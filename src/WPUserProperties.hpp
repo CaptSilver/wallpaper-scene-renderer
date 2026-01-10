@@ -115,6 +115,31 @@ public:
     // Check if empty
     bool Empty() const { return m_properties.empty(); }
 
+    // Set a single property value (used for overrides)
+    void SetProperty(const std::string& name, const nlohmann::json& value) {
+        m_properties[name] = value;
+        LOG_INFO("User property override: %s = %s", name.c_str(), value.dump().c_str());
+    }
+
+    // Apply overrides from JSON string (format: {"propname": value, ...})
+    bool ApplyOverrides(const std::string& jsonStr) {
+        if (jsonStr.empty()) return true;
+        try {
+            auto json = nlohmann::json::parse(jsonStr);
+            if (!json.is_object()) {
+                LOG_ERROR("User properties override is not an object");
+                return false;
+            }
+            for (auto it = json.begin(); it != json.end(); ++it) {
+                SetProperty(it.key(), it.value());
+            }
+            return true;
+        } catch (const nlohmann::json::exception& e) {
+            LOG_ERROR("Failed to parse user properties override: %s", e.what());
+            return false;
+        }
+    }
+
 private:
     std::unordered_map<std::string, nlohmann::json> m_properties;
 };

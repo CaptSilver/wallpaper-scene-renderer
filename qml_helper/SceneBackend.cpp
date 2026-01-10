@@ -293,6 +293,15 @@ void SceneObject::setMuted(bool value) {
     SET_PROPERTY(Bool, wallpaper::PROPERTY_MUTED, value);
 }
 
+QString SceneObject::userProperties() const { return m_userProperties; }
+
+void SceneObject::setUserProperties(const QString& value) {
+    if (m_userProperties == value) return;
+    m_userProperties = value;
+    SET_PROPERTY(String, wallpaper::PROPERTY_USER_PROPS, value.toStdString());
+    Q_EMIT userPropertiesChanged();
+}
+
 void SceneObject::play() { m_scene->play(); }
 void SceneObject::pause() { m_scene->pause(); }
 

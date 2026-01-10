@@ -111,6 +111,7 @@ private:
     WPSceneParser                        m_scene_parser;
     std::unique_ptr<audio::SoundManager> m_sound_manager;
     FirstFrameCallback                   m_first_frame_callback;
+    std::string                          m_user_props_json;
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -325,6 +326,8 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
         if (property == PROPERTY_SOURCE) {
             msg->findString("value", &m_source);
             LOG_INFO("source: %s", m_source.c_str());
+            // Reset user properties when source changes (new wallpaper)
+            m_user_props_json.clear();
             CALL_MHANDLER_CMD(LOAD_SCENE, msg);
         } else if (property == PROPERTY_ASSETS) {
             msg->findString("value", &m_assets);
@@ -367,6 +370,18 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                 auto nmsg = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_SPEED);
                 nmsg->setFloat("value", speed);
                 nmsg->post();
+            }
+        } else if (property == PROPERTY_USER_PROPS) {
+            std::string json;
+            msg->findString("value", &json);
+            if (m_user_props_json != json) {
+                m_user_props_json = json;
+                // Reload scene to apply new user properties (only if we have actual properties)
+                // Skip reload if json is empty - this means wallpaper is changing
+                if (!json.empty() && !m_source.empty() && !m_assets.empty()) {
+                    LOG_INFO("Reloading scene to apply user properties: %s", json.c_str());
+                    CALL_MHANDLER_CMD(LOAD_SCENE, msg);
+                }
             }
         }
     }
@@ -453,7 +468,7 @@ void MainHandler::loadScene() {
             LOG_ERROR("Not supported scene type");
             return;
         }
-        scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager);
+        scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, m_user_props_json);
         scene->vfs.swap(pVfs);
     }
 

@@ -1093,7 +1093,8 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
-                                            fs::VFS& vfs, audio::SoundManager& sm) {
+                                            fs::VFS& vfs, audio::SoundManager& sm,
+                                            const std::string& userPropsOverride) {
     // Load user properties from project.json if available
     WPUserProperties userProps;
     if (vfs.Contains("/assets/project.json")) {
@@ -1104,6 +1105,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 LOG_INFO("Loaded %s user properties", userProps.Empty() ? "no" : "some");
             }
         }
+    }
+
+    // Apply user overrides if provided
+    if (!userPropsOverride.empty()) {
+        LOG_INFO("Applying user properties override: %s", userPropsOverride.c_str());
+        userProps.ApplyOverrides(userPropsOverride);
     }
 
     // Set user properties context for the duration of parsing
