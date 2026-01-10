@@ -39,5 +39,5 @@ Made this for fun.
 - [x] Puppet warp
 - [ ] 3D model
 - [ ] Timeline animations
-- [ ] Scenescript  
-- [ ] User Properties
+- [ ] Scenescript
+- [x] User Properties (basic support - default values from project.json)

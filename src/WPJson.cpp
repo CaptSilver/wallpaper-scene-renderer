@@ -3,9 +3,28 @@
 
 #include "Utils/Identity.hpp"
 #include "Utils/String.h"
+#include "WPUserProperties.hpp"
 
 namespace wallpaper
 {
+
+// Resolve user property reference if present
+// Returns the resolved JSON value (either from user properties or default value)
+static nlohmann::json ResolveUserProperty(const nlohmann::json& json) {
+    if (!json.is_object() || !json.contains("user")) {
+        return json;
+    }
+
+    if (g_currentUserProperties != nullptr) {
+        return g_currentUserProperties->ResolveValue(json);
+    }
+
+    // No user properties context, use default value
+    if (json.contains("value")) {
+        return json["value"];
+    }
+    return json;
+}
 
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
@@ -21,9 +40,13 @@ bool ParseJson(const char* file, const char* func, int line, const std::string& 
 template<typename T>
 inline bool _GetJsonValue(const nlohmann::json&                  json,
                           typename utils::is_std_array<T>::type& value) {
-    using Tv          = typename T::value_type;
-    const auto* pjson = &json;
-    if (json.contains("value")) pjson = &json.at("value");
+    using Tv = typename T::value_type;
+
+    // Resolve user property reference first
+    nlohmann::json resolved = ResolveUserProperty(json);
+
+    const auto* pjson = &resolved;
+    if (resolved.contains("value")) pjson = &resolved.at("value");
     const auto& njson = *pjson;
     if (njson.is_number()) {
         value = { njson.get<Tv>() };
@@ -37,10 +60,13 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
 
 template<typename T>
 inline bool _GetJsonValue(const nlohmann::json& json, T& value) {
-    if (json.contains("value"))
-        value = json.at("value").get<T>();
+    // Resolve user property reference first
+    nlohmann::json resolved = ResolveUserProperty(json);
+
+    if (resolved.contains("value"))
+        value = resolved.at("value").get<T>();
     else
-        value = json.get<T>();
+        value = resolved.get<T>();
     return true;
 }
 

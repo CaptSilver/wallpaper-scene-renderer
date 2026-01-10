@@ -1,5 +1,6 @@
 #include "WPSceneParser.hpp"
 #include "WPJson.hpp"
+#include "WPUserProperties.hpp"
 
 #include "Utils/String.h"
 #include "Utils/Logging.h"
@@ -1093,6 +1094,21 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
                                             fs::VFS& vfs, audio::SoundManager& sm) {
+    // Load user properties from project.json if available
+    WPUserProperties userProps;
+    if (vfs.Contains("/assets/project.json")) {
+        auto projectFile = vfs.Open("/assets/project.json");
+        if (projectFile) {
+            std::string projectContent = projectFile->ReadAllStr();
+            if (userProps.LoadFromProjectJson(projectContent)) {
+                LOG_INFO("Loaded %s user properties", userProps.Empty() ? "no" : "some");
+            }
+        }
+    }
+
+    // Set user properties context for the duration of parsing
+    UserPropertiesScope propsScope(&userProps);
+
     nlohmann::json json;
     if (! PARSE_JSON(buf, json)) return nullptr;
     wpscene::WPScene sc;
