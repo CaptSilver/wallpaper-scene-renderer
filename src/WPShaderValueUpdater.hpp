@@ -79,6 +79,9 @@ public:
 
     void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
 
+    // Get interpolated mouse position in normalized coordinates (0-1)
+    std::array<float, 2> GetMousePosition() const { return m_mousePos; }
+
 private:
     Scene*               m_scene;
     WPCameraParallax     m_parallax;

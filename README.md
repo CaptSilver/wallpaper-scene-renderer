@@ -33,7 +33,7 @@ Made this for fun.
 	- [x] Initializers
 	- [x] Operators
 	- [x] Control Points
-        - [ ] Mouse Follow
+        - [x] Mouse Follow
 	- [x] Children
     - [ ] Audio Response
 - [x] Puppet warp

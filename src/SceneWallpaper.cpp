@@ -10,6 +10,7 @@
 #include "Scene/Scene.h"
 #include "Particle/ParticleSystem.h"
 #include "Interface/IShaderValueUpdater.h"
+#include "WPShaderValueUpdater.hpp"
 
 #include "Fs/VFS.h"
 #include "Fs/PhysicalFs.h"
@@ -180,6 +181,13 @@ private:
             {
                 auto pos = m_mouse_pos.load();
                 m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
+
+                // Update particle control points that follow the mouse
+                auto* wpUpdater =
+                    static_cast<WPShaderValueUpdater*>(m_scene->shaderValueUpdater.get());
+                auto mousePos = wpUpdater->GetMousePosition();
+                m_scene->paritileSys->UpdateMouseControlPoints(
+                    mousePos, { m_scene->ortho[0], m_scene->ortho[1] });
             }
             m_scene->paritileSys->Emitt();
 

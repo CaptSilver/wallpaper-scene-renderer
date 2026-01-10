@@ -203,3 +203,28 @@ void ParticleSystem::Emitt() {
         el->Emitt();
     }
 }
+
+void ParticleSubSystem::UpdateMouseControlPoints(double sceneX, double sceneY) {
+    for (auto& cp : m_controlpoints) {
+        if (cp.link_mouse) {
+            cp.offset = Eigen::Vector3d(sceneX, sceneY, 0.0);
+        }
+    }
+    // Update children recursively
+    for (auto& child : m_children) {
+        child->UpdateMouseControlPoints(sceneX, sceneY);
+    }
+}
+
+void ParticleSystem::UpdateMouseControlPoints(const std::array<float, 2>& mousePos,
+                                              const std::array<int, 2>&   orthoSize) {
+    // Convert normalized mouse position (0-1) to scene coordinates
+    // mousePos is in range [0,1] where (0,0) is top-left and (1,1) is bottom-right
+    // Scene coordinates have origin at center, so we need to convert
+    double sceneX = (mousePos[0] - 0.5) * orthoSize[0];
+    double sceneY = (0.5 - mousePos[1]) * orthoSize[1]; // Flip Y axis
+
+    for (auto& subsys : subsystems) {
+        subsys->UpdateMouseControlPoints(sceneX, sceneY);
+    }
+}

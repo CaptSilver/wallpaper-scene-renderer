@@ -76,6 +76,9 @@ public:
     std::span<const ParticleControlpoint> Controlpoints() const;
     std::span<ParticleControlpoint>       Controlpoints();
 
+    // Update control points with link_mouse flag to follow mouse position
+    void UpdateMouseControlPoints(double sceneX, double sceneY);
+
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
 
@@ -111,6 +114,11 @@ public:
     ~ParticleSystem() = default;
 
     void Emitt();
+
+    // Update control points that have link_mouse flag set
+    // mousePos: normalized mouse position (0-1), orthoSize: scene dimensions
+    void UpdateMouseControlPoints(const std::array<float, 2>& mousePos,
+                                  const std::array<int, 2>&   orthoSize);
 
     Scene& scene;
 
