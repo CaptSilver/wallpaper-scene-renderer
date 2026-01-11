@@ -184,7 +184,9 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
 
     if (! initRes()) return false;
-    ;
+
+    // Initialize glslang once at startup
+    glslang::InitializeProcess();
 
     m_inited = true;
     return m_inited;
@@ -236,6 +238,10 @@ bool VulkanRender::Impl::initRes() {
 
 void VulkanRender::Impl::destroy() {
     if (! m_inited) return;
+
+    // Finalize glslang (paired with InitializeProcess in init)
+    glslang::FinalizeProcess();
+
     if (m_device && m_device->handle()) {
         VVK_CHECK(m_device->handle().WaitIdle());
 
@@ -526,13 +532,11 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 
     setRenderTargetSize(scene, rg);
 
-    glslang::InitializeProcess();
     for (auto* p : m_passes) {
         if (! p->prepared()) {
             p->prepare(scene, *m_device, m_rendering_resources);
         }
     }
-    glslang::FinalizeProcess();
 
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -542,14 +546,24 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     m_vertex_buf->recordUpload(m_upload_cmd);
     VVK_CHECK_VOID_RE(m_upload_cmd.End());
     {
+        // Use fence instead of WaitIdle for better performance
+        vvk::Fence upload_fence;
+        VVK_CHECK_VOID_RE(m_device->handle().CreateFence(
+            VkFenceCreateInfo {
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+            },
+            upload_fence));
+
         VkSubmitInfo sub_info {
             .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .pNext              = nullptr,
             .commandBufferCount = 1,
             .pCommandBuffers    = m_upload_cmd.address(),
         };
-        VVK_CHECK_VOID_RE(m_device->graphics_queue().handle.Submit(sub_info, {}));
-        VVK_CHECK_VOID_RE(m_device->handle().WaitIdle());
+        VVK_CHECK_VOID_RE(m_device->graphics_queue().handle.Submit(sub_info, *upload_fence));
+        VVK_CHECK_VOID_RE(upload_fence.Wait(vk_wait_time));
     }
     m_pass_loaded = true;
 };

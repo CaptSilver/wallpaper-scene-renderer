@@ -57,8 +57,26 @@ public:
     void execute(const Device&, RenderingResources&) override;
     void destory(const Device&, RenderingResources&) override;
 
+    // Returns true if this pass has no dynamic elements (vertices, sprites)
+    bool isStatic() const override {
+        return !m_desc.dyn_vertex && m_desc.sprites_map.empty();
+    }
+
+    // Returns true if shader uses time-based uniforms (g_Time, g_PointerPosition, etc.)
+    bool usesTimeUniforms() const { return m_uses_time_uniforms; }
+
+    // Pass is cacheable if static and doesn't use time-based uniforms
+    bool isCacheable() const { return isStatic() && !m_uses_time_uniforms; }
+
+    // Check if output is already cached and valid
+    bool isCached() const { return m_cached; }
+    void invalidateCache() { m_cached = false; }
+    void markCached() { m_cached = true; }
+
 private:
     Desc m_desc;
+    bool m_cached { false };
+    bool m_uses_time_uniforms { false };
 };
 
 } // namespace vulkan

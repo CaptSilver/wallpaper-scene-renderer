@@ -36,11 +36,20 @@ public:
     std::span<const std::string> releaseTexs() const { return m_release_texs; }
     void                         clearReleaseTexs() { m_release_texs.clear(); }
 
+    // Dirty flags for conditional execution
+    bool needsExecute() const { return m_needs_execute; }
+    void markDirty() { m_needs_execute = true; }
+    void markClean() { m_needs_execute = false; }
+
+    // Override in subclasses to indicate if pass can be cached
+    virtual bool isStatic() const { return false; }
+
 protected:
     void setPrepared(bool v = true) { m_prepared = v; }
 
 private:
     bool                     m_prepared { false };
+    bool                     m_needs_execute { true };
     std::vector<std::string> m_release_texs;
 };
 } // namespace vulkan

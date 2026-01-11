@@ -149,6 +149,14 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             return;
         }
 
+        // Check if shader uses time-based uniforms (for caching optimization)
+        if (!ref.blocks.empty()) {
+            auto& block = ref.blocks.front();
+            m_uses_time_uniforms = exists(block.member_map, G_TIME) ||
+                                   exists(block.member_map, G_DAYTIME) ||
+                                   exists(block.member_map, G_POINTERPOSITION);
+        }
+
         auto& bindings = descriptor_info.bindings;
         bindings.resize(ref.binding_map.size());
 
@@ -389,6 +397,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 }
 
 void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
+    // NOTE: Pass caching disabled - output textures are not preserved between frames
+    // in current render graph implementation. Would need persistent render targets.
+    // if (isCacheable() && m_cached) { return; }
+
     if (m_desc.update_op) m_desc.update_op();
 
     auto&                   cmd    = rr.command;
@@ -400,6 +412,10 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         .baseArrayLayer = 0,
         .layerCount     = VK_REMAINING_MIP_LEVELS,
     };
+    // Batch image barriers for better performance
+    std::vector<VkImageMemoryBarrier> image_barriers;
+    image_barriers.reserve(m_desc.vk_textures.size());
+
     for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
         auto& slot    = m_desc.vk_textures[i];
         int   binding = m_desc.vk_tex_binding[i];
@@ -420,7 +436,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         };
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
 
-        VkImageMemoryBarrier imb {
+        image_barriers.push_back(VkImageMemoryBarrier {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext            = nullptr,
             .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
@@ -429,12 +445,15 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
             .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             .image            = img.handle,
             .subresourceRange = base_srang,
-        };
+        });
+    }
 
+    // Single batched barrier call instead of one per texture
+    if (!image_barriers.empty()) {
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_DEPENDENCY_BY_REGION_BIT,
-                            imb);
+                            {}, {}, image_barriers);
     }
 
     if (m_desc.ubo_buf) {
