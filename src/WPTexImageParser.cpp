@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <iostream>
+#include <string_view>
 
 using namespace wallpaper;
 
@@ -118,6 +119,44 @@ void SetHeaderPow2(ImageHeader& header, i32 mip_0_w, i32 mip_0_h) {
     header.mipmap_larger = mip_0_w * mip_0_h > header.mapWidth * header.mapHeight;
 }
 
+constexpr std::string_view ALIAS_PREFIX = "_alias_";
+
+inline bool IsAliasTexture(const std::string& name) {
+    return name.compare(0, ALIAS_PREFIX.size(), ALIAS_PREFIX) == 0;
+}
+
+inline ImageHeader MakeFallbackHeader() {
+    ImageHeader header;
+    header.width     = 1;
+    header.height    = 1;
+    header.mapWidth  = 1;
+    header.mapHeight = 1;
+    header.format    = TextureFormat::RGBA8;
+    header.count     = 1;
+    return header;
+}
+
+inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
+    auto  img_ptr = std::make_shared<Image>();
+    auto& img     = *img_ptr;
+    img.key        = name;
+    img.header     = MakeFallbackHeader();
+
+    Image::Slot slot;
+    slot.width  = 1;
+    slot.height = 1;
+
+    ImageData mipmap;
+    mipmap.width  = 1;
+    mipmap.height = 1;
+    mipmap.size   = 4;
+    mipmap.data   = ImageDataPtr(new uint8_t[4] { 255, 255, 255, 255 },
+                                 [](uint8_t* p) { delete[] p; });
+    slot.mipmaps.push_back(std::move(mipmap));
+    img.slots.push_back(std::move(slot));
+    return img_ptr;
+}
+
 } // namespace
 
 std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
@@ -127,7 +166,13 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     img.key                        = name;
     // std::ifstream file = fs::GetFileFstream(vfs, path);
     auto pfile = m_vfs->Open(path);
-    if (! pfile) return nullptr;
+    if (! pfile) {
+        if (IsAliasTexture(name)) {
+            LOG_INFO("using fallback 1x1 white texture for \"%s\"", name.c_str());
+            return MakeFallbackImage(name);
+        }
+        return nullptr;
+    }
     auto& file     = *pfile;
     auto  startpos = file.Tell();
     LoadHeader(file, img.header);
@@ -210,7 +255,12 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     ImageHeader header;
     std::string path  = "/assets/materials/" + name + ".tex";
     auto        pfile = m_vfs->Open(path);
-    if (! pfile) return header;
+    if (! pfile) {
+        if (IsAliasTexture(name)) {
+            return MakeFallbackHeader();
+        }
+        return header;
+    }
     auto& file = *pfile;
 
     LoadHeader(file, header);

@@ -241,6 +241,8 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (sstart_with(name, WE_HALF_COMPO_BUFFER_PREFIX)) {
         } else if (sstart_with(name, WE_QUARTER_COMPO_BUFFER_PREFIX)) {
         } else if (sstart_with(name, WE_FULL_COMPO_BUFFER_PREFIX)) {
+        } else if (name == WE_SHADOW_ATLAS) {
+        } else if (sstart_with(name, WE_BUFFER_PREFIX)) {
         } else {
             LOG_ERROR("unknown tex \"%s\"", name.c_str());
         }
@@ -338,7 +340,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             if (IsSpecLinkTex(name)) {
                 svData.renderTargets.push_back({ i, name });
             } else if (pScene->renderTargets.count(name) == 0) {
-                LOG_ERROR("%s not found in render targes", name.c_str());
+                LOG_ERROR("%s not found in render targets", name.c_str());
             } else {
                 svData.renderTargets.push_back({ i, name });
                 const auto& rt = pScene->renderTargets.at(name);
@@ -1167,6 +1169,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             .height     = context.ortho_w,
             .has_mipmap = true,
             .bind       = { .enable = true, .name = SpecTex_Default.data() }
+        };
+        context.scene->renderTargets[WE_SHADOW_ATLAS.data()] = {
+            .width  = 2048,
+            .height = 2048,
         };
     }
 

@@ -12,10 +12,10 @@ enum class TexTiling
 };
 
 struct ExHandle {
-    int         fd;
-    int32_t     width;
-    int32_t     height;
-    std::size_t size;
+    int         fd { -1 };
+    int32_t     width { 0 };
+    int32_t     height { 0 };
+    std::size_t size { 0 };
     // format rgba8
 
     ExHandle() = default;

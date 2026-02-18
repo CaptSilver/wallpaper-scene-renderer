@@ -136,6 +136,11 @@ std::span<const std::uint8_t> GlExtra::uuid() const { return pImpl->uuid; }
 TexTiling GlExtra::tiling() const { return m_tiling; }
 
 uint GlExtra::genExTexture(ExHandle& handle) {
+    if (handle.fd < 0 || handle.size == 0) {
+        LOG_ERROR("gl: invalid ExHandle (fd=%d, size=%zu)", handle.fd, handle.size);
+        return 0;
+    }
+
     uint memobject, tex;
     glCreateMemoryObjectsEXT(1, &memobject);
     glImportMemoryFdEXT(memobject, handle.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle.fd);

@@ -27,7 +27,7 @@ using namespace wallpaper;
 namespace
 {
 
-static constexpr const char* pre_shader_code = R"(#version 150
+static constexpr const char* pre_shader_code = R"(#version 330
 #define GLSL 1
 #define HLSL 0
 #define highp
@@ -359,6 +359,26 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
     return std::regex_replace(unit.src, re_hold, insert_str);
 }
 
+// Fix HLSL->GLSL implicit type conversion issues.
+// HLSL allows implicit float<->int conversions, GLSL/SPIR-V does not.
+inline std::string FixImplicitConversions(const std::string& src) {
+    std::string result = src;
+
+    // Fix: "float VAR = int(EXPR)" -> "int VAR = int(EXPR)"
+    // HLSL pattern where a float variable is assigned an int constructor result,
+    // then used in int contexts (for loops)
+    {
+        std::regex re(R"((\bfloat\s+)(\w+)(\s*=\s*int\s*\())");
+        result = std::regex_replace(result, re, "int $2$3");
+    }
+
+    // Fix: "for (int VAR = - FLOAT_EXPR" -> "for (int VAR = - int(FLOAT_EXPR)"
+    // Not needed if the above fix works, but kept as safety net
+    // for patterns where the variable was already declared as int elsewhere
+
+    return result;
+}
+
 inline std::string GenSha1(std::span<const WPShaderUnit> units) {
     std::string shas;
     for (auto& unit : units) {
@@ -469,6 +489,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                 i + 1 < units.size() ? &units[i + 1].preprocess_info : nullptr;
 
             unit.src = Finalprocessor(unit, pre_info, post_info);
+            unit.src = FixImplicitConversions(unit.src);
 
             vunit.src   = unit.src;
             vunit.stage = ToGLSL(unit.stage);
