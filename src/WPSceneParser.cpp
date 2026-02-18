@@ -797,7 +797,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             // load! effect commands
             {
                 for (const auto& el : wpeffobj.commands) {
-                    if (el.command != "copy") {
+                    SceneImageEffect::CmdType cmdType;
+                    if (el.command == "copy") {
+                        cmdType = SceneImageEffect::CmdType::Copy;
+                    } else if (el.command == "swap") {
+                        cmdType = SceneImageEffect::CmdType::Swap;
+                    } else {
                         LOG_ERROR("Unknown effect command: %s", el.command.c_str());
                         continue;
                     }
@@ -807,7 +812,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                   el.source.c_str());
                         continue;
                     }
-                    imgEffect->commands.push_back({ .cmd      = SceneImageEffect::CmdType::Copy,
+                    imgEffect->commands.push_back({ .cmd      = cmdType,
                                                     .dst      = fboMap[el.target],
                                                     .src      = fboMap[el.source],
                                                     .afterpos = el.afterpos });

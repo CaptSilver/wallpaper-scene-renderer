@@ -160,19 +160,16 @@ inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
 } // namespace
 
 std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
-    std::string            path    = "/assets/materials/" + name + ".tex";
+    std::string path = "/assets/materials/" + name + ".tex";
+    if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {
+        LOG_INFO("using fallback 1x1 white texture for \"%s\"", name.c_str());
+        return MakeFallbackImage(name);
+    }
     std::shared_ptr<Image> img_ptr = std::make_shared<Image>();
     auto&                  img     = *img_ptr;
     img.key                        = name;
-    // std::ifstream file = fs::GetFileFstream(vfs, path);
     auto pfile = m_vfs->Open(path);
-    if (! pfile) {
-        if (IsAliasTexture(name)) {
-            LOG_INFO("using fallback 1x1 white texture for \"%s\"", name.c_str());
-            return MakeFallbackImage(name);
-        }
-        return nullptr;
-    }
+    if (! pfile) return nullptr;
     auto& file     = *pfile;
     auto  startpos = file.Tell();
     LoadHeader(file, img.header);
@@ -253,14 +250,12 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
 
 ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     ImageHeader header;
-    std::string path  = "/assets/materials/" + name + ".tex";
-    auto        pfile = m_vfs->Open(path);
-    if (! pfile) {
-        if (IsAliasTexture(name)) {
-            return MakeFallbackHeader();
-        }
-        return header;
+    std::string path = "/assets/materials/" + name + ".tex";
+    if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {
+        return MakeFallbackHeader();
     }
+    auto pfile = m_vfs->Open(path);
+    if (! pfile) return header;
     auto& file = *pfile;
 
     LoadHeader(file, header);

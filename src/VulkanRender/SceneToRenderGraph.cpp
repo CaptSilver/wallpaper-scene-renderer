@@ -110,6 +110,8 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
             int   nodePos = 0;
             for (auto& n : eff->nodes) {
                 if (cmdItor != cmdEnd && nodePos == cmdItor->afterpos) {
+                    // both copy and swap use copy pass;
+                    // true swap would need temp FBO support in render graph
                     rg::addCopyPass(
                         rgraph, rg::createTexDesc(cmdItor->src), rg::createTexDesc(cmdItor->dst));
                     cmdItor++;

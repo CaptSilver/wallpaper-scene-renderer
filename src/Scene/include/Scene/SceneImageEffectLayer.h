@@ -22,6 +22,7 @@ struct SceneImageEffect {
     enum class CmdType
     {
         Copy,
+        Swap,
     };
     struct Command {
         CmdType     cmd { CmdType::Copy };
