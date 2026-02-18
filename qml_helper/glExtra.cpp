@@ -1,8 +1,11 @@
 #include "glExtra.hpp"
 #include <glad/glad.h>
-#include <stdio.h>
 #include <vector>
 #include "Utils/Logging.h"
+
+#include <QtGui/QOpenGLContext>
+#include <QtGui/QOffscreenSurface>
+#include <QtGui/QSurfaceFormat>
 
 using namespace wallpaper;
 
@@ -43,7 +46,10 @@ public:
 };
 
 GlExtra::GlExtra(): pImpl(std::make_unique<impl>()) {}
-GlExtra::~GlExtra() {}
+GlExtra::~GlExtra() {
+    delete m_surface;
+    delete m_shared_ctx;
+}
 
 static std::array<std::uint8_t, GL_UUID_SIZE_EXT> getUUID() {
     int32_t num_device = 0;
@@ -69,10 +75,58 @@ bool GlExtra::init(void* get_proc_address(const char*)) {
             break;
         }
         bool is_low_gl = ! GLAD_GL_VERSION_4_2 && ! GLAD_GL_ES_VERSION_3_0;
-        m_is_low_gl    = is_low_gl;
         if (is_low_gl) {
-            LOG_INFO("gl: Low opengl version, may not work properly");
+            LOG_INFO("gl: Context is GL %d.%d, attempting shared GL 4.2 context",
+                     GLVersion.major, GLVersion.minor);
+
+            // Try to create a shared GL 4.2+ context for external memory operations
+            QOpenGLContext* current = QOpenGLContext::currentContext();
+            if (current) {
+                auto* ctx = new QOpenGLContext();
+                // Use the parent context's format as base, just bump version
+                QSurfaceFormat fmt = current->format();
+                fmt.setVersion(4, 2);
+                ctx->setFormat(fmt);
+                ctx->setShareContext(current);
+                if (ctx->create()) {
+                    auto actual = ctx->format();
+                    LOG_INFO("gl: Shared context created: GL %d.%d",
+                             actual.majorVersion(), actual.minorVersion());
+
+                    auto* surface = new QOffscreenSurface();
+                    surface->setFormat(actual);
+                    surface->create();
+
+                    // Switch to new context to re-init GLAD with 4.2+ functions
+                    if (ctx->makeCurrent(surface)) {
+                        if (gladLoadGLLoader((GLADloadproc)get_proc_address)) {
+                            LOG_INFO("gl: GLAD reloaded with GL %d.%d",
+                                     GLVersion.major, GLVersion.minor);
+                            m_shared_ctx    = ctx;
+                            m_surface       = surface;
+                            m_use_shared_ctx = true;
+                            is_low_gl       = false;
+                        } else {
+                            LOG_ERROR("gl: Failed to reload GLAD on shared context");
+                        }
+                        // Switch back to Plasma context
+                        current->makeCurrent(current->surface());
+                    } else {
+                        LOG_ERROR("gl: Failed to makeCurrent on shared context");
+                    }
+
+                    if (! m_use_shared_ctx) {
+                        delete surface;
+                        delete ctx;
+                    }
+                } else {
+                    LOG_INFO("gl: Shared GL 4.2 context not available, using fallback");
+                    delete ctx;
+                }
+            }
         }
+
+        m_is_low_gl = is_low_gl;
         pImpl->uuid = getUUID();
 
         std::string gl_verdor_name { (const char*)glGetString(GL_VENDOR) };
@@ -129,6 +183,17 @@ bool GlExtra::init(void* get_proc_address(const char*)) {
 
         inited = true;
     } while (false);
+
+    // If we used the shared context for init, switch back to Plasma context
+    if (m_use_shared_ctx) {
+        QOpenGLContext* current = QOpenGLContext::currentContext();
+        if (current != m_shared_ctx) {
+            // Already on Plasma context
+        } else if (auto* share = m_shared_ctx->shareContext()) {
+            share->makeCurrent(share->surface());
+        }
+    }
+
     return inited;
 }
 
@@ -142,25 +207,30 @@ uint GlExtra::genExTexture(ExHandle& handle) {
         return 0;
     }
 
-    // clear any prior GL errors
-    while (glGetError() != GL_NO_ERROR) {}
+    QOpenGLContext* prev_ctx     = nullptr;
+    QSurface*       prev_surface = nullptr;
+
+    // Switch to shared 4.2 context if available
+    if (m_use_shared_ctx && m_shared_ctx) {
+        prev_ctx     = QOpenGLContext::currentContext();
+        prev_surface = prev_ctx ? prev_ctx->surface() : nullptr;
+        m_shared_ctx->makeCurrent(m_surface);
+    }
 
     uint memobject, tex;
     glCreateMemoryObjectsEXT(1, &memobject);
     glImportMemoryFdEXT(memobject, handle.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle.fd);
-    {
-        // NVIDIA GL 3.2 context may report GL_INVALID_ENUM here even though
-        // the import succeeds; demote to warning
-        int err = glGetError();
-        if (err != GL_NO_ERROR) {
-            LOG_INFO("gl: glImportMemoryFdEXT: %s(%d) (may be harmless on NVIDIA GL 3.2)",
-                     GLErrorToStr(err), err);
-        }
+    if (m_is_low_gl) {
+        // GL 3.2 may generate spurious GL_INVALID_ENUM on import — clear it
+        glGetError();
+    } else {
+        CHECK_GL_ERROR_IF_DEBUG()
     }
 
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
 
+    // GL_TEXTURE_TILING_EXT requires GL 4.2+ — skip on low GL to avoid GL_INVALID_ENUM
     if (! m_is_low_gl) {
         glTexParameteri(
             GL_TEXTURE_2D,
@@ -174,6 +244,12 @@ uint GlExtra::genExTexture(ExHandle& handle) {
 
     glBindTexture(GL_TEXTURE_2D, 0);
     handle.fd = -1;
+
+    // Switch back to Plasma context
+    if (prev_ctx && prev_surface) {
+        prev_ctx->makeCurrent(prev_surface);
+    }
+
     return tex;
 }
 
