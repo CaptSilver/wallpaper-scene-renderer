@@ -69,6 +69,7 @@ bool GlExtra::init(void* get_proc_address(const char*)) {
             break;
         }
         bool is_low_gl = ! GLAD_GL_VERSION_4_2 && ! GLAD_GL_ES_VERSION_3_0;
+        m_is_low_gl    = is_low_gl;
         if (is_low_gl) {
             LOG_INFO("gl: Low opengl version, may not work properly");
         }
@@ -141,19 +142,32 @@ uint GlExtra::genExTexture(ExHandle& handle) {
         return 0;
     }
 
+    // clear any prior GL errors
+    while (glGetError() != GL_NO_ERROR) {}
+
     uint memobject, tex;
     glCreateMemoryObjectsEXT(1, &memobject);
     glImportMemoryFdEXT(memobject, handle.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle.fd);
-    CHECK_GL_ERROR_IF_DEBUG()
+    {
+        // NVIDIA GL 3.2 context may report GL_INVALID_ENUM here even though
+        // the import succeeds; demote to warning
+        int err = glGetError();
+        if (err != GL_NO_ERROR) {
+            LOG_INFO("gl: glImportMemoryFdEXT: %s(%d) (may be harmless on NVIDIA GL 3.2)",
+                     GLErrorToStr(err), err);
+        }
+    }
 
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
 
-    glTexParameteri(
-        GL_TEXTURE_2D,
-        GL_TEXTURE_TILING_EXT,
-        (m_tiling == TexTiling::OPTIMAL ? GL_OPTIMAL_TILING_EXT : GL_LINEAR_TILING_EXT));
-    CHECK_GL_ERROR_IF_DEBUG()
+    if (! m_is_low_gl) {
+        glTexParameteri(
+            GL_TEXTURE_2D,
+            GL_TEXTURE_TILING_EXT,
+            (m_tiling == TexTiling::OPTIMAL ? GL_OPTIMAL_TILING_EXT : GL_LINEAR_TILING_EXT));
+        CHECK_GL_ERROR_IF_DEBUG()
+    }
 
     glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, handle.width, handle.height, memobject, 0);
     CHECK_GL_ERROR_IF_DEBUG()

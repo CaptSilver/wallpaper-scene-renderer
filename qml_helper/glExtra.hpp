@@ -22,6 +22,7 @@ private:
     std::unique_ptr<impl> pImpl;
 
     bool inited { false };
+    bool m_is_low_gl { false };
 
     wallpaper::TexTiling m_tiling { wallpaper::TexTiling::OPTIMAL };
 };
