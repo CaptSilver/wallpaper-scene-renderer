@@ -188,7 +188,7 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                                                           .type = rg::TexNode::TexType::Temp },
                                       true);
             builder.write(output_node);
-            if (output == SpecTex_Default) {
+            if (output == SpecTex_Default || output == GenOffscreenRT(imgId)) {
                 extra.id_link_map[(usize)imgId] = output_node;
             }
         });

@@ -59,9 +59,13 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
         swap_pp();
     }
     if (last_output != nullptr) {
-        last_output->output = SpecTex_Default;
-        auto& mesh          = *(last_output->sceneNode->Mesh());
-        auto& material      = *mesh.Material();
+        // Offscreen nodes write to a per-node RT to avoid compositing into the main scene;
+        // their output is still accessible via id_link_map for dependent effects.
+        last_output->output = m_is_offscreen
+                                  ? GenOffscreenRT(m_worldNode->ID())
+                                  : std::string(SpecTex_Default);
+        auto& mesh     = *(last_output->sceneNode->Mesh());
+        auto& material = *mesh.Material();
         {
             material.blenmode = m_final_blend;
             last_output->sceneNode->SetCamera(std::string());

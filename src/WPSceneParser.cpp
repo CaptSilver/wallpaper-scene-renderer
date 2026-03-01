@@ -541,9 +541,19 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
 
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
-    if (! wpimgobj.visible) return;
+    auto& vfs      = *context.vfs;
 
-    auto& vfs = *context.vfs;
+    // Invisible nodes that have visible effects are processed as offscreen dependency nodes:
+    // their effect output is written to a per-node RT (not the main scene output) so
+    // that compose layers can reference it via _rt_imageLayerComposite_XXX_a → _rt_link_XXX.
+    // Invisible nodes with no effects have nothing to produce, so skip them entirely.
+    if (! wpimgobj.visible) {
+        bool anyVisibleEffect = false;
+        for (const auto& wpeffobj : wpimgobj.effects)
+            if (wpeffobj.visible) { anyVisibleEffect = true; break; }
+        if (! anyVisibleEffect) return;
+    }
+    bool isOffscreen = ! wpimgobj.visible;
 
     // coloBlendMode load passthrough manaully
     if (wpimgobj.colorBlendMode != 0) {
@@ -561,6 +571,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         wpimgobj.effects.push_back(colorEffect);
     }
 
+    // Count effects after colorBlendMode may have added one
     int32_t count_eff = 0;
     for (const auto& wpeffobj : wpimgobj.effects) {
         if (wpeffobj.visible) count_eff++;
@@ -734,6 +745,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
         {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
+            imgEffectLayer->SetOffscreen(isOffscreen);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
             if (isCompose) {
@@ -753,6 +765,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
             }
             scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
+            if (isOffscreen) {
+                // Dedicated RT for the final output of invisible dependency nodes.
+                scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
+                    scene.renderTargets.at(effect_ppong_a);
+            }
         }
 
         int32_t i_eff = -1;

@@ -325,11 +325,19 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
                               { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 } },
                             mdl.vertexs.size());
 
+    // Clamp blend indices to [0, bone_count-1] to prevent OOB GPU array access in
+    // g_Bones[a_BlendIndices.x] which causes VK_ERROR_DEVICE_LOST on strict GPU drivers.
+    // Unused slots in the MDL may carry sentinel values (e.g. 0xFF) with weight=0.
+    uint32_t bone_count = mdl.puppet ? (uint32_t)mdl.puppet->bones.size() : 1u;
+
     std::array<float, 16> one_vert;
-    auto                  to_one = [](const WPMdl::Vertex& in, decltype(one_vert)& out) {
+    auto                  to_one = [bone_count](const WPMdl::Vertex& in, decltype(one_vert)& out) {
         uint offset = 0;
         memcpy(out.data() + 4 * (offset++), in.position.data(), sizeof(in.position));
-        memcpy(out.data() + 4 * (offset++), in.blend_indices.data(), sizeof(in.blend_indices));
+        std::array<uint32_t, 4> safe_indices;
+        for (int j = 0; j < 4; j++)
+            safe_indices[j] = in.blend_indices[j] < bone_count ? in.blend_indices[j] : 0u;
+        memcpy(out.data() + 4 * (offset++), safe_indices.data(), sizeof(safe_indices));
         memcpy(out.data() + 4 * (offset++), in.weight.data(), sizeof(in.weight));
         memcpy(out.data() + 4 * (offset++), in.texcoord.data(), sizeof(in.texcoord));
     };

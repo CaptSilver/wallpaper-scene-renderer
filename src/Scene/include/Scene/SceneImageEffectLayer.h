@@ -46,6 +46,10 @@ public:
     SceneMesh&  FinalMesh() const { return *m_final_mesh; }
     SceneNode&  FinalNode() const { return *m_final_node; }
     void        SetFinalBlend(BlendMode m) { m_final_blend = m; }
+    // When true, ResolveEffect writes the final output to a per-node offscreen RT instead of
+    // SpecTex_Default, so invisible dependency nodes don't composite into the main scene.
+    void        SetOffscreen(bool v) { m_is_offscreen = v; }
+    bool        IsOffscreen() const { return m_is_offscreen; }
 
     void ResolveEffect(const SceneMesh& defualt_mesh, std::string_view effect_cam);
 
@@ -55,6 +59,7 @@ private:
     std::string m_pingpong_b;
 
     bool fullscreen { false };
+    bool m_is_offscreen { false };
     //    std::vector<float> m_size;
     std::unique_ptr<SceneMesh> m_final_mesh;
     std::unique_ptr<SceneNode> m_final_node;
