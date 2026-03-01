@@ -107,7 +107,28 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         for (auto& v : id) v = f.ReadUint16();
     }
 
-    mdl.mdls = ReadMDLVesion(f);
+    // Newer MDL formats (MDLV >= 23 / PKGV0022+) insert extra sections between
+    // the mesh data and the skeleton.  Scan forward byte-by-byte for the "MDLS"
+    // tag rather than assuming it immediately follows the index data.
+    {
+        char ring[4] = { 0, 0, 0, 0 };
+        char c;
+        while (f.Read(&c, 1) == 1) {
+            ring[0] = ring[1];
+            ring[1] = ring[2];
+            ring[2] = ring[3];
+            ring[3] = c;
+            if (ring[0] == 'M' && ring[1] == 'D' && ring[2] == 'L' && ring[3] == 'S') {
+                // Read the remaining 5 bytes of the 9-byte version tag (4 digits + NUL).
+                char ver_tail[6] = {};
+                f.Read(ver_tail, 5);
+                int v = 0;
+                std::from_chars(ver_tail, ver_tail + 4, v);
+                mdl.mdls = v;
+                break;
+            }
+        }
+    }
 
     size_t bones_file_end = f.ReadUint32();
     (void)bones_file_end;
@@ -127,10 +148,9 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         f.ReadInt32(); // unk
 
         bone.parent = f.ReadUint32();
-        assert(bone.parent < i || bone.noParent());
         if (bone.parent >= i && ! bone.noParent()) {
-            LOG_ERROR("mdl wrong bone parent index %d", bone.parent);
-            return false;
+            LOG_ERROR("mdl wrong bone parent index %d, treating as root bone", bone.parent);
+            bone.parent = 0xFFFFFFFFu;
         }
 
         uint32_t size = f.ReadUint32();
