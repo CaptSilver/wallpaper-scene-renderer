@@ -305,7 +305,10 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
                       &res,
                       includer);
 
-    std::regex re_io(R"(.+\s(in|out)\s[\s\w]+\s(\w+)\s*;)", std::regex::ECMAScript);
+    // (?:^|\s) lets us match "out vec2 foo;" at column 0 (no qualifier) as well as
+    // "smooth out vec4 foo;" where the qualifier precedes the keyword.
+    std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*;)",
+                     std::regex::ECMAScript | std::regex::multiline);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
          it != std::sregex_iterator();
          it++) {
@@ -372,9 +375,127 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "int $2$3");
     }
 
-    // Fix: "for (int VAR = - FLOAT_EXPR" -> "for (int VAR = - int(FLOAT_EXPR)"
-    // Not needed if the above fix works, but kept as safety net
-    // for patterns where the variable was already declared as int elsewhere
+    // Fix: IDENTIFIER % int_literal -> int(IDENTIFIER) % int_literal
+    // HLSL allows % on floats; GLSL requires integer operands for %.
+    // When the result is assigned directly to a uint variable, additionally wrap in
+    // uint() to avoid the secondary int→uint implicit conversion error.
+    {
+        // Case: uint VAR = (WORD OP int_lit) % N  e.g. "uint b = (a + 1) % 32;"
+        // where WORD is uint: "uint + int" and "uint % int" are both GLSL errors.
+        // Fix: uint VAR = uint((int(WORD) OP int_lit) % N)
+        {
+            std::regex re(R"(\buint\s+(\w+)\s*=\s*\((\w+)\s*([\+\-])\s*(\d+)\)\s*%\s*(\d+\b))");
+            result = std::regex_replace(result, re, "uint $1 = uint((int($2) $3 $4) % $5)");
+        }
+        // Special case: uint VAR = EXPR % N;  →  uint VAR = uint(int(EXPR) % N);
+        {
+            std::regex re(R"(\buint\s+(\w+)\s*=\s*\b(\w+)\s*%\s*(\d+\b))");
+            result = std::regex_replace(result, re, "uint $1 = uint(int($2) % $3)");
+        }
+        // General case: EXPR % N  →  int(EXPR) % N
+        {
+            std::regex re(R"(\b(\w+)\s*%\s*(\d+\b))");
+            result = std::regex_replace(result, re, "int($1) % $2");
+        }
+    }
+
+    // Fix: HLSL varyings declared as vecN but accessed with components beyond N.
+    // In DirectX, texture-coordinate interpolator slots are always 4-wide regardless of
+    // the declared float2/float3 type; HLSL shaders rely on this.  GLSL enforces the
+    // declared width strictly, so "in vec2 v_TexCoord; ... v_TexCoord.zw" is an error.
+    // Upgrade vec2 → vec4 when .z/.w (xyzw) or .b/.a (rgba) is accessed on it;
+    // likewise vec3 → vec4 when .w/.a is accessed.
+    // NOTE: must run before fixTrunc so that upgraded variables are not incorrectly
+    // truncated (e.g. a vec2 upgraded to vec4 must not have its assignments cut to .xy).
+    {
+        auto upgradeIfOutOfRange = [&result](const char* small_type, const char* big_type,
+                                             const char* oob_pattern,
+                                             const char* bare_swizzle) {
+            std::vector<std::string> to_upgrade;
+            std::regex               re_decl(std::string(R"(\b)") + small_type + R"(\s+(\w+)\s*;)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
+                 it != std::sregex_iterator(); ++it) {
+                std::string name = (*it)[1].str();
+                if (std::regex_search(result, std::regex(R"(\b)" + name + oob_pattern)))
+                    to_upgrade.push_back(std::move(name));
+            }
+            for (const auto& name : to_upgrade) {
+                // Upgrade the declaration (vec2 → vec4, etc.)
+                std::regex re(std::string(R"(\b)") + small_type + R"((\s+)" + name + R"(\s*;))");
+                result = std::regex_replace(result, re, std::string(big_type) + "$1");
+                // After upgrading, bare uses of this variable as a texture() coordinate
+                // are now too wide (e.g. texture(sampler2D, vec4) is invalid).
+                // Add a swizzle to bring it back to the original size.
+                // Only matches bare NAME with no following dot (i.e. no existing swizzle).
+                std::regex re_tex(R"(\btexture\s*\(\s*(\w+)\s*,\s*)" + name + R"(\s*\))");
+                result = std::regex_replace(
+                    result, re_tex, "texture($1, " + name + "." + bare_swizzle + ")");
+            }
+        };
+        upgradeIfOutOfRange("vec2", "vec4", R"(\.[zwba])", "xy");
+        upgradeIfOutOfRange("vec3", "vec4", R"(\.[wa])", "xyz");
+    }
+
+    // Fix: HLSL implicit vector truncation (vec4->vec2, vec4->vec3, vec3->vec2).
+    // HLSL allows "vec2_var = vec4_expr" silently dropping the extra components;
+    // GLSL requires an explicit swizzle.  We collect all declared variable names
+    // per width and rewrite bare same-name assignments.
+    // NOTE: runs after upgradeIfOutOfRange so that variables already upgraded to vec4
+    // are not seen as vec2/vec3 targets and have their assignments incorrectly truncated.
+    {
+        auto collect = [&result](const char* type) {
+            std::set<std::string> vars;
+            std::regex            re(std::string(R"(\b)") + type + R"(\s+(\w+)\b)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator();
+                 ++it)
+                vars.insert((*it)[1].str());
+            return vars;
+        };
+
+        const auto vec2_vars = collect("vec2");
+        const auto vec3_vars = collect("vec3");
+        const auto vec4_vars = collect("vec4");
+
+        auto fixTrunc = [&result](const std::set<std::string>& dst,
+                                  const std::set<std::string>& src,
+                                  const char*                   swizzle) {
+            for (const auto& d : dst) {
+                for (const auto& s : src) {
+                    if (d == s) continue;
+                    std::regex re("\\b(" + d + ")\\s*=\\s*(" + s + ")\\s*;");
+                    result = std::regex_replace(result, re,
+                                                "$1 = $2." + std::string(swizzle) + ";");
+                }
+            }
+        };
+
+        fixTrunc(vec2_vars, vec3_vars, "xy");
+        fixTrunc(vec2_vars, vec4_vars, "xy");
+        fixTrunc(vec3_vars, vec4_vars, "xyz");
+    }
+
+    // Fix: HLSL pow(scalar, vecN) broadcasts the scalar; GLSL requires matching genType.
+    // When the pow() result is used inside a vecN() constructor, move the broadcast inside:
+    //   vecN(pow(X, Y)) → pow(vecN(X), vecN(Y))
+    // Wrapping an already-vecN arg in vecN() is a safe copy-constructor identity.
+    // Only handles one level of nesting inside each pow argument (sufficient in practice).
+    {
+        std::regex re(
+            R"(\b(vec[234])\s*\(\s*pow\s*\()"
+            R"(([^(),]*(?:\([^)]*\)[^(),]*)*),\s*)"
+            R"(([^()]*(?:\([^)]*\)[^()]*)*)\)\s*\))");
+        result = std::regex_replace(result, re, "pow($1($2), $1($3))");
+    }
+
+    // Fix: "int VAR = step(EXPR)" → "float VAR = step(EXPR)"
+    // step() returns genType (float); the variable is used in float arithmetic throughout
+    // (bar *= step(...), bar * u_BarOpacity, etc.), so changing the type is correct.
+    // HLSL allows int = float implicitly; GLSL requires matching types.
+    {
+        std::regex re(R"(\bint\s+(\w+)\s*=\s*(step\s*\([^;]*\))\s*;)");
+        result = std::regex_replace(result, re, "float $1 = $2;");
+    }
 
     return result;
 }

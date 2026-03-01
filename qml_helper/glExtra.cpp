@@ -220,12 +220,9 @@ uint GlExtra::genExTexture(ExHandle& handle) {
     uint memobject, tex;
     glCreateMemoryObjectsEXT(1, &memobject);
     glImportMemoryFdEXT(memobject, handle.size, GL_HANDLE_TYPE_OPAQUE_FD_EXT, handle.fd);
-    if (m_is_low_gl) {
-        // GL 3.2 may generate spurious GL_INVALID_ENUM on import — clear it
-        glGetError();
-    } else {
-        CHECK_GL_ERROR_IF_DEBUG()
-    }
+    // NVIDIA generates spurious GL_INVALID_ENUM here on both GL 3.2 and 4.x contexts.
+    // Subsequent checks after glTexParameteri/glTexStorageMem2DEXT catch real errors.
+    glGetError();
 
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
