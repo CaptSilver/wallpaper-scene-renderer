@@ -60,11 +60,15 @@ public:
 
     i32& ID() { return m_id; }
 
+    bool IsOffscreen() const { return m_offscreen; }
+    void SetOffscreen(bool v) { m_offscreen = v; }
+
 private:
     // mark self and all children
     void MarkTransDirty();
 
     i32         m_id;
+    bool        m_offscreen { false };
     std::string m_name;
 
     bool            m_dirty;

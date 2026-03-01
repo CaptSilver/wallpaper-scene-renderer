@@ -138,6 +138,14 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
         }
     }
 
+    // Invisible nodes without effects render to an offscreen RT so they don't
+    // composite into the main scene but remain accessible via id_link_map.
+    std::string offscreen_output;
+    if (imgeff == nullptr && node->IsOffscreen()) {
+        offscreen_output = GenOffscreenRT(imgId);
+        output           = offscreen_output;
+    }
+
     std::string passName = material->name;
 
     rgraph.addPass<vulkan::CustomShaderPass>(

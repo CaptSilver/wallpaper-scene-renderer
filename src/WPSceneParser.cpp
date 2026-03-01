@@ -543,16 +543,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
 
-    // Invisible nodes that have visible effects are processed as offscreen dependency nodes:
-    // their effect output is written to a per-node RT (not the main scene output) so
+    // Invisible nodes are processed as offscreen dependency nodes:
+    // their output is written to a per-node RT (not the main scene output) so
     // that compose layers can reference it via _rt_imageLayerComposite_XXX_a → _rt_link_XXX.
-    // Invisible nodes with no effects have nothing to produce, so skip them entirely.
-    if (! wpimgobj.visible) {
-        bool anyVisibleEffect = false;
-        for (const auto& wpeffobj : wpimgobj.effects)
-            if (wpeffobj.visible) { anyVisibleEffect = true; break; }
-        if (! anyVisibleEffect) return;
-    }
     bool isOffscreen = ! wpimgobj.visible;
 
     // coloBlendMode load passthrough manaully
@@ -578,7 +571,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     }
     bool hasEffect = count_eff > 0;
     // skip no effect fullscreen layer
-    if (! hasEffect && wpimgobj.fullscreen) return;
+    if (! hasEffect && wpimgobj.fullscreen) {
+        return;
+    }
 
     bool hasPuppet = ! wpimgobj.puppet.empty();
     (void)hasPuppet;
@@ -586,7 +581,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     bool isCompose = (wpimgobj.image == "models/util/composelayer.json");
     // skip no effect compose layer
     // it's not the correct behaviour, but do it for now
-    if (! hasEffect && isCompose) return;
+    if (! hasEffect && isCompose) {
+        return;
+    }
 
     std::unique_ptr<WPMdl> puppet;
     if (! wpimgobj.puppet.empty()) {
@@ -607,6 +604,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                                  Vector3f(wpimgobj.angles.data()));
     LoadAlignment(*spImgNode, wpimgobj.alignment, { wpimgobj.size[0], wpimgobj.size[1] });
     spImgNode->ID() = wpimgobj.id;
+    spImgNode->SetOffscreen(isOffscreen);
 
     SceneMaterial     material;
     WPShaderValueData svData;
@@ -639,7 +637,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                            &material,
                            &svData,
                            &shaderInfo)) {
-            LOG_ERROR("load imageobj '%s' material faild", wpimgobj.name.c_str());
+            LOG_ERROR("load imageobj id=%d '%s' material failed", wpimgobj.id, wpimgobj.name.c_str());
             return;
         };
         LoadConstvalue(material, wpimgobj.material, shaderInfo);
@@ -911,6 +909,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
     }
+    // Invisible nodes without effects still need an offscreen RT so their output
+    // can be referenced via link tex by compose layers.
+    if (isOffscreen && ! hasEffect) {
+        auto& scene = *context.scene;
+        scene.renderTargets[GenOffscreenRT(wpimgobj.id)] = {
+            .width      = (uint16_t)wpimgobj.size[0],
+            .height     = (uint16_t)wpimgobj.size[1],
+            .allowReuse = true,
+        };
+    }
     context.scene->sceneGraph->AppendChild(spImgNode);
 }
 
@@ -1111,7 +1119,6 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
         LOG_ERROR("parse scene object failed, name: %s", wpobj.name.c_str());
         return;
     }
-    if (! wpobj.visible) return;
     objs.push_back(wpobj);
 }
 } // namespace
