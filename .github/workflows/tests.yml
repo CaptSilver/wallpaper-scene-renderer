@@ -26,7 +26,8 @@ jobs:
             liblz4-dev \
             libeigen3-dev \
             libgl-dev \
-            libglvnd-dev
+            libglvnd-dev \
+            libvulkan-dev
 
       - name: Configure CMake
         run: cmake -B build -DBUILD_TESTS=ON
