@@ -28,6 +28,7 @@ VkFormat ToVkType(TextureFormat tf) {
     case TextureFormat::BC1: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
     case TextureFormat::BC2: return VK_FORMAT_BC2_UNORM_BLOCK;
     case TextureFormat::BC3: return VK_FORMAT_BC3_UNORM_BLOCK;
+    case TextureFormat::BC7: return VK_FORMAT_BC7_UNORM_BLOCK;
     case TextureFormat::R8: return VK_FORMAT_R8_UNORM;
     case TextureFormat::RG8: return VK_FORMAT_R8G8_UNORM;
     case TextureFormat::RGB8: return VK_FORMAT_R8G8B8_UNORM;

@@ -63,6 +63,7 @@ TextureFormat ToTexFormate(int type) {
     case 7: return TextureFormat::BC1;
     case 8: return TextureFormat::RG8;
     case 9: return TextureFormat::R8;
+    case 12: return TextureFormat::BC7;
     default:
         LOG_ERROR("ERROR::ToTexFormate Unkown image type: %d", type);
         return TextureFormat::RGBA8;
