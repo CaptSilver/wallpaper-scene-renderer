@@ -50,6 +50,7 @@ enum class TextureFormat
     BC1, // DXT1
     BC2, // DXT3
     BC3, // DXT5
+    BC7,
     RGB8,
     RGBA8,
     RG8,
