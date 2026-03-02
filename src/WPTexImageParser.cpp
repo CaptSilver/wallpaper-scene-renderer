@@ -302,8 +302,11 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         for (int32_t i = 0; i < framecount; i++) {
             SpriteFrame sf;
             sf.imageId = file.ReadInt32();
-            if (sf.imageId < 0) {
-                LOG_ERROR("get neg imageid");
+            if (sf.imageId < 0 || (usize)sf.imageId >= imageDatas.size()) {
+                LOG_ERROR("invalid sprite imageId %d (image_count=%zu), skipping sprite",
+                          sf.imageId, imageDatas.size());
+                header.isSprite = false;
+                break;
             }
             float spriteWidth  = imageDatas.at((usize)sf.imageId)[0];
             float spriteHeight = imageDatas.at((usize)sf.imageId)[1];

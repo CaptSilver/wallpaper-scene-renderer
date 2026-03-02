@@ -971,6 +971,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     auto& particle_obj = *p_particle_obj;
     auto& vfs          = *context.vfs;
 
+    if (particle_obj.renderers.empty()) {
+        LOG_ERROR("particle '%s' has no renderers, skipping", wppartobj.name.c_str());
+        return;
+    }
     auto wppartRenderer = particle_obj.renderers.at(0);
     bool render_rope    = sstart_with(wppartRenderer.name, "rope");
     bool hastrail       = send_with(wppartRenderer.name, "trail");
