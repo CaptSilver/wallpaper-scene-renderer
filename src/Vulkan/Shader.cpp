@@ -94,7 +94,7 @@ inline bool parse(const ShaderCompUnit& unit, const ShaderCompOpt& opt, EShMessa
     auto  client = getClient(opt.client_ver);
     shader.setStrings(&data, 1);
     shader.setEnvInput(opt.hlsl ? glslang::EShSourceHlsl : glslang::EShSourceGlsl,
-                       EShLanguage::EShLangVertex,
+                       unit.stage,
                        client,
                        ClientInputSemanticsVersion);
     shader.setEnvClient(client, opt.client_ver);
