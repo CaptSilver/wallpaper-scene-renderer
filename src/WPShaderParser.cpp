@@ -334,6 +334,16 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
     return res;
 }
 
+// Check if a GLSL I/O declaration has an integer type that requires flat interpolation.
+// Per Vulkan spec, integer/double fragment inputs must be decorated "flat".
+inline bool NeedsFlatDecoration(const std::string& decl) {
+    // Match integer types: int, uint, ivec2-4, uvec2-4
+    static const std::regex re_int_type(R"(\b(int|uint|ivec[234]|uvec[234])\b)");
+    // Already has flat qualifier
+    static const std::regex re_has_flat(R"(\bflat\b)");
+    return std::regex_search(decl, re_int_type) && ! std::regex_search(decl, re_has_flat);
+}
+
 inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessorInfo* pre,
                                   const WPPreprocessorInfo* next) {
     std::string insert_str {};
@@ -342,6 +352,7 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
         for (auto& [k, v] : pre->output) {
             if (! exists(cur.input, k)) {
                 auto n = std::regex_replace(v, std::regex(R"(\s*out\s)"), " in ");
+                if (NeedsFlatDecoration(n)) n = "flat " + n;
                 insert_str += n + '\n';
             }
         }
@@ -350,6 +361,7 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
         for (auto& [k, v] : next->input) {
             if (! exists(cur.output, k)) {
                 auto n = std::regex_replace(v, std::regex(R"(\s*in\s)"), " out ");
+                if (NeedsFlatDecoration(n)) n = "flat " + n;
                 insert_str += n + '\n';
             }
         }

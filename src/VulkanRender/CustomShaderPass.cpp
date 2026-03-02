@@ -296,8 +296,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
     if (! ref.blocks.empty()) {
         auto& block = ref.blocks.front();
-        rr.dyn_buf->allocateSubRef(
-            block.size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment);
+        if (! rr.dyn_buf->allocateSubRef(
+                block.size, m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment)) {
+            LOG_ERROR("allocate UBO failed, size %zu", (size_t)block.size);
+            return;
+        }
     }
 
     if (! ref.blocks.empty()) {
@@ -524,10 +527,11 @@ void CustomShaderPass::destory(const Device&, RenderingResources& rr) {
     {
         auto& buf = m_desc.dyn_vertex ? rr.dyn_buf : rr.vertex_buf;
         for (auto& bufref : m_desc.vertex_bufs) {
-            buf->unallocateSubRef(bufref);
+            if (bufref) buf->unallocateSubRef(bufref);
         }
+        if (m_desc.index_buf) buf->unallocateSubRef(m_desc.index_buf);
     }
-    rr.dyn_buf->unallocateSubRef(m_desc.ubo_buf);
+    if (m_desc.ubo_buf) rr.dyn_buf->unallocateSubRef(m_desc.ubo_buf);
 }
 
 void CustomShaderPass::setDescTex(u32 index, std::string_view tex_key) {

@@ -136,7 +136,7 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 
         {
             auto& buf = m_desc.vertex_buf;
-            rr.vertex_buf->allocateSubRef(sizeof(decltype(vertex_input)), buf);
+            if (! rr.vertex_buf->allocateSubRef(sizeof(decltype(vertex_input)), buf)) return;
             rr.vertex_buf->writeToBuf(buf, { (uint8_t*)vertex_input.data(), buf.size });
         }
     }
@@ -302,5 +302,5 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
 void FinPass::destory(const Device&, RenderingResources& rr) {
     setPrepared(false);
     clearReleaseTexs();
-    rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
+    if (m_desc.vertex_buf) rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
 }
