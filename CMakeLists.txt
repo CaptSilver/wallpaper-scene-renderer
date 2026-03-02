@@ -15,6 +15,12 @@ link_libraries(Eigen3::Eigen)
 add_subdirectory(third_party)
 add_subdirectory(src)
 
+option(BUILD_TESTS "Build backend_scene unit tests" OFF)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(src/Test)
+endif()
+
 if(BUILD_QML)
     find_package(Qt6 COMPONENTS Gui Quick Qml REQUIRED)
 
