@@ -25,7 +25,7 @@ namespace vulkan
 {
 VkFormat ToVkType(TextureFormat tf) {
     switch (tf) {
-    case TextureFormat::BC1: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case TextureFormat::BC1: return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
     case TextureFormat::BC2: return VK_FORMAT_BC2_UNORM_BLOCK;
     case TextureFormat::BC3: return VK_FORMAT_BC3_UNORM_BLOCK;
     case TextureFormat::BC7: return VK_FORMAT_BC7_UNORM_BLOCK;

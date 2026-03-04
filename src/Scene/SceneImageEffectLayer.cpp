@@ -3,6 +3,7 @@
 
 #include "SpecTexs.hpp"
 #include "Core/StringHelper.hpp"
+#include "Utils/Logging.h"
 
 using namespace wallpaper;
 
@@ -68,9 +69,52 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
         auto& material = *mesh.Material();
         {
             material.blenmode = m_final_blend;
-            last_output->sceneNode->SetCamera(std::string());
-            last_output->sceneNode->CopyTrans(*m_final_node);
-            mesh.ChangeMeshDataFrom(*m_final_mesh);
+            if (m_is_offscreen) {
+                // Force Normal blend so the first write uses DONT_CARE load op
+                // instead of LOAD on an uninitialized render target (Vulkan UB).
+                material.blenmode = BlendMode::Normal;
+                // Offscreen nodes render their final effect into a dedicated RT.
+                // Use the "effect" camera (2x2 ortho at origin) with the default
+                // mesh and identity transform so the output fills the entire RT.
+                // Cannot use the layer camera here because it has the imgEffect
+                // attached, which would cause ToGraphPass to recursively re-process
+                // the same effect chain.  The global camera would clip content
+                // since offscreen positions are outside its visible area.
+                last_output->sceneNode->SetCamera(std::string(effect_cam));
+                last_output->sceneNode->CopyTrans(default_node);
+                mesh.ChangeMeshDataFrom(default_mesh);
+            } else if (m_passthrough) {
+                // Passthrough compose layers capture the background and run
+                // effects (blend, fisheye, opacity mask) on it.  The final
+                // output uses the compose layer's world-space position so the
+                // result appears at the correct location and size on screen.
+                // The opacity/planet-mask effect clips to alpha=0 outside the
+                // globe, so Normal blend leaves the rest of the screen intact.
+                last_output->sceneNode->SetCamera(std::string());
+                last_output->sceneNode->CopyTrans(*m_final_node);
+                if (m_inherit_parent) {
+                    last_output->sceneNode->InheritParent(*m_worldNode);
+                }
+                mesh.ChangeMeshDataFrom(*m_final_mesh);
+            } else {
+                last_output->sceneNode->SetCamera(std::string());
+                // Copy the saved local transform from m_final_node
+                // (m_worldNode may have been reset to identity for non-compose layers).
+                last_output->sceneNode->CopyTrans(*m_final_node);
+                // When the image layer has a parent group, inherit that parent so
+                // UpdateTrans() chains the group transform into the world matrix.
+                if (m_inherit_parent) {
+                    last_output->sceneNode->InheritParent(*m_worldNode);
+                }
+                mesh.ChangeMeshDataFrom(*m_final_mesh);
+            }
         }
+        auto& t = m_final_node->Translate();
+        LOG_INFO("ResolveEffect final: output='%.*s' blend=%d (actual=%d) passthrough=%d "
+                 "inherit_parent=%d offscreen=%d translate=(%.1f,%.1f,%.1f) worldNode_id=%d",
+                 (int)last_output->output.size(), last_output->output.data(),
+                 (int)m_final_blend, (int)material.blenmode, m_passthrough,
+                 m_inherit_parent, m_is_offscreen,
+                 t[0], t[1], t[2], m_worldNode->ID());
     }
 }

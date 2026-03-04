@@ -56,6 +56,9 @@ struct ParseContext {
     std::shared_ptr<SceneNode> effect_camera_node;
     std::shared_ptr<SceneNode> global_camera_node;
     std::shared_ptr<SceneNode> global_perspective_camera_node;
+
+    // Map of object id → SceneNode for parent-child hierarchy (group nodes + parsed objects)
+    std::map<i32, std::shared_ptr<SceneNode>> node_map;
 };
 
 using WPObjectVar = std::variant<wpscene::WPImageObject, wpscene::WPParticleObject,
@@ -339,6 +342,28 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         if (IsSpecTex(name)) {
             if (IsSpecLinkTex(name)) {
                 svData.renderTargets.push_back({ i, name });
+                // Link textures reference offscreen dependency nodes.
+                // Set resolution from the linked node's render target so
+                // vertex shaders can compute correct UV scaling (without
+                // this, resolution stays at 0 and UV = 0/0 = NaN).
+                auto linkId        = ParseLinkTex(name);
+                auto offscreenName = GenOffscreenRT(linkId);
+                if (pScene->renderTargets.count(offscreenName) > 0) {
+                    const auto& rt = pScene->renderTargets.at(offscreenName);
+                    resolution     = { rt.width, rt.height, rt.width, rt.height };
+                    LOG_INFO("  link tex[%zu] '%s' → '%s' resolution=(%d,%d,%d,%d)",
+                             i, name.c_str(), offscreenName.c_str(),
+                             rt.width, rt.height, rt.width, rt.height);
+                } else if (pScene->renderTargets.count(std::string(SpecTex_Default)) > 0) {
+                    const auto& rt =
+                        pScene->renderTargets.at(std::string(SpecTex_Default));
+                    resolution = { rt.width, rt.height, rt.width, rt.height };
+                    LOG_INFO("  link tex[%zu] '%s' → _rt_default resolution=(%d,%d,%d,%d)",
+                             i, name.c_str(), rt.width, rt.height, rt.width, rt.height);
+                } else {
+                    LOG_ERROR("  link tex[%zu] '%s' → '%s' NOT FOUND",
+                              i, name.c_str(), offscreenName.c_str());
+                }
             } else if (pScene->renderTargets.count(name) == 0) {
                 LOG_ERROR("%s not found in render targets", name.c_str());
             } else {
@@ -486,6 +511,9 @@ void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
     context.global_camera_node = std::make_shared<SceneNode>(cori, cscale, cangle);
     scene.activeCamera->AttatchNode(context.global_camera_node);
     scene.sceneGraph->AppendChild(context.global_camera_node);
+    LOG_INFO("Global camera: %dx%d at (%.1f, %.1f) zoom=%.1f",
+             context.ortho_w / (i32)general.zoom, context.ortho_h / (i32)general.zoom,
+             cori.x(), cori.y(), general.zoom);
 
     scene.cameras["global_perspective"] =
         std::make_shared<SceneCamera>((float)context.ortho_w / (float)context.ortho_h,
@@ -515,6 +543,8 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
     scene.ortho[1]   = sc.general.orthogonalprojection.height;
     context.ortho_w  = scene.ortho[0];
     context.ortho_h  = scene.ortho[1];
+    LOG_INFO("Scene ortho: %dx%d (auto=%d)", context.ortho_w, context.ortho_h,
+             sc.general.orthogonalprojection.auto_);
 
     {
         auto& gb              = context.global_base_uniforms;
@@ -543,25 +573,51 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
 
+    LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d",
+             wpimgobj.id, wpimgobj.name.c_str(), wpimgobj.image.c_str(), (int)wpimgobj.visible);
+
+    // Shape-quad size fallback: if no image and size is still default (2,2),
+    // use the scene ortho dimensions so effect pingpong RTs have meaningful resolution.
+    if (wpimgobj.image.empty() && wpimgobj.size[0] <= 2.0f && wpimgobj.size[1] <= 2.0f) {
+        wpimgobj.size = { (float)context.ortho_w, (float)context.ortho_h };
+        LOG_INFO("  shape-quad size fallback: %dx%d", context.ortho_w, context.ortho_h);
+    }
+
     // Invisible nodes are processed as offscreen dependency nodes:
     // their output is written to a per-node RT (not the main scene output) so
     // that compose layers can reference it via _rt_imageLayerComposite_XXX_a → _rt_link_XXX.
     bool isOffscreen = ! wpimgobj.visible;
 
-    // coloBlendMode load passthrough manaully
+    // colorBlendMode: prefer hardware blend when a direct equivalent exists;
+    // fall back to shader-based effectpassthrough for complex modes.
+    // The override is applied after LoadMaterial (material not yet in scope).
+    BlendMode colorBlendOverride = BlendMode::Disable; // Disable = no override
     if (wpimgobj.colorBlendMode != 0) {
-        wpscene::WPImageEffect colorEffect;
-        wpscene::WPMaterial    colorMat;
-        nlohmann::json         json;
-        if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"),
-                         json))
-            return;
-        colorMat.FromJson(json);
-        colorMat.combos["BONECOUNT"] = 1;
-        colorMat.combos["BLENDMODE"] = wpimgobj.colorBlendMode;
-        colorMat.blending            = "disabled";
-        colorEffect.materials.push_back(colorMat);
-        wpimgobj.effects.push_back(colorEffect);
+        switch (wpimgobj.colorBlendMode) {
+        case 7: // Screen
+            colorBlendOverride = BlendMode::Opaque;
+            break;
+        case 9: // Add
+            colorBlendOverride = BlendMode::Additive;
+            break;
+        default: {
+            wpscene::WPImageEffect colorEffect;
+            wpscene::WPMaterial    colorMat;
+            nlohmann::json         json;
+            if (! PARSE_JSON(
+                    fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"), json))
+                return;
+            colorMat.FromJson(json);
+            colorMat.combos["BONECOUNT"] = 1;
+            colorMat.combos["BLENDMODE"] = wpimgobj.colorBlendMode;
+            colorMat.blending            = "disabled";
+            colorEffect.materials.push_back(colorMat);
+            wpimgobj.effects.push_back(colorEffect);
+            break;
+        }
+        }
+        LOG_INFO("  colorBlendMode=%d hw_override=%d", wpimgobj.colorBlendMode,
+                 colorBlendOverride != BlendMode::Disable);
     }
 
     // Count effects after colorBlendMode may have added one
@@ -703,8 +759,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                         { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] });
         }
     }
+    // Apply colorBlendMode hardware override if set
+    if (colorBlendOverride != BlendMode::Disable) {
+        material.blenmode = colorBlendOverride;
+    }
     // material blendmode for last step to use
     auto imgBlendMode = material.blenmode;
+    if (hasEffect) {
+        LOG_INFO("  ParseImageObj id=%d: finalBlend=%d hasEffect=1 isCompose=%d passthrough=%d",
+                 wpimgobj.id, (int)imgBlendMode, isCompose,
+                 isCompose && wpimgobj.config.passthrough);
+    }
     // disable img material blend, as it's the first effect node now
     if (hasEffect) {
         material.blenmode = BlendMode::Normal;
@@ -744,6 +809,14 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->SetOffscreen(isOffscreen);
+            imgEffectLayer->SetPassthrough(isCompose && wpimgobj.config.passthrough);
+            // Only visible (non-offscreen) nodes inherit the parent-group
+            // transform.  Offscreen dependency nodes render into their own
+            // fixed-size RTs and must stay centered — applying the parent
+            // group's position would displace their content out of frame.
+            imgEffectLayer->SetInheritParent(!isOffscreen &&
+                                             wpimgobj.parent_id >= 0 &&
+                                             context.node_map.count(wpimgobj.parent_id) > 0);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
             if (isCompose) {
@@ -902,12 +975,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 imgEffect->nodes.push_back({ matOutRT, spEffNode });
             }
 
-            if (eff_mat_ok)
+            if (eff_mat_ok) {
                 imgEffectLayer->AddEffect(imgEffect);
+                LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)", i_eff,
+                         wpeffobj.name.c_str(), imgEffect->nodes.size());
+            }
             else {
                 LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
             }
         }
+        LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",
+                 wpimgobj.id, imgEffectLayer->EffectCount(), (int)isCompose, (int)isOffscreen);
     }
     // Invisible nodes without effects still need an offscreen RT so their output
     // can be referenced via link tex by compose layers.
@@ -918,8 +996,27 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             .height     = (uint16_t)wpimgobj.size[1],
             .allowReuse = true,
         };
+        LOG_INFO("  created offscreen RT '%s' for id=%d (%dx%d)",
+                 GenOffscreenRT(wpimgobj.id).c_str(), wpimgobj.id,
+                 (int)wpimgobj.size[0], (int)wpimgobj.size[1]);
     }
-    context.scene->sceneGraph->AppendChild(spImgNode);
+    // Add to parent node if this object has a parent, otherwise to root scene graph
+    if (wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id)) {
+        context.node_map.at(wpimgobj.parent_id)->AppendChild(spImgNode);
+        // Offscreen nodes render into dedicated RTs with their own camera;
+        // clear parent so UpdateTrans() doesn't chain the group transform
+        // (the node stays in the parent's children list for traversal).
+        if (isOffscreen) {
+            spImgNode->InheritParent(SceneNode());
+        }
+        LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
+                 wpimgobj.id, wpimgobj.parent_id, (int)isOffscreen);
+    } else {
+        context.scene->sceneGraph->AppendChild(spImgNode);
+        LOG_INFO("  ParseImageObj id=%d completed, added to scene graph", wpimgobj.id);
+    }
+    // Register this node in the map so other objects can reference it as parent
+    context.node_map[wpimgobj.id] = spImgNode;
 }
 
 struct ParticleChildPtr {
@@ -964,6 +1061,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         spNode         = std::make_shared<SceneNode>(Vector3f(wppartobj.origin.data()),
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()));
+        spNode->ID() = wppartobj.id;
     }
 
     wpscene::ParticleInstanceoverride override = wppartobj.instanceoverride;
@@ -1096,10 +1194,14 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     else
         context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
 
-    if (is_child)
+    if (is_child) {
         child_ptr.node_parent->AppendChild(spNode);
-    else
+    } else if (wppartobj.parent_id >= 0 && context.node_map.count(wppartobj.parent_id)) {
+        context.node_map.at(wppartobj.parent_id)->AppendChild(spNode);
+    } else {
         context.scene->sceneGraph->AppendChild(spNode);
+    }
+    context.node_map[wppartobj.id] = spNode;
 }
 
 void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
@@ -1161,8 +1263,25 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     std::vector<WPObjectVar> wp_objs;
 
+    // First pass: create group nodes (objects without image/particle/sound/light).
+    // These are structural containers that provide transforms for child objects.
+    struct GroupInfo { i32 id; i32 parent_id; };
+    std::vector<GroupInfo> group_infos;
+
+    // Track each object's position in the JSON array so we can restore
+    // the intended Z-order after the two-pass group/image construction.
+    std::map<i32, size_t> json_order;
+    size_t                obj_idx = 0;
+
     for (auto& obj : json.at("objects")) {
+        if (obj.contains("id") && obj.at("id").is_number_integer()) {
+            json_order[obj.at("id").get<i32>()] = obj_idx;
+        }
+        obj_idx++;
+
         if (obj.contains("image") && ! obj.at("image").is_null()) {
+            AddWPObject<wpscene::WPImageObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("shape") && obj.value("shape", "") == "quad") {
             AddWPObject<wpscene::WPImageObject>(wp_objs, obj, vfs);
         } else if (obj.contains("particle") && ! obj.at("particle").is_null()) {
             AddWPObject<wpscene::WPParticleObject>(wp_objs, obj, vfs);
@@ -1170,6 +1289,34 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             AddWPObject<wpscene::WPSoundObject>(wp_objs, obj, vfs);
         } else if (obj.contains("light") && ! obj.at("light").is_null()) {
             AddWPObject<wpscene::WPLightObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("id")) {
+            // Group node — no content, just a transform container
+            try {
+                i32 gid = 0;
+                GET_JSON_NAME_VALUE(obj, "id", gid);
+
+                std::array<float, 3> origin { 0, 0, 0 };
+                std::array<float, 3> scale { 1, 1, 1 };
+                std::array<float, 3> angles { 0, 0, 0 };
+                GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
+                GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
+                GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
+
+                auto node = std::make_shared<SceneNode>(
+                    Vector3f(origin.data()), Vector3f(scale.data()), Vector3f(angles.data()));
+                node->ID() = gid;
+
+                context.node_map[gid] = node;
+
+                i32 parent_id = -1;
+                GET_JSON_NAME_VALUE_NOWARN(obj, "parent", parent_id);
+                group_infos.push_back({ gid, parent_id });
+
+                LOG_INFO("created group node id=%d origin=(%.1f, %.1f, %.1f) scale=(%.1f, %.1f, %.1f)",
+                         gid, origin[0], origin[1], origin[2], scale[0], scale[1], scale[2]);
+            } catch (const std::exception& e) {
+                LOG_ERROR("failed to parse group node: %s", e.what());
+            }
         }
     }
 
@@ -1191,15 +1338,25 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     InitContext(context, vfs, sc);
     ParseCamera(context, sc.general);
 
+    // Build group node hierarchy: add each group to its parent (or scene root)
+    for (auto& gi : group_infos) {
+        auto& node = context.node_map.at(gi.id);
+        if (gi.parent_id >= 0 && context.node_map.count(gi.parent_id)) {
+            context.node_map.at(gi.parent_id)->AppendChild(node);
+        } else {
+            context.scene->sceneGraph->AppendChild(node);
+        }
+    }
+
     {
         context.scene->renderTargets[SpecTex_Default.data()] = {
             .width  = context.ortho_w,
-            .height = context.ortho_w,
+            .height = context.ortho_h,
             .bind   = { .enable = true, .screen = true },
         };
         context.scene->renderTargets[WE_MIP_MAPPED_FRAME_BUFFER.data()] = {
             .width      = context.ortho_w,
-            .height     = context.ortho_w,
+            .height     = context.ortho_h,
             .has_mipmap = true,
             .bind       = { .enable = true, .name = SpecTex_Default.data() }
         };
@@ -1230,6 +1387,24 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                    },
                    obj);
     }
+
+    // Sort root children to match JSON "objects" array order.
+    // The two-pass construction (groups first, then images) breaks the intended
+    // Z-order.  Re-sorting ensures groups are interleaved with images at their
+    // original position so e.g. backgrounds render before compose layers.
+    // Camera nodes (not in JSON objects) stay at the front.
+    context.scene->sceneGraph->GetChildren().sort(
+        [&json_order](const std::shared_ptr<SceneNode>& a,
+                       const std::shared_ptr<SceneNode>& b) {
+            auto it_a = json_order.find(a->ID());
+            auto it_b = json_order.find(b->ID());
+            bool has_a = it_a != json_order.end();
+            bool has_b = it_b != json_order.end();
+            if (! has_a && ! has_b) return false; // both cameras: stable
+            if (! has_a) return true;              // cameras stay first
+            if (! has_b) return false;
+            return it_a->second < it_b->second;
+        });
 
     WPShaderParser::FinalGlslang();
     return context.scene;

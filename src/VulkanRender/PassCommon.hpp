@@ -32,6 +32,16 @@ inline void SetBlend(BlendMode bm, VkPipelineColorBlendAttachmentState& state) {
         state.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         break;
+    case BlendMode::Opaque:
+        // Screen blend: result.rgb = src + dst * (1 - src).
+        // Where src is black (outside mask): result = dst (background preserved).
+        // Where src has content (inside mask): result ≈ src (content dominates).
+        // Alpha: preserve destination alpha (keeps wallpaper opaque at alpha=1).
+        state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        break;
     }
 }
 inline void SetAttachmentLoadOp(BlendMode bm, VkAttachmentLoadOp& load_op) {
@@ -39,7 +49,8 @@ inline void SetAttachmentLoadOp(BlendMode bm, VkAttachmentLoadOp& load_op) {
     case BlendMode::Disable:
     case BlendMode::Normal: load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE; break;
     case BlendMode::Additive:
-    case BlendMode::Translucent: load_op = VK_ATTACHMENT_LOAD_OP_LOAD; break;
+    case BlendMode::Translucent:
+    case BlendMode::Opaque: load_op = VK_ATTACHMENT_LOAD_OP_LOAD; break;
     }
 }
 

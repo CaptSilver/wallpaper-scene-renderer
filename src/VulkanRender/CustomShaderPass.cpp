@@ -132,8 +132,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_output = opt.value();
-        } else
+        } else {
+            LOG_ERROR("output RT query failed for '%s' (shader: %s)",
+                      tex_name.c_str(),
+                      m_desc.node->Mesh()->Material()->customShader.shader->name.c_str());
             return;
+        }
     }
 
     SceneMesh& mesh = *(m_desc.node->Mesh());
@@ -218,11 +222,22 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             {
                 auto& buf = m_desc.vertex_bufs[i];
                 if (! m_desc.dyn_vertex) {
-                    if (! rr.vertex_buf->allocateSubRef(vertex.CapacitySizeOf(), buf)) return;
-                    if (! rr.vertex_buf->writeToBuf(buf, { (uint8_t*)vertex.Data(), buf.size }))
+                    if (! rr.vertex_buf->allocateSubRef(vertex.CapacitySizeOf(), buf)) {
+                        LOG_ERROR("vertex buf alloc failed for shader '%s' vert %u, size %zu",
+                                  mesh.Material()->customShader.shader->name.c_str(), i, vertex.CapacitySizeOf());
                         return;
+                    }
+                    if (! rr.vertex_buf->writeToBuf(buf, { (uint8_t*)vertex.Data(), buf.size })) {
+                        LOG_ERROR("vertex buf write failed for shader '%s'",
+                                  mesh.Material()->customShader.shader->name.c_str());
+                        return;
+                    }
                 } else {
-                    if (! rr.dyn_buf->allocateSubRef(vertex.CapacitySizeOf(), buf)) return;
+                    if (! rr.dyn_buf->allocateSubRef(vertex.CapacitySizeOf(), buf)) {
+                        LOG_ERROR("dyn buf alloc failed for shader '%s'",
+                                  mesh.Material()->customShader.shader->name.c_str());
+                        return;
+                    }
                 }
             }
             m_desc.draw_count += (u32)(vertex.DataSize() / vertex.OneSize());
@@ -234,10 +249,22 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             m_desc.draw_count = (u32)count * 3;
             auto& buf         = m_desc.index_buf;
             if (! m_desc.dyn_vertex) {
-                if (! rr.vertex_buf->allocateSubRef(indice.CapacitySizeof(), buf)) return;
-                if (! rr.vertex_buf->writeToBuf(buf, { (uint8_t*)indice.Data(), buf.size })) return;
+                if (! rr.vertex_buf->allocateSubRef(indice.CapacitySizeof(), buf)) {
+                    LOG_ERROR("index buf alloc failed for shader '%s'",
+                              mesh.Material()->customShader.shader->name.c_str());
+                    return;
+                }
+                if (! rr.vertex_buf->writeToBuf(buf, { (uint8_t*)indice.Data(), buf.size })) {
+                    LOG_ERROR("index buf write failed for shader '%s'",
+                              mesh.Material()->customShader.shader->name.c_str());
+                    return;
+                }
             } else {
-                if (! rr.dyn_buf->allocateSubRef(indice.CapacitySizeof(), buf)) return;
+                if (! rr.dyn_buf->allocateSubRef(indice.CapacitySizeof(), buf)) {
+                    LOG_ERROR("dyn index buf alloc failed for shader '%s'",
+                              mesh.Material()->customShader.shader->name.c_str());
+                    return;
+                }
             }
         }
     }
@@ -249,8 +276,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
             bool alpha =
                 ! (m_desc.node->Camera().empty() || sstart_with(m_desc.node->Camera(), "global"));
+            // Non-default RTs (offscreen, pingpong, composite) need alpha written
+            // so downstream blend effects can read meaningful alpha values.
+            bool non_default_rt = (m_desc.output != SpecTex_Default);
 
-            if (alpha) colorMask |= VK_COLOR_COMPONENT_A_BIT;
+            if (alpha || non_default_rt) colorMask |= VK_COLOR_COMPONENT_A_BIT;
             color_blend.colorWriteMask = colorMask;
 
             auto blendmode = mesh.Material()->blenmode;
@@ -258,12 +288,21 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             m_desc.blending = color_blend.blendEnable;
 
             SetAttachmentLoadOp(blendmode, loadOp);
+            // Non-default RTs with Normal blend (DONT_CARE) should CLEAR to
+            // transparent so uncovered areas have alpha=0 and don't affect
+            // downstream blend effects (blendAlpha *= blendColors.a).
+            if (non_default_rt && loadOp == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
+                loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         }
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
                                     loadOp,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        if (! opt.has_value()) return;
+        if (! opt.has_value()) {
+            LOG_ERROR("CreateRenderPass failed for shader '%s'",
+                      mesh.Material()->customShader.shader->name.c_str());
+            return;
+        }
         auto& pass = opt.value();
 
         descriptor_info.push_descriptor = true;
@@ -277,7 +316,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             .addInputAttributeDescription(attr_descriptions);
         for (auto& spv : spvs) pipeline.addStage(std::move(spv));
 
-        if (! pipeline.create(device, pass, m_desc.pipeline)) return;
+        if (! pipeline.create(device, pass, m_desc.pipeline)) {
+            LOG_ERROR("pipeline.create failed for shader '%s'",
+                      mesh.Material()->customShader.shader->name.c_str());
+            return;
+        }
     }
 
     {
@@ -388,10 +431,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
 
     {
-        auto& sc           = scene.clearColor;
-        m_desc.clear_value = VkClearValue {
-            .color = { sc[0], sc[1], sc[2], 1.0f },
-        };
+        // Non-default RTs clear to transparent so non-content areas don't
+        // affect downstream blend effects (blendAlpha *= blendColors.a).
+        bool non_default_rt = (m_desc.output != SpecTex_Default);
+        if (non_default_rt) {
+            m_desc.clear_value = VkClearValue { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
+        } else {
+            auto& sc           = scene.clearColor;
+            m_desc.clear_value = VkClearValue {
+                .color = { sc[0], sc[1], sc[2], 1.0f },
+            };
+        }
     }
     for (auto& tex : releaseTexs()) {
         device.tex_cache().MarkShareReady(tex);

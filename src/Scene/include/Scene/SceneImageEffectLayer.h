@@ -51,6 +51,17 @@ public:
     void        SetOffscreen(bool v) { m_is_offscreen = v; }
     bool        IsOffscreen() const { return m_is_offscreen; }
 
+    // When true, the last effect node inherits the parent pointer from the
+    // world node so its world transform includes the parent-group transform.
+    void SetInheritParent(bool v) { m_inherit_parent = v; }
+    bool InheritParent() const { return m_inherit_parent; }
+
+    // When true (compose layer with config.passthrough), the effect chain
+    // starts from the current scene output (_rt_default) instead of the
+    // layer's own mesh.  The base mesh rendering is replaced by a copy.
+    void SetPassthrough(bool v) { m_passthrough = v; }
+    bool IsPassthrough() const { return m_passthrough; }
+
     void ResolveEffect(const SceneMesh& defualt_mesh, std::string_view effect_cam);
 
 private:
@@ -60,6 +71,8 @@ private:
 
     bool fullscreen { false };
     bool m_is_offscreen { false };
+    bool m_inherit_parent { false };
+    bool m_passthrough { false };
     //    std::vector<float> m_size;
     std::unique_ptr<SceneMesh> m_final_mesh;
     std::unique_ptr<SceneNode> m_final_node;

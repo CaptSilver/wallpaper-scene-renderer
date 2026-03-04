@@ -13,6 +13,7 @@
 #include <chrono>
 #include <ctime>
 #include <numeric>
+#include <set>
 
 using namespace wallpaper;
 using namespace Eigen;
@@ -107,8 +108,29 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     if (hasNodeData) {
         auto& nodeData = m_nodeDataMap.at(pNode);
         for (const auto& el : nodeData.renderTargets) {
-            if (m_scene->renderTargets.count(el.second) == 0) continue;
-            const auto& rt = m_scene->renderTargets[el.second];
+            // Link textures (_rt_link_N) aren't directly in renderTargets;
+            // resolve to the corresponding offscreen RT so we can look up
+            // the correct dimensions for g_TextureNResolution.
+            std::string rtName = el.second;
+            if (IsSpecLinkTex(rtName)) {
+                rtName = GenOffscreenRT(ParseLinkTex(rtName));
+            }
+            if (m_scene->renderTargets.count(rtName) == 0) {
+                static std::set<std::string> _rt_miss_logged;
+                if (_rt_miss_logged.insert(el.second).second) {
+                    LOG_INFO("RT miss: tex[%zu]='%s' resolved='%s' NOT in renderTargets",
+                             el.first, el.second.c_str(), rtName.c_str());
+                }
+                continue;
+            }
+            const auto& rt = m_scene->renderTargets[rtName];
+            {
+                static std::set<std::string> _rt_res_logged;
+                if (IsSpecLinkTex(el.second) && _rt_res_logged.insert(el.second).second) {
+                    LOG_INFO("RT resolution upload: tex[%zu]='%s' → '%s' (%dx%d)",
+                             el.first, el.second.c_str(), rtName.c_str(), rt.width, rt.height);
+                }
+            }
 
             const auto& unifrom_tex = info.texs[el.first];
 
@@ -123,7 +145,19 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         }
         if (nodeData.puppet_layer.hasPuppet() && info.has_BONES) {
             auto data = nodeData.puppet_layer.genFrame(m_scene->frameTime);
+            static bool _bones_logged = false;
+            if (!_bones_logged) {
+                LOG_INFO("uploading g_Bones: %zu bones, frameTime=%.4f", data.size(), m_scene->frameTime);
+                _bones_logged = true;
+            }
             updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
+        } else {
+            static bool _no_bones_logged = false;
+            if (!_no_bones_logged && (nodeData.puppet_layer.hasPuppet() || info.has_BONES)) {
+                LOG_INFO("BONES NOT uploaded: hasPuppet=%d has_BONES=%d",
+                         (int)nodeData.puppet_layer.hasPuppet(), (int)info.has_BONES);
+                _no_bones_logged = true;
+            }
         }
     }
 
@@ -169,6 +203,18 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             Matrix4d mvpTrans = viewProTrans * modelTrans;
             updateOp(G_MVP, ShaderValue::fromMatrix(mvpTrans));
             if (reqMVPI) updateOp(G_MVPI, ShaderValue::fromMatrix(mvpTrans.inverse()));
+            // One-time diagnostic: log MVP info for nodes with empty camera (final composites)
+            static std::set<SceneNode*> _mvp_logged;
+            if (cam_name.empty() && _mvp_logged.insert(pNode).second) {
+                Vector4d center = mvpTrans * Vector4d(0, 0, 0, 1);
+                auto     t      = pNode->Translate();
+                LOG_INFO("MVP diag id=%d cam='' translate=(%.1f,%.1f) model=[%.3f,%.3f,%.3f,%.3f] "
+                         "clip_center=(%.3f,%.3f) blend=%d",
+                         pNode->ID(), t.x(), t.y(),
+                         modelTrans(0, 0), modelTrans(1, 1), modelTrans(0, 3), modelTrans(1, 3),
+                         center.x() / center.w(), center.y() / center.w(),
+                         (int)material->blenmode);
+            }
         }
         if (reqETVP || reqETVPI) {
             /*

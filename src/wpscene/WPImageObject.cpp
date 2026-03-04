@@ -135,6 +135,54 @@ bool WPImageEffect::FromFileJson(const nlohmann::json& json, fs::VFS& vfs) {
 }
 
 bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
+    // Shape-quad objects: procedural effect quads with no image file
+    if (json.contains("shape") && !json.contains("image")) {
+        std::string shape;
+        GET_JSON_NAME_VALUE(json, "shape", shape);
+        if (shape != "quad") {
+            LOG_ERROR("unsupported shape type: %s", shape.c_str());
+            return false;
+        }
+
+        GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
+        GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
+        GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
+        GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
+        GET_JSON_NAME_VALUE_NOWARN(json, "scale", scale);
+        GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
+        GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
+        GET_JSON_NAME_VALUE_NOWARN(json, "color", color);
+        GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
+        GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
+        GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
+
+        if (json.contains("size")) {
+            GET_JSON_NAME_VALUE(json, "size", size);
+        }
+        // else keep default (2,2) — ParseImageObj will override with ortho size
+
+        // Synthetic material: genericimage2, translucent, no depth, no cull
+        material.shader = "genericimage2";
+        // defaults are already: blending=translucent, cullmode=nocull,
+        // depthtest=disabled, depthwrite=disabled
+
+        LOG_INFO("shape-quad object id=%d name='%s'", id, name.c_str());
+
+        if (json.contains("effects")) {
+            for (const auto& jE : json.at("effects")) {
+                WPImageEffect wpeff;
+                wpeff.FromJson(jE, vfs);
+                effects.push_back(std::move(wpeff));
+            }
+        }
+        if (json.contains("config")) {
+            const auto& jConf = json.at("config");
+            GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
+        }
+        return true;
+    }
+
     GET_JSON_NAME_VALUE(json, "image", image);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "alignment", alignment);
@@ -146,19 +194,20 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
 	GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
 	GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
+	GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
 	GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
 	if(!fullscreen) {
-		GET_JSON_NAME_VALUE(json, "origin", origin);	
-		GET_JSON_NAME_VALUE(json, "angles", angles);	
-		GET_JSON_NAME_VALUE(json, "scale", scale);	
+		GET_JSON_NAME_VALUE(json, "origin", origin);
+		GET_JSON_NAME_VALUE(json, "angles", angles);
+		GET_JSON_NAME_VALUE(json, "scale", scale);
 		GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
 		if(jImage.contains("width")) {
 			int32_t w,h;
-			GET_JSON_NAME_VALUE(jImage, "width", w);	
-			GET_JSON_NAME_VALUE(jImage, "height", h);	
+			GET_JSON_NAME_VALUE(jImage, "width", w);
+			GET_JSON_NAME_VALUE(jImage, "height", h);
 			size = {(float)w, (float)h};
 		} else if(json.contains("size")) {
-			GET_JSON_NAME_VALUE(json, "size", size);	
+			GET_JSON_NAME_VALUE(json, "size", size);
 		} else {
 			size = {origin.at(0)*2, origin.at(1)*2};
 		}
@@ -168,10 +217,10 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
     GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
 
-	GET_JSON_NAME_VALUE_NOWARN(jImage, "puppet", puppet);	
+	GET_JSON_NAME_VALUE_NOWARN(jImage, "puppet", puppet);
     if(jImage.contains("material")) {
         std::string matPath;
-		GET_JSON_NAME_VALUE(jImage, "material", matPath);	
+		GET_JSON_NAME_VALUE(jImage, "material", matPath);
         nlohmann::json jMat;
         if(!PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + matPath), jMat)) {
             LOG_ERROR("Can't load material json: %s", matPath.c_str());
