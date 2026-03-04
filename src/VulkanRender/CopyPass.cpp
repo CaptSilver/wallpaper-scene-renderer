@@ -47,6 +47,14 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
         device.tex_cache().MarkShareReady(tex);
     }
 
+    LOG_INFO("CopyPass: '%s' %ux%u -> '%s' %ux%u (%s)",
+             m_desc.src.c_str(), m_desc.vk_src.extent.width, m_desc.vk_src.extent.height,
+             m_desc.dst.c_str(), m_desc.vk_dst.extent.width, m_desc.vk_dst.extent.height,
+             (m_desc.vk_src.extent.width == m_desc.vk_dst.extent.width &&
+              m_desc.vk_src.extent.height == m_desc.vk_dst.extent.height)
+                 ? "copy"
+                 : "blit");
+
     setPrepared();
 };
 void CopyPass::execute(const Device& device, RenderingResources& rr) {
@@ -55,6 +63,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
     auto& dst = m_desc.vk_dst;
 
     if (! (src.handle && dst.handle)) {
+        LOG_ERROR("CopyPass: invalid handle src=%p dst=%p", (void*)src.handle, (void*)dst.handle);
         assert(src.handle && dst.handle);
         return;
     }
@@ -67,23 +76,16 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
         .layerCount     = 1,
 
     };
-    VkImageCopy copy {
-        .srcSubresource =
-            VkImageSubresourceLayers {
-                .aspectMask     = srang.aspectMask,
-                .mipLevel       = 0,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            },
-        .dstSubresource =
-            VkImageSubresourceLayers {
-                .aspectMask     = srang.aspectMask,
-                .mipLevel       = 0,
-                .baseArrayLayer = 0,
-                .layerCount     = 1,
-            },
-        .extent = { src.extent.width, src.extent.height, 1 },
+    bool size_match = src.extent.width == dst.extent.width &&
+                      src.extent.height == dst.extent.height;
+
+    VkImageSubresourceLayers subresource {
+        .aspectMask     = srang.aspectMask,
+        .mipLevel       = 0,
+        .baseArrayLayer = 0,
+        .layerCount     = 1,
     };
+
     {
         VkImageMemoryBarrier in_bar {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -113,11 +115,36 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
                             {},
                             std::array { in_bar, out_bar });
     }
-    cmd.CopyImage(src.handle,
-                  VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                  dst.handle,
-                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  copy);
+
+    if (size_match) {
+        VkImageCopy copy {
+            .srcSubresource = subresource,
+            .dstSubresource = subresource,
+            .extent         = { src.extent.width, src.extent.height, 1 },
+        };
+        cmd.CopyImage(src.handle,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      dst.handle,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      copy);
+    } else {
+        VkImageBlit blit {
+            .srcSubresource = subresource,
+            .srcOffsets     = { VkOffset3D { 0, 0, 0 },
+                                VkOffset3D { (int32_t)src.extent.width,
+                                             (int32_t)src.extent.height, 1 } },
+            .dstSubresource = subresource,
+            .dstOffsets     = { VkOffset3D { 0, 0, 0 },
+                                VkOffset3D { (int32_t)dst.extent.width,
+                                             (int32_t)dst.extent.height, 1 } },
+        };
+        cmd.BlitImage(src.handle,
+                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      dst.handle,
+                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      blit,
+                      VK_FILTER_LINEAR);
+    }
     {
         VkImageMemoryBarrier in_bar {
             .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,

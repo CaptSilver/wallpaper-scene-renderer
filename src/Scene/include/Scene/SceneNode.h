@@ -48,6 +48,23 @@ public:
         m_rotation  = node.m_rotation;
     }
 
+    // Copy local transform AND inherit the same parent, so UpdateTrans()
+    // produces the same world transform as the source node.
+    void CopyTransWithParent(const SceneNode& node) {
+        CopyTrans(node);
+        m_parent = node.m_parent;
+        m_dirty  = true;
+    }
+
+    // Inherit only the parent pointer from another node, keeping local
+    // transform unchanged.  Used by ResolveEffect so the last effect node
+    // picks up the parent-group transform without overwriting its saved
+    // local transform (which may differ from the live world-node).
+    void InheritParent(const SceneNode& node) {
+        m_parent = node.m_parent;
+        m_dirty  = true;
+    }
+
     // update self modle trans (will update parent before)
     void            UpdateTrans();
     Eigen::Matrix4d ModelTrans() const { return m_trans; };
@@ -67,7 +84,7 @@ private:
     // mark self and all children
     void MarkTransDirty();
 
-    i32         m_id;
+    i32         m_id { -1 };
     bool        m_offscreen { false };
     std::string m_name;
 

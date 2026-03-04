@@ -96,31 +96,51 @@ struct ExtraInfo {
     bool                       use_mipmap_framebuffer { false };
 };
 
+static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
+
+static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraInfo& extra) {
+    auto& rgraph = *extra.rgraph;
+    auto& scene  = *extra.scene;
+
+    effs->ResolveEffect(scene.default_effect_mesh, "effect");
+
+    for (usize i = 0; i < effs->EffectCount(); i++) {
+        auto& eff     = effs->GetEffect(i);
+        auto  cmdItor = eff->commands.begin();
+        auto  cmdEnd  = eff->commands.end();
+        int   nodePos = 0;
+        for (auto& n : eff->nodes) {
+            if (cmdItor != cmdEnd && nodePos == cmdItor->afterpos) {
+                rg::addCopyPass(
+                    rgraph, rg::createTexDesc(cmdItor->src), rg::createTexDesc(cmdItor->dst));
+                cmdItor++;
+            }
+            auto& name = n.output;
+            if (n.sceneNode->HasMaterial()) {
+                auto& texs = n.sceneNode->Mesh()->Material()->textures;
+                std::string tex_list;
+                for (usize t = 0; t < texs.size(); t++) {
+                    if (t > 0) tex_list += ", ";
+                    tex_list += texs[t].empty() ? "(empty)" : texs[t];
+                }
+                LOG_INFO("  id=%d eff[%zu].%d: out='%.*s' cam='%s' blend=%d texs=[%s]",
+                         node->ID(), i, nodePos, (int)name.size(), name.data(),
+                         n.sceneNode->Camera().c_str(),
+                         (int)n.sceneNode->Mesh()->Material()->blenmode,
+                         tex_list.c_str());
+            }
+            ToGraphPass(n.sceneNode.get(), name, node->ID(), extra);
+            nodePos++;
+        }
+    }
+}
+
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
 
-    auto loadEffect = [node, &rgraph, &scene, &extra](SceneImageEffectLayer* effs) {
-        effs->ResolveEffect(scene.default_effect_mesh, "effect");
-
-        for (usize i = 0; i < effs->EffectCount(); i++) {
-            auto& eff     = effs->GetEffect(i);
-            auto  cmdItor = eff->commands.begin();
-            auto  cmdEnd  = eff->commands.end();
-            int   nodePos = 0;
-            for (auto& n : eff->nodes) {
-                if (cmdItor != cmdEnd && nodePos == cmdItor->afterpos) {
-                    // both copy and swap use copy pass;
-                    // true swap would need temp FBO support in render graph
-                    rg::addCopyPass(
-                        rgraph, rg::createTexDesc(cmdItor->src), rg::createTexDesc(cmdItor->dst));
-                    cmdItor++;
-                }
-                auto& name = n.output;
-                ToGraphPass(n.sceneNode.get(), name, node->ID(), extra);
-                nodePos++;
-            }
-        }
+    auto loadEffect = [node, &extra](SceneImageEffectLayer* effs) {
+        LoadEffectChain(node, effs, extra);
     };
 
     if (node->Mesh() == nullptr) return;
@@ -138,12 +158,39 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
         }
     }
 
+    // Passthrough compose layers copy _rt_default → pingpong then run their
+    // effect chain.  Process inline at the compose layer's natural Z-order
+    // so foreground elements (e.g. Lucy) render ON TOP of the compose result.
+    // At this point _rt_default contains background content rendered before
+    // this node in the scene graph — exactly what the compose needs.
+    if (imgeff != nullptr && imgeff->IsPassthrough()) {
+        LOG_INFO("passthrough compose: inline copy _rt_default → '%.*s'",
+                 (int)output.size(), output.data());
+        rg::addCopyPass(rgraph,
+                        rg::createTexDesc(std::string(SpecTex_Default)),
+                        rg::createTexDesc(std::string(output)));
+        loadEffect(imgeff);
+        return;
+    }
+
     // Invisible nodes without effects render to an offscreen RT so they don't
     // composite into the main scene but remain accessible via id_link_map.
+    // Use the effect camera and default mesh so the image fills the entire
+    // offscreen RT — same approach as SceneImageEffectLayer's offscreen path.
+    // The global camera would clip content since parent-group transforms place
+    // these nodes outside its visible area.
     std::string offscreen_output;
     if (imgeff == nullptr && node->IsOffscreen()) {
         offscreen_output = GenOffscreenRT(imgId);
         output           = offscreen_output;
+        // Force Normal blend so the first write uses DONT_CARE load op
+        // instead of LOAD on an uninitialized render target (Vulkan UB).
+        material->blenmode = BlendMode::Normal;
+        auto default_node  = SceneNode();
+        node->SetCamera("effect");
+        node->CopyTrans(default_node);
+        node->InheritParent(default_node); // clear parent → no group transform
+        mesh->ChangeMeshDataFrom(scene.default_effect_mesh);
     }
 
     std::string passName = material->name;
@@ -208,12 +255,24 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
+    {
+        int pos = 0;
+        for (auto& child : scene.sceneGraph->GetChildren()) {
+            LOG_INFO("root child[%d]: id=%d mesh=%s", pos++, child->ID(),
+                     child->HasMaterial() ? "yes" : "no");
+        }
+    }
     TraverseNode(
         [&extra](SceneNode* node) {
             ToGraphPass(node, SpecTex_Default, node->ID(), extra);
         },
         scene.sceneGraph.get());
 
+    LOG_INFO("resolving %zu link textures, id_link_map has %zu entries",
+             extra.link_info.size(), extra.id_link_map.size());
+    for (auto& [id, texnode] : extra.id_link_map) {
+        LOG_INFO("  id_link_map[%zu] = '%.*s'", id, (int)texnode->key().size(), texnode->key().data());
+    }
     for (auto& info : extra.link_info) {
         if (! exists(extra.id_link_map, info.link_id)) {
             LOG_ERROR("link tex %d not found", info.link_id);

@@ -42,8 +42,18 @@ void WPPuppet::prepared() {
 
 std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
                                                     double         time) noexcept {
+    static int _debug_frame_count = 0;
     double global_blend = puppet_layer.m_global_blend;
     double total_blend = puppet_layer.m_total_blend;
+
+    if (_debug_frame_count == 0) {
+        LOG_INFO("genFrame: global_blend=%.4f total_blend=%.4f layers=%zu bones=%zu",
+                 global_blend, total_blend, puppet_layer.m_layers.size(), bones.size());
+        int matched = 0;
+        for (auto& l : puppet_layer.m_layers) if (l.anim != nullptr) matched++;
+        LOG_INFO("genFrame: %d/%zu layers have matched animations",
+                 matched, puppet_layer.m_layers.size());
+    }
 
     puppet_layer.updateInterpolation(time);
 
@@ -103,7 +113,19 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         affine.rotate(quat.slerp(global_blend, ident).cast<float>());
         affine.scale(scale);
         affine = parent * affine;
+
+        if (_debug_frame_count == 0 && i == 0) {
+            LOG_INFO("genFrame bone[0]: trans=(%.3f,%.3f,%.3f) scale=(%.3f,%.3f,%.3f)",
+                     trans.x(), trans.y(), trans.z(), scale.x(), scale.y(), scale.z());
+        }
     }
+
+    if (_debug_frame_count == 0) {
+        Eigen::Matrix4f t0 = (m_final_affines[0] * bones[0].offset_trans.matrix()).matrix();
+        LOG_INFO("genFrame final bone[0] matrix diagonal: (%.4f, %.4f, %.4f, %.4f)",
+                 t0(0,0), t0(1,1), t0(2,2), t0(3,3));
+    }
+    _debug_frame_count++;
 
     for (uint i = 0; i < m_final_affines.size(); i++) {
         m_final_affines[i] *= bones[i].offset_trans.matrix();
@@ -153,6 +175,13 @@ void WPPuppetLayer::prepared(std::span<AnimationLayer> alayers) {
         }
     }
 
+    LOG_INFO("puppet layer prepared: %zu scene layers, %zu mdl anims, total_blend=%.2f",
+             alayers.size(), m_puppet->anims.size(), total_blend);
+    for (usize i = 0; i < alayers.size(); i++) {
+        LOG_INFO("  scene layer[%zu]: id=%d blend=%.2f rate=%.2f visible=%d",
+                 i, alayers[i].id, alayers[i].blend, alayers[i].rate, (int)alayers[i].visible);
+    }
+
     std::transform(
         alayers.rbegin(), alayers.rend(), m_layers.rbegin(), [&blend, this](const auto& layer) {
             double      cur_blend { 0.0f };
@@ -162,6 +191,8 @@ void WPPuppetLayer::prepared(std::span<AnimationLayer> alayers) {
                 return layer.id == a.id;
             });
             bool ok = it != anims.end() && layer.visible;
+            LOG_INFO("  match layer id=%d: %s (cur_blend will be %.4f)",
+                     layer.id, ok ? "MATCHED" : "NOT FOUND", ok ? layer.blend / m_total_blend : 0.0);
 
             double &total_blend = m_total_blend;
 

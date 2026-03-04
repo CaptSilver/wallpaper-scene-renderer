@@ -63,7 +63,11 @@ enum class BlendMode
     Disable,
     Translucent,
     Additive,
-    Normal
+    Normal,
+    // Screen blend: ONE*src + ONE_MINUS_SRC_COLOR*dst (per-channel).
+    // Composites bright content onto existing scene without relying on alpha.
+    // Used for passthrough compose layers whose effect chain outputs alpha=0.
+    Opaque
 };
 
 enum class ShaderType

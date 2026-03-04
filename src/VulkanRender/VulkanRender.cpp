@@ -334,9 +334,21 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     });
     m_dyn_buf->recordUpload(rr.command);
-    for (auto* p : m_passes) {
-        if (p->prepared()) {
-            p->execute(*m_device, rr);
+    {
+        static bool _dumped = false;
+        int prepared_count = 0, skipped_count = 0;
+        for (auto* p : m_passes) {
+            if (p->prepared()) {
+                p->execute(*m_device, rr);
+                prepared_count++;
+            } else {
+                skipped_count++;
+            }
+        }
+        if (!_dumped) {
+            LOG_INFO("render frame: %d passes executed, %d skipped (not prepared), %zu total",
+                     prepared_count, skipped_count, m_passes.size());
+            _dumped = true;
         }
     }
     (void)rr.command.End();
@@ -382,9 +394,21 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     });
     m_dyn_buf->recordUpload(rr.command);
 
-    for (auto* p : m_passes) {
-        if (p->prepared()) {
-            p->execute(*m_device, rr);
+    {
+        static bool _dumped = false;
+        int prepared_count = 0, skipped_count = 0;
+        for (auto* p : m_passes) {
+            if (p->prepared()) {
+                p->execute(*m_device, rr);
+                prepared_count++;
+            } else {
+                skipped_count++;
+            }
+        }
+        if (!_dumped) {
+            LOG_INFO("render frame (offscreen): %d passes executed, %d skipped (not prepared), %zu total",
+                     prepared_count, skipped_count, m_passes.size());
+            _dumped = true;
         }
     }
 
@@ -536,6 +560,24 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
         if (! p->prepared()) {
             p->prepare(scene, *m_device, m_rendering_resources);
         }
+    }
+
+    // Diagnostic: log pass prepare results
+    {
+        int prepared_count = 0, failed_count = 0;
+        for (size_t i = 0; i < nodes.size(); i++) {
+            auto* vpass = static_cast<VulkanPass*>(rg.getPass(nodes[i]));
+            auto* pnode = rg.getPassNode(nodes[i]);
+            if (! vpass->prepared()) {
+                LOG_ERROR("pass[%zu] '%.*s' FAILED to prepare",
+                          i, (int)pnode->name().size(), pnode->name().data());
+                failed_count++;
+            } else {
+                prepared_count++;
+            }
+        }
+        LOG_INFO("compileRenderGraph: %d passes prepared, %d FAILED, %zu total (+prepass+finpass)",
+                 prepared_count, failed_count, nodes.size());
     }
 
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {

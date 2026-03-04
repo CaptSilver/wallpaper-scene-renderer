@@ -242,13 +242,20 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
             uint anim_num = f.ReadUint32();
             anims.resize(anim_num);
+            int anim_idx = 0;
             for (auto& anim : anims) {
-                // there can be a variable number of 32-bit 0s between animations
-                anim.id = 0;
-                while(anim.id == 0){
+                // Skip zero padding bytes between animations.  Older formats
+                // used 4-byte-aligned padding, but newer MDLA versions (v6+)
+                // can have an odd number of padding bytes.  Scan byte-by-byte
+                // to find the first non-zero byte, then seek back and read
+                // the full 32-bit animation ID.
+                {
+                    uint8_t b = 0;
+                    while (b == 0) b = f.ReadUint8();
+                    f.SeekCur(-1);
                     anim.id = f.ReadInt32();
                 }
-    
+
                 if (anim.id <= 0) {
                     LOG_ERROR("wrong anime id %d", anim.id);
                     return false;
@@ -261,6 +268,9 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                 anim.mode   = ToPlayMode(f.ReadStr());
                 anim.fps    = f.ReadFloat();
                 anim.length = f.ReadInt32();
+                LOG_INFO("  anim[%d]: id=%d name='%s' length=%d",
+                         anim_idx, anim.id, anim.name.c_str(), anim.length);
+                anim_idx++;
                 f.ReadInt32();
 
                 uint32_t b_num = f.ReadUint32();

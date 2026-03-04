@@ -176,6 +176,26 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     auto  startpos = file.Tell();
     LoadHeader(file, img.header);
 
+    {
+        static const char* fmt_names[] = {
+            "RGBA8", "BC1", "BC2", "BC3", "RG8", "R8", "BC7", "?"
+        };
+        int fi = 7;
+        switch (img.header.format) {
+        case TextureFormat::RGBA8: fi = 0; break;
+        case TextureFormat::BC1:   fi = 1; break;
+        case TextureFormat::BC2:   fi = 2; break;
+        case TextureFormat::BC3:   fi = 3; break;
+        case TextureFormat::RG8:   fi = 4; break;
+        case TextureFormat::R8:    fi = 5; break;
+        case TextureFormat::BC7:   fi = 6; break;
+        default: break;
+        }
+        LOG_INFO("tex '%s': %dx%d fmt=%s sprite=%d count=%d",
+                 name.c_str(), img.header.width, img.header.height,
+                 fmt_names[fi], (int)img.header.isSprite, img.header.count);
+    }
+
     // image
     i32 _image_count = img.header.count;
     if (_image_count < 0) return nullptr;
