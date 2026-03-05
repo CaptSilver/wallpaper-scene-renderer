@@ -40,6 +40,8 @@ public:
         // pipeline
         VkClearValue       clear_value;
         bool               blending { false };
+        bool               hasDepth { false };
+        VkImageView        depthView { VK_NULL_HANDLE };
         vvk::Framebuffer   fb;
         PipelineParameters pipeline;
         u32                draw_count { 0 };

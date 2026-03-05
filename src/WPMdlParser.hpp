@@ -27,15 +27,33 @@ struct WPMdl {
     i32 mdls { 1 };
     i32 mdla { 1 };
 
-    std::string mat_json_file;
     struct Vertex {
         std::array<float, 3>    position;
+        std::array<float, 3>    normal;
+        std::array<float, 4>    tangent;
         std::array<uint32_t, 4> blend_indices;
         std::array<float, 4>    weight;
         std::array<float, 2>    texcoord;
     };
+
+    // A single submesh within an MDL (each has its own material, vertices, indices)
+    struct Submesh {
+        std::string                          mat_json_file;
+        std::vector<Vertex>                  vertexs;
+        std::vector<std::array<uint16_t, 3>> indices;
+        bool has_normals { false };
+        bool has_tangents { false };
+    };
+
+    // Model path: multiple submeshes, each with own material
+    std::vector<Submesh> submeshes;
+
+    // Puppet path: single material + mesh (legacy flat fields)
+    std::string                          mat_json_file;
     std::vector<Vertex>                  vertexs;
     std::vector<std::array<uint16_t, 3>> indices;
+
+    bool is_puppet { false };
 
     // std::vector<Eigen::Matrix<float, 3, 4>> bones;
     std::shared_ptr<WPPuppet> puppet;
@@ -59,6 +77,7 @@ public:
     static void AddPuppetMatInfo(wpscene::WPMaterial& mat, const WPMdl& mdl);
 
     static void GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl);
+    static void GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& submesh);
 };
 
 } // namespace wallpaper

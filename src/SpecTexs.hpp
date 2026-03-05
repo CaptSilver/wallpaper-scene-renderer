@@ -28,6 +28,7 @@ constexpr std::string_view WE_FULL_COMPO_BUFFER_PREFIX { "_rt_FullCompoBuffer" }
 constexpr std::string_view WE_MIP_MAPPED_FRAME_BUFFER { "_rt_MipMappedFrameBuffer" };
 
 constexpr std::string_view WE_SHADOW_ATLAS { "_rt_shadowAtlas" };
+constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX { "_rt_effect_pingpong_" };
@@ -36,6 +37,8 @@ constexpr std::string_view WE_EFFECT_PPONG_PREFIX_B { "_rt_effect_pingpong_b_" }
 
 constexpr std::string_view WE_IN_POSITION { "a_Position" };
 constexpr std::string_view WE_IN_TEXCOORD { "a_TexCoord" };
+constexpr std::string_view WE_IN_NORMAL { "a_Normal" };
+constexpr std::string_view WE_IN_TANGENT4 { "a_Tangent4" };
 constexpr std::string_view WE_IN_BLENDINDICES { "a_BlendIndices" };
 constexpr std::string_view WE_IN_BLENDWEIGHTS { "a_BlendWeights" };
 
@@ -73,6 +76,7 @@ constexpr std::string_view G_TEXELSIZEHALF { "g_TexelSizeHalf" };
 constexpr std::string_view G_BONES { "g_Bones" };
 constexpr std::string_view G_SCREEN { "g_Screen" };
 constexpr std::string_view G_PARALLAXPOSITION { "g_ParallaxPosition" };
+constexpr std::string_view G_EYEPOSITION { "g_EyePosition" };
 
 constexpr std::string_view SpecTex_Default { "_rt_default" };
 constexpr std::string_view SpecTex_Link { "_rt_link_" };

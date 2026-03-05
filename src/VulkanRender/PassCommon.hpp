@@ -46,8 +46,10 @@ inline void SetBlend(BlendMode bm, VkPipelineColorBlendAttachmentState& state) {
 }
 inline void SetAttachmentLoadOp(BlendMode bm, VkAttachmentLoadOp& load_op) {
     switch (bm) {
-    case BlendMode::Disable:
-    case BlendMode::Normal: load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE; break;
+    case BlendMode::Disable: load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE; break;
+    // Normal uses LOAD to preserve prior pass content in uncovered areas
+    // (required for 3D scenes where geometry doesn't fill the viewport)
+    case BlendMode::Normal:
     case BlendMode::Additive:
     case BlendMode::Translucent:
     case BlendMode::Opaque: load_op = VK_ATTACHMENT_LOAD_OP_LOAD; break;

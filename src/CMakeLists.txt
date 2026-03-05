@@ -41,6 +41,7 @@ add_library(
   wpscene/WPMaterial.cpp
   wpscene/WPScene.cpp
   wpscene/WPLightObject.cpp
+  wpscene/WPModelObject.cpp
   WPParticleParser.cpp
   WPShaderParser.cpp
   WPSceneParser.cpp

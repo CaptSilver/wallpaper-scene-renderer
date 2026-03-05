@@ -471,6 +471,14 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     double sw = scene.ortho[0], sh = scene.ortho[1];
     double fboAspect = width / (double)height, sAspect = sw / sh;
     auto&  gCam    = *scene.cameras.at("global");
+
+    // 3D perspective scenes: global camera IS perspective, no separate global_perspective
+    if (gCam.IsPerspective()) {
+        gCam.SetAspect(fboAspect);
+        gCam.Update();
+        return;
+    }
+
     auto&  gPerCam = *scene.cameras.at("global_perspective");
     // assum cam
     switch (fillmode) {

@@ -24,48 +24,135 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
 };
 CustomShaderPass::~CustomShaderPass() {}
 
+constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+
+static std::shared_ptr<VmaImageParameters>
+GetOrCreateDepthImage(wallpaper::Scene& scene, const Device& device, VkExtent3D extent) {
+    auto existing = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
+    if (existing && existing->extent.width == extent.width &&
+        existing->extent.height == extent.height) {
+        return existing;
+    }
+
+    auto depth = std::make_shared<VmaImageParameters>();
+    VkImageCreateInfo info {
+        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext       = nullptr,
+        .imageType   = VK_IMAGE_TYPE_2D,
+        .format      = DEPTH_FORMAT,
+        .extent      = extent,
+        .mipLevels   = 1,
+        .arrayLayers = 1,
+        .samples     = VK_SAMPLE_COUNT_1_BIT,
+        .tiling      = VK_IMAGE_TILING_OPTIMAL,
+        .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VmaAllocationCreateInfo vma_info {};
+    vma_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    if (vvk::CreateImage(device.vma_allocator(), info, vma_info, depth->handle) != VK_SUCCESS) {
+        LOG_ERROR("depth image creation failed");
+        return nullptr;
+    }
+    depth->extent = extent;
+    VkImageViewCreateInfo view_info {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext    = nullptr,
+        .image    = *depth->handle,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = DEPTH_FORMAT,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+                              .baseMipLevel = 0, .levelCount = 1,
+                              .baseArrayLayer = 0, .layerCount = 1 },
+    };
+    if (device.handle().CreateImageView(view_info, depth->view) != VK_SUCCESS) {
+        LOG_ERROR("depth image view creation failed");
+        return nullptr;
+    }
+    scene.depthBuffer = depth;
+    LOG_INFO("created depth buffer %dx%d", extent.width, extent.height);
+    return depth;
+}
+
 std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format,
                                                 VkAttachmentLoadOp loadOp,
-                                                VkImageLayout      finalLayout) {
-    VkAttachmentDescription attachment {
+                                                VkImageLayout      finalLayout,
+                                                bool               hasDepth = false,
+                                                VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR) {
+    VkAttachmentDescription attachments[2];
+    attachments[0] = VkAttachmentDescription {
         .format         = format,
         .samples        = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp         = loadOp, // VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .loadOp         = loadOp,
         .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = finalLayout, // ShaderReadOnlyOptimal
+        .finalLayout    = finalLayout,
     };
 
     if (loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
-        attachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    VkAttachmentReference attachment_ref {
+    uint32_t attachmentCount = 1;
+    VkAttachmentReference depth_ref {};
+
+    if (hasDepth) {
+        attachments[1] = VkAttachmentDescription {
+            .format         = DEPTH_FORMAT,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = depthLoadOp,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = (depthLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+                                  ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                  : VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+        depth_ref = VkAttachmentReference {
+            .attachment = 1,
+            .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+        attachmentCount = 2;
+    }
+
+    VkAttachmentReference color_ref {
         .attachment = 0,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
     VkSubpassDescription subpass {
-        .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .colorAttachmentCount = 1,
-        .pColorAttachments    = &attachment_ref,
+        .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount    = 1,
+        .pColorAttachments       = &color_ref,
+        .pDepthStencilAttachment = hasDepth ? &depth_ref : nullptr,
     };
+
+    VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkAccessFlags        dstAccess = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    if (hasDepth) {
+        dstStage |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dstAccess |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                     VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
 
     VkSubpassDependency dependency {
         .srcSubpass    = VK_SUBPASS_EXTERNAL,
         .dstSubpass    = 0,
         .srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask  = dstStage,
         .srcAccessMask = {},
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = dstAccess,
     };
 
     VkRenderPassCreateInfo creatinfo {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments    = &attachment,
+        .attachmentCount = attachmentCount,
+        .pAttachments    = attachments,
         .subpassCount    = 1,
         .pSubpasses      = &subpass,
         .dependencyCount = 1,
@@ -294,20 +381,59 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             if (non_default_rt && loadOp == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
                 loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         }
+        // Depth buffer for 3D models
+        bool useDepth = mesh.Material()->depthTest || mesh.Material()->depthWrite;
+        std::shared_ptr<VmaImageParameters> depthImg;
+        if (useDepth) {
+            VkExtent3D depthExtent { m_desc.vk_output.extent.width,
+                                     m_desc.vk_output.extent.height, 1 };
+            depthImg = GetOrCreateDepthImage(scene, device, depthExtent);
+            if (! depthImg) {
+                LOG_ERROR("depth buffer creation failed for shader '%s'",
+                          mesh.Material()->customShader.shader->name.c_str());
+                useDepth = false;
+            }
+        }
+
+        // First depth-enabled pass must CLEAR the depth buffer (undefined initial
+        // contents); all subsequent depth passes LOAD to preserve cross-pass depth.
+        VkAttachmentLoadOp depthLoadOp;
+        if (! scene.depthBufferCleared) {
+            depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            scene.depthBufferCleared = true;
+        } else {
+            depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        }
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
                                     loadOp,
-                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                    useDepth,
+                                    depthLoadOp);
         if (! opt.has_value()) {
             LOG_ERROR("CreateRenderPass failed for shader '%s'",
                       mesh.Material()->customShader.shader->name.c_str());
             return;
         }
         auto& pass = opt.value();
+        m_desc.hasDepth  = useDepth;
+        m_desc.depthView = useDepth ? *depthImg->view : VK_NULL_HANDLE;
 
         descriptor_info.push_descriptor = true;
         GraphicsPipeline pipeline;
         pipeline.toDefault();
+        if (mesh.Material()->depthTest) {
+            pipeline.depth.depthTestEnable  = VK_TRUE;
+            pipeline.depth.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+        }
+        if (mesh.Material()->depthWrite) {
+            pipeline.depth.depthWriteEnable = VK_TRUE;
+        }
+        if (mesh.Material()->cullmode == "back") {
+            pipeline.raster.cullMode = VK_CULL_MODE_BACK_BIT;
+        } else if (mesh.Material()->cullmode == "front") {
+            pipeline.raster.cullMode = VK_CULL_MODE_FRONT_BIT;
+        }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
             .setTopology(m_desc.index_buf ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
@@ -324,12 +450,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
 
     {
+        VkImageView fb_attachments[2] = { m_desc.vk_output.view, m_desc.depthView };
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext           = nullptr,
             .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = 1,
-            .pAttachments    = &m_desc.vk_output.view,
+            .attachmentCount = m_desc.hasDepth ? 2u : 1u,
+            .pAttachments    = fb_attachments,
             .width           = m_desc.vk_output.extent.width,
             .height          = m_desc.vk_output.extent.height,
             .layers          = 1,
@@ -527,6 +654,10 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
     }
 
+    VkClearValue clear_values[2];
+    clear_values[0] = m_desc.clear_value;
+    clear_values[1].depthStencil = { 1.0f, 0 };
+
     VkRenderPassBeginInfo pass_begin_info {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
@@ -537,8 +668,8 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                 .offset = { 0, 0 },
                 .extent = { outext.width, outext.height },
             },
-        .clearValueCount = 1,
-        .pClearValues    = &m_desc.clear_value,
+        .clearValueCount = m_desc.hasDepth ? 2u : 1u,
+        .pClearValues    = clear_values,
     };
     cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 

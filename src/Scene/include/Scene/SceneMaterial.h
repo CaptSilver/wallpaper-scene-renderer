@@ -32,5 +32,8 @@ public:
 
     SceneMaterialCustomShader customShader;
     BlendMode                 blenmode { BlendMode::Disable };
+    bool                      depthTest { false };
+    bool                      depthWrite { false };
+    std::string               cullmode { "nocull" };
 };
 } // namespace wallpaper

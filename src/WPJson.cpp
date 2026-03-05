@@ -29,7 +29,7 @@ static nlohmann::json ResolveUserProperty(const nlohmann::json& json) {
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
     try {
-        result = nlohmann::json::parse(source);
+        result = nlohmann::json::parse(source, nullptr, true, true);
     } catch (nlohmann::json::parse_error& e) {
         WallpaperLog(LOGLEVEL_ERROR, file, line, "parse json(%s), %s", func, e.what());
         return false;

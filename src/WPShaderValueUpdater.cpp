@@ -2,6 +2,7 @@
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Geometry/Transform.h"
 #include "Scene/Scene.h"
+#include "Scene/SceneCamera.h"
 #include "SpriteAnimation.hpp"
 #include "SpecTexs.hpp"
 #include "Core/ArrayHelper.hpp"
@@ -33,6 +34,11 @@ void WPShaderValueUpdater::FrameBegin() {
     double t           = new_time / m_parallax.delay;
     m_mousePos         = std::array { (float)algorism::lerp(t, m_mousePos[0], m_mousePosInput[0]),
                               (float)algorism::lerp(t, m_mousePos[1], m_mousePosInput[1]) };
+
+    // Advance camera path animation
+    if (m_scene->activeCamera && m_scene->activeCamera->HasPaths()) {
+        m_scene->activeCamera->AdvanceTime(m_scene->frameTime);
+    }
 }
 
 void WPShaderValueUpdater::FrameEnd() {}
@@ -73,6 +79,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_TEXELSIZEHALF    = existsOp(G_TEXELSIZEHALF);
     info.has_SCREEN           = existsOp(G_SCREEN);
     info.has_LP               = existsOp(G_LP);
+    info.has_EYEPOSITION      = existsOp(G_EYEPOSITION);
 
     std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](uint index, auto& value) {
         value.has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[index]);
@@ -280,6 +287,11 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         }
         updateOp(G_LP, lights);
         updateOp(G_LCP, lights_color);
+    }
+
+    if (info.has_EYEPOSITION && camera->IsPerspective()) {
+        auto pos = camera->GetPosition();
+        updateOp(G_EYEPOSITION, std::array { (float)pos.x(), (float)pos.y(), (float)pos.z() });
     }
 }
 

@@ -24,6 +24,7 @@
 #include "wpscene/WPParticleObject.h"
 #include "wpscene/WPSoundObject.h"
 #include "wpscene/WPLightObject.hpp"
+#include "wpscene/WPModelObject.h"
 #include "wpscene/WPScene.h"
 
 #include "Fs/VFS.h"
@@ -62,7 +63,8 @@ struct ParseContext {
 };
 
 using WPObjectVar = std::variant<wpscene::WPImageObject, wpscene::WPParticleObject,
-                                 wpscene::WPSoundObject, wpscene::WPLightObject>;
+                                 wpscene::WPSoundObject, wpscene::WPLightObject,
+                                 wpscene::WPModelObject>;
 
 namespace
 {
@@ -245,6 +247,7 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (sstart_with(name, WE_QUARTER_COMPO_BUFFER_PREFIX)) {
         } else if (sstart_with(name, WE_FULL_COMPO_BUFFER_PREFIX)) {
         } else if (name == WE_SHADOW_ATLAS) {
+        } else if (name == WE_REFLECTION) {
         } else if (sstart_with(name, WE_BUFFER_PREFIX)) {
         } else {
             LOG_ERROR("unknown tex \"%s\"", name.c_str());
@@ -431,7 +434,10 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         return false;
     }
 
-    material.blenmode = ParseBlendMode(wpmat.blending);
+    material.blenmode   = ParseBlendMode(wpmat.blending);
+    material.depthTest  = (wpmat.depthtest == "enabled");
+    material.depthWrite = (wpmat.depthwrite == "enabled");
+    material.cullmode   = wpmat.cullmode;
 
     for (uint i = 0; i < material.textures.size(); i++) {
         if (! exists(sd_units[1].preprocess_info.active_tex_slots, i)) material.textures[i].clear();
@@ -485,47 +491,118 @@ void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
             LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
         } else {
             material.customShader.constValues[glname] = value;
+            if (value.size() <= 4) {
+                std::string valStr;
+                for (size_t i = 0; i < value.size(); i++) {
+                    if (i > 0) valStr += ",";
+                    valStr += std::to_string(value[i]);
+                }
+                LOG_INFO("  constValue: '%s' -> '%s' = [%s]", name.c_str(), glname.c_str(), valStr.c_str());
+            }
         }
     }
 }
 
 // parse
 
-void ParseCamera(ParseContext& context, wpscene::WPSceneGeneral& general) {
-    auto& scene = *context.scene;
-    // effect camera
+void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
+    auto& general = sc.general;
+    auto& scene   = *context.scene;
+
+    // effect camera (always 2x2 ortho for post-processing passes)
     scene.cameras["effect"]    = std::make_shared<SceneCamera>(2, 2, -1.0f, 1.0f);
     context.effect_camera_node = std::make_shared<SceneNode>(); // at 0,0,0
     scene.cameras.at("effect")->AttatchNode(context.effect_camera_node);
     scene.sceneGraph->AppendChild(context.effect_camera_node);
 
-    // global camera
-    scene.cameras["global"] = std::make_shared<SceneCamera>((context.ortho_w / (i32)general.zoom),
-                                                            (context.ortho_h / (i32)general.zoom),
-                                                            -5000.0f,
-                                                            5000.0f);
-    scene.activeCamera      = scene.cameras.at("global").get();
-    Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
-        cscale { 1.0f, 1.0f, 1.0f }, cangle(Vector3f::Zero());
+    if (! general.isOrtho) {
+        // 3D perspective scene — use eye/center/up from scene camera
+        float aspect = (float)context.ortho_w / (float)context.ortho_h;
+        scene.cameras["global"] =
+            std::make_shared<SceneCamera>(aspect, general.nearz, general.farz, general.fov);
+        scene.activeCamera = scene.cameras.at("global").get();
 
-    context.global_camera_node = std::make_shared<SceneNode>(cori, cscale, cangle);
-    scene.activeCamera->AttatchNode(context.global_camera_node);
-    scene.sceneGraph->AppendChild(context.global_camera_node);
-    LOG_INFO("Global camera: %dx%d at (%.1f, %.1f) zoom=%.1f",
-             context.ortho_w / (i32)general.zoom, context.ortho_h / (i32)general.zoom,
-             cori.x(), cori.y(), general.zoom);
+        Vector3d eye(sc.camera.eye[0], sc.camera.eye[1], sc.camera.eye[2]);
+        Vector3d center(sc.camera.center[0], sc.camera.center[1], sc.camera.center[2]);
+        Vector3d up(sc.camera.up[0], sc.camera.up[1], sc.camera.up[2]);
+        scene.activeCamera->SetDirectLookAt(eye, center, up);
 
-    scene.cameras["global_perspective"] =
-        std::make_shared<SceneCamera>((float)context.ortho_w / (float)context.ortho_h,
-                                      general.nearz,
-                                      general.farz,
-                                      algorism::CalculatePersperctiveFov(1000.0f, context.ortho_h));
+        LOG_INFO("Perspective camera: eye=(%.3f,%.3f,%.3f) center=(%.3f,%.3f,%.3f) "
+                 "fov=%.1f aspect=%.3f near=%.3f far=%.1f",
+                 sc.camera.eye[0], sc.camera.eye[1], sc.camera.eye[2],
+                 sc.camera.center[0], sc.camera.center[1], sc.camera.center[2],
+                 general.fov, aspect, general.nearz, general.farz);
 
-    Vector3f cperori                       = cori;
-    cperori[2]                             = 1000.0f;
-    context.global_perspective_camera_node = std::make_shared<SceneNode>(cperori, cscale, cangle);
-    scene.cameras["global_perspective"]->AttatchNode(context.global_perspective_camera_node);
-    scene.sceneGraph->AppendChild(context.global_perspective_camera_node);
+        // Load camera animation paths
+        auto& vfs = *context.vfs;
+        std::vector<CameraPath> camPaths;
+        for (auto& pathFile : sc.camera.paths) {
+            std::string content = fs::GetFileContent(vfs, "/assets/" + pathFile);
+            if (content.empty()) {
+                LOG_ERROR("failed to load camera path file: %s", pathFile.c_str());
+                continue;
+            }
+            nlohmann::json jPaths;
+            if (! PARSE_JSON(content, jPaths)) continue;
+            if (! jPaths.contains("paths") || ! jPaths.at("paths").is_array()) continue;
+
+            for (auto& jPath : jPaths.at("paths")) {
+                CameraPath cp;
+                cp.duration = jPath.value("duration", 0.0);
+                if (jPath.contains("transforms") && jPath.at("transforms").is_array()) {
+                    for (auto& jT : jPath.at("transforms")) {
+                        CameraKeyframe kf;
+                        std::array<float, 3> kf_eye, kf_center, kf_up;
+                        GET_JSON_NAME_VALUE(jT, "eye", kf_eye);
+                        GET_JSON_NAME_VALUE(jT, "center", kf_center);
+                        GET_JSON_NAME_VALUE(jT, "up", kf_up);
+                        kf.eye       = Vector3d(kf_eye[0], kf_eye[1], kf_eye[2]);
+                        kf.center    = Vector3d(kf_center[0], kf_center[1], kf_center[2]);
+                        kf.up        = Vector3d(kf_up[0], kf_up[1], kf_up[2]);
+                        kf.timestamp = jT.value("timestamp", 0.0);
+                        cp.keyframes.push_back(kf);
+                    }
+                }
+                if (cp.keyframes.size() >= 2 && cp.duration > 0) {
+                    camPaths.push_back(std::move(cp));
+                }
+            }
+            LOG_INFO("loaded %zu camera paths from %s", camPaths.size(), pathFile.c_str());
+        }
+        if (! camPaths.empty()) {
+            scene.activeCamera->LoadPaths(std::move(camPaths));
+        }
+    } else {
+        // 2D orthographic scene (existing path)
+        scene.cameras["global"] =
+            std::make_shared<SceneCamera>((context.ortho_w / (i32)general.zoom),
+                                          (context.ortho_h / (i32)general.zoom),
+                                          -5000.0f,
+                                          5000.0f);
+        scene.activeCamera = scene.cameras.at("global").get();
+        Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
+            cscale { 1.0f, 1.0f, 1.0f }, cangle(Vector3f::Zero());
+
+        context.global_camera_node = std::make_shared<SceneNode>(cori, cscale, cangle);
+        scene.activeCamera->AttatchNode(context.global_camera_node);
+        scene.sceneGraph->AppendChild(context.global_camera_node);
+        LOG_INFO("Global camera: %dx%d at (%.1f, %.1f) zoom=%.1f",
+                 context.ortho_w / (i32)general.zoom, context.ortho_h / (i32)general.zoom,
+                 cori.x(), cori.y(), general.zoom);
+
+        scene.cameras["global_perspective"] =
+            std::make_shared<SceneCamera>(
+                (float)context.ortho_w / (float)context.ortho_h,
+                general.nearz,
+                general.farz,
+                algorism::CalculatePersperctiveFov(1000.0f, context.ortho_h));
+
+        Vector3f cperori                       = cori;
+        cperori[2]                             = 1000.0f;
+        context.global_perspective_camera_node = std::make_shared<SceneNode>(cperori, cscale, cangle);
+        scene.cameras["global_perspective"]->AttatchNode(context.global_perspective_camera_node);
+        scene.sceneGraph->AppendChild(context.global_perspective_camera_node);
+    }
 }
 
 void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
@@ -551,7 +628,11 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         gb["g_ViewUp"]        = std::array { 0.0f, 1.0f, 0.0f };
         gb["g_ViewRight"]     = std::array { 1.0f, 0.0f, 0.0f };
         gb["g_ViewForward"]   = std::array { 0.0f, 0.0f, -1.0f };
-        gb["g_EyePosition"]   = std::array { 0.0f, 0.0f, 0.0f };
+        if (! sc.general.isOrtho) {
+            gb["g_EyePosition"] = sc.camera.eye;
+        } else {
+            gb["g_EyePosition"] = std::array { 0.0f, 0.0f, 0.0f };
+        }
         gb["g_TexelSize"]     = std::array { 1.0f / 1920.0f, 1.0f / 1080.0f };
         gb["g_TexelSizeHalf"] = std::array { 1.0f / 1920.0f / 2.0f, 1.0f / 1080.0f / 2.0f };
 
@@ -1218,6 +1299,114 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
     context.scene->sceneGraph->AppendChild(node);
 }
 
+void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
+    auto& vfs = *context.vfs;
+
+    LOG_INFO("ParseModelObj: id=%d name='%s' model='%s'",
+             model_obj.id, model_obj.name.c_str(), model_obj.model.c_str());
+
+    WPMdl mdl;
+    if (! WPMdlParser::Parse(model_obj.model, vfs, mdl)) {
+        LOG_ERROR("parse model failed: %s", model_obj.model.c_str());
+        return;
+    }
+
+    // Parent node holds the transform; submesh nodes are children
+    auto spParent = std::make_shared<SceneNode>(Vector3f(model_obj.origin.data()),
+                                                Vector3f(model_obj.scale.data()),
+                                                Vector3f(model_obj.angles.data()));
+    spParent->ID() = model_obj.id;
+
+    std::vector<std::shared_ptr<SceneNode>> translucentNodes;
+    for (size_t si = 0; si < mdl.submeshes.size(); si++) {
+        auto& sub = mdl.submeshes[si];
+
+        // Load material JSON from the submesh's referenced material file
+        nlohmann::json jMat;
+        if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + sub.mat_json_file), jMat)) {
+            LOG_ERROR("Can't load model material json: %s", sub.mat_json_file.c_str());
+            continue;
+        }
+        wpscene::WPMaterial wpmat;
+        wpmat.FromJson(jMat);
+
+        // 3D models need depth enabled (WPMaterial defaults are 2D: disabled)
+        wpmat.depthtest  = "enabled";
+        wpmat.depthwrite = "enabled";
+
+        // Materials that need transparency explicitly set "blending": "translucent".
+        // Without it, default to opaque for 3D models (WPMaterial default is translucent for 2D).
+        const auto& jContent = jMat.at("passes").at(0);
+        if (! jContent.contains("blending")) {
+            wpmat.blending = "normal";
+        }
+        // Translucent materials: keep depth test but disable depth write so
+        // objects behind transparent surfaces remain visible.
+        if (wpmat.blending == "translucent") {
+            wpmat.depthwrite = "disabled";
+        }
+        // Default 3D models to backface culling when not specified
+        if (! jContent.contains("cullmode")) {
+            wpmat.cullmode = "back";
+        }
+
+        // Submesh child node (identity transform — parent holds the model transform)
+        auto spNode = std::make_shared<SceneNode>();
+        // First submesh gets the model object ID; others get synthetic IDs
+        spNode->ID() = (si == 0) ? model_obj.id : -(model_obj.id * 100 + (i32)si);
+
+        SceneMaterial     material;
+        WPShaderValueData svData;
+        WPShaderInfo      shaderInfo;
+        shaderInfo.baseConstSvs = context.global_base_uniforms;
+
+        if (! LoadMaterial(vfs,
+                           wpmat,
+                           context.scene.get(),
+                           spNode.get(),
+                           &material,
+                           &svData,
+                           &shaderInfo)) {
+            LOG_ERROR("load model id=%d submesh %zu '%s' material failed",
+                      model_obj.id, si, sub.mat_json_file.c_str());
+            continue;
+        }
+        LOG_INFO("  submesh[%zu] shader '%s' mat='%s' verts=%zu tris=%zu blend=%s",
+                 si, wpmat.shader.c_str(), sub.mat_json_file.c_str(),
+                 sub.vertexs.size(), sub.indices.size(), wpmat.blending.c_str());
+        LoadConstvalue(material, wpmat, shaderInfo);
+
+        auto  spMesh = std::make_shared<SceneMesh>();
+        auto& mesh   = *spMesh;
+        WPMdlParser::GenModelMesh(mesh, sub);
+
+        mesh.AddMaterial(std::move(material));
+        spNode->AddMesh(spMesh);
+        context.shader_updater->SetNodeData(spNode.get(), svData);
+
+        // Defer translucent submeshes so opaque geometry renders first
+        bool isTranslucent = (wpmat.blending == "translucent");
+        if (isTranslucent) {
+            translucentNodes.push_back(spNode);
+        } else {
+            spParent->AppendChild(spNode);
+        }
+    }
+    // Append translucent submeshes after all opaque ones
+    for (auto& tn : translucentNodes) {
+        spParent->AppendChild(tn);
+    }
+
+    if (model_obj.parent_id >= 0 && context.node_map.count(model_obj.parent_id)) {
+        context.node_map.at(model_obj.parent_id)->AppendChild(spParent);
+    } else {
+        context.scene->sceneGraph->AppendChild(spParent);
+    }
+    context.node_map[model_obj.id] = spParent;
+    LOG_INFO("  ParseModelObj id=%d completed, %zu submeshes",
+             model_obj.id, mdl.submeshes.size());
+}
+
 template<typename T>
 void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj, fs::VFS& vfs) {
     T wpobj;
@@ -1289,6 +1478,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             AddWPObject<wpscene::WPSoundObject>(wp_objs, obj, vfs);
         } else if (obj.contains("light") && ! obj.at("light").is_null()) {
             AddWPObject<wpscene::WPLightObject>(wp_objs, obj, vfs);
+        } else if (obj.contains("model") && ! obj.at("model").is_null()) {
+            AddWPObject<wpscene::WPModelObject>(wp_objs, obj, vfs);
         } else if (obj.contains("id")) {
             // Group node — no content, just a transform container
             try {
@@ -1336,7 +1527,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     }
 
     InitContext(context, vfs, sc);
-    ParseCamera(context, sc.general);
+    ParseCamera(context, sc);
 
     // Build group node hierarchy: add each group to its parent (or scene root)
     for (auto& gi : group_infos) {
@@ -1364,6 +1555,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             .width  = 2048,
             .height = 2048,
         };
+        context.scene->renderTargets[WE_REFLECTION.data()] = {
+            .width  = context.ortho_w,
+            .height = context.ortho_h,
+        };
     }
 
     context.scene->scene_id = scene_id;
@@ -1383,6 +1578,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                        },
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);
+                       },
+                       [&context](wpscene::WPModelObject& obj) {
+                           ParseModelObj(context, obj);
                        },
                    },
                    obj);
