@@ -21,7 +21,8 @@ Made this for fun.
 - [x] Camera
 	- [x] Zoom
 	- [ ] Shake
-	- [ ] Fade / Path
+	- [ ] Fade
+    - [x] Path
 - [x] Audio
 	- [x] Loop
 	- [ ] Random
