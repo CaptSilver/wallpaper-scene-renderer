@@ -10,6 +10,18 @@ namespace wallpaper
 
 class SceneNode;
 
+struct CameraKeyframe {
+    Eigen::Vector3d eye;
+    Eigen::Vector3d center;
+    Eigen::Vector3d up;
+    double          timestamp { 0 };
+};
+
+struct CameraPath {
+    double                      duration { 0 };
+    std::vector<CameraKeyframe> keyframes;
+};
+
 class SceneCamera {
 public:
     explicit SceneCamera(i32 width, i32 height, float near, float far)
@@ -52,6 +64,9 @@ public:
     bool  HasImgEffect() const { return (bool)m_imgEffect; }
     auto& GetImgEffect() { return m_imgEffect; }
 
+    void SetDirectLookAt(const Eigen::Vector3d& eye, const Eigen::Vector3d& center,
+                         const Eigen::Vector3d& up);
+
     Eigen::Vector3d GetPosition() const;
     Eigen::Vector3d GetDirection() const;
 
@@ -69,6 +84,10 @@ public:
         m_perspective = cam.m_perspective;
     }
 
+    void LoadPaths(std::vector<CameraPath> paths);
+    void AdvanceTime(double dt);
+    bool HasPaths() const { return !m_paths.empty(); }
+
 private:
     void CalculateViewProjectionMatrix();
 
@@ -83,7 +102,17 @@ private:
     Eigen::Matrix4d m_viewMat { Eigen::Matrix4d::Identity() };
     Eigen::Matrix4d m_viewProjectionMat { Eigen::Matrix4d::Identity() };
 
+    bool            m_direct_lookat { false };
+    Eigen::Vector3d m_eye { Eigen::Vector3d::Zero() };
+    Eigen::Vector3d m_center { -Eigen::Vector3d::UnitZ() };
+    Eigen::Vector3d m_up_vec { Eigen::Vector3d::UnitY() };
+
     std::shared_ptr<SceneNode>             m_node;
     std::shared_ptr<SceneImageEffectLayer> m_imgEffect { nullptr };
+
+    // Camera path animation
+    std::vector<CameraPath> m_paths;
+    size_t                  m_currentPath { 0 };
+    double                  m_pathTime { 0 };
 };
 } // namespace wallpaper

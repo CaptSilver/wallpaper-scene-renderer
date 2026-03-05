@@ -94,6 +94,7 @@ struct ExtraInfo {
     rg::RenderGraph*           rgraph { nullptr };
     Scene*                     scene { nullptr };
     bool                       use_mipmap_framebuffer { false };
+    bool                       use_reflection { false };
 };
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
@@ -226,6 +227,8 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                     if (IsSpecTex(url)) builder.markVirtualWrite(input);
                     if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
                         extra.use_mipmap_framebuffer = true;
+                    if (url == WE_REFLECTION)
+                        extra.use_reflection = true;
                 }
 
                 if (url == output) {
@@ -301,6 +304,16 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                                             .type = rg::TexNode::TexType::Temp },
                         rg::TexNode::Desc { .name = WE_MIP_MAPPED_FRAME_BUFFER.data(),
                                             .key  = WE_MIP_MAPPED_FRAME_BUFFER.data(),
+                                            .type = rg::TexNode::TexType::Temp });
+    }
+
+    if (extra.use_reflection) {
+        rg::addCopyPass(*rgraph,
+                        rg::TexNode::Desc { .name = SpecTex_Default.data(),
+                                            .key  = SpecTex_Default.data(),
+                                            .type = rg::TexNode::TexType::Temp },
+                        rg::TexNode::Desc { .name = WE_REFLECTION.data(),
+                                            .key  = WE_REFLECTION.data(),
                                             .type = rg::TexNode::TexType::Temp });
     }
 

@@ -1,4 +1,6 @@
 #include "WPMaterial.h"
+#include "WPUserProperties.hpp"
+#include <sstream>
 
 using namespace wallpaper::wpscene;
 
@@ -122,6 +124,30 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
             GET_JSON_VALUE(jC.key(), name);
             GET_JSON_VALUE(jC.value(), value);
             combos[name] = value;
+        }
+    }
+    // Resolve usershadervalues: maps user property names to shader constant names
+    if(jContent.contains("usershadervalues") && g_currentUserProperties != nullptr) {
+        for(const auto& entry : jContent.at("usershadervalues").items()) {
+            std::string shaderConstName = entry.value().get<std::string>();
+            auto propVal = g_currentUserProperties->GetProperty(entry.key());
+            if (!propVal.has_value()) continue;
+            const auto& val = *propVal;
+            std::vector<float> floatVec;
+            if (val.is_string()) {
+                std::istringstream iss(val.get<std::string>());
+                float f;
+                while (iss >> f) floatVec.push_back(f);
+            } else if (val.is_number()) {
+                floatVec.push_back(val.get<float>());
+            } else if (val.is_array()) {
+                for (const auto& elem : val) {
+                    if (elem.is_number()) floatVec.push_back(elem.get<float>());
+                }
+            }
+            if (!floatVec.empty()) {
+                constantshadervalues[shaderConstName] = floatVec;
+            }
         }
     }
     return true;

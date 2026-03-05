@@ -49,6 +49,10 @@ public:
     i32                  ortho[2] { 1920, 1080 }; // w, h
     std::array<float, 3> clearColor { 1.0f, 1.0f, 1.0f };
 
+    // Opaque depth buffer owned by the Vulkan layer (shared across render passes)
+    std::shared_ptr<void> depthBuffer;
+    bool                  depthBufferCleared { false };
+
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
           frameTime = t;

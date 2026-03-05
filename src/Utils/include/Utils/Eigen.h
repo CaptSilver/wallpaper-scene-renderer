@@ -15,10 +15,10 @@ Matrix4d inline LookAt(Vector3d eye, Vector3d center, Vector3d up) noexcept {
     Vector3d yAxis = zAxis.cross(xAxis).normalized();
 
     Affine3d trans = Affine3d::Identity();
-    // base change
-    trans.linear().col(0) = xAxis;
-    trans.linear().col(1) = yAxis;
-    trans.linear().col(2) = zAxis;
+    // base change: axes as rows for world-to-camera transform
+    trans.linear().row(0) = xAxis.transpose();
+    trans.linear().row(1) = yAxis.transpose();
+    trans.linear().row(2) = zAxis.transpose();
 
     // translate
     trans *= Translation3d(-eye);

@@ -37,6 +37,12 @@ constexpr uint32_t mdat_attachment_data_byte_length = 64;
 constexpr uint32_t alt_singile_vertex = 4 * (3 + 4 + 4 + 2 + 7);
 constexpr uint32_t alt_format_vertex_size_herald_value = 0x0180000F;
 
+// Non-puppet model vertex sizes (no blend indices/weights)
+// Flag 9:  position(3) + texcoord(2) = 5 floats = 20 bytes
+constexpr uint32_t model_vertex_flag9  = 4 * (3 + 2);
+// Flag 15: position(3) + normal(3) + tangent4(4) + texcoord(2) = 12 floats = 48 bytes
+constexpr uint32_t model_vertex_flag15 = 4 * (3 + 3 + 4 + 2);
+
 constexpr uint32_t singile_bone_frame = 4 * 9;
 
 bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
@@ -49,15 +55,75 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     mdl.mdlv = ReadMDLVesion(f);
 
     int32_t mdl_flag = f.ReadInt32();
-    if (mdl_flag == 9) {
-        LOG_INFO("puppet '%s' is not complete, ignore", str_path.c_str());
-        return false;
-    };
+
+    // Non-puppet model formats (flag=9 or flag=15): simple mesh data, no skeleton
+    if (mdl_flag == 9 || mdl_flag == 15) {
+        f.ReadInt32(); // unk, always 1
+        uint32_t submesh_count = f.ReadUint32();
+
+        mdl.is_puppet = false;
+        mdl.submeshes.resize(submesh_count);
+
+        for (uint32_t si = 0; si < submesh_count; si++) {
+            auto& sub = mdl.submeshes[si];
+            sub.mat_json_file = f.ReadStr();
+            f.ReadInt32(); // 0
+
+            uint32_t vertex_size = f.ReadUint32();
+
+            uint32_t vert_stride = (mdl_flag == 15) ? model_vertex_flag15 : model_vertex_flag9;
+            if (vertex_size % vert_stride != 0) {
+                LOG_ERROR("unsupported model vertex size %d for flag=%d submesh=%d",
+                          vertex_size, mdl_flag, si);
+                return false;
+            }
+
+            uint32_t vertex_num = vertex_size / vert_stride;
+            sub.vertexs.resize(vertex_num);
+
+            if (mdl_flag == 15) {
+                sub.has_normals  = true;
+                sub.has_tangents = true;
+                for (auto& vert : sub.vertexs) {
+                    for (auto& v : vert.position) v = f.ReadFloat();
+                    for (auto& v : vert.normal) v = f.ReadFloat();
+                    for (auto& v : vert.tangent) v = f.ReadFloat();
+                    for (auto& v : vert.texcoord) v = f.ReadFloat();
+                }
+            } else {
+                for (auto& vert : sub.vertexs) {
+                    for (auto& v : vert.position) v = f.ReadFloat();
+                    for (auto& v : vert.texcoord) v = f.ReadFloat();
+                }
+            }
+
+            uint32_t indices_size = f.ReadUint32();
+            if (indices_size % singile_indices != 0) {
+                LOG_ERROR("unsupported model indices size %d submesh=%d", indices_size, si);
+                return false;
+            }
+
+            uint32_t indices_num = indices_size / singile_indices;
+            sub.indices.resize(indices_num);
+            for (auto& id : sub.indices) {
+                for (auto& v : id) v = f.ReadUint16();
+            }
+
+            LOG_INFO("read model: mdlv: %d, flag: %d, submesh: %d/%d, verts: %d, tris: %d, "
+                     "normals: %d, tangents: %d, mat: %s",
+                     mdl.mdlv, mdl_flag, si, submesh_count, vertex_num, indices_num,
+                     (int)sub.has_normals, (int)sub.has_tangents, sub.mat_json_file.c_str());
+        }
+        return true;
+    }
+
+    // Puppet format (flag=11, 15+herald, etc.)
+    mdl.is_puppet = true;
     f.ReadInt32(); // unk, 1
     f.ReadInt32(); // unk, 1
 
     mdl.mat_json_file = f.ReadStr();
-    // 0    
+    // 0
     f.ReadInt32();
 
     bool alt_mdl_format = false;
@@ -362,6 +428,54 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
     memcpy(indices.data(), mdl.indices.data(), u16_count * sizeof(uint16_t));
 
     mesh.AddVertexArray(std::move(vertex));
+    mesh.AddIndexArray(SceneIndexArray(indices));
+}
+
+void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
+    if (sub.has_normals && sub.has_tangents) {
+        // padding=false: vertex data is tightly packed (no padding to vec4),
+        // must match the layout used by SetVertexs() below
+        SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_NORMAL.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_TANGENT4.data(), VertexType::FLOAT4, false },
+                                  { WE_IN_TEXCOORD.data(), VertexType::FLOAT2, false } },
+                                sub.vertexs.size());
+        std::array<float, 12> one_vert;
+        for (uint i = 0; i < sub.vertexs.size(); i++) {
+            auto& v      = sub.vertexs[i];
+            uint  offset = 0;
+            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.tangent.data(), sizeof(v.tangent));
+            offset += 4;
+            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            vertex.SetVertexs(i, one_vert);
+        }
+        mesh.AddVertexArray(std::move(vertex));
+    } else {
+        // padding=false: tightly packed, matches SetVertexs() layout
+        SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_TEXCOORD.data(), VertexType::FLOAT2, false } },
+                                sub.vertexs.size());
+        std::array<float, 5> one_vert;
+        for (uint i = 0; i < sub.vertexs.size(); i++) {
+            auto& v      = sub.vertexs[i];
+            uint  offset = 0;
+            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            vertex.SetVertexs(i, one_vert);
+        }
+        mesh.AddVertexArray(std::move(vertex));
+    }
+
+    std::vector<uint32_t> indices;
+    size_t                u16_count = sub.indices.size() * 3;
+    indices.resize(u16_count / 2 + 1);
+    memcpy(indices.data(), sub.indices.data(), u16_count * sizeof(uint16_t));
+
     mesh.AddIndexArray(SceneIndexArray(indices));
 }
 
