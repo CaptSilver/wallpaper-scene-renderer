@@ -39,6 +39,12 @@ void WPShaderValueUpdater::FrameBegin() {
     if (m_scene->activeCamera && m_scene->activeCamera->HasPaths()) {
         m_scene->activeCamera->AdvanceTime(m_scene->frameTime);
     }
+    // Keep reflected camera in sync
+    if (auto it = m_scene->cameras.find("reflected_perspective"); it != m_scene->cameras.end()) {
+        if (it->second->HasPaths()) {
+            it->second->AdvanceTime(m_scene->frameTime);
+        }
+    }
 }
 
 void WPShaderValueUpdater::FrameEnd() {}
@@ -90,16 +96,28 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
 
 void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
                                           const UpdateUniformOp& updateOp) {
+    UpdateUniforms(pNode, sprites, updateOp, "");
+}
+
+void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
+                                          const UpdateUniformOp& updateOp,
+                                          const std::string& camera_override) {
     if (! pNode->Mesh()) return;
 
     pNode->UpdateTrans();
 
-    const SceneCamera* camera;
-    std::string_view   cam_name = pNode->Camera();
-    if (! pNode->Camera().empty()) {
-        camera = m_scene->cameras.at(cam_name.data()).get();
-    } else
-        camera = m_scene->activeCamera;
+    const SceneCamera*  camera;
+    std::string_view    cam_name;
+    if (! camera_override.empty()) {
+        cam_name = camera_override;
+        camera   = m_scene->cameras.at(camera_override).get();
+    } else {
+        cam_name = pNode->Camera();
+        if (! cam_name.empty()) {
+            camera = m_scene->cameras.at(std::string(cam_name)).get();
+        } else
+            camera = m_scene->activeCamera;
+    }
 
     if (! camera) return;
 

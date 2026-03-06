@@ -564,6 +564,9 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 
     setRenderTargetSize(scene, rg);
 
+    scene.depthBufferCleared = false;
+    scene.clearedRTs.clear();
+
     for (auto* p : m_passes) {
         if (! p->prepared()) {
             p->prepare(scene, *m_device, m_rendering_resources);

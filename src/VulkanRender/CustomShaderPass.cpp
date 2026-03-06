@@ -17,10 +17,13 @@
 using namespace wallpaper::vulkan;
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
-    m_desc.node        = desc.node;
-    m_desc.textures    = desc.textures;
-    m_desc.output      = desc.output;
-    m_desc.sprites_map = desc.sprites_map;
+    m_desc.node            = desc.node;
+    m_desc.textures        = desc.textures;
+    m_desc.output          = desc.output;
+    m_desc.sprites_map     = desc.sprites_map;
+    m_desc.camera_override = desc.camera_override;
+    m_desc.disableDepth    = desc.disableDepth;
+    m_desc.flipCullMode    = desc.flipCullMode;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -175,15 +178,17 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
                                   value.size() * sizeof(ShaderValue::value_type) };
     auto               uni = block.member_map.find(name);
     if (uni == block.member_map.end()) {
-        // log
         return;
     }
 
     size_t offset    = uni->second.offset;
-    size_t type_size = sizeof(float) * uni->second.num;
-    if (type_size != value_u8.size()) {
-        // assert(type_size == value_u8.size());
-        ; // to do
+    // Use SPIR-V member size when available, fall back to num-based calculation
+    size_t type_size = uni->second.size > 0 ? uni->second.size
+                                            : sizeof(float) * uni->second.num;
+    // Clamp write to member size to prevent overflow into adjacent UBO members
+    // (e.g., mat4 ShaderValue written to mat3 uniform)
+    if (value_u8.size() > type_size) {
+        value_u8 = value_u8.subspan(0, type_size);
     }
     buf->writeToBuf(bufref, value_u8, offset);
 }
@@ -374,15 +379,24 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             SetBlend(blendmode, color_blend);
             m_desc.blending = color_blend.blendEnable;
 
-            SetAttachmentLoadOp(blendmode, loadOp);
-            // Non-default RTs with Normal blend (DONT_CARE) should CLEAR to
-            // transparent so uncovered areas have alpha=0 and don't affect
-            // downstream blend effects (blendAlpha *= blendColors.a).
-            if (non_default_rt && loadOp == VK_ATTACHMENT_LOAD_OP_DONT_CARE)
-                loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            // Non-default RTs: first write CLEARs (initialize to transparent black),
+            // subsequent writes LOAD (accumulate content). Mirrors depthBufferCleared
+            // pattern. Default RT uses blend-mode-based load ops as before.
+            if (non_default_rt) {
+                if (scene.clearedRTs.count(m_desc.output) == 0) {
+                    loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                    scene.clearedRTs.insert(m_desc.output);
+                } else {
+                    loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+                }
+            } else {
+                SetAttachmentLoadOp(blendmode, loadOp);
+            }
+
         }
-        // Depth buffer for 3D models
-        bool useDepth = mesh.Material()->depthTest || mesh.Material()->depthWrite;
+        // Depth buffer for 3D models (disabled for reflection to avoid sharing)
+        bool useDepth = !m_desc.disableDepth &&
+                        (mesh.Material()->depthTest || mesh.Material()->depthWrite);
         std::shared_ptr<VmaImageParameters> depthImg;
         if (useDepth) {
             VkExtent3D depthExtent { m_desc.vk_output.extent.width,
@@ -424,15 +438,21 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         pipeline.toDefault();
         if (mesh.Material()->depthTest) {
             pipeline.depth.depthTestEnable  = VK_TRUE;
-            pipeline.depth.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+            pipeline.depth.depthCompareOp   = VK_COMPARE_OP_LESS;
+        }
+        if (mesh.Material()->depthBiasConstant != 0) {
+            pipeline.raster.depthBiasEnable         = VK_TRUE;
+            pipeline.raster.depthBiasConstantFactor  = mesh.Material()->depthBiasConstant;
         }
         if (mesh.Material()->depthWrite) {
             pipeline.depth.depthWriteEnable = VK_TRUE;
         }
         if (mesh.Material()->cullmode == "back") {
-            pipeline.raster.cullMode = VK_CULL_MODE_BACK_BIT;
+            pipeline.raster.cullMode = m_desc.flipCullMode ? VK_CULL_MODE_FRONT_BIT
+                                                           : VK_CULL_MODE_BACK_BIT;
         } else if (mesh.Material()->cullmode == "front") {
-            pipeline.raster.cullMode = VK_CULL_MODE_FRONT_BIT;
+            pipeline.raster.cullMode = m_desc.flipCullMode ? VK_CULL_MODE_BACK_BIT
+                                                           : VK_CULL_MODE_FRONT_BIT;
         }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
@@ -511,6 +531,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto* shader_updater = scene.shaderValueUpdater.get();
         auto& sprites        = m_desc.sprites_map;
         auto& vk_textures    = m_desc.vk_textures;
+        auto  cam_override   = m_desc.camera_override;
 
         m_desc.update_op = [shader_updater,
                             block,
@@ -519,12 +540,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                             node,
                             &sprites,
                             &vk_textures,
+                            cam_override,
                             update_dyn_buf_op]() {
             auto update_unf_op = [&block, buf, bufref](std::string_view       name,
                                                        wallpaper::ShaderValue value) {
                 UpdateUniform(buf, *bufref, block, name, value);
             };
-            shader_updater->UpdateUniforms(node, sprites, update_unf_op);
+            shader_updater->UpdateUniforms(node, sprites, update_unf_op, cam_override);
             // update image slot for sprites
             {
                 for (auto& [i, sp] : sprites) {

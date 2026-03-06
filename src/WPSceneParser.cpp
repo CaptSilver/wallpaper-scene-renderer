@@ -570,6 +570,15 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
             LOG_INFO("loaded %zu camera paths from %s", camPaths.size(), pathFile.c_str());
         }
         if (! camPaths.empty()) {
+            // Create reflected camera for planar reflections (Y=0 mirror).
+            // Must be done BEFORE LoadPaths moves the vector.
+            auto reflCam = std::make_shared<SceneCamera>(
+                aspect, general.nearz, general.farz, general.fov);
+            reflCam->SetReflectY0(true);
+            reflCam->SetDirectLookAt(eye, center, up);
+            reflCam->LoadPaths(camPaths); // copy paths (not move)
+            scene.cameras["reflected_perspective"] = reflCam;
+
             scene.activeCamera->LoadPaths(std::move(camPaths));
         }
     } else {
@@ -1345,9 +1354,11 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
         if (wpmat.blending == "translucent") {
             wpmat.depthwrite = "disabled";
         }
-        // Default 3D models to backface culling when not specified
+        // Default 3D models to backface culling when not specified.
+        // Translucent flat quads (grid, shadow) may face either way,
+        // so skip culling for translucent materials.
         if (! jContent.contains("cullmode")) {
-            wpmat.cullmode = "back";
+            wpmat.cullmode = (wpmat.blending == "translucent") ? "nocull" : "back";
         }
 
         // Submesh child node (identity transform — parent holds the model transform)
@@ -1375,6 +1386,13 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
                  si, wpmat.shader.c_str(), sub.mat_json_file.c_str(),
                  sub.vertexs.size(), sub.indices.size(), wpmat.blending.c_str());
         LoadConstvalue(material, wpmat, shaderInfo);
+
+        // Single-submesh translucent models (grid, shadow) are typically
+        // floor-level objects coplanar with the dome base. Negative depth bias
+        // pulls them closer to the camera so they pass depth test against the dome.
+        if (mdl.submeshes.size() == 1 && wpmat.blending == "translucent") {
+            material.depthBiasConstant = -5000.0f;
+        }
 
         auto  spMesh = std::make_shared<SceneMesh>();
         auto& mesh   = *spMesh;

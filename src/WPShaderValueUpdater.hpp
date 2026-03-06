@@ -71,6 +71,8 @@ public:
 
     void InitUniforms(SceneNode*, const ExistsUniformOp&) override;
     void UpdateUniforms(SceneNode*, sprite_map_t&, const UpdateUniformOp&) override;
+    void UpdateUniforms(SceneNode*, sprite_map_t&, const UpdateUniformOp&,
+                        const std::string& camera_override);
     void FrameEnd() override;
     void MouseInput(double, double) override;
     void SetTexelSize(float x, float y) override;
