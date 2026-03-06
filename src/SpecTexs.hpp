@@ -31,6 +31,12 @@ constexpr std::string_view WE_SHADOW_ATLAS { "_rt_shadowAtlas" };
 constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
+constexpr std::string_view WE_BLOOM_PREFIX  { "_rt_Bloom_" };
+constexpr std::string_view WE_BLOOM_SCENE   { "_rt_Bloom_Scene" };
+constexpr std::string_view WE_BLOOM_QUARTER { "_rt_Bloom_Quarter" };
+constexpr std::string_view WE_BLOOM_EIGHTH  { "_rt_Bloom_Eighth" };
+constexpr std::string_view WE_BLOOM_RESULT  { "_rt_Bloom_Result" };
+
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX { "_rt_effect_pingpong_" };
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX_A { "_rt_effect_pingpong_a_" };
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX_B { "_rt_effect_pingpong_b_" };

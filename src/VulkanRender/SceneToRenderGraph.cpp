@@ -380,6 +380,18 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
             });
     }
 
+    // Bloom post-processing: copy scene → bloom input, then 4 bloom passes
+    if (scene.bloomConfig.enabled && ! scene.bloomConfig.nodes.empty()) {
+        LOG_INFO("adding %zu bloom passes", scene.bloomConfig.nodes.size());
+        rg::addCopyPass(*rgraph,
+                        rg::createTexDesc(std::string(SpecTex_Default)),
+                        rg::createTexDesc(std::string(WE_BLOOM_SCENE)));
+        for (size_t i = 0; i < scene.bloomConfig.nodes.size(); i++) {
+            ToGraphPass(scene.bloomConfig.nodes[i].get(),
+                        scene.bloomConfig.outputs[i], -1, extra);
+        }
+    }
+
     if (extra.use_mipmap_framebuffer) {
         rg::addCopyPass(*rgraph,
                         rg::TexNode::Desc { .name = SpecTex_Default.data(),
