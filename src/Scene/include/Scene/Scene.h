@@ -55,6 +55,15 @@ public:
     bool                  depthBufferCleared { false };
     std::unordered_set<std::string> clearedRTs;
 
+    struct BloomConfig {
+        bool                                     enabled { false };
+        float                                    strength { 2.0f };
+        float                                    threshold { 0.65f };
+        std::vector<std::shared_ptr<SceneNode>>  nodes;
+        std::vector<std::string>                 outputs;
+    };
+    BloomConfig bloomConfig;
+
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
           frameTime = t;

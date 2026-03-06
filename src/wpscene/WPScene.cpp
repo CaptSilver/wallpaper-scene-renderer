@@ -38,6 +38,9 @@ bool WPSceneGeneral::FromJson(const nlohmann::json& json) {
 	GET_JSON_NAME_VALUE_NOWARN(json, "fov", fov);
 	GET_JSON_NAME_VALUE_NOWARN(json, "nearz", nearz);
 	GET_JSON_NAME_VALUE_NOWARN(json, "farz", farz);
+	GET_JSON_NAME_VALUE_NOWARN(json, "bloom", bloom);
+	GET_JSON_NAME_VALUE_NOWARN(json, "bloomstrength", bloomstrength);
+	GET_JSON_NAME_VALUE_NOWARN(json, "bloomthreshold", bloomthreshold);
     if(json.contains("orthogonalprojection")) {
         const auto& ortho = json.at("orthogonalprojection");
         if(ortho.is_null())

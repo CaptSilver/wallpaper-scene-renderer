@@ -249,6 +249,7 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (name == WE_SHADOW_ATLAS) {
         } else if (name == WE_REFLECTION) {
         } else if (sstart_with(name, WE_BUFFER_PREFIX)) {
+        } else if (sstart_with(name, WE_BLOOM_PREFIX)) {
         } else {
             LOG_ERROR("unknown tex \"%s\"", name.c_str());
         }
@@ -1621,6 +1622,101 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             if (! has_b) return false;
             return it_a->second < it_b->second;
         });
+
+    // Create bloom post-processing passes if enabled
+    if (sc.general.bloom) {
+        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f",
+                 sc.general.bloomstrength, sc.general.bloomthreshold);
+
+        auto& scene = *context.scene;
+        auto& vfs   = *context.vfs;
+
+        // Create bloom render targets
+        scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
+            .width  = context.ortho_w,
+            .height = context.ortho_h,
+            .bind   = { .enable = true, .screen = true },
+        };
+        scene.renderTargets[std::string(WE_BLOOM_QUARTER)] = {
+            .width  = 2,
+            .height = 2,
+            .bind   = { .enable = true, .screen = true, .scale = 0.25 },
+        };
+        scene.renderTargets[std::string(WE_BLOOM_EIGHTH)] = {
+            .width  = 2,
+            .height = 2,
+            .bind   = { .enable = true, .screen = true, .scale = 0.125 },
+        };
+        scene.renderTargets[std::string(WE_BLOOM_RESULT)] = {
+            .width  = 2,
+            .height = 2,
+            .bind   = { .enable = true, .screen = true, .scale = 0.125 },
+        };
+
+        // Bloom pass definitions: shader, input textures, output RT
+        struct BloomPassDef {
+            std::string              shader;
+            std::vector<std::string> textures;
+            std::string              output;
+        };
+        std::array<BloomPassDef, 4> bloomPasses {{
+            { "downsample_quarter_bloom",
+              { std::string(WE_BLOOM_SCENE) },
+              std::string(WE_BLOOM_QUARTER) },
+            { "downsample_eighth_blur_v",
+              { std::string(WE_BLOOM_QUARTER) },
+              std::string(WE_BLOOM_EIGHTH) },
+            { "blur_h_bloom",
+              { std::string(WE_BLOOM_EIGHTH) },
+              std::string(WE_BLOOM_RESULT) },
+            { "combine",
+              { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_RESULT) },
+              std::string(SpecTex_Default) },
+        }};
+
+        scene.bloomConfig.enabled   = true;
+        scene.bloomConfig.strength  = sc.general.bloomstrength;
+        scene.bloomConfig.threshold = sc.general.bloomthreshold;
+
+        for (auto& def : bloomPasses) {
+            wpscene::WPMaterial wpmat;
+            wpmat.shader   = def.shader;
+            wpmat.textures = def.textures;
+
+            // Pass bloom parameters to downsample_quarter_bloom (first pass extracts bright pixels)
+            if (def.shader == "downsample_quarter_bloom") {
+                wpmat.constantshadervalues["bloomstrength"]  = { sc.general.bloomstrength };
+                wpmat.constantshadervalues["bloomthreshold"] = { sc.general.bloomthreshold };
+            }
+
+            auto          spNode = std::make_shared<SceneNode>();
+            WPShaderInfo  shaderInfo;
+            shaderInfo.baseConstSvs = context.global_base_uniforms;
+            SceneMaterial material;
+            WPShaderValueData svData;
+
+            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                LOG_ERROR("bloom: failed to load material for '%s'", def.shader.c_str());
+                scene.bloomConfig.enabled = false;
+                break;
+            }
+
+            LoadConstvalue(material, wpmat, shaderInfo);
+
+            auto spMesh = std::make_shared<SceneMesh>();
+            spMesh->AddMaterial(std::move(material));
+            spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
+            spNode->AddMesh(spMesh);
+            spNode->SetCamera("effect");
+
+            context.shader_updater->SetNodeData(spNode.get(), svData);
+
+            scene.bloomConfig.outputs.push_back(def.output);
+            scene.bloomConfig.nodes.push_back(spNode);
+
+            LOG_INFO("bloom: pass '%s' → '%s' created", def.shader.c_str(), def.output.c_str());
+        }
+    }
 
     WPShaderParser::FinalGlslang();
     return context.scene;
