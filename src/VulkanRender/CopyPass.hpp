@@ -15,6 +15,7 @@ public:
     struct Desc {
         std::string src;
         std::string dst;
+        bool        flipY { false };
 
         ImageParameters vk_src;
         ImageParameters vk_dst;

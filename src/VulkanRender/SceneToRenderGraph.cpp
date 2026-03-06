@@ -28,13 +28,15 @@ void addCopyPass(RenderGraph& rgraph, TexNode* in, TexNode* out) {
         });
 }
 
-void addCopyPass(RenderGraph& rgraph, const TexNode::Desc& in, const TexNode::Desc& out) {
+void addCopyPass(RenderGraph& rgraph, const TexNode::Desc& in, const TexNode::Desc& out,
+                 bool flipY = false) {
     rgraph.addPass<vulkan::CopyPass>(
         "copy",
         PassNode::Type::Copy,
-        [&in, &out](RenderGraphBuilder& builder, vulkan::CopyPass::Desc& desc) {
+        [&in, &out, flipY](RenderGraphBuilder& builder, vulkan::CopyPass::Desc& desc) {
             auto* in_node  = builder.createTexNode(in);
             auto* out_node = builder.createTexNode(out, true);
+            desc.flipY     = flipY;
             doCopy(builder, desc, in_node, out_node);
         });
 }
@@ -94,7 +96,6 @@ struct ExtraInfo {
     rg::RenderGraph*           rgraph { nullptr };
     Scene*                     scene { nullptr };
     bool                       use_mipmap_framebuffer { false };
-    bool                       use_reflection { false };
 };
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
@@ -227,8 +228,6 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                     if (IsSpecTex(url)) builder.markVirtualWrite(input);
                     if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
                         extra.use_mipmap_framebuffer = true;
-                    if (url == WE_REFLECTION)
-                        extra.use_reflection = true;
                 }
 
                 if (url == output) {
@@ -255,6 +254,76 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     if (imgeff != nullptr) loadEffect(imgeff);
 }
 
+// Render a scene node into _rt_Reflection using the reflected camera.
+// Skips nodes that read _rt_Reflection (the reflecting surface itself)
+// and offscreen/invisible nodes.
+static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
+    auto& rgraph = *extra.rgraph;
+    auto& scene  = *extra.scene;
+
+    if (! node->Mesh()) return;
+    auto* material = node->Mesh()->Material();
+    if (! material) return;
+
+    // Skip nodes that read _rt_Reflection (e.g., grid floor)
+    for (auto& url : material->textures) {
+        if (url == WE_REFLECTION) return;
+    }
+
+    // Skip offscreen/invisible nodes
+    if (node->IsOffscreen()) return;
+
+    // Skip effect camera nodes (internal compositing passes)
+    if (! node->Camera().empty()) {
+        auto& cam = scene.cameras.at(node->Camera());
+        if (cam->HasImgEffect()) return;
+    }
+
+    std::string passName = "refl_" + material->name;
+
+    rgraph.addPass<vulkan::CustomShaderPass>(
+        passName,
+        rg::PassNode::Type::CustomShader,
+        [material, node, &scene, &extra](
+            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
+            pdesc.node            = node;
+            pdesc.output          = std::string(WE_REFLECTION);
+            pdesc.camera_override = "reflected_perspective";
+            pdesc.disableDepth    = true;
+            pdesc.flipCullMode    = true;
+            CheckAndSetSprite(scene, pdesc, material->textures);
+
+            for (usize i = 0; i < material->textures.size(); i++) {
+                const auto& url = material->textures[i];
+                if (url.empty()) {
+                    pdesc.textures.emplace_back("");
+                    continue;
+                }
+                if (IsSpecLinkTex(url)) {
+                    pdesc.textures.emplace_back("");
+                    continue;
+                }
+
+                rg::TexNode::Desc desc;
+                desc.key  = url;
+                desc.name = url;
+                desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
+                                             : rg::TexNode::TexType::Temp;
+                auto* input = builder.createTexNode(desc);
+                if (IsSpecTex(url)) builder.markVirtualWrite(input);
+                builder.read(input);
+                pdesc.textures.emplace_back(input->key());
+            }
+
+            auto* output_node =
+                builder.createTexNode(rg::TexNode::Desc { .name = std::string(WE_REFLECTION),
+                                                           .key  = std::string(WE_REFLECTION),
+                                                           .type = rg::TexNode::TexType::Temp },
+                                      true);
+            builder.write(output_node);
+        });
+}
+
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
@@ -265,6 +334,20 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                      child->HasMaterial() ? "yes" : "no");
         }
     }
+    // Add reflected-camera passes for planar reflection (_rt_Reflection)
+    // BEFORE main passes.  This establishes the _rt_Reflection TexNode chain
+    // so that when the grid pass (main) reads _rt_Reflection, it gets the last
+    // version written by the reflection passes.  The render graph's dependency
+    // resolution then correctly orders: reflection passes → grid pass.
+    if (scene.cameras.count("reflected_perspective") > 0) {
+        LOG_INFO("adding reflection passes (reflected_perspective camera)");
+        TraverseNode(
+            [&extra](SceneNode* node) {
+                addReflectionPass(node, extra);
+            },
+            scene.sceneGraph.get());
+    }
+
     TraverseNode(
         [&extra](SceneNode* node) {
             ToGraphPass(node, SpecTex_Default, node->ID(), extra);
@@ -304,16 +387,6 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                                             .type = rg::TexNode::TexType::Temp },
                         rg::TexNode::Desc { .name = WE_MIP_MAPPED_FRAME_BUFFER.data(),
                                             .key  = WE_MIP_MAPPED_FRAME_BUFFER.data(),
-                                            .type = rg::TexNode::TexType::Temp });
-    }
-
-    if (extra.use_reflection) {
-        rg::addCopyPass(*rgraph,
-                        rg::TexNode::Desc { .name = SpecTex_Default.data(),
-                                            .key  = SpecTex_Default.data(),
-                                            .type = rg::TexNode::TexType::Temp },
-                        rg::TexNode::Desc { .name = WE_REFLECTION.data(),
-                                            .key  = WE_REFLECTION.data(),
                                             .type = rg::TexNode::TexType::Temp });
     }
 

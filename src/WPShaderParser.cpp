@@ -152,6 +152,19 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                             else
                                 combos[wput.combo] = "1";
                         }
+                        // formatcombo: auto-generate combo from the format field name
+                        // e.g. {"format":"normalmap","formatcombo":true} → NORMALMAP=1
+                        if (sv_json.contains("formatcombo") &&
+                            sv_json.at("formatcombo").get<bool>()) {
+                            std::string format;
+                            GET_JSON_NAME_VALUE_NOWARN(sv_json, "format", format);
+                            if (! format.empty()) {
+                                std::string comboName = format;
+                                std::transform(
+                                    comboName.begin(), comboName.end(), comboName.begin(), ::toupper);
+                                combos[comboName] = (index < texcount) ? "1" : "0";
+                            }
+                        }
                         if (index < texcount && texinfos[(usize)index].enabled) {
                             auto& compos = texinfos[(usize)index].composEnabled;
 

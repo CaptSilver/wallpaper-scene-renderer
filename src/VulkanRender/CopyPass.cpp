@@ -47,13 +47,14 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
         device.tex_cache().MarkShareReady(tex);
     }
 
-    LOG_INFO("CopyPass: '%s' %ux%u -> '%s' %ux%u (%s)",
+    LOG_INFO("CopyPass: '%s' %ux%u -> '%s' %ux%u (%s%s)",
              m_desc.src.c_str(), m_desc.vk_src.extent.width, m_desc.vk_src.extent.height,
              m_desc.dst.c_str(), m_desc.vk_dst.extent.width, m_desc.vk_dst.extent.height,
-             (m_desc.vk_src.extent.width == m_desc.vk_dst.extent.width &&
+             (! m_desc.flipY &&
+              m_desc.vk_src.extent.width == m_desc.vk_dst.extent.width &&
               m_desc.vk_src.extent.height == m_desc.vk_dst.extent.height)
-                 ? "copy"
-                 : "blit");
+                 ? "copy" : "blit",
+             m_desc.flipY ? ", flipY" : "");
 
     setPrepared();
 };
@@ -76,7 +77,9 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
         .layerCount     = 1,
 
     };
-    bool size_match = src.extent.width == dst.extent.width &&
+    // flipY requires the blit path (VkImageCopy can't flip)
+    bool size_match = ! m_desc.flipY &&
+                      src.extent.width == dst.extent.width &&
                       src.extent.height == dst.extent.height;
 
     VkImageSubresourceLayers subresource {
@@ -128,11 +131,14 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       copy);
     } else {
+        // Flip source Y when flipY is set (used for reflection render targets).
+        // vkCmdBlitImage natively supports this via swapped srcOffsets.
+        int32_t srcY0 = m_desc.flipY ? (int32_t)src.extent.height : 0;
+        int32_t srcY1 = m_desc.flipY ? 0 : (int32_t)src.extent.height;
         VkImageBlit blit {
             .srcSubresource = subresource,
-            .srcOffsets     = { VkOffset3D { 0, 0, 0 },
-                                VkOffset3D { (int32_t)src.extent.width,
-                                             (int32_t)src.extent.height, 1 } },
+            .srcOffsets     = { VkOffset3D { 0, srcY0, 0 },
+                                VkOffset3D { (int32_t)src.extent.width, srcY1, 1 } },
             .dstSubresource = subresource,
             .dstOffsets     = { VkOffset3D { 0, 0, 0 },
                                 VkOffset3D { (int32_t)dst.extent.width,

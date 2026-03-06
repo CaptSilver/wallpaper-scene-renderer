@@ -34,6 +34,7 @@ public:
     BlendMode                 blenmode { BlendMode::Disable };
     bool                      depthTest { false };
     bool                      depthWrite { false };
+    float                     depthBiasConstant { 0 };
     std::string               cullmode { "nocull" };
 };
 } // namespace wallpaper

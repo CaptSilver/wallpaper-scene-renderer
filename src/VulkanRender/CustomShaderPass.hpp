@@ -24,6 +24,11 @@ public:
         std::vector<std::string> textures;
         std::string              output;
         sprite_map_t             sprites_map;
+        std::string              camera_override; // use named camera instead of node's
+
+        // Reflection rendering overrides
+        bool disableDepth { false };   // skip depth test/write (avoids sharing depth buffer)
+        bool flipCullMode { false };   // swap front/back cull (reflection reverses winding)
 
         // -----prepared
         // vulkan texs

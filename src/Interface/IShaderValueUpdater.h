@@ -4,6 +4,7 @@
 #include "Core/MapSet.hpp"
 
 #include <functional>
+#include <string>
 #include <string_view>
 
 namespace wallpaper
@@ -25,6 +26,10 @@ public:
     virtual void FrameBegin()                                                      = 0;
     virtual void InitUniforms(SceneNode*, const ExistsUniformOp&)                  = 0;
     virtual void UpdateUniforms(SceneNode*, sprite_map_t&, const UpdateUniformOp&) = 0;
+    virtual void UpdateUniforms(SceneNode* n, sprite_map_t& s, const UpdateUniformOp& op,
+                                const std::string& /*camera_override*/) {
+        UpdateUniforms(n, s, op);
+    }
     virtual void FrameEnd()                                                        = 0;
 
     virtual void MouseInput(double x, double y) = 0;

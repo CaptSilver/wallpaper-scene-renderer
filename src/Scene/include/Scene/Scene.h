@@ -1,5 +1,6 @@
 #pragma once
 #include <unordered_map>
+#include <unordered_set>
 
 #include "SceneTexture.h"
 #include "SceneRenderTarget.h"
@@ -52,6 +53,7 @@ public:
     // Opaque depth buffer owned by the Vulkan layer (shared across render passes)
     std::shared_ptr<void> depthBuffer;
     bool                  depthBufferCleared { false };
+    std::unordered_set<std::string> clearedRTs;
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {

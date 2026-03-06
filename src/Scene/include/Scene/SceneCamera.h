@@ -87,6 +87,11 @@ public:
     void LoadPaths(std::vector<CameraPath> paths);
     void AdvanceTime(double dt);
     bool HasPaths() const { return !m_paths.empty(); }
+    const std::vector<CameraPath>& GetPaths() const { return m_paths; }
+
+    // Planar reflection about Y=0: negates eye.y, center.y, up.y in VP matrix
+    void SetReflectY0(bool v) { m_reflect_y0 = v; }
+    bool IsReflectY0() const { return m_reflect_y0; }
 
 private:
     void CalculateViewProjectionMatrix();
@@ -114,5 +119,8 @@ private:
     std::vector<CameraPath> m_paths;
     size_t                  m_currentPath { 0 };
     double                  m_pathTime { 0 };
+
+    // Planar reflection about Y=0
+    bool m_reflect_y0 { false };
 };
 } // namespace wallpaper

@@ -17,6 +17,7 @@ void SceneCamera::SetDirectLookAt(const Vector3d& eye, const Vector3d& center, c
 
 Vector3d SceneCamera::GetPosition() const {
 	if(m_direct_lookat) {
+		if (m_reflect_y0) return { m_eye.x(), -m_eye.y(), m_eye.z() };
 		return m_eye;
 	}
 	if(m_node) {
@@ -47,7 +48,15 @@ void SceneCamera::CalculateViewProjectionMatrix() {
 	// CalculateViewMatrix
 	{
 		if(m_direct_lookat) {
-			m_viewMat = LookAt(m_eye, m_center, m_up_vec);
+			if (m_reflect_y0) {
+				// Reflect camera about Y=0 for planar reflection
+				Vector3d eye    = { m_eye.x(),    -m_eye.y(),    m_eye.z() };
+				Vector3d center = { m_center.x(), -m_center.y(), m_center.z() };
+				Vector3d up     = { m_up_vec.x(), -m_up_vec.y(), m_up_vec.z() };
+				m_viewMat = LookAt(eye, center, up);
+			} else {
+				m_viewMat = LookAt(m_eye, m_center, m_up_vec);
+			}
 		} else if(m_node) {
 			Affine3d nodeTrans(m_node->GetLocalTrans());
 			Vector3d eye = nodeTrans * Vector3d::Zero();
