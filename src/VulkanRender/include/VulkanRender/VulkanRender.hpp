@@ -36,6 +36,7 @@ public:
 
     ExSwapchain* exSwapchain() const;
     bool inited() const;
+    bool deviceLost() const;
 
 private:
     struct Impl;
