@@ -162,10 +162,8 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         }
         // else keep default (2,2) — ParseImageObj will override with ortho size
 
-        // Synthetic material: genericimage2, translucent, no depth, no cull
+        // Synthetic material: genericimage2, translucent blend.
         material.shader = "genericimage2";
-        // defaults are already: blending=translucent, cullmode=nocull,
-        // depthtest=disabled, depthwrite=disabled
 
         LOG_INFO("shape-quad object id=%d name='%s'", id, name.c_str());
 

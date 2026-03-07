@@ -214,6 +214,8 @@ BlendMode ParseBlendMode(std::string_view str) {
         bm = BlendMode::Additive;
     } else if (str == "normal") {
         bm = BlendMode::Normal;
+    } else if (str == "translucent_pa") {
+        bm = BlendMode::Translucent_PA;
     } else if (str == "disabled") {
         // seems disabled is normal
         bm = BlendMode::Normal;
@@ -630,7 +632,8 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
     GenCardMesh(scene.default_effect_mesh, { 2, 2 });
     context.shader_updater = static_cast<WPShaderValueUpdater*>(scene.shaderValueUpdater.get());
 
-    scene.clearColor = sc.general.clearcolor;
+    scene.clearColor = { sc.general.clearcolor[0], sc.general.clearcolor[1],
+                         sc.general.clearcolor[2] };
     scene.ortho[0]   = sc.general.orthogonalprojection.width;
     scene.ortho[1]   = sc.general.orthogonalprojection.height;
     context.ortho_w  = scene.ortho[0];
