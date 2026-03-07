@@ -49,7 +49,13 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
     if (resolved.contains("value")) pjson = &resolved.at("value");
     const auto& njson = *pjson;
     if (njson.is_number()) {
-        value = { njson.get<Tv>() };
+        // Replicate scalar to all components (e.g. uniform scale slider → xyz scale)
+        Tv v = njson.get<Tv>();
+        if constexpr (requires { value.resize(1); }) {
+            value.assign(1, v);
+        } else {
+            std::fill(value.begin(), value.end(), v);
+        }
         return true;
     } else {
         std::string strvalue;

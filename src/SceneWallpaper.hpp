@@ -1,6 +1,8 @@
 #pragma once
 #include <memory>
 #include <string_view>
+#include <string>
+#include <vector>
 #include <functional>
 #include "Type.hpp"
 #include "Swapchain/ExSwapchain.hpp"
@@ -9,6 +11,12 @@ namespace wallpaper
 {
 
 using FirstFrameCallback = std::function<void()>;
+
+struct TextScriptInfo {
+    int32_t     id;
+    std::string script;
+    std::string initialValue;
+};
 
 constexpr std::string_view PROPERTY_SOURCE               = "source";
 constexpr std::string_view PROPERTY_ASSETS               = "assets";
@@ -38,6 +46,8 @@ public:
     void play();
     void pause();
     void mouseInput(double x, double y);
+    void updateText(int32_t id, const std::string& text);
+    std::vector<TextScriptInfo> getTextScripts() const;
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);

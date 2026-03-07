@@ -161,7 +161,14 @@ inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
 
 } // namespace
 
+void WPTexImageParser::RegisterImage(const std::string& key, std::shared_ptr<Image> img) {
+    m_registered[key] = std::move(img);
+}
+
 std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
+    if (auto it = m_registered.find(name); it != m_registered.end()) {
+        return it->second;
+    }
     std::string path = "/assets/materials/" + name + ".tex";
     if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {
         LOG_INFO("using fallback 1x1 white texture for \"%s\"", name.c_str());
@@ -271,6 +278,9 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
 }
 
 ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
+    if (auto it = m_registered.find(name); it != m_registered.end()) {
+        return it->second->header;
+    }
     ImageHeader header;
     std::string path = "/assets/materials/" + name + ".tex";
     if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {

@@ -19,6 +19,8 @@
 #include <atomic>
 #include <array>
 #include <functional>
+#include <QtCore/QRegularExpression>
+#include <QtCore/QTime>
 
 #include "glExtra.hpp"
 #include "SceneWallpaper.hpp"
@@ -199,9 +201,14 @@ SceneObject::SceneObject(QQuickItem* parent)
     setFlag(ItemHasContents, true);
     m_scene->init();
     m_scene->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, GetDefaultCachePath());
+
+    connect(this, &SceneObject::firstFrame, this, &SceneObject::setupTextScripts);
 }
 
-SceneObject::~SceneObject() { _Q_INFO("Destroy sceneobject", ""); }
+SceneObject::~SceneObject() {
+    cleanupTextScripts();
+    _Q_INFO("Destroy sceneobject", "");
+}
 
 void SceneObject::resizeFb() {
     QSize size;
@@ -253,6 +260,7 @@ bool  SceneObject::muted() const { return m_muted; }
 void SceneObject::setSource(const QUrl& source) {
     if (source == m_source) return;
     m_source = source;
+    cleanupTextScripts();
     setScenePropertyQurl(wallpaper::PROPERTY_SOURCE, m_source);
     Q_EMIT sourceChanged();
 }
@@ -339,6 +347,180 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 
 std::string SceneObject::GetDefaultCachePath() {
     return wallpaper::platform::GetCachePath(CACHE_DIR);
+}
+
+void SceneObject::setupTextScripts() {
+    cleanupTextScripts();
+
+    auto scripts = m_scene->getTextScripts();
+    if (scripts.empty()) return;
+
+    m_jsEngine = new QJSEngine(this);
+
+    // Provide a minimal 'engine' global with runtime and timeOfDay
+    m_runtimeTimer.start();
+    QJSValue engineObj = m_jsEngine->newObject();
+    engineObj.setProperty("frametime", 0.5);   // ~500ms timer
+    engineObj.setProperty("runtime", 0.0);
+    engineObj.setProperty("timeOfDay", 0.0);
+    engineObj.setProperty("userProperties", m_jsEngine->newObject());
+    m_jsEngine->globalObject().setProperty("engine", engineObj);
+
+    // Engine method stubs
+    m_jsEngine->evaluate(
+        "engine.isDesktopDevice = function() { return true; };\n"
+        "engine.isMobileDevice = function() { return false; };\n"
+        "engine.isWallpaper = function() { return true; };\n"
+        "engine.isScreensaver = function() { return false; };\n"
+        "engine.isRunningInEditor = function() { return false; };\n"
+        "engine.isPortrait = function() { return false; };\n"
+        "engine.isLandscape = function() { return true; };\n"
+    );
+
+    // Wallpaper Engine SceneScript API stubs
+    // createScriptProperties() returns a builder with .addSlider/.addCheckbox/.addCombo/.finish()
+    m_jsEngine->evaluate(
+        "function createScriptProperties(defs) {\n"
+        "  var _props = {};\n"
+        "  // If called with an object arg (legacy), extract values directly\n"
+        "  if (defs && typeof defs === 'object') {\n"
+        "    for (var k in defs) {\n"
+        "      if (defs.hasOwnProperty(k))\n"
+        "        _props[k] = defs[k].value !== undefined ? defs[k].value : null;\n"
+        "    }\n"
+        "  }\n"
+        "  var builder = {\n"
+        "    addSlider: function(o) { _props[o.name] = o.value !== undefined ? o.value : 0; return builder; },\n"
+        "    addCheckbox: function(o) { _props[o.name] = o.value !== undefined ? o.value : false; return builder; },\n"
+        "    addCombo: function(o) { _props[o.name] = o.value !== undefined ? o.value : (o.options && o.options.length > 0 ? o.options[0].value : 0); return builder; },\n"
+        "    addTextInput: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return builder; },\n"
+        "    addText: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return builder; },\n"
+        "    addColor: function(o) { _props[o.name] = o.value !== undefined ? o.value : '0 0 0'; return builder; },\n"
+        "    addFile: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return builder; },\n"
+        "    finish: function() { return _props; }\n"
+        "  };\n"
+        "  return builder;\n"
+        "}\n"
+    );
+
+    for (const auto& tsi : scripts) {
+        QString scriptSrc = QString::fromStdString(tsi.script);
+
+        qCInfo(wekdeScene, "Text script source for id=%d:\n%s",
+               tsi.id, qPrintable(scriptSrc));
+
+        // Strip 'use strict'; — it's inside our IIFE anyway
+        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
+
+        // Strip 'export ' keyword (QJSEngine doesn't support ES modules)
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+
+        // Wrap in IIFE that returns {update, init} functions
+        QString wrapped = QString(
+            "(function() {\n"
+            "  'use strict';\n"
+            "  var exports = {};\n"
+            "  %1\n"
+            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+            "             (typeof update === 'function' ? update : null);\n"
+            "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+            "              (typeof init === 'function' ? init : null);\n"
+            "  if (!_upd) return null;\n"
+            "  return { update: _upd, init: _init };\n"
+            "})()\n"
+        ).arg(scriptSrc);
+
+        QJSValue result = m_jsEngine->evaluate(wrapped);
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Text script error for id=%d: %s",
+                       tsi.id, qPrintable(result.toString()));
+            continue;
+        }
+        if (result.isNull() || result.isUndefined()) {
+            qCWarning(wekdeScene, "Text script for id=%d did not produce an update function", tsi.id);
+            continue;
+        }
+
+        QJSValue updateFn = result.property("update");
+        QJSValue initFn = result.property("init");
+
+        if (!updateFn.isCallable()) {
+            qCWarning(wekdeScene, "Text script for id=%d: update is not callable", tsi.id);
+            continue;
+        }
+
+        TextScriptState state;
+        state.id          = tsi.id;
+        state.updateFn    = updateFn;
+        state.currentText = QString::fromStdString(tsi.initialValue);
+
+        // Call init(value) if available
+        if (initFn.isCallable()) {
+            QJSValue initResult = initFn.call({ QJSValue(state.currentText) });
+            if (initResult.isError()) {
+                qCWarning(wekdeScene, "Text script init error id=%d: %s",
+                           tsi.id, qPrintable(initResult.toString()));
+            } else if (initResult.isString()) {
+                state.currentText = initResult.toString();
+            }
+        }
+
+        m_textScriptStates.push_back(std::move(state));
+        qCInfo(wekdeScene, "Text script compiled for id=%d", tsi.id);
+    }
+
+    if (!m_textScriptStates.empty()) {
+        m_textTimer = new QTimer(this);
+        m_textTimer->setInterval(500); // evaluate twice per second
+        connect(m_textTimer, &QTimer::timeout, this, &SceneObject::evaluateTextScripts);
+        m_textTimer->start();
+
+        // Run once immediately
+        evaluateTextScripts();
+    }
+}
+
+void SceneObject::evaluateTextScripts() {
+    if (!m_jsEngine || m_textScriptStates.empty()) return;
+
+    // Update engine globals
+    double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    engineObj.setProperty("runtime", runtimeSecs);
+    // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight
+    QTime now = QTime::currentTime();
+    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+    engineObj.setProperty("timeOfDay", tod);
+
+    for (auto& state : m_textScriptStates) {
+        QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Text script runtime error id=%d: %s",
+                       state.id, qPrintable(result.toString()));
+            continue;
+        }
+        QString newText = result.toString();
+        if (newText != state.currentText) {
+            state.currentText = newText;
+            m_scene->updateText(state.id, newText.toStdString());
+        }
+    }
+}
+
+void SceneObject::cleanupTextScripts() {
+    m_textScriptStates.clear();
+    if (m_textTimer) {
+        m_textTimer->stop();
+        delete m_textTimer;
+        m_textTimer = nullptr;
+    }
+    if (m_jsEngine) {
+        delete m_jsEngine;
+        m_jsEngine = nullptr;
+    }
 }
 
 #include "SceneBackend.moc"

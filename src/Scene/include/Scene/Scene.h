@@ -1,6 +1,8 @@
 #pragma once
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
+#include <string>
 
 #include "SceneTexture.h"
 #include "SceneRenderTarget.h"
@@ -19,6 +21,20 @@ namespace fs
 {
 class VFS;
 }
+
+struct TextLayerInfo {
+    i32         id;
+    std::string fontData;       // cached raw font bytes
+    float       pointsize;
+    i32         texWidth;
+    i32         texHeight;
+    i32         padding;
+    std::string halign;
+    std::string valign;
+    std::string currentText;    // last rendered text
+    std::string textureKey;     // key in textures / tex_cache
+    std::string script;         // JavaScript source from text.script
+};
 class Scene : NoCopy, NoMove {
 public:
     Scene();
@@ -63,6 +79,8 @@ public:
         std::vector<std::string>                 outputs;
     };
     BloomConfig bloomConfig;
+
+    std::vector<TextLayerInfo> textLayers;
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {

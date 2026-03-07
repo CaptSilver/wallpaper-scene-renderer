@@ -1,4 +1,5 @@
 #include "VulkanRender.hpp"
+#include "Image.hpp"
 
 #include "Utils/Logging.h"
 #include "RenderGraph/RenderGraph.hpp"
@@ -101,6 +102,10 @@ bool VulkanRender::inited() const { return pImpl->m_inited; }
 bool VulkanRender::init(RenderInitInfo info) { return pImpl->init(info); }
 void VulkanRender::destroy() { pImpl->destroy(); }
 void VulkanRender::drawFrame(Scene& scene) { pImpl->drawFrame(scene); };
+bool VulkanRender::reuploadTexture(const std::string& key, Image& image) {
+    if (! pImpl->m_inited || ! pImpl->m_device) return false;
+    return pImpl->m_device->tex_cache().ReuploadTex(key, image);
+}
 void VulkanRender::clearLastRenderGraph() { pImpl->clearLastRenderGraph(); };
 void VulkanRender::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     pImpl->compileRenderGraph(scene, rg);

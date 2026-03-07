@@ -22,7 +22,10 @@
 
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/VulkanRender.hpp"
+#include "WPTextRenderer.hpp"
 #include <atomic>
+#include <mutex>
+#include <unordered_map>
 
 using namespace wallpaper;
 
@@ -92,6 +95,11 @@ public:
     void sendFirstFrameOk();
     bool isGenGraphviz() const { return m_gen_graphviz; }
 
+    std::vector<TextScriptInfo> getTextScripts() const {
+        std::lock_guard<std::mutex> lock(m_text_scripts_mutex);
+        return m_text_scripts;
+    }
+
 private:
     void loadScene();
 
@@ -112,6 +120,9 @@ private:
     std::unique_ptr<audio::SoundManager> m_sound_manager;
     FirstFrameCallback                   m_first_frame_callback;
     std::string                          m_user_props_json;
+
+    mutable std::mutex                   m_text_scripts_mutex;
+    std::vector<TextScriptInfo>          m_text_scripts;
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -164,6 +175,11 @@ public:
 
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
+    void setTextUpdate(i32 id, const std::string& text) {
+        std::lock_guard<std::mutex> lock(m_text_update_mutex);
+        m_pending_text_updates[id] = text;
+    }
+
 private:
     MHANDLER_CMD(STOP) {
         bool stop { false };
@@ -191,6 +207,28 @@ private:
                     mousePos, { m_scene->ortho[0], m_scene->ortho[1] });
             }
             m_scene->paritileSys->Emitt();
+
+            // Process pending text updates before drawing
+            {
+                std::lock_guard<std::mutex> lock(m_text_update_mutex);
+                for (auto& [id, newText] : m_pending_text_updates) {
+                    for (auto& tl : m_scene->textLayers) {
+                        if (tl.id == id && tl.currentText != newText) {
+                            auto img = WPTextRenderer::RenderText(
+                                tl.fontData, tl.pointsize, newText,
+                                tl.texWidth, tl.texHeight,
+                                tl.halign, tl.valign, tl.padding);
+                            if (img) {
+                                img->key = tl.textureKey;
+                                m_render->reuploadTexture(tl.textureKey, *img);
+                                tl.currentText = newText;
+                            }
+                            break;
+                        }
+                    }
+                }
+                m_pending_text_updates.clear();
+            }
 
             m_render->drawFrame(*m_scene);
 
@@ -250,6 +288,9 @@ private:
     FillMode m_fillmode { FillMode::ASPECTCROP };
 
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
+
+    std::mutex                          m_text_update_mutex;
+    std::unordered_map<i32, std::string> m_pending_text_updates;
 };
 } // namespace wallpaper
 
@@ -294,6 +335,14 @@ void SceneWallpaper::pause() {
 
 void SceneWallpaper::mouseInput(double x, double y) {
     m_main_handler->renderHandler()->setMousePos(x, y);
+}
+
+void SceneWallpaper::updateText(int32_t id, const std::string& text) {
+    m_main_handler->renderHandler()->setTextUpdate(id, text);
+}
+
+std::vector<TextScriptInfo> SceneWallpaper::getTextScripts() const {
+    return m_main_handler->getTextScripts();
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -470,6 +519,22 @@ void MainHandler::loadScene() {
         }
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, m_user_props_json);
         scene->vfs.swap(pVfs);
+    }
+
+    // Extract text scripts for QML-side evaluation
+    {
+        std::lock_guard<std::mutex> lock(m_text_scripts_mutex);
+        m_text_scripts.clear();
+        for (const auto& tl : scene->textLayers) {
+            TextScriptInfo tsi;
+            tsi.id           = tl.id;
+            tsi.script       = tl.script;
+            tsi.initialValue = tl.currentText;
+            m_text_scripts.push_back(std::move(tsi));
+        }
+        if (!m_text_scripts.empty()) {
+            LOG_INFO("loadScene: %zu text layers with scripts", m_text_scripts.size());
+        }
     }
 
     {

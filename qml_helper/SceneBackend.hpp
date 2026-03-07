@@ -3,8 +3,12 @@
 #include <QtQuick/QQuickFramebufferObject>
 #include <QtCore/QLoggingCategory>
 #include <QtCore/QTimer>
+#include <QtCore/QElapsedTimer>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QHoverEvent>
+#include <QtQml/QJSEngine>
+#include <QtQml/QJSValue>
+#include <vector>
 
 #include "SceneWallpaper.hpp"
 
@@ -100,10 +104,25 @@ public:
 
 private:
     void setScenePropertyQurl(std::string_view, QUrl);
+    void setupTextScripts();
+    void evaluateTextScripts();
+    void cleanupTextScripts();
+
     bool m_inited { false };
     bool m_enable_valid { false };
 
     std::shared_ptr<wallpaper::SceneWallpaper> m_scene { nullptr };
+
+    // Text script evaluation
+    struct TextScriptState {
+        int32_t  id;
+        QJSValue updateFn;
+        QString  currentText;
+    };
+    QJSEngine*                    m_jsEngine { nullptr };
+    QTimer*                       m_textTimer { nullptr };
+    QElapsedTimer                 m_runtimeTimer;
+    std::vector<TextScriptState>  m_textScriptStates;
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);
