@@ -35,6 +35,17 @@ using namespace wallpaper::vulkan;
 constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
 constexpr uint32_t vk_command_num { 2 };
 
+// Like VVK_CHECK_VOID_RE but also sets m_device_lost on VK_ERROR_DEVICE_LOST
+#define VVK_CHECK_DEVICE_LOST(f)                                       \
+    {                                                                  \
+        VkResult _res = (f);                                           \
+        if (_res != VK_SUCCESS && _res != VK_SUBOPTIMAL_KHR) {         \
+            LOG_ERROR("VkResult is \"%s\"", vvk::ToString(_res));      \
+            if (_res == VK_ERROR_DEVICE_LOST) { m_device_lost = true; } \
+            return;                                                    \
+        }                                                              \
+    }
+
 constexpr std::array base_inst_exts {
     Extension { false, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME },
 };
@@ -87,6 +98,7 @@ struct VulkanRender::Impl {
     bool m_with_surface { false };
     bool m_inited { false };
     bool m_pass_loaded { false };
+    bool m_device_lost { false };
 
     std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
     RenderingResources                 m_rendering_resources;
@@ -98,6 +110,7 @@ VulkanRender::VulkanRender(): pImpl(std::make_unique<Impl>()) {}
 VulkanRender::~VulkanRender() {};
 
 bool VulkanRender::inited() const { return pImpl->m_inited; }
+bool VulkanRender::deviceLost() const { return pImpl->m_device_lost; }
 
 bool VulkanRender::init(RenderInitInfo info) { return pImpl->init(info); }
 void VulkanRender::destroy() { pImpl->destroy(); }
@@ -371,7 +384,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                 .pSignalSemaphores    = rr.sem_swap_finish.address(),
     };
 
-    VVK_CHECK_VOID_RE(m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame));
+    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame));
     VkPresentInfoKHR present_info {
         .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext              = nullptr,
@@ -381,10 +394,10 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .pSwapchains        = m_device->swapchain().handle().address(),
         .pImageIndices      = &image_index,
     };
-    VVK_CHECK_VOID_RE(m_device->present_queue().handle.Present(present_info));
+    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Present(present_info));
 
-    VVK_CHECK_VOID_RE(rr.fence_frame.Wait(vk_wait_time));
-    VVK_CHECK_VOID_RE(rr.fence_frame.Reset());
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
     RenderingResources& rr    = m_rendering_resources;
@@ -425,10 +438,10 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         .commandBufferCount = 1,
         .pCommandBuffers    = rr.command.address(),
     };
-    VVK_CHECK_VOID_RE(m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame));
+    VVK_CHECK_DEVICE_LOST(m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame));
 
-    VVK_CHECK_VOID_RE(rr.fence_frame.Wait(vk_wait_time));
-    VVK_CHECK_VOID_RE(rr.fence_frame.Reset());
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
     m_ex_swapchain->renderFrame();
 }
 
@@ -620,8 +633,8 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             .commandBufferCount = 1,
             .pCommandBuffers    = m_upload_cmd.address(),
         };
-        VVK_CHECK_VOID_RE(m_device->graphics_queue().handle.Submit(sub_info, *upload_fence));
-        VVK_CHECK_VOID_RE(upload_fence.Wait(vk_wait_time));
+        VVK_CHECK_DEVICE_LOST(m_device->graphics_queue().handle.Submit(sub_info, *upload_fence));
+        VVK_CHECK_DEVICE_LOST(upload_fence.Wait(vk_wait_time));
     }
     m_pass_loaded = true;
 };

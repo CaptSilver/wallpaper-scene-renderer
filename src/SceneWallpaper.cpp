@@ -191,6 +191,12 @@ private:
         }
     }
     MHANDLER_CMD(DRAW) {
+        // If device was lost, attempt recovery
+        if (m_render->deviceLost()) {
+            recoverFromDeviceLost();
+            return;
+        }
+
         frame_timer.FrameBegin();
         if (m_rg) {
             // LOG_INFO("frame info, fps: %.1f, frametime: %.1f", 1.0f, 1000.0f*m_scene->frameTime);
@@ -232,6 +238,13 @@ private:
 
             m_render->drawFrame(*m_scene);
 
+            // Check for device lost after draw
+            if (m_render->deviceLost()) {
+                LOG_ERROR("VK_ERROR_DEVICE_LOST detected during drawFrame, will recover next frame");
+                frame_timer.FrameEnd();
+                return;
+            }
+
             m_scene->PassFrameTime(frame_timer.IdeaTime() * m_speed);
 
             m_scene->shaderValueUpdater->FrameEnd();
@@ -267,11 +280,41 @@ private:
     MHANDLER_CMD(INIT_VULKAN) {
         std::shared_ptr<RenderInitInfo> info;
         if (msg->findObject("info", &info)) {
-            m_render->init(*info);
+            m_init_info = *info;
+            m_render->init(m_init_info);
 
             // inited, callback to laod scene
             main_handler.sendCmdLoadScene();
         }
+    }
+
+    void recoverFromDeviceLost() {
+        LOG_INFO("Recovering from VK_ERROR_DEVICE_LOST...");
+
+        // Stop the frame timer during recovery
+        frame_timer.Stop();
+
+        // Clear scene state
+        m_scene.reset();
+        m_rg.reset();
+
+        // Destroy and recreate the Vulkan renderer
+        m_render->destroy();
+        m_render = std::make_unique<vulkan::VulkanRender>();
+
+        if (! m_render->init(m_init_info)) {
+            LOG_ERROR("Failed to reinitialize Vulkan after device lost, retrying in 1s");
+            // Post a delayed draw message to retry
+            frame_timer.SetRequiredFps(1);
+            frame_timer.Run();
+            return;
+        }
+
+        LOG_INFO("Vulkan device recreated successfully, reloading scene");
+        frame_timer.Run();
+
+        // Trigger scene reload on the main thread
+        main_handler.sendCmdLoadScene();
     }
 
 public:
@@ -287,6 +330,7 @@ private:
 
     FillMode m_fillmode { FillMode::ASPECTCROP };
 
+    RenderInitInfo m_init_info;
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
 
     std::mutex                          m_text_update_mutex;
