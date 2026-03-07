@@ -37,6 +37,7 @@ if(BUILD_QML)
     PUBLIC
         Qt::Quick
         Qt::Gui
+        Qt::Qml
         glad
         ${PROJECT_NAME}
     )

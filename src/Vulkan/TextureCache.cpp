@@ -599,6 +599,121 @@ void TextureCache::MarkShareReady(std::string_view key) {
     }
 }
 
+bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
+    if (! exists(m_tex_map, key)) {
+        LOG_ERROR("ReuploadTex: key '%s' not found in cache", key.c_str());
+        return false;
+    }
+    auto& img_slots = m_tex_map.at(key);
+    if (img_slots.slots.empty() || image.slots.empty()) return false;
+
+    if (! m_tex_cmd) allocateCmd();
+
+    for (usize i = 0; i < std::min(img_slots.slots.size(), image.slots.size()); i++) {
+        auto& image_paras = img_slots.slots[i];
+        auto& image_slot  = image.slots[i];
+        if (image_slot.mipmaps.empty()) continue;
+
+        std::vector<VmaBufferParameters> stage_bufs;
+        std::vector<VkExtent3D>          extents;
+
+        for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
+            auto&               image_data = image_slot.mipmaps[j];
+            VmaBufferParameters buf;
+            (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, buf);
+            {
+                void* v_data;
+                VVK_CHECK(buf.handle.MapMemory(&v_data));
+                memcpy(v_data, image_data.data.get(), (u32)image_data.size);
+                buf.handle.UnMapMemory();
+            }
+            stage_bufs.emplace_back(std::move(buf));
+            extents.push_back(VkExtent3D { (u32)image_data.width, (u32)image_data.height, 1 });
+        }
+
+        // Re-upload: transition from SHADER_READ_ONLY → TRANSFER_DST, copy, → SHADER_READ_ONLY
+        VkResult result;
+        do {
+            result = m_tex_cmd.Begin(VkCommandBufferBeginInfo {
+                .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                .pNext = nullptr,
+                .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            });
+            if (result != VK_SUCCESS) break;
+
+            VkImageSubresourceRange subresourceRange {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel   = 0,
+                .levelCount     = (uint32_t)stage_bufs.size(),
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            };
+            {
+                VkImageMemoryBarrier in_bar {
+                    .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext            = nullptr,
+                    .srcAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+                    .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .image            = *image_paras.handle,
+                    .subresourceRange = subresourceRange,
+                };
+                m_tex_cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                          VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                          VK_DEPENDENCY_BY_REGION_BIT,
+                                          in_bar);
+            }
+            VkBufferImageCopy copy {
+                .imageSubresource =
+                    VkImageSubresourceLayers {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+            };
+            for (usize j = 0; j < stage_bufs.size(); j++) {
+                copy.imageSubresource.mipLevel = (u32)j;
+                copy.imageExtent               = extents[j];
+                m_tex_cmd.CopyBufferToImage(*stage_bufs[j].handle,
+                                            *image_paras.handle,
+                                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                            copy);
+            }
+            {
+                VkImageMemoryBarrier out_bar {
+                    .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext            = nullptr,
+                    .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .image            = *image_paras.handle,
+                    .subresourceRange = subresourceRange,
+                };
+                m_tex_cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                          VK_DEPENDENCY_BY_REGION_BIT,
+                                          out_bar);
+            }
+            result = m_tex_cmd.End();
+            if (result != VK_SUCCESS) break;
+
+            VkSubmitInfo sub_info {
+                .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+                .pNext              = nullptr,
+                .commandBufferCount = 1,
+                .pCommandBuffers    = m_tex_cmd.address(),
+            };
+            result = m_device.graphics_queue().handle.Submit(sub_info);
+        } while (false);
+
+        m_device.handle().WaitIdle();
+        if (result != VK_SUCCESS) return false;
+    }
+    return true;
+}
+
 void TextureCache::RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const {
     VkImageMemoryBarrier barrier {
         .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,

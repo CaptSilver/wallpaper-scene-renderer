@@ -7,10 +7,12 @@
 
 #include <cstdio>
 #include <memory>
+#include <string>
 
 namespace wallpaper
 {
 class Scene;
+class Image;
 
 namespace vulkan
 {
@@ -26,6 +28,7 @@ public:
     void destroy();
 
     void drawFrame(Scene&);
+    bool reuploadTexture(const std::string& key, Image& image);
 
     void clearLastRenderGraph();
     void compileRenderGraph(Scene&, rg::RenderGraph&);
