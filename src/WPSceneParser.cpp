@@ -225,7 +225,7 @@ BlendMode ParseBlendMode(std::string_view str) {
 }
 
 void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
-                      const WPShaderInfo& sinfo) {
+                      const WPShaderInfo& sinfo, const Scene* pScene = nullptr) {
     if (IsSpecTex(name)) {
         if (name == "_rt_FullFrameBuffer") {
             name = SpecTex_Default;
@@ -253,6 +253,8 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (name == WE_REFLECTION) {
         } else if (sstart_with(name, WE_BUFFER_PREFIX)) {
         } else if (sstart_with(name, WE_BLOOM_PREFIX)) {
+        } else if (pScene && pScene->renderTargets.count(name) > 0) {
+            // Dynamic effect FBO — already registered as a render target
         } else {
             LOG_ERROR("unknown tex \"%s\"", name.c_str());
         }
@@ -338,7 +340,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
 
     for (usize i = 0; i < textures.size(); i++) {
         std::string name = textures.at(i);
-        ParseSpecTexName(name, wpmat, *pWPShaderInfo);
+        ParseSpecTexName(name, wpmat, *pWPShaderInfo, pScene);
         material.textures.push_back(name);
         material.defines.push_back("g_Texture" + std::to_string(i));
         if (name.empty()) {
@@ -661,6 +663,14 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         cam_para.mouseinfluence = sc.general.cameraparallaxmouseinfluence;
         context.shader_updater->SetCameraParallax(cam_para);
     }
+    {
+        WPCameraShake cam_shake;
+        cam_shake.enable    = sc.general.camerashake;
+        cam_shake.amplitude = sc.general.camerashakeamplitude;
+        cam_shake.speed     = sc.general.camerashakespeed;
+        cam_shake.roughness = sc.general.camerashakeroughness;
+        context.shader_updater->SetCameraShake(cam_shake);
+    }
 }
 
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
@@ -957,7 +967,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 fboMap["previous"] = inRT;
                 for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
                     const auto& wpfbo  = wpeffobj.fbos.at(i);
-                    std::string rtname = wpfbo.name + "_" + effaddr;
+                    std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
                     if (wpimgobj.fullscreen) {
                         scene.renderTargets[rtname]      = { 2, 2, true };
                         scene.renderTargets[rtname].bind = {

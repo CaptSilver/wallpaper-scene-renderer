@@ -35,6 +35,18 @@ void WPShaderValueUpdater::FrameBegin() {
     m_mousePos         = std::array { (float)algorism::lerp(t, m_mousePos[0], m_mousePosInput[0]),
                               (float)algorism::lerp(t, m_mousePos[1], m_mousePosInput[1]) };
 
+    // Compute camera shake offset (sum-of-sinusoids pseudo-noise)
+    if (m_shake.enable) {
+        float t   = (float)m_scene->elapsingTime * m_shake.speed;
+        float r   = m_shake.roughness;
+        float sx  = std::sin(t * 1.0f) + std::sin(t * 2.3f + 1.7f) * r +
+                    std::sin(t * 4.7f + 3.1f) * r * r;
+        float sy  = std::cos(t * 1.3f + 0.5f) + std::cos(t * 2.7f + 2.1f) * r +
+                    std::cos(t * 5.1f + 0.9f) * r * r;
+        float norm = 1.0f + r + r * r;
+        m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
+    }
+
     // Advance camera path animation
     if (m_scene->activeCamera && m_scene->activeCamera->HasPaths()) {
         m_scene->activeCamera->AdvanceTime(m_scene->frameTime);
@@ -195,6 +207,16 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     bool reqETVPI = info.has_ETVPI;
 
     Matrix4d viewProTrans = camera->GetViewProjectionMatrix();
+
+    // Camera shake: translate the view-projection so all scene objects shift together.
+    // Only apply to the global camera (cam_name empty) — per-node effect cameras and
+    // the "effect" camera render to intermediate RTs and must not be shaken.
+    if (m_shake.enable && cam_name.empty()) {
+        Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
+        Vector2f shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
+        viewProTrans = viewProTrans *
+            Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
+    }
 
     if (info.has_VP) {
         updateOp(G_VP, ShaderValue::fromMatrix(viewProTrans));

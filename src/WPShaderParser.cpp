@@ -46,8 +46,24 @@ static constexpr const char* pre_shader_code = R"(#version 330
 #define ddx dFdx
 #define ddy(x) dFdy(-(x))
 #define saturate(x) (clamp(x, 0.0, 1.0))
+#define log10(x) (log(x) / log(10.0))
 
 #define max(x, y) max(y, x)
+
+// HLSL pow() broadcasts scalar to vector; GLSL requires matching genType.
+// Overloads must be defined BEFORE the #define so their bodies call the
+// real built-in pow(), while all subsequent shader code gets redirected.
+vec2 _wep(vec2 x, float y) { return pow(x, vec2(y)); }
+vec3 _wep(vec3 x, float y) { return pow(x, vec3(y)); }
+vec4 _wep(vec4 x, float y) { return pow(x, vec4(y)); }
+vec2 _wep(float x, vec2 y) { return pow(vec2(x), y); }
+vec3 _wep(float x, vec3 y) { return pow(vec3(x), y); }
+vec4 _wep(float x, vec4 y) { return pow(vec4(x), y); }
+float _wep(float x, float y) { return pow(x, y); }
+vec2 _wep(vec2 x, vec2 y) { return pow(x, y); }
+vec3 _wep(vec3 x, vec3 y) { return pow(x, y); }
+vec4 _wep(vec4 x, vec4 y) { return pow(x, y); }
+#define pow _wep
 
 #define float1 float
 #define float2 vec2
@@ -513,6 +529,22 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "pow($1($2), $1($3))");
     }
 
+    // Fix: "float VAR = texture(SAMPLER, COORD);" → add .x swizzle
+    // HLSL implicitly converts vec4 texture result to float (first component);
+    // GLSL requires an explicit swizzle.
+    {
+        std::regex re(R"(\bfloat\s+(\w+)\s*=\s*(texture\w*\s*\([^;]*?\))\s*;)");
+        result = std::regex_replace(result, re, "float $1 = $2.x;");
+    }
+
+    // Fix: integer literal as ternary condition → bool()
+    // HLSL allows int in ternary condition; GLSL requires bool.
+    // Match bare integer after = ( , that is followed by ? (ternary operator).
+    {
+        std::regex re(R"(([\=\(,]\s*)(\d+)(\s*\?))");
+        result = std::regex_replace(result, re, "$1bool($2)$3");
+    }
+
     // Fix: "int VAR = step(EXPR)" → "float VAR = step(EXPR)"
     // step() returns genType (float); the variable is used in float arithmetic throughout
     // (bar *= step(...), bar * u_BarOpacity, etc.), so changing the type is correct.
@@ -639,6 +671,75 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
 
             vunit.src   = unit.src;
             vunit.stage = ToGLSL(unit.stage);
+        }
+
+        // Fix cross-stage varying type mismatches.
+        // FixImplicitConversions or Finalprocessor may cause the vertex output and
+        // fragment input for a varying to have different widths (e.g. vec2 vs vec4).
+        // Upgrade the narrower side to match the wider one.
+        if (units.size() == 2) {
+            auto parseVaryings = [](const std::string& src, const char* kw) {
+                std::map<std::string, std::string> m;
+                std::regex re(std::string(R"(\b)") + kw +
+                              R"(\s+(vec[234]|float)\s+(\w+)\s*;)");
+                for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
+                     it != std::sregex_iterator(); ++it)
+                    m[(*it)[2].str()] = (*it)[1].str();
+                return m;
+            };
+            auto dim = [](const std::string& t) -> int {
+                if (t == "float") return 1;
+                if (t == "vec2") return 2;
+                if (t == "vec3") return 3;
+                if (t == "vec4") return 4;
+                return 0;
+            };
+            // Upgrade a varying declaration and pad its assignments in the given source.
+            // io_kw is "out" (vertex) or "in" (fragment).
+            auto upgradeVarying = [&dim](std::string& src, const char* io_kw,
+                                         const std::string& name,
+                                         const std::string& old_type,
+                                         const std::string& new_type) {
+                // Upgrade declaration
+                std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type +
+                                   "\\s+" + name + "\\s*;");
+                src = std::regex_replace(
+                    src, re_decl, std::string(io_kw) + " " + new_type + " " + name + ";");
+
+                // For "out" varyings (vertex shader): pad assignments with zeroes.
+                if (std::string(io_kw) == "out") {
+                    int od = dim(old_type), nd = dim(new_type);
+                    std::string pad;
+                    for (int p = 0; p < nd - od; p++) pad += ", 0.0";
+                    std::regex re_assign("\\b" + name + "(\\s*=\\s*)((?!" + new_type +
+                                         "\\s*\\()[^;]+);");
+                    src = std::regex_replace(
+                        src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
+                }
+            };
+
+            auto vertOuts = parseVaryings(units[0].src, "out");
+            auto fragIns  = parseVaryings(units[1].src, "in");
+            bool vert_changed = false, frag_changed = false;
+
+            for (auto& [name, ftype] : fragIns) {
+                auto it = vertOuts.find(name);
+                if (it == vertOuts.end() || it->second == ftype) continue;
+                int vd = dim(it->second), fd = dim(ftype);
+                if (vd == 0 || fd == 0) continue;
+
+                if (fd > vd) {
+                    // Fragment is wider → upgrade vertex output
+                    upgradeVarying(units[0].src, "out", name, it->second, ftype);
+                    vert_changed = true;
+                } else {
+                    // Vertex is wider → upgrade fragment input
+                    upgradeVarying(units[1].src, "in", name, ftype, it->second);
+                    frag_changed = true;
+                }
+            }
+            if (vert_changed) vunits[0].src = units[0].src;
+            if (frag_changed) vunits[1].src = units[1].src;
         }
 
         vulkan::ShaderCompOpt opt;
