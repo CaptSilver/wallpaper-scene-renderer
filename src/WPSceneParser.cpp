@@ -635,8 +635,9 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
     scene.ortho[1]   = sc.general.orthogonalprojection.height;
     context.ortho_w  = scene.ortho[0];
     context.ortho_h  = scene.ortho[1];
-    LOG_INFO("Scene ortho: %dx%d (auto=%d)", context.ortho_w, context.ortho_h,
-             sc.general.orthogonalprojection.auto_);
+    LOG_INFO("Scene ortho: %dx%d (auto=%d) clearColor=(%.3f,%.3f,%.3f)", context.ortho_w, context.ortho_h,
+             sc.general.orthogonalprojection.auto_,
+             scene.clearColor[0], scene.clearColor[1], scene.clearColor[2]);
 
     {
         auto& gb              = context.global_base_uniforms;
@@ -677,8 +678,10 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
 
-    LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d",
-             wpimgobj.id, wpimgobj.name.c_str(), wpimgobj.image.c_str(), (int)wpimgobj.visible);
+    LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d size=(%.0f,%.0f) fullscreen=%d origin=(%.1f,%.1f)",
+             wpimgobj.id, wpimgobj.name.c_str(), wpimgobj.image.c_str(), (int)wpimgobj.visible,
+             wpimgobj.size[0], wpimgobj.size[1], (int)wpimgobj.fullscreen,
+             wpimgobj.origin[0], wpimgobj.origin[1]);
 
     // Shape-quad size fallback: if no image and size is still default (2,2),
     // use the scene ortho dimensions so effect pingpong RTs have meaningful resolution.
