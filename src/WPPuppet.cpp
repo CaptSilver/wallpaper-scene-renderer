@@ -149,7 +149,17 @@ WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
     InterpolationInfo _info;
     auto&             _cur_time = *cur_time;
 
-    if (mode == PlayMode::Loop || mode == PlayMode::Single) {
+    if (mode == PlayMode::Single) {
+        // Play once and hold the last frame
+        if (_cur_time >= max_time) {
+            _cur_time    = max_time;
+            _info.frame_a = (idx)(length - 1);
+            _info.frame_b = _info.frame_a;
+            _info.t       = 0.0;
+        } else {
+            genInterpolationInfo(_info, _cur_time, (u32)length, frame_time, max_time);
+        }
+    } else if (mode == PlayMode::Loop) {
         genInterpolationInfo(_info, _cur_time, (u32)length, frame_time, max_time);
     } else if (mode == PlayMode::Mirror) {
         const auto _get_frame = [this](auto f) {
