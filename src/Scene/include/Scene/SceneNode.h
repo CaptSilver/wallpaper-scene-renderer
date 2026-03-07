@@ -80,12 +80,25 @@ public:
     bool IsOffscreen() const { return m_offscreen; }
     void SetOffscreen(bool v) { m_offscreen = v; }
 
+    bool IsVisible() const {
+        if (! m_visible) return false;
+        // Effect nodes inherit visibility from their owner (the image object node)
+        if (m_visibilityOwner && ! m_visibilityOwner->m_visible) return false;
+        return true;
+    }
+    void SetVisible(bool v) { m_visible = v; }
+
+    // Set the owner node whose visibility this node inherits (for effect chain nodes)
+    void SetVisibilityOwner(SceneNode* owner) { m_visibilityOwner = owner; }
+
 private:
     // mark self and all children
     void MarkTransDirty();
 
     i32         m_id { -1 };
     bool        m_offscreen { false };
+    bool        m_visible { true };
+    SceneNode*  m_visibilityOwner { nullptr };
     std::string m_name;
 
     bool            m_dirty;

@@ -23,6 +23,9 @@
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/VulkanRender.hpp"
 #include "WPTextRenderer.hpp"
+
+#include <nlohmann/json.hpp>
+#include <sstream>
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
@@ -102,6 +105,7 @@ public:
 
 private:
     void loadScene();
+    bool applyUserPropsRuntime(const std::string& newJson);
 
     MHANDLER_CMD(LOAD_SCENE);
     MHANDLER_CMD(SET_PROPERTY);
@@ -120,6 +124,7 @@ private:
     std::unique_ptr<audio::SoundManager> m_sound_manager;
     FirstFrameCallback                   m_first_frame_callback;
     std::string                          m_user_props_json;
+    std::shared_ptr<Scene>               m_scene; // shared with render handler
 
     mutable std::mutex                   m_text_scripts_mutex;
     std::vector<TextScriptInfo>          m_text_scripts;
@@ -468,12 +473,16 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             std::string json;
             msg->findString("value", &json);
             if (m_user_props_json != json) {
+                std::string oldJson = m_user_props_json;
                 m_user_props_json = json;
-                // Reload scene to apply new user properties (only if we have actual properties)
-                // Skip reload if json is empty - this means wallpaper is changing
                 if (!json.empty() && !m_source.empty() && !m_assets.empty()) {
-                    LOG_INFO("Reloading scene to apply user properties: %s", json.c_str());
-                    CALL_MHANDLER_CMD(LOAD_SCENE, msg);
+                    // Try runtime update first (no reload)
+                    if (m_scene && applyUserPropsRuntime(json)) {
+                        LOG_INFO("Applied user properties at runtime (no reload): %s", json.c_str());
+                    } else {
+                        LOG_INFO("Reloading scene to apply user properties: %s", json.c_str());
+                        CALL_MHANDLER_CMD(LOAD_SCENE, msg);
+                    }
                 }
             }
         }
@@ -497,6 +506,82 @@ MHANDLER_CMD_IMPL(MainHandler, STOP) {
 
 MHANDLER_CMD_IMPL(MainHandler, FIRST_FRAME) {
     if (m_first_frame_callback) m_first_frame_callback();
+}
+
+bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
+    if (! m_scene) return false;
+    auto& scene = *m_scene;
+
+    // If no bindings were recorded during parsing, fall back to reload
+    if (scene.userPropVisBindings.empty() && scene.userPropUniformBindings.empty()) {
+        LOG_INFO("No runtime user property bindings, falling back to reload");
+        return false;
+    }
+
+    // Parse the new properties
+    nlohmann::json props;
+    try {
+        props = nlohmann::json::parse(newJson);
+        if (! props.is_object()) return false;
+    } catch (...) {
+        return false;
+    }
+
+    bool anyApplied = false;
+
+    // Apply visibility changes
+    for (auto& [propName, bindings] : scene.userPropVisBindings) {
+        bool visible;
+        if (props.contains(propName)) {
+            auto& val = props[propName];
+            if (val.is_boolean()) {
+                visible = val.get<bool>();
+            } else {
+                continue;
+            }
+        } else {
+            // Property not in overrides → use default
+            visible = bindings.front().defaultVisible;
+        }
+        for (auto& b : bindings) {
+            if (b.node->IsVisible() != visible) {
+                b.node->SetVisible(visible);
+                LOG_INFO("Runtime user prop: '%s' -> node visible=%d", propName.c_str(), (int)visible);
+                anyApplied = true;
+            }
+        }
+    }
+
+    // Apply uniform value changes
+    for (auto& [propName, bindings] : scene.userPropUniformBindings) {
+        if (! props.contains(propName)) continue;
+        auto& val = props[propName];
+
+        // Convert JSON value to float vector
+        std::vector<float> floatVec;
+        if (val.is_number()) {
+            floatVec.push_back(val.get<float>());
+        } else if (val.is_string()) {
+            std::istringstream iss(val.get<std::string>());
+            float f;
+            while (iss >> f) floatVec.push_back(f);
+        } else if (val.is_array()) {
+            for (const auto& elem : val) {
+                if (elem.is_number()) floatVec.push_back(elem.get<float>());
+            }
+        }
+        if (floatVec.empty()) continue;
+
+        for (auto& b : bindings) {
+            b.material->customShader.constValues[b.uniformName] = floatVec;
+            b.material->customShader.constValuesDirty           = true;
+            LOG_INFO("Runtime user prop: '%s' -> uniform '%s' = [%f...]",
+                     propName.c_str(), b.uniformName.c_str(), floatVec[0]);
+            anyApplied = true;
+        }
+    }
+
+    return anyApplied;
 }
 
 void MainHandler::loadScene() {
@@ -564,6 +649,7 @@ void MainHandler::loadScene() {
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, m_user_props_json);
         scene->vfs.swap(pVfs);
     }
+    m_scene = scene; // keep reference for runtime user property updates
 
     // Extract text scripts for QML-side evaluation
     {

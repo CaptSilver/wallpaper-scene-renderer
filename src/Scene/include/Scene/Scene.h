@@ -11,6 +11,8 @@
 
 #include "Core/NoCopyMove.hpp"
 
+#include <mutex>
+
 namespace wallpaper
 {
 class ParticleSystem;
@@ -81,6 +83,20 @@ public:
     BloomConfig bloomConfig;
 
     std::vector<TextLayerInfo> textLayers;
+
+    // Runtime user property bindings for instant updates
+    struct UserPropVisibility {
+        SceneNode* node;
+        bool       defaultVisible; // original value without override
+    };
+    struct UserPropUniform {
+        SceneMaterial* material;
+        std::string    uniformName; // glsl uniform name (e.g. "g_UserAlpha")
+    };
+    std::unordered_map<std::string, std::vector<UserPropVisibility>> userPropVisBindings;
+    std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;
+    // Node lookup by ID for visibility updates
+    std::unordered_map<i32, SceneNode*> nodeById;
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
