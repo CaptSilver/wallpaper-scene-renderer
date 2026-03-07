@@ -527,8 +527,6 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         return false;
     }
 
-    bool anyApplied = false;
-
     // Apply visibility changes
     for (auto& [propName, bindings] : scene.userPropVisBindings) {
         bool visible;
@@ -547,7 +545,6 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
             if (b.node->IsVisible() != visible) {
                 b.node->SetVisible(visible);
                 LOG_INFO("Runtime user prop: '%s' -> node visible=%d", propName.c_str(), (int)visible);
-                anyApplied = true;
             }
         }
     }
@@ -577,11 +574,12 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
             b.material->customShader.constValuesDirty           = true;
             LOG_INFO("Runtime user prop: '%s' -> uniform '%s' = [%f...]",
                      propName.c_str(), b.uniformName.c_str(), floatVec[0]);
-            anyApplied = true;
         }
     }
 
-    return anyApplied;
+    // Always return true when bindings exist — unbound properties (script-driven
+    // dragging, hover effects, etc.) don't need a full scene reload.
+    return true;
 }
 
 void MainHandler::loadScene() {

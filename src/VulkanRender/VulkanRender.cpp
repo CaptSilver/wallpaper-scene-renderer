@@ -538,6 +538,10 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
 }
 
 void VulkanRender::Impl::clearLastRenderGraph() {
+    // Ensure GPU is idle before destroying resources to prevent GPUVM faults
+    if (m_device && m_device->handle()) {
+        m_device->handle().WaitIdle();
+    }
     for (auto& p : m_passes) {
         p->destory(*m_device, m_rendering_resources);
     }
