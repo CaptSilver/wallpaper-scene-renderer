@@ -424,8 +424,11 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
         if (property == PROPERTY_SOURCE) {
             msg->findString("value", &m_source);
             LOG_INFO("source: %s", m_source.c_str());
-            // Reset user properties when source changes (new wallpaper)
-            m_user_props_json.clear();
+            // Keep m_user_props_json — QML may set it before or after source.
+            // The scene parser ignores unrecognized property names, so stale
+            // props from a previous wallpaper are harmless.  Once the correct
+            // USER_PROPS message arrives it will trigger a runtime update or
+            // reload if the value differs.
             CALL_MHANDLER_CMD(LOAD_SCENE, msg);
         } else if (property == PROPERTY_ASSETS) {
             msg->findString("value", &m_assets);
