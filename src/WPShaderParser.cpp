@@ -545,6 +545,14 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "$1bool($2)$3");
     }
 
+    // Fix: (expr CMP expr) in arithmetic → float(expr CMP expr)
+    // HLSL allows bool in arithmetic (true=1.0, false=0.0); GLSL does not.
+    // Matches parenthesized comparison followed by arithmetic operator.
+    {
+        std::regex re(R"(\(([^()]*(?:<=|>=|==|!=|<|>)[^()]*)\)(\s*[*+/\-]))");
+        result = std::regex_replace(result, re, "float($1)$2");
+    }
+
     // Fix: "int VAR = step(EXPR)" → "float VAR = step(EXPR)"
     // step() returns genType (float); the variable is used in float arithmetic throughout
     // (bar *= step(...), bar * u_BarOpacity, etc.), so changing the type is correct.

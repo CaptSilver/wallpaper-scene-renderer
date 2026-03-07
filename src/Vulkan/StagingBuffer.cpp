@@ -74,7 +74,10 @@ StagingBuffer::VirtualBlock* StagingBuffer::newVirtualBlock(VkDeviceSize nsize) 
 
         m_virtual_blocks.push_back({});
         it         = m_virtual_blocks.end() - 1;
-        it->size   = nsize > m_size_step ? nsize : m_size_step;
+        VkDeviceSize min_size = nsize > m_size_step ? nsize : m_size_step;
+        // Exponential growth: new block at least as large as all existing blocks combined.
+        // This amortizes staging buffer resizes (each resize copies the full buffer).
+        it->size = std::max(min_size, offset);
         it->index  = (size_t)std::distance(m_virtual_blocks.begin(), it);
         it->offset = offset;
     }
