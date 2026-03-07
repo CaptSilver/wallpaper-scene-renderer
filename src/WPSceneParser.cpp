@@ -801,6 +801,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             return;
         };
         LoadConstvalue(material, wpimgobj.material, shaderInfo);
+
     }
 
     for (const auto& cs : wpimgobj.material.constantshadervalues) {
@@ -881,6 +882,29 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     mesh.AddMaterial(std::move(material));
     spImgNode->AddMesh(spMesh);
 
+    // Record usershadervalue bindings for runtime user property updates
+    // Must be done after AddMaterial since material is moved
+    if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
+        for (auto& [propName, shaderConstName] : wpimgobj.material.userShaderBindings) {
+            std::string glname;
+            if (shaderInfo.alias.count(shaderConstName) != 0) {
+                glname = shaderInfo.alias.at(shaderConstName);
+            } else {
+                for (const auto& el : shaderInfo.alias) {
+                    if (el.second.substr(2) == shaderConstName) {
+                        glname = el.second;
+                        break;
+                    }
+                }
+            }
+            if (glname.empty()) glname = shaderConstName;
+            context.scene->userPropUniformBindings[propName].push_back(
+                { spMesh->Material(), glname });
+            LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
+                     propName.c_str(), glname.c_str(), wpimgobj.id);
+        }
+    }
+
     context.shader_updater->SetNodeData(spImgNode.get(), svData);
     if (hasEffect) {
         auto& scene = *context.scene;
@@ -923,6 +947,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                              context.node_map.count(wpimgobj.parent_id) > 0);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
+            imgEffectLayer->FinalNode().SetVisibilityOwner(spImgNode.get());
             if (isCompose) {
             } else {
                 spImgNode->CopyTrans(SceneNode());
@@ -1076,6 +1101,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 spEffNode->AddMesh(spMesh);
 
                 context.shader_updater->SetNodeData(spEffNode.get(), svData);
+                spEffNode->SetVisibilityOwner(spImgNode.get());
                 imgEffect->nodes.push_back({ matOutRT, spEffNode });
             }
 
@@ -1580,6 +1606,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effctFinalMesh);
             imgEffectLayer->FinalNode().CopyTrans(*spNode);
+            imgEffectLayer->FinalNode().SetVisibilityOwner(spNode.get());
             spNode->CopyTrans(SceneNode());
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
         }
@@ -1653,6 +1680,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
                 spEffMesh->AddMaterial(std::move(effMaterial));
                 spEffNode->AddMesh(spEffMesh);
                 context.shader_updater->SetNodeData(spEffNode.get(), effSvData);
+                spEffNode->SetVisibilityOwner(spNode.get());
                 imgEffect->nodes.push_back({ matOutRT, spEffNode });
             }
             if (eff_mat_ok) imgEffectLayer->AddEffect(imgEffect);
@@ -1871,6 +1899,39 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                        },
                    },
                    obj);
+    }
+
+    // Record user property → visibility bindings by scanning raw JSON
+    for (auto& obj : json.at("objects")) {
+        if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
+        i32 id = obj.at("id").get<i32>();
+        auto node_it = context.node_map.find(id);
+        if (node_it == context.node_map.end()) continue;
+
+        // Register node in ID lookup table
+        context.scene->nodeById[id] = node_it->second.get();
+
+        // Check if "visible" references a user property
+        if (obj.contains("visible") && obj.at("visible").is_object() &&
+            obj.at("visible").contains("user")) {
+            const auto& userField = obj.at("visible").at("user");
+            std::string propName;
+            if (userField.is_string()) {
+                propName = userField.get<std::string>();
+            } else if (userField.is_object() && userField.contains("name")) {
+                propName = userField.at("name").get<std::string>();
+            }
+            if (! propName.empty()) {
+                bool defaultVis = true;
+                if (obj.at("visible").contains("value")) {
+                    defaultVis = obj.at("visible").at("value").get<bool>();
+                }
+                context.scene->userPropVisBindings[propName].push_back(
+                    { node_it->second.get(), defaultVis });
+                LOG_INFO("user prop binding: '%s' -> visibility of node id=%d (default=%d)",
+                         propName.c_str(), id, (int)defaultVis);
+            }
+        }
     }
 
     // Sort root children to match JSON "objects" array order.

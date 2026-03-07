@@ -41,6 +41,9 @@ public:
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
 
+    // Maps user property name → shader constant name (from usershadervalues)
+    std::unordered_map<std::string, std::string> userShaderBindings;
+
     bool use_puppet { false };
 };
 

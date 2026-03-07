@@ -533,11 +533,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto& vk_textures    = m_desc.vk_textures;
         auto  cam_override   = m_desc.camera_override;
 
+        auto* p_material = &mesh.Material()->customShader;
         m_desc.update_op = [shader_updater,
                             block,
                             buf,
                             bufref,
                             node,
+                            p_material,
                             &sprites,
                             &vk_textures,
                             cam_override,
@@ -546,6 +548,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                                                        wallpaper::ShaderValue value) {
                 UpdateUniform(buf, *bufref, block, name, value);
             };
+            // Re-upload constValues if they were modified at runtime (user property change)
+            if (p_material->constValuesDirty) {
+                for (auto& v : p_material->constValues) {
+                    if (exists(block.member_map, v.first)) {
+                        UpdateUniform(buf, *bufref, block, v.first, v.second);
+                    }
+                }
+                p_material->constValuesDirty = false;
+            }
             shader_updater->UpdateUniforms(node, sprites, update_unf_op, cam_override);
             // update image slot for sprites
             {
@@ -711,15 +722,19 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
 
     auto gpu_buf = m_desc.dyn_vertex ? rr.dyn_buf->gpuBuf() : rr.vertex_buf->gpuBuf();
 
-    for (usize i = 0; i < m_desc.vertex_bufs.size(); i++) {
-        auto& buf = m_desc.vertex_bufs[i];
-        cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
-    }
-    if (m_desc.index_buf) {
-        cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
-        cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
-    } else {
-        cmd.Draw(m_desc.draw_count, 1, 0, 0);
+    // Skip draw (but keep render pass begin/end) if node is hidden at runtime
+    bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
+    if (nodeVisible) {
+        for (usize i = 0; i < m_desc.vertex_bufs.size(); i++) {
+            auto& buf = m_desc.vertex_bufs[i];
+            cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
+        }
+        if (m_desc.index_buf) {
+            cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
+            cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
+        } else {
+            cmd.Draw(m_desc.draw_count, 1, 0, 0);
+        }
     }
 
     cmd.EndRenderPass();

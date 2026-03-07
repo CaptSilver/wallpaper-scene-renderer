@@ -13,6 +13,7 @@ namespace wallpaper
 struct SceneMaterialCustomShader {
     std::shared_ptr<SceneShader> shader;
     ShaderValues                 constValues;
+    bool                         constValuesDirty { false };
 };
 
 struct SceneMaterial {
