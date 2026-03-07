@@ -26,7 +26,7 @@ layout(binding = 1) uniform sampler2D u_Texture;
 
 void main()
 {
-	out_FragColor = texture(u_Texture, v_Texcoord);
+	out_FragColor = vec4(texture(u_Texture, v_Texcoord).rgb, 1.0);
 }
 )";
 

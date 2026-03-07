@@ -67,7 +67,11 @@ enum class BlendMode
     // Screen blend: ONE*src + ONE_MINUS_SRC_COLOR*dst (per-channel).
     // Composites bright content onto existing scene without relying on alpha.
     // Used for passthrough compose layers whose effect chain outputs alpha=0.
-    Opaque
+    Opaque,
+    // Premultiplied alpha: ONE*src + ONE_MINUS_SRC_ALPHA*dst.
+    // For DIRECTDRAW effects (shape-quad) where shader output RGB is already
+    // scaled by the mask/alpha, avoiding double-multiplication from SRC_ALPHA.
+    Translucent_PA
 };
 
 enum class ShaderType
