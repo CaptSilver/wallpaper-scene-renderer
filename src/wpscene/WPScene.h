@@ -49,6 +49,11 @@ public:
     bool  bloom { false };
     float bloomstrength { 2.0f };
     float bloomthreshold { 0.65f };
+
+    bool  camerashake { false };
+    float camerashakeamplitude { 0.5f };
+    float camerashakespeed { 1.0f };
+    float camerashakeroughness { 0.5f };
 };
 
 class WPScene {

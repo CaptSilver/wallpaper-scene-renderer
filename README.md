@@ -9,7 +9,7 @@ Made this for fun.
 - [x] Layer
 	- [x] Image
 	- [x] Composition / Fullscreen
-	- [ ] Text
+	- [x] Text (static)
 - [x] Effect
     - [x] Basic
 	- [x] Mouse position with delay
@@ -17,10 +17,10 @@ Made this for fun.
     - [x] Depth Parallax
 	- [x] ColorBlendMode
 	- [x] PBR light
-	- [ ] Global bloom
+	- [x] Global bloom
 - [x] Camera
 	- [x] Zoom
-	- [ ] Shake
+	- [x] Shake
 	- [ ] Fade
     - [x] Path
 - [x] Audio
@@ -38,7 +38,7 @@ Made this for fun.
 	- [x] Children
     - [ ] Audio Response
 - [x] Puppet warp
-- [ ] 3D model
+- [x] 3D model (basic)
 - [ ] Timeline animations
 - [ ] Scenescript
 - [x] User Properties (basic support - default values from project.json)
