@@ -285,14 +285,22 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
 
     std::string shaderPath("/assets/shaders/" + wpmat.shader);
 
+    auto vert_src = fs::GetFileContent(vfs, shaderPath + ".vert");
+    auto frag_src = fs::GetFileContent(vfs, shaderPath + ".frag");
+    // Log first 80 chars of each shader source for debugging
+    LOG_INFO("shader '%s' vert(%zu)='%.80s' frag(%zu)='%.80s'",
+             wpmat.shader.c_str(),
+             vert_src.size(), vert_src.c_str(),
+             frag_src.size(), frag_src.c_str());
+
     std::array sd_units { WPShaderUnit {
                               .stage           = ShaderType::VERTEX,
-                              .src             = fs::GetFileContent(vfs, shaderPath + ".vert"),
+                              .src             = std::move(vert_src),
                               .preprocess_info = {},
                           },
                           WPShaderUnit {
                               .stage           = ShaderType::FRAGMENT,
-                              .src             = fs::GetFileContent(vfs, shaderPath + ".frag"),
+                              .src             = std::move(frag_src),
                               .preprocess_info = {},
                           } };
 
@@ -1386,19 +1394,26 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
         wpscene::WPMaterial wpmat;
         wpmat.FromJson(jMat);
 
-        // 3D models need depth enabled (WPMaterial defaults are 2D: disabled)
-        wpmat.depthtest  = "enabled";
-        wpmat.depthwrite = "enabled";
+        // 3D models default to depth enabled, but respect explicit overrides
+        // from the material JSON (e.g. skybox sets depthtest/depthwrite to "disabled").
+        // WE materials use both "depthtest"/"depthwrite" and the alternate spellings
+        // "depthtesting"/"depthwriting" — check for both.
+        const auto& jContent = jMat.at("passes").at(0);
+        if (! jContent.contains("depthtest") && ! jContent.contains("depthtesting")) {
+            wpmat.depthtest = "enabled";
+        }
+        if (! jContent.contains("depthwrite") && ! jContent.contains("depthwriting")) {
+            wpmat.depthwrite = "enabled";
+        }
 
         // Materials that need transparency explicitly set "blending": "translucent".
         // Without it, default to opaque for 3D models (WPMaterial default is translucent for 2D).
-        const auto& jContent = jMat.at("passes").at(0);
         if (! jContent.contains("blending")) {
             wpmat.blending = "normal";
         }
-        // Translucent materials: keep depth test but disable depth write so
-        // objects behind transparent surfaces remain visible.
-        if (wpmat.blending == "translucent") {
+        // Translucent/additive materials: keep depth test but disable depth write so
+        // objects behind transparent/additive surfaces remain visible.
+        if (wpmat.blending == "translucent" || wpmat.blending == "additive") {
             wpmat.depthwrite = "disabled";
         }
         // Default 3D models to backface culling when not specified.
