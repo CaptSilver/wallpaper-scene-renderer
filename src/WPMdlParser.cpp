@@ -526,6 +526,18 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
             offset += 3;
             memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
+            // Dump first 3 vertices for debugging
+            if (i < 3) {
+                LOG_INFO("  vert[%u] pos=(%.4f,%.4f,%.4f) norm=(%.4f,%.4f,%.4f) tc=(%.4f,%.4f)",
+                         i, v.position[0], v.position[1], v.position[2],
+                         v.normal[0], v.normal[1], v.normal[2],
+                         v.texcoord[0], v.texcoord[1]);
+            }
+        }
+        // Also dump first 3 index triples
+        for (uint i = 0; i < std::min((uint)sub.indices.size(), 3u); i++) {
+            LOG_INFO("  tri[%u] indices=(%u,%u,%u)", i,
+                     sub.indices[i][0], sub.indices[i][1], sub.indices[i][2]);
         }
         mesh.AddVertexArray(std::move(vertex));
     } else {

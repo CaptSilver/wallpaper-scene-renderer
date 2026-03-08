@@ -182,6 +182,17 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 }
 
 void FinPass::execute(const Device& device, RenderingResources& rr) {
+    // First-frame execution trace
+    {
+        extern int g_exec_pass_counter;
+        extern int g_exec_frame_counter;
+        if (g_exec_frame_counter < 1) {
+            LOG_INFO("EXEC[%d] pass#%d FINPASS present=%ux%u result_handle=%p",
+                     g_exec_frame_counter, g_exec_pass_counter++,
+                     m_desc.vk_present.extent.width, m_desc.vk_present.extent.height,
+                     (void*)m_desc.vk_result.handle);
+        }
+    }
     auto& cmd    = rr.command;
     auto& outext = m_desc.vk_present.extent;
 

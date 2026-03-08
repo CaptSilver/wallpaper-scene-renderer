@@ -59,6 +59,19 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
     setPrepared();
 };
 void CopyPass::execute(const Device& device, RenderingResources& rr) {
+    // First-frame execution trace for copy passes
+    {
+        extern int g_exec_pass_counter;
+        extern int g_exec_frame_counter;
+        if (g_exec_frame_counter < 1) {
+            LOG_INFO("EXEC[%d] pass#%d COPY '%.*s' %ux%u -> '%.*s' %ux%u",
+                     g_exec_frame_counter, g_exec_pass_counter++,
+                     (int)m_desc.src.size(), m_desc.src.data(),
+                     m_desc.vk_src.extent.width, m_desc.vk_src.extent.height,
+                     (int)m_desc.dst.size(), m_desc.dst.data(),
+                     m_desc.vk_dst.extent.width, m_desc.vk_dst.extent.height);
+        }
+    }
     auto& cmd = rr.command;
     auto& src = m_desc.vk_src;
     auto& dst = m_desc.vk_dst;
