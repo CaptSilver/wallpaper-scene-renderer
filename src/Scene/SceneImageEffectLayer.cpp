@@ -5,6 +5,8 @@
 #include "Core/StringHelper.hpp"
 #include "Utils/Logging.h"
 
+#include <cassert>
+
 using namespace wallpaper;
 
 SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, float w, float h,

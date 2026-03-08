@@ -1,4 +1,5 @@
 #include "WPPuppet.hpp"
+#include <cassert>
 #include <cmath>
 #include "Utils/Logging.h"
 
