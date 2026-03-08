@@ -53,7 +53,7 @@ public:
         ma_result result = ma_decoder_init(Read, Seek, this, &config, &m_decoder);
         m_inited         = result == MA_SUCCESS;
         if (! m_inited) {
-            LOG_ERROR("init decoder failed");
+            LOG_ERROR("init decoder failed (ma_result=%d)", (int)result);
         }
         return m_inited;
     }
