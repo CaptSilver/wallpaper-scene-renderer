@@ -16,6 +16,13 @@
 
 using namespace wallpaper::vulkan;
 
+// Frame-level pass execution counters (reset in VulkanRender.cpp each frame)
+namespace wallpaper::vulkan {
+    int g_exec_pass_counter = 0;
+    int g_exec_frame_counter = 0;
+    bool g_depth_transitioned = false;  // reset each frame in VulkanRender.cpp
+}
+
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.node            = desc.node;
     m_desc.textures        = desc.textures;
@@ -48,7 +55,8 @@ GetOrCreateDepthImage(wallpaper::Scene& scene, const Device& device, VkExtent3D 
         .arrayLayers = 1,
         .samples     = VK_SAMPLE_COUNT_1_BIT,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
-        .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -103,6 +111,9 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
     VkAttachmentReference depth_ref {};
 
     if (hasDepth) {
+        // Always use DEPTH_STENCIL_ATTACHMENT_OPTIMAL as initialLayout.
+        // An explicit barrier in execute() transitions the depth image from
+        // UNDEFINED to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before first use.
         attachments[1] = VkAttachmentDescription {
             .format         = DEPTH_FORMAT,
             .samples        = VK_SAMPLE_COUNT_1_BIT,
@@ -110,9 +121,7 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
             .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout  = (depthLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
-                                  ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-                                  : VK_IMAGE_LAYOUT_UNDEFINED,
+            .initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
         depth_ref = VkAttachmentReference {
@@ -409,15 +418,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
         }
 
-        // First depth-enabled pass must CLEAR the depth buffer (undefined initial
-        // contents); all subsequent depth passes LOAD to preserve cross-pass depth.
-        VkAttachmentLoadOp depthLoadOp;
-        if (! scene.depthBufferCleared) {
-            depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            scene.depthBufferCleared = true;
-        } else {
-            depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        }
+        // Depth buffer is cleared explicitly via vkCmdClearDepthStencilImage
+        // before the first depth pass each frame (in execute()).  All render
+        // passes use LOAD to preserve the cleared/written values.
+        VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        scene.depthBufferCleared = true;
         auto opt = CreateRenderPass(device.handle(),
                                     VK_FORMAT_R8G8B8A8_UNORM,
                                     loadOp,
@@ -432,6 +437,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto& pass = opt.value();
         m_desc.hasDepth  = useDepth;
         m_desc.depthView = useDepth ? *depthImg->view : VK_NULL_HANDLE;
+        m_desc.depthImage = useDepth ? *depthImg->handle : VK_NULL_HANDLE;
 
         descriptor_info.push_descriptor = true;
         GraphicsPipeline pipeline;
@@ -466,6 +472,22 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             LOG_ERROR("pipeline.create failed for shader '%s'",
                       mesh.Material()->customShader.shader->name.c_str());
             return;
+        }
+
+        // One-time diagnostic per shader: pipeline state for 3D debugging
+        {
+            static std::set<std::string> _pipe_logged;
+            auto key = mesh.Material()->customShader.shader->name + "_" + m_desc.output;
+            if (_pipe_logged.insert(key).second) {
+                LOG_INFO("pipeline: shader='%s' out='%.*s' draw=%u indexed=%d "
+                         "depthTest=%d depthWrite=%d cull=%s blend=%d",
+                         mesh.Material()->customShader.shader->name.c_str(),
+                         (int)m_desc.output.size(), m_desc.output.data(),
+                         m_desc.draw_count, m_desc.index_buf ? 1 : 0,
+                         (int)mesh.Material()->depthTest, (int)mesh.Material()->depthWrite,
+                         mesh.Material()->cullmode.c_str(),
+                         (int)mesh.Material()->blenmode);
+            }
         }
     }
 
@@ -616,8 +638,95 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
 
     if (m_desc.update_op) m_desc.update_op();
 
+    // First-frame execution trace: log every pass with order, shader, output, load op, textures
+    {
+        extern int g_exec_pass_counter;
+        extern int g_exec_frame_counter;
+        if (g_exec_frame_counter < 1) {
+            auto shaderName = m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
+                ? m_desc.node->Mesh()->Material()->customShader.shader->name : "???";
+            bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
+            LOG_INFO("EXEC[%d] pass#%d shader='%s' out='%.*s' draw=%u visible=%d "
+                     "depth=%d blend=%d tex_count=%zu out_img=%p out_ext=%ux%u",
+                     g_exec_frame_counter, g_exec_pass_counter, shaderName.c_str(),
+                     (int)m_desc.output.size(), m_desc.output.data(),
+                     m_desc.draw_count, (int)nodeVisible,
+                     (int)m_desc.hasDepth, (int)m_desc.blending,
+                     m_desc.vk_textures.size(),
+                     (void*)m_desc.vk_output.handle,
+                     m_desc.vk_output.extent.width, m_desc.vk_output.extent.height);
+            // Log bound textures
+            for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
+                auto& slot = m_desc.vk_textures[i];
+                int binding = m_desc.vk_tex_binding[i];
+                if (binding < 0 || slot.slots.empty()) continue;
+                auto& img = slot.getActive();
+                LOG_INFO("  tex[%zu] binding=%d extent=%ux%u handle=%p",
+                         i, binding, img.extent.width, img.extent.height, (void*)img.handle);
+            }
+            g_exec_pass_counter++;
+        }
+    }
+
     auto&                   cmd    = rr.command;
     auto&                   outext = m_desc.vk_output.extent;
+
+    // Explicitly clear depth buffer to 1.0 on first use each frame.
+    // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
+    // to work around drivers where the render pass CLEAR doesn't execute
+    // correctly with a newly-created depth image (RADV GFX1201).
+    if (m_desc.hasDepth && !g_depth_transitioned) {
+        VkImageSubresourceRange depth_range {
+            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        };
+
+        // Transition UNDEFINED → TRANSFER_DST for the clear command
+        VkImageMemoryBarrier to_transfer {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = 0,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_desc.depthImage,
+            .subresourceRange    = depth_range,
+        };
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
+
+        // Explicit clear to 1.0
+        VkClearDepthStencilValue clear_depth { 1.0f, 0 };
+        cmd.ClearDepthStencilImage(m_desc.depthImage,
+                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                   clear_depth, depth_range);
+
+        // Transition TRANSFER_DST → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        VkImageMemoryBarrier to_attach {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_desc.depthImage,
+            .subresourceRange    = depth_range,
+        };
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                            0, to_attach);
+        g_depth_transitioned = true;
+    }
+
     VkImageSubresourceRange base_srang {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel   = 0,
