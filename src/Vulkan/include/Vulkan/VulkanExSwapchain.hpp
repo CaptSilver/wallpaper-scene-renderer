@@ -31,16 +31,20 @@ class VulkanExSwapchain : public ExSwapchain {
     using atomic_ = std::atomic<ExHandle*>;
 
 public:
-    VulkanExSwapchain(std::array<VulkanExHandle, 3> handles, VkExtent2D ext)
-        : m_handles(std::move(handles)), m_extent(ext) {
+    VulkanExSwapchain(std::array<VulkanExHandle, 3> handles, VkExtent2D ext,
+                      VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM)
+        : m_handles(std::move(handles)), m_extent(ext), m_format(fmt) {
+        // GL_RGBA8 = 0x8058, GL_RGBA16F = 0x881A
+        uint32_t gl_fmt = (fmt == VK_FORMAT_R16G16B16A16_SFLOAT) ? 0x881Au : 0x8058u;
         int index = 0;
         for (auto& h : m_handles) {
-            auto& handle  = h.handle;
-            handle        = ExHandle(index++);
-            handle.width  = (i32)h.image.extent.width;
-            handle.height = (i32)h.image.extent.height;
-            handle.fd     = h.image.fd;
-            handle.size   = h.image.mem_reqs.size;
+            auto& handle    = h.handle;
+            handle          = ExHandle(index++);
+            handle.width    = (i32)h.image.extent.width;
+            handle.height   = (i32)h.image.extent.height;
+            handle.fd       = h.image.fd;
+            handle.size     = h.image.mem_reqs.size;
+            handle.gl_format = gl_fmt;
         }
         m_presented  = &m_handles[0].handle;
         m_ready      = &m_handles[1].handle;
@@ -57,7 +61,7 @@ public:
         return m_handles.at((usize)(*inprogress()).id()).image;
     }
 
-    constexpr VkFormat format() const { return VK_FORMAT_R8G8B8A8_UNORM; };
+    VkFormat format() const { return m_format; };
 
 protected:
     atomic_& presented() override { return m_presented; };
@@ -70,31 +74,21 @@ private:
     atomic_                       m_ready { nullptr };
     atomic_                       m_inprogress { nullptr };
     VkExtent2D                    m_extent;
+    VkFormat                      m_format;
 };
 
 inline std::unique_ptr<VulkanExSwapchain> CreateExSwapchain(const Device& device, uint w, uint h,
-                                                            VkImageTiling tiling) {
+                                                            VkImageTiling tiling,
+                                                            VkFormat format = VK_FORMAT_R8G8B8A8_UNORM) {
     std::array<VulkanExHandle, 3> handles;
     for (auto& handle : handles) {
-        if (auto rv = device.tex_cache().CreateExTex(w, h, VK_FORMAT_R8G8B8A8_UNORM, tiling);
+        if (auto rv = device.tex_cache().CreateExTex(w, h, format, tiling);
             rv.has_value())
             handle.image = std::move(rv.value());
         else
             return nullptr;
     }
-    /*
-    VulkanExHandleSemaphore handle_sem;
-    {
-        vk::SemaphoreCreateInfo info;
-        vk::ExportSemaphoreCreateInfo esci { vk::ExternalSemaphoreHandleTypeFlagBits::eOpaqueFd };
-        info.setPNext(&esci);
-        VK_CHECK_RESULT_ACT(return nullptr, device.handle().createSemaphore(&info, nullptr,
-    &handle_sem.semaphore)); vk::SemaphoreGetFdInfoKHR fd_info; fd_info.semaphore =
-    handle_sem.semaphore; fd_info.handleType = vk::ExternalSemaphoreHandleTypeFlagBits::eOpaqueFd;
-        VK_CHECK_RESULT_ACT(return nullptr, device.handle().getSemaphoreFdKHR(&fd_info,
-    &handle_sem.handle.fd));
-    }*/
-    return std::make_unique<VulkanExSwapchain>(std::move(handles), VkExtent2D { w, h });
+    return std::make_unique<VulkanExSwapchain>(std::move(handles), VkExtent2D { w, h }, format);
 }
 
 } // namespace vulkan

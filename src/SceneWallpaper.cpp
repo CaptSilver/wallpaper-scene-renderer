@@ -119,6 +119,7 @@ private:
     std::string m_source;
     std::string m_cache_path;
     bool        m_gen_graphviz { false };
+    bool        m_hdr_output { false };
 
     WPSceneParser                        m_scene_parser;
     std::unique_ptr<audio::SoundManager> m_sound_manager;
@@ -145,6 +146,7 @@ public:
         CMD_SET_SCENE,
         CMD_SET_FILLMODE,
         CMD_SET_SPEED,
+        CMD_SET_HDR,
         CMD_STOP,
         CMD_DRAW,
         CMD_NO
@@ -172,6 +174,7 @@ public:
                 CASE_CMD(SET_FILLMODE);
                 CASE_CMD(SET_SCENE);
                 CASE_CMD(SET_SPEED);
+                CASE_CMD(SET_HDR);
                 CASE_CMD(INIT_VULKAN);
             default: break;
             }
@@ -286,6 +289,28 @@ private:
         }
     }
     MHANDLER_CMD(SET_SPEED) { msg->findFloat("value", &m_speed); }
+    MHANDLER_CMD(SET_HDR) {
+        bool value { false };
+        if (msg->findBool("value", &value)) {
+            m_init_info.hdr_output = value;
+            // Requires full Vulkan reinit (ExSwapchain format change)
+            LOG_INFO("HDR output changed to %s, reinitializing Vulkan", value ? "on" : "off");
+            frame_timer.Stop();
+            if (m_scene) {
+                m_render->clearLastRenderGraph(m_scene.get());
+            }
+            m_scene.reset();
+            m_rg.reset();
+            m_render->destroy();
+            m_render = std::make_unique<vulkan::VulkanRender>();
+            if (! m_render->init(m_init_info)) {
+                LOG_ERROR("Failed to reinitialize Vulkan for HDR toggle");
+                return;
+            }
+            frame_timer.Run();
+            main_handler.sendCmdLoadScene();
+        }
+    }
     MHANDLER_CMD(INIT_VULKAN) {
         std::shared_ptr<RenderInitInfo> info;
         if (msg->findObject("info", &info)) {
@@ -495,6 +520,19 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                         LOG_INFO("Reloading scene to apply user properties: %s", json.c_str());
                         CALL_MHANDLER_CMD(LOAD_SCENE, msg);
                     }
+                }
+            }
+        } else if (property == PROPERTY_HDR_OUTPUT) {
+            bool value { false };
+            msg->findBool("value", &value);
+            if (m_hdr_output != value) {
+                m_hdr_output = value;
+                LOG_INFO("HDR output: %s", value ? "enabled" : "disabled");
+                // HDR toggle requires ExSwapchain recreation → full reinit
+                if (m_render_handler->renderInited()) {
+                    auto nmsg = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_HDR);
+                    nmsg->setBool("value", value);
+                    nmsg->post();
                 }
             }
         }

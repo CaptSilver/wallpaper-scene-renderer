@@ -29,6 +29,7 @@ constexpr std::string_view PROPERTY_MUTED                = "muted";
 constexpr std::string_view PROPERTY_CACHE_PATH           = "cache_path";
 constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK = "first_frame_callback";
 constexpr std::string_view PROPERTY_USER_PROPS           = "user_props";
+constexpr std::string_view PROPERTY_HDR_OUTPUT           = "hdr_output";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;

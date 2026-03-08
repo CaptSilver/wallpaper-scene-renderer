@@ -17,7 +17,7 @@ void main()
 }
 )";
 
-constexpr std::string_view frag_code = R"(#version 320 es
+constexpr std::string_view frag_code_sdr = R"(#version 320 es
 precision mediump float;
 layout(location = 0) in vec2 v_Texcoord;
 layout(location = 0) out vec4 out_FragColor;
@@ -27,8 +27,22 @@ layout(binding = 1) uniform sampler2D u_Texture;
 
 void main()
 {
-	vec3 hdr = clamp(texture(u_Texture, v_Texcoord).rgb, 0.0, 1.0);
-	out_FragColor = vec4(hdr, 1.0);
+	vec3 hdr = texture(u_Texture, v_Texcoord).rgb;
+	out_FragColor = vec4(hdr / (hdr + 1.0), 1.0);
+}
+)";
+
+constexpr std::string_view frag_code_hdr = R"(#version 320 es
+precision mediump float;
+layout(location = 0) in vec2 v_Texcoord;
+layout(location = 0) out vec4 out_FragColor;
+
+// 0 is global ublock
+layout(binding = 1) uniform sampler2D u_Texture;
+
+void main()
+{
+	out_FragColor = vec4(texture(u_Texture, v_Texcoord).rgb, 1.0);
 }
 )";
 
@@ -92,6 +106,7 @@ void FinPass::setPresent(ImageParameters img) { m_desc.vk_present = img; }
 void FinPass::setPresentLayout(VkImageLayout layout) { m_desc.present_layout = layout; }
 void FinPass::setPresentFormat(VkFormat format) { m_desc.present_format = format; }
 void FinPass::setPresentQueueIndex(uint32_t i) { m_desc.present_queue_index = i; }
+void FinPass::setHdrPassthrough(bool hdr) { m_desc.hdr_passthrough = hdr; }
 
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     {
@@ -113,7 +128,10 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 
         std::array<ShaderCompUnit, 2> units;
         units[0] = ShaderCompUnit { .stage = EShLangVertex, .src = std::string(vert_code) };
-        units[1] = ShaderCompUnit { .stage = EShLangFragment, .src = std::string(frag_code) };
+        units[1] = ShaderCompUnit { .stage = EShLangFragment,
+                                     .src = std::string(m_desc.hdr_passthrough
+                                                            ? frag_code_hdr
+                                                            : frag_code_sdr) };
         CompileAndLinkShaderUnits(units, opt, spvs);
     }
 

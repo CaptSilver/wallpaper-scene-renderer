@@ -236,7 +236,8 @@ uint GlExtra::genExTexture(ExHandle& handle) {
         CHECK_GL_ERROR_IF_DEBUG()
     }
 
-    glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, handle.width, handle.height, memobject, 0);
+    GLenum gl_fmt = handle.gl_format ? handle.gl_format : GL_RGBA8;
+    glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, gl_fmt, handle.width, handle.height, memobject, 0);
     CHECK_GL_ERROR_IF_DEBUG()
 
     glBindTexture(GL_TEXTURE_2D, 0);
