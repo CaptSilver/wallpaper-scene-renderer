@@ -360,9 +360,11 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         extern int g_exec_pass_counter;
         extern int g_exec_frame_counter;
         extern bool g_depth_transitioned;
+        extern bool g_refl_depth_transitioned;
         g_exec_pass_counter = 0;
         g_exec_frame_counter = _render_frame_count;
         g_depth_transitioned = false;
+        g_refl_depth_transitioned = false;
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -429,9 +431,11 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         extern int g_exec_pass_counter;
         extern int g_exec_frame_counter;
         extern bool g_depth_transitioned;
+        extern bool g_refl_depth_transitioned;
         g_exec_pass_counter = 0;
         g_exec_frame_counter = _render_frame_count;
         g_depth_transitioned = false;
+        g_refl_depth_transitioned = false;
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);

@@ -71,6 +71,9 @@ public:
     // Opaque depth buffer owned by the Vulkan layer (shared across render passes)
     std::shared_ptr<void> depthBuffer;
     bool                  depthBufferCleared { false };
+
+    // Separate depth buffer for reflection passes (avoids contaminating main depth)
+    std::shared_ptr<void> reflectionDepthBuffer;
     std::unordered_set<std::string> clearedRTs;
 
     struct BloomConfig {
@@ -81,6 +84,12 @@ public:
         std::vector<std::string>                 outputs;
     };
     BloomConfig bloomConfig;
+
+    struct ReflectionBlurConfig {
+        std::vector<std::shared_ptr<SceneNode>> nodes;
+        std::vector<std::string>                outputs;
+    };
+    ReflectionBlurConfig reflectionBlurConfig;
 
     std::vector<TextLayerInfo> textLayers;
 

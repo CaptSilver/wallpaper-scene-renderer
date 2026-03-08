@@ -27,8 +27,9 @@ public:
         std::string              camera_override; // use named camera instead of node's
 
         // Reflection rendering overrides
-        bool disableDepth { false };   // skip depth test/write (avoids sharing depth buffer)
-        bool flipCullMode { false };   // swap front/back cull (reflection reverses winding)
+        bool disableDepth { false };       // skip depth test/write
+        bool flipCullMode { false };       // swap front/back cull (reflection reverses winding)
+        bool useReflectionDepth { false }; // use separate depth buffer for reflection passes
 
         // -----prepared
         // vulkan texs
