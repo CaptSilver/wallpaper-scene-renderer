@@ -25,6 +25,7 @@ jobs:
             pkg-config \
             liblz4-dev \
             libeigen3-dev \
+            libfreetype-dev \
             libgl-dev \
             libglvnd-dev \
             libvulkan-dev
