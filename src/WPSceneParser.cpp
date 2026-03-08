@@ -967,6 +967,35 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
             imgEffectLayer->FinalNode().SetVisibilityOwner(spImgNode.get());
+            // When a shape-quad has Z-rotation, the rotated quad may not cover
+            // the full viewport.  Scale the final node so the rotated rectangle
+            // still contains every viewport corner (prevents hard-edge artefacts).
+            // Only for shape-quads (image.empty()) — regular images should not
+            // be enlarged to cover the viewport.
+            if (!isOffscreen && wpimgobj.image.empty() &&
+                std::abs(wpimgobj.angles[2]) > 0.01f) {
+                float theta = std::abs(wpimgobj.angles[2]);
+                float ct = std::cos(theta), st = std::sin(theta);
+                float cx = wpimgobj.origin[0], cy = wpimgobj.origin[1];
+                float vw = (float)context.ortho_w, vh = (float)context.ortho_h;
+                // Max distance from quad center to any viewport corner
+                float max_hx = std::max(cx, vw - cx);
+                float max_hy = std::max(cy, vh - cy);
+                // Effective half-dimensions (mesh size × node scale)
+                float hw = (wpimgobj.size[0] / 2.0f) * wpimgobj.scale[0];
+                float hh = (wpimgobj.size[1] / 2.0f) * wpimgobj.scale[1];
+                if (hw > 0.0f && hh > 0.0f) {
+                    float s = std::max((max_hx * ct + max_hy * st) / hw,
+                                       (max_hx * st + max_hy * ct) / hh);
+                    if (s > 1.01f) {
+                        s = std::min(s, 3.0f);
+                        auto sc = imgEffectLayer->FinalNode().Scale();
+                        imgEffectLayer->FinalNode().SetScale(sc * s);
+                        LOG_INFO("  rotation coverage: angle=%.1f° scale=%.3f",
+                                 theta * 180.0f / 3.14159265f, s);
+                    }
+                }
+            }
             if (isCompose) {
             } else {
                 spImgNode->CopyTrans(SceneNode());
