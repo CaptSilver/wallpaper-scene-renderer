@@ -65,6 +65,7 @@ struct VulkanRender::Impl {
 
     bool init(RenderInitInfo);
     void destroy();
+    bool hdrOutput() const { return m_hdr_output; }
 
     void drawFrame(Scene&);
 
@@ -100,6 +101,7 @@ struct VulkanRender::Impl {
     bool m_inited { false };
     bool m_pass_loaded { false };
     bool m_device_lost { false };
+    bool m_hdr_output { false };
 
     std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
     RenderingResources                 m_rendering_resources;
@@ -197,14 +199,20 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
 
     if (info.offscreen) {
+        VkFormat ex_fmt = info.hdr_output
+            ? VK_FORMAT_R16G16B16A16_SFLOAT
+            : VK_FORMAT_R8G8B8A8_UNORM;
         m_ex_swapchain = CreateExSwapchain(*m_device,
                                            extent.width,
                                            extent.height,
                                            (info.offscreen_tiling == TexTiling::OPTIMAL
                                                 ? VK_IMAGE_TILING_OPTIMAL
-                                                : VK_IMAGE_TILING_LINEAR));
+                                                : VK_IMAGE_TILING_LINEAR),
+                                           ex_fmt);
         m_with_surface = false;
     }
+
+    m_hdr_output = info.hdr_output;
 
     if (! initRes()) return false;
 
@@ -218,6 +226,7 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 bool VulkanRender::Impl::initRes() {
     m_prepass = std::make_unique<PrePass>(PrePass::Desc {});
     m_finpass = std::make_unique<FinPass>(FinPass::Desc {});
+    m_finpass->setHdrPassthrough(m_hdr_output);
     if (m_with_surface) {
         m_finpass->setPresentFormat(m_device->swapchain().format());
         m_finpass->setPresentQueueIndex(m_device->present_queue().family_index);

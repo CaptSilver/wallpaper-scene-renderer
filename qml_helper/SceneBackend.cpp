@@ -108,10 +108,11 @@ public:
     bool initGl() { return m_glex.init(get_proc_address); }
 
     // after gl, can run at any thread
-    void initVulkan(uint16_t w, uint16_t h) {
+    void initVulkan(uint16_t w, uint16_t h, bool hdr_output = false) {
         wallpaper::RenderInitInfo info;
         info.enable_valid_layer = m_enable_valid;
         info.offscreen          = true;
+        info.hdr_output         = hdr_output;
         info.offscreen_tiling   = m_glex.tiling();
         info.uuid               = m_glex.uuid();
         info.width              = w;
@@ -223,7 +224,7 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             return (QSGTexture*)nullptr;
         });
         if (node->initGl()) {
-            node->initVulkan(width()*window()->devicePixelRatio(), height()*window()->devicePixelRatio());
+            node->initVulkan(width()*window()->devicePixelRatio(), height()*window()->devicePixelRatio(), m_hdrOutput);
 
             connect(
                 node, &TextureNode::redraw, window(), &QQuickWindow::update, Qt::QueuedConnection);
@@ -299,6 +300,14 @@ void SceneObject::setMuted(bool value) {
     if (m_muted == value) return;
     m_muted = value;
     SET_PROPERTY(Bool, wallpaper::PROPERTY_MUTED, value);
+}
+
+bool SceneObject::hdrOutput() const { return m_hdrOutput; }
+
+void SceneObject::setHdrOutput(bool value) {
+    if (m_hdrOutput == value) return;
+    m_hdrOutput = value;
+    SET_PROPERTY(Bool, wallpaper::PROPERTY_HDR_OUTPUT, value);
 }
 
 QString SceneObject::userProperties() const { return m_userProperties; }

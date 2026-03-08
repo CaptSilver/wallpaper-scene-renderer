@@ -16,7 +16,7 @@ struct ExHandle {
     int32_t     width { 0 };
     int32_t     height { 0 };
     std::size_t size { 0 };
-    // format rgba8
+    uint32_t    gl_format { 0x8058 }; // GL_RGBA8 default
 
     ExHandle() = default;
     ExHandle(int id): m_id(id) {};

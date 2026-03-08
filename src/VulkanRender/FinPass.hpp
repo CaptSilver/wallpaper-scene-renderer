@@ -22,6 +22,7 @@ public:
         VkFormat               present_format;
         VkImageLayout          present_layout;
         uint32_t               present_queue_index;
+        bool                   hdr_passthrough { false };
 
         // prepared
         ImageParameters vk_result;
@@ -41,6 +42,7 @@ public:
     void setPresentLayout(VkImageLayout);
     void setPresentFormat(VkFormat);
     void setPresentQueueIndex(uint32_t);
+    void setHdrPassthrough(bool hdr);
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

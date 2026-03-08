@@ -27,6 +27,7 @@ class SceneObject : public QQuickItem {
     Q_PROPERTY(float volume READ volume WRITE setVolume NOTIFY volumeChanged)
     Q_PROPERTY(bool muted READ muted WRITE setMuted)
     Q_PROPERTY(QString userProperties READ userProperties WRITE setUserProperties NOTIFY userPropertiesChanged)
+    Q_PROPERTY(bool hdrOutput READ hdrOutput WRITE setHdrOutput)
 public:
     constexpr static std::string_view CACHE_DIR { "wescene-renderer" };
     static std::string                GetDefaultCachePath();
@@ -49,6 +50,7 @@ public:
     float speed() const;
     float volume() const;
     bool  muted() const;
+    bool  hdrOutput() const;
     QString userProperties() const;
 
     void setFps(int);
@@ -57,6 +59,7 @@ public:
     void setVolume(float);
     void setMuted(bool);
     void setUserProperties(const QString&);
+    void setHdrOutput(bool);
 
     // debug
     bool vulkanValid() const;
@@ -94,6 +97,7 @@ private:
     float m_speed { 1.0f };
     float m_volume { 1.0f };
     bool  m_muted { false };
+    bool  m_hdrOutput { false };
     QString m_userProperties;
 
 public:
