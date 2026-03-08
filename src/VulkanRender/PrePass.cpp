@@ -14,7 +14,7 @@ TextureKey ToTexKey(wallpaper::SceneRenderTarget rt) {
         .width  = rt.width,
         .height = rt.height,
         .usage  = {},
-        .format = wallpaper::TextureFormat::RGBA8,
+        .format = rt.format,
         .sample = rt.sample,
     };
 }

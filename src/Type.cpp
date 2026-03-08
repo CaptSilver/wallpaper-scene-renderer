@@ -30,6 +30,12 @@ std::string wallpaper::ToString(const TextureFormat& format) {
         Fmt(RGB8);
         Fmt(RG8);
         Fmt(R8);
+        Fmt(RGBA16F);
+        Fmt(RG16F);
+        Fmt(R16F);
+        Fmt(BC6H);
+        Fmt(RGB565);
+        Fmt(RGBA1010102);
     default: LOG_ERROR("Not valied tex format: %d", (int)format); return "";
     }
 }

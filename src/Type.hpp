@@ -54,7 +54,13 @@ enum class TextureFormat
     RGB8,
     RGBA8,
     RG8,
-    R8
+    R8,
+    RGBA16F,     // 16-bit float, 4 channels (8 bytes/pixel)
+    RG16F,       // 16-bit float, 2 channels (4 bytes/pixel)
+    R16F,        // 16-bit float, 1 channel (2 bytes/pixel)
+    BC6H,        // Block-compressed HDR (128 bits per 4x4 block)
+    RGB565,      // 16-bit packed (2 bytes/pixel)
+    RGBA1010102, // 10-bit RGB + 2-bit alpha (4 bytes/pixel)
 };
 std::string ToString(const TextureFormat&);
 

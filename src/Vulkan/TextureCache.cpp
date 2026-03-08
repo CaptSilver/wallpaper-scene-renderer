@@ -33,6 +33,12 @@ VkFormat ToVkType(TextureFormat tf) {
     case TextureFormat::RG8: return VK_FORMAT_R8G8_UNORM;
     case TextureFormat::RGB8: return VK_FORMAT_R8G8B8_UNORM;
     case TextureFormat::RGBA8: return VK_FORMAT_R8G8B8A8_UNORM;
+    case TextureFormat::RGBA16F: return VK_FORMAT_R16G16B16A16_SFLOAT;
+    case TextureFormat::RG16F: return VK_FORMAT_R16G16_SFLOAT;
+    case TextureFormat::R16F: return VK_FORMAT_R16_SFLOAT;
+    case TextureFormat::BC6H: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+    case TextureFormat::RGB565: return VK_FORMAT_R5G6B5_UNORM_PACK16;
+    case TextureFormat::RGBA1010102: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
     default: assert(false); return VK_FORMAT_R8G8B8A8_UNORM;
     }
 }

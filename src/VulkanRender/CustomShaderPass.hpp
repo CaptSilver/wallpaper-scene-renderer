@@ -41,6 +41,7 @@ public:
         std::vector<ImageSlotsRef> vk_textures;
         std::vector<i32>           vk_tex_binding;
         ImageParameters            vk_output;
+        ImageParameters            vk_fallback_tex; // 1x1 dummy for unbound slots
 
         // bufs
         bool                          dyn_vertex { false };

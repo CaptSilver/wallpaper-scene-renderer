@@ -95,7 +95,8 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
 
 static std::shared_ptr<VmaImageParameters>
 GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
-                          VkExtent3D extent, VkSampleCountFlagBits samples) {
+                          VkExtent3D extent, VkSampleCountFlagBits samples,
+                          VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT) {
     auto existing = std::static_pointer_cast<VmaImageParameters>(storage);
     if (existing && existing->extent.width == extent.width &&
         existing->extent.height == extent.height) {
@@ -107,7 +108,7 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
         .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext       = nullptr,
         .imageType   = VK_IMAGE_TYPE_2D,
-        .format      = VK_FORMAT_R8G8B8A8_UNORM,
+        .format      = format,
         .extent      = extent,
         .mipLevels   = 1,
         .arrayLayers = 1,
@@ -129,7 +130,7 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
         .pNext    = nullptr,
         .image    = *msaa->handle,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = VK_FORMAT_R8G8B8A8_UNORM,
+        .format   = format,
         .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
                               .baseMipLevel = 0, .levelCount = 1,
                               .baseArrayLayer = 0, .layerCount = 1 },
@@ -333,11 +334,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
         m_desc.vk_textures[i] = img_slots;
     }
+    VkFormat output_vk_format;
     {
         auto& tex_name = m_desc.output;
         assert(IsSpecTex(tex_name));
         assert(scene.renderTargets.count(tex_name) > 0);
         auto& rt = scene.renderTargets.at(tex_name);
+        output_vk_format = ToVkType(rt.format);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_output = opt.value();
@@ -394,6 +397,28 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             if (exists(ref.binding_map, WE_GLTEX_NAMES[i]))
                 binding = (i32)ref.binding_map.at(WE_GLTEX_NAMES[i]).binding;
             m_desc.vk_tex_binding.push_back(binding);
+        }
+    }
+
+    // Create a 1x1 dummy texture for any shader-declared bindings with no texture loaded.
+    {
+        bool need_fallback = false;
+        for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
+            if (m_desc.vk_tex_binding[i] >= 0 && m_desc.vk_textures[i].slots.empty()) {
+                need_fallback = true;
+                break;
+            }
+        }
+        if (need_fallback) {
+            static const std::string dummy_key = "_rt_dummy_1x1";
+            TextureKey tk {
+                .width = 1, .height = 1, .usage = {},
+                .format = TextureFormat::RGBA8, .sample = {},
+                .mipmap_level = 1,
+            };
+            if (auto opt = device.tex_cache().Query(dummy_key, tk, true); opt.has_value()) {
+                m_desc.vk_fallback_tex = opt.value();
+            }
         }
     }
 
@@ -549,7 +574,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                                 m_desc.vk_output.extent.height, 1 };
             auto& msaaStorage = scene.msaaColorImages[m_desc.output];
             msaaColorImg = GetOrCreateMSAAColorImage(msaaStorage, device, extent,
-                                                      m_desc.msaaSamples);
+                                                      m_desc.msaaSamples,
+                                                      output_vk_format);
             if (! msaaColorImg) {
                 LOG_ERROR("MSAA color image creation failed, falling back to 1x");
                 m_desc.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -562,7 +588,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         scene.depthBufferCleared = true;
         auto opt = CreateRenderPass(device.handle(),
-                                    VK_FORMAT_R8G8B8A8_UNORM,
+                                    output_vk_format,
                                     loadOp,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     useDepth,
@@ -925,7 +951,28 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         auto& slot    = m_desc.vk_textures[i];
         int   binding = m_desc.vk_tex_binding[i];
         if (binding < 0) continue;
-        if (slot.slots.empty()) continue;
+        if (slot.slots.empty()) {
+            // Shader declares this texture binding but no texture was loaded.
+            // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
+            // Vulkan validation error VUID-vkCmdDraw-None-08114.
+            if (m_desc.vk_fallback_tex.sampler) {
+                VkDescriptorImageInfo desc_img { m_desc.vk_fallback_tex.sampler,
+                                                 m_desc.vk_fallback_tex.view,
+                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkWriteDescriptorSet  wset {
+                     .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                     .pNext           = nullptr,
+                     .dstSet          = {},
+                     .dstBinding      = (uint32_t)binding,
+                     .descriptorCount = 1,
+                     .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                     .pImageInfo      = &desc_img,
+                };
+                cmd.PushDescriptorSetKHR(
+                    VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+            }
+            continue;
+        }
         auto&                 img = slot.getActive();
         VkDescriptorImageInfo desc_img { img.sampler,
                                          img.view,
