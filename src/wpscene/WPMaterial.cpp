@@ -99,6 +99,11 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
 	GET_JSON_NAME_VALUE(jContent, "cullmode", cullmode);
 	GET_JSON_NAME_VALUE(jContent, "depthtest", depthtest);
 	GET_JSON_NAME_VALUE(jContent, "depthwrite", depthwrite);
+	// Some WE materials use alternate spellings
+	if (jContent.contains("depthtesting") && !jContent.contains("depthtest"))
+		GET_JSON_NAME_VALUE(jContent, "depthtesting", depthtest);
+	if (jContent.contains("depthwriting") && !jContent.contains("depthwrite"))
+		GET_JSON_NAME_VALUE(jContent, "depthwriting", depthwrite);
 	GET_JSON_NAME_VALUE(jContent, "shader", shader);
     if(jContent.contains("textures")) {
         for(const auto& jT:jContent.at("textures")) {

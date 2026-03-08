@@ -213,8 +213,16 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     // Only apply to the global camera (cam_name empty) — per-node effect cameras and
     // the "effect" camera render to intermediate RTs and must not be shaken.
     if (m_shake.enable && cam_name.empty()) {
-        Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
-        Vector2f shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
+        Vector2f shakeVec;
+        if (camera->IsPerspective()) {
+            // Perspective: m_shakeOffset already contains amplitude, use directly
+            // as world-space translation (typical amplitude 0.01 ≈ subtle shift)
+            shakeVec = m_shakeOffset;
+        } else {
+            // Ortho: scale by ortho dimensions for pixel-space shake
+            Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
+            shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
+        }
         viewProTrans = viewProTrans *
             Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
     }
@@ -247,6 +255,49 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         if (reqM) updateOp(G_M, ShaderValue::fromMatrix(modelTrans));
         if (reqAM) updateOp(G_AM, ShaderValue::fromMatrix(modelTrans));
         if (reqMI) updateOp(G_MI, ShaderValue::fromMatrix(modelTrans.inverse()));
+
+        // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
+        if (reqM && info.has_VP && !reqMVP && cam_name.empty()) {
+            static std::set<SceneNode*> _mvp_sep_logged;
+            if (_mvp_sep_logged.insert(pNode).second) {
+                Vector4d center = viewProTrans * modelTrans * Vector4d(0, 0, 0, 1);
+                auto     t      = pNode->Translate();
+                auto     eyePos = camera->GetPosition();
+                LOG_INFO("M+VP diag id=%d translate=(%.1f,%.1f,%.1f) "
+                         "clip_center=(%.3f,%.3f,%.3f,%.3f) "
+                         "ndc=(%.3f,%.3f) eye=(%.3f,%.3f,%.3f) "
+                         "depth=%d cull=%s",
+                         pNode->ID(), t.x(), t.y(), t.z(),
+                         center.x(), center.y(), center.z(), center.w(),
+                         center.x() / center.w(), center.y() / center.w(),
+                         eyePos.x(), eyePos.y(), eyePos.z(),
+                         (int)material->depthTest, material->cullmode.c_str());
+                // Dump full matrices and test points
+                LOG_INFO("  M=[%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f / "
+                         "%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f]",
+                         modelTrans(0,0), modelTrans(0,1), modelTrans(0,2), modelTrans(0,3),
+                         modelTrans(1,0), modelTrans(1,1), modelTrans(1,2), modelTrans(1,3),
+                         modelTrans(2,0), modelTrans(2,1), modelTrans(2,2), modelTrans(2,3),
+                         modelTrans(3,0), modelTrans(3,1), modelTrans(3,2), modelTrans(3,3));
+                LOG_INFO("  VP=[%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f / "
+                         "%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f]",
+                         viewProTrans(0,0), viewProTrans(0,1), viewProTrans(0,2), viewProTrans(0,3),
+                         viewProTrans(1,0), viewProTrans(1,1), viewProTrans(1,2), viewProTrans(1,3),
+                         viewProTrans(2,0), viewProTrans(2,1), viewProTrans(2,2), viewProTrans(2,3),
+                         viewProTrans(3,0), viewProTrans(3,1), viewProTrans(3,2), viewProTrans(3,3));
+                // Test a few representative points
+                Vector4d pts[] = {
+                    {1,0,0,1}, {-1,0,0,1}, {0,1,0,1}, {0,-1,0,1}, {0,0,1,1}, {0,0,-1,1}
+                };
+                for (auto& p : pts) {
+                    Vector4d c = viewProTrans * modelTrans * p;
+                    LOG_INFO("  test(%.0f,%.0f,%.0f) → clip=(%.3f,%.3f,%.3f,%.3f) ndc=(%.3f,%.3f,%.4f)",
+                             p.x(), p.y(), p.z(),
+                             c.x(), c.y(), c.z(), c.w(),
+                             c.x()/c.w(), c.y()/c.w(), c.z()/c.w());
+                }
+            }
+        }
         if (reqMVP) {
             Matrix4d mvpTrans = viewProTrans * modelTrans;
             updateOp(G_MVP, ShaderValue::fromMatrix(mvpTrans));
