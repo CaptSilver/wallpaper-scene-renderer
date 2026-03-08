@@ -289,8 +289,9 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
             pdesc.node            = node;
             pdesc.output          = std::string(WE_REFLECTION);
             pdesc.camera_override = "reflected_perspective";
-            pdesc.disableDepth    = true;
-            pdesc.flipCullMode    = true;
+            pdesc.disableDepth        = false;
+            pdesc.flipCullMode        = false;  // col(1) and row(1) negate cancel winding
+            pdesc.useReflectionDepth  = true;
             CheckAndSetSprite(scene, pdesc, material->textures);
 
             for (usize i = 0; i < material->textures.size(); i++) {
@@ -338,7 +339,7 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     // BEFORE main passes.  This establishes the _rt_Reflection TexNode chain
     // so that when the grid pass (main) reads _rt_Reflection, it gets the last
     // version written by the reflection passes.  The render graph's dependency
-    // resolution then correctly orders: reflection passes → grid pass.
+    // resolution then correctly orders: reflection passes → blur → grid pass.
     if (scene.cameras.count("reflected_perspective") > 0) {
         LOG_INFO("adding reflection passes (reflected_perspective camera)");
         TraverseNode(
@@ -346,6 +347,16 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                 addReflectionPass(node, extra);
             },
             scene.sceneGraph.get());
+
+        // Separable blur on _rt_Reflection to soften the reflection
+        if (! scene.reflectionBlurConfig.nodes.empty()) {
+            LOG_INFO("adding %zu reflection blur passes",
+                     scene.reflectionBlurConfig.nodes.size());
+            for (size_t i = 0; i < scene.reflectionBlurConfig.nodes.size(); i++) {
+                ToGraphPass(scene.reflectionBlurConfig.nodes[i].get(),
+                            scene.reflectionBlurConfig.outputs[i], -1, extra);
+            }
+        }
     }
 
     TraverseNode(

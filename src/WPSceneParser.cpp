@@ -1449,13 +1449,6 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
                  sub.vertexs.size(), sub.indices.size(), wpmat.blending.c_str());
         LoadConstvalue(material, wpmat, shaderInfo);
 
-        // Single-submesh translucent models (grid, shadow) are typically
-        // floor-level objects coplanar with the dome base. Negative depth bias
-        // pulls them closer to the camera so they pass depth test against the dome.
-        if (mdl.submeshes.size() == 1 && wpmat.blending == "translucent") {
-            material.depthBiasConstant = -5000.0f;
-        }
-
         auto  spMesh = std::make_shared<SceneMesh>();
         auto& mesh   = *spMesh;
         WPMdlParser::GenModelMesh(mesh, sub);
@@ -1892,6 +1885,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             .width  = context.ortho_w,
             .height = context.ortho_h,
         };
+        context.scene->renderTargets[WE_REFLECTION_BLUR.data()] = {
+            .width  = context.ortho_w,
+            .height = context.ortho_h,
+        };
     }
 
     context.scene->scene_id = scene_id;
@@ -2066,6 +2063,65 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             scene.bloomConfig.nodes.push_back(spNode);
 
             LOG_INFO("bloom: pass '%s' → '%s' created", def.shader.c_str(), def.output.c_str());
+        }
+    }
+
+    // Reflection blur: two-pass separable Gaussian blur on _rt_Reflection
+    if (context.scene->cameras.count("reflected_perspective") > 0) {
+        auto& scene = *context.scene;
+        auto& vfs   = *context.vfs;
+        struct ReflBlurDef {
+            std::string              shader;
+            std::vector<std::string> textures;
+            std::string              output;
+            int32_t                  vertical;
+        };
+        std::array<ReflBlurDef, 2> reflBlurPasses {{
+            { "blur_k3",
+              { std::string(WE_REFLECTION) },
+              std::string(WE_REFLECTION_BLUR),
+              0 },
+            { "blur_k3",
+              { std::string(WE_REFLECTION_BLUR) },
+              std::string(WE_REFLECTION),
+              1 },
+        }};
+
+        for (auto& def : reflBlurPasses) {
+            wpscene::WPMaterial wpmat;
+            wpmat.shader   = def.shader;
+            wpmat.textures = def.textures;
+            wpmat.combos["VERTICAL"] = def.vertical;
+
+            auto          spNode = std::make_shared<SceneNode>();
+            WPShaderInfo  shaderInfo;
+            shaderInfo.baseConstSvs = context.global_base_uniforms;
+            SceneMaterial material;
+            WPShaderValueData svData;
+
+            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                LOG_ERROR("reflection blur: failed to load material for '%s' VERTICAL=%d",
+                          def.shader.c_str(), def.vertical);
+                scene.reflectionBlurConfig.nodes.clear();
+                scene.reflectionBlurConfig.outputs.clear();
+                break;
+            }
+
+            LoadConstvalue(material, wpmat, shaderInfo);
+
+            auto spMesh = std::make_shared<SceneMesh>();
+            spMesh->AddMaterial(std::move(material));
+            spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
+            spNode->AddMesh(spMesh);
+            spNode->SetCamera("effect");
+
+            context.shader_updater->SetNodeData(spNode.get(), svData);
+
+            scene.reflectionBlurConfig.outputs.push_back(def.output);
+            scene.reflectionBlurConfig.nodes.push_back(spNode);
+
+            LOG_INFO("reflection blur: pass '%s' VERTICAL=%d → '%s' created",
+                     def.shader.c_str(), def.vertical, def.output.c_str());
         }
     }
 

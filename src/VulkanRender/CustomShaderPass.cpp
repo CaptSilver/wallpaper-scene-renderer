@@ -20,7 +20,8 @@ using namespace wallpaper::vulkan;
 namespace wallpaper::vulkan {
     int g_exec_pass_counter = 0;
     int g_exec_frame_counter = 0;
-    bool g_depth_transitioned = false;  // reset each frame in VulkanRender.cpp
+    bool g_depth_transitioned = false;            // reset each frame in VulkanRender.cpp
+    bool g_refl_depth_transitioned = false;       // reset each frame in VulkanRender.cpp
 }
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
@@ -29,16 +30,17 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.output          = desc.output;
     m_desc.sprites_map     = desc.sprites_map;
     m_desc.camera_override = desc.camera_override;
-    m_desc.disableDepth    = desc.disableDepth;
-    m_desc.flipCullMode    = desc.flipCullMode;
+    m_desc.disableDepth        = desc.disableDepth;
+    m_desc.flipCullMode        = desc.flipCullMode;
+    m_desc.useReflectionDepth  = desc.useReflectionDepth;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
 static std::shared_ptr<VmaImageParameters>
-GetOrCreateDepthImage(wallpaper::Scene& scene, const Device& device, VkExtent3D extent) {
-    auto existing = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
+GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkExtent3D extent) {
+    auto existing = std::static_pointer_cast<VmaImageParameters>(storage);
     if (existing && existing->extent.width == extent.width &&
         existing->extent.height == extent.height) {
         return existing;
@@ -81,7 +83,7 @@ GetOrCreateDepthImage(wallpaper::Scene& scene, const Device& device, VkExtent3D 
         LOG_ERROR("depth image view creation failed");
         return nullptr;
     }
-    scene.depthBuffer = depth;
+    storage = depth;
     LOG_INFO("created depth buffer %dx%d", extent.width, extent.height);
     return depth;
 }
@@ -403,14 +405,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
 
         }
-        // Depth buffer for 3D models (disabled for reflection to avoid sharing)
+        // Depth buffer for 3D models
         bool useDepth = !m_desc.disableDepth &&
                         (mesh.Material()->depthTest || mesh.Material()->depthWrite);
         std::shared_ptr<VmaImageParameters> depthImg;
         if (useDepth) {
             VkExtent3D depthExtent { m_desc.vk_output.extent.width,
                                      m_desc.vk_output.extent.height, 1 };
-            depthImg = GetOrCreateDepthImage(scene, device, depthExtent);
+            auto& depthStorage = m_desc.useReflectionDepth
+                                     ? scene.reflectionDepthBuffer
+                                     : scene.depthBuffer;
+            depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent);
             if (! depthImg) {
                 LOG_ERROR("depth buffer creation failed for shader '%s'",
                           mesh.Material()->customShader.shader->name.c_str());
@@ -675,7 +680,9 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
     // to work around drivers where the render pass CLEAR doesn't execute
     // correctly with a newly-created depth image (RADV GFX1201).
-    if (m_desc.hasDepth && !g_depth_transitioned) {
+    bool& depth_flag = m_desc.useReflectionDepth ? g_refl_depth_transitioned
+                                                   : g_depth_transitioned;
+    if (m_desc.hasDepth && !depth_flag) {
         VkImageSubresourceRange depth_range {
             .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
             .baseMipLevel   = 0,
@@ -724,7 +731,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
                             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                             0, to_attach);
-        g_depth_transitioned = true;
+        depth_flag = true;
     }
 
     VkImageSubresourceRange base_srang {

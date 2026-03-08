@@ -29,6 +29,7 @@ constexpr std::string_view WE_MIP_MAPPED_FRAME_BUFFER { "_rt_MipMappedFrameBuffe
 
 constexpr std::string_view WE_SHADOW_ATLAS { "_rt_shadowAtlas" };
 constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
+constexpr std::string_view WE_REFLECTION_BLUR { "_rt_Reflection_blur" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
 constexpr std::string_view WE_BLOOM_PREFIX  { "_rt_Bloom_" };

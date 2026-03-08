@@ -367,11 +367,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         std::array<float, 16> lights_color_radius { 0 };
         std::array<float, 12> lights_color { 0 };
         uint                  i = 0;
+        bool reflect_lights = (cam_name == "reflected_perspective");
         for (auto& l : m_scene->lights) {
             if (i == 4) break;
             assert(l->node() != nullptr);
             const auto& trans = l->node()->Translate();
             std::copy(trans.begin(), trans.end(), lights.begin() + i * 4);
+            // Reflect light Y about the floor plane so the underside of
+            // objects receives the dominant lighting in the reflection.
+            if (reflect_lights) lights[i * 4 + 1] = -lights[i * 4 + 1];
             // g_LightsColorRadius: vec4(color * intensity, radius)
             const auto& ci = l->colorIntensity();
             lights_color_radius[i * 4 + 0] = ci[0];

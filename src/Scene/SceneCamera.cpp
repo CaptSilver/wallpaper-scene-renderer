@@ -48,14 +48,13 @@ void SceneCamera::CalculateViewProjectionMatrix() {
 	// CalculateViewMatrix
 	{
 		if(m_direct_lookat) {
+			m_viewMat = LookAt(m_eye, m_center, m_up_vec);
 			if (m_reflect_y0) {
-				// Reflect camera about Y=0 for planar reflection
-				Vector3d eye    = { m_eye.x(),    -m_eye.y(),    m_eye.z() };
-				Vector3d center = { m_center.x(), -m_center.y(), m_center.z() };
-				Vector3d up     = { m_up_vec.x(), -m_up_vec.y(), m_up_vec.z() };
-				m_viewMat = LookAt(eye, center, up);
-			} else {
-				m_viewMat = LookAt(m_eye, m_center, m_up_vec);
+				// Planar reflection about Y=0: V_refl = V_main * R
+				// where R = diag(1, -1, 1, 1).  This ensures floor points
+				// (Y=0) project to the SAME screen-space UV as the main
+				// camera, so the screen-UV reflection texture lookup aligns.
+				m_viewMat.col(1) *= -1.0;
 			}
 		} else if(m_node) {
 			Affine3d nodeTrans(m_node->GetLocalTrans());
@@ -75,6 +74,16 @@ void SceneCamera::CalculateViewProjectionMatrix() {
 		double bottom = -m_height/2.0f;
 		double up = m_height/2.0f;
 		m_viewProjectionMat = Ortho(left, right, bottom, up, m_nearClip, m_farClip) * m_viewMat;
+	}
+
+	if (m_reflect_y0) {
+		// Negate VP row 1 (Y) to counteract the Vulkan gl_Position.y *= -1
+		// injected by shader preprocessing.  This makes the reflection texture
+		// store content with "un-flipped" Y.  The floor shader's screenUV is
+		// computed from the Y-flipped main camera, so its Y is inverted —
+		// sampling the un-flipped reflection texture with inverted Y produces
+		// the correct mirror lookup.
+		m_viewProjectionMat.row(1) *= -1.0;
 	}
 }
 
