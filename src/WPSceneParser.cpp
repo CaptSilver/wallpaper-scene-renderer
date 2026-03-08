@@ -1148,6 +1148,28 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 spMesh->AddMaterial(std::move(material));
                 spEffNode->AddMesh(spMesh);
 
+                // Register user property bindings for effect material uniforms
+                if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
+                    for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                        std::string glname;
+                        if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
+                            glname = wpEffShaderInfo.alias.at(shaderConstName);
+                        } else {
+                            for (const auto& el : wpEffShaderInfo.alias) {
+                                if (el.second.substr(2) == shaderConstName) {
+                                    glname = el.second;
+                                    break;
+                                }
+                            }
+                        }
+                        if (glname.empty()) glname = shaderConstName;
+                        context.scene->userPropUniformBindings[propName].push_back(
+                            { spMesh->Material(), glname });
+                        LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
+                                 propName.c_str(), glname.c_str(), wpimgobj.id);
+                    }
+                }
+
                 context.shader_updater->SetNodeData(spEffNode.get(), svData);
                 spEffNode->SetVisibilityOwner(spImgNode.get());
                 imgEffect->nodes.push_back({ matOutRT, spEffNode });
@@ -1727,6 +1749,27 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
                 auto spEffMesh = std::make_shared<SceneMesh>();
                 spEffMesh->AddMaterial(std::move(effMaterial));
                 spEffNode->AddMesh(spEffMesh);
+
+                // Register user property bindings for text effect material uniforms
+                if (! wpmat.userShaderBindings.empty() && spEffMesh->Material()) {
+                    for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                        std::string glname;
+                        if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
+                            glname = wpEffShaderInfo.alias.at(shaderConstName);
+                        } else {
+                            for (const auto& el : wpEffShaderInfo.alias) {
+                                if (el.second.substr(2) == shaderConstName) {
+                                    glname = el.second;
+                                    break;
+                                }
+                            }
+                        }
+                        if (glname.empty()) glname = shaderConstName;
+                        context.scene->userPropUniformBindings[propName].push_back(
+                            { spEffMesh->Material(), glname });
+                    }
+                }
+
                 context.shader_updater->SetNodeData(spEffNode.get(), effSvData);
                 spEffNode->SetVisibilityOwner(spNode.get());
                 imgEffect->nodes.push_back({ matOutRT, spEffNode });
