@@ -40,8 +40,12 @@ constexpr uint32_t alt_format_vertex_size_herald_value = 0x0180000F;
 // Non-puppet model vertex sizes (no blend indices/weights)
 // Flag 9:  position(3) + texcoord(2) = 5 floats = 20 bytes
 constexpr uint32_t model_vertex_flag9  = 4 * (3 + 2);
+// Flag 11: position(3) + normal(3) + texcoord(2) = 8 floats = 32 bytes
+constexpr uint32_t model_vertex_flag11 = 4 * (3 + 3 + 2);
 // Flag 15: position(3) + normal(3) + tangent4(4) + texcoord(2) = 12 floats = 48 bytes
 constexpr uint32_t model_vertex_flag15 = 4 * (3 + 3 + 4 + 2);
+// Flag 39: position(3) + normal(3) + tangent4(4) + texcoord0(2) + texcoord1(2) = 14 floats = 56 bytes
+constexpr uint32_t model_vertex_flag39 = 4 * (3 + 3 + 4 + 2 + 2);
 
 constexpr uint32_t singile_bone_frame = 4 * 9;
 
@@ -56,8 +60,10 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
     int32_t mdl_flag = f.ReadInt32();
 
-    // Non-puppet model formats (flag=9 or flag=15): simple mesh data, no skeleton
-    if (mdl_flag == 9 || mdl_flag == 15) {
+    // Non-puppet model formats: simple mesh data, no skeleton
+    // Flag is a bitmask: bit0=position, bit1=normal, bit2=tangent4, bit3=texcoord,
+    // bit5=texcoord1 (lightmap UVs)
+    if (mdl_flag == 9 || mdl_flag == 11 || mdl_flag == 15 || mdl_flag == 39) {
         f.ReadInt32(); // unk, always 1
         uint32_t submesh_count = f.ReadUint32();
 
@@ -71,7 +77,16 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
 
             uint32_t vertex_size = f.ReadUint32();
 
-            uint32_t vert_stride = (mdl_flag == 15) ? model_vertex_flag15 : model_vertex_flag9;
+            uint32_t vert_stride;
+            if (mdl_flag == 39)
+                vert_stride = model_vertex_flag39;
+            else if (mdl_flag == 15)
+                vert_stride = model_vertex_flag15;
+            else if (mdl_flag == 11)
+                vert_stride = model_vertex_flag11;
+            else
+                vert_stride = model_vertex_flag9;
+
             if (vertex_size % vert_stride != 0) {
                 LOG_ERROR("unsupported model vertex size %d for flag=%d submesh=%d",
                           vertex_size, mdl_flag, si);
@@ -81,13 +96,31 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
             uint32_t vertex_num = vertex_size / vert_stride;
             sub.vertexs.resize(vertex_num);
 
-            if (mdl_flag == 15) {
+            if (mdl_flag == 39) {
+                sub.has_normals   = true;
+                sub.has_tangents  = true;
+                sub.has_texcoord1 = true;
+                for (auto& vert : sub.vertexs) {
+                    for (auto& v : vert.position) v = f.ReadFloat();
+                    for (auto& v : vert.normal) v = f.ReadFloat();
+                    for (auto& v : vert.tangent) v = f.ReadFloat();
+                    for (auto& v : vert.texcoord) v = f.ReadFloat();
+                    for (auto& v : vert.texcoord1) v = f.ReadFloat();
+                }
+            } else if (mdl_flag == 15) {
                 sub.has_normals  = true;
                 sub.has_tangents = true;
                 for (auto& vert : sub.vertexs) {
                     for (auto& v : vert.position) v = f.ReadFloat();
                     for (auto& v : vert.normal) v = f.ReadFloat();
                     for (auto& v : vert.tangent) v = f.ReadFloat();
+                    for (auto& v : vert.texcoord) v = f.ReadFloat();
+                }
+            } else if (mdl_flag == 11) {
+                sub.has_normals = true;
+                for (auto& vert : sub.vertexs) {
+                    for (auto& v : vert.position) v = f.ReadFloat();
+                    for (auto& v : vert.normal) v = f.ReadFloat();
                     for (auto& v : vert.texcoord) v = f.ReadFloat();
                 }
             } else {
@@ -432,7 +465,31 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
 }
 
 void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
-    if (sub.has_normals && sub.has_tangents) {
+    if (sub.has_normals && sub.has_tangents && sub.has_texcoord1) {
+        // Flag 39: pos + normal + tangent + texcoord0 + texcoord1 (lightmap)
+        // Pack both texcoord sets into a_TexCoordVec4 (vec4) for lightmap shaders
+        SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_NORMAL.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_TANGENT4.data(), VertexType::FLOAT4, false },
+                                  { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4, false } },
+                                sub.vertexs.size());
+        std::array<float, 14> one_vert;
+        for (uint i = 0; i < sub.vertexs.size(); i++) {
+            auto& v      = sub.vertexs[i];
+            uint  offset = 0;
+            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.tangent.data(), sizeof(v.tangent));
+            offset += 4;
+            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            offset += 2;
+            memcpy(one_vert.data() + offset, v.texcoord1.data(), sizeof(v.texcoord1));
+            vertex.SetVertexs(i, one_vert);
+        }
+        mesh.AddVertexArray(std::move(vertex));
+    } else if (sub.has_normals && sub.has_tangents) {
         // padding=false: vertex data is tightly packed (no padding to vec4),
         // must match the layout used by SetVertexs() below
         SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
@@ -450,6 +507,23 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
             offset += 3;
             memcpy(one_vert.data() + offset, v.tangent.data(), sizeof(v.tangent));
             offset += 4;
+            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            vertex.SetVertexs(i, one_vert);
+        }
+        mesh.AddVertexArray(std::move(vertex));
+    } else if (sub.has_normals) {
+        SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_NORMAL.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_TEXCOORD.data(), VertexType::FLOAT2, false } },
+                                sub.vertexs.size());
+        std::array<float, 8> one_vert;
+        for (uint i = 0; i < sub.vertexs.size(); i++) {
+            auto& v      = sub.vertexs[i];
+            uint  offset = 0;
+            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
+            offset += 3;
+            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
+            offset += 3;
             memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
         }

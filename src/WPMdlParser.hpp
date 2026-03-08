@@ -34,6 +34,7 @@ struct WPMdl {
         std::array<uint32_t, 4> blend_indices;
         std::array<float, 4>    weight;
         std::array<float, 2>    texcoord;
+        std::array<float, 2>    texcoord1;
     };
 
     // A single submesh within an MDL (each has its own material, vertices, indices)
@@ -43,6 +44,7 @@ struct WPMdl {
         std::vector<std::array<uint16_t, 3>> indices;
         bool has_normals { false };
         bool has_tangents { false };
+        bool has_texcoord1 { false };
     };
 
     // Model path: multiple submeshes, each with own material
