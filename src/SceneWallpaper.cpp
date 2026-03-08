@@ -28,6 +28,9 @@
 #include <sstream>
 #include <atomic>
 #include <mutex>
+#include <set>
+#include <fstream>
+#include <filesystem>
 #include <unordered_map>
 
 using namespace wallpaper;
@@ -698,6 +701,32 @@ void MainHandler::loadScene() {
         scene->vfs.swap(pVfs);
     }
     m_scene = scene; // keep reference for runtime user property updates
+
+    // Write active user property bindings to disk for the config UI
+    {
+        std::set<std::string> activeProps;
+        for (const auto& [name, _] : scene->userPropUniformBindings)
+            activeProps.insert(name);
+        for (const auto& [name, _] : scene->userPropVisBindings)
+            activeProps.insert(name);
+
+        std::string configDir;
+        if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && xdg[0]) {
+            configDir = std::string(xdg) + "/wekde/wallpaper";
+        } else if (const char* home = std::getenv("HOME"); home && home[0]) {
+            configDir = std::string(home) + "/.config/wekde/wallpaper";
+        }
+        if (!configDir.empty()) {
+            std::filesystem::create_directories(configDir);
+            nlohmann::json j = activeProps;
+            std::string bindingsPath = configDir + "/" + std::string(scene_id) + "_bindings.json";
+            std::ofstream ofs(bindingsPath);
+            if (ofs) {
+                ofs << j.dump();
+                LOG_INFO("Wrote %zu active bindings to %s", activeProps.size(), bindingsPath.c_str());
+            }
+        }
+    }
 
     // Extract text scripts for QML-side evaluation
     {

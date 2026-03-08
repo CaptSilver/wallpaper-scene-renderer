@@ -242,7 +242,8 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                         }
                     }
                     if (defines.back()[0] != 'g') {
-                        LOG_INFO("PreShaderSrc User shadervalue not supported");
+                        LOG_INFO("user shader uniform: '%s' (alias: '%s')",
+                                 defines.back().c_str(), material.c_str());
                     }
                 }
             }
