@@ -10,8 +10,9 @@ Made this for fun.
 	- [x] Image
 	- [x] Composition / Fullscreen
 	- [x] Text (static)
-- [x] Effect
-    - [x] Basic
+	- [ ] Text (dynamic - scripts/clocks)
+- [x] Effect (generic shader pipeline)
+    - [x] Blur / Water / Scroll / Spin / Shimmer / etc.
 	- [x] Mouse position with delay
 	- [x] Parallax
     - [x] Depth Parallax
@@ -38,7 +39,23 @@ Made this for fun.
 	- [x] Children
     - [ ] Audio Response
 - [x] Puppet warp
-- [x] 3D model (basic)
+- [x] 3D model
+	- [x] Multi-submesh MDL
+	- [x] Camera path animation
+	- [x] Depth occlusion & transparency
+	- [x] Planar reflection
+	- [x] Normal mapping
+	- [x] Lightmap UVs
+	- [x] Point lights & skylight
+	- [x] Skybox
+	- [x] MSAA x4
+	- [x] Anisotropic filtering (16x)
+	- [ ] Shadow mapping
+	- [ ] HDR rendering & tonemapping
+	- [ ] HDR bloom
 - [ ] Timeline animations
 - [ ] Scenescript
-- [x] User Properties (basic support - default values from project.json)
+- [x] User Properties
+	- [x] Default values from project.json
+	- [x] Runtime visibility & uniform bindings
+	- [ ] User-defined shaders
