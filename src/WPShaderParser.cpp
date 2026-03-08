@@ -48,11 +48,9 @@ static constexpr const char* pre_shader_code = R"(#version 330
 #define saturate(x) (clamp(x, 0.0, 1.0))
 #define log10(x) (log(x) / log(10.0))
 
-#define max(x, y) max(y, x)
-
-// HLSL pow() broadcasts scalar to vector; GLSL requires matching genType.
+// HLSL built-ins broadcast scalar to vector; GLSL requires matching genType.
 // Overloads must be defined BEFORE the #define so their bodies call the
-// real built-in pow(), while all subsequent shader code gets redirected.
+// real built-in, while all subsequent shader code gets redirected.
 vec2 _wep(vec2 x, float y) { return pow(x, vec2(y)); }
 vec3 _wep(vec3 x, float y) { return pow(x, vec3(y)); }
 vec4 _wep(vec4 x, float y) { return pow(x, vec4(y)); }
@@ -64,6 +62,38 @@ vec2 _wep(vec2 x, vec2 y) { return pow(x, y); }
 vec3 _wep(vec3 x, vec3 y) { return pow(x, y); }
 vec4 _wep(vec4 x, vec4 y) { return pow(x, y); }
 #define pow _wep
+vec2 _wemx(float x, vec2 y) { return max(vec2(x), y); }
+vec3 _wemx(float x, vec3 y) { return max(vec3(x), y); }
+vec4 _wemx(float x, vec4 y) { return max(vec4(x), y); }
+vec2 _wemx(vec2 x, float y) { return max(x, vec2(y)); }
+vec3 _wemx(vec3 x, float y) { return max(x, vec3(y)); }
+vec4 _wemx(vec4 x, float y) { return max(x, vec4(y)); }
+float _wemx(float x, float y) { return max(x, y); }
+vec2 _wemx(vec2 x, vec2 y) { return max(x, y); }
+vec3 _wemx(vec3 x, vec3 y) { return max(x, y); }
+vec4 _wemx(vec4 x, vec4 y) { return max(x, y); }
+#define max _wemx
+vec2 _wemn(float x, vec2 y) { return min(vec2(x), y); }
+vec3 _wemn(float x, vec3 y) { return min(vec3(x), y); }
+vec4 _wemn(float x, vec4 y) { return min(vec4(x), y); }
+vec2 _wemn(vec2 x, float y) { return min(x, vec2(y)); }
+vec3 _wemn(vec3 x, float y) { return min(x, vec3(y)); }
+vec4 _wemn(vec4 x, float y) { return min(x, vec4(y)); }
+float _wemn(float x, float y) { return min(x, y); }
+vec2 _wemn(vec2 x, vec2 y) { return min(x, y); }
+vec3 _wemn(vec3 x, vec3 y) { return min(x, y); }
+vec4 _wemn(vec4 x, vec4 y) { return min(x, y); }
+#define min _wemn
+float _wedot(vec4 x, vec3 y) { return dot(x.xyz, y); }
+float _wedot(vec3 x, vec4 y) { return dot(x, y.xyz); }
+float _wedot(vec4 x, vec2 y) { return dot(x.xy, y); }
+float _wedot(vec2 x, vec4 y) { return dot(x, y.xy); }
+float _wedot(vec3 x, vec2 y) { return dot(x.xy, y); }
+float _wedot(vec2 x, vec3 y) { return dot(x, y.xy); }
+float _wedot(vec2 x, vec2 y) { return dot(x, y); }
+float _wedot(vec3 x, vec3 y) { return dot(x, y); }
+float _wedot(vec4 x, vec4 y) { return dot(x, y); }
+#define dot _wedot
 
 #define float1 float
 #define float2 vec2
