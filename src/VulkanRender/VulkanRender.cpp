@@ -354,7 +354,15 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     m_dyn_buf->recordUpload(rr.command);
     {
         static bool _dumped = false;
+        static int _render_frame_count = 0;
         int prepared_count = 0, skipped_count = 0;
+        // Reset per-frame exec pass counter (extern from CustomShaderPass)
+        extern int g_exec_pass_counter;
+        extern int g_exec_frame_counter;
+        extern bool g_depth_transitioned;
+        g_exec_pass_counter = 0;
+        g_exec_frame_counter = _render_frame_count;
+        g_depth_transitioned = false;
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -368,6 +376,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                      prepared_count, skipped_count, m_passes.size());
             _dumped = true;
         }
+        _render_frame_count++;
     }
     (void)rr.command.End();
 
@@ -415,6 +424,9 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     {
         static bool _dumped = false;
         int prepared_count = 0, skipped_count = 0;
+        // Reset per-frame depth transition flag (extern from CustomShaderPass)
+        extern bool g_depth_transitioned;
+        g_depth_transitioned = false;
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
