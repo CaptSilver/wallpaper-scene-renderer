@@ -28,6 +28,15 @@ public:
     const auto& handle() const { return m_device; }
     const auto& gpu() const { return m_gpu; }
     const auto& limits() const { return m_limits; }
+    float       maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }
+    VkSampleCountFlagBits maxMSAASamples() const {
+        VkSampleCountFlags counts = m_limits.framebufferColorSampleCounts &
+                                     m_limits.framebufferDepthSampleCounts;
+        if (counts & VK_SAMPLE_COUNT_8_BIT) return VK_SAMPLE_COUNT_8_BIT;
+        if (counts & VK_SAMPLE_COUNT_4_BIT) return VK_SAMPLE_COUNT_4_BIT;
+        if (counts & VK_SAMPLE_COUNT_2_BIT) return VK_SAMPLE_COUNT_2_BIT;
+        return VK_SAMPLE_COUNT_1_BIT;
+    }
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }
     const auto& swapchain() const { return m_swapchain; }

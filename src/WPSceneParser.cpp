@@ -549,6 +549,10 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
                  sc.camera.center[0], sc.camera.center[1], sc.camera.center[2],
                  general.fov, aspect, general.nearz, general.farz);
 
+        // Enable 4x MSAA for 3D scenes (perspective camera = 3D models)
+        scene.msaaSamples = 4;
+        LOG_INFO("MSAA enabled: x%d (3D scene)", scene.msaaSamples);
+
         // Load camera animation paths
         auto& vfs = *context.vfs;
         std::vector<CameraPath> camPaths;

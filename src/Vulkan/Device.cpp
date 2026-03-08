@@ -120,12 +120,32 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         tested_exts.begin(), tested_exts.end(), tested_exts_c.begin(), [](const auto& s) {
             return s.c_str();
         });
+    // Enable device features
+    VkPhysicalDeviceFeatures2KHR features2 {
+        .sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
+        .pNext    = nullptr,
+        .features = {},
+    };
+    {
+        VkPhysicalDeviceFeatures2KHR supported {
+            .sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2_KHR,
+            .pNext    = nullptr,
+            .features = {},
+        };
+        inst.gpu().GetFeatures2KHR(supported);
+        if (supported.features.samplerAnisotropy) {
+            features2.features.samplerAnisotropy = VK_TRUE;
+            LOG_INFO("Anisotropic filtering enabled (max %.0f)",
+                     device.m_limits.maxSamplerAnisotropy);
+        }
+    }
+
     bool rq_surface = ! inst.offscreen();
     VVK_CHECK_BOOL_RE(vvk::Device::Create(device.m_device,
                                           *device.m_gpu,
                                           device.ChooseDeviceQueue(*inst.surface()),
                                           tested_exts_c,
-                                          nullptr,
+                                          &features2,
                                           device.dld));
 
     // VK_CHECK_RESULT_BOOL_RE(CreateDevice(inst, device.ChooseDeviceQueue(inst.surface()),

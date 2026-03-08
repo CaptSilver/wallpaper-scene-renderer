@@ -154,6 +154,10 @@ public:
         : main_handler(m), m_render(std::make_unique<vulkan::VulkanRender>()) {}
     virtual ~RenderHandler() {
         frame_timer.Stop();
+        // Release Scene GPU resources before destroying VMA allocator
+        if (m_scene && m_render->inited()) {
+            m_render->clearLastRenderGraph(m_scene.get());
+        }
         m_render->destroy();
         LOG_INFO("render handler deleted");
     }
@@ -273,7 +277,7 @@ private:
     }
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
-            if (m_rg) m_render->clearLastRenderGraph();
+            if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
             m_rg = sceneToRenderGraph(*m_scene);
 
             if (main_handler.isGenGraphviz()) m_rg->ToGraphviz("graph.dot");
@@ -298,6 +302,11 @@ private:
 
         // Stop the frame timer during recovery
         frame_timer.Stop();
+
+        // Release Scene GPU resources before destroying VMA allocator
+        if (m_scene) {
+            m_render->clearLastRenderGraph(m_scene.get());
+        }
 
         // Clear scene state
         m_scene.reset();

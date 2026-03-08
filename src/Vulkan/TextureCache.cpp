@@ -58,8 +58,10 @@ VkFilter ToVkType(wallpaper::TextureFilter sam) {
 
 namespace
 {
-VkSamplerCreateInfo GenSamplerInfo(TextureKey key) {
+VkSamplerCreateInfo GenSamplerInfo(TextureKey key, float deviceMaxAnisotropy) {
     auto& sam = key.sample;
+
+    bool useAniso = (sam.magFilter == TextureFilter::LINEAR) && deviceMaxAnisotropy > 1.0f;
 
     VkSamplerCreateInfo sampler_info { .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                        .pNext            = nullptr,
@@ -69,8 +71,8 @@ VkSamplerCreateInfo GenSamplerInfo(TextureKey key) {
                                        .addressModeU     = (ToVkType(sam.wrapS)),
                                        .addressModeV     = (ToVkType(sam.wrapS)),
                                        .addressModeW     = (ToVkType(sam.wrapT)),
-                                       .anisotropyEnable = (false),
-                                       .maxAnisotropy    = (1.0f),
+                                       .anisotropyEnable = useAniso,
+                                       .maxAnisotropy    = useAniso ? deviceMaxAnisotropy : 1.0f,
                                        .compareEnable    = (false),
                                        .compareOp        = VK_COMPARE_OP_NEVER,
                                        .minLod           = (0.0f),
@@ -429,7 +431,8 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
 
     img_slots.slots.resize(image.slots.size());
 
-    auto& sam = image.header.sample;
+    auto& sam           = image.header.sample;
+    float maxAniso      = m_device.maxAnisotropy();
 
     for (usize i = 0; i < image.slots.size(); i++) {
         auto& image_paras   = img_slots.slots[i];
@@ -438,6 +441,8 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
 
         // check data
         if (! image_slot) return {};
+
+        bool useAniso = (sam.magFilter == TextureFilter::LINEAR) && maxAniso > 1.0f;
         VkSamplerCreateInfo sampler_info {
             .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .pNext                   = nullptr,
@@ -447,8 +452,8 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
             .addressModeU            = (ToVkType(sam.wrapS)),
             .addressModeV            = (ToVkType(sam.wrapS)),
             .addressModeW            = (ToVkType(sam.wrapT)),
-            .anisotropyEnable        = (false),
-            .maxAnisotropy           = (1.0f),
+            .anisotropyEnable        = useAniso,
+            .maxAnisotropy           = useAniso ? maxAniso : 1.0f,
             .compareEnable           = (false),
             .compareOp               = VK_COMPARE_OP_NEVER,
             .minLod                  = (0.0f),
@@ -511,7 +516,7 @@ void TextureCache::allocateCmd() {
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
-        VkSamplerCreateInfo sam_info = GenSamplerInfo(tex_key);
+        VkSamplerCreateInfo sam_info = GenSamplerInfo(tex_key, m_device.maxAnisotropy());
         VkFormat            format   = ToVkType(tex_key.format);
         VkExtent3D          ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
 

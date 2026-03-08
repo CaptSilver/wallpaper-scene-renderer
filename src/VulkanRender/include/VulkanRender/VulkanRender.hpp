@@ -30,7 +30,7 @@ public:
     void drawFrame(Scene&);
     bool reuploadTexture(const std::string& key, Image& image);
 
-    void clearLastRenderGraph();
+    void clearLastRenderGraph(Scene* scene = nullptr);
     void compileRenderGraph(Scene&, rg::RenderGraph&);
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
 

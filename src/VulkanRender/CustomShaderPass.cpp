@@ -13,6 +13,7 @@
 #include "Core/ArrayHelper.hpp"
 
 #include <cassert>
+#include <unordered_set>
 
 using namespace wallpaper::vulkan;
 
@@ -22,6 +23,9 @@ namespace wallpaper::vulkan {
     int g_exec_frame_counter = 0;
     bool g_depth_transitioned = false;            // reset each frame in VulkanRender.cpp
     bool g_refl_depth_transitioned = false;       // reset each frame in VulkanRender.cpp
+    // MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
+    // (only needs to happen once per image lifetime, not per frame)
+    std::unordered_set<VkImage> g_msaa_color_inited;
 }
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
@@ -39,7 +43,8 @@ CustomShaderPass::~CustomShaderPass() {}
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
 static std::shared_ptr<VmaImageParameters>
-GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkExtent3D extent) {
+GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkExtent3D extent,
+                      VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) {
     auto existing = std::static_pointer_cast<VmaImageParameters>(storage);
     if (existing && existing->extent.width == extent.width &&
         existing->extent.height == extent.height) {
@@ -55,7 +60,7 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         .extent      = extent,
         .mipLevels   = 1,
         .arrayLayers = 1,
-        .samples     = VK_SAMPLE_COUNT_1_BIT,
+        .samples     = samples,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
         .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -84,64 +89,165 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         return nullptr;
     }
     storage = depth;
-    LOG_INFO("created depth buffer %dx%d", extent.width, extent.height);
+    LOG_INFO("created depth buffer %dx%d samples=%d", extent.width, extent.height, (int)samples);
     return depth;
+}
+
+static std::shared_ptr<VmaImageParameters>
+GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
+                          VkExtent3D extent, VkSampleCountFlagBits samples) {
+    auto existing = std::static_pointer_cast<VmaImageParameters>(storage);
+    if (existing && existing->extent.width == extent.width &&
+        existing->extent.height == extent.height) {
+        return existing;
+    }
+
+    auto msaa = std::make_shared<VmaImageParameters>();
+    VkImageCreateInfo info {
+        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext       = nullptr,
+        .imageType   = VK_IMAGE_TYPE_2D,
+        .format      = VK_FORMAT_R8G8B8A8_UNORM,
+        .extent      = extent,
+        .mipLevels   = 1,
+        .arrayLayers = 1,
+        .samples     = samples,
+        .tiling      = VK_IMAGE_TILING_OPTIMAL,
+        .usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VmaAllocationCreateInfo vma_info {};
+    vma_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+    if (vvk::CreateImage(device.vma_allocator(), info, vma_info, msaa->handle) != VK_SUCCESS) {
+        LOG_ERROR("MSAA color image creation failed");
+        return nullptr;
+    }
+    msaa->extent = extent;
+    VkImageViewCreateInfo view_info {
+        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext    = nullptr,
+        .image    = *msaa->handle,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format   = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                              .baseMipLevel = 0, .levelCount = 1,
+                              .baseArrayLayer = 0, .layerCount = 1 },
+    };
+    if (device.handle().CreateImageView(view_info, msaa->view) != VK_SUCCESS) {
+        LOG_ERROR("MSAA color image view creation failed");
+        return nullptr;
+    }
+    storage = msaa;
+    LOG_INFO("created MSAA %dx color buffer %dx%d", (int)samples, extent.width, extent.height);
+    return msaa;
 }
 
 std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format,
                                                 VkAttachmentLoadOp loadOp,
                                                 VkImageLayout      finalLayout,
                                                 bool               hasDepth = false,
-                                                VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR) {
-    VkAttachmentDescription attachments[2];
-    attachments[0] = VkAttachmentDescription {
-        .format         = format,
-        .samples        = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp         = loadOp,
-        .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout    = finalLayout,
-    };
+                                                VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                                VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT) {
+    bool useMSAA = msaaSamples > VK_SAMPLE_COUNT_1_BIT;
 
-    if (loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
-        attachments[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    }
+    // Without MSAA: [0]=color, [1]=depth
+    // With MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
+    VkAttachmentDescription attachments[3];
+    uint32_t attachmentCount = 0;
 
-    uint32_t attachmentCount = 1;
-    VkAttachmentReference depth_ref {};
+    if (useMSAA) {
+        // Attachment 0: multisampled color
+        // Always use COLOR_ATTACHMENT_OPTIMAL as initialLayout.
+        // An explicit barrier in execute() transitions new MSAA images from
+        // UNDEFINED to COLOR_ATTACHMENT_OPTIMAL before first use.
+        attachments[0] = VkAttachmentDescription {
+            .format         = format,
+            .samples        = msaaSamples,
+            .loadOp         = loadOp,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,  // persist for next pass
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .finalLayout    = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
 
-    if (hasDepth) {
-        // Always use DEPTH_STENCIL_ATTACHMENT_OPTIMAL as initialLayout.
-        // An explicit barrier in execute() transitions the depth image from
-        // UNDEFINED to DEPTH_STENCIL_ATTACHMENT_OPTIMAL before first use.
+        // Attachment 1: resolve target (single-sample, the original RT)
         attachments[1] = VkAttachmentDescription {
-            .format         = DEPTH_FORMAT,
+            .format         = format,
             .samples        = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp         = depthLoadOp,
+            .loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
             .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-        depth_ref = VkAttachmentReference {
-            .attachment = 1,
-            .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout    = finalLayout,
         };
         attachmentCount = 2;
+
+        if (hasDepth) {
+            attachments[2] = VkAttachmentDescription {
+                .format         = DEPTH_FORMAT,
+                .samples        = msaaSamples,
+                .loadOp         = depthLoadOp,
+                .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            };
+            attachmentCount = 3;
+        }
+    } else {
+        // No MSAA: original layout
+        attachments[0] = VkAttachmentDescription {
+            .format         = format,
+            .samples        = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp         = loadOp,
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout    = finalLayout,
+        };
+        if (loadOp == VK_ATTACHMENT_LOAD_OP_LOAD) {
+            attachments[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        attachmentCount = 1;
+
+        if (hasDepth) {
+            attachments[1] = VkAttachmentDescription {
+                .format         = DEPTH_FORMAT,
+                .samples        = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp         = depthLoadOp,
+                .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout  = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            };
+            attachmentCount = 2;
+        }
     }
 
     VkAttachmentReference color_ref {
         .attachment = 0,
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
+    VkAttachmentReference resolve_ref {
+        .attachment = 1,
+        .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference depth_ref {
+        .attachment = useMSAA ? 2u : 1u,
+        .layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
 
     VkSubpassDescription subpass {
         .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount    = 1,
         .pColorAttachments       = &color_ref,
+        .pResolveAttachments     = useMSAA ? &resolve_ref : nullptr,
         .pDepthStencilAttachment = hasDepth ? &depth_ref : nullptr,
     };
 
@@ -405,6 +511,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
 
         }
+        // MSAA: clamp to device-supported max
+        m_desc.msaaSamples = (VkSampleCountFlagBits)std::min(
+            (u32)scene.msaaSamples, (u32)device.maxMSAASamples());
+
         // Depth buffer for 3D models
         bool useDepth = !m_desc.disableDepth &&
                         (mesh.Material()->depthTest || mesh.Material()->depthWrite);
@@ -412,14 +522,37 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (useDepth) {
             VkExtent3D depthExtent { m_desc.vk_output.extent.width,
                                      m_desc.vk_output.extent.height, 1 };
-            auto& depthStorage = m_desc.useReflectionDepth
-                                     ? scene.reflectionDepthBuffer
-                                     : scene.depthBuffer;
-            depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent);
+            if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+                // MSAA: depth buffer must be multisampled
+                auto& depthStorage = m_desc.useReflectionDepth
+                                         ? scene.msaaReflectionDepthBuffer
+                                         : scene.msaaDepthBuffer;
+                depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent,
+                                                 m_desc.msaaSamples);
+            } else {
+                auto& depthStorage = m_desc.useReflectionDepth
+                                         ? scene.reflectionDepthBuffer
+                                         : scene.depthBuffer;
+                depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent);
+            }
             if (! depthImg) {
                 LOG_ERROR("depth buffer creation failed for shader '%s'",
                           mesh.Material()->customShader.shader->name.c_str());
                 useDepth = false;
+            }
+        }
+
+        // MSAA: create multisampled color image for this RT
+        std::shared_ptr<VmaImageParameters> msaaColorImg;
+        if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+            VkExtent3D extent { m_desc.vk_output.extent.width,
+                                m_desc.vk_output.extent.height, 1 };
+            auto& msaaStorage = scene.msaaColorImages[m_desc.output];
+            msaaColorImg = GetOrCreateMSAAColorImage(msaaStorage, device, extent,
+                                                      m_desc.msaaSamples);
+            if (! msaaColorImg) {
+                LOG_ERROR("MSAA color image creation failed, falling back to 1x");
+                m_desc.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
             }
         }
 
@@ -433,7 +566,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                                     loadOp,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                     useDepth,
-                                    depthLoadOp);
+                                    depthLoadOp,
+                                    m_desc.msaaSamples);
         if (! opt.has_value()) {
             LOG_ERROR("CreateRenderPass failed for shader '%s'",
                       mesh.Material()->customShader.shader->name.c_str());
@@ -443,10 +577,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         m_desc.hasDepth  = useDepth;
         m_desc.depthView = useDepth ? *depthImg->view : VK_NULL_HANDLE;
         m_desc.depthImage = useDepth ? *depthImg->handle : VK_NULL_HANDLE;
+        if (msaaColorImg) {
+            m_desc.msaaColorView  = *msaaColorImg->view;
+            m_desc.msaaColorImage = *msaaColorImg->handle;
+        }
 
         descriptor_info.push_descriptor = true;
         GraphicsPipeline pipeline;
         pipeline.toDefault();
+        if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+            pipeline.multisample.rasterizationSamples = m_desc.msaaSamples;
+        }
         if (mesh.Material()->depthTest) {
             pipeline.depth.depthTestEnable  = VK_TRUE;
             pipeline.depth.depthCompareOp   = VK_COMPARE_OP_LESS;
@@ -497,12 +638,26 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     }
 
     {
-        VkImageView fb_attachments[2] = { m_desc.vk_output.view, m_desc.depthView };
+        // Framebuffer attachments must match render pass attachment order:
+        // No MSAA: [0]=color, [1]=depth
+        // MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
+        VkImageView fb_attachments[3];
+        uint32_t fb_count;
+        if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+            fb_attachments[0] = m_desc.msaaColorView;   // multisampled color
+            fb_attachments[1] = m_desc.vk_output.view;  // resolve target (original RT)
+            fb_attachments[2] = m_desc.depthView;        // multisampled depth
+            fb_count = m_desc.hasDepth ? 3u : 2u;
+        } else {
+            fb_attachments[0] = m_desc.vk_output.view;
+            fb_attachments[1] = m_desc.depthView;
+            fb_count = m_desc.hasDepth ? 2u : 1u;
+        }
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext           = nullptr,
             .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = m_desc.hasDepth ? 2u : 1u,
+            .attachmentCount = fb_count,
             .pAttachments    = fb_attachments,
             .width           = m_desc.vk_output.extent.width,
             .height          = m_desc.vk_output.extent.height,
@@ -676,6 +831,27 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     auto&                   cmd    = rr.command;
     auto&                   outext = m_desc.vk_output.extent;
 
+    // Transition MSAA color image from UNDEFINED → COLOR_ATTACHMENT_OPTIMAL on first use
+    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT &&
+        g_msaa_color_inited.find(m_desc.msaaColorImage) == g_msaa_color_inited.end()) {
+        VkImageMemoryBarrier barrier {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = 0,
+            .dstAccessMask       = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_desc.msaaColorImage,
+            .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+        };
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                            0, barrier);
+        g_msaa_color_inited.insert(m_desc.msaaColorImage);
+    }
+
     // Explicitly clear depth buffer to 1.0 on first use each frame.
     // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
     // to work around drivers where the render pass CLEAR doesn't execute
@@ -803,9 +979,21 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
     }
 
-    VkClearValue clear_values[2];
-    clear_values[0] = m_desc.clear_value;
-    clear_values[1].depthStencil = { 1.0f, 0 };
+    // Clear values indexed by attachment:
+    // No MSAA: [0]=color, [1]=depth
+    // MSAA:    [0]=msaa_color, [1]=resolve(unused), [2]=msaa_depth
+    VkClearValue clear_values[3];
+    uint32_t clearCount;
+    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+        clear_values[0] = m_desc.clear_value;           // msaa color
+        clear_values[1] = {};                            // resolve (DONT_CARE, ignored)
+        clear_values[2].depthStencil = { 1.0f, 0 };     // msaa depth
+        clearCount = m_desc.hasDepth ? 3u : 2u;
+    } else {
+        clear_values[0] = m_desc.clear_value;
+        clear_values[1].depthStencil = { 1.0f, 0 };
+        clearCount = m_desc.hasDepth ? 2u : 1u;
+    }
 
     VkRenderPassBeginInfo pass_begin_info {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -817,7 +1005,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                 .offset = { 0, 0 },
                 .extent = { outext.width, outext.height },
             },
-        .clearValueCount = m_desc.hasDepth ? 2u : 1u,
+        .clearValueCount = clearCount,
         .pClearValues    = clear_values,
     };
     cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);

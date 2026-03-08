@@ -180,6 +180,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkGetSemaphoreCounterValueKHR         vkGetSemaphoreCounterValueKHR {};
     PFN_vkMapMemory                           vkMapMemory {};
     PFN_vkQueueSubmit                         vkQueueSubmit {};
+    PFN_vkQueueWaitIdle                       vkQueueWaitIdle {};
     PFN_vkResetFences                         vkResetFences {};
     PFN_vkUnmapMemory                         vkUnmapMemory {};
     PFN_vkUpdateDescriptorSetWithTemplateKHR  vkUpdateDescriptorSetWithTemplateKHR {};
@@ -361,6 +362,10 @@ public:
 
     VkResult Present(const VkPresentInfoKHR& present_info) const noexcept {
         return dld->vkQueuePresentKHR(handle, &present_info);
+    }
+
+    VkResult WaitIdle() const noexcept {
+        return dld->vkQueueWaitIdle(handle);
     }
 };
 

@@ -161,6 +161,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetSemaphoreCounterValueKHR);
     X(vkMapMemory);
     X(vkQueueSubmit);
+    X(vkQueueWaitIdle);
     X(vkResetFences);
     X(vkSetDebugUtilsObjectNameEXT);
     X(vkSetDebugUtilsObjectTagEXT);
@@ -463,6 +464,10 @@ VkPhysicalDeviceProperties PhysicalDevice::GetProperties() const noexcept {
 
 void PhysicalDevice::GetProperties2KHR(VkPhysicalDeviceProperties2KHR& props) const noexcept {
     dld->vkGetPhysicalDeviceProperties2KHR(handle, &props);
+}
+
+void PhysicalDevice::GetFeatures2KHR(VkPhysicalDeviceFeatures2KHR& features) const noexcept {
+    dld->vkGetPhysicalDeviceFeatures2KHR(handle, &features);
 }
 
 VkResult PhysicalDevice::EnumerateDeviceExtensionProperties(

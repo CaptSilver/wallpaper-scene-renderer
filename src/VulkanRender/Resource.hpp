@@ -11,9 +11,7 @@ namespace vulkan
 struct RenderingResources {
     vvk::CommandBuffer command;
 
-    vvk::Semaphore sem_swap_wait_image;
-    vvk::Semaphore sem_swap_finish;
-    vvk::Fence     fence_frame;
+    vvk::Fence fence_frame; // used by offscreen path
 
     StagingBuffer* vertex_buf;
     StagingBuffer* dyn_buf;
