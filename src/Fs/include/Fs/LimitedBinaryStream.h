@@ -17,7 +17,7 @@ public:
     virtual ~LimitedBinaryStream() = default;
 
 private:
-    bool CheckInArea(idx pos) const { return pos > 0 && pos <= Size(); }
+    bool CheckInArea(idx pos) const { return pos >= 0 && pos <= Size(); }
 
     bool SeekInMPos(void) { return m_infs->SeekSet(m_start + m_pos); }
     bool SeekInPos(idx pos) {

@@ -62,7 +62,9 @@ public:
     void PassDesc(const Desc& d) override { m_desc = d; }
     void Switch() {
         std::string path   = m_soundPaths[LoopIndex()];
-        auto        stream = vfs.Open("/assets/" + path);
+        LOG_INFO("audio Switch: loading '%s' (channels=%u, sampleRate=%u)",
+                 path.c_str(), m_desc.channels, m_desc.sampleRate);
+        auto stream = vfs.Open("/assets/" + path);
         if (! stream) {
             LOG_ERROR("audio file not found: %s", path.c_str());
             m_curActive.reset();
