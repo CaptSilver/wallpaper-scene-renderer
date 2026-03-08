@@ -97,6 +97,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_TEXELSIZEHALF    = existsOp(G_TEXELSIZEHALF);
     info.has_SCREEN           = existsOp(G_SCREEN);
     info.has_LP               = existsOp(G_LP);
+    info.has_LCR              = existsOp(G_LCR);
     info.has_EYEPOSITION      = existsOp(G_EYEPOSITION);
 
     std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](uint index, auto& value) {
@@ -310,8 +311,9 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(gtrans, std::array { f.x, f.y });
     }
 
-    if (info.has_LP) {
+    if (info.has_LP || info.has_LCR) {
         std::array<float, 16> lights { 0 };
+        std::array<float, 16> lights_color_radius { 0 };
         std::array<float, 12> lights_color { 0 };
         uint                  i = 0;
         for (auto& l : m_scene->lights) {
@@ -319,6 +321,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             assert(l->node() != nullptr);
             const auto& trans = l->node()->Translate();
             std::copy(trans.begin(), trans.end(), lights.begin() + i * 4);
+            // g_LightsColorRadius: vec4(color * intensity, radius)
+            const auto& ci = l->colorIntensity();
+            lights_color_radius[i * 4 + 0] = ci[0];
+            lights_color_radius[i * 4 + 1] = ci[1];
+            lights_color_radius[i * 4 + 2] = ci[2];
+            lights_color_radius[i * 4 + 3] = l->radius();
             if (i < 3) {
                 const auto& color = l->premultipliedColor();
                 std::copy(color.begin(), color.end(), lights_color.begin() + i * 4);
@@ -326,6 +334,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             i++;
         }
         updateOp(G_LP, lights);
+        updateOp(G_LCR, lights_color_radius);
         updateOp(G_LCP, lights_color);
     }
 
