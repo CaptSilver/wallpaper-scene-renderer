@@ -76,6 +76,14 @@ public:
     std::shared_ptr<void> reflectionDepthBuffer;
     std::unordered_set<std::string> clearedRTs;
 
+    // MSAA: 1=off, 2/4/8=sample count (maps to VkSampleCountFlagBits)
+    u32 msaaSamples { 1 };
+    // Multisampled color images per render target (owned by Vulkan layer)
+    std::unordered_map<std::string, std::shared_ptr<void>> msaaColorImages;
+    // Multisampled depth buffers (main + reflection)
+    std::shared_ptr<void> msaaDepthBuffer;
+    std::shared_ptr<void> msaaReflectionDepthBuffer;
+
     struct BloomConfig {
         bool                                     enabled { false };
         float                                    strength { 2.0f };

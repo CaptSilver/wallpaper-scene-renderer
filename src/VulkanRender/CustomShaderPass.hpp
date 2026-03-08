@@ -31,6 +31,11 @@ public:
         bool flipCullMode { false };       // swap front/back cull (reflection reverses winding)
         bool useReflectionDepth { false }; // use separate depth buffer for reflection passes
 
+        // MSAA
+        VkSampleCountFlagBits msaaSamples { VK_SAMPLE_COUNT_1_BIT };
+        VkImageView           msaaColorView { VK_NULL_HANDLE };
+        VkImage               msaaColorImage { VK_NULL_HANDLE };
+
         // -----prepared
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;

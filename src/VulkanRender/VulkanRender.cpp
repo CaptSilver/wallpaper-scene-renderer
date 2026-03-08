@@ -9,6 +9,7 @@
 #include "Utils/Algorism.h"
 
 #include <glslang/Public/ShaderLang.h>
+#include <unordered_set>
 
 #include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
@@ -70,7 +71,7 @@ struct VulkanRender::Impl {
     bool CreateRenderingResource(RenderingResources&);
     void DestroyRenderingResource(RenderingResources&);
 
-    void clearLastRenderGraph();
+    void clearLastRenderGraph(Scene* scene);
     void compileRenderGraph(Scene&, rg::RenderGraph&);
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
 
@@ -103,6 +104,10 @@ struct VulkanRender::Impl {
     std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
     RenderingResources                 m_rendering_resources;
 
+    // Swapchain synchronization semaphores
+    vvk::Semaphore m_sem_image_available;
+    vvk::Semaphore m_sem_render_finished;
+
     std::vector<VulkanPass*> m_passes;
 };
 
@@ -119,7 +124,7 @@ bool VulkanRender::reuploadTexture(const std::string& key, Image& image) {
     if (! pImpl->m_inited || ! pImpl->m_device) return false;
     return pImpl->m_device->tex_cache().ReuploadTex(key, image);
 }
-void VulkanRender::clearLastRenderGraph() { pImpl->clearLastRenderGraph(); };
+void VulkanRender::clearLastRenderGraph(Scene* scene) { pImpl->clearLastRenderGraph(scene); };
 void VulkanRender::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     pImpl->compileRenderGraph(scene, rg);
 };
@@ -270,6 +275,11 @@ void VulkanRender::Impl::destroy() {
         m_vertex_buf->destroy();
         m_dyn_buf->destroy();
 
+        // Release sync objects before destroying device
+        m_sem_image_available.reset();
+        m_sem_render_finished.reset();
+        m_rendering_resources.fence_frame.reset();
+
         m_device->Destroy();
     }
     m_instance.Destroy();
@@ -288,10 +298,10 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
     rr.fence_frame.Reset();
 
     if (m_with_surface) {
-        VkSemaphoreCreateInfo ci { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-                                   .pNext = nullptr };
-        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(ci, rr.sem_swap_finish));
-        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(ci, rr.sem_swap_wait_image));
+        VkSemaphoreCreateInfo sem_ci { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                                       .pNext = nullptr };
+        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available));
+        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_render_finished));
     }
 
     rr.vertex_buf = m_vertex_buf.get();
@@ -330,15 +340,13 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 }
 
 void VulkanRender::Impl::drawFrameSwapchain() {
-    static size_t resource_index = 0;
-
     RenderingResources& rr = m_rendering_resources;
-    resource_index         = (resource_index + 1) % 3;
-    uint32_t image_index   = 0;
+
+    uint32_t image_index = 0;
     {
         VVK_CHECK_VOID_RE(m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
                                                                  vk_wait_time,
-                                                                 *rr.sem_swap_wait_image,
+                                                                 *m_sem_image_available,
                                                                  {},
                                                                  &image_index));
     }
@@ -387,28 +395,29 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                 .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 .pNext                = nullptr,
                 .waitSemaphoreCount   = 1,
-                .pWaitSemaphores      = rr.sem_swap_wait_image.address(),
+                .pWaitSemaphores      = m_sem_image_available.address(),
                 .pWaitDstStageMask    = &wait_dst_stage,
                 .commandBufferCount   = 1,
                 .pCommandBuffers      = rr.command.address(),
                 .signalSemaphoreCount = 1,
-                .pSignalSemaphores    = rr.sem_swap_finish.address(),
+                .pSignalSemaphores    = m_sem_render_finished.address(),
     };
 
-    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame));
+    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, {}));
     VkPresentInfoKHR present_info {
         .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext              = nullptr,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores    = rr.sem_swap_finish.address(),
+        .pWaitSemaphores    = m_sem_render_finished.address(),
         .swapchainCount     = 1,
         .pSwapchains        = m_device->swapchain().handle().address(),
         .pImageIndices      = &image_index,
     };
     VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Present(present_info));
 
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
+    // Wait for ALL queue operations (submit + present) to complete.
+    // This ensures semaphores are fully consumed before reuse.
+    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.WaitIdle());
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
     RenderingResources& rr    = m_rendering_resources;
@@ -559,7 +568,7 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     scene.UpdateLinkedCamera("global");
 }
 
-void VulkanRender::Impl::clearLastRenderGraph() {
+void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
     // Ensure GPU is idle before destroying resources to prevent GPUVM faults
     if (m_device && m_device->handle()) {
         m_device->handle().WaitIdle();
@@ -569,6 +578,22 @@ void VulkanRender::Impl::clearLastRenderGraph() {
     }
     m_passes.clear();
     m_device->tex_cache().Clear();
+
+    // Clear MSAA image init tracking (images are being destroyed)
+    {
+        extern std::unordered_set<VkImage> g_msaa_color_inited;
+        g_msaa_color_inited.clear();
+    }
+
+    // Release GPU images stored in Scene before VMA allocator is destroyed.
+    // These are shared_ptr<VmaImageParameters> erased to shared_ptr<void>.
+    if (scene) {
+        scene->depthBuffer.reset();
+        scene->reflectionDepthBuffer.reset();
+        scene->msaaDepthBuffer.reset();
+        scene->msaaReflectionDepthBuffer.reset();
+        scene->msaaColorImages.clear();
+    }
 
     m_vertex_buf->destroy();
     m_dyn_buf->destroy();
