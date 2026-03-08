@@ -19,6 +19,7 @@ struct SceneRenderTarget {
     bool          withDepth { false };
     bool          has_mipmap { false };
     uint          mipmap_level { 1 };
+    TextureFormat format { TextureFormat::RGBA16F };
     TextureSample sample { TextureWrap::CLAMP_TO_EDGE,
                            TextureWrap::CLAMP_TO_EDGE,
                            TextureFilter::LINEAR,

@@ -18,6 +18,7 @@ void main()
 )";
 
 constexpr std::string_view frag_code = R"(#version 320 es
+precision mediump float;
 layout(location = 0) in vec2 v_Texcoord;
 layout(location = 0) out vec4 out_FragColor;
 
@@ -26,7 +27,8 @@ layout(binding = 1) uniform sampler2D u_Texture;
 
 void main()
 {
-	out_FragColor = vec4(texture(u_Texture, v_Texcoord).rgb, 1.0);
+	vec3 hdr = clamp(texture(u_Texture, v_Texcoord).rgb, 0.0, 1.0);
+	out_FragColor = vec4(hdr, 1.0);
 }
 )";
 

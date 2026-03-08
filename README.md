@@ -51,7 +51,8 @@ Made this for fun.
 	- [x] MSAA x4
 	- [x] Anisotropic filtering (16x)
 	- [ ] Shadow mapping
-	- [ ] HDR rendering & tonemapping
+	- [x] HDR rendering (RGBA16F internal RTs)
+	- [x] HDR texture formats (BC6H, RGBA16F, RG16F, R16F, RGB565, RGBA1010102)
 	- [ ] HDR bloom
 - [ ] Timeline animations
 - [ ] Scenescript

@@ -63,7 +63,13 @@ TextureFormat ToTexFormate(int type) {
     case 7: return TextureFormat::BC1;
     case 8: return TextureFormat::RG8;
     case 9: return TextureFormat::R8;
+    case 10: return TextureFormat::RGBA16F;
+    case 11: return TextureFormat::RG16F;
     case 12: return TextureFormat::BC7;
+    case 13: return TextureFormat::R16F;
+    case 14: return TextureFormat::BC6H;
+    case 15: return TextureFormat::RGB565;
+    case 16: return TextureFormat::RGBA1010102;
     default:
         LOG_ERROR("ERROR::ToTexFormate Unkown image type: %d", type);
         return TextureFormat::RGBA8;
@@ -184,23 +190,10 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     LoadHeader(file, img.header);
 
     {
-        static const char* fmt_names[] = {
-            "RGBA8", "BC1", "BC2", "BC3", "RG8", "R8", "BC7", "?"
-        };
-        int fi = 7;
-        switch (img.header.format) {
-        case TextureFormat::RGBA8: fi = 0; break;
-        case TextureFormat::BC1:   fi = 1; break;
-        case TextureFormat::BC2:   fi = 2; break;
-        case TextureFormat::BC3:   fi = 3; break;
-        case TextureFormat::RG8:   fi = 4; break;
-        case TextureFormat::R8:    fi = 5; break;
-        case TextureFormat::BC7:   fi = 6; break;
-        default: break;
-        }
         LOG_INFO("tex '%s': %dx%d fmt=%s sprite=%d count=%d",
                  name.c_str(), img.header.width, img.header.height,
-                 fmt_names[fi], (int)img.header.isSprite, img.header.count);
+                 ToString(img.header.format).c_str(),
+                 (int)img.header.isSprite, img.header.count);
     }
 
     // image
