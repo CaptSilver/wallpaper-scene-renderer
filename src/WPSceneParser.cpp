@@ -655,7 +655,8 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         gb["g_TexelSize"]     = std::array { 1.0f / 1920.0f, 1.0f / 1080.0f };
         gb["g_TexelSizeHalf"] = std::array { 1.0f / 1920.0f / 2.0f, 1.0f / 1080.0f / 2.0f };
 
-        gb["g_LightAmbientColor"] = sc.general.ambientcolor;
+        gb["g_LightAmbientColor"]  = sc.general.ambientcolor;
+        gb["g_LightSkylightColor"] = sc.general.skylightcolor;
         gb["g_NormalModelMatrix"] = ShaderValue::fromMatrix(Matrix4f::Identity());
     }
 

@@ -73,6 +73,7 @@ constexpr std::string_view G_ETVP { "g_EffectTextureProjectionMatrix" };
 constexpr std::string_view G_ETVPI { "g_EffectTextureProjectionMatrixInverse" };
 constexpr std::string_view G_LP { "g_LightsPosition" };
 constexpr std::string_view G_LCP { "g_LightsColorPremultiplied" };
+constexpr std::string_view G_LCR { "g_LightsColorRadius" };
 
 constexpr std::string_view G_TIME { "g_Time" };
 constexpr std::string_view G_DAYTIME { "g_DayTime" };

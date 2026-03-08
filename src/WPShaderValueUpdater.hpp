@@ -38,6 +38,7 @@ struct WPUniformInfo {
     bool has_TEXELSIZEHALF { false };
     bool has_SCREEN { false };
     bool has_LP { false };
+    bool has_LCR { false };
     bool has_EYEPOSITION { false };
 
     struct Tex {
