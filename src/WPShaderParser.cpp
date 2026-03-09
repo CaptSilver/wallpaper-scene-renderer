@@ -206,8 +206,10 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                             GET_JSON_NAME_VALUE_NOWARN(sv_json, "format", format);
                             if (! format.empty()) {
                                 std::string comboName = format;
-                                std::transform(
-                                    comboName.begin(), comboName.end(), comboName.begin(), ::toupper);
+                                std::transform(comboName.begin(),
+                                               comboName.end(),
+                                               comboName.begin(),
+                                               ::toupper);
                                 combos[comboName] = (index < texcount) ? "1" : "0";
                             }
                         }
@@ -243,7 +245,8 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                     }
                     if (defines.back()[0] != 'g') {
                         LOG_INFO("user shader uniform: '%s' (alias: '%s')",
-                                 defines.back().c_str(), material.c_str());
+                                 defines.back().c_str(),
+                                 material.c_str());
                     }
                 }
             }
@@ -367,7 +370,7 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
             "    return light;\n"
             "}\n";
 
-        std::regex re_require("(^|\r?\n)#require (.+)(\r?\n)");
+        std::regex  re_require("(^|\r?\n)#require (.+)(\r?\n)");
         std::smatch m;
         std::string tmp = src;
         std::string result;
@@ -520,13 +523,15 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // NOTE: must run before fixTrunc so that upgraded variables are not incorrectly
     // truncated (e.g. a vec2 upgraded to vec4 must not have its assignments cut to .xy).
     {
-        auto upgradeIfOutOfRange = [&result](const char* small_type, const char* big_type,
+        auto upgradeIfOutOfRange = [&result](const char* small_type,
+                                             const char* big_type,
                                              const char* oob_pattern,
                                              const char* bare_swizzle) {
             std::vector<std::string> to_upgrade;
             std::regex               re_decl(std::string(R"(\b)") + small_type + R"(\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
-                 it != std::sregex_iterator(); ++it) {
+                 it != std::sregex_iterator();
+                 ++it) {
                 std::string name = (*it)[1].str();
                 if (std::regex_search(result, std::regex(R"(\b)" + name + oob_pattern)))
                     to_upgrade.push_back(std::move(name));
@@ -571,13 +576,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
 
         auto fixTrunc = [&result](const std::set<std::string>& dst,
                                   const std::set<std::string>& src,
-                                  const char*                   swizzle) {
+                                  const char*                  swizzle) {
             for (const auto& d : dst) {
                 for (const auto& s : src) {
                     if (d == s) continue;
                     std::regex re("\\b(" + d + ")\\s*=\\s*(" + s + ")\\s*;");
-                    result = std::regex_replace(result, re,
-                                                "$1 = $2." + std::string(swizzle) + ";");
+                    result =
+                        std::regex_replace(result, re, "$1 = $2." + std::string(swizzle) + ";");
                 }
             }
         };
@@ -593,10 +598,9 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Wrapping an already-vecN arg in vecN() is a safe copy-constructor identity.
     // Only handles one level of nesting inside each pow argument (sufficient in practice).
     {
-        std::regex re(
-            R"(\b(vec[234])\s*\(\s*pow\s*\()"
-            R"(([^(),]*(?:\([^)]*\)[^(),]*)*),\s*)"
-            R"(([^()]*(?:\([^)]*\)[^()]*)*)\)\s*\))");
+        std::regex re(R"(\b(vec[234])\s*\(\s*pow\s*\()"
+                      R"(([^(),]*(?:\([^)]*\)[^(),]*)*),\s*)"
+                      R"(([^()]*(?:\([^)]*\)[^()]*)*)\)\s*\))");
         result = std::regex_replace(result, re, "pow($1($2), $1($3))");
     }
 
@@ -729,7 +733,8 @@ void WPShaderParser::FinalGlslang() { glslang::FinalizeProcess(); }
 
 bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderUnit> units,
                                   std::vector<ShaderCode>& codes, fs::VFS& vfs,
-                                  WPShaderInfo* shader_info, std::span<const WPShaderTexInfo> texs) {
+                                  WPShaderInfo*                    shader_info,
+                                  std::span<const WPShaderTexInfo> texs) {
     (void)texs;
 
     std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
@@ -759,10 +764,10 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         if (units.size() == 2) {
             auto parseVaryings = [](const std::string& src, const char* kw) {
                 std::map<std::string, std::string> m;
-                std::regex re(std::string(R"(\b)") + kw +
-                              R"(\s+(vec[234]|float)\s+(\w+)\s*;)");
+                std::regex re(std::string(R"(\b)") + kw + R"(\s+(vec[234]|float)\s+(\w+)\s*;)");
                 for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
-                     it != std::sregex_iterator(); ++it)
+                     it != std::sregex_iterator();
+                     ++it)
                     m[(*it)[2].str()] = (*it)[1].str();
                 return m;
             };
@@ -775,19 +780,20 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
             };
             // Upgrade a varying declaration and pad its assignments in the given source.
             // io_kw is "out" (vertex) or "in" (fragment).
-            auto upgradeVarying = [&dim](std::string& src, const char* io_kw,
+            auto upgradeVarying = [&dim](std::string&       src,
+                                         const char*        io_kw,
                                          const std::string& name,
                                          const std::string& old_type,
                                          const std::string& new_type) {
                 // Upgrade declaration
-                std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type +
-                                   "\\s+" + name + "\\s*;");
+                std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
+                                   "\\s*;");
                 src = std::regex_replace(
                     src, re_decl, std::string(io_kw) + " " + new_type + " " + name + ";");
 
                 // For "out" varyings (vertex shader): pad assignments with zeroes.
                 if (std::string(io_kw) == "out") {
-                    int od = dim(old_type), nd = dim(new_type);
+                    int         od = dim(old_type), nd = dim(new_type);
                     std::string pad;
                     for (int p = 0; p < nd - od; p++) pad += ", 0.0";
                     std::regex re_assign("\\b" + name + "(\\s*=\\s*)((?!" + new_type +
@@ -797,8 +803,8 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                 }
             };
 
-            auto vertOuts = parseVaryings(units[0].src, "out");
-            auto fragIns  = parseVaryings(units[1].src, "in");
+            auto vertOuts     = parseVaryings(units[0].src, "out");
+            auto fragIns      = parseVaryings(units[1].src, "in");
             bool vert_changed = false, frag_changed = false;
 
             for (auto& [name, ftype] : fragIns) {
