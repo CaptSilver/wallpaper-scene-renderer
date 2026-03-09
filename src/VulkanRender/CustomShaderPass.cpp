@@ -18,25 +18,26 @@
 using namespace wallpaper::vulkan;
 
 // Frame-level pass execution counters (reset in VulkanRender.cpp each frame)
-namespace wallpaper::vulkan {
-    int g_exec_pass_counter = 0;
-    int g_exec_frame_counter = 0;
-    bool g_depth_transitioned = false;            // reset each frame in VulkanRender.cpp
-    bool g_refl_depth_transitioned = false;       // reset each frame in VulkanRender.cpp
-    // MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
-    // (only needs to happen once per image lifetime, not per frame)
-    std::unordered_set<VkImage> g_msaa_color_inited;
-}
+namespace wallpaper::vulkan
+{
+int  g_exec_pass_counter       = 0;
+int  g_exec_frame_counter      = 0;
+bool g_depth_transitioned      = false; // reset each frame in VulkanRender.cpp
+bool g_refl_depth_transitioned = false; // reset each frame in VulkanRender.cpp
+// MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
+// (only needs to happen once per image lifetime, not per frame)
+std::unordered_set<VkImage> g_msaa_color_inited;
+} // namespace wallpaper::vulkan
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
-    m_desc.node            = desc.node;
-    m_desc.textures        = desc.textures;
-    m_desc.output          = desc.output;
-    m_desc.sprites_map     = desc.sprites_map;
-    m_desc.camera_override = desc.camera_override;
-    m_desc.disableDepth        = desc.disableDepth;
-    m_desc.flipCullMode        = desc.flipCullMode;
-    m_desc.useReflectionDepth  = desc.useReflectionDepth;
+    m_desc.node               = desc.node;
+    m_desc.textures           = desc.textures;
+    m_desc.output             = desc.output;
+    m_desc.sprites_map        = desc.sprites_map;
+    m_desc.camera_override    = desc.camera_override;
+    m_desc.disableDepth       = desc.disableDepth;
+    m_desc.flipCullMode       = desc.flipCullMode;
+    m_desc.useReflectionDepth = desc.useReflectionDepth;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -51,7 +52,7 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         return existing;
     }
 
-    auto depth = std::make_shared<VmaImageParameters>();
+    auto              depth = std::make_shared<VmaImageParameters>();
     VkImageCreateInfo info {
         .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext       = nullptr,
@@ -62,9 +63,8 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         .arrayLayers = 1,
         .samples     = samples,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
-        .usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VmaAllocationCreateInfo vma_info {};
@@ -75,14 +75,16 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
     }
     depth->extent = extent;
     VkImageViewCreateInfo view_info {
-        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .pNext    = nullptr,
-        .image    = *depth->handle,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = DEPTH_FORMAT,
-        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-                              .baseMipLevel = 0, .levelCount = 1,
-                              .baseArrayLayer = 0, .layerCount = 1 },
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext            = nullptr,
+        .image            = *depth->handle,
+        .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+        .format           = DEPTH_FORMAT,
+        .subresourceRange = { .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+                              .baseMipLevel   = 0,
+                              .levelCount     = 1,
+                              .baseArrayLayer = 0,
+                              .layerCount     = 1 },
     };
     if (device.handle().CreateImageView(view_info, depth->view) != VK_SUCCESS) {
         LOG_ERROR("depth image view creation failed");
@@ -94,28 +96,28 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
 }
 
 static std::shared_ptr<VmaImageParameters>
-GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
-                          VkExtent3D extent, VkSampleCountFlagBits samples,
-                          VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT) {
+GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device, VkExtent3D extent,
+                          VkSampleCountFlagBits samples,
+                          VkFormat              format = VK_FORMAT_R16G16B16A16_SFLOAT) {
     auto existing = std::static_pointer_cast<VmaImageParameters>(storage);
     if (existing && existing->extent.width == extent.width &&
         existing->extent.height == extent.height) {
         return existing;
     }
 
-    auto msaa = std::make_shared<VmaImageParameters>();
+    auto              msaa = std::make_shared<VmaImageParameters>();
     VkImageCreateInfo info {
-        .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext       = nullptr,
-        .imageType   = VK_IMAGE_TYPE_2D,
-        .format      = format,
-        .extent      = extent,
-        .mipLevels   = 1,
-        .arrayLayers = 1,
-        .samples     = samples,
-        .tiling      = VK_IMAGE_TILING_OPTIMAL,
-        .usage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext         = nullptr,
+        .imageType     = VK_IMAGE_TYPE_2D,
+        .format        = format,
+        .extent        = extent,
+        .mipLevels     = 1,
+        .arrayLayers   = 1,
+        .samples       = samples,
+        .tiling        = VK_IMAGE_TILING_OPTIMAL,
+        .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VmaAllocationCreateInfo vma_info {};
@@ -126,14 +128,16 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
     }
     msaa->extent = extent;
     VkImageViewCreateInfo view_info {
-        .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .pNext    = nullptr,
-        .image    = *msaa->handle,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format   = format,
-        .subresourceRange = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                              .baseMipLevel = 0, .levelCount = 1,
-                              .baseArrayLayer = 0, .layerCount = 1 },
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .pNext            = nullptr,
+        .image            = *msaa->handle,
+        .viewType         = VK_IMAGE_VIEW_TYPE_2D,
+        .format           = format,
+        .subresourceRange = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                              .baseMipLevel   = 0,
+                              .levelCount     = 1,
+                              .baseArrayLayer = 0,
+                              .layerCount     = 1 },
     };
     if (device.handle().CreateImageView(view_info, msaa->view) != VK_SUCCESS) {
         LOG_ERROR("MSAA color image view creation failed");
@@ -144,18 +148,17 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device,
     return msaa;
 }
 
-std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format,
-                                                VkAttachmentLoadOp loadOp,
-                                                VkImageLayout      finalLayout,
-                                                bool               hasDepth = false,
-                                                VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                                VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT) {
+std::optional<vvk::RenderPass>
+CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp loadOp,
+                 VkImageLayout finalLayout, bool hasDepth = false,
+                 VkAttachmentLoadOp    depthLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                 VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT) {
     bool useMSAA = msaaSamples > VK_SAMPLE_COUNT_1_BIT;
 
     // Without MSAA: [0]=color, [1]=depth
     // With MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
     VkAttachmentDescription attachments[3];
-    uint32_t attachmentCount = 0;
+    uint32_t                attachmentCount = 0;
 
     if (useMSAA) {
         // Attachment 0: multisampled color
@@ -166,7 +169,7 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
             .format         = format,
             .samples        = msaaSamples,
             .loadOp         = loadOp,
-            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE,  // persist for next pass
+            .storeOp        = VK_ATTACHMENT_STORE_OP_STORE, // persist for next pass
             .stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
             .initialLayout  = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -253,8 +256,8 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
     };
 
     VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkAccessFlags        dstAccess = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    VkAccessFlags        dstAccess =
+        VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     if (hasDepth) {
         dstStage |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
         dstAccess |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
@@ -299,10 +302,9 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
         return;
     }
 
-    size_t offset    = uni->second.offset;
+    size_t offset = uni->second.offset;
     // Use SPIR-V member size when available, fall back to num-based calculation
-    size_t type_size = uni->second.size > 0 ? uni->second.size
-                                            : sizeof(float) * uni->second.num;
+    size_t type_size = uni->second.size > 0 ? uni->second.size : sizeof(float) * uni->second.num;
     // Clamp write to member size to prevent overflow into adjacent UBO members
     // (e.g., mat4 ShaderValue written to mat3 uniform)
     if (value_u8.size() > type_size) {
@@ -339,7 +341,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto& tex_name = m_desc.output;
         assert(IsSpecTex(tex_name));
         assert(scene.renderTargets.count(tex_name) > 0);
-        auto& rt = scene.renderTargets.at(tex_name);
+        auto& rt         = scene.renderTargets.at(tex_name);
         output_vk_format = ToVkType(rt.format);
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
@@ -366,8 +368,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
 
         // Check if shader uses time-based uniforms (for caching optimization)
-        if (!ref.blocks.empty()) {
-            auto& block = ref.blocks.front();
+        if (! ref.blocks.empty()) {
+            auto& block          = ref.blocks.front();
             m_uses_time_uniforms = exists(block.member_map, G_TIME) ||
                                    exists(block.member_map, G_DAYTIME) ||
                                    exists(block.member_map, G_POINTERPOSITION);
@@ -411,10 +413,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
         if (need_fallback) {
             static const std::string dummy_key = "_rt_dummy_1x1";
-            TextureKey tk {
-                .width = 1, .height = 1, .usage = {},
-                .format = TextureFormat::RGBA8, .sample = {},
-                .mipmap_level = 1,
+            TextureKey               tk {
+                              .width        = 1,
+                              .height       = 1,
+                              .usage        = {},
+                              .format       = TextureFormat::RGBA8,
+                              .sample       = {},
+                              .mipmap_level = 1,
             };
             if (auto opt = device.tex_cache().Query(dummy_key, tk, true); opt.has_value()) {
                 m_desc.vk_fallback_tex = opt.value();
@@ -458,7 +463,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 if (! m_desc.dyn_vertex) {
                     if (! rr.vertex_buf->allocateSubRef(vertex.CapacitySizeOf(), buf)) {
                         LOG_ERROR("vertex buf alloc failed for shader '%s' vert %u, size %zu",
-                                  mesh.Material()->customShader.shader->name.c_str(), i, vertex.CapacitySizeOf());
+                                  mesh.Material()->customShader.shader->name.c_str(),
+                                  i,
+                                  vertex.CapacitySizeOf());
                         return;
                     }
                     if (! rr.vertex_buf->writeToBuf(buf, { (uint8_t*)vertex.Data(), buf.size })) {
@@ -534,36 +541,34 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             } else {
                 SetAttachmentLoadOp(blendmode, loadOp);
             }
-
         }
         // MSAA: only for _rt_default (the final composited output).
         // Effect/pingpong RTs don't benefit from MSAA and small ones can
         // trigger RADV GFX1201 FPE in radv_get_binning_state.
         if (m_desc.output == SpecTex_Default) {
-            m_desc.msaaSamples = (VkSampleCountFlagBits)std::min(
-                (u32)scene.msaaSamples, (u32)device.maxMSAASamples());
+            m_desc.msaaSamples = (VkSampleCountFlagBits)std::min((u32)scene.msaaSamples,
+                                                                 (u32)device.maxMSAASamples());
         } else {
             m_desc.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
         }
 
         // Depth buffer for 3D models
-        bool useDepth = !m_desc.disableDepth &&
-                        (mesh.Material()->depthTest || mesh.Material()->depthWrite);
+        bool useDepth =
+            ! m_desc.disableDepth && (mesh.Material()->depthTest || mesh.Material()->depthWrite);
         std::shared_ptr<VmaImageParameters> depthImg;
         if (useDepth) {
             VkExtent3D depthExtent { m_desc.vk_output.extent.width,
-                                     m_desc.vk_output.extent.height, 1 };
+                                     m_desc.vk_output.extent.height,
+                                     1 };
             if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
                 // MSAA: depth buffer must be multisampled
-                auto& depthStorage = m_desc.useReflectionDepth
-                                         ? scene.msaaReflectionDepthBuffer
-                                         : scene.msaaDepthBuffer;
-                depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent,
-                                                 m_desc.msaaSamples);
+                auto& depthStorage = m_desc.useReflectionDepth ? scene.msaaReflectionDepthBuffer
+                                                               : scene.msaaDepthBuffer;
+                depthImg =
+                    GetOrCreateDepthImage(depthStorage, device, depthExtent, m_desc.msaaSamples);
             } else {
-                auto& depthStorage = m_desc.useReflectionDepth
-                                         ? scene.reflectionDepthBuffer
-                                         : scene.depthBuffer;
+                auto& depthStorage =
+                    m_desc.useReflectionDepth ? scene.reflectionDepthBuffer : scene.depthBuffer;
                 depthImg = GetOrCreateDepthImage(depthStorage, device, depthExtent);
             }
             if (! depthImg) {
@@ -576,12 +581,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // MSAA: create multisampled color image for this RT
         std::shared_ptr<VmaImageParameters> msaaColorImg;
         if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-            VkExtent3D extent { m_desc.vk_output.extent.width,
-                                m_desc.vk_output.extent.height, 1 };
-            auto& msaaStorage = scene.msaaColorImages[m_desc.output];
-            msaaColorImg = GetOrCreateMSAAColorImage(msaaStorage, device, extent,
-                                                      m_desc.msaaSamples,
-                                                      output_vk_format);
+            VkExtent3D extent { m_desc.vk_output.extent.width, m_desc.vk_output.extent.height, 1 };
+            auto&      msaaStorage = scene.msaaColorImages[m_desc.output];
+            msaaColorImg           = GetOrCreateMSAAColorImage(
+                msaaStorage, device, extent, m_desc.msaaSamples, output_vk_format);
             if (! msaaColorImg) {
                 LOG_ERROR("MSAA color image creation failed, falling back to 1x");
                 m_desc.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -589,8 +592,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
 
         VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        scene.depthBufferCleared = true;
-        auto opt = CreateRenderPass(device.handle(),
+        scene.depthBufferCleared       = true;
+        auto opt                       = CreateRenderPass(device.handle(),
                                     output_vk_format,
                                     loadOp,
                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -602,15 +605,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                       mesh.Material()->customShader.shader->name.c_str());
             return;
         }
-        auto& pass = opt.value();
-        m_desc.hasDepth  = useDepth;
-        m_desc.depthView = useDepth ? *depthImg->view : VK_NULL_HANDLE;
+        auto& pass        = opt.value();
+        m_desc.hasDepth   = useDepth;
+        m_desc.depthView  = useDepth ? *depthImg->view : VK_NULL_HANDLE;
         m_desc.depthImage = useDepth ? *depthImg->handle : VK_NULL_HANDLE;
-        m_desc.depthOwner = depthImg;  // prevent depth image from being freed
+        m_desc.depthOwner = depthImg; // prevent depth image from being freed
         if (msaaColorImg) {
             m_desc.msaaColorView  = *msaaColorImg->view;
             m_desc.msaaColorImage = *msaaColorImg->handle;
-            m_desc.msaaColorOwner = msaaColorImg;  // prevent MSAA image from being freed
+            m_desc.msaaColorOwner = msaaColorImg; // prevent MSAA image from being freed
         }
 
         descriptor_info.push_descriptor = true;
@@ -620,22 +623,22 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             pipeline.multisample.rasterizationSamples = m_desc.msaaSamples;
         }
         if (mesh.Material()->depthTest) {
-            pipeline.depth.depthTestEnable  = VK_TRUE;
-            pipeline.depth.depthCompareOp   = VK_COMPARE_OP_LESS;
+            pipeline.depth.depthTestEnable = VK_TRUE;
+            pipeline.depth.depthCompareOp  = VK_COMPARE_OP_LESS;
         }
         if (mesh.Material()->depthBiasConstant != 0) {
             pipeline.raster.depthBiasEnable         = VK_TRUE;
-            pipeline.raster.depthBiasConstantFactor  = mesh.Material()->depthBiasConstant;
+            pipeline.raster.depthBiasConstantFactor = mesh.Material()->depthBiasConstant;
         }
         if (mesh.Material()->depthWrite) {
             pipeline.depth.depthWriteEnable = VK_TRUE;
         }
         if (mesh.Material()->cullmode == "back") {
-            pipeline.raster.cullMode = m_desc.flipCullMode ? VK_CULL_MODE_FRONT_BIT
-                                                           : VK_CULL_MODE_BACK_BIT;
+            pipeline.raster.cullMode =
+                m_desc.flipCullMode ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
         } else if (mesh.Material()->cullmode == "front") {
-            pipeline.raster.cullMode = m_desc.flipCullMode ? VK_CULL_MODE_BACK_BIT
-                                                           : VK_CULL_MODE_FRONT_BIT;
+            pipeline.raster.cullMode =
+                m_desc.flipCullMode ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
         }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
@@ -659,9 +662,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 LOG_INFO("pipeline: shader='%s' out='%.*s' draw=%u indexed=%d "
                          "depthTest=%d depthWrite=%d cull=%s blend=%d",
                          mesh.Material()->customShader.shader->name.c_str(),
-                         (int)m_desc.output.size(), m_desc.output.data(),
-                         m_desc.draw_count, m_desc.index_buf ? 1 : 0,
-                         (int)mesh.Material()->depthTest, (int)mesh.Material()->depthWrite,
+                         (int)m_desc.output.size(),
+                         m_desc.output.data(),
+                         m_desc.draw_count,
+                         m_desc.index_buf ? 1 : 0,
+                         (int)mesh.Material()->depthTest,
+                         (int)mesh.Material()->depthWrite,
                          mesh.Material()->cullmode.c_str(),
                          (int)mesh.Material()->blenmode);
             }
@@ -673,16 +679,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // No MSAA: [0]=color, [1]=depth
         // MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
         VkImageView fb_attachments[3];
-        uint32_t fb_count;
+        uint32_t    fb_count;
         if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-            fb_attachments[0] = m_desc.msaaColorView;   // multisampled color
-            fb_attachments[1] = m_desc.vk_output.view;  // resolve target (original RT)
-            fb_attachments[2] = m_desc.depthView;        // multisampled depth
-            fb_count = m_desc.hasDepth ? 3u : 2u;
+            fb_attachments[0] = m_desc.msaaColorView;  // multisampled color
+            fb_attachments[1] = m_desc.vk_output.view; // resolve target (original RT)
+            fb_attachments[2] = m_desc.depthView;      // multisampled depth
+            fb_count          = m_desc.hasDepth ? 3u : 2u;
         } else {
             fb_attachments[0] = m_desc.vk_output.view;
             fb_attachments[1] = m_desc.depthView;
-            fb_count = m_desc.hasDepth ? 2u : 1u;
+            fb_count          = m_desc.hasDepth ? 2u : 1u;
         }
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -727,7 +733,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         auto& indice = mesh.GetIndexArray(0);
                         u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
                         draw_count   = count * 3;
-                        auto& buf = index_buf;
+                        auto& buf    = index_buf;
                         if (! dyn_buf->writeToBuf(buf,
                                                   { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
                             return;
@@ -834,33 +840,44 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         extern int g_exec_pass_counter;
         extern int g_exec_frame_counter;
         if (g_exec_frame_counter < 1) {
-            auto shaderName = m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
-                ? m_desc.node->Mesh()->Material()->customShader.shader->name : "???";
+            auto shaderName  = m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
+                                   ? m_desc.node->Mesh()->Material()->customShader.shader->name
+                                   : "???";
             bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
             LOG_INFO("EXEC[%d] pass#%d shader='%s' out='%.*s' draw=%u visible=%d "
                      "depth=%d blend=%d tex_count=%zu out_img=%p out_ext=%ux%u",
-                     g_exec_frame_counter, g_exec_pass_counter, shaderName.c_str(),
-                     (int)m_desc.output.size(), m_desc.output.data(),
-                     m_desc.draw_count, (int)nodeVisible,
-                     (int)m_desc.hasDepth, (int)m_desc.blending,
+                     g_exec_frame_counter,
+                     g_exec_pass_counter,
+                     shaderName.c_str(),
+                     (int)m_desc.output.size(),
+                     m_desc.output.data(),
+                     m_desc.draw_count,
+                     (int)nodeVisible,
+                     (int)m_desc.hasDepth,
+                     (int)m_desc.blending,
                      m_desc.vk_textures.size(),
                      (void*)m_desc.vk_output.handle,
-                     m_desc.vk_output.extent.width, m_desc.vk_output.extent.height);
+                     m_desc.vk_output.extent.width,
+                     m_desc.vk_output.extent.height);
             // Log bound textures
             for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-                auto& slot = m_desc.vk_textures[i];
-                int binding = m_desc.vk_tex_binding[i];
+                auto& slot    = m_desc.vk_textures[i];
+                int   binding = m_desc.vk_tex_binding[i];
                 if (binding < 0 || slot.slots.empty()) continue;
                 auto& img = slot.getActive();
                 LOG_INFO("  tex[%zu] binding=%d extent=%ux%u handle=%p",
-                         i, binding, img.extent.width, img.extent.height, (void*)img.handle);
+                         i,
+                         binding,
+                         img.extent.width,
+                         img.extent.height,
+                         (void*)img.handle);
             }
             g_exec_pass_counter++;
         }
     }
 
-    auto&                   cmd    = rr.command;
-    auto&                   outext = m_desc.vk_output.extent;
+    auto& cmd    = rr.command;
+    auto& outext = m_desc.vk_output.extent;
 
     // Transition MSAA color image from UNDEFINED → COLOR_ATTACHMENT_OPTIMAL on first use
     if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT &&
@@ -879,7 +896,8 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         };
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                            0, barrier);
+                            0,
+                            barrier);
         g_msaa_color_inited.insert(m_desc.msaaColorImage);
     }
 
@@ -887,9 +905,8 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
     // to work around drivers where the render pass CLEAR doesn't execute
     // correctly with a newly-created depth image (RADV GFX1201).
-    bool& depth_flag = m_desc.useReflectionDepth ? g_refl_depth_transitioned
-                                                   : g_depth_transitioned;
-    if (m_desc.hasDepth && !depth_flag) {
+    bool& depth_flag = m_desc.useReflectionDepth ? g_refl_depth_transitioned : g_depth_transitioned;
+    if (m_desc.hasDepth && ! depth_flag) {
         VkImageSubresourceRange depth_range {
             .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
             .baseMipLevel   = 0,
@@ -911,22 +928,21 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
             .image               = m_desc.depthImage,
             .subresourceRange    = depth_range,
         };
-        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
 
         // Explicit clear to 1.0
         VkClearDepthStencilValue clear_depth { 1.0f, 0 };
-        cmd.ClearDepthStencilImage(m_desc.depthImage,
-                                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                                   clear_depth, depth_range);
+        cmd.ClearDepthStencilImage(
+            m_desc.depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, clear_depth, depth_range);
 
         // Transition TRANSFER_DST → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         VkImageMemoryBarrier to_attach {
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext               = nullptr,
-            .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext         = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             .newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -936,8 +952,9 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         };
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
                             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                            0, to_attach);
+                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                            0,
+                            to_attach);
         depth_flag = true;
     }
 
@@ -1006,11 +1023,13 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     }
 
     // Single batched barrier call instead of one per texture
-    if (!image_barriers.empty()) {
+    if (! image_barriers.empty()) {
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_DEPENDENCY_BY_REGION_BIT,
-                            {}, {}, image_barriers);
+                            {},
+                            {},
+                            image_barriers);
     }
 
     if (m_desc.ubo_buf) {
@@ -1035,16 +1054,16 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // No MSAA: [0]=color, [1]=depth
     // MSAA:    [0]=msaa_color, [1]=resolve(unused), [2]=msaa_depth
     VkClearValue clear_values[3];
-    uint32_t clearCount;
+    uint32_t     clearCount;
     if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-        clear_values[0] = m_desc.clear_value;           // msaa color
-        clear_values[1] = {};                            // resolve (DONT_CARE, ignored)
-        clear_values[2].depthStencil = { 1.0f, 0 };     // msaa depth
-        clearCount = m_desc.hasDepth ? 3u : 2u;
+        clear_values[0]              = m_desc.clear_value; // msaa color
+        clear_values[1]              = {};                 // resolve (DONT_CARE, ignored)
+        clear_values[2].depthStencil = { 1.0f, 0 };        // msaa depth
+        clearCount                   = m_desc.hasDepth ? 3u : 2u;
     } else {
-        clear_values[0] = m_desc.clear_value;
+        clear_values[0]              = m_desc.clear_value;
         clear_values[1].depthStencil = { 1.0f, 0 };
-        clearCount = m_desc.hasDepth ? 2u : 1u;
+        clearCount                   = m_desc.hasDepth ? 2u : 1u;
     }
 
     VkRenderPassBeginInfo pass_begin_info {

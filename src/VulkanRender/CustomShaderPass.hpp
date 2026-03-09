@@ -50,16 +50,16 @@ public:
         StagingBufferRef              ubo_buf;
 
         // pipeline
-        VkClearValue       clear_value;
-        bool               blending { false };
-        bool               hasDepth { false };
-        VkImageView        depthView { VK_NULL_HANDLE };
-        VkImage            depthImage { VK_NULL_HANDLE };
-        std::shared_ptr<void> depthOwner;    // prevent shared depth image from being freed
+        VkClearValue          clear_value;
+        bool                  blending { false };
+        bool                  hasDepth { false };
+        VkImageView           depthView { VK_NULL_HANDLE };
+        VkImage               depthImage { VK_NULL_HANDLE };
+        std::shared_ptr<void> depthOwner;     // prevent shared depth image from being freed
         std::shared_ptr<void> msaaColorOwner; // prevent shared MSAA image from being freed
-        vvk::Framebuffer   fb;
-        PipelineParameters pipeline;
-        u32                draw_count { 0 };
+        vvk::Framebuffer      fb;
+        PipelineParameters    pipeline;
+        u32                   draw_count { 0 };
 
         // uniforms
         std::function<void()> update_op;
@@ -75,15 +75,13 @@ public:
     void destory(const Device&, RenderingResources&) override;
 
     // Returns true if this pass has no dynamic elements (vertices, sprites)
-    bool isStatic() const override {
-        return !m_desc.dyn_vertex && m_desc.sprites_map.empty();
-    }
+    bool isStatic() const override { return ! m_desc.dyn_vertex && m_desc.sprites_map.empty(); }
 
     // Returns true if shader uses time-based uniforms (g_Time, g_PointerPosition, etc.)
     bool usesTimeUniforms() const { return m_uses_time_uniforms; }
 
     // Pass is cacheable if static and doesn't use time-based uniforms
-    bool isCacheable() const { return isStatic() && !m_uses_time_uniforms; }
+    bool isCacheable() const { return isStatic() && ! m_uses_time_uniforms; }
 
     // Check if output is already cached and valid
     bool isCached() const { return m_cached; }
