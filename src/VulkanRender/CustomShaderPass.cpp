@@ -536,9 +536,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
 
         }
-        // MSAA: clamp to device-supported max
-        m_desc.msaaSamples = (VkSampleCountFlagBits)std::min(
-            (u32)scene.msaaSamples, (u32)device.maxMSAASamples());
+        // MSAA: only for _rt_default (the final composited output).
+        // Effect/pingpong RTs don't benefit from MSAA and small ones can
+        // trigger RADV GFX1201 FPE in radv_get_binning_state.
+        if (m_desc.output == SpecTex_Default) {
+            m_desc.msaaSamples = (VkSampleCountFlagBits)std::min(
+                (u32)scene.msaaSamples, (u32)device.maxMSAASamples());
+        } else {
+            m_desc.msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+        }
 
         // Depth buffer for 3D models
         bool useDepth = !m_desc.disableDepth &&
@@ -582,9 +588,6 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
         }
 
-        // Depth buffer is cleared explicitly via vkCmdClearDepthStencilImage
-        // before the first depth pass each frame (in execute()).  All render
-        // passes use LOAD to preserve the cleared/written values.
         VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         scene.depthBufferCleared = true;
         auto opt = CreateRenderPass(device.handle(),
@@ -603,9 +606,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         m_desc.hasDepth  = useDepth;
         m_desc.depthView = useDepth ? *depthImg->view : VK_NULL_HANDLE;
         m_desc.depthImage = useDepth ? *depthImg->handle : VK_NULL_HANDLE;
+        m_desc.depthOwner = depthImg;  // prevent depth image from being freed
         if (msaaColorImg) {
             m_desc.msaaColorView  = *msaaColorImg->view;
             m_desc.msaaColorImage = *msaaColorImg->handle;
+            m_desc.msaaColorOwner = msaaColorImg;  // prevent MSAA image from being freed
         }
 
         descriptor_info.push_descriptor = true;

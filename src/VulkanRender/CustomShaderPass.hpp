@@ -55,6 +55,8 @@ public:
         bool               hasDepth { false };
         VkImageView        depthView { VK_NULL_HANDLE };
         VkImage            depthImage { VK_NULL_HANDLE };
+        std::shared_ptr<void> depthOwner;    // prevent shared depth image from being freed
+        std::shared_ptr<void> msaaColorOwner; // prevent shared MSAA image from being freed
         vvk::Framebuffer   fb;
         PipelineParameters pipeline;
         u32                draw_count { 0 };
