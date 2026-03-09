@@ -3,12 +3,20 @@
 #include "Fs/LimitedBinaryStream.h"
 #include "Fs/CBinaryStream.h"
 #include <vector>
+#include <algorithm>
+#include <cctype>
 
 using namespace wallpaper;
 using namespace wallpaper::fs;
 
 namespace
 {
+std::string ToLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
 std::string ReadSizedString(IBinaryStream& f) {
     idx ilen = f.ReadInt32();
     assert(ilen >= 0);
@@ -42,18 +50,22 @@ std::unique_ptr<WPPkgFs> WPPkgFs::CreatePkgFs(std::string_view pkgpath) {
     idx headerSize   = pkg.Tell();
     for (auto& el : pkgfiles) {
         el.offset += headerSize;
-        pkgfs->m_files.insert({ el.path, el });
+        pkgfs->m_files.insert({ ToLower(el.path), el });
     }
     return pkgfs;
 }
 
-bool WPPkgFs::Contains(std::string_view path) const { return m_files.count(std::string(path)) > 0; }
+bool WPPkgFs::Contains(std::string_view path) const {
+    return m_files.count(ToLower(std::string(path))) > 0;
+}
 
 std::shared_ptr<IBinaryStream> WPPkgFs::Open(std::string_view path) {
     auto pkg = fs::CreateCBinaryStream(m_pkgPath);
     if (! pkg) return nullptr;
-    if (Contains(path)) {
-        const auto& file = m_files.at(std::string(path));
+    auto key = ToLower(std::string(path));
+    auto it  = m_files.find(key);
+    if (it != m_files.end()) {
+        const auto& file = it->second;
         return std::make_shared<LimitedBinaryStream>(pkg, file.offset, file.length);
     }
     return nullptr;
