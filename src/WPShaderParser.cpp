@@ -343,10 +343,50 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
 
     std::string src = wallpaper::WPShaderParser::PreShaderHeader(in_src, combos, type);
 
-    // workaround #require directive
+    // Handle #require directive: inject required function implementations
     {
+        // LightingV1: PBR lighting using g_LightsPosition/g_LightsColorRadius uniforms
+        // that our backend provides.  Uses ComputePBRLightShadow from common_pbr_2.h.
+        static const std::string lightingV1_impl =
+            "\n"
+            "uniform vec4 g_LightsPosition[4];\n"
+            "uniform vec4 g_LightsColorRadius[4];\n"
+            "\n"
+            "vec3 PerformLighting_V1(vec3 worldPos, vec3 albedo, vec3 normal,\n"
+            "    vec3 viewVector, vec3 specularTint, vec3 f0, float roughness, float metallic)\n"
+            "{\n"
+            "    vec3 light = vec3(0.0);\n"
+            "    for (int i = 0; i < 4; ++i) {\n"
+            "        vec3 lightDelta = g_LightsPosition[i].xyz - worldPos;\n"
+            "        float radius = g_LightsColorRadius[i].w;\n"
+            "        if (radius <= 0.0) continue;\n"
+            "        light += ComputePBRLightShadow(normal, lightDelta, viewVector,\n"
+            "            albedo, g_LightsColorRadius[i].rgb, radius, 1.0,\n"
+            "            specularTint, f0, roughness, metallic, 1.0);\n"
+            "    }\n"
+            "    return light;\n"
+            "}\n";
+
         std::regex re_require("(^|\r?\n)#require (.+)(\r?\n)");
-        src = std::regex_replace(src, re_require, "$1//#require $2$3");
+        std::smatch m;
+        std::string tmp = src;
+        std::string result;
+        while (std::regex_search(tmp, m, re_require)) {
+            result += m.prefix().str() + m[1].str();
+            std::string req_name = m[2].str();
+            // Trim whitespace
+            while (! req_name.empty() && (req_name.back() == ' ' || req_name.back() == '\r'))
+                req_name.pop_back();
+            if (req_name == "LightingV1") {
+                result += lightingV1_impl;
+            } else {
+                result += "//#require " + req_name;
+            }
+            result += m[3].str();
+            tmp = m.suffix().str();
+        }
+        result += tmp;
+        src = result;
     }
 
     glslang::TShader::ForbidIncluder includer;
