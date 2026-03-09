@@ -70,10 +70,20 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         mdl.is_puppet = false;
         mdl.submeshes.resize(submesh_count);
 
+        // MDLV0023+ adds per-submesh bounding box and flags before vertex data,
+        // and 6 bytes padding after index data
+        const bool v23 = (mdl.mdlv >= 23);
+
         for (uint32_t si = 0; si < submesh_count; si++) {
             auto& sub = mdl.submeshes[si];
             sub.mat_json_file = f.ReadStr();
             f.ReadInt32(); // 0
+
+            if (v23) {
+                // bounding box: min(3 floats) + max(3 floats) + flags repeat(uint32)
+                for (int i = 0; i < 6; i++) f.ReadFloat();
+                f.ReadUint32(); // flags repeat (same as mdl_flag)
+            }
 
             uint32_t vertex_size = f.ReadUint32();
 
@@ -142,6 +152,11 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                 for (auto& v : id) v = f.ReadUint16();
             }
 
+            if (v23) {
+                // 6 bytes trailing padding per submesh
+                for (int i = 0; i < 6; i++) f.ReadUint8();
+            }
+
             LOG_INFO("read model: mdlv: %d, flag: %d, submesh: %d/%d, verts: %d, tris: %d, "
                      "normals: %d, tangents: %d, mat: %s",
                      mdl.mdlv, mdl_flag, si, submesh_count, vertex_num, indices_num,
@@ -159,6 +174,11 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     // 0
     f.ReadInt32();
 
+    // MDLV0023+ inserts bbox (6 floats) between the zero and the herald/vertex_size
+    if (mdl.mdlv >= 23) {
+        for (int i = 0; i < 6; i++) f.ReadFloat(); // bbox_min + bbox_max
+    }
+
     bool alt_mdl_format = false;
     uint32_t curr = f.ReadUint32();
 
@@ -173,6 +193,10 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         curr = f.ReadUint32();
     }
     else if(curr == std_format_vertex_size_herald_value){
+        curr = f.ReadUint32();
+    }
+    else if(curr == alt_format_vertex_size_herald_value){
+        alt_mdl_format = true;
         curr = f.ReadUint32();
     }
 
