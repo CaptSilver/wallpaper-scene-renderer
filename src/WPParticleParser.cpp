@@ -92,7 +92,8 @@ std::array<float, N> mapVertex(const std::array<float, N>& v, float (*oper)(floa
     return result;
 };
 
-ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj) {
+ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
+                                                   std::span<const ParticleControlpoint> controlpoints) {
     using namespace std::placeholders;
     do {
         if (! wpj.contains("name")) break;
@@ -104,6 +105,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj) {
             r.min = { 0.0f, 0.0f, 0.0f };
             r.max = { 255.0f, 255.0f, 255.0f };
             VecRandom::ReadFromJson(wpj, r);
+            if (! wpj.contains("max")) r.max = r.min;
 
             return [=](Particle& p, double) {
                 Color(p,
@@ -193,6 +195,38 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj) {
                 result *= speed;
                 PM::ChangeVelocity(p, result[0], result[1], result[2]);
             };
+        } else if (name == "mapsequencebetweencontrolpoints") {
+            u32         count = 10;
+            std::string limitbehavior;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "limitbehavior", limitbehavior);
+            if (count == 0) count = 1;
+
+            bool                        mirror  = (limitbehavior == "mirror");
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
+
+            u32 seq = 0;
+            return [=](Particle& p, double) mutable {
+                if (cp_size < 2 || count <= 1) {
+                    seq++;
+                    return;
+                }
+                u32 idx;
+                if (mirror && count > 1) {
+                    u32 period = 2 * (count - 1);
+                    u32 pos    = seq % period;
+                    idx        = pos < count ? pos : period - pos;
+                } else {
+                    idx = seq % count;
+                }
+                float    t       = (float)idx / (float)(count - 1);
+                Vector3f cp0     = cp_data[0].offset.cast<float>();
+                Vector3f cp1     = cp_data[1].offset.cast<float>();
+                Vector3f pathpos = cp0 + t * (cp1 - cp0);
+                PM::Move(p, pathpos.cast<double>());
+                seq++;
+            };
         }
     } while (false);
     return [](Particle&, double) {
@@ -204,7 +238,7 @@ ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstan
         PM::MutiplyInitLifeTime(p, over.lifetime);
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);
-        PM::MutiplyVelocity(p, over.speed);
+        PM::MutiplyVelocity(p, over.speed * over.speed * over.speed);
         if (over.overColor) {
             PM::InitColor(
                 p, over.color[0] / 255.0f, over.color[1] / 255.0f, over.color[2] / 255.0f);
@@ -435,17 +469,17 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
         GET_JSON_NAME_VALUE(wpj, "name", name);
         if (name == "movement") {
             float drag { 0.0f };
-            auto  speed = over.speed;
 
             std::array<float, 3> gravity { 0, 0, 0 };
             GET_JSON_NAME_VALUE_NOWARN(wpj, "drag", drag);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "gravity", gravity);
-            Vector3d vecG = Vector3f(gravity.data()).cast<double>();
+            Vector3d vecG   = Vector3f(gravity.data()).cast<double>();
+            double   spd    = over.speed;
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
                     Vector3d acc =
-                        algorism::DragForce(PM::GetVelocity(p).cast<double>(), drag) + vecG;
-                    PM::Accelerate(p, speed * acc, info.time_pass);
+                        algorism::DragForce(PM::GetVelocity(p).cast<double>(), drag) + vecG * spd;
+                    PM::Accelerate(p, acc, info.time_pass);
                     PM::MoveByTime(p, info.time_pass);
                 }
             };
@@ -604,7 +638,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
     };
 }
 
-ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe, bool sort) {
+ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe, bool sort,
+                                                     u32 batch_size, float burst_rate) {
     if (wpe.name == "boxrandom") {
         ParticleBoxEmitterArgs box;
         box.emitSpeed     = wpe.rate;
@@ -617,6 +652,8 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         box.minSpeed      = wpe.speedmin;
         box.maxSpeed      = wpe.speedmax;
         box.sort          = sort;
+        box.batchSize     = batch_size;
+        box.burstRate     = burst_rate;
         return ParticleBoxEmitterArgs::MakeEmittOp(box);
     } else if (wpe.name == "sphererandom") {
         ParticleSphereEmitterArgs sphere;
@@ -631,6 +668,8 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         sphere.minSpeed      = wpe.speedmin;
         sphere.maxSpeed      = wpe.speedmax;
         sphere.sort          = sort;
+        sphere.batchSize     = batch_size;
+        sphere.burstRate     = burst_rate;
         return ParticleSphereEmitterArgs::MakeEmittOp(sphere);
     } else
         return [](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, float) {

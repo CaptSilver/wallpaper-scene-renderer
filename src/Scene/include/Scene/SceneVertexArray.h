@@ -38,6 +38,12 @@ public:
     bool GetOption(std::string_view) const;
     void SetOption(std::string_view, bool);
 
+    // Dynamic render vertex count (for GS particles where vertex count changes each frame)
+    usize RenderVertexCount() const noexcept {
+        return m_render_vertex_count > 0 ? m_render_vertex_count : VertexCount();
+    }
+    void SetRenderVertexCount(usize count) noexcept { m_render_vertex_count = count; }
+
     const float* Data() const { return m_pData; }
     usize        DataSize() const { return m_size; }
     usize        DataSizeOf() const { return m_size * sizeof(float); }
@@ -67,6 +73,7 @@ private:
     usize  m_oneSize { 0 };
     usize  m_size { 0 };
     usize  m_capacity { 0 };
+    usize  m_render_vertex_count { 0 };
 
     uint32_t m_id;
 };

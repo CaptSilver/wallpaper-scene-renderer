@@ -31,6 +31,7 @@ namespace
 inline wallpaper::ShaderType ToGeneType(VkShaderStageFlagBits stage) {
     switch (stage) {
     case VK_SHADER_STAGE_VERTEX_BIT: return wallpaper::ShaderType::VERTEX;
+    case VK_SHADER_STAGE_GEOMETRY_BIT: return wallpaper::ShaderType::GEOMETRY;
     case VK_SHADER_STAGE_FRAGMENT_BIT: return wallpaper::ShaderType::FRAGMENT;
     default: assert(false); return wallpaper::ShaderType::VERTEX;
     }
@@ -39,6 +40,7 @@ inline wallpaper::ShaderType ToGeneType(VkShaderStageFlagBits stage) {
 inline VkShaderStageFlagBits ToVkType(EShLanguage lan) {
     switch (lan) {
     case EShLangVertex: return VK_SHADER_STAGE_VERTEX_BIT;
+    case EShLangGeometry: return VK_SHADER_STAGE_GEOMETRY_BIT;
     case EShLangFragment: return VK_SHADER_STAGE_FRAGMENT_BIT;
     default: assert(false); return VK_SHADER_STAGE_VERTEX_BIT;
     }
@@ -49,6 +51,7 @@ inline VkFormat ToVkType(SpvReflectFormat type) { return static_cast<VkFormat>(t
 inline VkShaderStageFlagBits ToVkType(SpvReflectShaderStageFlagBits s) {
     switch (s) {
     case SPV_REFLECT_SHADER_STAGE_VERTEX_BIT: return VK_SHADER_STAGE_VERTEX_BIT;
+    case SPV_REFLECT_SHADER_STAGE_GEOMETRY_BIT: return VK_SHADER_STAGE_GEOMETRY_BIT;
     case SPV_REFLECT_SHADER_STAGE_FRAGMENT_BIT: return VK_SHADER_STAGE_FRAGMENT_BIT;
     default: assert(false); return VK_SHADER_STAGE_VERTEX_BIT;
     }
@@ -347,6 +350,31 @@ bool wallpaper::vulkan::GenReflect(std::span<const std::vector<uint>> codes,
             if (exists(ref.binding_map, bind_name)) {
                 auto& bind = ref.binding_map[bind_name];
                 bind.stageFlags |= stage;
+
+                // For UBOs shared across stages: merge members from this stage
+                // into the existing block. With separate compilation, each stage
+                // may include different subsets of the UBO members (unused ones
+                // are optimized out). We need the union of all members, and must
+                // use the largest block size so the allocation fits all stages.
+                if (b.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+                    ! ref.blocks.empty()) {
+                    auto& block     = b.block;
+                    auto& ref_block = ref.blocks.front();
+                    if (block.size > ref_block.size) {
+                        ref_block.size = block.size;
+                    }
+                    for (u32 mi = 0; mi < block.member_count; mi++) {
+                        auto& unif = block.members[mi];
+                        if (! exists(ref_block.member_map, std::string(unif.name))) {
+                            ShaderReflected::BlockedUniform bunif {};
+                            bunif.size   = unif.size;
+                            bunif.offset = unif.offset;
+                            ref_block.member_map[unif.name] = bunif;
+                            LOG_INFO("GenReflect: merged UBO member '%s' (off=%u sz=%u) from stage 0x%x",
+                                     unif.name, unif.offset, unif.size, (unsigned)stage);
+                        }
+                    }
+                }
                 continue;
             }
             if (b.descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {

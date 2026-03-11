@@ -356,6 +356,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
     SceneMesh& mesh = *(m_desc.node->Mesh());
 
+    // Detect geometry shader point topology from mesh vertex array option
+    if (mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER)) {
+        m_desc.point_topology = true;
+    }
+
     std::vector<Uni_ShaderSpv> spvs;
     DescriptorSetInfo          descriptor_info;
     ShaderReflected            ref;
@@ -365,6 +370,29 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (! GenReflect(shader.codes, spvs, ref)) {
             LOG_ERROR("gen spv reflect failed, %s", shader.name.c_str());
             return;
+        }
+
+        // Diagnostic: log stage count and UBO details for GS pipelines
+        if (m_desc.point_topology) {
+            std::string stages_str;
+            for (auto& s : spvs) {
+                if (! stages_str.empty()) stages_str += ",";
+                stages_str += (s->stage == ShaderType::VERTEX)     ? "VTX"
+                              : (s->stage == ShaderType::GEOMETRY) ? "GS"
+                              : (s->stage == ShaderType::FRAGMENT) ? "FRAG"
+                                                                   : "?";
+            }
+            LOG_INFO("GS pipeline '%s': %zu stages [%s], %zu UBO blocks",
+                     shader.name.c_str(), spvs.size(), stages_str.c_str(),
+                     ref.blocks.size());
+            if (! ref.blocks.empty()) {
+                LOG_INFO("  UBO block: size=%zu members=%zu",
+                         (size_t)ref.blocks.front().size,
+                         ref.blocks.front().member_map.size());
+                for (auto& [name, u] : ref.blocks.front().member_map) {
+                    LOG_INFO("    %s: off=%u sz=%u", name.c_str(), u.offset, u.size);
+                }
+            }
         }
 
         // Check if shader uses time-based uniforms (for caching optimization)
@@ -642,8 +670,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
-            .setTopology(m_desc.index_buf ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
-                                          : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP)
+            .setTopology(m_desc.index_buf       ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+                         : m_desc.point_topology ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                                                 : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP)
             .addInputBindingDescription(bind_descriptions)
             .addInputAttributeDescription(attr_descriptions);
         for (auto& spv : spvs) pipeline.addStage(std::move(spv));
@@ -720,7 +749,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto& vertex_bufs = m_desc.vertex_bufs;
             auto& draw_count  = m_desc.draw_count;
             auto& index_buf   = m_desc.index_buf;
-            update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf]() {
+            auto  point_topo   = m_desc.point_topology;
+            update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf,
+                                 point_topo]() {
                 if (mesh.Dirty().exchange(false)) {
                     for (usize i = 0; i < mesh.VertexCount(); i++) {
                         const auto& vertex = mesh.GetVertexArray(i);
@@ -737,6 +768,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         if (! dyn_buf->writeToBuf(buf,
                                                   { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
                             return;
+                    } else if (point_topo && mesh.VertexCount() > 0) {
+                        // GS particles: draw_count = active vertex count
+                        draw_count = (u32)mesh.GetVertexArray(0).RenderVertexCount();
                     }
                 }
             };

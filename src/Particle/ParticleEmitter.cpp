@@ -90,11 +90,12 @@ inline void ApplySign(Eigen::Vector3d& p, int32_t x, int32_t y, int32_t z) noexc
 
 ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
     double timer { 0.0f };
-    return [a, timer](std::vector<Particle>&       ps,
-                      std::vector<ParticleInitOp>& inis,
-                      u32                          maxcount,
-                      double                       timepass) mutable {
-        timer += timepass;
+    double burstTimer { 0.0f };
+    u32    burstEmitted { 0 };
+    return [a, timer, burstTimer, burstEmitted](std::vector<Particle>&       ps,
+                                                std::vector<ParticleInitOp>& inis,
+                                                u32                          maxcount,
+                                                double                       timepass) mutable {
         auto GenBox = [&]() {
             Eigen::Vector3d pos;
             for (int32_t i = 0; i < 3; i++)
@@ -108,9 +109,32 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
             ParticleModify::Move(p, a.orgin[0], a.orgin[1], a.orgin[2]);
             return p;
         };
-        u32 emit_num = GetEmitNum(timer, a.emitSpeed);
-        emit_num     = a.one_per_frame ? 1 : emit_num;
-        emit_num     = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
+
+        u32 emit_num = 0;
+        if (a.burstRate > 0 && a.batchSize > 1) {
+            // Sequential burst: emit at base rate during active phase, pause between bursts
+            burstTimer += timepass;
+            double cyclePeriod = 1.0 / a.burstRate;
+            if (burstEmitted >= a.batchSize) {
+                // Waiting for next cycle
+                if (burstTimer >= cyclePeriod) {
+                    burstTimer -= cyclePeriod;
+                    burstEmitted = 0;
+                }
+            }
+            if (burstEmitted < a.batchSize) {
+                timer += timepass;
+                u32 can_emit = GetEmitNum(timer, a.emitSpeed);
+                u32 remaining = a.batchSize - burstEmitted;
+                emit_num = std::min(can_emit, remaining);
+                burstEmitted += emit_num;
+            }
+        } else {
+            timer += timepass;
+            emit_num = GetEmitNum(timer, a.emitSpeed);
+            emit_num = a.one_per_frame ? 1 : emit_num;
+        }
+        emit_num = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
         Emitt(ps, emit_num, maxcount, a.sort, [&]() {
             return Spwan(GenBox, inis, 1.0f / a.emitSpeed);
         });
@@ -120,11 +144,12 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
 ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs a) {
     using namespace Eigen;
     double timer { 0.0f };
-    return [a, timer](std::vector<Particle>&       ps,
-                      std::vector<ParticleInitOp>& inis,
-                      u32                          maxcount,
-                      double                       timepass) mutable {
-        timer += timepass;
+    double burstTimer { 0.0f };
+    u32    burstEmitted { 0 };
+    return [a, timer, burstTimer, burstEmitted](std::vector<Particle>&       ps,
+                                                std::vector<ParticleInitOp>& inis,
+                                                u32                          maxcount,
+                                                double                       timepass) mutable {
         auto GenSphere = [&]() {
             auto   p = Particle();
             double r = algorism::lerp(
@@ -143,9 +168,32 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
             ParticleModify::Move(p, Eigen::Vector3f { a.orgin.data() }.cast<double>());
             return p;
         };
-        u32 emit_num = GetEmitNum(timer, a.emitSpeed);
-        emit_num     = a.one_per_frame ? 1 : emit_num;
-        emit_num     = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
+
+        u32 emit_num = 0;
+        if (a.burstRate > 0 && a.batchSize > 1) {
+            // Sequential burst: emit at base rate during active phase, pause between bursts
+            burstTimer += timepass;
+            double cyclePeriod = 1.0 / a.burstRate;
+            if (burstEmitted >= a.batchSize) {
+                // Waiting for next cycle
+                if (burstTimer >= cyclePeriod) {
+                    burstTimer -= cyclePeriod;
+                    burstEmitted = 0;
+                }
+            }
+            if (burstEmitted < a.batchSize) {
+                timer += timepass;
+                u32 can_emit = GetEmitNum(timer, a.emitSpeed);
+                u32 remaining = a.batchSize - burstEmitted;
+                emit_num = std::min(can_emit, remaining);
+                burstEmitted += emit_num;
+            }
+        } else {
+            timer += timepass;
+            emit_num = GetEmitNum(timer, a.emitSpeed);
+            emit_num = a.one_per_frame ? 1 : emit_num;
+        }
+        emit_num = a.instantaneous > 0 && ps.empty() ? a.instantaneous : emit_num;
         Emitt(ps, emit_num, maxcount, a.sort, [&]() {
             return Spwan(GenSphere, inis, 1.0f / a.emitSpeed);
         });
