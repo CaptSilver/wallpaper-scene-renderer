@@ -16,6 +16,8 @@
 #include <stack>
 #include <charconv>
 #include <string>
+#include <fstream>
+#include <sstream>
 
 static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
@@ -115,6 +117,10 @@ static constexpr const char* pre_shader_code_frag = R"(
 #define gl_FragColor glOutColor
 out vec4 glOutColor;
 
+)";
+// Geometry shader: no attribute/varying defines needed.
+// Layout declarations are injected by TranslateGeometryShader based on [maxvertexcount].
+static constexpr const char* pre_shader_code_geom = R"(
 )";
 
 inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
@@ -332,9 +338,252 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
     return NposToZero(pos);
 }
 
+// Translate Wallpaper Engine geometry shader syntax to valid GLSL 330.
+// WE uses an HLSL-inspired dialect: IN[0].field, OUT.Append(v), PS_INPUT,
+// [maxvertexcount(N)].  This function converts to standard GLSL geometry
+// shader constructs (gl_in, EmitVertex, layout declarations).
+inline std::string TranslateGeometryShader(const std::string& src) {
+    std::string result = src;
+
+    // 1. Remove [maxvertexcount(EXPR)] — layout declarations will be added
+    //    after preprocessing when the expression is fully resolved.
+    //    Store the expression as a #define for the preprocessor to expand.
+    {
+        std::regex  re(R"(\[maxvertexcount\(([^)]+)\)\])");
+        std::smatch m;
+        std::string maxVertExpr = "4"; // fallback
+        if (std::regex_search(result, m, re)) {
+            maxVertExpr = m[1].str();
+        }
+        result = std::regex_replace(result, re, "");
+        // Prepend #define so the preprocessor evaluates the expression.
+        // The actual layout() declaration is injected post-preprocessing.
+        result = "#define WE_GS_MAX_VERTICES (" + maxVertExpr + ")\n" + result;
+    }
+
+    // 2. Remove "in vec4 gl_Position;" and "out vec4 gl_Position;" declarations.
+    //    gl_Position is a built-in; re-declaring it causes errors.
+    {
+        std::regex re_in_gl(R"(\bin\s+vec4\s+gl_Position\s*;)");
+        std::regex re_out_gl(R"(\bout\s+vec4\s+gl_Position\s*;)");
+        result = std::regex_replace(result, re_in_gl, "// (gl_Position input via gl_in)");
+        result = std::regex_replace(result, re_out_gl, "// (gl_Position output is built-in)");
+    }
+
+    // 3. Convert input declarations to arrays with gs_in_ prefix to avoid
+    //    same-name redefinition (GLSL forbids same-name in/out):
+    //    "in TYPE v_xxx;" → "in TYPE gs_in_v_xxx[];"
+    {
+        std::regex re_in_decl(R"(\bin\s+(vec[234]|float|int|uint|ivec[234]|uvec[234]|mat[234])"
+                              R"()\s+(v_\w+)\s*;)");
+        result = std::regex_replace(result, re_in_decl, "in $1 gs_in_$2[];");
+    }
+
+    // 4. Replace IN[0].gl_Position → gl_in[0].gl_Position
+    {
+        std::regex re(R"(\bIN\[0\]\.gl_Position\b)");
+        result = std::regex_replace(result, re, "gl_in[0].gl_Position");
+    }
+
+    // 5. Replace IN[0].v_xxx → gs_in_v_xxx[0]  (access prefixed geometry input)
+    {
+        std::regex re(R"(\bIN\[0\]\.(v_\w+)\b)");
+        result = std::regex_replace(result, re, "gs_in_$1[0]");
+    }
+
+    // 6. Remove PS_INPUT variable declaration: "PS_INPUT v;"
+    {
+        std::regex re(R"(\bPS_INPUT\s+\w+\s*;)");
+        result = std::regex_replace(result, re, "");
+    }
+
+    // 6a. Replace remaining PS_INPUT (function return type) → void
+    {
+        std::regex re(R"(\bPS_INPUT\b)");
+        result = std::regex_replace(result, re, "void");
+    }
+
+    // 6b. Remove VS_OUTPUT parameter from function signatures
+    //     Handles ", in VS_OUTPUT IN" and "in VS_OUTPUT IN, "
+    {
+        std::regex re1(R"(,\s*in\s+VS_OUTPUT\s+IN\b)");
+        result = std::regex_replace(result, re1, "");
+        std::regex re2(R"(\bin\s+VS_OUTPUT\s+IN\s*,\s*)");
+        result = std::regex_replace(result, re2, "");
+    }
+
+    // 6c. Translate function-local IN.gl_Position → gl_in[0].gl_Position
+    {
+        std::regex re(R"(\bIN\.gl_Position\b)");
+        result = std::regex_replace(result, re, "gl_in[0].gl_Position");
+    }
+
+    // 6d. Translate function-local IN.v_xxx → gs_in_v_xxx[0]
+    {
+        std::regex re(R"(\bIN\.(v_\w+)\b)");
+        result = std::regex_replace(result, re, "gs_in_$1[0]");
+    }
+
+    // 6e. Remove bare IN[0] from function call arguments
+    {
+        std::regex re1(R"(,\s*IN\[0\])");
+        result = std::regex_replace(result, re1, "");
+        std::regex re2(R"(IN\[0\]\s*,\s*)");
+        result = std::regex_replace(result, re2, "");
+    }
+
+    // 6f. Replace "return v;" → "return;" (void function)
+    {
+        std::regex re(R"(\breturn\s+v\s*;)");
+        result = std::regex_replace(result, re, "return;");
+    }
+
+    // 7. Replace "v.gl_Position" → "gl_Position" (built-in output)
+    {
+        std::regex re(R"(\bv\.gl_Position\b)");
+        result = std::regex_replace(result, re, "gl_Position");
+    }
+
+    // 8. Replace "v.v_xxx" → "v_xxx" (output varying assignment)
+    //    Handles v.v_Color, v.v_TexCoord.xy, etc.
+    {
+        std::regex re(R"(\bv\.(v_\w+)\b)");
+        result = std::regex_replace(result, re, "$1");
+    }
+
+    // 9. Replace OUT.Append(expr); → expr; EmitVertex();
+    //    Handles both OUT.Append(v); and OUT.Append(FuncCall(...));
+    //    Uses balanced-paren matching for nested calls.
+    {
+        const std::string marker = "OUT.Append(";
+        std::string replaced;
+        size_t pos = 0;
+        while (true) {
+            size_t start = result.find(marker, pos);
+            if (start == std::string::npos) {
+                replaced.append(result, pos, std::string::npos);
+                break;
+            }
+            replaced.append(result, pos, start - pos);
+            size_t inner = start + marker.size();
+            int    depth = 1;
+            size_t i     = inner;
+            for (; i < result.size() && depth > 0; i++) {
+                if (result[i] == '(') depth++;
+                else if (result[i] == ')') depth--;
+            }
+            // i now points past the matching ')'
+            // Skip optional trailing whitespace and semicolon
+            size_t after = i;
+            while (after < result.size() && (result[after] == ' ' || result[after] == '\t'))
+                after++;
+            if (after < result.size() && result[after] == ';') after++;
+
+            std::string innerExpr = result.substr(inner, i - 1 - inner);
+            // If inner expr is just a bare identifier (the old PS_INPUT var),
+            // skip it — the output varyings are already set directly.
+            // Only keep the expr if it's a function call or complex expression.
+            if (std::regex_match(innerExpr, std::regex(R"(\s*\w+\s*)")))
+                replaced += "EmitVertex();";
+            else
+                replaced += innerExpr + "; EmitVertex();";
+            pos = after;
+        }
+        result = std::move(replaced);
+    }
+
+    // 10. Replace OUT.RestartStrip(); → EndPrimitive();
+    {
+        std::regex re(R"(\bOUT\.RestartStrip\s*\(\s*\)\s*;)");
+        result = std::regex_replace(result, re, "EndPrimitive();");
+    }
+
+    // 11. gl_in[0].gl_Position is vec4; HLSL implicitly truncates vec4→vec3 in
+    //     function args. Only add .xyz when the function parameter is vec3 (not vec4).
+    {
+        // Collect function declarations: funcName → [paramType0, paramType1, ...]
+        std::map<std::string, std::vector<std::string>> funcSigs;
+        {
+            std::regex re(R"(\b(?:void|float|vec[234]|int|uint|bool|mat[234])\s+(\w+)\s*\(([^)]*)\))");
+            std::regex paramRe(R"((?:in\s+|out\s+|inout\s+|const\s+)*(\w+)\s+\w+)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator(); ++it) {
+                std::string paramStr = (*it)[2].str();
+                std::vector<std::string> types;
+                for (auto pit = std::sregex_iterator(paramStr.begin(), paramStr.end(), paramRe);
+                     pit != std::sregex_iterator(); ++pit)
+                    types.push_back((*pit)[1].str());
+                funcSigs[(*it)[1].str()] = types;
+            }
+        }
+
+        const std::string gl_pos = "gl_in[0].gl_Position";
+        std::string out;
+        size_t pos = 0;
+        while (pos < result.size()) {
+            size_t found = result.find(gl_pos, pos);
+            if (found == std::string::npos) {
+                out.append(result, pos, std::string::npos);
+                break;
+            }
+            size_t after = found + gl_pos.size();
+            // If followed by . or alnum (already has swizzle), skip
+            if (after < result.size() &&
+                (result[after] == '.' || std::isalnum(result[after]) || result[after] == '_')) {
+                out.append(result, pos, after - pos);
+                pos = after;
+                continue;
+            }
+
+            // Find enclosing function call: scan backward for '(' at depth 0
+            bool needsTrunc = false;
+            size_t scan = found;
+            int depth = 0;
+            while (scan > 0) {
+                scan--;
+                if (result[scan] == ')') depth++;
+                else if (result[scan] == '(') {
+                    if (depth == 0) {
+                        // Count commas between '(' and gl_pos at depth 0 → arg index
+                        int argIdx = 0, cd = 0;
+                        for (size_t j = scan + 1; j < found; j++) {
+                            if (result[j] == '(') cd++;
+                            else if (result[j] == ')') cd--;
+                            else if (result[j] == ',' && cd == 0) argIdx++;
+                        }
+                        // Extract function name before '('
+                        size_t ne = scan;
+                        while (ne > 0 && std::isspace(result[ne - 1])) ne--;
+                        size_t ns = ne;
+                        while (ns > 0 && (std::isalnum(result[ns - 1]) || result[ns - 1] == '_'))
+                            ns--;
+                        std::string fn = result.substr(ns, ne - ns);
+                        if (funcSigs.count(fn)) {
+                            auto& p = funcSigs[fn];
+                            if (argIdx < (int)p.size() && p[argIdx] == "vec3")
+                                needsTrunc = true;
+                        }
+                        break;
+                    }
+                    depth--;
+                }
+            }
+
+            out.append(result, pos, found - pos);
+            out += gl_pos;
+            if (needsTrunc) out += ".xyz";
+            pos = after;
+        }
+        result = std::move(out);
+    }
+
+    return result;
+}
+
 inline EShLanguage ToGLSL(ShaderType type) {
     switch (type) {
     case ShaderType::VERTEX: return EShLangVertex;
+    case ShaderType::GEOMETRY: return EShLangGeometry;
     case ShaderType::FRAGMENT: return EShLangFragment;
     default: return EShLangVertex;
     }
@@ -410,7 +659,8 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
 
     // (?:^|\s) lets us match "out vec2 foo;" at column 0 (no qualifier) as well as
     // "smooth out vec4 foo;" where the qualifier precedes the keyword.
-    std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*;)",
+    // The optional (\[\])? handles geometry shader array inputs (e.g., "in vec4 v_Color[];").
+    std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
                      std::regex::ECMAScript | std::regex::multiline);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
          it != std::sregex_iterator();
@@ -450,21 +700,41 @@ inline bool NeedsFlatDecoration(const std::string& decl) {
 inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessorInfo* pre,
                                   const WPPreprocessorInfo* next) {
     std::string insert_str {};
-    auto&       cur = unit.preprocess_info;
+    auto&       cur    = unit.preprocess_info;
+    bool        is_geo = (unit.stage == ShaderType::GEOMETRY);
     if (pre != nullptr) {
         for (auto& [k, v] : pre->output) {
-            if (! exists(cur.input, k)) {
+            // For geometry shaders, check for gs_in_ prefixed name
+            bool already_declared =
+                exists(cur.input, k) || (is_geo && exists(cur.input, "gs_in_" + k));
+            if (! already_declared) {
                 auto n = std::regex_replace(v, std::regex(R"(\s*out\s)"), " in ");
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
+                // Geometry shader inputs: unsized arrays with gs_in_ prefix
+                if (is_geo) {
+                    n = std::regex_replace(n, std::regex(R"(\bin\s+([\w]+)\s+(v_\w+))"),
+                                           "in $1 gs_in_$2");
+                    n = std::regex_replace(n, std::regex(R"((\w)\s*;)"), "$1[];");
+                }
                 insert_str += n + '\n';
             }
         }
     }
     if (next != nullptr) {
         for (auto& [k, v] : next->input) {
-            if (! exists(cur.output, k)) {
+            // For geometry shader inputs with gs_in_ prefix,
+            // check canonical name (without prefix) against current outputs
+            std::string canon = k;
+            if (canon.substr(0, 6) == "gs_in_")
+                canon = canon.substr(6);
+            if (! exists(cur.output, k) && ! exists(cur.output, canon)) {
                 auto n = std::regex_replace(v, std::regex(R"(\s*in\s)"), " out ");
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
+                // Strip gs_in_ prefix and [] suffix for non-geometry outputs
+                if (k.substr(0, 6) == "gs_in_") {
+                    n = std::regex_replace(n, std::regex(R"(\bgs_in_(v_\w+))"), "$1");
+                    n = std::regex_replace(n, std::regex(R"(\[\]\s*;)"), ";");
+                }
                 insert_str += n + '\n';
             }
         }
@@ -590,6 +860,153 @@ inline std::string FixImplicitConversions(const std::string& src) {
         fixTrunc(vec2_vars, vec3_vars, "xy");
         fixTrunc(vec2_vars, vec4_vars, "xy");
         fixTrunc(vec3_vars, vec4_vars, "xyz");
+
+        // Fix: HLSL implicit vector truncation in arithmetic expressions.
+        // HLSL allows vec2 + vec4 (truncates the larger); GLSL requires matching
+        // dimensions.  When a known vecN variable is in arithmetic with a swizzle
+        // of more than N components, truncate the swizzle to N.
+        auto fixArithSwizzleTrunc = [&result](const std::set<std::string>& small_vars,
+                                              int target_width) {
+            std::string swiz_chars = "xyzwrgbastpq";
+            for (const auto& v : small_vars) {
+                // VAR OP WORD.XXXX  where XXXX has more than target_width components
+                for (int sw = 4; sw > target_width; --sw) {
+                    std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
+                                  swiz_chars + "]{" + std::to_string(sw) + "})\\b");
+                    std::string tmp;
+                    size_t      lastPos = 0;
+                    bool        found   = false;
+                    for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                         it != std::sregex_iterator();
+                         ++it) {
+                        found              = true;
+                        std::string swizzle = (*it)[4].str().substr(0, target_width);
+                        tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
+                        tmp += (*it)[1].str() + (*it)[2].str() + (*it)[3].str() + "." + swizzle;
+                        lastPos = (size_t)(*it).position() + (*it).length();
+                    }
+                    if (found) {
+                        tmp.append(result, lastPos, std::string::npos);
+                        result = std::move(tmp);
+                    }
+
+                    // Reverse: WORD.XXXX OP VAR
+                    std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(sw) +
+                                   "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
+                    tmp.clear();
+                    lastPos = 0;
+                    found   = false;
+                    for (auto it = std::sregex_iterator(result.begin(), result.end(), re2);
+                         it != std::sregex_iterator();
+                         ++it) {
+                        found              = true;
+                        std::string swizzle = (*it)[2].str().substr(0, target_width);
+                        tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
+                        tmp += (*it)[1].str() + "." + swizzle + (*it)[3].str() + (*it)[4].str();
+                        lastPos = (size_t)(*it).position() + (*it).length();
+                    }
+                    if (found) {
+                        tmp.append(result, lastPos, std::string::npos);
+                        result = std::move(tmp);
+                    }
+                }
+            }
+        };
+        // For arithmetic truncation, only consider local variable declarations
+        // (TYPE NAME ; or TYPE NAME =), not function parameters (TYPE NAME , or TYPE NAME )).
+        // This avoids false positives when the same name appears as vec2 param + vec4 local.
+        auto collectLocal = [&result](const char* type) {
+            std::set<std::string> vars;
+            std::regex            re(std::string(R"(\b)") + type + R"(\s+(\w+)\s*[;=])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator();
+                 ++it)
+                vars.insert((*it)[1].str());
+            return vars;
+        };
+        const auto local_vec2 = collectLocal("vec2");
+        const auto local_vec3 = collectLocal("vec3");
+        fixArithSwizzleTrunc(local_vec2, 2);
+        fixArithSwizzleTrunc(local_vec3, 3);
+
+        // Fix: HLSL implicit vector truncation — larger variable OP smaller swizzle.
+        // Instead of truncating the variable (which cascades mismatches downstream),
+        // expand the swizzle to match the variable width by repeating its last char.
+        // E.g. vec3_var - expr.xx → vec3_var - expr.xxx
+        auto fixArithSwizzleExpand = [&result](const std::set<std::string>& large_vars,
+                                               int var_width, int swizzle_width) {
+            std::string swiz_chars = "xyzwrgbastpq";
+            int         pad_count  = var_width - swizzle_width;
+            for (const auto& v : large_vars) {
+                // VAR OP WORD.XX  (swizzle_width components, smaller than var_width)
+                std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
+                              swiz_chars + "]{" + std::to_string(swizzle_width) + "})\\b");
+                std::string tmp;
+                size_t      lastPos = 0;
+                bool        found   = false;
+                for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                     it != std::sregex_iterator();
+                     ++it) {
+                    // Skip if variable already has a swizzle
+                    size_t vEnd = (size_t)(*it).position() + (*it)[1].length();
+                    if (vEnd < result.size() && result[vEnd] == '.') continue;
+                    found = true;
+                    tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
+                    std::string swiz = (*it)[4].str();
+                    char        last = swiz.back();
+                    for (int j = 0; j < pad_count; j++) swiz += last;
+                    tmp += (*it)[1].str() + (*it)[2].str() +
+                           (*it)[3].str() + "." + swiz;
+                    lastPos = (size_t)(*it).position() + (*it).length();
+                }
+                if (found) {
+                    tmp.append(result, lastPos, std::string::npos);
+                    result = std::move(tmp);
+                }
+
+                // Reverse: WORD.XX OP VAR
+                std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" +
+                               std::to_string(swizzle_width) + "})(\\s*[+\\-*/]\\s*)\\b(" +
+                               v + ")\\b");
+                tmp.clear();
+                lastPos = 0;
+                found   = false;
+                for (auto it = std::sregex_iterator(result.begin(), result.end(), re2);
+                     it != std::sregex_iterator();
+                     ++it) {
+                    size_t vStart = (size_t)(*it).position(4);
+                    size_t vEnd   = vStart + (*it)[4].length();
+                    if (vEnd < result.size() && result[vEnd] == '.') continue;
+                    found = true;
+                    tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
+                    std::string swiz = (*it)[2].str();
+                    char        last = swiz.back();
+                    for (int j = 0; j < pad_count; j++) swiz += last;
+                    tmp += (*it)[1].str() + "." + swiz + (*it)[3].str() +
+                           (*it)[4].str();
+                    lastPos = (size_t)(*it).position() + (*it).length();
+                }
+                if (found) {
+                    tmp.append(result, lastPos, std::string::npos);
+                    result = std::move(tmp);
+                }
+            }
+        };
+        const auto local_vec4 = collectLocal("vec4");
+        // vec3 var OP 2-component swizzle → expand swizzle to 3
+        fixArithSwizzleExpand(local_vec3, 3, 2);
+        // vec4 var OP 2-component swizzle → expand swizzle to 4
+        fixArithSwizzleExpand(local_vec4, 4, 2);
+        // vec4 var OP 3-component swizzle → expand swizzle to 4
+        fixArithSwizzleExpand(local_vec4, 4, 3);
+    }
+
+    // Fix: HLSL implicit vec4→vec3 truncation in matrix*vector expressions.
+    // WE mul(vec4(X), MAT) → ((MAT) * (vec4(X))) returns vec4 but may be assigned to vec3.
+    // Add .xyz to truncate.
+    {
+        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*(\([^;]*\)\s*\*\s*\(vec4\s*\([^;]*?\)\)\s*)\s*;)");
+        result = std::regex_replace(result, re, "vec3 $1 = ($2).xyz;");
     }
 
     // Fix: HLSL pow(scalar, vecN) broadcasts the scalar; GLSL requires matching genType.
@@ -714,6 +1131,7 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
                                             ShaderType type) {
     std::string pre(pre_shader_code);
     if (type == ShaderType::VERTEX) pre += pre_shader_code_vert;
+    if (type == ShaderType::GEOMETRY) pre += pre_shader_code_geom;
     if (type == ShaderType::FRAGMENT) pre += pre_shader_code_frag;
     std::string header(pre);
     for (const auto& c : combos) {
@@ -737,9 +1155,55 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                                   std::span<const WPShaderTexInfo> texs) {
     (void)texs;
 
+    // Translate WE geometry shader syntax to GLSL before preprocessing.
+    for (auto& unit : units) {
+        if (unit.stage == ShaderType::GEOMETRY) {
+            unit.src = TranslateGeometryShader(unit.src);
+        }
+    }
+
     std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
         unit.src = Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
     });
+
+    // Post-preprocessing: inject GS layout declarations with evaluated max_vertices.
+    // The preprocessor expanded WE_GS_MAX_VERTICES to a constant expression;
+    // now evaluate it and inject the layout (GLSL 330 requires integer literals).
+    for (auto& unit : units) {
+        if (unit.stage != ShaderType::GEOMETRY) continue;
+
+        // Find the expanded WE_GS_MAX_VERTICES value after preprocessing.
+        // The preprocessor replaces the #define, leaving the expanded expression
+        // somewhere in the source.  We find it by looking for "WE_GS_MAX_VERTICES"
+        // or its expanded form.  But actually, after preprocessing, the #define
+        // line is gone and references to WE_GS_MAX_VERTICES are expanded inline.
+        // Since we didn't reference it anywhere, we need to extract it differently.
+        //
+        // Simpler approach: scan for "(N)" pattern where N is a simple integer
+        // expression, at the location where #define was.  Or just evaluate from
+        // the combo values directly.
+        int maxVerts = 4; // default
+        auto it = shader_info->combos.find("TRAILSUBDIVISION");
+        if (it != shader_info->combos.end()) {
+            int subdiv = std::stoi(it->second);
+            maxVerts = 4 + subdiv * 2;
+        }
+
+        // Insert layout declarations after the #version line
+        std::string layouts = "layout(points) in;\n"
+                              "layout(triangle_strip, max_vertices = " +
+                              std::to_string(maxVerts) + ") out;\n\n";
+        auto ver_pos = unit.src.find("#version");
+        if (ver_pos != std::string::npos) {
+            auto eol = unit.src.find('\n', ver_pos);
+            if (eol != std::string::npos)
+                unit.src.insert(eol + 1, layouts);
+            else
+                unit.src += "\n" + layouts;
+        } else {
+            unit.src = layouts + unit.src;
+        }
+    }
 
     auto compile = [](std::span<WPShaderUnit> units, std::vector<ShaderCode>& codes) {
         std::vector<vulkan::ShaderCompUnit> vunits(units.size());
@@ -758,13 +1222,16 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         }
 
         // Fix cross-stage varying type mismatches.
-        // FixImplicitConversions or Finalprocessor may cause the vertex output and
-        // fragment input for a varying to have different widths (e.g. vec2 vs vec4).
+        // FixImplicitConversions or Finalprocessor may cause adjacent stages to
+        // have different widths for a varying (e.g. vec2 vs vec4).
         // Upgrade the narrower side to match the wider one.
-        if (units.size() == 2) {
+        // For 3+ stage pipelines, fix all adjacent pairs (vert→geom, geom→frag).
+        if (units.size() >= 2) {
             auto parseVaryings = [](const std::string& src, const char* kw) {
                 std::map<std::string, std::string> m;
-                std::regex re(std::string(R"(\b)") + kw + R"(\s+(vec[234]|float)\s+(\w+)\s*;)");
+                // Match both "out vec4 name;" and "out vec4 name[];"
+                std::regex re(std::string(R"(\b)") + kw +
+                              R"(\s+(vec[234]|float)\s+(\w+)\s*(\[\])?\s*;)");
                 for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
                      it != std::sregex_iterator();
                      ++it)
@@ -778,20 +1245,18 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                 if (t == "vec4") return 4;
                 return 0;
             };
-            // Upgrade a varying declaration and pad its assignments in the given source.
-            // io_kw is "out" (vertex) or "in" (fragment).
             auto upgradeVarying = [&dim](std::string&       src,
                                          const char*        io_kw,
                                          const std::string& name,
                                          const std::string& old_type,
                                          const std::string& new_type) {
-                // Upgrade declaration
+                // Upgrade declaration (handles optional [] suffix)
                 std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
-                                   "\\s*;");
+                                   R"(\s*(\[\])?\s*;)");
+                std::string suffix = "$1"; // preserve [] if present
                 src = std::regex_replace(
-                    src, re_decl, std::string(io_kw) + " " + new_type + " " + name + ";");
+                    src, re_decl, std::string(io_kw) + " " + new_type + " " + name + suffix + ";");
 
-                // For "out" varyings (vertex shader): pad assignments with zeroes.
                 if (std::string(io_kw) == "out") {
                     int         od = dim(old_type), nd = dim(new_type);
                     std::string pad;
@@ -803,28 +1268,29 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                 }
             };
 
-            auto vertOuts     = parseVaryings(units[0].src, "out");
-            auto fragIns      = parseVaryings(units[1].src, "in");
-            bool vert_changed = false, frag_changed = false;
+            // Fix each adjacent pair of stages
+            for (usize pair = 0; pair + 1 < units.size(); pair++) {
+                auto outVars     = parseVaryings(units[pair].src, "out");
+                auto inVars      = parseVaryings(units[pair + 1].src, "in");
+                bool out_changed = false, in_changed = false;
 
-            for (auto& [name, ftype] : fragIns) {
-                auto it = vertOuts.find(name);
-                if (it == vertOuts.end() || it->second == ftype) continue;
-                int vd = dim(it->second), fd = dim(ftype);
-                if (vd == 0 || fd == 0) continue;
+                for (auto& [name, itype] : inVars) {
+                    auto it = outVars.find(name);
+                    if (it == outVars.end() || it->second == itype) continue;
+                    int od = dim(it->second), id = dim(itype);
+                    if (od == 0 || id == 0) continue;
 
-                if (fd > vd) {
-                    // Fragment is wider → upgrade vertex output
-                    upgradeVarying(units[0].src, "out", name, it->second, ftype);
-                    vert_changed = true;
-                } else {
-                    // Vertex is wider → upgrade fragment input
-                    upgradeVarying(units[1].src, "in", name, ftype, it->second);
-                    frag_changed = true;
+                    if (id > od) {
+                        upgradeVarying(units[pair].src, "out", name, it->second, itype);
+                        out_changed = true;
+                    } else {
+                        upgradeVarying(units[pair + 1].src, "in", name, itype, it->second);
+                        in_changed = true;
+                    }
                 }
+                if (out_changed) vunits[pair].src = units[pair].src;
+                if (in_changed) vunits[pair + 1].src = units[pair + 1].src;
             }
-            if (vert_changed) vunits[0].src = units[0].src;
-            if (frag_changed) vunits[1].src = units[1].src;
         }
 
         vulkan::ShaderCompOpt opt;
@@ -834,6 +1300,77 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         opt.relaxed_errors_glsl    = true;
         opt.relaxed_rules_vulkan   = true;
         opt.suppress_warnings_glsl = true;
+
+        // Geometry shader pipelines: link all 3 stages together so they
+        // share a single UBO layout.  The GS uses gs_in_ prefix for its
+        // inputs (to avoid same-name in/out redefinition within the GS).
+        // To make glslang's name-based linker work, rename VS outputs to
+        // match the GS input names (add gs_in_ prefix).
+        {
+            bool has_gs = false;
+            for (auto& u : units) {
+                if (u.stage == ShaderType::GEOMETRY) { has_gs = true; break; }
+            }
+            if (has_gs) {
+                // Collect GS input names (gs_in_v_XXX) and their canonical
+                // names (v_XXX) so we can rename VS outputs to match.
+                std::vector<std::pair<std::string, std::string>> gs_renames; // {canonical, gs_in_name}
+                for (auto& unit : units) {
+                    if (unit.stage != ShaderType::GEOMETRY) continue;
+                    std::regex re_gs_in(R"(\bin\s+(?:flat\s+)?(?:vec[234]|float|int|ivec[234])\s+(gs_in_(\w+))\s*\[\])");
+                    for (auto it = std::sregex_iterator(unit.src.begin(), unit.src.end(), re_gs_in);
+                         it != std::sregex_iterator(); ++it) {
+                        gs_renames.push_back({ (*it)[2].str(), (*it)[1].str() });
+                    }
+                }
+
+                // Rename VS outputs: v_XXX → gs_in_v_XXX (declarations + body)
+                for (auto& unit : units) {
+                    if (unit.stage != ShaderType::VERTEX) continue;
+                    for (auto& [canon, gs_name] : gs_renames) {
+                        // Rename output declaration: "out TYPE v_XXX;" → "out TYPE gs_in_v_XXX;"
+                        std::regex re_decl("\\bout\\s+((?:flat\\s+)?(?:vec[234]|float|int|ivec[234])\\s+)" +
+                                           canon + "\\s*;");
+                        unit.src = std::regex_replace(unit.src, re_decl, "out $1" + gs_name + ";");
+                        // Rename all uses of the variable in the body
+                        std::regex re_use("\\b" + canon + "\\b");
+                        // Only rename if it's not a vertex attribute (don't rename a_XXX)
+                        // and not inside an "in" declaration
+                        unit.src = std::regex_replace(unit.src, re_use, gs_name);
+                    }
+                }
+
+                // Sync vunits sources
+                for (usize i = 0; i < units.size(); i++) {
+                    vunits[i].src = units[i].src;
+                }
+
+                // Dump GS shader stages for debugging (each unique shader)
+                {
+                    static int dump_idx = 0;
+                    if (dump_idx < 5) {
+                        const char* stage_names[] = { "VERTEX", "GEOMETRY", "FRAGMENT" };
+                        for (usize i = 0; i < vunits.size(); i++) {
+                            int si = (vunits[i].stage == EShLangVertex)     ? 0
+                                     : (vunits[i].stage == EShLangGeometry) ? 1
+                                                                            : 2;
+                            std::string path = "/tmp/gs_dump_" +
+                                               std::to_string(dump_idx) + "_" +
+                                               std::string(stage_names[si]) + ".glsl";
+                            std::ofstream f(path);
+                            if (f) f << vunits[i].src;
+                            LOG_INFO("GS dump[%d]: stage=%s → %s (%zu bytes)",
+                                     dump_idx, stage_names[si], path.c_str(),
+                                     vunits[i].src.size());
+                        }
+                        dump_idx++;
+                    }
+                }
+
+                // Link all 3 stages together (shared UBO layout)
+                // Falls through to the normal CompileAndLinkShaderUnits below
+            }
+        }
 
         std::vector<vulkan::Uni_ShaderSpv> spvs(units.size());
 

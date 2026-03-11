@@ -102,6 +102,14 @@ bool ParticleInstanceoverride::FromJosn(const nlohmann::json& json) {
         GET_JSON_NAME_VALUE(json, "colorn", colorn);
         overColorn = true;
     }
+    // Parse controlpoint overrides (controlpoint0 through controlpoint7)
+    for (int i = 0; i < 8; i++) {
+        std::string key = "controlpoint" + std::to_string(i);
+        if (json.contains(key)) {
+            GET_JSON_NAME_VALUE(json, key.c_str(), controlpointOverrides[i].offset);
+            controlpointOverrides[i].active = true;
+        }
+    }
     return true;
 };
 

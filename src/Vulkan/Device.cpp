@@ -138,6 +138,10 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
             LOG_INFO("Anisotropic filtering enabled (max %.0f)",
                      device.m_limits.maxSamplerAnisotropy);
         }
+        if (supported.features.geometryShader) {
+            features2.features.geometryShader = VK_TRUE;
+            LOG_INFO("Geometry shader feature enabled");
+        }
     }
 
     bool rq_surface = ! inst.offscreen();

@@ -125,6 +125,25 @@ void SetParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uint32_
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
 }
 
+// GS particle: 1 vertex per particle (geometry shader expands to triangle strip)
+void SetParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, uint32_t count,
+                       bool thick_format) {
+    (void)particle;
+    std::vector<SceneVertexArray::SceneVertexAttribute> attrs {
+        { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+        { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_COLOR.data(), VertexType::FLOAT4 },
+    };
+    if (thick_format) {
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 });
+    }
+    attrs.push_back({ WE_IN_TEXCOORDC2.data(), VertexType::FLOAT2 });
+    // 1 vertex per particle, no index buffer (POINT_LIST topology)
+    mesh.AddVertexArray(SceneVertexArray(attrs, count));
+    mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
+    mesh.GetVertexArray(0).SetOption(WE_CB_GEOMETRY_SHADER, true);
+}
+
 void SetRopeParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uint32_t count,
                          bool thick_format) {
     (void)particle;
@@ -148,6 +167,29 @@ void SetRopeParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uin
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
 }
 
+// GS rope: 1 vertex per segment (geometry shader expands to triangle strip)
+void SetRopeParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, uint32_t count,
+                            bool thick_format) {
+    (void)particle;
+    std::vector<SceneVertexArray::SceneVertexAttribute> attrs {
+        { WE_IN_POSITIONVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 },
+    };
+    if (thick_format) {
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C2.data(), VertexType::FLOAT4 });
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C3.data(), VertexType::FLOAT4 });
+    } else {
+        attrs.push_back({ WE_IN_TEXCOORDVEC3C2.data(), VertexType::FLOAT4 });
+    }
+    attrs.push_back({ WE_IN_COLOR.data(), VertexType::FLOAT4 });
+    // 1 vertex per segment, no index buffer (POINT_LIST topology)
+    mesh.AddVertexArray(SceneVertexArray(attrs, count));
+    mesh.GetVertexArray(0).SetOption(WE_PRENDER_ROPE, true);
+    mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
+    mesh.GetVertexArray(0).SetOption(WE_CB_GEOMETRY_SHADER, true);
+}
+
 ParticleAnimationMode ToAnimMode(const std::string& str) {
     if (str == "randomframe")
         return ParticleAnimationMode::RANDOMONE;
@@ -158,9 +200,12 @@ ParticleAnimationMode ToAnimMode(const std::string& str) {
     }
 }
 
-void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp) {
+void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
+                      const wpscene::ParticleInstanceoverride& over,
+                      const std::array<float, 3>&              object_origin) {
     std::span<ParticleControlpoint> pcs = pSys.Controlpoints();
-    usize                           s   = std::min(pcs.size(), wp.controlpoints.size());
+    Eigen::Vector3d origin_vec { array_cast<double>(object_origin).data() };
+    usize           s = std::min(pcs.size(), wp.controlpoints.size());
     for (usize i = 0; i < s; i++) {
         pcs[i].offset = Eigen::Vector3d { array_cast<double>(wp.controlpoints[i].offset).data() };
         pcs[i].link_mouse =
@@ -168,11 +213,24 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp) {
         pcs[i].worldspace =
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::worldspace];
     }
+    // Apply instance override control points
+    for (int i = 0; i < 8; i++) {
+        if (over.controlpointOverrides[i].active) {
+            pcs[i].offset =
+                Eigen::Vector3d { array_cast<double>(over.controlpointOverrides[i].offset).data() };
+        }
+    }
+    // Convert worldspace control points to local space
+    for (usize i = 0; i < pcs.size(); i++) {
+        if (pcs[i].worldspace) {
+            pcs[i].offset -= origin_vec;
+        }
+    }
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                      const wpscene::ParticleInstanceoverride& over) {
     for (const auto& ini : wp.initializers) {
-        pSys.AddInitializer(WPParticleParser::genParticleInitOp(ini));
+        pSys.AddInitializer(WPParticleParser::genParticleInitOp(ini, pSys.Controlpoints()));
     }
     if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
 }
@@ -182,14 +240,20 @@ void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
         pSys.AddOperator(WPParticleParser::genParticleOperatorOp(op, over));
     }
 }
-void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count,
-                 bool render_rope) {
+void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count, float rate,
+                 bool render_rope, u32 rope_batch_size = 1) {
     bool sort = render_rope;
     for (const auto& em : wp.emitters) {
-        auto newEm = em;
-        newEm.rate *= count;
-        // newEm.origin[2] -= perspectiveZ;
-        pSys.AddEmitter(WPParticleParser::genParticleEmittOp(newEm, sort));
+        auto  newEm      = em;
+        float burst_rate = 0.0f;
+        if (rope_batch_size > 1) {
+            // Sequential burst: keep base rate as emitSpeed, use rate override as burst frequency
+            burst_rate = rate;
+        } else {
+            newEm.rate *= count * rate;
+        }
+        pSys.AddEmitter(
+            WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
     }
 }
 
@@ -287,22 +351,39 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
 
     auto vert_src = fs::GetFileContent(vfs, shaderPath + ".vert");
     auto frag_src = fs::GetFileContent(vfs, shaderPath + ".frag");
-    // Log first 80 chars of each shader source for debugging
-    LOG_INFO("shader '%s' vert(%zu)='%.80s' frag(%zu)='%.80s'",
-             wpmat.shader.c_str(),
-             vert_src.size(), vert_src.c_str(),
-             frag_src.size(), frag_src.c_str());
+    std::string geom_src;
+    if (vfs.Contains(shaderPath + ".geom"))
+        geom_src = fs::GetFileContent(vfs, shaderPath + ".geom");
 
-    std::array sd_units { WPShaderUnit {
-                              .stage           = ShaderType::VERTEX,
-                              .src             = std::move(vert_src),
-                              .preprocess_info = {},
-                          },
-                          WPShaderUnit {
-                              .stage           = ShaderType::FRAGMENT,
-                              .src             = std::move(frag_src),
-                              .preprocess_info = {},
-                          } };
+    // Log first 80 chars of each shader source for debugging
+    LOG_INFO("shader '%s' vert(%zu) frag(%zu) geom(%zu)",
+             wpmat.shader.c_str(),
+             vert_src.size(), frag_src.size(), geom_src.size());
+
+    bool has_geometry_shader = ! geom_src.empty();
+    if (has_geometry_shader) {
+        pWPShaderInfo->combos["GS_ENABLED"] = "1";
+        LOG_INFO("  geometry shader enabled for '%s'", wpmat.shader.c_str());
+    }
+
+    std::vector<WPShaderUnit> sd_units;
+    sd_units.push_back(WPShaderUnit {
+        .stage           = ShaderType::VERTEX,
+        .src             = std::move(vert_src),
+        .preprocess_info = {},
+    });
+    if (has_geometry_shader) {
+        sd_units.push_back(WPShaderUnit {
+            .stage           = ShaderType::GEOMETRY,
+            .src             = std::move(geom_src),
+            .preprocess_info = {},
+        });
+    }
+    sd_units.push_back(WPShaderUnit {
+        .stage           = ShaderType::FRAGMENT,
+        .src             = std::move(frag_src),
+        .preprocess_info = {},
+    });
 
     std::vector<WPShaderTexInfo>                 texinfos;
     std::unordered_map<std::string, ImageHeader> texHeaders;
@@ -456,7 +537,8 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
     material.cullmode   = wpmat.cullmode;
 
     for (uint i = 0; i < material.textures.size(); i++) {
-        if (! exists(sd_units[1].preprocess_info.active_tex_slots, i)) material.textures[i].clear();
+        if (! exists(sd_units.back().preprocess_info.active_tex_slots, i))
+            material.textures[i].clear();
     }
 
     for (const auto& el : pWPShaderInfo->baseConstSvs) {
@@ -1338,20 +1420,28 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     bool  hasSprite          = material.hasSprite;
     (void)hasSprite;
 
-    bool thick_format = material.hasSprite || hastrail;
+    bool thick_format       = material.hasSprite || hastrail;
+    bool has_geometry_shader = exists(shaderInfo.combos, "GS_ENABLED");
     {
         u32 mesh_maxcount = maxcount * (u32)child_ptr.max_instancecount;
-        if (render_rope)
-            SetRopeParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
-        else
-            SetParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
+        if (render_rope) {
+            if (has_geometry_shader)
+                SetRopeParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
+            else
+                SetRopeParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
+        } else {
+            if (has_geometry_shader)
+                SetParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
+            else
+                SetParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
+        }
     }
 
     auto particleSub = std::make_unique<ParticleSubSystem>(
         *context.scene->paritileSys,
         spMesh,
         maxcount,
-        override.rate,
+        1.0,
         child_data.maxcount,
         child_data.probability,
         ParseSpawnType(child_data.type),
@@ -1369,10 +1459,27 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             }
         });
 
-    LoadEmitter(*particleSub, particle_obj, override.count, render_rope);
+    LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);
+
+    // Detect batch size for rope particles with mapsequencebetweencontrolpoints
+    u32 rope_batch_size = 1;
+    if (render_rope) {
+        for (const auto& ini : particle_obj.initializers) {
+            if (ini.contains("name")) {
+                std::string ini_name;
+                GET_JSON_NAME_VALUE(ini, "name", ini_name);
+                if (ini_name == "mapsequencebetweencontrolpoints") {
+                    rope_batch_size = 10;
+                    GET_JSON_NAME_VALUE_NOWARN(ini, "count", rope_batch_size);
+                    break;
+                }
+            }
+        }
+    }
+    LoadEmitter(*particleSub, particle_obj, override.count, override.rate, render_rope,
+                rope_batch_size);
     LoadInitializer(*particleSub, particle_obj, override);
     LoadOperator(*particleSub, particle_obj, override);
-    LoadControlPoint(*particleSub, particle_obj);
 
     mesh.AddMaterial(std::move(material));
     spNode->AddMesh(spMesh);

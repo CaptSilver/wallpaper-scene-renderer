@@ -146,6 +146,12 @@ public:
     float                size { 1.0f };
     std::array<float, 3> color { 1.0f, 1.0f, 1.0f };
     std::array<float, 3> colorn { 1.0f, 1.0f, 1.0f };
+
+    struct ControlPointOverride {
+        bool                 active { false };
+        std::array<float, 3> offset { 0, 0, 0 };
+    };
+    std::array<ControlPointOverride, 8> controlpointOverrides;
 };
 
 class WPParticleObject {

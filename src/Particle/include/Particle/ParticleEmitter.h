@@ -44,6 +44,8 @@ struct ParticleBoxEmitterArgs {
     u32                  instantaneous;
     float                minSpeed;
     float                maxSpeed;
+    u32                  batchSize { 1 };
+    float                burstRate { 0.0f };
 
     static ParticleEmittOp MakeEmittOp(ParticleBoxEmitterArgs);
 };
@@ -60,6 +62,8 @@ struct ParticleSphereEmitterArgs {
     u32                    instantaneous;
     float                  minSpeed;
     float                  maxSpeed;
+    u32                    batchSize { 1 };
+    float                  burstRate { 0.0f };
 
     static ParticleEmittOp MakeEmittOp(ParticleSphereEmitterArgs);
 };

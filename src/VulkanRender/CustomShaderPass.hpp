@@ -36,6 +36,9 @@ public:
         VkImageView           msaaColorView { VK_NULL_HANDLE };
         VkImage               msaaColorImage { VK_NULL_HANDLE };
 
+        // Geometry shader: use POINT_LIST topology instead of TRIANGLE_STRIP
+        bool point_topology { false };
+
         // -----prepared
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;
