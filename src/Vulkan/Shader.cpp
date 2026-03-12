@@ -319,6 +319,7 @@ static bool GetReflectedInfo(glslang::TProgram& pro, ShaderReflected& ref, const
 bool wallpaper::vulkan::GenReflect(std::span<const std::vector<uint>> codes,
                                    std::vector<Uni_ShaderSpv>& spvs, ShaderReflected& ref) {
     spvs.clear();
+    if (codes.empty()) return false;
     for (const auto& code : codes) {
         spv_reflect::ShaderModule spv_ref(code, SPV_REFLECT_MODULE_FLAG_NO_COPY);
         VkShaderStageFlagBits     stage = ::ToVkType(spv_ref.GetShaderStage());

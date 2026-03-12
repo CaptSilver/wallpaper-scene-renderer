@@ -200,6 +200,9 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
         if (auto opt = CreateShaderModule(device.handle(), *spv); opt.has_value()) {
             shader_modules.emplace_back(std::move(opt.value()));
             info.module = *shader_modules.back();
+        } else {
+            LOG_ERROR("CreateShaderModule failed for stage 0x%x", (u32)info.stage);
+            return false;
         }
 
         shaderStages.push_back(info);
