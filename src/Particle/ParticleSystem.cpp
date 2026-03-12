@@ -16,7 +16,18 @@ void ParticleInstance::Refresh() {
     SetNoLiveParticle(false);
     GetBoundedData() = {};
     ParticlesVec().clear();
+    for (auto& trail : m_trail_histories) trail.Clear();
 }
+
+void ParticleInstance::InitTrails(u32 trail_capacity) {
+    m_trail_capacity = trail_capacity;
+}
+
+std::vector<ParticleTrailHistory>& ParticleInstance::TrailHistories() {
+    return m_trail_histories;
+}
+
+u32 ParticleInstance::TrailCapacity() const { return m_trail_capacity; }
 
 bool ParticleInstance::IsDeath() const { return m_is_death; }
 void ParticleInstance::SetDeath(bool v) { m_is_death = v; };
@@ -32,10 +43,11 @@ ParticleInstance::BoundedData& ParticleInstance::GetBoundedData() { return m_bou
 ParticleSubSystem::ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMesh> sm,
                                      uint32_t maxcount, double rate, u32 maxcount_instance,
                                      double probability, SpawnType type,
-                                     ParticleRawGenSpecOp specOp)
+                                     ParticleRawGenSpecOp specOp, uint32_t starttime)
     : m_sys(p),
       m_mesh(sm),
       m_maxcount(maxcount),
+      m_starttime(starttime),
       m_rate(rate),
       m_genSpecOp(specOp),
       m_time(0),
@@ -60,6 +72,11 @@ ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_ty
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
 
+void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity) {
+    m_is_spritetrail = true;
+    m_trail_capacity = trail_capacity;
+}
+
 void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
     m_children.emplace_back(std::move(child));
 }
@@ -73,20 +90,30 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
             }
         }
         if (m_instances.size() < m_maxcount_instance) {
-            m_instances.emplace_back(std::make_unique<ParticleInstance>());
-            return m_instances.back().get();
+            auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
+            if (m_is_spritetrail) {
+                inst->InitTrails(m_trail_capacity);
+            }
+            return inst.get();
         }
     }
     return nullptr;
 }
 
 void ParticleSubSystem::Emitt() {
+    if (m_sys.scene.elapsingTime < (double)m_starttime) return;
+
     double frameTime    = m_sys.scene.frameTime;
     double particleTime = frameTime * m_rate;
     m_time += particleTime;
 
     if (m_spawn_type == SpawnType::STATIC) {
-        if (m_instances.empty()) m_instances.emplace_back(std::make_unique<ParticleInstance>());
+        if (m_instances.empty()) {
+            auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
+            if (m_is_spritetrail) {
+                inst->InitTrails(m_trail_capacity);
+            }
+        }
     }
 
     auto spawn_inst = [](ParticleInstance& inst, ParticleSubSystem& child, isize idx) {
@@ -141,8 +168,10 @@ void ParticleSubSystem::Emitt() {
             }
         }
 
-        // event_death is always death after emitop
-        if (m_spawn_type == SpawnType::EVENT_DEATH) inst->SetDeath(true);
+        // event_death is death when no live particles left
+        if (m_spawn_type == SpawnType::EVENT_DEATH && inst->IsNoLiveParticle() && ! inst->ParticlesVec().empty()) {
+            inst->SetDeath(true);
+        }
 
         ParticleInfo info {
             .particles     = inst->ParticlesVec(),
@@ -156,7 +185,8 @@ void ParticleSubSystem::Emitt() {
         for (auto& p : info.particles) {
             i++;
 
-            if (ParticleModify::IsNew(p)) {
+            bool is_new = ParticleModify::IsNew(p);
+            if (is_new) {
                 // new spawn
                 for (auto& child : m_children) {
                     if (child->Type() == SpawnType::EVENT_FOLLOW ||
@@ -167,6 +197,10 @@ void ParticleSubSystem::Emitt() {
 
             ParticleModify::MarkOld(p);
             if (! ParticleModify::LifetimeOk(p)) {
+                // Mark newly-dead particles so trail recording can clear them
+                if (m_is_spritetrail && i < (isize)inst->TrailHistories().size()) {
+                    inst->TrailHistories()[i].Clear();
+                }
                 continue;
             }
             ParticleModify::Reset(p);
@@ -187,11 +221,41 @@ void ParticleSubSystem::Emitt() {
         std::for_each(m_operators.begin(), m_operators.end(), [&info](ParticleOperatorOp& op) {
             op(info);
         });
+
+        // Record trail positions for spritetrail particles
+        if (m_is_spritetrail) {
+            auto& trails    = inst->TrailHistories();
+            auto& particles = inst->ParticlesVec();
+            // Grow trail history vector to match particle count
+            while (trails.size() < particles.size()) {
+                trails.emplace_back();
+                trails.back().Init(m_trail_capacity);
+            }
+            usize alive_count = 0;
+            usize trail_count = 0;
+            for (usize pi = 0; pi < particles.size(); pi++) {
+                auto& p     = particles[pi];
+                auto& trail = trails[pi];
+                if (ParticleModify::LifetimeOk(p)) {
+                    trail.Push({ p.position, p.size, p.alpha, p.color });
+                    alive_count++;
+                    if (trail.Count() >= 2) trail_count++;
+                }
+                // Dead particles already had trail cleared in the loop above
+            }
+            static int s_trail_log_counter = 0;
+            if (++s_trail_log_counter % 6000 == 1 && alive_count > 0) {
+                LOG_INFO("spritetrail: alive=%zu trail_renderable=%zu capacity=%u particles=%zu",
+                         alive_count, trail_count, m_trail_capacity, particles.size());
+            }
+        }
     }
 
-    m_mesh->SetDirty();
-
-    m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+    // Spawner-only particles have no vertex arrays — skip render data generation
+    if (m_mesh->VertexCount() > 0) {
+        m_mesh->SetDirty();
+        m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+    }
 
     for (auto& child : m_children) {
         child->Emitt();

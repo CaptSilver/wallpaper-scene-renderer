@@ -42,15 +42,16 @@ bool ParticleControlpoint::FromJson(const nlohmann::json& json) {
 
 bool ParticleRender::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE(json, "name", name);
-    // ropetrail require subdivition, replaced
-    if (name == "ropetrail") name = "spritetrail";
 
-    if (sstart_with(name, "rope")) {
+    if (name == "ropetrail") {
         GET_JSON_NAME_VALUE_NOWARN(json, "subdivision", subdivision);
-    }
-    if (name == "spritetrail" || name == "ropetrail") {
         GET_JSON_NAME_VALUE_NOWARN(json, "length", length);
         GET_JSON_NAME_VALUE_NOWARN(json, "maxlength", maxlength);
+    } else if (name == "spritetrail") {
+        GET_JSON_NAME_VALUE_NOWARN(json, "length", length);
+        GET_JSON_NAME_VALUE_NOWARN(json, "maxlength", maxlength);
+    } else if (sstart_with(name, "rope")) {
+        GET_JSON_NAME_VALUE_NOWARN(json, "subdivision", subdivision);
     }
     return true;
 }
@@ -74,6 +75,12 @@ bool Emitter::FromJson(const nlohmann::json& json) {
     if (controlpoint >= 8) LOG_ERROR("wrong controlpoint %d", controlpoint);
     controlpoint = controlpoint % 8; // limited to 0-7
 
+    GET_JSON_NAME_VALUE_NOWARN(json, "minperiodicdelay", minperiodicdelay);
+    GET_JSON_NAME_VALUE_NOWARN(json, "maxperiodicdelay", maxperiodicdelay);
+    GET_JSON_NAME_VALUE_NOWARN(json, "minperiodicduration", minperiodicduration);
+    GET_JSON_NAME_VALUE_NOWARN(json, "maxperiodicduration", maxperiodicduration);
+    GET_JSON_NAME_VALUE_NOWARN(json, "maxtoemitperperiod", maxtoemitperperiod);
+
     uint32_t _raw_flags { 0 };
     GET_JSON_NAME_VALUE_NOWARN(json, "flags", _raw_flags);
     flags = EFlags(_raw_flags);
@@ -90,6 +97,7 @@ bool Emitter::FromJson(const nlohmann::json& json) {
 bool ParticleInstanceoverride::FromJosn(const nlohmann::json& json) {
     enabled = true;
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
+    GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
     GET_JSON_NAME_VALUE_NOWARN(json, "size", size);
     GET_JSON_NAME_VALUE_NOWARN(json, "lifetime", lifetime);
     GET_JSON_NAME_VALUE_NOWARN(json, "rate", rate);
@@ -130,8 +138,8 @@ bool Particle::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
             renderers.push_back(pr);
         }
     }
-    // add sprite if no renderers
-    if (renderers.empty()) {
+    // add sprite if no renderers (only when key missing, not when explicitly empty)
+    if (renderers.empty() && ! json.contains("renderer")) {
         ParticleRender pr;
         pr.name = "sprite";
         renderers.push_back(pr);

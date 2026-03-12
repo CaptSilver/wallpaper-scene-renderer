@@ -76,6 +76,13 @@ public:
     EFlags                 flags;
     std::string            name;
     float                  rate { 5.0f };
+
+    // Periodic emission fields
+    float minperiodicdelay { 0.0f };
+    float maxperiodicdelay { 0.0f };
+    float minperiodicduration { 0.0f };
+    float maxperiodicduration { 0.0f };
+    u32   maxtoemitperperiod { 0 };
 };
 
 class ParticleChild;
@@ -139,6 +146,7 @@ public:
     bool overColorn { false };
 
     float                alpha { 1.0f };
+    float                brightness { 1.0f };
     float                count { 1.0f };
     float                lifetime { 1.0f };
     float                rate { 1.0f };

@@ -195,20 +195,113 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                 result *= speed;
                 PM::ChangeVelocity(p, result[0], result[1], result[2]);
             };
-        } else if (name == "mapsequencebetweencontrolpoints") {
-            u32         count = 10;
-            std::string limitbehavior;
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "limitbehavior", limitbehavior);
-            if (count == 0) count = 1;
+        } else if (name == "positionoffsetrandom") {
+            float distance = 0.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "distance", distance);
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
+            return [=](Particle& p, double) {
+                if (distance <= 0.0f) return;
+                // Small micro-variation on top of smooth noise curves from mapsequence
+                double r   = distance * 0.02 * std::cbrt(Random::get(0.0, 1.0));
+                double z   = Random::get(-1.0, 1.0);
+                double phi = Random::get(0.0, 2.0 * M_PI);
+                double rxy = std::sqrt(1.0 - z * z);
+                Vector3d offset(rxy * std::cos(phi), rxy * std::sin(phi), z);
+                offset *= r;
+                // Project out the along-line component so offset is perpendicular
+                // to the control point line — produces clean zigzag for rope particles
+                if (cp_size >= 2) {
+                    Vector3d line = cp_data[1].offset - cp_data[0].offset;
+                    double   len2 = line.squaredNorm();
+                    if (len2 > 1e-10) {
+                        Vector3d dir = line / std::sqrt(len2);
+                        offset -= offset.dot(dir) * dir;
+                    }
+                }
+                PM::Move(p, offset);
+            };
+        } else if (name == "box") {
+            VecRandom r;
+            VecRandom::ReadFromJson(wpj, r);
+            return [=](Particle& p, double) {
+                auto pos = GenRandomVec3(r.min, r.max);
+                PM::InitPos(p, pos[0], pos[1], pos[2]);
+            };
+        } else if (name == "sphere") {
+            SingleRandom r;
+            SingleRandom::ReadFromJson(wpj, r);
+            return [=](Particle& p, double) {
+                double radius =
+                    algorism::lerp(std::pow(Random::get(0.0, 1.0), 1.0 / 3.0), r.min, r.max);
+                double   z   = Random::get(-1.0, 1.0);
+                double   phi = Random::get(0.0, 2.0 * M_PI);
+                double   rxy = std::sqrt(1.0 - z * z);
+                Vector3d pos(rxy * std::cos(phi), rxy * std::sin(phi), z);
+                pos *= radius;
+                PM::InitPos(p, pos[0], pos[1], pos[2]);
+            };
+        } else if (name == "remapinitialvalue") {
+            std::string input, output, operation;
+            float       inMin = 0, inMax = 100, outMin = 0, outMax = 1;
+            int         inputCP = 0;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "output", output);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "operation", operation);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputrangemin", inMin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputrangemax", inMax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemin", outMin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemax", outMax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcontrolpoint0", inputCP);
+            inputCP = std::clamp(inputCP, 0, 7);
 
-            bool                        mirror  = (limitbehavior == "mirror");
             const ParticleControlpoint* cp_data = controlpoints.data();
             usize                       cp_size = controlpoints.size();
 
-            u32 seq = 0;
+            return [=](Particle& p, double) {
+                double val = 0;
+                if (input == "distancetocontrolpoint") {
+                    if ((usize)inputCP < cp_size) {
+                        val = (PM::GetPos(p).cast<double>() - cp_data[inputCP].offset).norm();
+                    }
+                }
+                // Map val from [inMin, inMax] to [outMin, outMax]
+                double t = (inMax > inMin) ? std::clamp((val - inMin) / (inMax - inMin), 0.0, 1.0)
+                                           : 0.0;
+                double outVal = algorism::lerp(t, (double)outMin, (double)outMax);
+
+                if (output == "size") {
+                    if (operation == "multiply")
+                        PM::MutiplySize(p, outVal);
+                    else
+                        PM::InitSize(p, outVal);
+                }
+            };
+        } else if (name == "mapsequencebetweencontrolpoints") {
+            u32         count     = 10;
+            u32         flags     = 0;
+            float       arcamount = 0.0f;
+            int         cpStart   = 0;
+            std::string limitbehavior;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "arcamount", arcamount);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "limitbehavior", limitbehavior);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "flags", flags);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpointstartindex", cpStart);
+            if (count == 0) count = 1;
+            cpStart = std::clamp(cpStart, 0, 7);
+
+            // Mirror from explicit string or from flags bit 1
+            bool                        mirror  = (limitbehavior == "mirror") || (flags & 2);
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
+
+            auto  seq_ptr = std::make_shared<u32>(0);
+            // Noise phases for smooth curves — regenerated each emission cycle
+            float phase0 = 0, phase1 = 0, phase2 = 0;
             return [=](Particle& p, double) mutable {
-                if (cp_size < 2 || count <= 1) {
+                u32& seq = *seq_ptr;
+                if (cp_size < (usize)(cpStart + 2) || count <= 1) {
                     seq++;
                     return;
                 }
@@ -220,11 +313,44 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                 } else {
                     idx = seq % count;
                 }
+                // New cycle: randomize noise phases so each bolt looks different
+                if (idx == 0) {
+                    phase0 = Random::get(0.0f, (float)(2.0 * M_PI));
+                    phase1 = Random::get(0.0f, (float)(2.0 * M_PI));
+                    phase2 = Random::get(0.0f, (float)(2.0 * M_PI));
+                }
                 float    t       = (float)idx / (float)(count - 1);
-                Vector3f cp0     = cp_data[0].offset.cast<float>();
-                Vector3f cp1     = cp_data[1].offset.cast<float>();
-                Vector3f pathpos = cp0 + t * (cp1 - cp0);
+                Vector3f cp0     = cp_data[cpStart].offset.cast<float>();
+                Vector3f cp1     = cp_data[cpStart + 1].offset.cast<float>();
+                Vector3f line    = cp1 - cp0;
+                float    lineLen = line.norm();
+                Vector3f pathpos = cp0 + t * line;
+
+                // Perpendicular direction to the CP line
+                Vector3f perp(-line.y(), line.x(), 0.0f);
+                if (perp.squaredNorm() < 1e-6f)
+                    perp = Vector3f(0, 0, 1.0f);
+                else
+                    perp.normalize();
+
+                // Arc: parabolic bulge perpendicular to line
+                if (std::abs(arcamount) > 1e-6f) {
+                    pathpos += arcamount * 4.0f * t * (1.0f - t) * perp * lineLen;
+                }
+
+                // Smooth noise displacement: sum-of-sinusoids at 3 octaves
+                // Creates organic curves instead of zigzag
+                // Amplitude scales with line length (~15% of line length)
+                float amplitude = lineLen * 0.15f;
+                // Taper to zero at endpoints so bolt connects cleanly to CPs
+                float taper     = std::sin(t * (float)M_PI);
+                float noise     = std::sin(t * 2.5f * (float)M_PI + phase0) * 0.55f
+                              + std::sin(t * 5.7f * (float)M_PI + phase1) * 0.30f
+                              + std::sin(t * 11.3f * (float)M_PI + phase2) * 0.15f;
+                pathpos += perp * noise * amplitude * taper;
+
                 PM::Move(p, pathpos.cast<double>());
+                PM::ChangeVelocity(p, -PM::GetVelocity(p).cast<double>());
                 seq++;
             };
         }
@@ -238,12 +364,16 @@ ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstan
         PM::MutiplyInitLifeTime(p, over.lifetime);
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);
-        PM::MutiplyVelocity(p, over.speed * over.speed * over.speed);
+        PM::MutiplyVelocity(p, over.speed);
         if (over.overColor) {
             PM::InitColor(
                 p, over.color[0] / 255.0f, over.color[1] / 255.0f, over.color[2] / 255.0f);
         } else if (over.overColorn) {
             PM::MutiplyInitColor(p, over.colorn[0], over.colorn[1], over.colorn[2]);
+        }
+        // Brightness multiplies particle color (e.g. 5.0 for lightning glow)
+        if (over.brightness != 1.0f) {
+            PM::MutiplyInitColor(p, over.brightness, over.brightness, over.brightness);
         }
     };
 }
@@ -583,15 +713,55 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             double     phase = Random::get(tur.phasemin, tur.phasemax);
             double     speed = Random::get(tur.speedmin, tur.speedmax);
 
+            float blendinstart = 0.0f, blendinend = 0.0f;
+            float blendoutstart = 1.0f, blendoutend = 1.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinstart", blendinstart);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinend", blendinend);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutstart", blendoutstart);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutend", blendoutend);
+            bool hasBlend = blendinend > 0.0f || blendoutend < 1.0f;
+
             return [=](const ParticleInfo& info) {
+                double noiseRate =
+                    std::abs(tur.timescale * tur.scale * 2.0) * info.time_pass;
+                bool incoherent = noiseRate > 1.0;
+
                 for (auto& p : info.particles) {
                     Vector3d pos = PM::GetPos(p).cast<double>();
-                    pos.x() += phase + tur.timescale * info.time;
-                    Vector3d result = speed * algorism::CurlNoise(pos * tur.scale * 2).normalized();
-                    for (usize i = 0; i < 3; i++) {
-                        if (tur.mask[i] == 0) result[i] = 0;
+                    double factor = speed;
+                    if (hasBlend) {
+                        double life  = PM::LifetimePos(p);
+                        double blend = 1.0;
+                        if (blendinend > blendinstart && life < blendinend)
+                            blend = std::clamp(
+                                (life - blendinstart) / (blendinend - blendinstart), 0.0, 1.0);
+                        if (blendoutend > blendoutstart && life > blendoutstart) {
+                            double bo = std::clamp(
+                                (life - blendoutstart) / (blendoutend - blendoutstart), 0.0, 1.0);
+                            blend *= (1.0 - bo);
+                        }
+                        factor *= blend;
                     }
-                    PM::Accelerate(p, result, info.time_pass);
+                    if (incoherent) {
+                        // High-frequency spatial noise so adjacent rope particles
+                        // jitter independently (not uniformly).  Time evolves slowly
+                        // so the crackle pattern drifts rather than flickering.
+                        Vector3d samplePos = pos * tur.scale * 20.0;
+                        samplePos.x() += phase + info.time * tur.scale * 2.0;
+                        Vector3d result = algorism::CurlNoise(samplePos).normalized();
+                        for (usize i = 0; i < 3; i++) {
+                            if (tur.mask[i] == 0) result[i] = 0;
+                        }
+                        PM::Move(p, result * factor * info.time_pass * 0.3);
+                    } else {
+                        pos.x() += phase + tur.timescale * info.time;
+                        Vector3d result =
+                            speed * algorism::CurlNoise(pos * tur.scale * 2).normalized();
+                        for (usize i = 0; i < 3; i++) {
+                            if (tur.mask[i] == 0) result[i] = 0;
+                        }
+                        PM::Accelerate(p, result * factor, info.time_pass);
+                    }
                 }
             };
         } else if (name == "vortex") {
@@ -619,6 +789,120 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     }
                 }
             };
+        } else if (name == "maintaindistancebetweencontrolpoints") {
+            // Clamp particles that drift past the control point endpoints.
+            // The perpendicular offset (zigzag) from positionoffsetrandom/turbulence
+            // is fully preserved; only the along-line component is clamped.
+            return [=](const ParticleInfo& info) {
+                if (info.controlpoints.size() < 2) return;
+                Vector3d cp0  = info.controlpoints[0].offset;
+                Vector3d cp1  = info.controlpoints[1].offset;
+                Vector3d line = cp1 - cp0;
+                double   len2 = line.squaredNorm();
+                if (len2 < 1e-10) return;
+
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    Vector3d pos   = PM::GetPos(p).cast<double>();
+                    double   projT = (pos - cp0).dot(line) / len2;
+                    if (projT < 0.0 || projT > 1.0) {
+                        double   clampedT = std::clamp(projT, 0.0, 1.0);
+                        Vector3d projPt   = cp0 + projT * line;
+                        Vector3d clampPt  = cp0 + clampedT * line;
+                        PM::Move(p, clampPt - projPt);
+                    }
+                }
+            };
+        } else if (name == "reducemovementnearcontrolpoint") {
+            i32   controlpoint   = 0;
+            float distanceinner  = 0.0f;
+            float distanceouter  = 100.0f;
+            float reductioninner = 1.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "distanceinner", distanceinner);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "distanceouter", distanceouter);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "reductioninner", reductioninner);
+            controlpoint = std::clamp(controlpoint, 0, 7);
+
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                Vector3d cpPos = info.controlpoints[controlpoint].offset;
+
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    double dist = (PM::GetPos(p).cast<double>() - cpPos).norm();
+                    if (dist >= distanceouter) continue;
+
+                    double reduction;
+                    if (dist <= distanceinner) {
+                        reduction = reductioninner;
+                    } else {
+                        double t  = (dist - distanceinner) / (distanceouter - distanceinner);
+                        reduction = algorism::lerp(t, (double)reductioninner, 0.0);
+                    }
+                    double factor = 1.0 / (1.0 + reduction * info.time_pass);
+                    PM::MutiplyVelocity(p, factor);
+                }
+            };
+        } else if (name == "remapvalue") {
+            std::string input, output, transformfunction;
+            float       transforminputscale = 1.0f;
+            float       blendinstart = 0.0f, blendinend = 0.0f;
+            float       blendoutstart = 1.0f, blendoutend = 1.0f;
+
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "output", output);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "transformfunction", transformfunction);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "transforminputscale", transforminputscale);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinstart", blendinstart);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinend", blendinend);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutstart", blendoutstart);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutend", blendoutend);
+
+            return [=](const ParticleInfo& info) {
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+
+                    // Get input value
+                    double inputVal = 0.0;
+                    if (input == "particlesystemtime") {
+                        inputVal = info.time;
+                    } else if (input == "particlelifetime") {
+                        inputVal = PM::LifetimePos(p);
+                    }
+
+                    // Apply transform function
+                    double transformed = inputVal * transforminputscale;
+                    if (transformfunction == "sine") {
+                        transformed = (std::sin(transformed) + 1.0) * 0.5;
+                    } else if (transformfunction == "cosine") {
+                        transformed = (std::cos(transformed) + 1.0) * 0.5;
+                    }
+                    // else linear: keep as-is
+
+                    // Blend based on particle lifetime position
+                    double life  = PM::LifetimePos(p);
+                    double blend = 1.0;
+                    if (blendinend > blendinstart && life < blendinend) {
+                        blend = std::clamp(
+                            (life - blendinstart) / (blendinend - blendinstart), 0.0, 1.0);
+                    }
+                    if (blendoutend > blendoutstart && life > blendoutstart) {
+                        double bout = std::clamp(
+                            (life - blendoutstart) / (blendoutend - blendoutstart), 0.0, 1.0);
+                        blend *= (1.0 - bout);
+                    }
+
+                    double value = algorism::lerp(blend, 1.0, transformed);
+
+                    // Apply to output
+                    if (output == "opacity") {
+                        PM::MutiplyAlpha(p, value);
+                    } else if (output == "size") {
+                        PM::MutiplySize(p, value);
+                    }
+                }
+            };
         } else if (name == "controlpointattract") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
@@ -640,11 +924,12 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
 
 ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe, bool sort,
                                                      u32 batch_size, float burst_rate) {
+    ParticleEmittOp baseOp;
     if (wpe.name == "boxrandom") {
         ParticleBoxEmitterArgs box;
         box.emitSpeed     = wpe.rate;
-        box.minDistance   = wpe.distancemin;
-        box.maxDistance   = wpe.distancemax;
+        box.minDistance    = wpe.distancemin;
+        box.maxDistance    = wpe.distancemax;
         box.directions    = wpe.directions;
         box.orgin         = wpe.origin;
         box.one_per_frame = wpe.flags[wpscene::Emitter::FlagEnum::one_per_frame];
@@ -654,12 +939,12 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         box.sort          = sort;
         box.batchSize     = batch_size;
         box.burstRate     = burst_rate;
-        return ParticleBoxEmitterArgs::MakeEmittOp(box);
+        baseOp            = ParticleBoxEmitterArgs::MakeEmittOp(box);
     } else if (wpe.name == "sphererandom") {
         ParticleSphereEmitterArgs sphere;
         sphere.emitSpeed     = wpe.rate;
-        sphere.minDistance   = wpe.distancemin[0];
-        sphere.maxDistance   = wpe.distancemax[0];
+        sphere.minDistance    = wpe.distancemin[0];
+        sphere.maxDistance    = wpe.distancemax[0];
         sphere.directions    = wpe.directions;
         sphere.orgin         = wpe.origin;
         sphere.sign          = wpe.sign;
@@ -670,8 +955,69 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         sphere.sort          = sort;
         sphere.batchSize     = batch_size;
         sphere.burstRate     = burst_rate;
-        return ParticleSphereEmitterArgs::MakeEmittOp(sphere);
-    } else
+        baseOp               = ParticleSphereEmitterArgs::MakeEmittOp(sphere);
+    } else {
         return [](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, float) {
         };
+    }
+
+    // Wrap with periodic emission if configured
+    bool hasPeriodic = wpe.maxperiodicduration > 0 || wpe.maxperiodicdelay > 0;
+    if (! hasPeriodic) return baseOp;
+
+    float minDelay = wpe.minperiodicdelay;
+    float maxDelay = wpe.maxperiodicdelay;
+    float minDur   = wpe.minperiodicduration;
+    float maxDur   = wpe.maxperiodicduration;
+    u32   maxPer   = wpe.maxtoemitperperiod;
+
+    double phaseDur     = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+    // Random initial phase offset so different instances don't fire simultaneously
+    double totalCycle   = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
+    double timer        = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
+    bool   active       = true;
+    u32    emittedCount = 0;
+
+    return [=, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
+                                           std::vector<ParticleInitOp>& inis, u32 maxcount,
+                                           double timepass) mutable {
+        bool justActivated = false;
+        timer += timepass;
+        while (timer >= phaseDur) {
+            timer -= phaseDur;
+            active = ! active;
+            if (active) {
+                phaseDur      = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+                emittedCount  = 0;
+                justActivated = true;
+            } else {
+                phaseDur = maxDelay > 0 ? Random::get((double)minDelay, (double)maxDelay) : 0.1;
+            }
+        }
+        if (active && (maxPer == 0 || emittedCount < maxPer)) {
+            u32 aliveBefore = 0;
+            if (maxPer > 0) {
+                for (const auto& p : ps)
+                    if (ParticleModify::LifetimeOk(p)) aliveBefore++;
+            }
+
+            // Trigger burst at start of period if maxtoemitperperiod is set.
+            // Or for ropes, always try to emit the whole batch.
+            double effectiveTime = timepass;
+            if (justActivated && maxPer > 0) {
+                effectiveTime = 1000.0; // Force immediate burst of maxPer
+            } else if (batch_size > 1 && emittedCount == 0) {
+                effectiveTime = 1000.0; // Force immediate rope batch
+            }
+
+            baseOp(ps, inis, maxcount, effectiveTime);
+
+            if (maxPer > 0) {
+                u32 aliveAfter = 0;
+                for (const auto& p : ps)
+                    if (ParticleModify::LifetimeOk(p)) aliveAfter++;
+                if (aliveAfter > aliveBefore) emittedCount += (aliveAfter - aliveBefore);
+            }
+        }
+    };
 }

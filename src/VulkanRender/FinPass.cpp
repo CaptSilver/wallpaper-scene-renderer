@@ -28,7 +28,10 @@ layout(binding = 1) uniform sampler2D u_Texture;
 void main()
 {
 	vec3 hdr = texture(u_Texture, v_Texcoord).rgb;
-	out_FragColor = vec4(hdr / (hdr + 1.0), 1.0);
+	// Exposure tonemap: preserves HDR glow gradients from additive particles
+	// (beam textures + brightness 5x + alpha 10x produce values up to ~50)
+	// 1 - exp(-x) smoothly compresses: 0→0, 1→0.63, 5→0.99, 50→1.0
+	out_FragColor = vec4(1.0 - exp(-hdr), 1.0);
 }
 )";
 

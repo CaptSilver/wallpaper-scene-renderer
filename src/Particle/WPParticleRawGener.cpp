@@ -97,6 +97,8 @@ inline usize GenParticleData(std::span<const std::unique_ptr<ParticleInstance>> 
 }
 
 // GS path: 1 vertex per particle (geometry shader expands to quad)
+// When GS_ENABLED, the vertex shader reads all 3 rotation components from a_TexCoordVec4.xyz
+// and particle size from a_TexCoordVec4.w. a_TexCoordC2 is not used.
 inline usize GenParticleDataGS(std::span<const std::unique_ptr<ParticleInstance>> instances,
                                 const ParticleRawGenSpecOp& specOp, WPGOption opt,
                                 SceneVertexArray& sv) noexcept {
@@ -116,15 +118,16 @@ inline usize GenParticleDataGS(std::span<const std::unique_ptr<ParticleInstance>
 
             auto  pos  = inst->GetBoundedData().pos + p.position;
             float size = p.size / 2.0f;
-            float rz   = p.rotation[2];
 
             usize offset = 0;
 
             // a_Position (vec3, padded to 4 floats in vertex layout)
             std::copy_n(std::array { pos[0], pos[1], pos[2], 0.0f }.data(), 4, data + offset);
             offset += 4;
-            // a_TexCoordVec4: UV (unused by GS), rotation.z, size
-            std::copy_n(std::array { 0.0f, 0.0f, rz, size }.data(), 4, data + offset);
+            // a_TexCoordVec4: rotation.xyz + size (GS reads all 3 rotation components)
+            std::copy_n(
+                std::array { p.rotation[0], p.rotation[1], p.rotation[2], size }.data(), 4,
+                data + offset);
             offset += 4;
             // a_Color
             std::copy_n(std::array { p.color[0], p.color[1], p.color[2], p.alpha }.data(), 4,
@@ -138,9 +141,6 @@ inline usize GenParticleDataGS(std::span<const std::unique_ptr<ParticleInstance>
                     4, data + offset);
                 offset += 4;
             }
-            // a_TexCoordC2: rotation.x, rotation.y (padded to 4 floats)
-            std::copy_n(std::array { p.rotation[0], p.rotation[1], 0.0f, 0.0f }.data(), 4,
-                        data + offset);
 
             sv.SetVertexs(i, { data, one_size });
             i++;
@@ -159,18 +159,25 @@ inline size_t GenRopeParticleData(std::span<const Particle> particles,
     const auto totle_size = one_size * 4;
     size_t     seg_count  = 0;
 
-    for (size_t pi = 1; pi < particles.size(); pi++) {
-        const auto& p = particles[pi];
-        if (! ParticleModify::LifetimeOk(p)) break;
+    // Collect alive particle indices to connect consecutive alive ones
+    std::vector<size_t> alive;
+    alive.reserve(particles.size());
+    for (size_t i = 0; i < particles.size(); i++) {
+        if (ParticleModify::LifetimeOk(particles[i])) alive.push_back(i);
+    }
 
-        const auto& pre_p = particles[pi - 1];
+    float trail_length = (float)alive.size();
+
+    for (size_t ai = 1; ai < alive.size(); ai++) {
+        const auto& pre_p = particles[alive[ai - 1]];
+        const auto& p     = particles[alive[ai]];
+
         float       size  = p.size / 2.0f;
         size_t      offset = 0;
 
         float lifetime = p.lifetime;
         specOp(p, { &lifetime });
-        float trail_length   = (float)particles.size();
-        float trail_position = (float)(pi - 1);
+        float trail_position = (float)(ai - 1);
 
         // Add instance position offset
         Vector3f sp_pos  = Vector3f { pre_p.position } + inst_pos;
@@ -238,24 +245,31 @@ inline size_t GenRopeParticleData(std::span<const Particle> particles,
 inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const Vector3f& inst_pos,
                                      const ParticleRawGenSpecOp& specOp, WPGOption opt,
                                      SceneVertexArray& sv, size_t start_idx) {
-    // GS vertex: same data as non-GS but 1 vertex per segment, no UV attribute
     const auto one_size = sv.OneSize();
     size_t     seg_count = 0;
 
     std::array<float, 32> storage;
     float*                data = storage.data();
 
-    for (size_t pi = 1; pi < particles.size(); pi++) {
-        const auto& p = particles[pi];
-        if (! ParticleModify::LifetimeOk(p)) break;
+    // Collect alive particle indices to connect consecutive alive ones
+    // (dead particles in the middle don't break the rope chain)
+    std::vector<size_t> alive;
+    alive.reserve(particles.size());
+    for (size_t i = 0; i < particles.size(); i++) {
+        if (ParticleModify::LifetimeOk(particles[i])) alive.push_back(i);
+    }
 
-        const auto& pre_p = particles[pi - 1];
-        float       size  = p.size / 2.0f;
+    float trail_length = (float)alive.size();
+
+    for (size_t ai = 1; ai < alive.size(); ai++) {
+        const auto& pre_p = particles[alive[ai - 1]];
+        const auto& p     = particles[alive[ai]];
+
+        float size = p.size / 2.0f;
 
         float lifetime = p.lifetime;
         specOp(p, { &lifetime });
-        float trail_length   = (float)particles.size();
-        float trail_position = (float)(pi - 1);
+        float trail_position = (float)(ai - 1);
 
         Vector3f sp_pos  = Vector3f { pre_p.position } + inst_pos;
         Vector3f ep_pos  = Vector3f { p.position } + inst_pos;
@@ -307,6 +321,220 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
     return seg_count;
 }
 
+// Spritetrail: each particle's trail history rendered as mini-rope segments
+inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstance>> instances,
+                                  const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                  SceneVertexArray& sv) noexcept {
+    std::array<float, 32 * 4> storage;
+    float*                    data = storage.data();
+
+    const auto one_size   = sv.OneSize();
+    const auto totle_size = one_size * 4;
+    size_t     total_segs = 0;
+
+    for (const auto& inst : instances) {
+        if (inst->IsNoLiveParticle()) continue;
+
+        auto  particles = inst->Particles();
+        auto& trails    = inst->TrailHistories();
+        auto  inst_pos  = inst->GetBoundedData().pos;
+
+        for (size_t pi = 0; pi < particles.size(); pi++) {
+            const auto& p = particles[pi];
+            if (! ParticleModify::LifetimeOk(p)) continue;
+            if (pi >= trails.size()) continue;
+
+            const auto& trail = trails[pi];
+            if (trail.Count() < 2) continue;
+
+            float trail_length = (float)trail.Count();
+
+            for (u32 ti = 1; ti < trail.Count(); ti++) {
+                const auto& tp_new = trail.At(ti - 1); // newer
+                const auto& tp_old = trail.At(ti);     // older
+
+                float    trail_position = (float)(ti - 1);
+                float    size           = tp_new.size / 2.0f;
+                Vector3f sp_pos         = tp_new.position + inst_pos;
+                Vector3f ep_pos         = tp_old.position + inst_pos;
+                Vector3f pos_vec        = ep_pos - sp_pos;
+
+                Vector3f cp_vec =
+                    AngleAxisf(p.rotation[2] + (float)M_PI / 2.0f, Vector3f::UnitZ()) *
+                    Vector3f { 0.0f, size / 2.0f, 0.0f };
+                if (pos_vec.norm() > 0.001f)
+                    cp_vec =
+                        pos_vec.normalized().dot(cp_vec) > 0 ? cp_vec : -1.0f * cp_vec;
+
+                Vector3f scp = sp_pos + cp_vec;
+                Vector3f ecp = ep_pos - cp_vec;
+
+                size_t offset = 0;
+
+                // a_PositionVec4: start pos + size
+                AssignVertexTimes({ data + offset, totle_size },
+                                  std::array { sp_pos[0], sp_pos[1], sp_pos[2], size }, 4);
+                offset += 4;
+                // a_TexCoordVec4: end pos + trail_length
+                AssignVertexTimes(
+                    { data + offset, totle_size },
+                    std::array { ep_pos[0], ep_pos[1], ep_pos[2], trail_length }, 4);
+                offset += 4;
+                // a_TexCoordVec4C1: cp start + trail_position
+                AssignVertexTimes(
+                    { data + offset, totle_size },
+                    std::array { scp[0], scp[1], scp[2], trail_position }, 4);
+                offset += 4;
+
+                if (opt.thick_format) {
+                    float size_end = tp_old.size / 2.0f;
+                    // a_TexCoordVec4C2: cp end pos + size_end
+                    AssignVertexTimes({ data + offset, totle_size },
+                                      std::array { ecp[0], ecp[1], ecp[2], size_end }, 4);
+                    offset += 4;
+                    // a_TexCoordVec4C3: color_end
+                    AssignVertexTimes(
+                        { data + offset, totle_size },
+                        std::array { tp_old.color[0], tp_old.color[1], tp_old.color[2],
+                                     tp_old.alpha },
+                        4);
+                    offset += 4;
+                    // a_TexCoordC4: UV seam
+                    std::array t { 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f,
+                                   1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                    AssignVertex({ data + offset, totle_size }, t, 4);
+                    offset += 4;
+                } else {
+                    // a_TexCoordVec3C2: cp end pos
+                    AssignVertexTimes({ data + offset, totle_size },
+                                      std::array { ecp[0], ecp[1], ecp[2] }, 4);
+                    offset += 4;
+                    // a_TexCoordC3
+                    std::array t { 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f,
+                                   1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+                    AssignVertex({ data + offset, totle_size }, t, 4);
+                    offset += 4;
+                }
+
+                // a_Color
+                AssignVertexTimes(
+                    { data + offset, totle_size },
+                    std::array { tp_new.color[0], tp_new.color[1], tp_new.color[2],
+                                 tp_new.alpha },
+                    4);
+
+                sv.SetVertexs(total_segs * 4, { data, totle_size });
+                total_segs++;
+            }
+        }
+    }
+    return total_segs;
+}
+
+// GS spritetrail: 1 vertex per trail segment
+inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInstance>> instances,
+                                    const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                    SceneVertexArray& sv) noexcept {
+    const auto            one_size = sv.OneSize();
+    size_t                total_segs = 0;
+    std::array<float, 32> storage;
+    float*                data = storage.data();
+
+    static int s_gen_log_counter = 0;
+    bool do_log = (++s_gen_log_counter % 6000 == 1);
+
+    for (const auto& inst : instances) {
+        if (inst->IsNoLiveParticle()) continue;
+
+        auto  particles = inst->Particles();
+        auto& trails    = inst->TrailHistories();
+        auto  inst_pos  = inst->GetBoundedData().pos;
+
+        for (size_t pi = 0; pi < particles.size(); pi++) {
+            const auto& p = particles[pi];
+            if (! ParticleModify::LifetimeOk(p)) continue;
+            if (pi >= trails.size()) continue;
+
+            const auto& trail = trails[pi];
+            if (trail.Count() < 2) continue;
+
+            float trail_length = (float)trail.Count();
+
+            for (u32 ti = 1; ti < trail.Count(); ti++) {
+                const auto& tp_new = trail.At(ti - 1);
+                const auto& tp_old = trail.At(ti);
+
+                float    trail_position = (float)(ti - 1);
+                float    size           = tp_new.size / 2.0f;
+                Vector3f sp_pos         = tp_new.position + inst_pos;
+                Vector3f ep_pos         = tp_old.position + inst_pos;
+                Vector3f pos_vec        = ep_pos - sp_pos;
+
+                Vector3f cp_vec =
+                    AngleAxisf(p.rotation[2] + (float)M_PI / 2.0f, Vector3f::UnitZ()) *
+                    Vector3f { 0.0f, size / 2.0f, 0.0f };
+                if (pos_vec.norm() > 0.001f)
+                    cp_vec =
+                        pos_vec.normalized().dot(cp_vec) > 0 ? cp_vec : -1.0f * cp_vec;
+
+                Vector3f scp = sp_pos + cp_vec;
+                Vector3f ecp = ep_pos - cp_vec;
+
+                size_t offset = 0;
+
+                // a_PositionVec4: start pos + size
+                std::copy_n(std::array { sp_pos[0], sp_pos[1], sp_pos[2], size }.data(), 4,
+                            data + offset);
+                offset += 4;
+                // a_TexCoordVec4: end pos + trail_length
+                std::copy_n(
+                    std::array { ep_pos[0], ep_pos[1], ep_pos[2], trail_length }.data(), 4,
+                    data + offset);
+                offset += 4;
+                // a_TexCoordVec4C1: cp start + trail_position
+                std::copy_n(
+                    std::array { scp[0], scp[1], scp[2], trail_position }.data(), 4,
+                    data + offset);
+                offset += 4;
+
+                if (opt.thick_format) {
+                    float size_end = tp_old.size / 2.0f;
+                    // a_TexCoordVec4C2: cp end pos + size_end
+                    std::copy_n(
+                        std::array { ecp[0], ecp[1], ecp[2], size_end }.data(), 4,
+                        data + offset);
+                    offset += 4;
+                    // a_TexCoordVec4C3: color_end
+                    std::copy_n(std::array { tp_old.color[0], tp_old.color[1],
+                                             tp_old.color[2], tp_old.alpha }
+                                    .data(),
+                                4, data + offset);
+                    offset += 4;
+                } else {
+                    // a_TexCoordVec3C2: cp end pos
+                    std::copy_n(
+                        std::array { ecp[0], ecp[1], ecp[2], 0.0f }.data(), 4,
+                        data + offset);
+                    offset += 4;
+                }
+
+                // a_Color
+                std::copy_n(std::array { tp_new.color[0], tp_new.color[1], tp_new.color[2],
+                                         tp_new.alpha }
+                                .data(),
+                            4, data + offset);
+
+                sv.SetVertexs(total_segs, { data, one_size });
+                total_segs++;
+            }
+        }
+    }
+    if (do_log && total_segs > 0) {
+        LOG_INFO("GenSpriteTrailDataGS: total_segs=%zu", total_segs);
+    }
+    return total_segs;
+}
+
 inline void updateIndexArray(uint16_t index, size_t count, SceneIndexArray& iarray) noexcept {
     constexpr size_t single_size = 6;
     const uint16_t   cv          = index * 4;
@@ -338,7 +566,14 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
 
     usize particle_num { 0 };
 
-    if (sv.GetOption(WE_PRENDER_ROPE)) {
+    if (sv.GetOption(WE_PRENDER_SPRITETRAIL)) {
+        if (opt.geometry_shader) {
+            particle_num = GenSpriteTrailDataGS(instances, specOp, opt, sv);
+            sv.SetRenderVertexCount(particle_num);
+        } else {
+            particle_num = GenSpriteTrailData(instances, specOp, opt, sv);
+        }
+    } else if (sv.GetOption(WE_PRENDER_ROPE)) {
         if (opt.geometry_shader) {
             // GS path: 1 vertex per segment, no index buffer
             for (const auto& inst : instances) {
@@ -359,6 +594,11 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
         if (opt.geometry_shader) {
             particle_num += GenParticleDataGS(instances, specOp, opt, sv);
             sv.SetRenderVertexCount(particle_num);
+            static int s_gs_sprite_log = 0;
+            if (++s_gs_sprite_log % 600 == 1) {
+                LOG_INFO("GenParticleDataGS: particle_num=%zu instances=%zu one_size=%zu thick=%d",
+                         particle_num, instances.size(), sv.OneSize(), (int)opt.thick_format);
+            }
         } else {
             particle_num += GenParticleData(instances, specOp, opt, sv);
         }
