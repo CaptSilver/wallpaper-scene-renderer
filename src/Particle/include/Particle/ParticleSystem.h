@@ -1,5 +1,6 @@
 #pragma once
 #include "ParticleEmitter.h"
+#include "ParticleTrail.h"
 #include "Interface/IParticleRawGener.h"
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
@@ -40,11 +41,17 @@ public:
 
     BoundedData& GetBoundedData();
 
+    void                                 InitTrails(u32 trail_capacity);
+    std::vector<ParticleTrailHistory>&   TrailHistories();
+    u32                                  TrailCapacity() const;
+
 private:
-    bool                  m_is_death { false };
-    bool                  m_no_live_particle { false };
-    std::vector<Particle> m_particles;
-    BoundedData           m_bounded_data;
+    bool                               m_is_death { false };
+    bool                               m_no_live_particle { false };
+    std::vector<Particle>              m_particles;
+    BoundedData                        m_bounded_data;
+    std::vector<ParticleTrailHistory>  m_trail_histories;
+    u32                                m_trail_capacity { 0 };
 };
 
 class ParticleSubSystem : NoCopy, NoMove {
@@ -60,7 +67,7 @@ public:
 public:
     ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMesh> sm, uint32_t maxcount,
                       double rate, u32 maxcount_instance, double probability, SpawnType type,
-                      ParticleRawGenSpecOp specOp);
+                      ParticleRawGenSpecOp specOp, uint32_t starttime = 0);
     ~ParticleSubSystem();
 
     void Emitt();
@@ -82,6 +89,8 @@ public:
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
 
+    void SetSpriteTrail(u32 trail_capacity);
+
 private:
     ParticleSystem&            m_sys;
     std::shared_ptr<SceneMesh> m_mesh;
@@ -96,6 +105,7 @@ private:
 
     ParticleRawGenSpecOp m_genSpecOp;
     u32                  m_maxcount;
+    u32                  m_starttime;
     double               m_rate;
     double               m_time;
 
@@ -105,6 +115,9 @@ private:
     u32       m_maxcount_instance { 1 };
     double    m_probability { 1.0f };
     SpawnType m_spawn_type { SpawnType::STATIC };
+
+    bool m_is_spritetrail { false };
+    u32  m_trail_capacity { 0 };
 };
 
 class Scene;

@@ -57,5 +57,9 @@ public:
     static bool CompileToSpv(std::string_view         scene_id, std::span<WPShaderUnit>,
                              std::vector<ShaderCode>& spvs, fs::VFS&, WPShaderInfo*,
                              std::span<const WPShaderTexInfo>);
+
+    // Wait for all deferred async shader compilations and write results to disk cache.
+    // Call after all CompileToSpv calls are done (before FinalGlslang).
+    static void FlushPendingCompilations(fs::VFS& vfs);
 };
 } // namespace wallpaper

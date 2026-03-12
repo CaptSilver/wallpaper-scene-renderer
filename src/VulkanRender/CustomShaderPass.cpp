@@ -314,6 +314,12 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 }
 
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
+    {
+        SceneMesh* pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
+        std::string sn = (pm && pm->Material()) ? pm->Material()->customShader.shader->name : "?";
+        LOG_INFO("CSP_PREPARE: shader='%s' vertCount=%zu",
+                 sn.c_str(), pm ? (size_t)pm->VertexCount() : 0u);
+    }
     m_desc.vk_textures.resize(m_desc.textures.size());
     for (usize i = 0; i < m_desc.textures.size(); i++) {
         auto& tex_name = m_desc.textures[i];
@@ -357,8 +363,19 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     SceneMesh& mesh = *(m_desc.node->Mesh());
 
     // Detect geometry shader point topology from mesh vertex array option
-    if (mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER)) {
-        m_desc.point_topology = true;
+    {
+        bool has_gs_opt = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER);
+        bool has_rope   = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_PRENDER_ROPE);
+        bool has_trail  = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_PRENDER_SPRITETRAIL);
+        std::string shname = mesh.Material() ? mesh.Material()->customShader.shader->name : "null";
+        if (sstart_with(shname, "generic")) {
+            LOG_INFO("GS_CHECK: shader='%s' vertCount=%zu gs_opt=%d rope=%d trail=%d dyn=%d",
+                     shname.c_str(), (size_t)mesh.VertexCount(),
+                     (int)has_gs_opt, (int)has_rope, (int)has_trail, (int)mesh.Dynamic());
+        }
+        if (has_gs_opt) {
+            m_desc.point_topology = true;
+        }
     }
 
     std::vector<Uni_ShaderSpv> spvs;
@@ -476,7 +493,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             for (auto& item : ref.input_location_map) {
                 auto& name   = item.first;
                 auto& input  = item.second;
-                usize offset = exists(attrs_map, name) ? attrs_map[name].offset : 0;
+                bool  found  = exists(attrs_map, name);
+                usize offset = found ? attrs_map[name].offset : 0;
 
                 VkVertexInputAttributeDescription attr_desc {
                     .location = input.location,
@@ -485,6 +503,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     .offset   = (u32)offset,
                 };
                 attr_descriptions.push_back(attr_desc);
+
+                if (m_desc.point_topology) {
+                    LOG_INFO("  GS vtx attr '%s': loc=%u fmt=%u offset=%zu found=%d",
+                             name.c_str(), input.location, (u32)input.format, offset, (int)found);
+                }
+            }
+            if (m_desc.point_topology) {
+                LOG_INFO("  GS mesh attrs (stride=%zu):", vertex.OneSizeOf());
+                for (auto& [an, ai] : attrs_map)
+                    LOG_INFO("    mesh '%s': offset=%zu", an.c_str(), ai.offset);
             }
             {
                 auto& buf = m_desc.vertex_bufs[i];
@@ -771,6 +799,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     } else if (point_topo && mesh.VertexCount() > 0) {
                         // GS particles: draw_count = active vertex count
                         draw_count = (u32)mesh.GetVertexArray(0).RenderVertexCount();
+                        static int s_dyn_log = 0;
+                        if (++s_dyn_log % 600 == 1) {
+                            LOG_INFO("GS dyn update: draw_count=%u dataSizeOf=%zu",
+                                     draw_count, mesh.GetVertexArray(0).DataSizeOf());
+                        }
                     }
                 }
             };
@@ -1142,6 +1175,11 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
             cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
             cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
         } else {
+            static int s_draw_log = 0;
+            if (m_desc.point_topology && ++s_draw_log % 600 == 1) {
+                LOG_INFO("GS Draw: draw_count=%u point_topo=%d visible=%d",
+                         m_desc.draw_count, (int)m_desc.point_topology, (int)nodeVisible);
+            }
             cmd.Draw(m_desc.draw_count, 1, 0, 0);
         }
     }

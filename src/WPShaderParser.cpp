@@ -18,6 +18,12 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <future>
+#include <mutex>
+#include <atomic>
+#include <chrono>
+#include <unordered_map>
+#include <set>
 
 static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
@@ -445,10 +451,20 @@ inline std::string TranslateGeometryShader(const std::string& src) {
     }
 
     // 8. Replace "v.v_xxx" → "v_xxx" (output varying assignment)
-    //    Handles v.v_Color, v.v_TexCoord.xy, etc.
+    //    Handles v.v_Color, v.v_TexCoord.xy, v.v_ViewDir.xyz, etc.
     {
         std::regex re(R"(\bv\.(v_\w+)\b)");
         result = std::regex_replace(result, re, "$1");
+    }
+
+    // 8.5. Truncate vec4 to vec3 for assignments to known vec3 output varyings.
+    // HLSL implicitly truncates; GLSL requires .xyz.
+    // Target only mul() expressions which return vec4 in our dialect.
+    {
+        // Handle v_WorldPos, v_WorldRight, v_ScreenCoord (all vec3)
+        // Ensure we don't match if it already has .xyz
+        std::regex re(R"(\b(v_WorldPos|v_WorldRight|v_ScreenCoord)\s*=\s*(mul\s*\([^;]+?\))\s*;(?!\s*\.xyz))");
+        result = std::regex_replace(result, re, "$1 = ($2).xyz;");
     }
 
     // 9. Replace OUT.Append(expr); → expr; EmitVertex();
@@ -498,7 +514,20 @@ inline std::string TranslateGeometryShader(const std::string& src) {
         result = std::regex_replace(result, re, "EndPrimitive();");
     }
 
-    // 11. gl_in[0].gl_Position is vec4; HLSL implicitly truncates vec4→vec3 in
+    // 11. Fix: HLSL variable shadowing in for-loops.
+    // WE's genericropeparticle.geom has: for(int s=0;s<N;++s){float s=smoothstep(...);}
+    // HLSL allows inner scope to shadow outer; GLSL does not (redefinition error).
+    // Rename the loop counter: int s → int _si (keeps float s inside body valid).
+    {
+        std::regex re_for(R"(for\s*\(\s*int\s+s\s*=)");
+        if (std::regex_search(result, re_for) && result.find("float s") != std::string::npos) {
+            std::regex re_header(
+                R"(for\s*\(\s*int\s+s\s*=\s*(\d+)\s*;\s*s\s*(<\s*[^;]+);\s*\+\+\s*s\s*\))");
+            result = std::regex_replace(result, re_header, "for (int _si = $1; _si $2; ++ _si)");
+        }
+    }
+
+    // 12. gl_in[0].gl_Position is vec4; HLSL implicitly truncates vec4→vec3 in
     //     function args. Only add .xyz when the function parameter is vec3 (not vec4).
     {
         // Collect function declarations: funcName → [paramType0, paramType1, ...]
@@ -1104,6 +1133,176 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
     file.Write(nop, sizeof(nop));
 }
 
+// Standalone compile function: runs Finalprocessor + FixImplicitConversions + glslang.
+// Thread-safe — each call operates on its own copy of units.
+static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<ShaderCode>& codes) {
+    std::vector<vulkan::ShaderCompUnit> vunits(units.size());
+    for (usize i = 0; i < units.size(); i++) {
+        auto&               unit     = units[i];
+        auto&               vunit    = vunits[i];
+        WPPreprocessorInfo* pre_info = i >= 1 ? &units[i - 1].preprocess_info : nullptr;
+        WPPreprocessorInfo* post_info =
+            i + 1 < units.size() ? &units[i + 1].preprocess_info : nullptr;
+
+        unit.src = Finalprocessor(unit, pre_info, post_info);
+        unit.src = FixImplicitConversions(unit.src);
+
+        vunit.src   = unit.src;
+        vunit.stage = ToGLSL(unit.stage);
+    }
+
+    // Fix cross-stage varying type mismatches
+    if (units.size() >= 2) {
+        auto parseVaryings = [](const std::string& src, const char* kw) {
+            std::map<std::string, std::string> m;
+            std::regex re(std::string(R"(\b)") + kw +
+                          R"(\s+(vec[234]|float)\s+(\w+)\s*(\[\])?\s*;)");
+            for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
+                 it != std::sregex_iterator();
+                 ++it)
+                m[(*it)[2].str()] = (*it)[1].str();
+            return m;
+        };
+        auto dim = [](const std::string& t) -> int {
+            if (t == "float") return 1;
+            if (t == "vec2") return 2;
+            if (t == "vec3") return 3;
+            if (t == "vec4") return 4;
+            return 0;
+        };
+        auto upgradeVarying = [&dim](std::string&       src,
+                                     const char*        io_kw,
+                                     const std::string& name,
+                                     const std::string& old_type,
+                                     const std::string& new_type) {
+            std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
+                               R"(\s*(\[\])?\s*;)");
+            std::string suffix = "$1";
+            src = std::regex_replace(
+                src, re_decl, std::string(io_kw) + " " + new_type + " " + name + suffix + ";");
+
+            if (std::string(io_kw) == "out") {
+                int         od = dim(old_type), nd = dim(new_type);
+                std::string pad;
+                for (int p = 0; p < nd - od; p++) pad += ", 0.0";
+                std::regex re_assign("\\b" + name + "(\\s*=\\s*)((?!" + new_type +
+                                     "\\s*\\()[^;]+);");
+                src = std::regex_replace(
+                    src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
+            }
+        };
+
+        for (usize pair = 0; pair + 1 < units.size(); pair++) {
+            auto outVars     = parseVaryings(units[pair].src, "out");
+            auto inVars      = parseVaryings(units[pair + 1].src, "in");
+            bool out_changed = false, in_changed = false;
+
+            for (auto& [name, itype] : inVars) {
+                auto it = outVars.find(name);
+                if (it == outVars.end() || it->second == itype) continue;
+                int od = dim(it->second), id = dim(itype);
+                if (od == 0 || id == 0) continue;
+
+                if (id > od) {
+                    upgradeVarying(units[pair].src, "out", name, it->second, itype);
+                    out_changed = true;
+                } else {
+                    upgradeVarying(units[pair + 1].src, "in", name, itype, it->second);
+                    in_changed = true;
+                }
+            }
+            if (out_changed) vunits[pair].src = units[pair].src;
+            if (in_changed) vunits[pair + 1].src = units[pair + 1].src;
+        }
+    }
+
+    vulkan::ShaderCompOpt opt;
+    opt.client_ver             = glslang::EShTargetVulkan_1_1;
+    opt.auto_map_bindings      = true;
+    opt.auto_map_locations     = true;
+    opt.relaxed_errors_glsl    = true;
+    opt.relaxed_rules_vulkan   = true;
+    opt.suppress_warnings_glsl = true;
+
+    // Geometry shader: rename VS outputs to match GS input names
+    {
+        bool has_gs = false;
+        for (auto& u : units) {
+            if (u.stage == ShaderType::GEOMETRY) { has_gs = true; break; }
+        }
+        if (has_gs) {
+            std::vector<std::pair<std::string, std::string>> gs_renames;
+            for (auto& unit : units) {
+                if (unit.stage != ShaderType::GEOMETRY) continue;
+                std::regex re_gs_in(R"(\bin\s+(?:flat\s+)?(?:vec[234]|float|int|ivec[234])\s+(gs_in_(\w+))\s*\[\])");
+                for (auto it = std::sregex_iterator(unit.src.begin(), unit.src.end(), re_gs_in);
+                     it != std::sregex_iterator(); ++it) {
+                    gs_renames.push_back({ (*it)[2].str(), (*it)[1].str() });
+                }
+            }
+
+            for (auto& unit : units) {
+                if (unit.stage != ShaderType::VERTEX) continue;
+                for (auto& [canon, gs_name] : gs_renames) {
+                    std::regex re_decl("\\bout\\s+((?:flat\\s+)?(?:vec[234]|float|int|ivec[234])\\s+)" +
+                                       canon + "\\s*;");
+                    unit.src = std::regex_replace(unit.src, re_decl, "out $1" + gs_name + ";");
+                    std::regex re_use("\\b" + canon + "\\b");
+                    unit.src = std::regex_replace(unit.src, re_use, gs_name);
+                }
+            }
+
+            for (usize i = 0; i < units.size(); i++) {
+                vunits[i].src = units[i].src;
+            }
+
+            // Dump GS shaders for debugging (thread-safe counter)
+            {
+                static std::atomic<int> dump_idx { 0 };
+                int idx = dump_idx.fetch_add(1);
+                if (idx < 5) {
+                    const char* stage_names[] = { "VERTEX", "GEOMETRY", "FRAGMENT" };
+                    for (usize i = 0; i < vunits.size(); i++) {
+                        int si = (vunits[i].stage == EShLangVertex)     ? 0
+                                 : (vunits[i].stage == EShLangGeometry) ? 1
+                                                                        : 2;
+                        std::string path = "/tmp/gs_dump_" +
+                                           std::to_string(idx) + "_" +
+                                           std::string(stage_names[si]) + ".glsl";
+                        std::ofstream f(path);
+                        if (f) f << vunits[i].src;
+                        LOG_INFO("GS dump[%d]: stage=%s → %s (%zu bytes)",
+                                 idx, stage_names[si], path.c_str(),
+                                 vunits[i].src.size());
+                    }
+                }
+            }
+        }
+    }
+
+    std::vector<vulkan::Uni_ShaderSpv> spvs(units.size());
+
+    if (! vulkan::CompileAndLinkShaderUnits(vunits, opt, spvs)) {
+        return false;
+    }
+
+    codes.clear();
+    for (auto& spv : spvs) {
+        codes.emplace_back(std::move(spv->spirv));
+    }
+    return true;
+}
+
+// Deferred parallel compilation state
+struct PendingShaderCompilation {
+    std::string              sha1;
+    std::string              cache_path;
+    std::vector<ShaderCode>* output;
+};
+static std::mutex s_compileMtx;
+static std::unordered_map<std::string, std::shared_future<std::vector<ShaderCode>>> s_asyncCompilations;
+static std::vector<PendingShaderCompilation> s_pendingOutputs;
+
 } // namespace
 
 std::string WPShaderParser::PreShaderSrc(fs::VFS& vfs, const std::string& src,
@@ -1167,29 +1366,16 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     });
 
     // Post-preprocessing: inject GS layout declarations with evaluated max_vertices.
-    // The preprocessor expanded WE_GS_MAX_VERTICES to a constant expression;
-    // now evaluate it and inject the layout (GLSL 330 requires integer literals).
     for (auto& unit : units) {
         if (unit.stage != ShaderType::GEOMETRY) continue;
 
-        // Find the expanded WE_GS_MAX_VERTICES value after preprocessing.
-        // The preprocessor replaces the #define, leaving the expanded expression
-        // somewhere in the source.  We find it by looking for "WE_GS_MAX_VERTICES"
-        // or its expanded form.  But actually, after preprocessing, the #define
-        // line is gone and references to WE_GS_MAX_VERTICES are expanded inline.
-        // Since we didn't reference it anywhere, we need to extract it differently.
-        //
-        // Simpler approach: scan for "(N)" pattern where N is a simple integer
-        // expression, at the location where #define was.  Or just evaluate from
-        // the combo values directly.
-        int maxVerts = 4; // default
+        int maxVerts = 4;
         auto it = shader_info->combos.find("TRAILSUBDIVISION");
         if (it != shader_info->combos.end()) {
             int subdiv = std::stoi(it->second);
             maxVerts = 4 + subdiv * 2;
         }
 
-        // Insert layout declarations after the #version line
         std::string layouts = "layout(points) in;\n"
                               "layout(triangle_strip, max_vertices = " +
                               std::to_string(maxVerts) + ") out;\n\n";
@@ -1205,186 +1391,6 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         }
     }
 
-    auto compile = [](std::span<WPShaderUnit> units, std::vector<ShaderCode>& codes) {
-        std::vector<vulkan::ShaderCompUnit> vunits(units.size());
-        for (usize i = 0; i < units.size(); i++) {
-            auto&               unit     = units[i];
-            auto&               vunit    = vunits[i];
-            WPPreprocessorInfo* pre_info = i >= 1 ? &units[i - 1].preprocess_info : nullptr;
-            WPPreprocessorInfo* post_info =
-                i + 1 < units.size() ? &units[i + 1].preprocess_info : nullptr;
-
-            unit.src = Finalprocessor(unit, pre_info, post_info);
-            unit.src = FixImplicitConversions(unit.src);
-
-            vunit.src   = unit.src;
-            vunit.stage = ToGLSL(unit.stage);
-        }
-
-        // Fix cross-stage varying type mismatches.
-        // FixImplicitConversions or Finalprocessor may cause adjacent stages to
-        // have different widths for a varying (e.g. vec2 vs vec4).
-        // Upgrade the narrower side to match the wider one.
-        // For 3+ stage pipelines, fix all adjacent pairs (vert→geom, geom→frag).
-        if (units.size() >= 2) {
-            auto parseVaryings = [](const std::string& src, const char* kw) {
-                std::map<std::string, std::string> m;
-                // Match both "out vec4 name;" and "out vec4 name[];"
-                std::regex re(std::string(R"(\b)") + kw +
-                              R"(\s+(vec[234]|float)\s+(\w+)\s*(\[\])?\s*;)");
-                for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
-                     it != std::sregex_iterator();
-                     ++it)
-                    m[(*it)[2].str()] = (*it)[1].str();
-                return m;
-            };
-            auto dim = [](const std::string& t) -> int {
-                if (t == "float") return 1;
-                if (t == "vec2") return 2;
-                if (t == "vec3") return 3;
-                if (t == "vec4") return 4;
-                return 0;
-            };
-            auto upgradeVarying = [&dim](std::string&       src,
-                                         const char*        io_kw,
-                                         const std::string& name,
-                                         const std::string& old_type,
-                                         const std::string& new_type) {
-                // Upgrade declaration (handles optional [] suffix)
-                std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
-                                   R"(\s*(\[\])?\s*;)");
-                std::string suffix = "$1"; // preserve [] if present
-                src = std::regex_replace(
-                    src, re_decl, std::string(io_kw) + " " + new_type + " " + name + suffix + ";");
-
-                if (std::string(io_kw) == "out") {
-                    int         od = dim(old_type), nd = dim(new_type);
-                    std::string pad;
-                    for (int p = 0; p < nd - od; p++) pad += ", 0.0";
-                    std::regex re_assign("\\b" + name + "(\\s*=\\s*)((?!" + new_type +
-                                         "\\s*\\()[^;]+);");
-                    src = std::regex_replace(
-                        src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
-                }
-            };
-
-            // Fix each adjacent pair of stages
-            for (usize pair = 0; pair + 1 < units.size(); pair++) {
-                auto outVars     = parseVaryings(units[pair].src, "out");
-                auto inVars      = parseVaryings(units[pair + 1].src, "in");
-                bool out_changed = false, in_changed = false;
-
-                for (auto& [name, itype] : inVars) {
-                    auto it = outVars.find(name);
-                    if (it == outVars.end() || it->second == itype) continue;
-                    int od = dim(it->second), id = dim(itype);
-                    if (od == 0 || id == 0) continue;
-
-                    if (id > od) {
-                        upgradeVarying(units[pair].src, "out", name, it->second, itype);
-                        out_changed = true;
-                    } else {
-                        upgradeVarying(units[pair + 1].src, "in", name, itype, it->second);
-                        in_changed = true;
-                    }
-                }
-                if (out_changed) vunits[pair].src = units[pair].src;
-                if (in_changed) vunits[pair + 1].src = units[pair + 1].src;
-            }
-        }
-
-        vulkan::ShaderCompOpt opt;
-        opt.client_ver             = glslang::EShTargetVulkan_1_1;
-        opt.auto_map_bindings      = true;
-        opt.auto_map_locations     = true;
-        opt.relaxed_errors_glsl    = true;
-        opt.relaxed_rules_vulkan   = true;
-        opt.suppress_warnings_glsl = true;
-
-        // Geometry shader pipelines: link all 3 stages together so they
-        // share a single UBO layout.  The GS uses gs_in_ prefix for its
-        // inputs (to avoid same-name in/out redefinition within the GS).
-        // To make glslang's name-based linker work, rename VS outputs to
-        // match the GS input names (add gs_in_ prefix).
-        {
-            bool has_gs = false;
-            for (auto& u : units) {
-                if (u.stage == ShaderType::GEOMETRY) { has_gs = true; break; }
-            }
-            if (has_gs) {
-                // Collect GS input names (gs_in_v_XXX) and their canonical
-                // names (v_XXX) so we can rename VS outputs to match.
-                std::vector<std::pair<std::string, std::string>> gs_renames; // {canonical, gs_in_name}
-                for (auto& unit : units) {
-                    if (unit.stage != ShaderType::GEOMETRY) continue;
-                    std::regex re_gs_in(R"(\bin\s+(?:flat\s+)?(?:vec[234]|float|int|ivec[234])\s+(gs_in_(\w+))\s*\[\])");
-                    for (auto it = std::sregex_iterator(unit.src.begin(), unit.src.end(), re_gs_in);
-                         it != std::sregex_iterator(); ++it) {
-                        gs_renames.push_back({ (*it)[2].str(), (*it)[1].str() });
-                    }
-                }
-
-                // Rename VS outputs: v_XXX → gs_in_v_XXX (declarations + body)
-                for (auto& unit : units) {
-                    if (unit.stage != ShaderType::VERTEX) continue;
-                    for (auto& [canon, gs_name] : gs_renames) {
-                        // Rename output declaration: "out TYPE v_XXX;" → "out TYPE gs_in_v_XXX;"
-                        std::regex re_decl("\\bout\\s+((?:flat\\s+)?(?:vec[234]|float|int|ivec[234])\\s+)" +
-                                           canon + "\\s*;");
-                        unit.src = std::regex_replace(unit.src, re_decl, "out $1" + gs_name + ";");
-                        // Rename all uses of the variable in the body
-                        std::regex re_use("\\b" + canon + "\\b");
-                        // Only rename if it's not a vertex attribute (don't rename a_XXX)
-                        // and not inside an "in" declaration
-                        unit.src = std::regex_replace(unit.src, re_use, gs_name);
-                    }
-                }
-
-                // Sync vunits sources
-                for (usize i = 0; i < units.size(); i++) {
-                    vunits[i].src = units[i].src;
-                }
-
-                // Dump GS shader stages for debugging (each unique shader)
-                {
-                    static int dump_idx = 0;
-                    if (dump_idx < 5) {
-                        const char* stage_names[] = { "VERTEX", "GEOMETRY", "FRAGMENT" };
-                        for (usize i = 0; i < vunits.size(); i++) {
-                            int si = (vunits[i].stage == EShLangVertex)     ? 0
-                                     : (vunits[i].stage == EShLangGeometry) ? 1
-                                                                            : 2;
-                            std::string path = "/tmp/gs_dump_" +
-                                               std::to_string(dump_idx) + "_" +
-                                               std::string(stage_names[si]) + ".glsl";
-                            std::ofstream f(path);
-                            if (f) f << vunits[i].src;
-                            LOG_INFO("GS dump[%d]: stage=%s → %s (%zu bytes)",
-                                     dump_idx, stage_names[si], path.c_str(),
-                                     vunits[i].src.size());
-                        }
-                        dump_idx++;
-                    }
-                }
-
-                // Link all 3 stages together (shared UBO layout)
-                // Falls through to the normal CompileAndLinkShaderUnits below
-            }
-        }
-
-        std::vector<vulkan::Uni_ShaderSpv> spvs(units.size());
-
-        if (! vulkan::CompileAndLinkShaderUnits(vunits, opt, spvs)) {
-            return false;
-        }
-
-        codes.clear();
-        for (auto& spv : spvs) {
-            codes.emplace_back(std::move(spv->spirv));
-        }
-        return true;
-    };
-
     bool has_cache_dir = vfs.IsMounted("cache");
 
     if (has_cache_dir) {
@@ -1392,20 +1398,76 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         std::string cache_file_path = GetCachePath(scene_id, sha1);
 
         if (vfs.Contains(cache_file_path)) {
+            // Disk cache hit — load synchronously
             auto cache_file = vfs.Open(cache_file_path);
             if (! cache_file || ! ::LoadShaderFromFile(codes, *cache_file)) {
                 LOG_ERROR("load shader from \'%s\' failed", cache_file_path.c_str());
                 return false;
             }
-        } else {
-            if (! compile(units, codes)) return false;
-            if (auto cache_file = vfs.OpenW(cache_file_path); cache_file) {
-                ::SaveShaderToFile(codes, *cache_file);
+            return true;
+        }
+
+        // Cache miss — launch async compilation (deferred until FlushPendingCompilations)
+        {
+            std::lock_guard<std::mutex> lock(s_compileMtx);
+            if (s_asyncCompilations.find(sha1) == s_asyncCompilations.end()) {
+                // First time seeing this SHA1 — copy units and launch async
+                auto units_copy = std::vector<WPShaderUnit>(units.begin(), units.end());
+                auto future = std::async(std::launch::async,
+                    [u = std::move(units_copy)]() mutable {
+                        std::vector<ShaderCode> result;
+                        CompileShaderUnits(u, result);
+                        return result;
+                    });
+                s_asyncCompilations[sha1] = future.share();
             }
+            s_pendingOutputs.push_back({sha1, cache_file_path, &codes});
         }
         return true;
 
     } else {
-        return compile(units, codes);
+        // No cache dir — compile synchronously
+        auto units_vec = std::vector<WPShaderUnit>(units.begin(), units.end());
+        return CompileShaderUnits(units_vec, codes);
     }
+}
+
+void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
+    std::lock_guard<std::mutex> lock(s_compileMtx);
+
+    if (s_pendingOutputs.empty()) return;
+
+    auto t0 = std::chrono::steady_clock::now();
+
+    LOG_INFO("Flushing %zu deferred shader compilations (%zu unique)...",
+             s_pendingOutputs.size(), s_asyncCompilations.size());
+
+    std::set<std::string> saved_to_disk;
+    for (auto& pending : s_pendingOutputs) {
+        auto it = s_asyncCompilations.find(pending.sha1);
+        if (it == s_asyncCompilations.end()) continue;
+
+        const auto& compiled = it->second.get(); // blocks until compilation finishes
+        if (compiled.empty()) {
+            LOG_ERROR("async shader compilation failed for %s", pending.sha1.c_str());
+            continue;
+        }
+        *pending.output = compiled;
+
+        // Write to disk cache (once per unique SHA1)
+        if (saved_to_disk.find(pending.sha1) == saved_to_disk.end()) {
+            if (auto cache_file = vfs.OpenW(pending.cache_path); cache_file) {
+                ::SaveShaderToFile(compiled, *cache_file);
+            }
+            saved_to_disk.insert(pending.sha1);
+        }
+    }
+
+    auto t1 = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    LOG_INFO("Shader compilation complete: %zu unique shaders in %lld ms",
+             saved_to_disk.size(), (long long)ms);
+
+    s_pendingOutputs.clear();
+    s_asyncCompilations.clear();
 }

@@ -125,7 +125,9 @@ void SetParticleMesh(SceneMesh& mesh, const wpscene::Particle& particle, uint32_
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
 }
 
-// GS particle: 1 vertex per particle (geometry shader expands to triangle strip)
+// GS particle: 1 vertex per particle (geometry shader expands to quad)
+// When GS_ENABLED, vertex shader packs all rotation into a_TexCoordVec4.xyz
+// and does NOT use a_TexCoordC2, so we omit it from the layout.
 void SetParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, uint32_t count,
                        bool thick_format) {
     (void)particle;
@@ -137,7 +139,6 @@ void SetParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, uint3
     if (thick_format) {
         attrs.push_back({ WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 });
     }
-    attrs.push_back({ WE_IN_TEXCOORDC2.data(), VertexType::FLOAT2 });
     // 1 vertex per particle, no index buffer (POINT_LIST topology)
     mesh.AddVertexArray(SceneVertexArray(attrs, count));
     mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
@@ -190,6 +191,52 @@ void SetRopeParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, u
     mesh.GetVertexArray(0).SetOption(WE_CB_GEOMETRY_SHADER, true);
 }
 
+void SetSpriteTrailMesh(SceneMesh& mesh, const wpscene::Particle& particle,
+                        uint32_t count, u32 trail_segments, bool thick_format) {
+    (void)particle;
+    u32 total_segments = count * trail_segments;
+    std::vector<SceneVertexArray::SceneVertexAttribute> attrs {
+        { WE_IN_POSITIONVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 },
+    };
+    if (thick_format) {
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C2.data(), VertexType::FLOAT4 });
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C3.data(), VertexType::FLOAT4 });
+        attrs.push_back({ WE_IN_TEXCOORDC4.data(), VertexType::FLOAT4 });
+    } else {
+        attrs.push_back({ WE_IN_TEXCOORDVEC3C2.data(), VertexType::FLOAT4 });
+        attrs.push_back({ WE_IN_TEXCOORDC3.data(), VertexType::FLOAT4 });
+    }
+    attrs.push_back({ WE_IN_COLOR.data(), VertexType::FLOAT4 });
+    mesh.AddVertexArray(SceneVertexArray(attrs, total_segments * 4));
+    mesh.AddIndexArray(SceneIndexArray(total_segments));
+    mesh.GetVertexArray(0).SetOption(WE_PRENDER_SPRITETRAIL, true);
+    mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
+}
+
+void SetSpriteTrailMeshGS(SceneMesh& mesh, const wpscene::Particle& particle,
+                           uint32_t count, u32 trail_segments, bool thick_format) {
+    (void)particle;
+    u32 total_segments = count * trail_segments;
+    std::vector<SceneVertexArray::SceneVertexAttribute> attrs {
+        { WE_IN_POSITIONVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
+        { WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 },
+    };
+    if (thick_format) {
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C2.data(), VertexType::FLOAT4 });
+        attrs.push_back({ WE_IN_TEXCOORDVEC4C3.data(), VertexType::FLOAT4 });
+    } else {
+        attrs.push_back({ WE_IN_TEXCOORDVEC3C2.data(), VertexType::FLOAT4 });
+    }
+    attrs.push_back({ WE_IN_COLOR.data(), VertexType::FLOAT4 });
+    mesh.AddVertexArray(SceneVertexArray(attrs, total_segments));
+    mesh.GetVertexArray(0).SetOption(WE_PRENDER_SPRITETRAIL, true);
+    mesh.GetVertexArray(0).SetOption(WE_CB_THICK_FORMAT, thick_format);
+    mesh.GetVertexArray(0).SetOption(WE_CB_GEOMETRY_SHADER, true);
+}
+
 ParticleAnimationMode ToAnimMode(const std::string& str) {
     if (str == "randomframe")
         return ParticleAnimationMode::RANDOMONE;
@@ -228,9 +275,20 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
     }
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
-                     const wpscene::ParticleInstanceoverride& over) {
+                     const wpscene::ParticleInstanceoverride& over, u32 rope_count = 0,
+                     int cp_start = 0) {
     for (const auto& ini : wp.initializers) {
-        pSys.AddInitializer(WPParticleParser::genParticleInitOp(ini, pSys.Controlpoints()));
+        nlohmann::json iniCopy = ini;
+        // Inject/override count for mapsequencebetweencontrolpoints
+        if (rope_count > 0 && iniCopy.contains("name") &&
+            iniCopy["name"] == "mapsequencebetweencontrolpoints") {
+            iniCopy["count"] = rope_count;
+        }
+        // Inject controlpointstartindex
+        if (cp_start > 0) {
+            iniCopy["controlpointstartindex"] = cp_start;
+        }
+        pSys.AddInitializer(WPParticleParser::genParticleInitOp(iniCopy, pSys.Controlpoints()));
     }
     if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
 }
@@ -244,16 +302,10 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
                  bool render_rope, u32 rope_batch_size = 1) {
     bool sort = render_rope;
     for (const auto& em : wp.emitters) {
-        auto  newEm      = em;
-        float burst_rate = 0.0f;
-        if (rope_batch_size > 1) {
-            // Sequential burst: keep base rate as emitSpeed, use rate override as burst frequency
-            burst_rate = rate;
-        } else {
-            newEm.rate *= count * rate;
-        }
+        auto newEm = em;
+        newEm.rate *= count * rate;
         pSys.AddEmitter(
-            WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
+            WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, 0.0f));
     }
 }
 
@@ -1351,15 +1403,62 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     auto& particle_obj = *p_particle_obj;
     auto& vfs          = *context.vfs;
 
-    if (particle_obj.renderers.empty()) {
-        LOG_ERROR("particle '%s' has no renderers, skipping", wppartobj.name.c_str());
+    bool is_spawner_only = particle_obj.renderers.empty();
+    if (is_spawner_only && particle_obj.children.empty()) {
+        LOG_ERROR("particle '%s' has no renderers and no children, skipping",
+                  wppartobj.name.c_str());
+        return;
+    }
+    if (is_spawner_only) {
+        LOG_INFO("particle '%s' is spawner-only (no renderer, %zu children)",
+                 wppartobj.name.c_str(), particle_obj.children.size());
+
+        // Minimal setup: no mesh/material, just particle subsystem for children
+        u32  maxcount = std::min(particle_obj.maxcount, 20000u);
+        auto spMesh   = std::make_shared<SceneMesh>(true);
+        auto particleSub = std::make_unique<ParticleSubSystem>(
+            *context.scene->paritileSys, spMesh, maxcount, 1.0,
+            child_data.maxcount, child_data.probability,
+            ParseSpawnType(child_data.type),
+            [](const Particle&, const ParticleRawGenSpec&) {},
+            particle_obj.starttime);
+
+        LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);
+        LoadEmitter(*particleSub, particle_obj, override.count, override.rate,
+                    false, 1);
+        LoadInitializer(*particleSub, particle_obj, override, 0, child_data.controlpointstartindex);
+        LoadOperator(*particleSub, particle_obj, override);
+
+        for (auto& child : particle_obj.children) {
+            ParseParticleObj(context, wppartobj,
+                             { .child             = &child,
+                               .node_parent       = spNode.get(),
+                               .particle_parent   = particleSub.get(),
+                               .max_instancecount = child_ptr.max_instancecount });
+        }
+
+        if (is_child)
+            child_ptr.particle_parent->AddChild(std::move(particleSub));
+        else
+            context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
+
+        if (is_child)
+            child_ptr.node_parent->AppendChild(spNode);
+        else
+            context.scene->sceneGraph->AppendChild(spNode);
+        context.node_map[wppartobj.id] = spNode;
         return;
     }
     auto wppartRenderer = particle_obj.renderers.at(0);
-    bool render_rope    = sstart_with(wppartRenderer.name, "rope");
-    bool hastrail       = send_with(wppartRenderer.name, "trail");
+    LOG_INFO("particle '%s' renderer='%s'", wppartobj.name.c_str(),
+             wppartRenderer.name.c_str());
+    bool render_ropetrail   = (wppartRenderer.name == "ropetrail");
+    bool render_rope        = sstart_with(wppartRenderer.name, "rope") && !render_ropetrail;
+    bool render_spritetrail = (wppartRenderer.name == "spritetrail") || render_ropetrail;
+    bool hastrail           = send_with(wppartRenderer.name, "trail");
 
-    if (render_rope) particle_obj.material.shader = "genericropeparticle";
+    if (render_rope || render_spritetrail)
+        particle_obj.material.shader = "genericropeparticle";
 
     // wppartobj.origin[1] = context.ortho_h - wppartobj.origin[1];
 
@@ -1382,12 +1481,26 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     shaderInfo.baseConstSvs["g_ViewUp"]             = std::array { 0.0f, 1.0f, 0.0f };
     shaderInfo.baseConstSvs["g_ViewRight"]          = std::array { 1.0f, 0.0f, 0.0f };
 
+    // Check for periodic emitters early (needed for maxcount doubling)
+    bool has_periodic = false;
+    for (const auto& em : particle_obj.emitters) {
+        if (em.maxperiodicduration > 0 || em.maxperiodicdelay > 0) {
+            has_periodic = true;
+            break;
+        }
+    }
+
     u32 maxcount = particle_obj.maxcount;
     maxcount     = std::min(maxcount, 20000u);
 
+    u32 trail_segments = render_spritetrail
+                             ? std::clamp((u32)wppartRenderer.maxlength, 2u, 64u)
+                             : 0;
+
     if (hastrail) {
-        double in_SegmentUVTimeOffset           = 0.0;
-        double in_SegmentMaxCount               = maxcount - 1.0;
+        double in_SegmentUVTimeOffset = 0.0;
+        double in_SegmentMaxCount =
+            render_spritetrail ? trail_segments - 1.0 : maxcount - 1.0;
         shaderInfo.baseConstSvs["g_RenderVar0"] = std::array {
             (float)wppartRenderer.length,
             (float)wppartRenderer.maxlength,
@@ -1396,6 +1509,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         };
         shaderInfo.combos["THICKFORMAT"]   = "1";
         shaderInfo.combos["TRAILRENDERER"] = "1";
+        if (render_ropetrail && wppartRenderer.subdivision > 0) {
+            shaderInfo.combos["TRAILSUBDIVISION"] =
+                std::to_string((int)wppartRenderer.subdivision);
+        }
     }
 
     if (! particle_obj.flags[wpscene::Particle::FlagEnum::spritenoframeblending]) {
@@ -1429,11 +1546,21 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 SetRopeParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
             else
                 SetRopeParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
-        } else {
+        } else if (render_spritetrail) {
             if (has_geometry_shader)
-                SetParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
+                SetSpriteTrailMeshGS(
+                    mesh, particle_obj, mesh_maxcount, trail_segments, thick_format);
             else
+                SetSpriteTrailMesh(
+                    mesh, particle_obj, mesh_maxcount, trail_segments, thick_format);
+        } else {
+            if (has_geometry_shader) {
+                LOG_INFO("  MESH_SETUP: SetParticleMeshGS maxcount=%u thick=%d", mesh_maxcount,
+                         (int)thick_format);
+                SetParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
+            } else {
                 SetParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);
+            }
         }
     }
 
@@ -1457,7 +1584,12 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 lifetime = (1.0f - (p.lifetime / p.init.lifetime)) * sequencemultiplier;
                 break;
             }
-        });
+        },
+        particle_obj.starttime);
+
+    if (render_spritetrail) {
+        particleSub->SetSpriteTrail(trail_segments);
+    }
 
     LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);
 
@@ -1469,16 +1601,45 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 std::string ini_name;
                 GET_JSON_NAME_VALUE(ini, "name", ini_name);
                 if (ini_name == "mapsequencebetweencontrolpoints") {
-                    rope_batch_size = 10;
-                    GET_JSON_NAME_VALUE_NOWARN(ini, "count", rope_batch_size);
+                    if (ini.contains("count")) {
+                        GET_JSON_NAME_VALUE(ini, "count", rope_batch_size);
+                    } else {
+                        // Default to maxtoemitperperiod or maxcount
+                        for (const auto& em : particle_obj.emitters) {
+                            if (em.maxtoemitperperiod > 0) {
+                                rope_batch_size = em.maxtoemitperperiod;
+                                break;
+                            }
+                        }
+                        if (rope_batch_size <= 1) rope_batch_size = particle_obj.maxcount;
+                    }
                     break;
                 }
             }
         }
     }
-    LoadEmitter(*particleSub, particle_obj, override.count, override.rate, render_rope,
-                rope_batch_size);
-    LoadInitializer(*particleSub, particle_obj, override);
+    // For periodic emitters, don't batch — let particles emit gradually so
+    // the rope grows from one end to the other instead of appearing instantly.
+    u32 emitter_batch = rope_batch_size;
+    if (render_rope && rope_batch_size > 1)
+        LOG_INFO("rope '%s' batch_size=%u emitter_batch=%u maxcount=%u periodic=%d",
+                 wppartobj.name.c_str(), rope_batch_size, emitter_batch,
+                 particle_obj.maxcount, has_periodic);
+    LoadEmitter(*particleSub, particle_obj, override.count, override.rate,
+                render_rope && !render_spritetrail, emitter_batch);
+    // For rope mapsequence: use maxtoemitperperiod as count so each particle gets
+    // a unique position along the line (avoids half-filled rope from maxcount mismatch)
+    u32 rope_init_count = 0;
+    if (render_rope) {
+        for (const auto& em : particle_obj.emitters) {
+            if (em.maxtoemitperperiod > 0) {
+                rope_init_count = em.maxtoemitperperiod;
+                break;
+            }
+        }
+        if (rope_init_count == 0) rope_init_count = maxcount;
+    }
+    LoadInitializer(*particleSub, particle_obj, override, rope_init_count, child_data.controlpointstartindex);
     LoadOperator(*particleSub, particle_obj, override);
 
     mesh.AddMaterial(std::move(material));
@@ -2307,6 +2468,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                      def.shader.c_str(), def.vertical, def.output.c_str());
         }
     }
+
+    // Wait for all deferred async shader compilations
+    WPShaderParser::FlushPendingCompilations(*context.vfs);
 
     WPShaderParser::FinalGlslang();
     WPTextRenderer::Shutdown();
