@@ -1058,6 +1058,66 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "float $1 = $2.x;");
     }
 
+    // Fix: vec4 texture variable used in scalar arithmetic → add .x swizzle at use site.
+    // HLSL: float4 timer = tex2D(...); float off = u_scale * timer;  — implicit truncation.
+    // GLSL: vec4 timer = texture(...);  u_scale * timer → vec4, not float.
+    // Detect "vec4 VAR = texture(...)" vars whose bare name appears in float*VAR or VAR*float
+    // expressions (no existing swizzle), and append .x at those use sites.
+    {
+        // Collect vec4 vars assigned from texture()
+        std::set<std::string> tex_vec4_vars;
+        std::regex re_decl(R"(\bvec4\s+(\w+)\s*=\s*texture\w*\s*\()");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
+             it != std::sregex_iterator();
+             ++it)
+            tex_vec4_vars.insert((*it)[1].str());
+        // Collect known float uniforms
+        std::set<std::string> float_vars;
+        std::regex re_float(R"(\buniform\s+float\s+(\w+)\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+             it != std::sregex_iterator();
+             ++it)
+            float_vars.insert((*it)[1].str());
+        // Also add local float vars
+        std::regex re_flocal(R"(\bfloat\s+(\w+)\s*=)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_flocal);
+             it != std::sregex_iterator();
+             ++it)
+            float_vars.insert((*it)[1].str());
+        // For each tex vec4 var, check if it appears in arithmetic with float vars
+        for (const auto& tvar : tex_vec4_vars) {
+            bool used_as_scalar = false;
+            for (const auto& fvar : float_vars) {
+                // float * vec4_var  or  vec4_var * float
+                std::regex re_arith("\\b" + fvar + R"(\s*\*\s*)" + tvar + R"((?!\s*[\.\[]))" +
+                                    "|\\b" + tvar + R"((?!\s*[\.\[]))" + R"(\s*\*\s*)" + fvar +
+                                    "\\b");
+                if (std::regex_search(result, re_arith)) {
+                    used_as_scalar = true;
+                    break;
+                }
+            }
+            if (used_as_scalar) {
+                // Replace bare uses of tvar (not followed by . or [) with tvar.x
+                // But preserve declarations: "vec4 tvar = texture" and "in vec4 tvar;"
+                std::string mark = "__DECL_MARK_" + tvar;
+                // Mark local declaration
+                result = std::regex_replace(
+                    result, std::regex(R"(\bvec4\s+)" + tvar + R"(\s*=\s*texture)"),
+                    "vec4 " + mark + " = texture");
+                // Mark 'in' declaration
+                result = std::regex_replace(
+                    result, std::regex(R"(\bin\s+vec4\s+)" + tvar + R"(\s*;)"),
+                    "in vec4 " + mark + ";");
+                // Replace bare uses with .x
+                std::regex re_bare("\\b" + tvar + "(?!\\s*[.\\[\\w])");
+                result = std::regex_replace(result, re_bare, tvar + ".x");
+                // Restore marks
+                result = std::regex_replace(result, std::regex(mark), tvar);
+            }
+        }
+    }
+
     // Fix: integer literal as ternary condition → bool()
     // HLSL allows int in ternary condition; GLSL requires bool.
     // Match bare integer after = ( , that is followed by ? (ternary operator).
@@ -1081,6 +1141,99 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"(\bint\s+(\w+)\s*=\s*(step\s*\([^;]*\))\s*;)");
         result = std::regex_replace(result, re, "float $1 = $2;");
+    }
+
+    // Fix: texture(sampler2D, VEC4_VAR) → texture(sampler2D, VEC4_VAR.xy)
+    // HLSL varyings may be declared as vec4 (float4 semantics) and used bare as texture
+    // coordinates. sampler2D texture() requires vec2.  Add .xy for any vec4/vec3 varying
+    // used bare (no existing swizzle) as a texture() coordinate.
+    {
+        // Collect all "in vec4" and "in vec3" varying names
+        std::set<std::string> wide_varyings;
+        std::regex            re_in(R"(\bin\s+vec[34]\s+(\w+)\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
+             it != std::sregex_iterator();
+             ++it)
+            wide_varyings.insert((*it)[1].str());
+        for (const auto& name : wide_varyings) {
+            // Match texture(SAMPLER, NAME) where NAME is NOT followed by '.'
+            std::regex re_tex(R"(\btexture\s*\(\s*(\w+)\s*,\s*)" + name + R"(\s*\))");
+            result = std::regex_replace(result, re_tex, "texture($1, " + name + ".xy)");
+        }
+    }
+
+    // Fix: "const TYPE VAR = texture(...)" → remove const qualifier.
+    // GLSL requires const initializers to be compile-time constants; texture() is runtime.
+    {
+        std::regex re(R"(\bconst\s+(vec[234]|float|int)\s+(\w+)\s*=\s*(texture\w*\s*\())");
+        result = std::regex_replace(result, re, "$1 $2 = $3");
+    }
+
+    // Fix: writing to 'in' varying — HLSL allows mutable inputs; GLSL doesn't.
+    // Create a mutable copy for any 'in' variable that has compound assignment (+=,-=,*=,/=).
+    {
+        std::regex re_in(R"(\bin\s+(vec[234]|float)\s+(\w+)\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
+             it != std::sregex_iterator();
+             ++it) {
+            std::string type = (*it)[1].str();
+            std::string name = (*it)[2].str();
+            std::regex  re_compound("\\b" + name + R"(\s*[\+\-\*\/]=)");
+            if (! std::regex_search(result, re_compound)) continue;
+
+            // Rename all body uses: NAME → _m_NAME, then fix the 'in' declaration back
+            std::string mut = "_m_" + name;
+            result = std::regex_replace(result, std::regex("\\b" + name + "\\b"), mut);
+            // Restore the 'in' declaration
+            result = std::regex_replace(
+                result, std::regex("\\bin\\s+" + type + "\\s+" + mut + "\\s*;"),
+                "in " + type + " " + name + ";");
+            // Add mutable copy at start of main()
+            result = std::regex_replace(
+                result, std::regex(R"(void\s+main\s*\(\s*\)\s*\{)"),
+                "void main() {\n " + type + " " + mut + " = " + name + ";");
+            break; // handle one at a time to avoid iterator invalidation
+        }
+    }
+
+    // Fix: "vec3 VAR = vec4(EXPR)" → "vec3 VAR = vec4(EXPR).xyz"
+    // HLSL implicit truncation from vec4 constructor result to vec3.
+    {
+        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*(vec4\s*\([^;]*?\))\s*;)");
+        result = std::regex_replace(result, re, "vec3 $1 = $2.xyz;");
+    }
+
+    // Fix: "float VAR = VEC_EXPR" → "float VAR = (VEC_EXPR).x"
+    // HLSL implicitly takes the first component; GLSL requires explicit swizzle.
+    // Detect known vec2/vec3/vec4 variables used in a float assignment.
+    {
+        std::set<std::string> vec_vars;
+        std::regex re_vec(R"(\b(?:uniform|in)\s+vec[234]\s+(\w+)\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vec);
+             it != std::sregex_iterator();
+             ++it)
+            vec_vars.insert((*it)[1].str());
+        for (const auto& name : vec_vars) {
+            // float VAR = VEC_NAME * EXPR;  →  float VAR = VEC_NAME.x * EXPR;
+            std::regex re(R"(\bfloat\s+(\w+)\s*=\s*)" + name + R"(\s*([*+\-/]))");
+            result = std::regex_replace(result, re, "float $1 = " + name + ".x $2");
+            // float VAR = EXPR * VEC_NAME;  →  float VAR = EXPR * VEC_NAME.x;
+            std::regex re2(R"(([*+\-/])\s*)" + name + R"(\s*;)");
+            result = std::regex_replace(result, re2, "$1 " + name + ".x;");
+        }
+    }
+
+    // Fix: "for (int VAR = -FLOAT_EXPR" → "for (int VAR = int(-FLOAT_EXPR)"
+    // HLSL allows implicit float-to-int in for-loop initializers; GLSL does not.
+    {
+        std::regex re(R"(for\s*\(\s*int\s+(\w+)\s*=\s*(-\s*\w+\s*\*\s*\d+))");
+        result = std::regex_replace(result, re, "for (int $1 = int($2)");
+    }
+    // Also fix the loop condition: "VAR <= FLOAT_EXPR * N" → "VAR <= int(FLOAT_EXPR * N)"
+    {
+        std::regex re(R"((\w+)\s*<=\s*(\w+\s*\*\s*\d+)\s*;)");
+        // Only apply when the pattern looks like a for-loop condition with a float uniform
+        result = std::regex_replace(result, re, "$1 <= int($2);");
     }
 
     return result;
