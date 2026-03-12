@@ -796,7 +796,12 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         if (! sc.general.isOrtho) {
             gb["g_EyePosition"] = sc.camera.eye;
         } else {
-            gb["g_EyePosition"] = std::array { 0.0f, 0.0f, 0.0f };
+            // Eye position for 2D ortho scenes: place at scene center with Z offset.
+            // Without Z offset, rope/trail particle geometry shaders produce degenerate
+            // quads (cross product of two XY-plane vectors → Z-only → zero screen width).
+            gb["g_EyePosition"] = std::array { (float)context.ortho_w / 2.0f,
+                                                (float)context.ortho_h / 2.0f,
+                                                1000.0f };
         }
         gb["g_TexelSize"]     = std::array { 1.0f / 1920.0f, 1.0f / 1080.0f };
         gb["g_TexelSizeHalf"] = std::array { 1.0f / 1920.0f / 2.0f, 1.0f / 1080.0f / 2.0f };
@@ -1555,8 +1560,6 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                     mesh, particle_obj, mesh_maxcount, trail_segments, thick_format);
         } else {
             if (has_geometry_shader) {
-                LOG_INFO("  MESH_SETUP: SetParticleMeshGS maxcount=%u thick=%d", mesh_maxcount,
-                         (int)thick_format);
                 SetParticleMeshGS(mesh, particle_obj, mesh_maxcount, thick_format);
             } else {
                 SetParticleMesh(mesh, particle_obj, mesh_maxcount, thick_format);

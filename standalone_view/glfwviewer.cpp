@@ -88,7 +88,9 @@ int main(int argc, char** argv) {
     psw->setPropertyString(wallpaper::PROPERTY_ASSETS, program.get<std::string>(ARG_ASSETS));
     psw->setPropertyString(wallpaper::PROPERTY_SOURCE, program.get<std::string>(ARG_SCENE));
     psw->setPropertyBool(wallpaper::PROPERTY_GRAPHIVZ, program.get<bool>(OPT_GRAPHVIZ));
-    psw->setPropertyInt32(wallpaper::PROPERTY_FPS, program.get<int32_t>(OPT_FPS));
+    auto fps_val = program.get<int32_t>(OPT_FPS);
+    if (fps_val < 5) fps_val = 60; // default to 60fps
+    psw->setPropertyInt32(wallpaper::PROPERTY_FPS, fps_val);
 
     std::string cache_path = program.get<std::string>(OPT_CACHE_PATH);
     if (cache_path.empty()) cache_path = wallpaper::platform::GetCachePath("wescene-renderer");
@@ -99,6 +101,9 @@ int main(int argc, char** argv) {
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetCursorPosCallback(window, cursor_position_callback);
+
+    // Start the render loop (frame timer)
+    psw->play();
 
     while (! glfwWindowShouldClose(window)) {
         glfwPollEvents();

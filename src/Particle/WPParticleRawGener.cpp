@@ -441,7 +441,7 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
     float*                data = storage.data();
 
     static int s_gen_log_counter = 0;
-    bool do_log = (++s_gen_log_counter % 6000 == 1);
+    bool do_log = (s_gen_log_counter++ % 6000 == 1);
 
     for (const auto& inst : instances) {
         if (inst->IsNoLiveParticle()) continue;
@@ -519,8 +519,8 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                 }
 
                 // a_Color
-                std::copy_n(std::array { tp_new.color[0], tp_new.color[1], tp_new.color[2],
-                                         tp_new.alpha }
+                std::copy_n(std::array { tp_new.color[0], tp_new.color[1],
+                                         tp_new.color[2], tp_new.alpha }
                                 .data(),
                             4, data + offset);
 
@@ -530,7 +530,7 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
         }
     }
     if (do_log && total_segs > 0) {
-        LOG_INFO("GenSpriteTrailDataGS: total_segs=%zu", total_segs);
+        LOG_INFO("GenSpriteTrailDataGS: total_segs=%zu one_size=%zu", total_segs, one_size);
     }
     return total_segs;
 }

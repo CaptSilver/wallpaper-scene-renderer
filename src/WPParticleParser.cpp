@@ -789,6 +789,78 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     }
                 }
             };
+        } else if (name == "vortex_v2") {
+            Vortex v = Vortex::ReadFromJson(wpj);
+            float  ringradius       = 0.0f;
+            float  ringwidth        = 0.0f;
+            float  ringpulldistance = 0.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "ringradius", ringradius);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "ringwidth", ringwidth);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "ringpulldistance", ringpulldistance);
+            bool use_rotation = v.flags[1]; // flags & 2: direct rotation mode
+            LOG_INFO("particle operator vortex_v2: speedinner=%.1f speedouter=%.1f "
+                     "distinner=%.1f distouter=%.1f ringradius=%.1f rotation=%d",
+                     v.speedinner, v.speedouter, v.distanceinner, v.distanceouter,
+                     ringradius, (int)use_rotation);
+            return [=](const ParticleInfo& info) {
+                Vector3d offset = info.controlpoints[v.controlpoint].offset +
+                                  (Vector3f { v.offset.data() }).cast<double>();
+                Vector3d axis    = (Vector3f { v.axis.data() }).cast<double>().normalized();
+                double   dis_mid = v.distanceouter - v.distanceinner + 0.1f;
+
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+
+                    Vector3d pos      = p.position.cast<double>();
+                    Vector3d radial   = pos - offset;
+                    double   distance = radial.norm();
+
+                    // Determine speed based on distance zone
+                    double speed;
+                    if (dis_mid < 0 || distance < v.distanceinner) {
+                        speed = v.speedinner;
+                    } else if (distance > v.distanceouter) {
+                        speed = v.speedouter;
+                    } else {
+                        double t = (distance - v.distanceinner) / dis_mid;
+                        speed    = algorism::lerp(t, v.speedinner, v.speedouter);
+                    }
+
+                    if (use_rotation && distance > 0.001) {
+                        // Direct rotation: rotate position around axis (Rodrigues').
+                        // Preserves orbital radius while movement operator's drag
+                        // naturally dampens the initial radial velocity from the emitter,
+                        // giving a gentle outward drift for a softer ring appearance.
+                        double   angle   = (speed / distance) * info.time_pass;
+                        Vector3d rotated = radial * std::cos(angle) +
+                                           axis.cross(radial) * std::sin(angle) +
+                                           axis * axis.dot(radial) * (1.0 - std::cos(angle));
+                        p.position = (offset + rotated).cast<float>();
+                        // Keep existing velocity (radial drift from emitter, damped by drag).
+                        // Zero only the tangential component to prevent double-counting
+                        // with the rotation above.
+                        Vector3d vel     = p.velocity.cast<double>();
+                        Vector3d tangent = axis.cross(rotated).normalized();
+                        double   vt      = vel.dot(tangent);
+                        p.velocity       = (vel - tangent * vt).cast<float>();
+                    } else {
+                        // Acceleration mode (original vortex behavior)
+                        Vector3d direct = axis.cross(radial).normalized();
+                        PM::Accelerate(p, direct * speed, info.time_pass);
+                    }
+
+                    // Ring pull: attract particles toward target ring radius
+                    if (ringradius > 0 && distance > 0.001) {
+                        double   radiusDiff = ringradius - distance;
+                        Vector3d radialDir  = radial / distance;
+                        if (std::abs(radiusDiff) > ringwidth) {
+                            double sign = radiusDiff > 0 ? 1.0 : -1.0;
+                            PM::Accelerate(p, radialDir * ringpulldistance * sign,
+                                           info.time_pass);
+                        }
+                    }
+                }
+            };
         } else if (name == "maintaindistancebetweencontrolpoints") {
             // Clamp particles that drift past the control point endpoints.
             // The perpendicular offset (zigzag) from positionoffsetrandom/turbulence

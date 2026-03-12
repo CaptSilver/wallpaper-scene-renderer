@@ -365,14 +365,6 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     // Detect geometry shader point topology from mesh vertex array option
     {
         bool has_gs_opt = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER);
-        bool has_rope   = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_PRENDER_ROPE);
-        bool has_trail  = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_PRENDER_SPRITETRAIL);
-        std::string shname = mesh.Material() ? mesh.Material()->customShader.shader->name : "null";
-        if (sstart_with(shname, "generic")) {
-            LOG_INFO("GS_CHECK: shader='%s' vertCount=%zu gs_opt=%d rope=%d trail=%d dyn=%d",
-                     shname.c_str(), (size_t)mesh.VertexCount(),
-                     (int)has_gs_opt, (int)has_rope, (int)has_trail, (int)mesh.Dynamic());
-        }
         if (has_gs_opt) {
             m_desc.point_topology = true;
         }
@@ -1175,11 +1167,6 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
             cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
             cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
         } else {
-            static int s_draw_log = 0;
-            if (m_desc.point_topology && ++s_draw_log % 600 == 1) {
-                LOG_INFO("GS Draw: draw_count=%u point_topo=%d visible=%d",
-                         m_desc.draw_count, (int)m_desc.point_topology, (int)nodeVisible);
-            }
             cmd.Draw(m_desc.draw_count, 1, 0, 0);
         }
     }
