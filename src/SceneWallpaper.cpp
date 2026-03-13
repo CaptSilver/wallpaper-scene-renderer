@@ -132,6 +132,7 @@ private:
     std::string m_cache_path;
     bool        m_gen_graphviz { false };
     bool        m_hdr_output { false };
+    bool        m_system_audio_capture { false };
 
     WPSceneParser                        m_scene_parser;
     std::unique_ptr<audio::SoundManager> m_sound_manager;
@@ -567,6 +568,31 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             bool muted { false };
             msg->findBool("value", &muted);
             m_sound_manager->SetMuted(muted);
+        } else if (property == PROPERTY_SYSTEM_AUDIO_CAPTURE) {
+            bool enabled { false };
+            msg->findBool("value", &enabled);
+            if (enabled != m_system_audio_capture) {
+                m_system_audio_capture = enabled;
+                if (enabled && m_audio_analyzer) {
+                    if (! m_audio_capture) {
+                        m_audio_capture = std::make_unique<audio::AudioCapture>();
+                    }
+                    if (m_audio_capture->Init(m_audio_analyzer)) {
+                        m_sound_manager->SetAudioAnalyzer(nullptr);
+                        LOG_INFO("Audio spectrum: switched to system audio capture");
+                    } else {
+                        m_audio_capture.reset();
+                        m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
+                        LOG_INFO("Audio spectrum: system capture failed, keeping playback tap");
+                    }
+                } else {
+                    m_audio_capture.reset();
+                    if (m_audio_analyzer) {
+                        m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
+                    }
+                    LOG_INFO("Audio spectrum: switched to playback tap (wallpaper BGM)");
+                }
+            }
         } else if (property == PROPERTY_VOLUME) {
             float volume { 1.0f };
             msg->findFloat("value", &volume);
@@ -724,14 +750,18 @@ void MainHandler::loadScene() {
         m_sound_manager->UnMountAll();
     }
 
-    // Create audio analyzer — try system capture first, fall back to playback tap
+    // Create audio analyzer — use system capture only if enabled, otherwise playback tap
     m_audio_analyzer = std::make_shared<audio::AudioAnalyzer>();
-    m_audio_capture = std::make_unique<audio::AudioCapture>();
-    if (m_audio_capture->Init(m_audio_analyzer)) {
-        LOG_INFO("Audio spectrum: using system audio capture (PipeWire/PulseAudio monitor)");
+    if (m_system_audio_capture) {
+        m_audio_capture = std::make_unique<audio::AudioCapture>();
+        if (m_audio_capture->Init(m_audio_analyzer)) {
+            LOG_INFO("Audio spectrum: using system audio capture (PipeWire/PulseAudio monitor)");
+        } else {
+            m_audio_capture.reset();
+            m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
+            LOG_INFO("Audio spectrum: system capture failed, falling back to playback tap");
+        }
     } else {
-        // Fall back to tapping playback output
-        m_audio_capture.reset();
         m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
         LOG_INFO("Audio spectrum: using playback tap (wallpaper BGM only)");
     }

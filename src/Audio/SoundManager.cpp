@@ -125,8 +125,12 @@ void SoundManager::SetMuted(bool v) {
 }
 void SoundManager::SetVolume(float v) { pImpl->device.SetVolume(v); }
 void SoundManager::SetAudioAnalyzer(std::shared_ptr<AudioAnalyzer> analyzer) {
-    pImpl->device.SetSpectrumCallback(
-        [analyzer](const float* data, uint32_t frameCount, uint32_t channels) {
-            analyzer->FeedPcm(data, frameCount, channels);
-        });
+    if (analyzer) {
+        pImpl->device.SetSpectrumCallback(
+            [analyzer](const float* data, uint32_t frameCount, uint32_t channels) {
+                analyzer->FeedPcm(data, frameCount, channels);
+            });
+    } else {
+        pImpl->device.SetSpectrumCallback(nullptr);
+    }
 }

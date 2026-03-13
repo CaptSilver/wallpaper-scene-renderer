@@ -28,6 +28,7 @@ class SceneObject : public QQuickItem {
     Q_PROPERTY(bool muted READ muted WRITE setMuted)
     Q_PROPERTY(QString userProperties READ userProperties WRITE setUserProperties NOTIFY userPropertiesChanged)
     Q_PROPERTY(bool hdrOutput READ hdrOutput WRITE setHdrOutput)
+    Q_PROPERTY(bool systemAudioCapture READ systemAudioCapture WRITE setSystemAudioCapture)
 public:
     constexpr static std::string_view CACHE_DIR { "wescene-renderer" };
     static std::string                GetDefaultCachePath();
@@ -51,6 +52,7 @@ public:
     float volume() const;
     bool  muted() const;
     bool  hdrOutput() const;
+    bool  systemAudioCapture() const;
     QString userProperties() const;
 
     void setFps(int);
@@ -60,6 +62,7 @@ public:
     void setMuted(bool);
     void setUserProperties(const QString&);
     void setHdrOutput(bool);
+    void setSystemAudioCapture(bool);
 
     // debug
     bool vulkanValid() const;
@@ -98,6 +101,7 @@ private:
     float m_volume { 1.0f };
     bool  m_muted { false };
     bool  m_hdrOutput { false };
+    bool  m_systemAudioCapture { false };
     QString m_userProperties;
 
 public:
