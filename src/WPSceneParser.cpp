@@ -63,6 +63,14 @@ struct ParseContext {
 
     // Map of object id → SceneNode for parent-child hierarchy (group nodes + parsed objects)
     std::map<i32, std::shared_ptr<SceneNode>> node_map;
+
+    // Original world transforms before effect-chain identity reset.
+    // When image nodes with effects have their world-node transforms reset
+    // to identity, children that inherit_parent lose the parent chain.
+    // This map preserves each node's original world transform (accumulated
+    // from the parent chain) so proxy nodes can be created for correct
+    // child placement.
+    std::map<i32, Eigen::Matrix4d> original_world_transforms;
 };
 
 using WPObjectVar = std::variant<wpscene::WPImageObject, wpscene::WPParticleObject,
@@ -1076,6 +1084,21 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     }
 
     context.shader_updater->SetNodeData(spImgNode.get(), svData);
+
+    // Compute and save this node's original world transform before effects
+    // potentially reset it to identity.  Children that inherit_parent use
+    // the parent's saved transform via a proxy node.
+    {
+        Eigen::Matrix4d local = spImgNode->GetLocalTrans();
+        if (wpimgobj.parent_id >= 0 &&
+            context.original_world_transforms.count(wpimgobj.parent_id)) {
+            context.original_world_transforms[wpimgobj.id] =
+                context.original_world_transforms[wpimgobj.parent_id] * local;
+        } else {
+            context.original_world_transforms[wpimgobj.id] = local;
+        }
+    }
+
     if (hasEffect) {
         auto& scene = *context.scene;
         // currently use addr for unique
@@ -1115,6 +1138,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             imgEffectLayer->SetInheritParent(!isOffscreen &&
                                              wpimgobj.parent_id >= 0 &&
                                              context.node_map.count(wpimgobj.parent_id) > 0);
+            // Create proxy node with parent's baked world transform.
+            // Parent world nodes may have been reset to identity for their own
+            // effect chains, so the live parent chain no longer carries the
+            // correct transform.  The proxy preserves it.
+            if (!isOffscreen && wpimgobj.parent_id >= 0 &&
+                context.original_world_transforms.count(wpimgobj.parent_id)) {
+                auto proxy = std::make_shared<SceneNode>();
+                proxy->SetWorldTransform(
+                    context.original_world_transforms[wpimgobj.parent_id]);
+                imgEffectLayer->SetParentProxy(std::move(proxy));
+            }
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
             imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
             imgEffectLayer->FinalNode().SetVisibilityOwner(spImgNode.get());
@@ -2227,6 +2261,20 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             context.node_map.at(gi.parent_id)->AppendChild(node);
         } else {
             context.scene->sceneGraph->AppendChild(node);
+        }
+    }
+    // Compute original world transforms for group nodes so image-object
+    // children can look up the correct parent transform even when the
+    // parent's world node has been reset to identity for effect rendering.
+    for (auto& gi : group_infos) {
+        auto& node  = context.node_map.at(gi.id);
+        auto  local = node->GetLocalTrans();
+        if (gi.parent_id >= 0 &&
+            context.original_world_transforms.count(gi.parent_id)) {
+            context.original_world_transforms[gi.id] =
+                context.original_world_transforms[gi.parent_id] * local;
+        } else {
+            context.original_world_transforms[gi.id] = local;
         }
     }
 

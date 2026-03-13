@@ -1134,6 +1134,27 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "float($1)$2");
     }
 
+    // Fix: "float_var *= bool_var" → "float_var *= float(bool_var)"
+    // HLSL allows bool in arithmetic (true=1.0, false=0.0); GLSL does not.
+    // Collect all local bool variable names, then wrap them with float() when used
+    // in compound assignment (*=, +=, -=, /=) or after arithmetic operators (* + - /).
+    {
+        std::set<std::string> bool_vars;
+        std::regex            re_bool(R"(\bbool\s+(\w+)\s*[=;])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_bool);
+             it != std::sregex_iterator();
+             ++it)
+            bool_vars.insert((*it)[1].str());
+        for (const auto& bv : bool_vars) {
+            // Wrap bool var after *= += -= /= operators
+            std::regex re_compound(R"(([*+\-/]=\s*)\b)" + bv + R"(\b(?!\s*[.(]))");
+            result = std::regex_replace(result, re_compound, "$1float(" + bv + ")");
+            // Wrap bool var after binary * + - / operators (preceded by space or paren)
+            std::regex re_arith(R"(([*+\-/]\s*)\b)" + bv + R"(\b(?!\s*[.(=]))");
+            result = std::regex_replace(result, re_arith, "$1float(" + bv + ")");
+        }
+    }
+
     // Fix: "int VAR = step(EXPR)" → "float VAR = step(EXPR)"
     // step() returns genType (float); the variable is used in float arithmetic throughout
     // (bar *= step(...), bar * u_BarOpacity, etc.), so changing the type is correct.
