@@ -41,7 +41,8 @@ if(BUILD_QML)
         glad
         ${PROJECT_NAME}
     )
-    target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper third_party)
+    target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper third_party
+        PRIVATE src/Audio/include)
 
     set(CMAKE_AUTOMOC OFF) 
     set(CMAKE_AUTORCC OFF) 

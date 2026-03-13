@@ -13,6 +13,7 @@
 #include "Core/MapSet.hpp"
 #include "SpriteAnimation.hpp"
 #include "WPPuppet.hpp"
+#include "Audio/AudioAnalyzer.h"
 
 namespace wallpaper
 {
@@ -40,6 +41,13 @@ struct WPUniformInfo {
     bool has_LP { false };
     bool has_LCR { false };
     bool has_EYEPOSITION { false };
+
+    bool has_AUDIOSPECTRUM16LEFT { false };
+    bool has_AUDIOSPECTRUM16RIGHT { false };
+    bool has_AUDIOSPECTRUM32LEFT { false };
+    bool has_AUDIOSPECTRUM32RIGHT { false };
+    bool has_AUDIOSPECTRUM64LEFT { false };
+    bool has_AUDIOSPECTRUM64RIGHT { false };
 
     struct Tex {
         bool has_resolution { false };
@@ -88,6 +96,9 @@ public:
     void SetNodeData(void*, const WPShaderValueData&);
     void SetCameraParallax(const WPCameraParallax& value) { m_parallax = value; }
     void SetCameraShake(const WPCameraShake& value) { m_shake = value; }
+    void SetAudioAnalyzer(std::shared_ptr<audio::AudioAnalyzer> analyzer) {
+        m_audioAnalyzer = std::move(analyzer);
+    }
 
     void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
 
@@ -110,6 +121,8 @@ private:
     std::chrono::time_point<std::chrono::steady_clock> m_last_mouse_input_time;
 
     std::array<float, 2> m_screen_size { 1920, 1080 };
+
+    std::shared_ptr<audio::AudioAnalyzer> m_audioAnalyzer;
 
     Map<void*, WPShaderValueData> m_nodeDataMap;
     Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;

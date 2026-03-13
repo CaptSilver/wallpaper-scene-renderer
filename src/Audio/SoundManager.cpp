@@ -1,4 +1,5 @@
 #include "Audio/SoundManager.h"
+#include "Audio/AudioAnalyzer.h"
 #include "miniaudio-wrapper.hpp"
 #include "Fs/IBinaryStream.h"
 #include "Core/Literals.hpp"
@@ -123,3 +124,9 @@ void SoundManager::SetMuted(bool v) {
     }
 }
 void SoundManager::SetVolume(float v) { pImpl->device.SetVolume(v); }
+void SoundManager::SetAudioAnalyzer(std::shared_ptr<AudioAnalyzer> analyzer) {
+    pImpl->device.SetSpectrumCallback(
+        [analyzer](const float* data, uint32_t frameCount, uint32_t channels) {
+            analyzer->FeedPcm(data, frameCount, channels);
+        });
+}

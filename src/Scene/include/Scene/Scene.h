@@ -19,6 +19,11 @@ class ParticleSystem;
 class IShaderValueUpdater;
 class IImageParser;
 
+namespace audio
+{
+class AudioAnalyzer;
+}
+
 namespace fs
 {
 class VFS;
@@ -36,6 +41,14 @@ struct TextLayerInfo {
     std::string currentText;    // last rendered text
     std::string textureKey;     // key in textures / tex_cache
     std::string script;         // JavaScript source from text.script
+};
+
+struct SceneColorScript {
+    i32                    id;
+    SceneMaterial*         material;     // material owning g_Color4
+    std::string            script;       // JavaScript source from color.script
+    std::string            scriptProperties; // JSON string of script properties
+    std::array<float, 3>   initialColor;
 };
 class Scene : NoCopy, NoMove {
 public:
@@ -102,7 +115,10 @@ public:
     };
     ReflectionBlurConfig reflectionBlurConfig;
 
+    std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer;
+
     std::vector<TextLayerInfo> textLayers;
+    std::vector<SceneColorScript> colorScripts;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {

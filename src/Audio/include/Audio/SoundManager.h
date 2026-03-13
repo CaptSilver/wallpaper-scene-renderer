@@ -14,6 +14,7 @@ class IBinaryStream;
 }
 namespace audio
 {
+class AudioAnalyzer;
 
 class SoundStream : NoCopy, NoMove {
 public:
@@ -48,6 +49,8 @@ public:
     bool  Muted() const;
     void  SetMuted(bool);
     void  SetVolume(float);
+
+    void SetAudioAnalyzer(std::shared_ptr<AudioAnalyzer> analyzer);
 
 private:
     class impl;
