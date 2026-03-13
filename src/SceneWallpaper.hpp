@@ -40,6 +40,7 @@ constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK = "first_frame_callback
 constexpr std::string_view PROPERTY_USER_PROPS           = "user_props";
 constexpr std::string_view PROPERTY_HDR_OUTPUT           = "hdr_output";
 constexpr std::string_view PROPERTY_HDR_CONTENT          = "hdr_content";
+constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE = "system_audio_capture";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;

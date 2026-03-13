@@ -311,6 +311,14 @@ void SceneObject::setHdrOutput(bool value) {
     SET_PROPERTY(Bool, wallpaper::PROPERTY_HDR_OUTPUT, value);
 }
 
+bool SceneObject::systemAudioCapture() const { return m_systemAudioCapture; }
+
+void SceneObject::setSystemAudioCapture(bool value) {
+    if (m_systemAudioCapture == value) return;
+    m_systemAudioCapture = value;
+    SET_PROPERTY(Bool, wallpaper::PROPERTY_SYSTEM_AUDIO_CAPTURE, value);
+}
+
 QString SceneObject::userProperties() const { return m_userProperties; }
 
 void SceneObject::setUserProperties(const QString& value) {
