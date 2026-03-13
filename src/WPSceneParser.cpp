@@ -2343,6 +2343,21 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // Register node in ID lookup table
         context.scene->nodeById[id] = node_it->second.get();
 
+        // Register name → id mapping and initial state for thisScene.getLayer()
+        if (obj.contains("name") && obj.at("name").is_string()) {
+            std::string name = obj.at("name").get<std::string>();
+            if (!name.empty()) {
+                context.scene->nodeNameToId[name] = id;
+                auto* node = node_it->second.get();
+                Scene::LayerInitialState lis;
+                lis.origin  = { node->Translate().x(), node->Translate().y(), node->Translate().z() };
+                lis.scale   = { node->Scale().x(), node->Scale().y(), node->Scale().z() };
+                lis.angles  = { node->Rotation().x(), node->Rotation().y(), node->Rotation().z() };
+                lis.visible = node->IsVisible();
+                context.scene->layerInitialStates[name] = lis;
+            }
+        }
+
         // Check if "visible" references a user property
         if (obj.contains("visible") && obj.at("visible").is_object() &&
             obj.at("visible").contains("user")) {
@@ -2364,6 +2379,44 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                          propName.c_str(), id, (int)defaultVis);
             }
         }
+    }
+
+    // Extract property scripts from raw JSON (visible, origin, scale, angles, alpha)
+    for (auto& obj : json.at("objects")) {
+        if (!obj.contains("id") || !obj.at("id").is_number_integer()) continue;
+        i32 id = obj.at("id").get<i32>();
+
+        for (const char* prop : {"visible", "origin", "scale", "angles", "alpha"}) {
+            if (!obj.contains(prop)) continue;
+            auto& val = obj.at(prop);
+            if (!val.is_object() || !val.contains("script")) continue;
+
+            ScenePropertyScript sps;
+            sps.id       = id;
+            sps.property = prop;
+            sps.script   = val.at("script").get<std::string>();
+            if (obj.contains("name") && obj.at("name").is_string())
+                sps.layerName = obj.at("name").get<std::string>();
+            if (val.contains("scriptproperties"))
+                sps.scriptProperties = val.at("scriptproperties").dump();
+
+            // Parse initial value
+            if (std::string(prop) == "visible") {
+                sps.initialVisible = val.value("value", true);
+            } else if (std::string(prop) == "alpha") {
+                sps.initialFloat = val.value("value", 1.0f);
+            } else {
+                // origin/scale/angles: "x y z" space-separated string
+                if (val.contains("value") && val.at("value").is_string()) {
+                    std::istringstream iss(val.at("value").get<std::string>());
+                    iss >> sps.initialVec3[0] >> sps.initialVec3[1] >> sps.initialVec3[2];
+                }
+            }
+            context.scene->propertyScripts.push_back(std::move(sps));
+        }
+    }
+    if (!context.scene->propertyScripts.empty()) {
+        LOG_INFO("Extracted %zu property scripts", context.scene->propertyScripts.size());
     }
 
     // Sort root children to match JSON "objects" array order.

@@ -19,6 +19,7 @@
 #include <atomic>
 #include <array>
 #include <functional>
+#include <unordered_set>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTime>
 
@@ -372,7 +373,8 @@ void SceneObject::setupTextScripts() {
 
     auto scripts = m_scene->getTextScripts();
     auto colorScripts = m_scene->getColorScripts();
-    if (scripts.empty() && colorScripts.empty()) return;
+    auto propertyScripts = m_scene->getPropertyScripts();
+    if (scripts.empty() && colorScripts.empty() && propertyScripts.empty()) return;
 
     m_jsEngine = new QJSEngine(this);
 
@@ -404,6 +406,144 @@ void SceneObject::setupTextScripts() {
         "engine.isPortrait = function() { return false; };\n"
         "engine.isLandscape = function() { return true; };\n"
     );
+
+    // Screen resolution and input stubs for property scripts
+    m_jsEngine->evaluate(
+        "engine.screenResolution = { x: 1920, y: 1080 };\n"
+        "var input = { cursorWorldPosition: { x: 0, y: 0 } };\n"
+        "function Vec3(x, y, z) {\n"
+        "  var v = { x: x||0, y: y||0, z: z||0 };\n"
+        "  v.multiply = function(s) { return Vec3(v.x*s, v.y*s, v.z*s); };\n"
+        "  v.add = function(o) { return Vec3(v.x+o.x, v.y+o.y, v.z+o.z); };\n"
+        "  v.subtract = function(o) { return Vec3(v.x-o.x, v.y-o.y, v.z-o.z); };\n"
+        "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z); };\n"
+        "  v.normalize = function() { var l=v.length()||1; return Vec3(v.x/l,v.y/l,v.z/l); };\n"
+        "  v.copy = function() { return Vec3(v.x, v.y, v.z); };\n"
+        "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
+        "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
+        "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
+        "  return v;\n"
+        "}\n"
+        "var localStorage = {\n"
+        "  get: function(key) { return undefined; },\n"
+        "  set: function(key, value) {}\n"
+        "};\n"
+    );
+
+    // engine.openUserShortcut stub
+    m_jsEngine->evaluate("engine.openUserShortcut = function(name) {};\n");
+
+    // createScriptProperties() — WE SceneScript API for declaring user-configurable properties
+    // Returns a chainable builder: createScriptProperties().addSlider({name,value,...}).addCheckbox(...)
+    // After chaining, the result object has properties accessible by name (e.g. scriptProperties.mode)
+    m_jsEngine->evaluate(
+        "function createScriptProperties() {\n"
+        "  var builder = {};\n"
+        "  function addProp(def) {\n"
+        "    var n = def.name || def.n;\n"
+        "    if (n) builder[n] = def.value;\n"
+        "    return builder;\n"
+        "  }\n"
+        "  builder.addCheckbox = addProp;\n"
+        "  builder.addSlider = addProp;\n"
+        "  builder.addCombo = addProp;\n"
+        "  builder.addText = addProp;\n"
+        "  builder.addColor = addProp;\n"
+        "  builder.addFile = addProp;\n"
+        "  builder.addDirectory = addProp;\n"
+        "  return builder;\n"
+        "}\n"
+    );
+
+    // Inject layer initial states from scene parsing
+    {
+        std::string initJson = m_scene->getLayerInitialStatesJson();
+        if (!initJson.empty()) {
+            QString escaped = QString::fromStdString(initJson);
+            escaped.replace("\\", "\\\\");
+            escaped.replace("'", "\\'");
+            m_jsEngine->evaluate(
+                QString("var _layerInitStates = JSON.parse('%1');\n").arg(escaped));
+        } else {
+            m_jsEngine->evaluate("var _layerInitStates = {};\n");
+        }
+    }
+
+    // thisScene.getLayer() and thisLayer infrastructure
+    // Layer proxies use Object.defineProperty for dirty tracking
+    m_jsEngine->evaluate(
+        "var _layerCache = {};\n"
+        "function _makeLayerProxy(name) {\n"
+        "  var init = _layerInitStates[name];\n"
+        "  var _s = init ? {\n"
+        "    origin: {x:init.o[0], y:init.o[1], z:init.o[2]},\n"
+        "    scale: {x:init.s[0], y:init.s[1], z:init.s[2]},\n"
+        "    angles: {x:init.a[0], y:init.a[1], z:init.a[2]},\n"
+        "    visible: init.v, alpha: 1.0,\n"
+        "    text: '', name: name, _dirty: {}\n"
+        "  } : { origin: {x:0,y:0,z:0}, scale: {x:1,y:1,z:1},\n"
+        "        angles: {x:0,y:0,z:0}, visible: true, alpha: 1.0,\n"
+        "        text: '', name: name, _dirty: {} };\n"
+        "  var p = {};\n"
+        "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
+        "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true });\n"
+        "  var vec3Props = ['origin','scale','angles'];\n"
+        "  for (var i=0; i<vec3Props.length; i++) {\n"
+        "    (function(prop){\n"
+        "      Object.defineProperty(p, prop, {\n"
+        "        get: function(){ return _s[prop]; },\n"
+        "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+        "        enumerable: true\n"
+        "      });\n"
+        "    })(vec3Props[i]);\n"
+        "  }\n"
+        "  var scalarProps = ['visible','alpha'];\n"
+        "  for (var j=0; j<scalarProps.length; j++) {\n"
+        "    (function(prop){\n"
+        "      Object.defineProperty(p, prop, {\n"
+        "        get: function(){ return _s[prop]; },\n"
+        "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+        "        enumerable: true\n"
+        "      });\n"
+        "    })(scalarProps[j]);\n"
+        "  }\n"
+        "  Object.defineProperty(p, 'text', {\n"
+        "    get: function(){ return _s.text; },\n"
+        "    set: function(v){ _s.text = v; _s._dirty.text = true; },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        "  p.play = function(){};\n"
+        "  p._state = _s;\n"
+        "  return p;\n"
+        "}\n"
+        "var thisScene = {\n"
+        "  getLayer: function(name) {\n"
+        "    if (!_layerCache[name]) _layerCache[name] = _makeLayerProxy(name);\n"
+        "    return _layerCache[name];\n"
+        "  }\n"
+        "};\n"
+        "var thisLayer = null;\n"
+        "function _collectDirtyLayers() {\n"
+        "  var updates = [];\n"
+        "  for (var name in _layerCache) {\n"
+        "    var s = _layerCache[name]._state;\n"
+        "    var d = s._dirty;\n"
+        "    var keys = Object.keys(d);\n"
+        "    if (keys.length === 0) continue;\n"
+        "    updates.push({ name: name, dirty: d,\n"
+        "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
+        "      visible: s.visible, alpha: s.alpha });\n"
+        "    s._dirty = {};\n"
+        "  }\n"
+        "  return updates;\n"
+        "}\n"
+    );
+
+    // Store reference to _collectDirtyLayers for C++ calls
+    m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
+
+    // Get node name→id map for thisScene.getLayer() dispatch
+    m_nodeNameToId = m_scene->getNodeNameToIdMap();
 
     // Audio resolution constants
     engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
@@ -521,13 +661,31 @@ void SceneObject::setupTextScripts() {
         scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
         scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
 
-        // Inject scriptProperties values before the script runs
-        // Use JSON.parse() in JS — avoids needing nlohmann/json in the QML target
+        // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
         if (!csi.scriptProperties.empty()) {
             QString jsonStr = QString::fromStdString(csi.scriptProperties);
+            jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
-            propsInit = QString("var scriptProperties = JSON.parse('%1');\n").arg(jsonStr);
+            propsInit = QString(
+                "var _storedProps = JSON.parse('%1');\n"
+                "function createScriptProperties() {\n"
+                "  var b = {};\n"
+                "  function ap(def) {\n"
+                "    var n = def.name || def.n;\n"
+                "    if (n) {\n"
+                "      if (n in _storedProps) {\n"
+                "        var sp = _storedProps[n];\n"
+                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "      } else { b[n] = def.value; }\n"
+                "    }\n"
+                "    return b;\n"
+                "  }\n"
+                "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
+                "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  return b;\n"
+                "}\n"
+            ).arg(jsonStr);
         }
 
         // Wrap in IIFE
@@ -567,6 +725,143 @@ void SceneObject::setupTextScripts() {
         state.currentColor = csi.initialColor;
         m_colorScriptStates.push_back(std::move(state));
         qCInfo(wekdeScene, "Color script compiled for id=%d", csi.id);
+    }
+
+    // Load property scripts (visible, origin, scale, angles, alpha)
+    for (const auto& psi : propertyScripts) {
+        QString scriptSrc = QString::fromStdString(psi.script);
+
+        // Strip 'use strict', imports, exports
+        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
+        scriptSrc.replace(QRegularExpression("^\\s*import\\s+.*?from\\s+['\"].*?['\"];?\\s*$", QRegularExpression::MultilineOption), "");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+
+        // Transform spread operator (QV4 may not support it)
+        // Object spread: { ...expr } → Object.assign({}, expr)
+        scriptSrc.replace(QRegularExpression("\\{\\s*\\.\\.\\.([^}]+)\\}"), "Object.assign({}, \\1)");
+        // Array spread: [...expr] → [].concat(expr)
+        scriptSrc.replace(QRegularExpression("\\[\\s*\\.\\.\\.(\\w[^\\]]*)\\]"), "[].concat(\\1)");
+
+        // Inject scriptProperties and per-IIFE createScriptProperties that merges stored values
+        QString propsInit;
+        if (!psi.scriptProperties.empty()) {
+            QString jsonStr = QString::fromStdString(psi.scriptProperties);
+            jsonStr.replace("\\", "\\\\");
+            jsonStr.replace("'", "\\'");
+            // Shadow global createScriptProperties with one that uses stored property values
+            propsInit = QString(
+                "var _storedProps = JSON.parse('%1');\n"
+                "function createScriptProperties() {\n"
+                "  var b = {};\n"
+                "  function ap(def) {\n"
+                "    var n = def.name || def.n;\n"
+                "    if (n) {\n"
+                "      if (n in _storedProps) {\n"
+                "        var sp = _storedProps[n];\n"
+                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "      } else { b[n] = def.value; }\n"
+                "    }\n"
+                "    return b;\n"
+                "  }\n"
+                "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
+                "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  return b;\n"
+                "}\n"
+            ).arg(jsonStr);
+        }
+
+        // Set thisLayer before compilation so closures can capture it
+        if (!psi.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty(
+                "thisLayer",
+                m_jsEngine->evaluate(
+                    QString("thisScene.getLayer('%1')").arg(
+                        QString::fromStdString(psi.layerName))));
+        }
+
+        // Wrap in IIFE returning {update, init}
+        // Scripts that only use thisScene.getLayer() side effects may not have update()
+        QString wrapped = QString(
+            "(function() {\n"
+            "  'use strict';\n"
+            "  var exports = {};\n"
+            "  %1\n"
+            "  %2\n"
+            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+            "             (typeof update === 'function' ? update : null);\n"
+            "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+            "              (typeof init === 'function' ? init : null);\n"
+            "  return { update: _upd, init: _init };\n"
+            "})()\n"
+        ).arg(propsInit, scriptSrc);
+
+        QJSValue result = m_jsEngine->evaluate(wrapped);
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Property script error for id=%d prop=%s: %s",
+                       psi.id, psi.property.c_str(), qPrintable(result.toString()));
+            continue;
+        }
+        if (result.isNull() || result.isUndefined()) {
+            continue;
+        }
+
+        QJSValue updateFn = result.property("update");
+        QJSValue initFn = result.property("init");
+
+        // Scripts with neither update nor init are useless
+        if (!updateFn.isCallable() && !initFn.isCallable()) {
+            continue;
+        }
+
+        PropertyScriptState state;
+        state.id             = psi.id;
+        state.property       = psi.property;
+        state.layerName      = psi.layerName;
+        state.updateFn       = updateFn;
+        state.initFn         = initFn;
+        state.currentVisible = psi.initialVisible;
+        state.currentVec3    = psi.initialVec3;
+        state.currentFloat   = psi.initialFloat;
+
+        // Cache layer proxy for thisLayer (avoids evaluate per frame)
+        if (!psi.layerName.empty()) {
+            state.thisLayerProxy = m_jsEngine->evaluate(
+                QString("thisScene.getLayer('%1')").arg(
+                    QString::fromStdString(psi.layerName)));
+        }
+
+        // Call init(value) if available
+        if (initFn.isCallable()) {
+            // Set thisLayer for init call
+            if (!psi.layerName.empty()) {
+                m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+            }
+            QJSValue initVal;
+            if (psi.property == "visible") {
+                initVal = QJSValue(psi.initialVisible);
+            } else if (psi.property == "alpha") {
+                initVal = QJSValue((double)psi.initialFloat);
+            } else {
+                initVal = m_jsEngine->evaluate(
+                    QString("Vec3(%1,%2,%3)")
+                        .arg(psi.initialVec3[0], 0, 'g', 9)
+                        .arg(psi.initialVec3[1], 0, 'g', 9)
+                        .arg(psi.initialVec3[2], 0, 'g', 9));
+            }
+            QJSValue initResult = initFn.call({ initVal });
+            if (initResult.isError()) {
+                qCWarning(wekdeScene, "Property script init error id=%d prop=%s: %s",
+                           psi.id, psi.property.c_str(), qPrintable(initResult.toString()));
+            }
+        }
+
+        m_propertyScriptStates.push_back(std::move(state));
+    }
+    if (!m_propertyScriptStates.empty()) {
+        qCInfo(wekdeScene, "Compiled %zu property scripts", (size_t)m_propertyScriptStates.size());
     }
 
     for (const auto& tsi : scripts) {
@@ -656,6 +951,16 @@ void SceneObject::setupTextScripts() {
 
         // Run once immediately
         evaluateColorScripts();
+    }
+
+    if (!m_propertyScriptStates.empty()) {
+        m_propertyTimer = new QTimer(this);
+        m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
+        connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
+        m_propertyTimer->start();
+
+        // Run once immediately
+        evaluatePropertyScripts();
     }
 }
 
@@ -759,11 +1064,8 @@ void SceneObject::evaluateColorScripts() {
             g = (float)result.property("y").toNumber();
             b = (float)result.property("z").toNumber();
         } else {
-            // Log unexpected return type for debugging
-            qCWarning(wekdeScene, "Color script id=%d returned non-object: type=%s value=%s",
-                       state.id,
-                       result.isUndefined() ? "undefined" : result.isNull() ? "null" : "other",
-                       qPrintable(result.toString()));
+            // Skip silently — color scripts that depend on shared.* may return
+            // undefined until property scripts populate the data
             continue;
         }
 
@@ -784,9 +1086,156 @@ void SceneObject::evaluateColorScripts() {
     }
 }
 
+void SceneObject::evaluatePropertyScripts() {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+
+    // Update engine globals
+    double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    engineObj.setProperty("runtime", runtimeSecs);
+    engineObj.setProperty("frametime", 0.033); // ~30Hz
+
+    QTime now = QTime::currentTime();
+    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+    engineObj.setProperty("timeOfDay", tod);
+
+    // Refresh audio buffers in case property scripts use audio data
+    refreshAudioBuffers();
+
+    // Cache Vec3 constructor for efficient argument creation
+    QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
+
+    // Evaluate in order: visible first (computes shared.*), then vec3 props, then alpha
+    for (int pass = 0; pass < 3; pass++) {
+        for (auto& state : m_propertyScriptStates) {
+            bool isVisible = (state.property == "visible");
+            bool isAlpha   = (state.property == "alpha");
+            bool isVec3    = !isVisible && !isAlpha;
+
+            if (pass == 0 && !isVisible) continue;
+            if (pass == 1 && !isVec3) continue;
+            if (pass == 2 && !isAlpha) continue;
+
+            // Set thisLayer for this script's context (cached proxy)
+            if (!state.layerName.empty()) {
+                m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+            }
+
+            if (!state.updateFn.isCallable()) continue;
+
+            QJSValue arg;
+            if (isVisible) {
+                arg = QJSValue(state.currentVisible);
+            } else if (isAlpha) {
+                arg = QJSValue((double)state.currentFloat);
+            } else {
+                // Call Vec3() function directly (cheaper than evaluate)
+                arg = vec3Fn.call({ QJSValue((double)state.currentVec3[0]),
+                                    QJSValue((double)state.currentVec3[1]),
+                                    QJSValue((double)state.currentVec3[2]) });
+            }
+
+            QJSValue result = state.updateFn.call({ arg });
+            if (result.isError()) {
+                static std::unordered_set<int> erroredIds;
+                if (erroredIds.find(state.id * 100 + pass) == erroredIds.end()) {
+                    erroredIds.insert(state.id * 100 + pass);
+                    qCWarning(wekdeScene, "Property script error id=%d prop=%s: %s",
+                               state.id, state.property.c_str(), qPrintable(result.toString()));
+                }
+                continue;
+            }
+
+            // Process return values (some scripts return values directly)
+            if (isVisible) {
+                if (result.isBool()) {
+                    bool newVal = result.toBool();
+                    if (newVal != state.currentVisible) {
+                        state.currentVisible = newVal;
+                        m_scene->updateNodeVisible(state.id, newVal);
+                    }
+                }
+            } else if (isAlpha) {
+                if (result.isNumber()) {
+                    float newVal = (float)result.toNumber();
+                    if (std::abs(newVal - state.currentFloat) > 0.001f) {
+                        state.currentFloat = newVal;
+                        m_scene->updateNodeAlpha(state.id, newVal);
+                    }
+                }
+            } else if (result.isObject() && result.hasProperty("x")) {
+                float x = (float)result.property("x").toNumber();
+                float y = (float)result.property("y").toNumber();
+                float z = (float)result.property("z").toNumber();
+                if (std::abs(x - state.currentVec3[0]) > 0.0001f ||
+                    std::abs(y - state.currentVec3[1]) > 0.0001f ||
+                    std::abs(z - state.currentVec3[2]) > 0.0001f) {
+                    state.currentVec3 = { x, y, z };
+                    m_scene->updateNodeTransform(state.id, state.property, x, y, z);
+                }
+            }
+        }
+    }
+
+    // Flush dirty layer proxies from thisScene.getLayer() side effects
+    int dirtyLayerCount = 0;
+    if (m_collectDirtyLayersFn.isCallable()) {
+        QJSValue updates = m_collectDirtyLayersFn.call();
+        dirtyLayerCount = updates.property("length").toInt();
+        for (int i = 0; i < dirtyLayerCount; i++) {
+            QJSValue entry = updates.property(i);
+            std::string name = entry.property("name").toString().toStdString();
+            auto it = m_nodeNameToId.find(name);
+            if (it == m_nodeNameToId.end()) continue;
+            int32_t id = it->second;
+
+            QJSValue dirty = entry.property("dirty");
+
+            if (dirty.property("origin").toBool()) {
+                QJSValue o = entry.property("origin");
+                m_scene->updateNodeTransform(id, "origin",
+                    (float)o.property("x").toNumber(),
+                    (float)o.property("y").toNumber(),
+                    (float)o.property("z").toNumber());
+            }
+            if (dirty.property("scale").toBool()) {
+                QJSValue s = entry.property("scale");
+                m_scene->updateNodeTransform(id, "scale",
+                    (float)s.property("x").toNumber(),
+                    (float)s.property("y").toNumber(),
+                    (float)s.property("z").toNumber());
+            }
+            if (dirty.property("angles").toBool()) {
+                QJSValue a = entry.property("angles");
+                m_scene->updateNodeTransform(id, "angles",
+                    (float)a.property("x").toNumber(),
+                    (float)a.property("y").toNumber(),
+                    (float)a.property("z").toNumber());
+            }
+            if (dirty.property("visible").toBool()) {
+                m_scene->updateNodeVisible(id, entry.property("visible").toBool());
+            }
+            if (dirty.property("alpha").toBool()) {
+                m_scene->updateNodeAlpha(id, (float)entry.property("alpha").toNumber());
+            }
+        }
+    }
+
+    // Periodic diagnostic logging (~every 3 seconds at 30Hz)
+    static int propEvalCount = 0;
+    if (++propEvalCount % 90 == 1) {
+        int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
+        qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d",
+               (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount);
+    }
+}
+
 void SceneObject::cleanupTextScripts() {
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
+    m_propertyScriptStates.clear();
+    m_nodeNameToId.clear();
+    m_collectDirtyLayersFn = QJSValue();
     if (m_textTimer) {
         m_textTimer->stop();
         delete m_textTimer;
@@ -796,6 +1245,11 @@ void SceneObject::cleanupTextScripts() {
         m_colorTimer->stop();
         delete m_colorTimer;
         m_colorTimer = nullptr;
+    }
+    if (m_propertyTimer) {
+        m_propertyTimer->stop();
+        delete m_propertyTimer;
+        m_propertyTimer = nullptr;
     }
     if (m_jsEngine) {
         delete m_jsEngine;

@@ -50,6 +50,17 @@ struct SceneColorScript {
     std::string            scriptProperties; // JSON string of script properties
     std::array<float, 3>   initialColor;
 };
+
+struct ScenePropertyScript {
+    i32         id;
+    std::string property;          // "visible", "origin", "scale", "angles", "alpha"
+    std::string script;
+    std::string scriptProperties;  // JSON string
+    std::string layerName;         // name of the object for thisLayer.name
+    bool                 initialVisible {true};
+    std::array<float, 3> initialVec3 {0, 0, 0};
+    float                initialFloat {1.0f};
+};
 class Scene : NoCopy, NoMove {
 public:
     Scene();
@@ -119,6 +130,7 @@ public:
 
     std::vector<TextLayerInfo> textLayers;
     std::vector<SceneColorScript> colorScripts;
+    std::vector<ScenePropertyScript> propertyScripts;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {
@@ -133,6 +145,16 @@ public:
     std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;
     // Node lookup by ID for visibility updates
     std::unordered_map<i32, SceneNode*> nodeById;
+    // Layer name → node ID mapping for thisScene.getLayer()
+    std::unordered_map<std::string, i32> nodeNameToId;
+    // Layer name → initial transform state for JS proxy initialization
+    struct LayerInitialState {
+        std::array<float, 3> origin {0, 0, 0};
+        std::array<float, 3> scale {1, 1, 1};
+        std::array<float, 3> angles {0, 0, 0};
+        bool visible {true};
+    };
+    std::unordered_map<std::string, LayerInitialState> layerInitialStates;
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
