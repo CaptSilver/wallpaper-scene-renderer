@@ -344,12 +344,13 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
             if (! ParticleModify::LifetimeOk(p)) continue;
             if (pi >= trails.size()) continue;
 
-            const auto& trail = trails[pi];
-            if (trail.Count() < 2) continue;
+            const auto& trail  = trails[pi];
+            u32         active = trail.ActiveCount();
+            if (active < 2) continue;
 
-            float trail_length = (float)trail.Count();
+            float trail_length = (float)active;
 
-            for (u32 ti = 1; ti < trail.Count(); ti++) {
+            for (u32 ti = 1; ti < active; ti++) {
                 const auto& tp_new = trail.At(ti - 1); // newer
                 const auto& tp_old = trail.At(ti);     // older
 
@@ -455,12 +456,13 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
             if (! ParticleModify::LifetimeOk(p)) continue;
             if (pi >= trails.size()) continue;
 
-            const auto& trail = trails[pi];
-            if (trail.Count() < 2) continue;
+            const auto& trail  = trails[pi];
+            u32         active = trail.ActiveCount();
+            if (active < 2) continue;
 
-            float trail_length = (float)trail.Count();
+            float trail_length = (float)active;
 
-            for (u32 ti = 1; ti < trail.Count(); ti++) {
+            for (u32 ti = 1; ti < active; ti++) {
                 const auto& tp_new = trail.At(ti - 1);
                 const auto& tp_old = trail.At(ti);
 
@@ -572,6 +574,11 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
             sv.SetRenderVertexCount(particle_num);
         } else {
             particle_num = GenSpriteTrailData(instances, specOp, opt, sv);
+        }
+        static int s_st_log = 0;
+        if (++s_st_log % 6000 == 1) {
+            LOG_INFO("spritetrail GenGLData: segs=%zu instances=%zu gs=%d",
+                     particle_num, instances.size(), (int)opt.geometry_shader);
         }
     } else if (sv.GetOption(WE_PRENDER_ROPE)) {
         if (opt.geometry_shader) {

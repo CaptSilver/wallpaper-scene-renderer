@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
 
     wallpaper::RenderInitInfo info;
     info.enable_valid_layer = program.get<bool>(OPT_VALID_LAYER);
+    info.hdr_content        = program.get<bool>(OPT_HDR);
     info.width              = w_width;
     info.height             = w_height;
 

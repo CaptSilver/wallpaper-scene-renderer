@@ -1591,7 +1591,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         particle_obj.starttime);
 
     if (render_spritetrail) {
-        particleSub->SetSpriteTrail(trail_segments);
+        particleSub->SetSpriteTrail(trail_segments, wppartRenderer.length);
     }
 
     LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);

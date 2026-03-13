@@ -110,6 +110,7 @@ void FinPass::setPresentLayout(VkImageLayout layout) { m_desc.present_layout = l
 void FinPass::setPresentFormat(VkFormat format) { m_desc.present_format = format; }
 void FinPass::setPresentQueueIndex(uint32_t i) { m_desc.present_queue_index = i; }
 void FinPass::setHdrPassthrough(bool hdr) { m_desc.hdr_passthrough = hdr; }
+void FinPass::setHdrContent(bool hdr) { m_desc.hdr_content = hdr; }
 
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     {
@@ -131,10 +132,12 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 
         std::array<ShaderCompUnit, 2> units;
         units[0] = ShaderCompUnit { .stage = EShLangVertex, .src = std::string(vert_code) };
+        // Tonemap only when HDR content pipeline is active and output is SDR
+        bool use_tonemap = m_desc.hdr_content && ! m_desc.hdr_passthrough;
         units[1] = ShaderCompUnit { .stage = EShLangFragment,
-                                     .src = std::string(m_desc.hdr_passthrough
-                                                            ? frag_code_hdr
-                                                            : frag_code_sdr) };
+                                     .src = std::string(use_tonemap
+                                                            ? frag_code_sdr
+                                                            : frag_code_hdr) };
         CompileAndLinkShaderUnits(units, opt, spvs);
     }
 

@@ -19,8 +19,9 @@ void ParticleInstance::Refresh() {
     for (auto& trail : m_trail_histories) trail.Clear();
 }
 
-void ParticleInstance::InitTrails(u32 trail_capacity) {
+void ParticleInstance::InitTrails(u32 trail_capacity, float trail_max_age) {
     m_trail_capacity = trail_capacity;
+    m_trail_max_age  = trail_max_age;
 }
 
 std::vector<ParticleTrailHistory>& ParticleInstance::TrailHistories() {
@@ -72,9 +73,10 @@ ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_ty
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
 
-void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity) {
+void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity, float trail_length) {
     m_is_spritetrail = true;
     m_trail_capacity = trail_capacity;
+    m_trail_length   = trail_length;
 }
 
 void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
@@ -92,7 +94,7 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
         if (m_instances.size() < m_maxcount_instance) {
             auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
             if (m_is_spritetrail) {
-                inst->InitTrails(m_trail_capacity);
+                inst->InitTrails(m_trail_capacity, m_trail_length);
             }
             return inst.get();
         }
@@ -107,11 +109,12 @@ void ParticleSubSystem::Emitt() {
     double particleTime = frameTime * m_rate;
     m_time += particleTime;
 
+
     if (m_spawn_type == SpawnType::STATIC) {
         if (m_instances.empty()) {
             auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
             if (m_is_spritetrail) {
-                inst->InitTrails(m_trail_capacity);
+                inst->InitTrails(m_trail_capacity, m_trail_length);
             }
         }
     }
@@ -229,7 +232,7 @@ void ParticleSubSystem::Emitt() {
             // Grow trail history vector to match particle count
             while (trails.size() < particles.size()) {
                 trails.emplace_back();
-                trails.back().Init(m_trail_capacity);
+                trails.back().Init(m_trail_capacity, m_trail_length);
             }
             usize alive_count = 0;
             usize trail_count = 0;
@@ -237,7 +240,8 @@ void ParticleSubSystem::Emitt() {
                 auto& p     = particles[pi];
                 auto& trail = trails[pi];
                 if (ParticleModify::LifetimeOk(p)) {
-                    trail.Push({ p.position, p.size, p.alpha, p.color });
+                    float cur_time = (float)m_sys.scene.elapsingTime;
+                    trail.Push({ p.position, p.size, p.alpha, p.color, cur_time });
                     alive_count++;
                     if (trail.Count() >= 2) trail_count++;
                 }
@@ -245,7 +249,7 @@ void ParticleSubSystem::Emitt() {
             }
             static int s_trail_log_counter = 0;
             if (++s_trail_log_counter % 6000 == 1 && alive_count > 0) {
-                LOG_INFO("spritetrail: alive=%zu trail_renderable=%zu capacity=%u particles=%zu",
+                LOG_INFO("spritetrail: alive=%zu renderable=%zu capacity=%u particles=%zu",
                          alive_count, trail_count, m_trail_capacity, particles.size());
             }
         }
@@ -263,6 +267,11 @@ void ParticleSubSystem::Emitt() {
 }
 
 void ParticleSystem::Emitt() {
+    static int s_ps_log = 0;
+    if (++s_ps_log % 600 == 1) {
+        LOG_INFO("ParticleSystem::Emitt: %zu subsystems, elapsed=%f",
+                 subsystems.size(), scene.elapsingTime);
+    }
     for (auto& el : subsystems) {
         el->Emitt();
     }

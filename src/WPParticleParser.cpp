@@ -47,7 +47,14 @@ struct SingleRandom {
     static void ReadFromJson(const nlohmann::json& j, SingleRandom& r) {
         GET_JSON_NAME_VALUE_NOWARN(j, "min", r.min);
         GET_JSON_NAME_VALUE_NOWARN(j, "max", r.max);
+        GET_JSON_NAME_VALUE_NOWARN(j, "exponent", r.exponent);
     };
+    // Apply exponent to a uniform [0,1] random value: pow(rand, exponent) skews toward min
+    float get() const {
+        float t = Random::get(0.0f, 1.0f);
+        if (exponent != 1.0f) t = std::pow(t, exponent);
+        return min + (max - min) * t;
+    }
 };
 struct VecRandom {
     std::array<float, 3> min { 0.0f, 0.0f, 0.0f };
@@ -121,19 +128,22 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
             SingleRandom r = { 0.0f, 1.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
-                PM::InitLifetime(p, Random::get(r.min, r.max));
+                PM::InitLifetime(p, r.get());
             };
         } else if (name == "sizerandom") {
             SingleRandom r = { 0.0f, 20.0f };
             SingleRandom::ReadFromJson(wpj, r);
+            if (r.exponent != 1.0f) {
+                LOG_INFO("sizerandom: min=%.2f max=%.2f exponent=%.2f", r.min, r.max, r.exponent);
+            }
             return [=](Particle& p, double) {
-                PM::InitSize(p, Random::get(r.min, r.max));
+                PM::InitSize(p, r.get());
             };
         } else if (name == "alpharandom") {
             SingleRandom r = { 0.05f, 1.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
-                PM::InitAlpha(p, Random::get(r.min, r.max));
+                PM::InitAlpha(p, r.get());
             };
         } else if (name == "velocityrandom") {
             VecRandom r;
@@ -350,6 +360,41 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                 pathpos += perp * noise * amplitude * taper;
 
                 PM::Move(p, pathpos.cast<double>());
+                PM::ChangeVelocity(p, -PM::GetVelocity(p).cast<double>());
+                seq++;
+            };
+        } else if (name == "mapsequencearoundcontrolpoint") {
+            u32                  count { 10 };
+            int                  cp_id { 0 };
+            std::array<float, 3> axis { 0, 0, 0 };
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "axis", axis);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", cp_id);
+            if (count == 0) count = 1;
+            cp_id = std::clamp(cp_id, 0, 7);
+
+            LOG_INFO("mapsequencearoundcontrolpoint: count=%u axis=(%.1f,%.1f,%.1f) cp=%d",
+                     count, axis[0], axis[1], axis[2], cp_id);
+
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
+            auto                        seq_ptr = std::make_shared<u32>(0);
+
+            return [=](Particle& p, double) mutable {
+                u32& seq   = *seq_ptr;
+                u32  idx   = seq % count;
+                float angle = (float)idx / (float)count * 2.0f * (float)M_PI;
+
+                Vector3f cp_offset(0, 0, 0);
+                if ((usize)cp_id < cp_size) {
+                    cp_offset = cp_data[cp_id].offset.cast<float>();
+                }
+
+                Vector3f pos = cp_offset + Vector3f(axis[0] * std::cos(angle),
+                                                     axis[1] * std::sin(angle),
+                                                     0.0f);
+
+                PM::Move(p, pos.cast<double>());
                 PM::ChangeVelocity(p, -PM::GetVelocity(p).cast<double>());
                 seq++;
             };
@@ -584,6 +629,7 @@ struct ControlPointForce {
 
         GET_JSON_NAME_VALUE_NOWARN(j, "scale", v.scale);
         GET_JSON_NAME_VALUE_NOWARN(j, "threadhold", v.threshold);
+        GET_JSON_NAME_VALUE_NOWARN(j, "threshold", v.threshold);
 
         GET_JSON_NAME_VALUE_NOWARN(j, "offset", v.origin);
         return v;
@@ -836,13 +882,9 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                                            axis.cross(radial) * std::sin(angle) +
                                            axis * axis.dot(radial) * (1.0 - std::cos(angle));
                         p.position = (offset + rotated).cast<float>();
-                        // Keep existing velocity (radial drift from emitter, damped by drag).
-                        // Zero only the tangential component to prevent double-counting
-                        // with the rotation above.
-                        Vector3d vel     = p.velocity.cast<double>();
-                        Vector3d tangent = axis.cross(rotated).normalized();
-                        double   vt      = vel.dot(tangent);
-                        p.velocity       = (vel - tangent * vt).cast<float>();
+                        // Zero velocity — rotation handles orbital motion directly,
+                        // so the emitter's initial velocity is not needed.
+                        p.velocity = Eigen::Vector3f::Zero();
                     } else {
                         // Acceleration mode (original vortex behavior)
                         Vector3d direct = axis.cross(radial).normalized();

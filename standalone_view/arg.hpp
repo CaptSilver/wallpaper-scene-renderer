@@ -11,6 +11,7 @@ constexpr std::string_view OPT_GRAPHVIZ    = "--graphviz";
 constexpr std::string_view OPT_FPS         = "--fps";
 constexpr std::string_view OPT_RESOLUTION  = "--resolution";
 constexpr std::string_view OPT_CACHE_PATH  = "--cache-path";
+constexpr std::string_view OPT_HDR        = "--hdr";
 
 struct Resolution {
 	uint w;
@@ -48,6 +49,13 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .help("generate graphviz of render graph, output to 'graph.dot'")
         .default_value(std::string())
         .nargs(1)
+        .append();
+
+    arg.add_argument("-H", OPT_HDR)
+        .help("enable HDR content pipeline (RGBA16F render targets + tonemapping)")
+        .default_value(false)
+        .implicit_value(true)
+        .nargs(0)
         .append();
 
     arg.add_argument("-R", OPT_RESOLUTION)
