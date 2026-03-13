@@ -88,6 +88,14 @@ constexpr std::string_view G_SCREEN { "g_Screen" };
 constexpr std::string_view G_PARALLAXPOSITION { "g_ParallaxPosition" };
 constexpr std::string_view G_EYEPOSITION { "g_EyePosition" };
 
+// Audio spectrum uniforms (std140 float arrays with vec4 stride)
+constexpr std::string_view G_AUDIOSPECTRUM16LEFT  { "g_AudioSpectrum16Left" };
+constexpr std::string_view G_AUDIOSPECTRUM16RIGHT { "g_AudioSpectrum16Right" };
+constexpr std::string_view G_AUDIOSPECTRUM32LEFT  { "g_AudioSpectrum32Left" };
+constexpr std::string_view G_AUDIOSPECTRUM32RIGHT { "g_AudioSpectrum32Right" };
+constexpr std::string_view G_AUDIOSPECTRUM64LEFT  { "g_AudioSpectrum64Left" };
+constexpr std::string_view G_AUDIOSPECTRUM64RIGHT { "g_AudioSpectrum64Right" };
+
 constexpr std::string_view SpecTex_Default { "_rt_default" };
 constexpr std::string_view SpecTex_Link { "_rt_link_" };
 

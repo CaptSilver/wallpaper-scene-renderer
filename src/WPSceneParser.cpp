@@ -1063,6 +1063,18 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
     }
 
+    // Record color script for SceneScript evaluation
+    if (!wpimgobj.colorScript.empty() && spMesh->Material()) {
+        SceneColorScript csi;
+        csi.id               = wpimgobj.id;
+        csi.material         = spMesh->Material();
+        csi.script           = wpimgobj.colorScript;
+        csi.scriptProperties = wpimgobj.colorScriptProperties;
+        csi.initialColor     = wpimgobj.color;
+        context.scene->colorScripts.push_back(std::move(csi));
+        LOG_INFO("  color script registered for id=%d", wpimgobj.id);
+    }
+
     context.shader_updater->SetNodeData(spImgNode.get(), svData);
     if (hasEffect) {
         auto& scene = *context.scene;
@@ -1257,6 +1269,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 std::string  effmataddr = getAddr(spEffNode.get());
                 WPShaderInfo wpEffShaderInfo;
                 wpEffShaderInfo.baseConstSvs = baseConstSvs;
+                // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
+                // don't re-apply g_Color4 (would double-count alpha and re-tint)
+                if (wpmat.combos.count("BLENDMODE") != 0) {
+                    wpEffShaderInfo.baseConstSvs["g_Color4"] =
+                        std::array<float, 4>{ 1.0f, 1.0f, 1.0f, 1.0f };
+                }
                 wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
                     ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
                 wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =

@@ -82,6 +82,10 @@ public:
 
     std::string                                puppet;
     std::vector<WPPuppetLayer::AnimationLayer> puppet_layers;
+
+    // Color property script (e.g. audio-reactive color)
+    std::string colorScript;
+    std::string colorScriptProperties; // JSON string
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);

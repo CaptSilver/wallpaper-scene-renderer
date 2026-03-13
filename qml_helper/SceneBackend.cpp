@@ -27,6 +27,7 @@
 #include "SceneWallpaperSurface.hpp"
 #include "Type.hpp"
 #include "Utils/Platform.hpp"
+#include "Audio/AudioAnalyzer.h"
 #include <cstdio>
 #include <qobjectdefs.h>
 #include <unistd.h>
@@ -362,7 +363,8 @@ void SceneObject::setupTextScripts() {
     cleanupTextScripts();
 
     auto scripts = m_scene->getTextScripts();
-    if (scripts.empty()) return;
+    auto colorScripts = m_scene->getColorScripts();
+    if (scripts.empty() && colorScripts.empty()) return;
 
     m_jsEngine = new QJSEngine(this);
 
@@ -385,6 +387,35 @@ void SceneObject::setupTextScripts() {
         "engine.isPortrait = function() { return false; };\n"
         "engine.isLandscape = function() { return true; };\n"
     );
+
+    // Audio resolution constants
+    engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
+    engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
+    engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
+
+    // engine.registerAudioBuffers(resolution) — implemented as native C++ callback
+    {
+        // Store 'this' pointer for the closure; safe because cleanupTextScripts() removes timer
+        auto* self = this;
+        QJSValue regFn = m_jsEngine->evaluate(
+            "(function(resolution) {\n"
+            "  resolution = resolution || 64;\n"
+            "  var n = Math.min(Math.max(resolution, 16), 64);\n"
+            "  // Round to nearest valid: 16, 32, or 64\n"
+            "  if (n <= 24) n = 16;\n"
+            "  else if (n <= 48) n = 32;\n"
+            "  else n = 64;\n"
+            "  var buf = { left: [], right: [], average: [], resolution: n };\n"
+            "  for (var i = 0; i < n; i++) { buf.left.push(0); buf.right.push(0); buf.average.push(0); }\n"
+            "  // Store registration ID for C++ side to find\n"
+            "  if (!engine._audioRegs) engine._audioRegs = [];\n"
+            "  buf._regIdx = engine._audioRegs.length;\n"
+            "  engine._audioRegs.push(buf);\n"
+            "  return buf;\n"
+            "})\n"
+        );
+        engineObj.setProperty("registerAudioBuffers", regFn);
+    }
 
     // Wallpaper Engine SceneScript API stubs
     // createScriptProperties() returns a builder with .addSlider/.addCheckbox/.addCombo/.finish()
@@ -411,6 +442,115 @@ void SceneObject::setupTextScripts() {
         "  return builder;\n"
         "}\n"
     );
+
+    // WEColor module: hsv2rgb, rgb2hsv for color scripts
+    m_jsEngine->evaluate(
+        "var WEColor = (function() {\n"
+        "  function hsv2rgb(hsv) {\n"
+        "    var h = hsv.x, s = hsv.y, v = hsv.z;\n"
+        "    var i = Math.floor(h * 6);\n"
+        "    var f = h * 6 - i;\n"
+        "    var p = v * (1 - s);\n"
+        "    var q = v * (1 - f * s);\n"
+        "    var t = v * (1 - (1 - f) * s);\n"
+        "    var r, g, b;\n"
+        "    switch (i % 6) {\n"
+        "      case 0: r = v; g = t; b = p; break;\n"
+        "      case 1: r = q; g = v; b = p; break;\n"
+        "      case 2: r = p; g = v; b = t; break;\n"
+        "      case 3: r = p; g = q; b = v; break;\n"
+        "      case 4: r = t; g = p; b = v; break;\n"
+        "      case 5: r = v; g = p; b = q; break;\n"
+        "    }\n"
+        "    return { x: r, y: g, z: b };\n"
+        "  }\n"
+        "  function rgb2hsv(rgb) {\n"
+        "    var r = rgb.x, g = rgb.y, b = rgb.z;\n"
+        "    var max = Math.max(r, g, b), min = Math.min(r, g, b);\n"
+        "    var h, s, v = max;\n"
+        "    var d = max - min;\n"
+        "    s = max === 0 ? 0 : d / max;\n"
+        "    if (max === min) { h = 0; }\n"
+        "    else {\n"
+        "      switch (max) {\n"
+        "        case r: h = (g - b) / d + (g < b ? 6 : 0); break;\n"
+        "        case g: h = (b - r) / d + 2; break;\n"
+        "        case b: h = (r - g) / d + 4; break;\n"
+        "      }\n"
+        "      h /= 6;\n"
+        "    }\n"
+        "    return { x: h, y: s, z: v };\n"
+        "  }\n"
+        "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv };\n"
+        "})();\n"
+    );
+
+    // Load color scripts
+    for (const auto& csi : colorScripts) {
+        QString scriptSrc = QString::fromStdString(csi.script);
+
+        qCInfo(wekdeScene, "Color script source for id=%d:\n%s",
+               csi.id, qPrintable(scriptSrc));
+
+        // Strip 'use strict';
+        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
+
+        // Strip import statements (we provide WEColor as a global)
+        scriptSrc.replace(QRegularExpression("^\\s*import\\s+.*?from\\s+['\"].*?['\"];?\\s*$", QRegularExpression::MultilineOption), "");
+
+        // Strip 'export ' keyword
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+
+        // Inject scriptProperties values before the script runs
+        // Use JSON.parse() in JS — avoids needing nlohmann/json in the QML target
+        QString propsInit;
+        if (!csi.scriptProperties.empty()) {
+            QString jsonStr = QString::fromStdString(csi.scriptProperties);
+            jsonStr.replace("'", "\\'");
+            propsInit = QString("var scriptProperties = JSON.parse('%1');\n").arg(jsonStr);
+        }
+
+        // Wrap in IIFE
+        QString wrapped = QString(
+            "(function() {\n"
+            "  'use strict';\n"
+            "  var exports = {};\n"
+            "  %1\n"  // scriptProperties override
+            "  %2\n"  // script body
+            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+            "             (typeof update === 'function' ? update : null);\n"
+            "  if (!_upd) return null;\n"
+            "  return { update: _upd };\n"
+            "})()\n"
+        ).arg(propsInit, scriptSrc);
+
+        QJSValue result = m_jsEngine->evaluate(wrapped);
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Color script error for id=%d: %s",
+                       csi.id, qPrintable(result.toString()));
+            continue;
+        }
+        if (result.isNull() || result.isUndefined()) {
+            qCWarning(wekdeScene, "Color script for id=%d did not produce an update function", csi.id);
+            continue;
+        }
+
+        QJSValue updateFn = result.property("update");
+        if (!updateFn.isCallable()) {
+            qCWarning(wekdeScene, "Color script for id=%d: update is not callable", csi.id);
+            continue;
+        }
+
+        ColorScriptState state;
+        state.id           = csi.id;
+        state.updateFn     = updateFn;
+        state.currentColor = csi.initialColor;
+        m_colorScriptStates.push_back(std::move(state));
+        qCInfo(wekdeScene, "Color script compiled for id=%d", csi.id);
+    }
 
     for (const auto& tsi : scripts) {
         QString scriptSrc = QString::fromStdString(tsi.script);
@@ -490,10 +630,56 @@ void SceneObject::setupTextScripts() {
         // Run once immediately
         evaluateTextScripts();
     }
+
+    if (!m_colorScriptStates.empty()) {
+        m_colorTimer = new QTimer(this);
+        m_colorTimer->setInterval(33); // ~30Hz for smooth audio-reactive color
+        connect(m_colorTimer, &QTimer::timeout, this, &SceneObject::evaluateColorScripts);
+        m_colorTimer->start();
+
+        // Run once immediately
+        evaluateColorScripts();
+    }
+}
+
+void SceneObject::refreshAudioBuffers() {
+    if (!m_jsEngine) return;
+
+    auto analyzer = m_scene->audioAnalyzer();
+    if (!analyzer || !analyzer->HasData()) return;
+
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    QJSValue audioRegs = engineObj.property("_audioRegs");
+    if (!audioRegs.isArray()) return;
+
+    int len = audioRegs.property("length").toInt();
+    for (int r = 0; r < len; r++) {
+        QJSValue buf = audioRegs.property(r);
+        int resolution = buf.property("resolution").toInt();
+
+        auto leftData  = analyzer->GetRawSpectrum(resolution, 0);
+        auto rightData = analyzer->GetRawSpectrum(resolution, 1);
+
+        QJSValue leftArr  = buf.property("left");
+        QJSValue rightArr = buf.property("right");
+        QJSValue avgArr   = buf.property("average");
+
+        int n = (int)leftData.size();
+        for (int i = 0; i < n; i++) {
+            float l = leftData[i];
+            float rv = rightData[i];
+            leftArr.setProperty(i, (double)l);
+            rightArr.setProperty(i, (double)rv);
+            avgArr.setProperty(i, (double)((l + rv) * 0.5f));
+        }
+    }
 }
 
 void SceneObject::evaluateTextScripts() {
     if (!m_jsEngine || m_textScriptStates.empty()) return;
+
+    // Refresh audio buffers before evaluating scripts
+    refreshAudioBuffers();
 
     // Update engine globals
     double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
@@ -519,12 +705,80 @@ void SceneObject::evaluateTextScripts() {
     }
 }
 
+void SceneObject::evaluateColorScripts() {
+    if (!m_jsEngine || m_colorScriptStates.empty()) return;
+
+    // Refresh audio buffers before evaluating scripts
+    refreshAudioBuffers();
+
+    // Update engine globals
+    double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    engineObj.setProperty("runtime", runtimeSecs);
+    engineObj.setProperty("frametime", 0.033); // ~30Hz timer interval
+
+    QTime now = QTime::currentTime();
+    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+    engineObj.setProperty("timeOfDay", tod);
+
+    for (auto& state : m_colorScriptStates) {
+        // Pass current color as Vec3 {x, y, z}
+        QJSValue colorVal = m_jsEngine->newObject();
+        colorVal.setProperty("x", (double)state.currentColor[0]);
+        colorVal.setProperty("y", (double)state.currentColor[1]);
+        colorVal.setProperty("z", (double)state.currentColor[2]);
+
+        QJSValue result = state.updateFn.call({ colorVal });
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Color script runtime error id=%d: %s",
+                       state.id, qPrintable(result.toString()));
+            continue;
+        }
+
+        // Result is Vec3 {x, y, z} = RGB
+        float r, g, b;
+        if (result.isObject()) {
+            r = (float)result.property("x").toNumber();
+            g = (float)result.property("y").toNumber();
+            b = (float)result.property("z").toNumber();
+        } else {
+            // Log unexpected return type for debugging
+            qCWarning(wekdeScene, "Color script id=%d returned non-object: type=%s value=%s",
+                       state.id,
+                       result.isUndefined() ? "undefined" : result.isNull() ? "null" : "other",
+                       qPrintable(result.toString()));
+            continue;
+        }
+
+        // Periodic diagnostic logging (every ~3 seconds)
+        static int evalCount = 0;
+        if (++evalCount % 90 == 1) {
+            qCInfo(wekdeScene, "Color script id=%d: rgb=(%.3f, %.3f, %.3f)",
+                   state.id, r, g, b);
+        }
+
+        // Only push update if color actually changed
+        if (std::abs(r - state.currentColor[0]) > 0.001f ||
+            std::abs(g - state.currentColor[1]) > 0.001f ||
+            std::abs(b - state.currentColor[2]) > 0.001f) {
+            state.currentColor = { r, g, b };
+            m_scene->updateColor(state.id, r, g, b);
+        }
+    }
+}
+
 void SceneObject::cleanupTextScripts() {
     m_textScriptStates.clear();
+    m_colorScriptStates.clear();
     if (m_textTimer) {
         m_textTimer->stop();
         delete m_textTimer;
         m_textTimer = nullptr;
+    }
+    if (m_colorTimer) {
+        m_colorTimer->stop();
+        delete m_colorTimer;
+        m_colorTimer = nullptr;
     }
     if (m_jsEngine) {
         delete m_jsEngine;

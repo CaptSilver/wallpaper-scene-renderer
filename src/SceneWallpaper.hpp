@@ -7,6 +7,8 @@
 #include "Type.hpp"
 #include "Swapchain/ExSwapchain.hpp"
 
+namespace wallpaper::audio { class AudioAnalyzer; }
+
 namespace wallpaper
 {
 
@@ -16,6 +18,13 @@ struct TextScriptInfo {
     int32_t     id;
     std::string script;
     std::string initialValue;
+};
+
+struct ColorScriptInfo {
+    int32_t              id;
+    std::string          script;
+    std::string          scriptProperties;
+    std::array<float, 3> initialColor;
 };
 
 constexpr std::string_view PROPERTY_SOURCE               = "source";
@@ -49,7 +58,9 @@ public:
     void pause();
     void mouseInput(double x, double y);
     void updateText(int32_t id, const std::string& text);
+    void updateColor(int32_t id, float r, float g, float b);
     std::vector<TextScriptInfo> getTextScripts() const;
+    std::vector<ColorScriptInfo> getColorScripts() const;
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);
@@ -58,6 +69,7 @@ public:
     void setPropertyObject(std::string_view, std::shared_ptr<void>);
 
     ExSwapchain* exSwapchain() const;
+    std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const;
 
 private:
     bool m_inited { false };

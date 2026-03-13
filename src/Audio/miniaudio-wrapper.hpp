@@ -170,6 +170,9 @@ public:
     void  SetMuted(bool v) { m_muted = v; }
 
     void SetVolume(float v) { m_volume = v; };
+
+    using SpectrumCallback = std::function<void(const float*, uint32_t, uint32_t)>;
+    void SetSpectrumCallback(SpectrumCallback cb) { m_spectrum_callback = std::move(cb); }
     void MountChannel(std::shared_ptr<Channel> chn) {
         ChannelWrap chnw;
         chnw.chn = chn;
@@ -229,6 +232,11 @@ private:
                                             }),
                              m_channels.end());
         }
+        // Feed mixed output to spectrum analyzer (lock-free callback)
+        if (m_spectrum_callback) {
+            float* pOutput_float = static_cast<float*>(pOutput);
+            m_spectrum_callback(pOutput_float, frameCount, m_device.playback.channels);
+        }
     }
     ma_device_config GenMaDeviceConfig(const DeviceDesc& d) {
         ma_device_config config  = ma_device_config_init(ma_device_type_playback);
@@ -254,6 +262,7 @@ private:
 
     std::vector<ChannelWrap> m_channels;
     std::vector<uint8_t>     m_frameBuffer;
+    SpectrumCallback         m_spectrum_callback;
 };
 
 } // namespace miniaudio

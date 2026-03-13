@@ -17,6 +17,8 @@
 #include "WPPkgFs.hpp"
 
 #include "Audio/SoundManager.h"
+#include "Audio/AudioAnalyzer.h"
+#include "Audio/AudioCapture.h"
 
 #include "RenderGraph/RenderGraph.hpp"
 
@@ -106,6 +108,13 @@ public:
         return m_text_scripts;
     }
 
+    std::vector<ColorScriptInfo> getColorScripts() const {
+        std::lock_guard<std::mutex> lock(m_color_scripts_mutex);
+        return m_color_scripts;
+    }
+
+    std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
+
 private:
     void loadScene();
     bool applyUserPropsRuntime(const std::string& newJson);
@@ -126,12 +135,16 @@ private:
 
     WPSceneParser                        m_scene_parser;
     std::unique_ptr<audio::SoundManager> m_sound_manager;
+    std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
+    std::unique_ptr<audio::AudioCapture> m_audio_capture;
     FirstFrameCallback                   m_first_frame_callback;
     std::string                          m_user_props_json;
     std::shared_ptr<Scene>               m_scene; // shared with render handler
 
     mutable std::mutex                   m_text_scripts_mutex;
     std::vector<TextScriptInfo>          m_text_scripts;
+    mutable std::mutex                   m_color_scripts_mutex;
+    std::vector<ColorScriptInfo>         m_color_scripts;
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -195,6 +208,12 @@ public:
         m_pending_text_updates[id] = text;
     }
 
+    void setColorUpdate(i32 id, float r, float g, float b) {
+        std::lock_guard<std::mutex> lock(m_color_update_mutex);
+        m_pending_color_updates[id] = { r, g, b };
+        LOG_INFO("setColorUpdate enqueued id=%d rgb=(%.3f,%.3f,%.3f)", id, r, g, b);
+    }
+
 private:
     MHANDLER_CMD(STOP) {
         bool stop { false };
@@ -249,6 +268,35 @@ private:
                     }
                 }
                 m_pending_text_updates.clear();
+            }
+
+            // Process pending color updates before drawing
+            {
+                std::lock_guard<std::mutex> lock(m_color_update_mutex);
+                if (!m_pending_color_updates.empty()) {
+                    LOG_INFO("DRAW: %zu pending color updates, %zu colorScripts",
+                             m_pending_color_updates.size(), m_scene->colorScripts.size());
+                }
+                for (auto& [id, rgb] : m_pending_color_updates) {
+                    for (auto& cs : m_scene->colorScripts) {
+                        if (cs.id == id && cs.material) {
+                            // Preserve existing alpha from g_Color4
+                            float alpha = 1.0f;
+                            auto it = cs.material->customShader.constValues.find("g_Color4");
+                            if (it != cs.material->customShader.constValues.end() &&
+                                it->second.size() >= 4) {
+                                alpha = it->second[3];
+                            }
+                            cs.material->customShader.constValues["g_Color4"] =
+                                std::vector<float>{ rgb[0], rgb[1], rgb[2], alpha };
+                            cs.material->customShader.constValuesDirty = true;
+                            LOG_INFO("color update id=%d: rgb=(%.3f,%.3f,%.3f) alpha=%.3f",
+                                     id, rgb[0], rgb[1], rgb[2], alpha);
+                            break;
+                        }
+                    }
+                }
+                m_pending_color_updates.clear();
             }
 
             m_render->drawFrame(*m_scene);
@@ -391,6 +439,9 @@ private:
 
     std::mutex                          m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
+
+    std::mutex                                        m_color_update_mutex;
+    std::unordered_map<i32, std::array<float, 3>>     m_pending_color_updates;
 };
 } // namespace wallpaper
 
@@ -441,8 +492,16 @@ void SceneWallpaper::updateText(int32_t id, const std::string& text) {
     m_main_handler->renderHandler()->setTextUpdate(id, text);
 }
 
+void SceneWallpaper::updateColor(int32_t id, float r, float g, float b) {
+    m_main_handler->renderHandler()->setColorUpdate(id, r, g, b);
+}
+
 std::vector<TextScriptInfo> SceneWallpaper::getTextScripts() const {
     return m_main_handler->getTextScripts();
+}
+
+std::vector<ColorScriptInfo> SceneWallpaper::getColorScripts() const {
+    return m_main_handler->getColorScripts();
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -461,6 +520,10 @@ BASIC_TYPE(Object, std::shared_ptr<void>);
 
 ExSwapchain* SceneWallpaper::exSwapchain() const {
     return m_main_handler->renderHandler()->exSwapchain();
+}
+
+std::shared_ptr<audio::AudioAnalyzer> SceneWallpaper::audioAnalyzer() const {
+    return m_main_handler->audioAnalyzer();
 }
 
 MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {
@@ -661,6 +724,18 @@ void MainHandler::loadScene() {
         m_sound_manager->UnMountAll();
     }
 
+    // Create audio analyzer — try system capture first, fall back to playback tap
+    m_audio_analyzer = std::make_shared<audio::AudioAnalyzer>();
+    m_audio_capture = std::make_unique<audio::AudioCapture>();
+    if (m_audio_capture->Init(m_audio_analyzer)) {
+        LOG_INFO("Audio spectrum: using system audio capture (PipeWire/PulseAudio monitor)");
+    } else {
+        // Fall back to tapping playback output
+        m_audio_capture.reset();
+        m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
+        LOG_INFO("Audio spectrum: using playback tap (wallpaper BGM only)");
+    }
+
     std::shared_ptr<Scene> scene { nullptr };
 
     // mount assets dir
@@ -714,6 +789,14 @@ void MainHandler::loadScene() {
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, m_user_props_json);
         scene->vfs.swap(pVfs);
     }
+    // Connect audio analyzer to shader value updater
+    scene->audioAnalyzer = m_audio_analyzer;
+    if (auto* wpUpdater =
+            dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
+        wpUpdater->SetAudioAnalyzer(m_audio_analyzer);
+        LOG_INFO("Audio analyzer connected to shader value updater");
+    }
+
     m_scene = scene; // keep reference for runtime user property updates
 
     // Write active user property bindings to disk for the config UI
@@ -755,6 +838,23 @@ void MainHandler::loadScene() {
         }
         if (!m_text_scripts.empty()) {
             LOG_INFO("loadScene: %zu text layers with scripts", m_text_scripts.size());
+        }
+    }
+
+    // Extract color scripts for QML-side evaluation
+    {
+        std::lock_guard<std::mutex> lock(m_color_scripts_mutex);
+        m_color_scripts.clear();
+        for (const auto& cs : scene->colorScripts) {
+            ColorScriptInfo csi;
+            csi.id               = cs.id;
+            csi.script           = cs.script;
+            csi.scriptProperties = cs.scriptProperties;
+            csi.initialColor     = cs.initialColor;
+            m_color_scripts.push_back(std::move(csi));
+        }
+        if (!m_color_scripts.empty()) {
+            LOG_INFO("loadScene: %zu color scripts", m_color_scripts.size());
         }
     }
 
@@ -805,6 +905,7 @@ bool MainHandler::init() {
 }
 MainHandler::MainHandler()
     : m_sound_manager(std::make_unique<audio::SoundManager>()),
+      m_audio_analyzer(std::make_shared<audio::AudioAnalyzer>()),
       m_main_loop(std::make_shared<looper::Looper>()),
       m_render_loop(std::make_shared<looper::Looper>()),
       m_render_handler(std::make_shared<RenderHandler>(*this)) {}

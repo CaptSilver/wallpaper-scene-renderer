@@ -305,6 +305,7 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
     size_t offset = uni->second.offset;
     // Use SPIR-V member size when available, fall back to num-based calculation
     size_t type_size = uni->second.size > 0 ? uni->second.size : sizeof(float) * uni->second.num;
+
     // Clamp write to member size to prevent overflow into adjacent UBO members
     // (e.g., mat4 ShaderValue written to mat3 uniform)
     if (value_u8.size() > type_size) {
@@ -409,7 +410,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto& block          = ref.blocks.front();
             m_uses_time_uniforms = exists(block.member_map, G_TIME) ||
                                    exists(block.member_map, G_DAYTIME) ||
-                                   exists(block.member_map, G_POINTERPOSITION);
+                                   exists(block.member_map, G_POINTERPOSITION) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM16LEFT) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM16RIGHT) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM32LEFT) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM32RIGHT) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM64LEFT) ||
+                                   exists(block.member_map, G_AUDIOSPECTRUM64RIGHT);
         }
 
         auto& bindings = descriptor_info.bindings;

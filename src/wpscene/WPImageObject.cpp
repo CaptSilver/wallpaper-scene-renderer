@@ -2,7 +2,32 @@
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
+#include <sstream>
+
 using namespace wallpaper::wpscene;
+
+namespace
+{
+// Parse color field: may be a simple vec3 array or an object with {script, scriptproperties, value}
+void ParseColorField(const nlohmann::json& json, std::array<float, 3>& color,
+                     std::string& colorScript, std::string& colorScriptProperties, int32_t id) {
+    if (json.contains("color") && json.at("color").is_object() &&
+        json.at("color").contains("script")) {
+        const auto& colorObj = json.at("color");
+        if (colorObj.contains("script") && colorObj.at("script").is_string())
+            colorScript = colorObj.at("script").get<std::string>();
+        if (colorObj.contains("scriptproperties"))
+            colorScriptProperties = colorObj.at("scriptproperties").dump();
+        if (colorObj.contains("value") && colorObj.at("value").is_string()) {
+            std::istringstream iss(colorObj.at("value").get<std::string>());
+            iss >> color[0] >> color[1] >> color[2];
+        }
+        LOG_INFO("color script on id=%d (len=%zu)", id, colorScript.size());
+    } else {
+        GET_JSON_NAME_VALUE_NOWARN(json, "color", color);
+    }
+}
+} // namespace
 
 
 bool WPEffectCommand::FromJson(const nlohmann::json& json) {
@@ -152,7 +177,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         GET_JSON_NAME_VALUE_NOWARN(json, "scale", scale);
         GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
         GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
-        GET_JSON_NAME_VALUE_NOWARN(json, "color", color);
+        ParseColorField(json, color, colorScript, colorScriptProperties, id);
         GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
         GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
         GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
@@ -211,7 +236,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 		}
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "nopadding", nopadding);
-    GET_JSON_NAME_VALUE_NOWARN(json, "color", color);
+    ParseColorField(json, color, colorScript, colorScriptProperties, id);
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
     GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
 

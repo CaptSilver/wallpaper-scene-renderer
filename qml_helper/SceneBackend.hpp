@@ -110,6 +110,7 @@ private:
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
     void evaluateTextScripts();
+    void evaluateColorScripts();
     void cleanupTextScripts();
 
     bool m_inited { false };
@@ -123,10 +124,28 @@ private:
         QJSValue updateFn;
         QString  currentText;
     };
+    // Color script evaluation
+    struct ColorScriptState {
+        int32_t  id;
+        QJSValue updateFn;
+        std::array<float, 3> currentColor;
+    };
     QJSEngine*                    m_jsEngine { nullptr };
     QTimer*                       m_textTimer { nullptr };
+    QTimer*                       m_colorTimer { nullptr };
     QElapsedTimer                 m_runtimeTimer;
     std::vector<TextScriptState>  m_textScriptStates;
+    std::vector<ColorScriptState> m_colorScriptStates;
+
+    // Audio buffer registrations for SceneScript
+    struct AudioBufferReg {
+        int      resolution; // 16, 32, or 64
+        QJSValue leftArray;
+        QJSValue rightArray;
+        QJSValue averageArray;
+    };
+    std::vector<AudioBufferReg> m_audioBufferRegs;
+    void refreshAudioBuffers();
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

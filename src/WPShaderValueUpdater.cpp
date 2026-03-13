@@ -47,6 +47,11 @@ void WPShaderValueUpdater::FrameBegin() {
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
     }
 
+    // Process audio FFT for this frame
+    if (m_audioAnalyzer) {
+        m_audioAnalyzer->Process();
+    }
+
     // Advance camera path animation
     if (m_scene->activeCamera && m_scene->activeCamera->HasPaths()) {
         m_scene->activeCamera->AdvanceTime(m_scene->frameTime);
@@ -99,6 +104,19 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_LP               = existsOp(G_LP);
     info.has_LCR              = existsOp(G_LCR);
     info.has_EYEPOSITION      = existsOp(G_EYEPOSITION);
+
+    info.has_AUDIOSPECTRUM16LEFT  = existsOp(G_AUDIOSPECTRUM16LEFT);
+    info.has_AUDIOSPECTRUM16RIGHT = existsOp(G_AUDIOSPECTRUM16RIGHT);
+    info.has_AUDIOSPECTRUM32LEFT  = existsOp(G_AUDIOSPECTRUM32LEFT);
+    info.has_AUDIOSPECTRUM32RIGHT = existsOp(G_AUDIOSPECTRUM32RIGHT);
+    info.has_AUDIOSPECTRUM64LEFT  = existsOp(G_AUDIOSPECTRUM64LEFT);
+    info.has_AUDIOSPECTRUM64RIGHT = existsOp(G_AUDIOSPECTRUM64RIGHT);
+
+    if (info.has_AUDIOSPECTRUM16LEFT || info.has_AUDIOSPECTRUM16RIGHT ||
+        info.has_AUDIOSPECTRUM32LEFT || info.has_AUDIOSPECTRUM32RIGHT ||
+        info.has_AUDIOSPECTRUM64LEFT || info.has_AUDIOSPECTRUM64RIGHT) {
+        LOG_INFO("Audio spectrum uniforms detected for node %d", pNode->ID());
+    }
 
     std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](uint index, auto& value) {
         value.has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[index]);
@@ -396,6 +414,22 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     if (info.has_EYEPOSITION && camera->IsPerspective()) {
         auto pos = camera->GetPosition();
         updateOp(G_EYEPOSITION, std::array { (float)pos.x(), (float)pos.y(), (float)pos.z() });
+    }
+
+    // Audio spectrum uniforms
+    if (m_audioAnalyzer && m_audioAnalyzer->HasData()) {
+        if (info.has_AUDIOSPECTRUM16LEFT)
+            updateOp(G_AUDIOSPECTRUM16LEFT, m_audioAnalyzer->GetSpectrum16Left());
+        if (info.has_AUDIOSPECTRUM16RIGHT)
+            updateOp(G_AUDIOSPECTRUM16RIGHT, m_audioAnalyzer->GetSpectrum16Right());
+        if (info.has_AUDIOSPECTRUM32LEFT)
+            updateOp(G_AUDIOSPECTRUM32LEFT, m_audioAnalyzer->GetSpectrum32Left());
+        if (info.has_AUDIOSPECTRUM32RIGHT)
+            updateOp(G_AUDIOSPECTRUM32RIGHT, m_audioAnalyzer->GetSpectrum32Right());
+        if (info.has_AUDIOSPECTRUM64LEFT)
+            updateOp(G_AUDIOSPECTRUM64LEFT, m_audioAnalyzer->GetSpectrum64Left());
+        if (info.has_AUDIOSPECTRUM64RIGHT)
+            updateOp(G_AUDIOSPECTRUM64RIGHT, m_audioAnalyzer->GetSpectrum64Right());
     }
 }
 
