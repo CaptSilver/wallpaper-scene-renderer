@@ -31,6 +31,7 @@
 #include <atomic>
 #include <mutex>
 #include <set>
+#include <map>
 #include <fstream>
 #include <filesystem>
 #include <unordered_map>
@@ -113,6 +114,21 @@ public:
         return m_color_scripts;
     }
 
+    std::vector<PropertyScriptInfo> getPropertyScripts() const {
+        std::lock_guard<std::mutex> lock(m_property_scripts_mutex);
+        return m_property_scripts;
+    }
+
+    std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const {
+        std::lock_guard<std::mutex> lock(m_name_map_mutex);
+        return m_node_name_to_id;
+    }
+
+    std::string getLayerInitialStatesJson() const {
+        std::lock_guard<std::mutex> lock(m_layer_init_mutex);
+        return m_layer_init_json;
+    }
+
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
 private:
@@ -146,6 +162,12 @@ private:
     std::vector<TextScriptInfo>          m_text_scripts;
     mutable std::mutex                   m_color_scripts_mutex;
     std::vector<ColorScriptInfo>         m_color_scripts;
+    mutable std::mutex                   m_property_scripts_mutex;
+    std::vector<PropertyScriptInfo>      m_property_scripts;
+    mutable std::mutex                   m_name_map_mutex;
+    std::unordered_map<std::string, int32_t> m_node_name_to_id;
+    mutable std::mutex                   m_layer_init_mutex;
+    std::string                          m_layer_init_json;
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -213,6 +235,21 @@ public:
         std::lock_guard<std::mutex> lock(m_color_update_mutex);
         m_pending_color_updates[id] = { r, g, b };
         LOG_INFO("setColorUpdate enqueued id=%d rgb=(%.3f,%.3f,%.3f)", id, r, g, b);
+    }
+
+    void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_transform_updates[{id, property}] = { x, y, z };
+    }
+
+    void setNodeVisible(i32 id, bool visible) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_visible_updates[id] = visible;
+    }
+
+    void setNodeAlpha(i32 id, float alpha) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_alpha_updates[id] = alpha;
     }
 
 private:
@@ -298,6 +335,45 @@ private:
                     }
                 }
                 m_pending_color_updates.clear();
+            }
+
+            // Process pending property script updates (transform, visibility, alpha)
+            {
+                std::lock_guard<std::mutex> lock(m_property_update_mutex);
+                for (auto& [key, vec] : m_pending_transform_updates) {
+                    auto [id, prop] = key;
+                    auto nit = m_scene->nodeById.find(id);
+                    if (nit == m_scene->nodeById.end()) continue;
+                    SceneNode* node = nit->second;
+                    Eigen::Vector3f v(vec[0], vec[1], vec[2]);
+                    if (prop == "origin") {
+                        node->SetTranslate(v);
+                    } else if (prop == "scale") {
+                        node->SetScale(v);
+                    } else if (prop == "angles") {
+                        node->SetRotation(v);
+                    }
+                }
+                for (auto& [id, visible] : m_pending_visible_updates) {
+                    auto nit = m_scene->nodeById.find(id);
+                    if (nit != m_scene->nodeById.end()) {
+                        nit->second->SetVisible(visible);
+                    }
+                }
+                for (auto& [id, alpha] : m_pending_alpha_updates) {
+                    auto nit = m_scene->nodeById.find(id);
+                    if (nit == m_scene->nodeById.end()) continue;
+                    SceneNode* node = nit->second;
+                    if (node->HasMaterial()) {
+                        auto* mat = node->Mesh()->Material();
+                        mat->customShader.constValues["g_UserAlpha"] =
+                            std::vector<float>{ alpha };
+                        mat->customShader.constValuesDirty = true;
+                    }
+                }
+                m_pending_transform_updates.clear();
+                m_pending_visible_updates.clear();
+                m_pending_alpha_updates.clear();
             }
 
             m_render->drawFrame(*m_scene);
@@ -443,6 +519,11 @@ private:
 
     std::mutex                                        m_color_update_mutex;
     std::unordered_map<i32, std::array<float, 3>>     m_pending_color_updates;
+
+    std::mutex m_property_update_mutex;
+    std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
+    std::unordered_map<i32, bool>  m_pending_visible_updates;
+    std::unordered_map<i32, float> m_pending_alpha_updates;
 };
 } // namespace wallpaper
 
@@ -503,6 +584,31 @@ std::vector<TextScriptInfo> SceneWallpaper::getTextScripts() const {
 
 std::vector<ColorScriptInfo> SceneWallpaper::getColorScripts() const {
     return m_main_handler->getColorScripts();
+}
+
+std::vector<PropertyScriptInfo> SceneWallpaper::getPropertyScripts() const {
+    return m_main_handler->getPropertyScripts();
+}
+
+std::unordered_map<std::string, int32_t> SceneWallpaper::getNodeNameToIdMap() const {
+    return m_main_handler->getNodeNameToIdMap();
+}
+
+std::string SceneWallpaper::getLayerInitialStatesJson() const {
+    return m_main_handler->getLayerInitialStatesJson();
+}
+
+void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property,
+                                         float x, float y, float z) {
+    m_main_handler->renderHandler()->setNodeTransform(id, property, x, y, z);
+}
+
+void SceneWallpaper::updateNodeVisible(int32_t id, bool visible) {
+    m_main_handler->renderHandler()->setNodeVisible(id, visible);
+}
+
+void SceneWallpaper::updateNodeAlpha(int32_t id, float alpha) {
+    m_main_handler->renderHandler()->setNodeAlpha(id, alpha);
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -886,6 +992,52 @@ void MainHandler::loadScene() {
         if (!m_color_scripts.empty()) {
             LOG_INFO("loadScene: %zu color scripts", m_color_scripts.size());
         }
+    }
+
+    // Extract property scripts for QML-side evaluation
+    {
+        std::lock_guard<std::mutex> lock(m_property_scripts_mutex);
+        m_property_scripts.clear();
+        for (const auto& ps : scene->propertyScripts) {
+            PropertyScriptInfo psi;
+            psi.id               = ps.id;
+            psi.property         = ps.property;
+            psi.script           = ps.script;
+            psi.scriptProperties = ps.scriptProperties;
+            psi.layerName        = ps.layerName;
+            psi.initialVisible   = ps.initialVisible;
+            psi.initialVec3      = ps.initialVec3;
+            psi.initialFloat     = ps.initialFloat;
+            m_property_scripts.push_back(std::move(psi));
+        }
+        if (!m_property_scripts.empty()) {
+            LOG_INFO("loadScene: %zu property scripts", m_property_scripts.size());
+        }
+    }
+
+    // Store layer name → node ID mapping for thisScene.getLayer()
+    {
+        std::lock_guard<std::mutex> lock(m_name_map_mutex);
+        m_node_name_to_id = scene->nodeNameToId;
+        if (!m_node_name_to_id.empty()) {
+            LOG_INFO("loadScene: %zu named layers for thisScene.getLayer()",
+                     m_node_name_to_id.size());
+        }
+    }
+
+    // Serialize layer initial states as JSON for JS proxy initialization
+    {
+        std::lock_guard<std::mutex> lock(m_layer_init_mutex);
+        nlohmann::json j = nlohmann::json::object();
+        for (const auto& [name, lis] : scene->layerInitialStates) {
+            j[name] = {
+                {"o", { lis.origin[0], lis.origin[1], lis.origin[2] }},
+                {"s", { lis.scale[0], lis.scale[1], lis.scale[2] }},
+                {"a", { lis.angles[0], lis.angles[1], lis.angles[2] }},
+                {"v", lis.visible}
+            };
+        }
+        m_layer_init_json = j.dump();
     }
 
     {

@@ -27,6 +27,17 @@ struct ColorScriptInfo {
     std::array<float, 3> initialColor;
 };
 
+struct PropertyScriptInfo {
+    int32_t     id;
+    std::string property;          // "visible", "origin", "scale", "angles", "alpha"
+    std::string script;
+    std::string scriptProperties;  // JSON string
+    std::string layerName;         // name of the object for thisLayer.name
+    bool                 initialVisible {true};
+    std::array<float, 3> initialVec3 {0, 0, 0};
+    float                initialFloat {1.0f};
+};
+
 constexpr std::string_view PROPERTY_SOURCE               = "source";
 constexpr std::string_view PROPERTY_ASSETS               = "assets";
 constexpr std::string_view PROPERTY_FPS                  = "fps";
@@ -62,6 +73,12 @@ public:
     void updateColor(int32_t id, float r, float g, float b);
     std::vector<TextScriptInfo> getTextScripts() const;
     std::vector<ColorScriptInfo> getColorScripts() const;
+    std::vector<PropertyScriptInfo> getPropertyScripts() const;
+    std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
+    std::string getLayerInitialStatesJson() const;
+    void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
+    void updateNodeVisible(int32_t id, bool visible);
+    void updateNodeAlpha(int32_t id, float alpha);
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);

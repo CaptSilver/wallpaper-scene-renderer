@@ -115,6 +115,7 @@ private:
     void setupTextScripts();
     void evaluateTextScripts();
     void evaluateColorScripts();
+    void evaluatePropertyScripts();
     void cleanupTextScripts();
 
     bool m_inited { false };
@@ -134,12 +135,28 @@ private:
         QJSValue updateFn;
         std::array<float, 3> currentColor;
     };
-    QJSEngine*                    m_jsEngine { nullptr };
-    QTimer*                       m_textTimer { nullptr };
-    QTimer*                       m_colorTimer { nullptr };
-    QElapsedTimer                 m_runtimeTimer;
-    std::vector<TextScriptState>  m_textScriptStates;
-    std::vector<ColorScriptState> m_colorScriptStates;
+    // Property script evaluation
+    struct PropertyScriptState {
+        int32_t     id;
+        std::string property;
+        std::string layerName;
+        QJSValue    updateFn;
+        QJSValue    initFn;
+        QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
+        bool                 currentVisible {true};
+        std::array<float, 3> currentVec3 {0, 0, 0};
+        float                currentFloat {1.0f};
+    };
+    QJSEngine*                        m_jsEngine { nullptr };
+    QTimer*                           m_textTimer { nullptr };
+    QTimer*                           m_colorTimer { nullptr };
+    QTimer*                           m_propertyTimer { nullptr };
+    QElapsedTimer                     m_runtimeTimer;
+    std::vector<TextScriptState>      m_textScriptStates;
+    std::vector<ColorScriptState>     m_colorScriptStates;
+    std::vector<PropertyScriptState>  m_propertyScriptStates;
+    std::unordered_map<std::string, int32_t> m_nodeNameToId;
+    QJSValue                          m_collectDirtyLayersFn;
 
     // Audio buffer registrations for SceneScript
     struct AudioBufferReg {
