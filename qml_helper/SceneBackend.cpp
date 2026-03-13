@@ -385,6 +385,15 @@ void SceneObject::setupTextScripts() {
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
     m_jsEngine->globalObject().setProperty("engine", engineObj);
 
+    // Provide the 'shared' global for inter-script data sharing.
+    // All scripts in the scene can read/write to this object.
+    m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
+
+    // Provide a minimal 'console' object for scripts that call console.log()
+    m_jsEngine->evaluate(
+        "var console = { log: function() {}, warn: function() {}, error: function() {} };\n"
+    );
+
     // Engine method stubs
     m_jsEngine->evaluate(
         "engine.isDesktopDevice = function() { return true; };\n"
