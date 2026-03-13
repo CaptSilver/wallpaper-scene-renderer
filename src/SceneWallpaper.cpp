@@ -284,6 +284,20 @@ private:
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
+
+            // Upgrade render targets to RGBA16F when HDR content pipeline is active
+            if (m_render->hdrContent()) {
+                m_scene->hdrContent = true;
+                int upgraded = 0;
+                for (auto& [name, rt] : m_scene->renderTargets) {
+                    if (rt.format == TextureFormat::RGBA8) {
+                        rt.format = TextureFormat::RGBA16F;
+                        upgraded++;
+                    }
+                }
+                LOG_INFO("HDR content: upgraded %d render targets to RGBA16F", upgraded);
+            }
+
             m_rg = sceneToRenderGraph(*m_scene);
 
             if (main_handler.isGenGraphviz()) m_rg->ToGraphviz("graph.dot");

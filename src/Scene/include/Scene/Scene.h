@@ -76,6 +76,9 @@ public:
     std::shared_ptr<void> reflectionDepthBuffer;
     std::unordered_set<std::string> clearedRTs;
 
+    // HDR content pipeline: when true, render targets use RGBA16F and FinPass tonemaps
+    bool hdrContent { false };
+
     // MSAA: 1=off, 2/4/8=sample count (maps to VkSampleCountFlagBits)
     u32 msaaSamples { 1 };
     // Multisampled color images per render target (owned by Vulkan layer)

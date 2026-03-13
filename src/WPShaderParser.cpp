@@ -1236,6 +1236,15 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "$1 <= int($2);");
     }
 
+    // Fix: scalar assigned to glOutColor → wrap in vec4()
+    // HLSL allows implicit float→float4 broadcast on output; GLSL requires explicit vec4().
+    // e.g. "glOutColor = sample.x * mask * step(...);" → "glOutColor = vec4(...);"
+    // Does NOT match component writes like "glOutColor.a *= ..." (the '.' prevents \s*= match).
+    {
+        std::regex re(R"(\bglOutColor\s*=\s*(?!vec4\s*\()([^;]+);)");
+        result = std::regex_replace(result, re, "glOutColor = vec4($1);");
+    }
+
     return result;
 }
 

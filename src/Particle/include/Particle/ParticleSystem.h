@@ -41,7 +41,7 @@ public:
 
     BoundedData& GetBoundedData();
 
-    void                                 InitTrails(u32 trail_capacity);
+    void                                 InitTrails(u32 trail_capacity, float trail_max_age = 0.0f);
     std::vector<ParticleTrailHistory>&   TrailHistories();
     u32                                  TrailCapacity() const;
 
@@ -52,6 +52,7 @@ private:
     BoundedData                        m_bounded_data;
     std::vector<ParticleTrailHistory>  m_trail_histories;
     u32                                m_trail_capacity { 0 };
+    float                              m_trail_max_age { 0.0f };
 };
 
 class ParticleSubSystem : NoCopy, NoMove {
@@ -89,7 +90,7 @@ public:
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
 
-    void SetSpriteTrail(u32 trail_capacity);
+    void SetSpriteTrail(u32 trail_capacity, float trail_length = 0.0f);
 
 private:
     ParticleSystem&            m_sys;
@@ -116,8 +117,9 @@ private:
     double    m_probability { 1.0f };
     SpawnType m_spawn_type { SpawnType::STATIC };
 
-    bool m_is_spritetrail { false };
-    u32  m_trail_capacity { 0 };
+    bool  m_is_spritetrail { false };
+    u32   m_trail_capacity { 0 };
+    float m_trail_length { 0.0f };
 };
 
 class Scene;

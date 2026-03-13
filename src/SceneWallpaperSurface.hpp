@@ -20,6 +20,7 @@ struct RenderInitInfo {
     bool enable_valid_layer { false };
     bool offscreen { false };
     bool hdr_output { false };
+    bool hdr_content { false };
 
     std::span<const std::uint8_t> uuid;
     TexTiling                     offscreen_tiling { TexTiling::OPTIMAL };

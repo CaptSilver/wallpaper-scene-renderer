@@ -66,6 +66,7 @@ struct VulkanRender::Impl {
     bool init(RenderInitInfo);
     void destroy();
     bool hdrOutput() const { return m_hdr_output; }
+    bool hdrContent() const { return m_hdr_content; }
 
     void drawFrame(Scene&);
 
@@ -102,6 +103,7 @@ struct VulkanRender::Impl {
     bool m_pass_loaded { false };
     bool m_device_lost { false };
     bool m_hdr_output { false };
+    bool m_hdr_content { false };
 
     std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
     RenderingResources                 m_rendering_resources;
@@ -118,6 +120,7 @@ VulkanRender::~VulkanRender() {};
 
 bool VulkanRender::inited() const { return pImpl->m_inited; }
 bool VulkanRender::deviceLost() const { return pImpl->m_device_lost; }
+bool VulkanRender::hdrContent() const { return pImpl->m_hdr_content; }
 
 bool VulkanRender::init(RenderInitInfo info) { return pImpl->init(info); }
 void VulkanRender::destroy() { pImpl->destroy(); }
@@ -212,7 +215,8 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         m_with_surface = false;
     }
 
-    m_hdr_output = info.hdr_output;
+    m_hdr_output  = info.hdr_output;
+    m_hdr_content = info.hdr_content || info.hdr_output; // HDR output implies HDR content
 
     if (! initRes()) return false;
 
@@ -227,6 +231,7 @@ bool VulkanRender::Impl::initRes() {
     m_prepass = std::make_unique<PrePass>(PrePass::Desc {});
     m_finpass = std::make_unique<FinPass>(FinPass::Desc {});
     m_finpass->setHdrPassthrough(m_hdr_output);
+    m_finpass->setHdrContent(m_hdr_content);
     if (m_with_surface) {
         m_finpass->setPresentFormat(m_device->swapchain().format());
         m_finpass->setPresentQueueIndex(m_device->present_queue().family_index);

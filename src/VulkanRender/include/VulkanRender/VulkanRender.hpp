@@ -37,6 +37,7 @@ public:
     ExSwapchain* exSwapchain() const;
     bool inited() const;
     bool deviceLost() const;
+    bool hdrContent() const;
 
 private:
     struct Impl;
