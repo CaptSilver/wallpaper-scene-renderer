@@ -67,6 +67,19 @@ public:
         m_dirty  = true;
     }
 
+    // Set the parent node directly for world transform chaining.
+    void SetParent(SceneNode* parent) {
+        m_parent = parent;
+        m_dirty  = true;
+    }
+
+    // Set a pre-computed world transform, bypassing the parent chain.
+    // Used by proxy nodes that have their transform baked at parse time.
+    void SetWorldTransform(const Eigen::Matrix4d& t) {
+        m_trans = t;
+        m_dirty = false;
+    }
+
     // update self modle trans (will update parent before)
     void            UpdateTrans();
     Eigen::Matrix4d ModelTrans() const { return m_trans; };

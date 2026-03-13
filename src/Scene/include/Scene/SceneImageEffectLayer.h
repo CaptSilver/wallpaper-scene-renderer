@@ -56,6 +56,15 @@ public:
     void SetInheritParent(bool v) { m_inherit_parent = v; }
     bool InheritParent() const { return m_inherit_parent; }
 
+    // Set a proxy node carrying the parent's original (pre-reset) world
+    // transform.  When image nodes with effects have their transforms reset
+    // to identity for effect-chain rendering, children that inherit_parent
+    // can no longer chain through the (now-identity) parent world node.
+    // The proxy preserves the correct parent transform.
+    void SetParentProxy(std::shared_ptr<SceneNode> proxy) {
+        m_parent_proxy = std::move(proxy);
+    }
+
     // When true (compose layer with config.passthrough), the effect chain
     // starts from the current scene output (_rt_default) instead of the
     // layer's own mesh.  The base mesh rendering is replaced by a copy.
@@ -79,5 +88,8 @@ private:
     BlendMode                  m_final_blend;
 
     std::vector<std::shared_ptr<SceneImageEffect>> m_effects;
+
+    // Proxy node with the parent's baked world transform (see SetParentProxy).
+    std::shared_ptr<SceneNode> m_parent_proxy;
 };
 } // namespace wallpaper

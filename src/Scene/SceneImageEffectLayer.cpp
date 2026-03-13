@@ -95,7 +95,11 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 last_output->sceneNode->SetCamera(std::string());
                 last_output->sceneNode->CopyTrans(*m_final_node);
                 if (m_inherit_parent) {
-                    last_output->sceneNode->InheritParent(*m_worldNode);
+                    if (m_parent_proxy) {
+                        last_output->sceneNode->SetParent(m_parent_proxy.get());
+                    } else {
+                        last_output->sceneNode->InheritParent(*m_worldNode);
+                    }
                 }
                 mesh.ChangeMeshDataFrom(*m_final_mesh);
             } else {
@@ -106,7 +110,11 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 // When the image layer has a parent group, inherit that parent so
                 // UpdateTrans() chains the group transform into the world matrix.
                 if (m_inherit_parent) {
-                    last_output->sceneNode->InheritParent(*m_worldNode);
+                    if (m_parent_proxy) {
+                        last_output->sceneNode->SetParent(m_parent_proxy.get());
+                    } else {
+                        last_output->sceneNode->InheritParent(*m_worldNode);
+                    }
                 }
                 mesh.ChangeMeshDataFrom(*m_final_mesh);
             }
