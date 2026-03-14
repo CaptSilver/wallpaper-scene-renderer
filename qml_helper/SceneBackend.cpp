@@ -1244,6 +1244,21 @@ void SceneObject::evaluatePropertyScripts() {
         int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
         qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d (miss: %d)",
                (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount, dirtyLayerMiss);
+        // Dump key shared variables to verify simulation output
+        QJSValue sharedObj = m_jsEngine->globalObject().property("shared");
+        if (!sharedObj.isUndefined()) {
+            QString dump;
+            for (const char* key : {"p1x", "p1y", "p1z", "sunsize", "rotX", "rotY",
+                                    "p3x", "p3y", "p3z", "p6x", "p6y"}) {
+                QJSValue v = sharedObj.property(key);
+                if (!v.isUndefined()) {
+                    dump += QString("%1=%.4f ").arg(key).arg(v.toNumber());
+                }
+            }
+            if (!dump.isEmpty()) {
+                qCInfo(wekdeScene, "Shared vars: %s", qPrintable(dump));
+            }
+        }
     }
 }
 
