@@ -865,6 +865,88 @@ void SceneObject::setupTextScripts() {
     }
     if (!m_propertyScriptStates.empty()) {
         qCInfo(wekdeScene, "Compiled %zu property scripts", (size_t)m_propertyScriptStates.size());
+        LOG_INFO("Compiled %zu property scripts (of %zu total)",
+                 (size_t)m_propertyScriptStates.size(), propertyScripts.size());
+    } else if (!propertyScripts.empty()) {
+        LOG_INFO("WARNING: 0 property scripts compiled out of %zu - all failed!", propertyScripts.size());
+    }
+
+    // Load sound volume scripts
+    auto soundVolumeScripts = m_scene->getSoundVolumeScripts();
+    for (const auto& svsi : soundVolumeScripts) {
+        QString scriptSrc = QString::fromStdString(svsi.script);
+
+        // Strip 'use strict', imports, exports
+        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
+        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+
+        // Inject scriptProperties
+        QString propsInit;
+        if (!svsi.scriptProperties.empty()) {
+            QString jsonStr = QString::fromStdString(svsi.scriptProperties);
+            jsonStr.replace("\\", "\\\\");
+            jsonStr.replace("'", "\\'");
+            propsInit = QString(
+                "var _storedProps = JSON.parse('%1');\n"
+                "function createScriptProperties() {\n"
+                "  var b = {};\n"
+                "  function ap(def) {\n"
+                "    var n = def.name || def.n;\n"
+                "    if (n) {\n"
+                "      if (n in _storedProps) {\n"
+                "        var sp = _storedProps[n];\n"
+                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "      } else { b[n] = def.value; }\n"
+                "    }\n"
+                "    return b;\n"
+                "  }\n"
+                "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
+                "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  b.finish=function(){return b;};\n"
+                "  return b;\n"
+                "}\n"
+            ).arg(jsonStr);
+        }
+
+        QString wrapped = QString(
+            "(function() {\n"
+            "  'use strict';\n"
+            "  var exports = {};\n"
+            "  %1\n"
+            "  %2\n"
+            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+            "             (typeof update === 'function' ? update : null);\n"
+            "  if (!_upd) return null;\n"
+            "  return { update: _upd };\n"
+            "})()\n"
+        ).arg(propsInit, scriptSrc);
+
+        QJSValue result = m_jsEngine->evaluate(wrapped);
+        if (result.isError()) {
+            qCWarning(wekdeScene, "Sound volume script error for index=%d: %s",
+                       svsi.index, qPrintable(result.toString()));
+            continue;
+        }
+        if (result.isNull() || result.isUndefined()) {
+            continue;
+        }
+
+        QJSValue updateFn = result.property("update");
+        if (!updateFn.isCallable()) {
+            qCWarning(wekdeScene, "Sound volume script for index=%d: update is not callable", svsi.index);
+            continue;
+        }
+
+        SoundVolumeScriptState state;
+        state.index         = svsi.index;
+        state.updateFn      = updateFn;
+        state.currentVolume = svsi.initialVolume;
+        m_soundVolumeScriptStates.push_back(std::move(state));
+        qCInfo(wekdeScene, "Sound volume script compiled for index=%d (initial=%.3f)",
+               svsi.index, svsi.initialVolume);
     }
 
     for (const auto& tsi : scripts) {
@@ -936,6 +1018,17 @@ void SceneObject::setupTextScripts() {
         qCInfo(wekdeScene, "Text script compiled for id=%d", tsi.id);
     }
 
+    // Property scripts must run first — they populate shared.* that text/color scripts depend on
+    if (!m_propertyScriptStates.empty() || !m_soundVolumeScriptStates.empty()) {
+        m_propertyTimer = new QTimer(this);
+        m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
+        connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
+        m_propertyTimer->start();
+
+        // Run once immediately so shared.* is populated before text/color scripts
+        evaluatePropertyScripts();
+    }
+
     if (!m_textScriptStates.empty()) {
         m_textTimer = new QTimer(this);
         m_textTimer->setInterval(500); // evaluate twice per second
@@ -954,16 +1047,6 @@ void SceneObject::setupTextScripts() {
 
         // Run once immediately
         evaluateColorScripts();
-    }
-
-    if (!m_propertyScriptStates.empty()) {
-        m_propertyTimer = new QTimer(this);
-        m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
-        connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
-        m_propertyTimer->start();
-
-        // Run once immediately
-        evaluatePropertyScripts();
     }
 }
 
@@ -1266,6 +1349,7 @@ void SceneObject::cleanupTextScripts() {
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
     m_propertyScriptStates.clear();
+    m_soundVolumeScriptStates.clear();
     m_nodeNameToId.clear();
     m_collectDirtyLayersFn = QJSValue();
     if (m_textTimer) {

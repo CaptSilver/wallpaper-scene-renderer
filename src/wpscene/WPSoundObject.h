@@ -23,9 +23,26 @@ struct WPSoundObject {
     bool                     visible { true };
     std::string              name;
     std::vector<std::string> sound;
+    bool                     hasVolumeScript { false };
+    std::string              volumeScript;
+    std::string              volumeScriptProperties;
 
     bool FromJson(const nlohmann::json& json, fs::VFS&) {
-        GET_JSON_NAME_VALUE(json, "volume", volume);
+        // Volume can be a plain number, a user-property object, or a scripted object
+        if (json.contains("volume")) {
+            auto& vol = json.at("volume");
+            if (vol.is_number()) {
+                volume = vol.get<float>();
+            } else if (vol.is_object()) {
+                volume = vol.value("value", 1.0f);
+                if (vol.contains("script")) {
+                    hasVolumeScript = true;
+                    volumeScript = vol.at("script").get<std::string>();
+                    if (vol.contains("scriptproperties"))
+                        volumeScriptProperties = vol.at("scriptproperties").dump();
+                }
+            }
+        }
         GET_JSON_NAME_VALUE(json, "playbackmode", playbackmode);
         GET_JSON_NAME_VALUE_NOWARN(json, "mintime", mintime);
         GET_JSON_NAME_VALUE_NOWARN(json, "maxtime", maxtime);

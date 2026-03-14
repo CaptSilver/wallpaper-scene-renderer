@@ -147,6 +147,12 @@ private:
         std::array<float, 3> currentVec3 {0, 0, 0};
         float                currentFloat {1.0f};
     };
+    // Sound volume script evaluation
+    struct SoundVolumeScriptState {
+        int32_t  index;
+        QJSValue updateFn;
+        float    currentVolume {1.0f};
+    };
     QJSEngine*                        m_jsEngine { nullptr };
     QTimer*                           m_textTimer { nullptr };
     QTimer*                           m_colorTimer { nullptr };
@@ -155,6 +161,7 @@ private:
     std::vector<TextScriptState>      m_textScriptStates;
     std::vector<ColorScriptState>     m_colorScriptStates;
     std::vector<PropertyScriptState>  m_propertyScriptStates;
+    std::vector<SoundVolumeScriptState> m_soundVolumeScriptStates;
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
     QJSValue                          m_collectDirtyLayersFn;
 

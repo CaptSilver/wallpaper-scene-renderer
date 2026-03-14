@@ -2318,7 +2318,15 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                            ParseParticleObj(context, obj);
                        },
                        [&context, &sm](wpscene::WPSoundObject& obj) {
-                           WPSoundParser::Parse(obj, *context.vfs, sm);
+                           auto* streamPtr = WPSoundParser::Parse(obj, *context.vfs, sm);
+                           if (streamPtr && obj.hasVolumeScript) {
+                               Scene::SoundVolumeScript svs;
+                               svs.script = obj.volumeScript;
+                               svs.scriptProperties = obj.volumeScriptProperties;
+                               svs.initialVolume = obj.volume;
+                               svs.streamPtr = streamPtr;
+                               context.scene->soundVolumeScripts.push_back(std::move(svs));
+                           }
                        },
                        [&context](wpscene::WPLightObject& obj) {
                            ParseLightObj(context, obj);

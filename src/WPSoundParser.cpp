@@ -6,8 +6,10 @@
 
 #include <string>
 #include <string_view>
+#include <atomic>
 
-using namespace wallpaper;
+namespace wallpaper
+{
 
 enum class PlaybackMode
 {
@@ -32,8 +34,13 @@ public:
         PlaybackMode mode { PlaybackMode::Loop };
     };
     WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config c)
-        : vfs(vfs), m_config(c), m_soundPaths(paths) {};
+        : vfs(vfs), m_config(c), m_soundPaths(paths),
+          m_runtimeVolume(c.volume) {};
     virtual ~WPSoundStream() = default;
+
+    // Thread-safe volume update (called from QML thread via script evaluation)
+    void SetVolume(float v) { m_runtimeVolume.store(v, std::memory_order_relaxed); }
+    float GetVolume() const { return m_runtimeVolume.load(std::memory_order_relaxed); }
 
     uint64_t NextPcmData(void* pData, uint32_t frameCount) override {
         // first
@@ -49,12 +56,13 @@ public:
             if (! m_curActive) return 0;
             frameReads = m_curActive->NextPcmData(pData, frameCount);
         }
-        // volume
+        // volume (use runtime volume for script-driven updates)
         {
+            float      vol        = m_runtimeVolume.load(std::memory_order_relaxed);
             float*     pData_float = static_cast<float*>(pData);
             const auto num         = frameReads * m_desc.channels;
             for (uint i = 0; i < num; i++, pData_float++) {
-                (*pData_float) *= m_config.volume;
+                (*pData_float) *= vol;
             }
         }
         return frameReads;
@@ -86,16 +94,36 @@ private:
 
     const std::vector<std::string> m_soundPaths;
     std::unique_ptr<SoundStream>   m_curActive;
+    std::atomic<float>             m_runtimeVolume;
 };
 
-void WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs,
-                          audio::SoundManager& sm) {
+WPSoundStream* WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs,
+                                    audio::SoundManager& sm) {
+    float vol = obj.volume > 1.0f ? 1.0f : obj.volume;
+
+    // Skip sound objects with zero volume (e.g. click sounds with default volume=0)
+    if (vol <= 0.001f && !obj.hasVolumeScript) {
+        LOG_INFO("sound '%s': skipped (volume=%.3f, no script)", obj.name.c_str(), vol);
+        return nullptr;
+    }
+
+    LOG_INFO("sound '%s': volume=%.3f hasScript=%d mode=%s files=%zu",
+             obj.name.c_str(), vol, (int)obj.hasVolumeScript,
+             obj.playbackmode.c_str(), obj.sound.size());
+
     WPSoundStream::Config config { .maxtime = obj.maxtime,
                                    .mintime = obj.mintime,
-                                   .volume  = obj.volume > 1.0f ? 1.0f : obj.volume,
+                                   .volume  = vol,
                                    .mode    = ToPlaybackMode(obj.playbackmode) };
 
     auto ss = std::make_unique<WPSoundStream>(obj.sound, vfs, config);
-    // auto ss_raw = ss.get();
+    WPSoundStream* rawPtr = ss.get();
     sm.MountStream(std::move(ss));
+    return rawPtr;
 }
+
+void WPSoundParser::SetStreamVolume(void* stream, float volume) {
+    if (stream) static_cast<WPSoundStream*>(stream)->SetVolume(volume);
+}
+
+} // namespace wallpaper
