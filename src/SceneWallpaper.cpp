@@ -16,6 +16,7 @@
 #include "Fs/PhysicalFs.h"
 #include "WPPkgFs.hpp"
 
+#include "WPSoundParser.hpp"
 #include "Audio/SoundManager.h"
 #include "Audio/AudioAnalyzer.h"
 #include "Audio/AudioCapture.h"
@@ -119,6 +120,18 @@ public:
         return m_property_scripts;
     }
 
+    std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const {
+        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
+        return m_sound_volume_scripts;
+    }
+
+    void updateSoundVolume(int32_t index, float volume) {
+        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_volume_streams.size()) {
+            WPSoundParser::SetStreamVolume(m_sound_volume_streams[index], volume);
+        }
+    }
+
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const {
         std::lock_guard<std::mutex> lock(m_name_map_mutex);
         return m_node_name_to_id;
@@ -164,6 +177,9 @@ private:
     std::vector<ColorScriptInfo>         m_color_scripts;
     mutable std::mutex                   m_property_scripts_mutex;
     std::vector<PropertyScriptInfo>      m_property_scripts;
+    mutable std::mutex                   m_sound_volume_scripts_mutex;
+    std::vector<SoundVolumeScriptInfo>   m_sound_volume_scripts;
+    std::vector<void*>                   m_sound_volume_streams; // parallel: WPSoundStream*
     mutable std::mutex                   m_name_map_mutex;
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
     mutable std::mutex                   m_layer_init_mutex;
@@ -662,6 +678,14 @@ void SceneWallpaper::updateNodeAlpha(int32_t id, float alpha) {
     m_main_handler->renderHandler()->setNodeAlpha(id, alpha);
 }
 
+std::vector<SoundVolumeScriptInfo> SceneWallpaper::getSoundVolumeScripts() const {
+    return m_main_handler->getSoundVolumeScripts();
+}
+
+void SceneWallpaper::updateSoundVolume(int32_t index, float volume) {
+    m_main_handler->updateSoundVolume(index, volume);
+}
+
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
     void SceneWallpaper::setProperty##NAME(std::string_view name, TYPENAME value) {      \
         auto msg = CreateMsgWithCmd(m_main_handler, MainHandler::CMD::CMD_SET_PROPERTY); \
@@ -1063,6 +1087,26 @@ void MainHandler::loadScene() {
         }
         if (!m_property_scripts.empty()) {
             LOG_INFO("loadScene: %zu property scripts", m_property_scripts.size());
+        }
+    }
+
+    // Extract sound volume scripts for QML-side evaluation
+    {
+        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
+        m_sound_volume_scripts.clear();
+        m_sound_volume_streams.clear();
+        for (int32_t i = 0; i < (int32_t)scene->soundVolumeScripts.size(); i++) {
+            const auto& svs = scene->soundVolumeScripts[i];
+            SoundVolumeScriptInfo info;
+            info.index            = i;
+            info.script           = svs.script;
+            info.scriptProperties = svs.scriptProperties;
+            info.initialVolume    = svs.initialVolume;
+            m_sound_volume_scripts.push_back(std::move(info));
+            m_sound_volume_streams.push_back(svs.streamPtr);
+        }
+        if (!m_sound_volume_scripts.empty()) {
+            LOG_INFO("loadScene: %zu sound volume scripts", m_sound_volume_scripts.size());
         }
     }
 

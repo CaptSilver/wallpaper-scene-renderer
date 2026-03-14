@@ -156,6 +156,15 @@ public:
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;
 
+    // Sound volume scripts: evaluated at runtime to control per-stream volume
+    struct SoundVolumeScript {
+        std::string script;
+        std::string scriptProperties;
+        float       initialVolume { 1.0f };
+        void*       streamPtr { nullptr }; // WPSoundStream* (type-erased)
+    };
+    std::vector<SoundVolumeScript> soundVolumeScripts;
+
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
           frameTime = t;

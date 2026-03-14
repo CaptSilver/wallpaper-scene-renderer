@@ -38,6 +38,13 @@ struct PropertyScriptInfo {
     float                initialFloat {1.0f};
 };
 
+struct SoundVolumeScriptInfo {
+    int32_t     index;             // index into soundVolumeScripts vector
+    std::string script;
+    std::string scriptProperties;
+    float       initialVolume {1.0f};
+};
+
 constexpr std::string_view PROPERTY_SOURCE               = "source";
 constexpr std::string_view PROPERTY_ASSETS               = "assets";
 constexpr std::string_view PROPERTY_FPS                  = "fps";
@@ -79,6 +86,8 @@ public:
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
+    std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
+    void updateSoundVolume(int32_t index, float volume);
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);
