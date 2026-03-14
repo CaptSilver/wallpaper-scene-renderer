@@ -350,6 +350,7 @@ private:
                              m_scene->nodeById.size());
                 }
                 int transformHit = 0, transformMiss = 0;
+                int sampleCount = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
                     auto [id, prop] = key;
                     auto nit = m_scene->nodeById.find(id);
@@ -357,6 +358,12 @@ private:
                     transformHit++;
                     SceneNode* node = nit->second;
                     Eigen::Vector3f v(vec[0], vec[1], vec[2]);
+                    // Sample first 5 transforms for diagnostics
+                    if (logDiag && sampleCount < 5) {
+                        sampleCount++;
+                        LOG_INFO("DRAW sample: id=%d prop=%s val=(%.4f, %.4f, %.4f)",
+                                 id, prop.c_str(), vec[0], vec[1], vec[2]);
+                    }
                     if (prop == "origin") {
                         node->SetTranslate(v);
                     } else if (prop == "scale") {
@@ -365,10 +372,14 @@ private:
                         node->SetRotation(v);
                     }
                 }
+                int visHit = 0, visMiss = 0;
                 for (auto& [id, visible] : m_pending_visible_updates) {
                     auto nit = m_scene->nodeById.find(id);
                     if (nit != m_scene->nodeById.end()) {
+                        visHit++;
                         nit->second->SetVisible(visible);
+                    } else {
+                        visMiss++;
                     }
                 }
                 for (auto& [id, alpha] : m_pending_alpha_updates) {
@@ -383,7 +394,9 @@ private:
                     }
                 }
                 if (logDiag) {
-                    LOG_INFO("DRAW: transform hit=%d miss=%d", transformHit, transformMiss);
+                    LOG_INFO("DRAW: transform hit=%d miss=%d, visible hit=%d miss=%d, alpha=%zu",
+                             transformHit, transformMiss, visHit, visMiss,
+                             m_pending_alpha_updates.size());
                 }
                 m_pending_transform_updates.clear();
                 m_pending_visible_updates.clear();
