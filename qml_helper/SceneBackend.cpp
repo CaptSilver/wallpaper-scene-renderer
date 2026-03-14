@@ -451,6 +451,7 @@ void SceneObject::setupTextScripts() {
         "  builder.addColor = addProp;\n"
         "  builder.addFile = addProp;\n"
         "  builder.addDirectory = addProp;\n"
+        "  builder.finish = function() { return builder; };\n"
         "  return builder;\n"
         "}\n"
     );
@@ -683,6 +684,7 @@ void SceneObject::setupTextScripts() {
                 "  }\n"
                 "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
                 "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  b.finish=function(){return b;};\n"
                 "  return b;\n"
                 "}\n"
             ).arg(jsonStr);
@@ -768,6 +770,7 @@ void SceneObject::setupTextScripts() {
                 "  }\n"
                 "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
                 "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  b.finish=function(){return b;};\n"
                 "  return b;\n"
                 "}\n"
             ).arg(jsonStr);
@@ -1015,8 +1018,12 @@ void SceneObject::evaluateTextScripts() {
     for (auto& state : m_textScriptStates) {
         QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
         if (result.isError()) {
-            qCWarning(wekdeScene, "Text script runtime error id=%d: %s",
-                       state.id, qPrintable(result.toString()));
+            static std::unordered_set<int> textErroredIds;
+            if (textErroredIds.find(state.id) == textErroredIds.end()) {
+                textErroredIds.insert(state.id);
+                qCWarning(wekdeScene, "Text script runtime error id=%d: %s",
+                           state.id, qPrintable(result.toString()));
+            }
             continue;
         }
         QString newText = result.toString();
