@@ -92,7 +92,7 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 // result appears at the correct location and size on screen.
                 // The opacity/planet-mask effect clips to alpha=0 outside the
                 // globe, so Normal blend leaves the rest of the screen intact.
-                last_output->sceneNode->SetCamera(std::string());
+                last_output->sceneNode->SetCamera(m_final_camera);
                 last_output->sceneNode->CopyTrans(*m_final_node);
                 if (m_inherit_parent) {
                     if (m_parent_proxy) {
@@ -103,7 +103,7 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 }
                 mesh.ChangeMeshDataFrom(*m_final_mesh);
             } else {
-                last_output->sceneNode->SetCamera(std::string());
+                last_output->sceneNode->SetCamera(m_final_camera);
                 // Copy the saved local transform from m_final_node
                 // (m_worldNode may have been reset to identity for non-compose layers).
                 last_output->sceneNode->CopyTrans(*m_final_node);
@@ -119,6 +119,11 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 mesh.ChangeMeshDataFrom(*m_final_mesh);
             }
         }
+        // Store the resolved final output node so property script updates
+        // can target it directly (the world node stays at identity for the
+        // base render into the ping-pong buffer).
+        m_resolved_last_output = last_output->sceneNode.get();
+
         auto& t = m_final_node->Translate();
         LOG_INFO("ResolveEffect final: output='%.*s' blend=%d (actual=%d) passthrough=%d "
                  "inherit_parent=%d offscreen=%d translate=(%.1f,%.1f,%.1f) worldNode_id=%d",

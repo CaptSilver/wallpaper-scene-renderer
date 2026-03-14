@@ -18,6 +18,7 @@ namespace wallpaper
 class ParticleSystem;
 class IShaderValueUpdater;
 class IImageParser;
+class SceneImageEffectLayer;
 
 namespace audio
 {
@@ -145,6 +146,10 @@ public:
     std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;
     // Node lookup by ID for visibility updates
     std::unordered_map<i32, SceneNode*> nodeById;
+    // Node ID → effect layer for redirecting property script transform updates.
+    // Nodes with effect chains need transforms applied to the final composite
+    // node rather than the world node (which stays at identity for base render).
+    std::unordered_map<i32, SceneImageEffectLayer*> nodeEffectLayerMap;
     // Layer name → node ID mapping for thisScene.getLayer()
     std::unordered_map<std::string, i32> nodeNameToId;
     // Layer name → initial transform state for JS proxy initialization

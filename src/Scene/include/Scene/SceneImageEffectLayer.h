@@ -71,7 +71,19 @@ public:
     void SetPassthrough(bool v) { m_passthrough = v; }
     bool IsPassthrough() const { return m_passthrough; }
 
+    // Camera override for the final composite output (non-offscreen).
+    // When set, the last effect node uses this camera instead of activeCamera.
+    // Used for flat image layers in perspective scenes that need ortho projection.
+    void        SetFinalCamera(std::string cam) { m_final_camera = std::move(cam); }
+    const auto& FinalCamera() const { return m_final_camera; }
+
     void ResolveEffect(const SceneMesh& defualt_mesh, std::string_view effect_cam);
+
+    // After ResolveEffect, returns the scene node that renders the final
+    // composite to screen.  Property script transform updates should target
+    // this node (not the world node, which stays at identity for the base
+    // render into the ping-pong buffer).
+    SceneNode* ResolvedLastOutput() const { return m_resolved_last_output; }
 
 private:
     SceneNode*  m_worldNode;
@@ -82,7 +94,7 @@ private:
     bool m_is_offscreen { false };
     bool m_inherit_parent { false };
     bool m_passthrough { false };
-    //    std::vector<float> m_size;
+    std::string m_final_camera; // Camera for final composite (empty → activeCamera)
     std::unique_ptr<SceneMesh> m_final_mesh;
     std::unique_ptr<SceneNode> m_final_node;
     BlendMode                  m_final_blend;
@@ -91,5 +103,8 @@ private:
 
     // Proxy node with the parent's baked world transform (see SetParentProxy).
     std::shared_ptr<SceneNode> m_parent_proxy;
+
+    // The actual scene node that renders the final composite (set by ResolveEffect).
+    SceneNode* m_resolved_last_output { nullptr };
 };
 } // namespace wallpaper

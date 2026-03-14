@@ -74,6 +74,7 @@ public:
     bool                       fullscreen { false };
     bool                       nopadding { false };
     bool                       visible { true };
+    bool                       perspective { false }; // Use perspective camera (default: flat/ortho)
     std::string                image;
     std::string                alignment { "center" };
     WPMaterial                 material;
