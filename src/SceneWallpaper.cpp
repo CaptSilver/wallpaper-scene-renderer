@@ -351,6 +351,7 @@ private:
                 }
                 int transformHit = 0, transformMiss = 0;
                 int sampleCount = 0;
+                int planetSampleCount = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
                     auto [id, prop] = key;
                     auto nit = m_scene->nodeById.find(id);
@@ -358,11 +359,17 @@ private:
                     transformHit++;
                     SceneNode* node = nit->second;
                     Eigen::Vector3f v(vec[0], vec[1], vec[2]);
-                    // Sample first 5 transforms for diagnostics
+                    // Sample first 5 transforms + planet-range transforms
                     if (logDiag && sampleCount < 5) {
                         sampleCount++;
                         LOG_INFO("DRAW sample: id=%d prop=%s val=(%.4f, %.4f, %.4f)",
                                  id, prop.c_str(), vec[0], vec[1], vec[2]);
+                    }
+                    if (logDiag && id >= 1360 && id <= 1400 && planetSampleCount < 10) {
+                        planetSampleCount++;
+                        LOG_INFO("DRAW planet: id=%d prop=%s val=(%.4f, %.4f, %.4f) visible=%d",
+                                 id, prop.c_str(), vec[0], vec[1], vec[2],
+                                 (int)node->IsVisible());
                     }
                     if (prop == "origin") {
                         node->SetTranslate(v);
@@ -397,6 +404,23 @@ private:
                     LOG_INFO("DRAW: transform hit=%d miss=%d, visible hit=%d miss=%d, alpha=%zu",
                              transformHit, transformMiss, visHit, visMiss,
                              m_pending_alpha_updates.size());
+                    // Dump world transforms for key planet nodes after applying updates
+                    for (int checkId : {1360, 1365, 1373, 1374, 1375, 1376}) {
+                        auto nit = m_scene->nodeById.find(checkId);
+                        if (nit != m_scene->nodeById.end()) {
+                            auto* n = nit->second;
+                            n->UpdateTrans();
+                            auto wt = n->ModelTrans();
+                            auto& t = n->Translate();
+                            auto& s = n->Scale();
+                            LOG_INFO("NODE %d: trans=(%.3f,%.3f,%.3f) scale=(%.3f,%.3f,%.3f) "
+                                     "visible=%d world[0]=(%.4f,%.4f,%.4f,%.4f)",
+                                     checkId, t.x(), t.y(), t.z(),
+                                     s.x(), s.y(), s.z(),
+                                     (int)n->IsVisible(),
+                                     wt(0,0), wt(0,1), wt(0,2), wt(0,3));
+                        }
+                    }
                 }
                 m_pending_transform_updates.clear();
                 m_pending_visible_updates.clear();
