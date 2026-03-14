@@ -290,30 +290,6 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                          center.x() / center.w(), center.y() / center.w(),
                          eyePos.x(), eyePos.y(), eyePos.z(),
                          (int)material->depthTest, material->cullmode.c_str());
-                // Dump full matrices and test points
-                LOG_INFO("  M=[%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f / "
-                         "%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f]",
-                         modelTrans(0,0), modelTrans(0,1), modelTrans(0,2), modelTrans(0,3),
-                         modelTrans(1,0), modelTrans(1,1), modelTrans(1,2), modelTrans(1,3),
-                         modelTrans(2,0), modelTrans(2,1), modelTrans(2,2), modelTrans(2,3),
-                         modelTrans(3,0), modelTrans(3,1), modelTrans(3,2), modelTrans(3,3));
-                LOG_INFO("  VP=[%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f / "
-                         "%.4f %.4f %.4f %.4f / %.4f %.4f %.4f %.4f]",
-                         viewProTrans(0,0), viewProTrans(0,1), viewProTrans(0,2), viewProTrans(0,3),
-                         viewProTrans(1,0), viewProTrans(1,1), viewProTrans(1,2), viewProTrans(1,3),
-                         viewProTrans(2,0), viewProTrans(2,1), viewProTrans(2,2), viewProTrans(2,3),
-                         viewProTrans(3,0), viewProTrans(3,1), viewProTrans(3,2), viewProTrans(3,3));
-                // Test a few representative points
-                Vector4d pts[] = {
-                    {1,0,0,1}, {-1,0,0,1}, {0,1,0,1}, {0,-1,0,1}, {0,0,1,1}, {0,0,-1,1}
-                };
-                for (auto& p : pts) {
-                    Vector4d c = viewProTrans * modelTrans * p;
-                    LOG_INFO("  test(%.0f,%.0f,%.0f) → clip=(%.3f,%.3f,%.3f,%.3f) ndc=(%.3f,%.3f,%.4f)",
-                             p.x(), p.y(), p.z(),
-                             c.x(), c.y(), c.z(), c.w(),
-                             c.x()/c.w(), c.y()/c.w(), c.z()/c.w());
-                }
             }
         }
         if (reqMVP) {

@@ -257,16 +257,29 @@ public:
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_transform_updates[{id, property}] = { x, y, z };
+        static int s_transform_log = 0;
+        if (++s_transform_log <= 5 || s_transform_log % 1000 == 0) {
+            LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)",
+                     s_transform_log, id, property.c_str(), x, y, z);
+        }
     }
 
     void setNodeVisible(i32 id, bool visible) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_visible_updates[id] = visible;
+        static int s_visible_log = 0;
+        if (++s_visible_log <= 5 || s_visible_log % 1000 == 0) {
+            LOG_INFO("setNodeVisible[%d]: id=%d visible=%d", s_visible_log, id, (int)visible);
+        }
     }
 
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
+        static int s_alpha_log = 0;
+        if (++s_alpha_log <= 5 || s_alpha_log % 1000 == 0) {
+            LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f", s_alpha_log, id, alpha);
+        }
     }
 
 private:
@@ -358,6 +371,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(m_property_update_mutex);
                 static int drawDiagCount = 0;
+                if (m_drawDiagReset) { drawDiagCount = 0; m_drawDiagReset = false; }
                 bool logDiag = (++drawDiagCount % 180 == 1);  // every ~6 sec at 30fps
                 if (logDiag) {
                     LOG_INFO("DRAW: pending transforms=%zu visible=%zu alpha=%zu nodeById=%zu",
@@ -367,6 +381,7 @@ private:
                              m_scene->nodeById.size());
                 }
                 int transformHit = 0, transformMiss = 0;
+                int effectRedirects = 0;
                 int sampleCount = 0;
                 int planetSampleCount = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
@@ -388,12 +403,37 @@ private:
                                  id, prop.c_str(), vec[0], vec[1], vec[2],
                                  (int)node->IsVisible());
                     }
+                    // For nodes with effect chains, redirect transform updates
+                    // to the resolved final composite node.  The world node must
+                    // stay at identity so the base render fills the ping-pong RT.
+                    auto eit = m_scene->nodeEffectLayerMap.find(id);
+                    SceneNode* resolvedOutput = nullptr;
+                    if (eit != m_scene->nodeEffectLayerMap.end()) {
+                        resolvedOutput = eit->second->ResolvedLastOutput();
+                        effectRedirects++;
+                    }
+
                     if (prop == "origin") {
-                        node->SetTranslate(v);
+                        if (resolvedOutput) {
+                            resolvedOutput->SetTranslate(v);
+                        } else {
+                            node->SetTranslate(v);
+                        }
                     } else if (prop == "scale") {
-                        node->SetScale(v);
+                        if (resolvedOutput) {
+                            resolvedOutput->SetScale(v);
+                        } else {
+                            node->SetScale(v);
+                        }
                     } else if (prop == "angles") {
-                        node->SetRotation(v);
+                        // WE SceneScript outputs angles in degrees; Eigen AngleAxis expects radians
+                        constexpr float deg2rad = M_PI / 180.0f;
+                        Eigen::Vector3f rv(v[0] * deg2rad, v[1] * deg2rad, v[2] * deg2rad);
+                        if (resolvedOutput) {
+                            resolvedOutput->SetRotation(rv);
+                        } else {
+                            node->SetRotation(rv);
+                        }
                     }
                 }
                 int visHit = 0, visMiss = 0;
@@ -418,8 +458,8 @@ private:
                     }
                 }
                 if (logDiag) {
-                    LOG_INFO("DRAW: transform hit=%d miss=%d, visible hit=%d miss=%d, alpha=%zu",
-                             transformHit, transformMiss, visHit, visMiss,
+                    LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d miss=%d, alpha=%zu",
+                             transformHit, transformMiss, effectRedirects, visHit, visMiss,
                              m_pending_alpha_updates.size());
                     // Dump world transforms for key planet nodes after applying updates
                     for (int checkId : {1360, 1365, 1373, 1374, 1375, 1376}) {

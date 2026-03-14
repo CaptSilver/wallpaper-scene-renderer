@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <qobjectdefs.h>
 #include <unistd.h>
+#include "Utils/Logging.h"
 
 using namespace scenebackend;
 
@@ -374,6 +375,8 @@ void SceneObject::setupTextScripts() {
     auto scripts = m_scene->getTextScripts();
     auto colorScripts = m_scene->getColorScripts();
     auto propertyScripts = m_scene->getPropertyScripts();
+    LOG_INFO("setupTextScripts: text=%zu color=%zu property=%zu",
+             scripts.size(), colorScripts.size(), propertyScripts.size());
     if (scripts.empty() && colorScripts.empty() && propertyScripts.empty()) return;
 
     m_jsEngine = new QJSEngine(this);
@@ -519,7 +522,9 @@ void SceneObject::setupTextScripts() {
         "}\n"
         "var thisScene = {\n"
         "  getLayer: function(name) {\n"
-        "    if (!_layerCache[name]) _layerCache[name] = _makeLayerProxy(name);\n"
+        "    if (_layerCache[name]) return _layerCache[name];\n"
+        "    if (!_layerInitStates[name]) return null;\n"
+        "    _layerCache[name] = _makeLayerProxy(name);\n"
         "    return _layerCache[name];\n"
         "  }\n"
         "};\n"
@@ -803,6 +808,11 @@ void SceneObject::setupTextScripts() {
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError()) {
+            static int s_err_log = 0;
+            if (++s_err_log <= 10) {
+                LOG_INFO("Property script COMPILE ERROR id=%d prop=%s: %s",
+                         psi.id, psi.property.c_str(), qPrintable(result.toString()));
+            }
             qCWarning(wekdeScene, "Property script error for id=%d prop=%s: %s",
                        psi.id, psi.property.c_str(), qPrintable(result.toString()));
             continue;
@@ -1230,6 +1240,11 @@ void SceneObject::evaluatePropertyScripts() {
                 static std::unordered_set<int> erroredIds;
                 if (erroredIds.find(state.id * 100 + pass) == erroredIds.end()) {
                     erroredIds.insert(state.id * 100 + pass);
+                    static int s_rt_err = 0;
+                    if (++s_rt_err <= 10) {
+                        LOG_INFO("Property script RUNTIME ERROR id=%d prop=%s: %s",
+                                 state.id, state.property.c_str(), qPrintable(result.toString()));
+                    }
                     qCWarning(wekdeScene, "Property script error id=%d prop=%s: %s",
                                state.id, state.property.c_str(), qPrintable(result.toString()));
                 }
@@ -1321,25 +1336,64 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    // Evaluate sound volume scripts (after visible scripts set shared.*)
+    for (auto& svState : m_soundVolumeScriptStates) {
+        if (!svState.updateFn.isCallable()) continue;
+
+        QJSValue result = svState.updateFn.call({ QJSValue((double)svState.currentVolume) });
+        if (result.isError()) {
+            static std::unordered_set<int> erroredIndices;
+            if (erroredIndices.find(svState.index) == erroredIndices.end()) {
+                erroredIndices.insert(svState.index);
+                qCWarning(wekdeScene, "Sound volume script error index=%d: %s",
+                           svState.index, qPrintable(result.toString()));
+            }
+            continue;
+        }
+
+        if (result.isNumber()) {
+            float newVol = (float)result.toNumber();
+            if (newVol < 0.0f) newVol = 0.0f;
+            if (newVol > 1.0f) newVol = 1.0f;
+            if (std::abs(newVol - svState.currentVolume) > 0.001f) {
+                svState.currentVolume = newVol;
+                m_scene->updateSoundVolume(svState.index, newVol);
+            }
+        }
+    }
+
     // Periodic diagnostic logging (~every 3 seconds at 30Hz)
     static int propEvalCount = 0;
     if (++propEvalCount % 90 == 1) {
         int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
-        qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d (miss: %d)",
-               (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount, dirtyLayerMiss);
+        LOG_INFO("PROPEVAL[%d]: %zu states, shared=%d, dirty=%d (miss=%d), soundVol=%zu",
+                 propEvalCount, (size_t)m_propertyScriptStates.size(), sharedCount,
+                 dirtyLayerCount, dirtyLayerMiss, (size_t)m_soundVolumeScriptStates.size());
+        qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d (miss: %d), sound vol: %zu",
+               (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount, dirtyLayerMiss,
+               (size_t)m_soundVolumeScriptStates.size());
+        // Dump sound volume states
+        for (const auto& sv : m_soundVolumeScriptStates) {
+            qCInfo(wekdeScene, "  sound[%d] vol=%.3f callable=%d", sv.index, sv.currentVolume,
+                   (int)sv.updateFn.isCallable());
+        }
         // Dump key shared variables to verify simulation output
         QJSValue sharedObj = m_jsEngine->globalObject().property("shared");
         if (!sharedObj.isUndefined()) {
             QString dump;
             for (const char* key : {"p1x", "p1y", "p1z", "sunsize", "rotX", "rotY",
-                                    "p3x", "p3y", "p3z", "p6x", "p6y"}) {
+                                    "p3x", "p3y", "p3z", "p6x", "p6y",
+                                    "musicse", "musicvolume"}) {
                 QJSValue v = sharedObj.property(key);
                 if (!v.isUndefined()) {
-                    dump += QString("%1=%.4f ").arg(key).arg(v.toNumber());
+                    dump += QString("%1=%2 ").arg(key).arg(v.toNumber(), 0, 'f', 4);
                 }
             }
             if (!dump.isEmpty()) {
+                LOG_INFO("Shared vars: %s", qPrintable(dump));
                 qCInfo(wekdeScene, "Shared vars: %s", qPrintable(dump));
+            } else {
+                LOG_INFO("Shared vars: (none of the expected keys found)");
             }
         }
     }
