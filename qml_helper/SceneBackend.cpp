@@ -1186,6 +1186,7 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Flush dirty layer proxies from thisScene.getLayer() side effects
     int dirtyLayerCount = 0;
+    int dirtyLayerMiss = 0;
     if (m_collectDirtyLayersFn.isCallable()) {
         QJSValue updates = m_collectDirtyLayersFn.call();
         dirtyLayerCount = updates.property("length").toInt();
@@ -1193,7 +1194,16 @@ void SceneObject::evaluatePropertyScripts() {
             QJSValue entry = updates.property(i);
             std::string name = entry.property("name").toString().toStdString();
             auto it = m_nodeNameToId.find(name);
-            if (it == m_nodeNameToId.end()) continue;
+            if (it == m_nodeNameToId.end()) {
+                dirtyLayerMiss++;
+                static std::unordered_set<std::string> loggedMisses;
+                if (loggedMisses.find(name) == loggedMisses.end()) {
+                    loggedMisses.insert(name);
+                    qCWarning(wekdeScene, "Dirty layer '%s' not found in nodeNameToId (%zu entries)",
+                              name.c_str(), m_nodeNameToId.size());
+                }
+                continue;
+            }
             int32_t id = it->second;
 
             QJSValue dirty = entry.property("dirty");
@@ -1232,8 +1242,8 @@ void SceneObject::evaluatePropertyScripts() {
     static int propEvalCount = 0;
     if (++propEvalCount % 90 == 1) {
         int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
-        qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d",
-               (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount);
+        qCInfo(wekdeScene, "Property scripts: %zu states, shared vars: %d, dirty layers: %d (miss: %d)",
+               (size_t)m_propertyScriptStates.size(), sharedCount, dirtyLayerCount, dirtyLayerMiss);
     }
 }
 
