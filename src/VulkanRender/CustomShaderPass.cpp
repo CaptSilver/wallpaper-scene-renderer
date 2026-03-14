@@ -316,10 +316,13 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     {
-        SceneMesh* pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
-        std::string sn = (pm && pm->Material()) ? pm->Material()->customShader.shader->name : "?";
-        LOG_INFO("CSP_PREPARE: shader='%s' vertCount=%zu",
-                 sn.c_str(), pm ? (size_t)pm->VertexCount() : 0u);
+        static std::unordered_set<const void*> _csp_logged;
+        if (_csp_logged.insert(this).second) {
+            SceneMesh* pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
+            std::string sn = (pm && pm->Material()) ? pm->Material()->customShader.shader->name : "?";
+            LOG_INFO("CSP_PREPARE: shader='%s' vertCount=%zu",
+                     sn.c_str(), pm ? (size_t)pm->VertexCount() : 0u);
+        }
     }
     m_desc.vk_textures.resize(m_desc.textures.size());
     for (usize i = 0; i < m_desc.textures.size(); i++) {
