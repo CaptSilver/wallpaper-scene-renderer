@@ -539,6 +539,15 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     if (gCam.IsPerspective()) {
         gCam.SetAspect(fboAspect);
         gCam.Update();
+
+        // Update ortho overlay camera for flat image layers.
+        // Keep height=1.0, adjust width to match viewport aspect ratio.
+        if (scene.cameras.count("global_ortho")) {
+            auto& orthoCam = *scene.cameras.at("global_ortho");
+            orthoCam.SetWidth(fboAspect);
+            orthoCam.SetHeight(1.0);
+            orthoCam.Update();
+        }
         return;
     }
 

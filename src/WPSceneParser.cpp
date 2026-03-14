@@ -695,6 +695,24 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         scene.msaaSamples = 4;
         LOG_INFO("MSAA enabled: x%d (3D scene)", scene.msaaSamples);
 
+        // Create orthographic overlay camera for flat image layers in 3D scenes.
+        // Image layers default to flat/ortho rendering unless perspective=true.
+        // Use the scene's ortho dimensions (pixels) so image/text quad sizes and
+        // script-set origins/scales match the same coordinate space as 2D wallpapers.
+        {
+            float orthoW = (float)general.orthogonalprojection.width;
+            float orthoH = (float)general.orthogonalprojection.height;
+            auto orthoCam = std::make_shared<SceneCamera>(2, 1, -5000.0f, 5000.0f);
+            orthoCam->SetWidth(orthoW);
+            orthoCam->SetHeight(orthoH);
+            orthoCam->Update();
+            auto ortho_node = std::make_shared<SceneNode>();
+            orthoCam->AttatchNode(ortho_node);
+            scene.sceneGraph->AppendChild(ortho_node);
+            scene.cameras["global_ortho"] = orthoCam;
+            LOG_INFO("Ortho overlay camera: %.0f x %.0f (for flat image layers)", orthoW, orthoH);
+        }
+
         // Load camera animation paths
         auto& vfs = *context.vfs;
         std::vector<CameraPath> camPaths;
@@ -1105,11 +1123,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         std::string nodeAddr = getAddr(spImgNode.get());
         // set camera to attatch effect
         if (isCompose) {
+            // For compose effects, use scene ortho dimensions (works for both
+            // ortho and perspective scenes; perspective activeCamera Width/Height
+            // defaults to 1.0 which is too small).
+            i32 cw = context.ortho_w > 0 ? context.ortho_w : (i32)scene.activeCamera->Width();
+            i32 ch = context.ortho_h > 0 ? context.ortho_h : (i32)scene.activeCamera->Height();
             scene.cameras[nodeAddr] =
-                std::make_shared<SceneCamera>((int32_t)scene.activeCamera->Width(),
-                                              (int32_t)scene.activeCamera->Height(),
-                                              -1.0f,
-                                              1.0f);
+                std::make_shared<SceneCamera>(cw, ch, -1.0f, 1.0f);
             scene.cameras.at(nodeAddr)->AttatchNode(scene.activeCamera->GetAttachedNode());
             if (scene.linkedCameras.count("global") == 0) scene.linkedCameras["global"] = {};
             scene.linkedCameras.at("global").push_back(nodeAddr);
@@ -1186,6 +1206,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 spImgNode->CopyTrans(SceneNode());
             }
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
+            // Register for property script transform redirection.
+            scene.nodeEffectLayerMap[wpimgobj.id] = imgEffectLayer.get();
         }
         // set renderTarget for ping-pong operate
         {
@@ -1377,7 +1399,22 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
         LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",
                  wpimgobj.id, imgEffectLayer->EffectCount(), (int)isCompose, (int)isOffscreen);
+
+        // In perspective scenes, flat image layers need the ortho overlay camera
+        // for their final composite (not the perspective camera).
+        if (scene.cameras.count("global_ortho") && !wpimgobj.perspective) {
+            imgEffectLayer->SetFinalCamera("global_ortho");
+        }
     }
+
+    // In perspective scenes, flat image layers without effects use the ortho
+    // overlay camera instead of the perspective camera.  This makes SceneScript
+    // origin values (UV coordinates in [-0.5, 0.5]) map correctly to screen space.
+    if (!hasEffect && context.scene->activeCamera->IsPerspective() &&
+        !wpimgobj.perspective && context.scene->cameras.count("global_ortho")) {
+        spImgNode->SetCamera("global_ortho");
+    }
+
     // Invisible nodes without effects still need an offscreen RT so their output
     // can be referenced via link tex by compose layers.
     if (isOffscreen && ! hasEffect) {
@@ -2002,6 +2039,8 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
             imgEffectLayer->FinalNode().SetVisibilityOwner(spNode.get());
             spNode->CopyTrans(SceneNode());
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
+            // Register for property script transform redirection.
+            scene.nodeEffectLayerMap[spNode->ID()] = imgEffectLayer.get();
         }
         scene.renderTargets[effect_ppong_a] = {
             .width      = static_cast<uint16_t>(w),

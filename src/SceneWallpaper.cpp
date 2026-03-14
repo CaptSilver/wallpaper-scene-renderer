@@ -8,6 +8,7 @@
 #include "Utils/FpsCounter.h"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
+#include "Scene/SceneImageEffectLayer.h"
 #include "Particle/ParticleSystem.h"
 #include "Interface/IShaderValueUpdater.h"
 #include "WPShaderValueUpdater.hpp"
@@ -476,6 +477,7 @@ private:
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
+            m_drawDiagReset = true;  // force DRAW diagnostic on next frame
 
             // Upgrade render targets to RGBA16F when HDR content pipeline is active
             if (m_render->hdrContent()) {
@@ -591,6 +593,8 @@ private:
     std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
     std::unordered_map<i32, bool>  m_pending_visible_updates;
     std::unordered_map<i32, float> m_pending_alpha_updates;
+
+    bool m_drawDiagReset { false };
 };
 } // namespace wallpaper
 
