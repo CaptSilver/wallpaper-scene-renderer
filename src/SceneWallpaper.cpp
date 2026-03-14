@@ -340,10 +340,21 @@ private:
             // Process pending property script updates (transform, visibility, alpha)
             {
                 std::lock_guard<std::mutex> lock(m_property_update_mutex);
+                static int drawDiagCount = 0;
+                bool logDiag = (++drawDiagCount % 180 == 1);  // every ~6 sec at 30fps
+                if (logDiag) {
+                    LOG_INFO("DRAW: pending transforms=%zu visible=%zu alpha=%zu nodeById=%zu",
+                             m_pending_transform_updates.size(),
+                             m_pending_visible_updates.size(),
+                             m_pending_alpha_updates.size(),
+                             m_scene->nodeById.size());
+                }
+                int transformHit = 0, transformMiss = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
                     auto [id, prop] = key;
                     auto nit = m_scene->nodeById.find(id);
-                    if (nit == m_scene->nodeById.end()) continue;
+                    if (nit == m_scene->nodeById.end()) { transformMiss++; continue; }
+                    transformHit++;
                     SceneNode* node = nit->second;
                     Eigen::Vector3f v(vec[0], vec[1], vec[2]);
                     if (prop == "origin") {
@@ -370,6 +381,9 @@ private:
                             std::vector<float>{ alpha };
                         mat->customShader.constValuesDirty = true;
                     }
+                }
+                if (logDiag) {
+                    LOG_INFO("DRAW: transform hit=%d miss=%d", transformHit, transformMiss);
                 }
                 m_pending_transform_updates.clear();
                 m_pending_visible_updates.clear();
