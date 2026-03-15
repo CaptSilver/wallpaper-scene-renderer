@@ -2,6 +2,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <limits>
 
@@ -18,13 +19,13 @@ public:
     SceneIndexArray(std::span<const uint32_t> data);
 
     SceneIndexArray(SceneIndexArray&&) noexcept;
-    ~SceneIndexArray();
+    ~SceneIndexArray() = default;
 
     void Assign(usize index, std::span<const uint32_t> data) { AssignSpan(index, data); }
     void AssignHalf(usize index, std::span<const uint16_t> data) { AssignSpan(index, data); }
 
     // Get
-    const uint32_t* Data() const { return m_pData; }
+    const uint32_t* Data() const { return m_pData.get(); }
     usize           DataCount() const { return m_size; }
     usize           DataSizeOf() const { return m_size * Unit_Byte_Size; }
 
@@ -46,12 +47,12 @@ private:
     void AssignSpan(usize index, std::span<const T> data) {
         using in_value_type = T;
         if (! IncreaseCheckSet((index + data.size()) * sizeof(in_value_type))) return;
-        std::copy(data.begin(), data.end(), ((in_value_type*)m_pData) + index);
+        std::copy(data.begin(), data.end(), ((in_value_type*)m_pData.get()) + index);
     }
 
-    uint32_t* m_pData;
-    usize     m_size;
-    usize     m_capacity;
+    std::unique_ptr<uint32_t[]> m_pData;
+    usize                       m_size { 0 };
+    usize                       m_capacity { 0 };
 
     usize m_render_size { std::numeric_limits<usize>::max() };
 

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 using namespace wallpaper;
 
@@ -39,13 +40,12 @@ namespace
 
 using namespace wallpaper::teximage_helpers;
 
-char* Lz4Decompress(const char* src, int size, int decompressed_size) {
-    char* dst       = new char[(usize)decompressed_size];
-    int   load_size = LZ4_decompress_safe(src, dst, size, decompressed_size);
+std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size) {
+    std::vector<char> dst((usize)decompressed_size);
+    int               load_size = LZ4_decompress_safe(src, dst.data(), size, decompressed_size);
     if (load_size < decompressed_size) {
         LOG_ERROR("lz4 decompress failed");
-        delete[] dst;
-        return nullptr;
+        return {};
     }
     return dst;
 }
@@ -194,20 +194,17 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             if (src_size <= 0 || mipmap.width <= 0 || mipmap.height <= 0 || decompressed_size < 0)
                 return nullptr;
 
-            char* result;
-            result = new char[(usize)src_size];
-            file.Read(result, (usize)src_size);
+            std::vector<char> result((usize)src_size);
+            file.Read(result.data(), (usize)src_size);
 
             // is LZ4 compress
             if (LZ4_compressed) {
-                char* decompressed_char = Lz4Decompress(result, src_size, decompressed_size);
-                src_size                = decompressed_size;
-                if (decompressed_char != nullptr) {
-                    delete[] result;
-                    result = decompressed_char;
+                auto decompressed = Lz4Decompress(result.data(), src_size, decompressed_size);
+                if (! decompressed.empty()) {
+                    src_size = decompressed_size;
+                    result   = std::move(decompressed);
                 } else {
                     LOG_ERROR("lz4 decompress failed");
-                    delete[] result;
                     return nullptr;
                 }
             }
@@ -215,19 +212,17 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             if (img.header.extraHeader["texb"].val >= 3 && img.header.type != ImageType::UNKNOWN) {
                 int32_t w, h, n;
                 auto*   data =
-                    stbi_load_from_memory((const unsigned char*)result, src_size, &w, &h, &n, 4);
+                    stbi_load_from_memory((const unsigned char*)result.data(), src_size, &w, &h, &n, 4);
                 mipmap.data = ImageDataPtr((uint8_t*)data, [](uint8_t* data) {
                     stbi_image_free((unsigned char*)data);
                 });
                 src_size    = w * h * 4;
             } else {
-                mipmap.data = ImageDataPtr(new uint8_t[(usize)src_size], [](uint8_t* data) {
-                    delete[] data;
-                });
-                std::copy(result, result + src_size, mipmap.data.get());
+                auto buf = std::make_unique<uint8_t[]>((usize)src_size);
+                std::copy(result.data(), result.data() + src_size, buf.get());
+                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) { delete[] p; });
             }
             mipmap.size = src_size * (i32)sizeof(uint8_t);
-            delete[] result;
         }
     }
     return img_ptr;
