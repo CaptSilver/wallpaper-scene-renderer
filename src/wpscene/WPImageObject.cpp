@@ -172,6 +172,14 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
         GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        // Combo condition-based visibility: {"user": {"condition": "X", "name": "prop"}}
+        // These are mutually exclusive character selectors that must stay in the
+        // main render graph (not offscreen) so they can be toggled at runtime.
+        if (json.contains("visible") && json.at("visible").is_object() &&
+            json.at("visible").contains("user") &&
+            json.at("visible").at("user").is_object() &&
+            json.at("visible").at("user").contains("condition"))
+            visibleIsComboSelector = true;
         GET_JSON_NAME_VALUE_NOWARN(json, "perspective", perspective);
         GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
         GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
@@ -209,6 +217,11 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 
     GET_JSON_NAME_VALUE(json, "image", image);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    if (json.contains("visible") && json.at("visible").is_object() &&
+        json.at("visible").contains("user") &&
+        json.at("visible").at("user").is_object() &&
+        json.at("visible").at("user").contains("condition"))
+        visibleIsComboSelector = true;
     GET_JSON_NAME_VALUE_NOWARN(json, "perspective", perspective);
     GET_JSON_NAME_VALUE_NOWARN(json, "alignment", alignment);
     nlohmann::json jImage;

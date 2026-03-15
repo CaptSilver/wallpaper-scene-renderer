@@ -135,8 +135,10 @@ public:
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {
-        SceneNode* node;
-        bool       defaultVisible; // original value without override
+        SceneNode*  node;
+        bool        defaultVisible;   // original value without override
+        std::string conditionValue;   // combo: visible when prop == this value (empty = boolean)
+        std::string rawVisibleJson;   // raw JSON of "visible" field for re-resolution
     };
     struct UserPropUniform {
         SceneMaterial* material;
@@ -157,9 +159,19 @@ public:
         std::array<float, 3> origin {0, 0, 0};
         std::array<float, 3> scale {1, 1, 1};
         std::array<float, 3> angles {0, 0, 0};
+        std::array<float, 2> size {0, 0}; // layer pixel dimensions for hit testing
         bool visible {true};
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;
+
+    // Sound layer info for SceneScript play/stop/pause API (enumerateLayers)
+    struct SoundLayerInfo {
+        std::string name;
+        float       initialVolume { 1.0f };
+        bool        startsilent { false };
+        void*       streamPtr { nullptr }; // WPSoundStream* (type-erased)
+    };
+    std::vector<SoundLayerInfo> soundLayers;
 
     // Sound volume scripts: evaluated at runtime to control per-stream volume
     struct SoundVolumeScript {

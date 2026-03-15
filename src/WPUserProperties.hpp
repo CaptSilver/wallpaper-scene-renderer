@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <optional>
@@ -25,6 +26,9 @@ public:
                     const auto& prop = it.value();
                     if (prop.contains("value")) {
                         m_properties[name] = prop["value"];
+                        m_defaults[name]   = prop["value"];
+                        if (prop.contains("type") && prop["type"].is_string())
+                            m_types[name] = prop["type"].get<std::string>();
                         LOG_INFO("User property: %s = %s", name.c_str(),
                                  prop["value"].dump().c_str());
                     }
@@ -46,6 +50,24 @@ public:
     std::optional<nlohmann::json> GetProperty(const std::string& name) const {
         auto it = m_properties.find(name);
         if (it != m_properties.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+    // Get property default value (original from project.json, never overridden)
+    std::optional<nlohmann::json> GetDefault(const std::string& name) const {
+        auto it = m_defaults.find(name);
+        if (it != m_defaults.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+    // Get property type ("bool", "combo", "slider", etc.)
+    std::optional<std::string> GetType(const std::string& name) const {
+        auto it = m_types.find(name);
+        if (it != m_types.end()) {
             return it->second;
         }
         return std::nullopt;
@@ -94,6 +116,25 @@ public:
             return json;
         }
 
+        // Simple user-string format with no condition.
+        // If binding expects bool but property is non-bool (combo returning "6"),
+        // use default-flip: visible = (current==default) ? visDefault : !visDefault
+        if (condition.empty()) {
+            if (json.contains("value") && json["value"].is_boolean() && !propValue->is_boolean()) {
+                bool visDefault = json["value"].get<bool>();
+                auto defaultVal = GetDefault(propName);
+                if (defaultVal.has_value()) {
+                    std::string currentStr =
+                        propValue->is_string() ? propValue->get<std::string>() : propValue->dump();
+                    std::string defaultStr =
+                        defaultVal->is_string() ? defaultVal->get<std::string>()
+                                                : defaultVal->dump();
+                    return nlohmann::json((currentStr == defaultStr) ? visDefault : !visDefault);
+                }
+                return json["value"]; // no default available, use binding default
+            }
+        }
+
         // Handle condition checking for visibility
         if (!condition.empty()) {
             // For combo properties, check if value matches condition
@@ -110,6 +151,12 @@ public:
         }
 
         return *propValue;
+    }
+
+    // Insert all property names into a set (for activeBindings)
+    void InsertAllNames(std::set<std::string>& out) const {
+        for (const auto& [name, _] : m_properties)
+            out.insert(name);
     }
 
     // Check if empty
@@ -142,6 +189,8 @@ public:
 
 private:
     std::unordered_map<std::string, nlohmann::json> m_properties;
+    std::unordered_map<std::string, nlohmann::json> m_defaults; // original from project.json
+    std::unordered_map<std::string, std::string>    m_types;    // "bool", "combo", "slider", etc.
 };
 
 // Global thread-local pointer to current user properties context

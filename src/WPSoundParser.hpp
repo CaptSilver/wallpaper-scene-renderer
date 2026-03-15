@@ -13,5 +13,10 @@ public:
 	static WPSoundStream* Parse(const wpscene::WPSoundObject&, fs::VFS&, audio::SoundManager&);
 	// Thread-safe volume update via type-erased pointer (streamPtr from Scene::SoundVolumeScript)
 	static void SetStreamVolume(void* stream, float volume);
+	// Thread-safe sound layer control methods (type-erased WPSoundStream*)
+	static void StreamPlay(void* stream);
+	static void StreamStop(void* stream);
+	static void StreamPause(void* stream);
+	static bool StreamIsPlaying(void* stream);
 };
 }
