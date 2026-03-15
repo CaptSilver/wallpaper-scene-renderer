@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <cstddef>
+#include <memory>
 #include <string_view>
 #include <span>
 #include "Core/MapSet.hpp"
@@ -26,7 +27,7 @@ public:
     };
 
     SceneVertexArray(const std::vector<SceneVertexAttribute>& attrs, const std::size_t count);
-    ~SceneVertexArray();
+    ~SceneVertexArray() = default;
 
     SceneVertexArray(SceneVertexArray&&) noexcept;
     SceneVertexArray& operator=(SceneVertexArray&&) noexcept;
@@ -44,7 +45,7 @@ public:
     }
     void SetRenderVertexCount(usize count) noexcept { m_render_vertex_count = count; }
 
-    const float* Data() const { return m_pData; }
+    const float* Data() const { return m_pData.get(); }
     usize        DataSize() const { return m_size; }
     usize        DataSizeOf() const { return m_size * sizeof(float); }
     usize        VertexCount() const { return m_size / m_oneSize; }
@@ -69,7 +70,7 @@ private:
 
     Map<std::string, bool> m_options;
 
-    float* m_pData { nullptr };
+    std::unique_ptr<float[]> m_pData;
     usize  m_oneSize { 0 };
     usize  m_size { 0 };
     usize  m_capacity { 0 };
