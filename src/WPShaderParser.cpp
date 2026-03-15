@@ -1269,6 +1269,46 @@ inline std::string FixImplicitConversions(const std::string& src) {
     return result;
 }
 
+// Fix effect shaders that write glOutColor component-wise (.r/.g/.b/.rgb) without
+// ever writing .a — the alpha channel is left at 0 (undefined), making the output
+// invisible under Translucent blend (src*alpha + dst*(1-alpha)).
+// Injects alpha preservation from the input texture (g_Texture0) before the closing
+// brace of main().  Only fires for shaders with component writes but NO full
+// assignment (glOutColor = ...) and NO explicit alpha write (.a / swizzle with a/w).
+inline std::string FixEffectAlpha(const std::string& src) {
+    // Check for full assignment: glOutColor = ...  (not component write like .rgb = ...)
+    static const std::regex re_full(R"(\bglOutColor\s*=)");
+    if (std::regex_search(src, re_full)) return src;
+
+    // Check for any component write (.r, .g, .b, .rgb, etc.)
+    static const std::regex re_comp(R"(\bglOutColor\s*\.)");
+    if (! std::regex_search(src, re_comp)) return src;
+
+    // Check for explicit alpha write (.a, .rgba, .xyzw, any swizzle containing a or w)
+    static const std::regex re_alpha(R"(\bglOutColor\s*\.\s*\w*[aw])");
+    if (std::regex_search(src, re_alpha)) return src;
+
+    // Find last '}' (closing brace of main()) and inject alpha preservation
+    auto pos = src.rfind('}');
+    if (pos == std::string::npos) return src;
+
+    std::string result = src;
+    result.insert(pos, "    glOutColor.a = texSample2D(g_Texture0, v_TexCoord.xy).a;\n");
+
+    // Dump the fixed shader for diagnostics
+    static std::atomic<int> dump_idx { 0 };
+    int idx = dump_idx.fetch_add(1);
+    if (idx < 10) {
+        std::string path = "/tmp/alpha_fix_dump_" + std::to_string(idx) + ".glsl";
+        std::ofstream f(path);
+        if (f) f << result;
+        LOG_INFO("FixEffectAlpha[%d]: injected alpha preservation → %s (%zu bytes)",
+                 idx, path.c_str(), result.size());
+    }
+
+    return result;
+}
+
 inline std::string GenSha1(std::span<const WPShaderUnit> units) {
     std::string shas;
     for (auto& unit : units) {
@@ -1329,6 +1369,9 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
 
         unit.src = Finalprocessor(unit, pre_info, post_info);
         unit.src = FixImplicitConversions(unit.src);
+        if (unit.stage == ShaderType::FRAGMENT) {
+            unit.src = FixEffectAlpha(unit.src);
+        }
 
         vunit.src   = unit.src;
         vunit.stage = ToGLSL(unit.stage);

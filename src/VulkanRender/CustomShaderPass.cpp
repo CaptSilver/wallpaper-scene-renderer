@@ -572,32 +572,23 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VkAttachmentLoadOp                  loadOp { VK_ATTACHMENT_LOAD_OP_DONT_CARE };
         {
             VkColorComponentFlags colorMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
-            bool alpha =
-                ! (m_desc.node->Camera().empty() || sstart_with(m_desc.node->Camera(), "global"));
-            // Non-default RTs (offscreen, pingpong, composite) need alpha written
-            // so downstream blend effects can read meaningful alpha values.
-            bool non_default_rt = (m_desc.output != SpecTex_Default);
-
-            if (alpha || non_default_rt) colorMask |= VK_COLOR_COMPONENT_A_BIT;
+                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
             color_blend.colorWriteMask = colorMask;
 
             auto blendmode = mesh.Material()->blenmode;
             SetBlend(blendmode, color_blend);
             m_desc.blending = color_blend.blendEnable;
 
-            // Non-default RTs: first write CLEARs (initialize to transparent black),
-            // subsequent writes LOAD (accumulate content). Mirrors depthBufferCleared
-            // pattern. Default RT uses blend-mode-based load ops as before.
-            if (non_default_rt) {
-                if (scene.clearedRTs.count(m_desc.output) == 0) {
-                    loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    scene.clearedRTs.insert(m_desc.output);
-                } else {
-                    loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                }
+            // First write to any RT each frame CLEARs it; subsequent writes LOAD.
+            // This prevents alpha corruption from accumulating across frames
+            // (compose layers capture _rt_default including alpha, process through
+            // effects, and write back — without CLEAR, corrupted alpha persists).
+            if (scene.clearedRTs.count(m_desc.output) == 0) {
+                loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                scene.clearedRTs.insert(m_desc.output);
             } else {
-                SetAttachmentLoadOp(blendmode, loadOp);
+                loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             }
         }
         // MSAA: only for _rt_default (the final composited output).
@@ -913,10 +904,12 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                                    ? m_desc.node->Mesh()->Material()->customShader.shader->name
                                    : "???";
             bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
-            LOG_INFO("EXEC[%d] pass#%d shader='%s' out='%.*s' draw=%u visible=%d "
+            int  nodeId      = m_desc.node ? m_desc.node->ID() : -1;
+            LOG_INFO("EXEC[%d] pass#%d id=%d shader='%s' out='%.*s' draw=%u visible=%d "
                      "depth=%d blend=%d tex_count=%zu out_img=%p out_ext=%ux%u",
                      g_exec_frame_counter,
                      g_exec_pass_counter,
+                     nodeId,
                      shaderName.c_str(),
                      (int)m_desc.output.size(),
                      m_desc.output.data(),
