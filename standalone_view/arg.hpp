@@ -11,7 +11,8 @@ constexpr std::string_view OPT_GRAPHVIZ    = "--graphviz";
 constexpr std::string_view OPT_FPS         = "--fps";
 constexpr std::string_view OPT_RESOLUTION  = "--resolution";
 constexpr std::string_view OPT_CACHE_PATH  = "--cache-path";
-constexpr std::string_view OPT_HDR        = "--hdr";
+constexpr std::string_view OPT_HDR         = "--hdr";
+constexpr std::string_view OPT_USER_PROPS  = "--user-props";
 
 struct Resolution {
 	uint w;
@@ -75,6 +76,12 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
 			}
 			return Resolution{width, height};
 		});
+
+    arg.add_argument("-U", OPT_USER_PROPS)
+        .help("user properties override JSON, e.g. '{\"lucyrebecca\":\"6\"}'")
+        .default_value(std::string())
+        .nargs(1)
+        .append();
 
     try {
         arg.parse_args(argc, argv);

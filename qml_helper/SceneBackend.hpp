@@ -8,6 +8,7 @@
 #include <QtGui/QHoverEvent>
 #include <QtQml/QJSEngine>
 #include <QtQml/QJSValue>
+#include <unordered_set>
 #include <vector>
 
 #include "SceneWallpaper.hpp"
@@ -74,6 +75,7 @@ public:
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
+    void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void hoverMoveEvent(QHoverEvent* event) override;
 
@@ -142,6 +144,12 @@ private:
         std::string layerName;
         QJSValue    updateFn;
         QJSValue    initFn;
+        QJSValue    cursorClickFn;   // optional cursorClick handler from IIFE
+        QJSValue    cursorEnterFn;
+        QJSValue    cursorLeaveFn;
+        QJSValue    cursorDownFn;
+        QJSValue    cursorUpFn;
+        QJSValue    cursorMoveFn;
         QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
         bool                 currentVisible {true};
         std::array<float, 3> currentVec3 {0, 0, 0};
@@ -165,6 +173,15 @@ private:
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
     QJSValue                          m_collectDirtyLayersFn;
 
+    // Sound layer control state for SceneScript play/stop/pause API
+    struct SoundLayerState {
+        int32_t     index;
+        std::string name;
+    };
+    std::vector<SoundLayerState>             m_soundLayerStates;
+    std::unordered_map<std::string, int32_t> m_soundLayerNameToIndex;
+    QJSValue                                 m_collectDirtySoundLayersFn;
+
     // Audio buffer registrations for SceneScript
     struct AudioBufferReg {
         int      resolution; // 16, 32, or 64
@@ -174,6 +191,23 @@ private:
     };
     std::vector<AudioBufferReg> m_audioBufferRegs;
     void refreshAudioBuffers();
+
+    // Cursor event targets (deduplicated by layer name)
+    struct CursorTarget {
+        std::string layerName;
+        QJSValue    clickFn;
+        QJSValue    enterFn;
+        QJSValue    leaveFn;
+        QJSValue    downFn;
+        QJSValue    upFn;
+        QJSValue    moveFn;
+        QJSValue    thisLayerProxy;
+    };
+    std::vector<CursorTarget>      m_cursorTargets;
+    std::unordered_set<std::string> m_hoveredLayers;   // layers cursor is over
+    std::string                    m_dragTarget;       // layer being dragged
+    float m_sceneOrthoW {1920.0f};
+    float m_sceneOrthoH {1080.0f};
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

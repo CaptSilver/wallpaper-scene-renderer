@@ -28,6 +28,7 @@
 #include "VulkanRender/VulkanRender.hpp"
 #include "WPTextRenderer.hpp"
 
+#include "WPUserProperties.hpp"
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <atomic>
@@ -133,6 +134,37 @@ public:
         }
     }
 
+    std::vector<SoundLayerControlInfo> getSoundLayerControls() const {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        return m_sound_layer_controls;
+    }
+    void soundLayerPlay(int32_t index) {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
+            WPSoundParser::StreamPlay(m_sound_layer_streams[index]);
+    }
+    void soundLayerStop(int32_t index) {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
+            WPSoundParser::StreamStop(m_sound_layer_streams[index]);
+    }
+    void soundLayerPause(int32_t index) {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
+            WPSoundParser::StreamPause(m_sound_layer_streams[index]);
+    }
+    bool soundLayerIsPlaying(int32_t index) const {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
+            return WPSoundParser::StreamIsPlaying(m_sound_layer_streams[index]);
+        return false;
+    }
+    void soundLayerSetVolume(int32_t index, float volume) {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
+            WPSoundParser::SetStreamVolume(m_sound_layer_streams[index], volume);
+    }
+
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const {
         std::lock_guard<std::mutex> lock(m_name_map_mutex);
         return m_node_name_to_id;
@@ -141,6 +173,11 @@ public:
     std::string getLayerInitialStatesJson() const {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
         return m_layer_init_json;
+    }
+
+    std::array<int32_t, 2> getOrthoSize() const {
+        if (m_scene) return { m_scene->ortho[0], m_scene->ortho[1] };
+        return { 1920, 1080 };
     }
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
@@ -181,10 +218,15 @@ private:
     mutable std::mutex                   m_sound_volume_scripts_mutex;
     std::vector<SoundVolumeScriptInfo>   m_sound_volume_scripts;
     std::vector<void*>                   m_sound_volume_streams; // parallel: WPSoundStream*
+    mutable std::mutex                   m_sound_layers_mutex;
+    std::vector<SoundLayerControlInfo>   m_sound_layer_controls;
+    std::vector<void*>                   m_sound_layer_streams; // parallel: WPSoundStream*
     mutable std::mutex                   m_name_map_mutex;
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
     mutable std::mutex                   m_layer_init_mutex;
     std::string                          m_layer_init_json;
+    mutable std::mutex                   m_user_props_mutex;
+    WPUserProperties                     m_user_props_resolved; // for runtime re-resolution
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -709,6 +751,10 @@ std::string SceneWallpaper::getLayerInitialStatesJson() const {
     return m_main_handler->getLayerInitialStatesJson();
 }
 
+std::array<int32_t, 2> SceneWallpaper::getOrthoSize() const {
+    return m_main_handler->getOrthoSize();
+}
+
 void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property,
                                          float x, float y, float z) {
     m_main_handler->renderHandler()->setNodeTransform(id, property, x, y, z);
@@ -728,6 +774,25 @@ std::vector<SoundVolumeScriptInfo> SceneWallpaper::getSoundVolumeScripts() const
 
 void SceneWallpaper::updateSoundVolume(int32_t index, float volume) {
     m_main_handler->updateSoundVolume(index, volume);
+}
+
+std::vector<SoundLayerControlInfo> SceneWallpaper::getSoundLayerControls() const {
+    return m_main_handler->getSoundLayerControls();
+}
+void SceneWallpaper::soundLayerPlay(int32_t index) {
+    m_main_handler->soundLayerPlay(index);
+}
+void SceneWallpaper::soundLayerStop(int32_t index) {
+    m_main_handler->soundLayerStop(index);
+}
+void SceneWallpaper::soundLayerPause(int32_t index) {
+    m_main_handler->soundLayerPause(index);
+}
+bool SceneWallpaper::soundLayerIsPlaying(int32_t index) const {
+    return m_main_handler->soundLayerIsPlaying(index);
+}
+void SceneWallpaper::soundLayerSetVolume(int32_t index, float volume) {
+    m_main_handler->soundLayerSetVolume(index, volume);
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -908,24 +973,47 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         return false;
     }
 
-    // Apply visibility changes
-    for (auto& [propName, bindings] : scene.userPropVisBindings) {
-        bool visible;
-        if (props.contains(propName)) {
-            auto& val = props[propName];
-            if (val.is_boolean()) {
-                visible = val.get<bool>();
-            } else {
-                continue;
-            }
-        } else {
-            // Property not in overrides → use default
-            visible = bindings.front().defaultVisible;
+    // Apply visibility changes by re-resolving raw JSON with updated user properties.
+    // This handles both boolean and combo properties without requiring a scene reload.
+    {
+        std::lock_guard<std::mutex> lock(m_user_props_mutex);
+        // Apply new overrides to our persistent copy
+        for (auto it = props.begin(); it != props.end(); ++it) {
+            m_user_props_resolved.SetProperty(it.key(), it.value());
         }
-        for (auto& b : bindings) {
-            if (b.node->IsVisible() != visible) {
-                b.node->SetVisible(visible);
-                LOG_INFO("Runtime user prop: '%s' -> node visible=%d", propName.c_str(), (int)visible);
+
+        for (auto& [propName, bindings] : scene.userPropVisBindings) {
+            if (!props.contains(propName)) continue;
+
+            for (auto& b : bindings) {
+                // Re-resolve the raw visible JSON with updated user properties
+                try {
+                    auto visJson = nlohmann::json::parse(b.rawVisibleJson);
+                    auto resolved = m_user_props_resolved.ResolveValue(visJson);
+                    bool visible;
+                    if (resolved.is_boolean()) {
+                        visible = resolved.get<bool>();
+                    } else if (resolved.is_number()) {
+                        visible = resolved.get<double>() != 0.0;
+                    } else if (resolved.is_string()) {
+                        auto s = resolved.get<std::string>();
+                        visible = !s.empty() && s != "0" && s != "false";
+                    } else {
+                        visible = b.defaultVisible;
+                    }
+                    LOG_INFO("Runtime resolve: '%s' raw=%s resolved=%s visible=%d was=%d",
+                             propName.c_str(), b.rawVisibleJson.c_str(),
+                             resolved.dump().c_str(), (int)visible,
+                             (int)b.node->IsVisible());
+                    if (b.node->IsVisible() != visible) {
+                        b.node->SetVisible(visible);
+                        LOG_INFO("Runtime user prop: '%s' -> node visible=%d",
+                                 propName.c_str(), (int)visible);
+                    }
+                } catch (const std::exception& e) {
+                    LOG_INFO("Runtime user prop resolve error: '%s': %s",
+                             propName.c_str(), e.what());
+                }
             }
         }
     }
@@ -1041,8 +1129,41 @@ void MainHandler::loadScene() {
             LOG_ERROR("Not supported scene type");
             return;
         }
-        scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, m_user_props_json);
+
+        // Build user properties once: load defaults from project.json (filesystem,
+        // since it lives alongside scene.pkg, not inside it) + apply overrides.
+        // Used for both parse-time resolution and runtime re-resolution.
+        WPUserProperties userProps;
+        {
+            std::filesystem::path projPath =
+                std::filesystem::path(pkgDir) / "project.json";
+            if (std::filesystem::exists(projPath)) {
+                std::ifstream ifs(projPath);
+                if (ifs.good()) {
+                    std::string content(
+                        (std::istreambuf_iterator<char>(ifs)),
+                        std::istreambuf_iterator<char>());
+                    if (userProps.LoadFromProjectJson(content)) {
+                        LOG_INFO("Loaded user property defaults from %s",
+                                 projPath.c_str());
+                    }
+                }
+            }
+            if (!m_user_props_json.empty()) {
+                LOG_INFO("Applying user properties override: %s",
+                         m_user_props_json.c_str());
+                userProps.ApplyOverrides(m_user_props_json);
+            }
+        }
+
+        scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, userProps);
         scene->vfs.swap(pVfs);
+
+        // Store for runtime re-resolution of combo visibility
+        {
+            std::lock_guard<std::mutex> lock(m_user_props_mutex);
+            m_user_props_resolved = userProps;
+        }
     }
     // Connect audio analyzer to shader value updater
     scene->audioAnalyzer = m_audio_analyzer;
@@ -1054,9 +1175,16 @@ void MainHandler::loadScene() {
 
     m_scene = scene; // keep reference for runtime user property updates
 
-    // Write active user property bindings to disk for the config UI
+    // Write active user property bindings to disk for the config UI.
+    // Include ALL project.json properties — some are used only by property
+    // scripts (e.g. via applyUserProperties / shared vars) and have no
+    // direct visibility or uniform bindings in scene.json.
     {
         std::set<std::string> activeProps;
+        {
+            std::lock_guard<std::mutex> lock(m_user_props_mutex);
+            m_user_props_resolved.InsertAllNames(activeProps);
+        }
         for (const auto& [name, _] : scene->userPropUniformBindings)
             activeProps.insert(name);
         for (const auto& [name, _] : scene->userPropVisBindings)
@@ -1154,6 +1282,25 @@ void MainHandler::loadScene() {
         }
     }
 
+    // Extract sound layers for SceneScript play/stop/pause API
+    {
+        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
+        m_sound_layer_controls.clear();
+        m_sound_layer_streams.clear();
+        for (const auto& sl : scene->soundLayers) {
+            SoundLayerControlInfo info;
+            info.name          = sl.name;
+            info.initialVolume = sl.initialVolume;
+            info.startsilent   = sl.startsilent;
+            m_sound_layer_controls.push_back(std::move(info));
+            m_sound_layer_streams.push_back(sl.streamPtr);
+        }
+        if (!m_sound_layer_controls.empty()) {
+            LOG_INFO("loadScene: %zu sound layers for SceneScript API",
+                     m_sound_layer_controls.size());
+        }
+    }
+
     // Store layer name → node ID mapping for thisScene.getLayer()
     {
         std::lock_guard<std::mutex> lock(m_name_map_mutex);
@@ -1173,9 +1320,11 @@ void MainHandler::loadScene() {
                 {"o", { lis.origin[0], lis.origin[1], lis.origin[2] }},
                 {"s", { lis.scale[0], lis.scale[1], lis.scale[2] }},
                 {"a", { lis.angles[0], lis.angles[1], lis.angles[2] }},
-                {"v", lis.visible}
+                {"v", lis.visible},
+                {"sz", { lis.size[0], lis.size[1] }}
             };
         }
+        j["_ortho"] = { scene->ortho[0], scene->ortho[1] };
         m_layer_init_json = j.dump();
     }
 

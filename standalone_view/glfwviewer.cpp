@@ -25,6 +25,18 @@ struct UserData {
 extern "C" {
 void framebuffer_size_callback(GLFWwindow*, int width, int height) {}
 
+void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) {
+    if (action != GLFW_PRESS) return;
+    UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
+    // Number keys 1-9 → switch lucyrebecca to that value at runtime
+    if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) {
+        std::string val = std::to_string(key - GLFW_KEY_0);
+        std::string json = "{\"lucyrebecca\":\"" + val + "\"}";
+        std::cout << "Runtime user prop change: " << json << std::endl;
+        data->psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, json);
+    }
+}
+
 void mouse_button_callback(GLFWwindow* win, int button, int action, int mods) {
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
         UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
@@ -97,9 +109,15 @@ int main(int argc, char** argv) {
     if (cache_path.empty()) cache_path = wallpaper::platform::GetCachePath("wescene-renderer");
     psw->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, cache_path);
 
+    std::string user_props = program.get<std::string>(OPT_USER_PROPS);
+    if (!user_props.empty()) {
+        psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, user_props);
+    }
+
     glfwSetWindowUserPointer(window, &data);
 
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetKeyCallback(window, key_callback);
     glfwSetMouseButtonCallback(window, mouse_button_callback);
     glfwSetCursorPosCallback(window, cursor_position_callback);
 

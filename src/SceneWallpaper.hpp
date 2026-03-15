@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <memory>
 #include <string_view>
 #include <string>
@@ -45,6 +46,12 @@ struct SoundVolumeScriptInfo {
     float       initialVolume {1.0f};
 };
 
+struct SoundLayerControlInfo {
+    std::string name;
+    float       initialVolume {1.0f};
+    bool        startsilent {false};
+};
+
 constexpr std::string_view PROPERTY_SOURCE               = "source";
 constexpr std::string_view PROPERTY_ASSETS               = "assets";
 constexpr std::string_view PROPERTY_FPS                  = "fps";
@@ -83,11 +90,20 @@ public:
     std::vector<PropertyScriptInfo> getPropertyScripts() const;
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
     std::string getLayerInitialStatesJson() const;
+    std::array<int32_t, 2> getOrthoSize() const;
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void updateSoundVolume(int32_t index, float volume);
+
+    // Sound layer control API for SceneScript play/stop/pause
+    std::vector<SoundLayerControlInfo> getSoundLayerControls() const;
+    void soundLayerPlay(int32_t index);
+    void soundLayerStop(int32_t index);
+    void soundLayerPause(int32_t index);
+    bool soundLayerIsPlaying(int32_t index) const;
+    void soundLayerSetVolume(int32_t index, float volume);
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);
