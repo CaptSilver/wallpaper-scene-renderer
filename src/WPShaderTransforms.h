@@ -829,3 +829,34 @@ inline std::string FixEffectAlpha(const std::string& src) {
 
     return result;
 }
+
+// ---------------------------------------------------------------------------
+// FixCombineAlpha
+// ---------------------------------------------------------------------------
+// Fix combine shaders (shine_combine, godrays_combine) that add effect alpha
+// to the original alpha:  `albedo.a = saturate(albedo.a + rays.a);`
+// This extends the alpha boundary beyond the original object, making
+// previously-invisible pixels partially visible.  When composited with
+// Translucent blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA), these extra-alpha
+// pixels create a ghosting fringe at puppet/sprite edges.
+//
+// Fix: remove the additive alpha line so the variable retains its original
+// alpha from the input texture (g_Texture1).  For fullscreen layers this is
+// a no-op (original alpha is always 1, so saturate(1+x) == 1 anyway).
+//
+// Only matches `VAR.a = saturate(VAR.a + OTHER.a);` where the SAME variable
+// appears on both sides — this avoids touching fluidsimulation_combine which
+// uses `albedo.a = saturate(prev.a + albedo.a)` (different LHS/first operand).
+inline std::string FixCombineAlpha(const std::string& src) {
+    // After macro expansion, `saturate(x)` becomes `(clamp(x, 0.0, 1.0))`.
+    // Match: VAR.a = (clamp(VAR.a + OTHER.a, 0.0, 1.0));
+    static const std::regex re(
+        R"((\w+)\.a\s*=\s*\(clamp\(\s*\1\.a\s*\+\s*\w+\.a\s*,\s*0\.0\s*,\s*1\.0\s*\)\)\s*;)");
+    if (! std::regex_search(src, re)) return src;
+
+    std::string result = std::regex_replace(src, re,
+        "// $& // removed: bloom alpha must not extend object boundary");
+
+    LOG_INFO("FixCombineAlpha: removed additive alpha in combine shader");
+    return result;
+}
