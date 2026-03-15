@@ -193,3 +193,36 @@ TEST_CASE("different inputs produce different outputs") {
 }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// PerlinNoiseVec3
+// ===========================================================================
+
+TEST_SUITE("PerlinNoiseVec3") {
+
+TEST_CASE("deterministic: same input gives same output") {
+    auto a = algorism::PerlinNoiseVec3({1.5, 2.5, 3.5});
+    auto b = algorism::PerlinNoiseVec3({1.5, 2.5, 3.5});
+    CHECK(a.x() == doctest::Approx(b.x()));
+    CHECK(a.y() == doctest::Approx(b.y()));
+    CHECK(a.z() == doctest::Approx(b.z()));
+}
+
+TEST_CASE("components differ due to offsets") {
+    auto v = algorism::PerlinNoiseVec3({1.5, 2.5, 3.5});
+    // Each component uses different offsets, so they should generally differ
+    bool all_same = (std::abs(v.x() - v.y()) < 1e-10) &&
+                    (std::abs(v.y() - v.z()) < 1e-10);
+    CHECK_FALSE(all_same);
+}
+
+TEST_CASE("different inputs produce different outputs") {
+    auto a = algorism::PerlinNoiseVec3({1.0, 2.0, 3.0});
+    auto b = algorism::PerlinNoiseVec3({4.5, 5.5, 6.5});
+    bool different = (std::abs(a.x() - b.x()) > 1e-10) ||
+                     (std::abs(a.y() - b.y()) > 1e-10) ||
+                     (std::abs(a.z() - b.z()) > 1e-10);
+    CHECK(different);
+}
+
+} // TEST_SUITE
