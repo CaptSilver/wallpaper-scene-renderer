@@ -1,11 +1,16 @@
 #include <doctest.h>
 
 #include "Core/StringHelper.hpp"
+#include "Core/MapSet.hpp"
+#include "Core/ArrayHelper.hpp"
 #include "Utils/Algorism.h"
 #include "Utils/BitFlags.hpp"
+#include "Type.hpp"
+#include "Fs/Bswap.hpp"
 #include "WPCommon.hpp"
 #include "Fs/MemBinaryStream.h"
 
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -215,6 +220,274 @@ TEST_CASE("ReadVersion consecutive reads") {
     MemBinaryStream stream(std::move(data));
     CHECK(ReadTexVesion(stream) == 1);
     CHECK(ReadTexVesion(stream) == 2);
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// ToString (TextureFormat)
+// ===========================================================================
+
+TEST_SUITE("ToString_TextureFormat") {
+
+TEST_CASE("all 14 TextureFormat enum values") {
+    CHECK(ToString(TextureFormat::RGBA8) == "RGBA8");
+    CHECK(ToString(TextureFormat::BC1) == "BC1");
+    CHECK(ToString(TextureFormat::BC2) == "BC2");
+    CHECK(ToString(TextureFormat::BC3) == "BC3");
+    CHECK(ToString(TextureFormat::BC7) == "BC7");
+    CHECK(ToString(TextureFormat::RGB8) == "RGB8");
+    CHECK(ToString(TextureFormat::RG8) == "RG8");
+    CHECK(ToString(TextureFormat::R8) == "R8");
+    CHECK(ToString(TextureFormat::RGBA16F) == "RGBA16F");
+    CHECK(ToString(TextureFormat::RG16F) == "RG16F");
+    CHECK(ToString(TextureFormat::R16F) == "R16F");
+    CHECK(ToString(TextureFormat::BC6H) == "BC6H");
+    CHECK(ToString(TextureFormat::RGB565) == "RGB565");
+    CHECK(ToString(TextureFormat::RGBA1010102) == "RGBA1010102");
+}
+
+TEST_CASE("all results are non-empty") {
+    CHECK_FALSE(ToString(TextureFormat::RGBA8).empty());
+    CHECK_FALSE(ToString(TextureFormat::BC1).empty());
+    CHECK_FALSE(ToString(TextureFormat::BC3).empty());
+    CHECK_FALSE(ToString(TextureFormat::BC7).empty());
+    CHECK_FALSE(ToString(TextureFormat::RGBA16F).empty());
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// ToString (ImageType)
+// ===========================================================================
+
+TEST_SUITE("ToString_ImageType") {
+
+TEST_CASE("known ImageType values") {
+    CHECK(ToString(ImageType::UNKNOWN) == "UNKNOWN");
+    CHECK(ToString(ImageType::BMP) == "BMP");
+    CHECK(ToString(ImageType::ICO) == "ICO");
+    CHECK(ToString(ImageType::JPEG) == "JPEG");
+    CHECK(ToString(ImageType::JNG) == "JNG");
+    CHECK(ToString(ImageType::PNG) == "PNG");
+}
+
+TEST_CASE("non-empty for known types") {
+    CHECK_FALSE(ToString(ImageType::UNKNOWN).empty());
+    CHECK_FALSE(ToString(ImageType::PNG).empty());
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// Bswap
+// ===========================================================================
+
+TEST_SUITE("Bswap") {
+
+TEST_CASE("uint16_t known swap") {
+    CHECK(bswap<uint16_t>(0x0102) == 0x0201);
+    CHECK(bswap<uint16_t>(0) == 0);
+}
+
+TEST_CASE("uint32_t known swap") {
+    CHECK(bswap<uint32_t>(0x01020304u) == 0x04030201u);
+    CHECK(bswap<uint32_t>(0) == 0);
+}
+
+TEST_CASE("uint64_t known swap") {
+    CHECK(bswap<uint64_t>(0x0102030405060708ull) == 0x0807060504030201ull);
+    CHECK(bswap<uint64_t>(0) == 0);
+}
+
+TEST_CASE("uint8_t identity") {
+    CHECK(bswap<uint8_t>(0xAB) == 0xAB);
+}
+
+TEST_CASE("int32_t signed wrapper") {
+    int32_t val = (int32_t)0x01020304;
+    int32_t swapped = bswap<int32_t>(val);
+    CHECK(swapped == (int32_t)0x04030201);
+}
+
+TEST_CASE("int16_t signed wrapper") {
+    int16_t val = (int16_t)0x0102;
+    int16_t swapped = bswap<int16_t>(val);
+    CHECK(swapped == (int16_t)0x0201);
+}
+
+TEST_CASE("double-swap roundtrip uint16") {
+    uint16_t orig = 0xBEEF;
+    CHECK(bswap<uint16_t>(bswap<uint16_t>(orig)) == orig);
+}
+
+TEST_CASE("double-swap roundtrip uint32") {
+    uint32_t orig = 0xDEADBEEFu;
+    CHECK(bswap<uint32_t>(bswap<uint32_t>(orig)) == orig);
+}
+
+TEST_CASE("double-swap roundtrip uint64") {
+    uint64_t orig = 0xDEADBEEFCAFEBABEull;
+    CHECK(bswap<uint64_t>(bswap<uint64_t>(orig)) == orig);
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// Perspective camera math
+// ===========================================================================
+
+TEST_SUITE("PerspectiveCamera") {
+
+TEST_CASE("CalculatePersperctiveDistance fov=90 deg") {
+    // tan(45deg) = 1, so distance = height / (2 * 1) = height / 2
+    double dist = algorism::CalculatePersperctiveDistance(90.0, 100.0);
+    CHECK(dist == doctest::Approx(50.0));
+}
+
+TEST_CASE("CalculatePersperctiveDistance larger fov means shorter distance") {
+    double d1 = algorism::CalculatePersperctiveDistance(60.0, 100.0);
+    double d2 = algorism::CalculatePersperctiveDistance(90.0, 100.0);
+    CHECK(d1 > d2);
+}
+
+TEST_CASE("CalculatePersperctiveDistance taller height means greater distance") {
+    double d1 = algorism::CalculatePersperctiveDistance(60.0, 100.0);
+    double d2 = algorism::CalculatePersperctiveDistance(60.0, 200.0);
+    CHECK(d2 == doctest::Approx(d1 * 2.0));
+}
+
+TEST_CASE("CalculatePersperctiveFov inverse of Distance") {
+    double fov = 60.0;
+    double height = 100.0;
+    double dist = algorism::CalculatePersperctiveDistance(fov, height);
+    double recovered_fov = algorism::CalculatePersperctiveFov(dist, height);
+    CHECK(recovered_fov == doctest::Approx(fov).epsilon(1e-6));
+}
+
+TEST_CASE("CalculatePersperctiveFov known value fov=90") {
+    // distance = height/2 when fov = 90
+    double fov = algorism::CalculatePersperctiveFov(50.0, 100.0);
+    CHECK(fov == doctest::Approx(90.0).epsilon(1e-6));
+}
+
+TEST_CASE("roundtrip Fov to Distance to Fov") {
+    double fov = 75.0;
+    double height = 200.0;
+    double dist = algorism::CalculatePersperctiveDistance(fov, height);
+    double fov2 = algorism::CalculatePersperctiveFov(dist, height);
+    CHECK(fov2 == doctest::Approx(fov).epsilon(1e-6));
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// MapSet utilities
+// ===========================================================================
+
+TEST_SUITE("MapSet") {
+
+TEST_CASE("exists map key found") {
+    Map<std::string, int> m;
+    m["hello"] = 42;
+    CHECK(exists(m, "hello") == true);
+}
+
+TEST_CASE("exists map key not found") {
+    Map<std::string, int> m;
+    m["hello"] = 42;
+    CHECK(exists(m, "world") == false);
+}
+
+TEST_CASE("exists set key found") {
+    Set<std::string> s;
+    s.insert("hello");
+    CHECK(exists(s, "hello") == true);
+}
+
+TEST_CASE("exists set key not found") {
+    Set<std::string> s;
+    s.insert("hello");
+    CHECK(exists(s, "world") == false);
+}
+
+TEST_CASE("exists heterogeneous lookup with string_view") {
+    Map<std::string, int> m;
+    m["test"] = 1;
+    std::string_view sv = "test";
+    CHECK(exists(m, sv) == true);
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// ArrayHelper utilities
+// ===========================================================================
+
+TEST_SUITE("ArrayHelper") {
+
+TEST_CASE("array_cast int to float") {
+    std::array<int, 3> src = { 1, 2, 3 };
+    auto result = array_cast<float>(src);
+    CHECK(result[0] == doctest::Approx(1.0f));
+    CHECK(result[1] == doctest::Approx(2.0f));
+    CHECK(result[2] == doctest::Approx(3.0f));
+}
+
+TEST_CASE("array_cast double to int truncation") {
+    std::array<double, 2> src = { 1.9, 2.1 };
+    auto result = array_cast<int>(src);
+    CHECK(result[0] == 1);
+    CHECK(result[1] == 2);
+}
+
+TEST_CASE("spanone size is always 1") {
+    int val = 42;
+    spanone<int> s(val);
+    CHECK(s.size() == 1);
+}
+
+TEST_CASE("spanone data points to value") {
+    int val = 42;
+    spanone<int> s(val);
+    CHECK(*s.data() == 42);
+    CHECK(s[0] == 42);
+}
+
+TEST_CASE("spanone iteration") {
+    int val = 99;
+    spanone<int> s(val);
+    int count = 0;
+    for (auto it = s.begin(); it != s.end(); ++it) {
+        CHECK(*it == 99);
+        count++;
+    }
+    CHECK(count == 1);
+}
+
+TEST_CASE("spanone mutation through reference") {
+    int val = 10;
+    spanone<int> s(val);
+    s[0] = 20;
+    CHECK(val == 20);
+}
+
+TEST_CASE("transform doubles values") {
+    std::vector<int> src = { 1, 2, 3 };
+    auto result = transform<int>(std::span<const int>(src), [](int x) { return x * 2; });
+    CHECK(result.size() == 3);
+    CHECK(result[0] == 2);
+    CHECK(result[1] == 4);
+    CHECK(result[2] == 6);
+}
+
+TEST_CASE("transform type conversion") {
+    std::vector<int> src = { 1, 2, 3 };
+    auto result = transform<int>(std::span<const int>(src), [](int x) { return (double)x + 0.5; });
+    CHECK(result.size() == 3);
+    CHECK(result[0] == doctest::Approx(1.5));
+    CHECK(result[1] == doctest::Approx(2.5));
+    CHECK(result[2] == doctest::Approx(3.5));
 }
 
 } // TEST_SUITE

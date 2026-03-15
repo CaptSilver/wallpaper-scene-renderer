@@ -1,6 +1,7 @@
 #include "WPTexImageParser.hpp"
 
 #include "Type.hpp"
+#include "WPTexImageHelpers.h"
 #include "WPCommon.hpp"
 #include <cstdint>
 #include <lz4.h>
@@ -35,6 +36,9 @@ using WPTexFlags = BitFlags<WPTexFlagEnum>;
 
 namespace
 {
+
+using namespace wallpaper::teximage_helpers;
+
 char* Lz4Decompress(const char* src, int size, int decompressed_size) {
     char* dst       = new char[(usize)decompressed_size];
     int   load_size = LZ4_decompress_safe(src, dst, size, decompressed_size);
@@ -44,36 +48,6 @@ char* Lz4Decompress(const char* src, int size, int decompressed_size) {
         return nullptr;
     }
     return dst;
-}
-
-TextureFormat ToTexFormate(int type) {
-    /*
-        type
-        RGBA8888 = 0,
-        DXT5 = 4,
-        DXT3 = 6,
-        DXT1 = 7,
-        RG88 = 8,
-        R8 = 9,
-    */
-    switch (type) {
-    case 0: return TextureFormat::RGBA8;
-    case 4: return TextureFormat::BC3;
-    case 6: return TextureFormat::BC2;
-    case 7: return TextureFormat::BC1;
-    case 8: return TextureFormat::RG8;
-    case 9: return TextureFormat::R8;
-    case 10: return TextureFormat::RGBA16F;
-    case 11: return TextureFormat::RG16F;
-    case 12: return TextureFormat::BC7;
-    case 13: return TextureFormat::R16F;
-    case 14: return TextureFormat::BC6H;
-    case 15: return TextureFormat::RGB565;
-    case 16: return TextureFormat::RGBA1010102;
-    default:
-        LOG_ERROR("ERROR::ToTexFormate Unkown image type: %d", type);
-        return TextureFormat::RGBA8;
-    }
 }
 void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
     header.extraHeader["texv"].val = ReadTexVesion(file);
@@ -120,17 +94,6 @@ void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
 
     if (header.extraHeader["texb"].val >= 3) header.type = static_cast<ImageType>(file.ReadInt32());
     if (header.extraHeader["texb"].val >= 4) file.ReadInt32(); // isVideoMp4 flag, skip
-}
-
-void SetHeaderPow2(ImageHeader& header, i32 mip_0_w, i32 mip_0_h) {
-    header.mipmap_pow2   = algorism::IsPowOfTwo((u32)mip_0_w) || algorism::IsPowOfTwo((u32)mip_0_h);
-    header.mipmap_larger = mip_0_w * mip_0_h > header.mapWidth * header.mapHeight;
-}
-
-constexpr std::string_view ALIAS_PREFIX = "_alias_";
-
-inline bool IsAliasTexture(const std::string& name) {
-    return name.compare(0, ALIAS_PREFIX.size(), ALIAS_PREFIX) == 0;
 }
 
 inline ImageHeader MakeFallbackHeader() {

@@ -14,14 +14,19 @@ add_executable(backend_scene_tests
     test_StringUtils.cpp
     test_Algorism.cpp
     test_WPUserProperties.cpp
+    test_ParticleModify.cpp
+    test_WPPuppet.cpp
+    test_WPTexImageHelpers.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
+    ${SRC_DIR}/WPPuppet.cpp
 )
 
 target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}
     ${SRC_DIR}/Scene/include
+    ${SRC_DIR}/Particle/include
     ${DOCTEST_INCLUDE_DIR}
 )
 
