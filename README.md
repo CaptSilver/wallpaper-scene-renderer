@@ -13,7 +13,7 @@ Open source Vulkan scene renderer for Wallpaper Engine wallpapers on Linux.
 - [x] Image layers
 - [x] Composition / Fullscreen layers
 - [x] Text (static rasterization via FreeType)
-- [ ] Text (dynamic via SceneScript — clocks, dates, counters)
+- [x] Text (dynamic via SceneScript — clocks, dates, counters)
 - [x] Sound objects (looping playback via miniaudio)
 - [x] Particle systems (see below)
 - [x] 3D models (see below)
@@ -179,34 +179,43 @@ to a valid fragment shader will render. Known working:
 - [x] Async compilation with disk caching
 - [x] `#define` injection (`log10`, etc.)
 - [x] Implicit conversion fixes (`bool()` wraps, cross-stage varying upgrades)
+- [x] Effect alpha preservation (component-write shaders that omit `.a`)
 - [x] `flat` interpolation qualifier support
 - [x] 13 texture slots (`g_Texture0`–`g_Texture12`) with resolution/rotation/translation metadata
 
 ### SceneScript
-- [ ] `engine` global (IEngine)
-  - [ ] `registerAudioBuffers(resolution)` → `AudioBuffers { left, right, average }`
-  - [ ] `screenResolution`, `canvasSize`, `timeOfDay`, `frametime`, `runtime`
-  - [ ] `userProperties` access
+- [x] `engine` global (IEngine)
+  - [x] `registerAudioBuffers(resolution)` → `AudioBuffers { left, right, average }`
+  - [x] `screenResolution`, `canvasSize`, `timeOfDay`, `frametime`, `runtime`
+  - [x] `userProperties` access
   - [ ] `setTimeout` / `setInterval`
   - [ ] Device detection (`isDesktopDevice`, `isMobileDevice`, etc.)
-- [ ] `thisScene` global (IScene)
+- [x] `thisScene` global (IScene)
   - [ ] Scene property control (bloom, clear color, camera, lighting)
-  - [ ] Layer management (`getLayer`, `createLayer`, `destroyLayer`)
+  - [x] `getLayer(name)` — returns layer proxy with position/scale/visibility/opacity
+  - [x] `enumerateLayers()` — returns array of all layer proxies
+  - [ ] `createLayer`, `destroyLayer`
   - [ ] Camera transforms
-- [ ] `thisLayer` global (ILayer)
-  - [ ] Position, angles, scale, visibility control
+- [x] `thisLayer` global (ILayer)
+  - [x] Position, angles, scale, visibility control
   - [ ] Parent/child hierarchy manipulation
   - [ ] Animation access (`getAnimation`)
-- [ ] `input` global (IInput)
-  - [ ] Mouse cursor position and events
-  - [ ] `cursorEnter` / `cursorLeave` / `cursorClick` events
-- [ ] `shared` global (inter-script data sharing)
-- [ ] Events: `init`, `update`, `destroy`, `applyUserProperties`, `resizeScreen`
+- [x] `input` global (IInput)
+  - [x] Mouse cursor position and events
+  - [x] `cursorEnter` / `cursorLeave` / `cursorClick` events
+  - [x] `cursorDown` / `cursorUp` / `cursorMove` events
+- [x] `shared` global (inter-script data sharing)
+- [x] Events: `init`, `update`
+- [ ] Events: `destroy`, `applyUserProperties`, `resizeScreen`
 - [ ] Media integration events (`mediaPlaybackChanged`, `mediaPropertiesChanged`, etc.)
 - [ ] `ILocalStorage` (persistent per-wallpaper storage)
-- [ ] Text layer dynamic content (scripts driving text updates)
-- [ ] Color scripts (partial — `colorScript` field parsed, evaluation started)
-- [ ] `WEColor`, `WEMath`, `WEVector` utility modules
+- [x] Text layer dynamic content (scripts driving text updates)
+- [x] Color scripts (`colorScript` field parsed, compiled, evaluated at 30Hz)
+- [x] `WEMath`, `WEColor` utility modules
+- [x] `Vec3` factory (position math for cursor/drag scripts)
+- [ ] `WEVector` utility module
+- [x] Sound layer control (`enumerateLayers`, `play`/`stop`/`pause`/`isPlaying`/`volume`)
+- [x] `console.log` support (buffered → LOG_INFO flush)
 
 ### Timeline Animations
 - [ ] Keyframe system with bezier curve interpolation
