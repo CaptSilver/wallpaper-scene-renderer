@@ -493,6 +493,61 @@ TEST_CASE("injection placed before closing brace") {
 } // TEST_SUITE("FixEffectAlpha")
 
 // ===========================================================================
+// FixCombineAlpha
+// ===========================================================================
+
+TEST_SUITE("FixCombineAlpha") {
+
+TEST_CASE("shine_combine pattern removed (macro-expanded saturate)") {
+    // After macro expansion: saturate(x) → (clamp(x, 0.0, 1.0))
+    std::string in = "void main() {\n"
+                     " albedo.a = (clamp(albedo.a + rays.a, 0.0, 1.0));\n"
+                     " glOutColor = albedo;\n"
+                     "}";
+    auto result = FixCombineAlpha(in);
+    CHECK(result.find("// albedo.a") != std::string::npos);
+    CHECK(result.find("glOutColor = albedo;") != std::string::npos);
+}
+
+TEST_CASE("godrays_combine with extra whitespace") {
+    std::string in = "void main() {\n"
+                     " albedo.a = (clamp( albedo.a + rays.a , 0.0 , 1.0 )) ;\n"
+                     " glOutColor = albedo;\n"
+                     "}";
+    auto result = FixCombineAlpha(in);
+    CHECK(result.find("// albedo.a") != std::string::npos);
+}
+
+TEST_CASE("fluidsimulation_combine NOT matched (different LHS/operand)") {
+    std::string in = "void main() {\n"
+                     " albedo.a = (clamp(prev.a + albedo.a, 0.0, 1.0));\n"
+                     " glOutColor = albedo;\n"
+                     "}";
+    auto result = FixCombineAlpha(in);
+    // Should be unchanged — prev != albedo on LHS
+    CHECK_EQ(result, in);
+}
+
+TEST_CASE("no matching pattern → unchanged") {
+    std::string in = "void main() {\n"
+                     "  albedo.a = 1.0;\n"
+                     "  glOutColor = albedo;\n"
+                     "}";
+    CHECK_EQ(FixCombineAlpha(in), in);
+}
+
+TEST_CASE("different variable names work") {
+    std::string in = "void main() {\n"
+                     " color.a = (clamp(color.a + bloom.a, 0.0, 1.0));\n"
+                     " glOutColor = color;\n"
+                     "}";
+    auto result = FixCombineAlpha(in);
+    CHECK(result.find("// color.a") != std::string::npos);
+}
+
+} // TEST_SUITE("FixCombineAlpha")
+
+// ===========================================================================
 // TranslateGeometryShader
 // ===========================================================================
 
