@@ -10,6 +10,10 @@ add_executable(backend_scene_tests
     test_SpecTexs.cpp
     test_SpriteAnimation.cpp
     test_helpers.cpp
+    test_WPShaderTransforms.cpp
+    test_StringUtils.cpp
+    test_Algorism.cpp
+    test_WPUserProperties.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
@@ -26,6 +30,7 @@ target_link_libraries(backend_scene_tests PRIVATE
     wpFs
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
+    nlohmann_json
 )
 
 target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
