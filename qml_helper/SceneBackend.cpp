@@ -346,7 +346,121 @@ void SceneObject::setAcceptMouse(bool value) {
 
 void SceneObject::setAcceptHover(bool value) { setAcceptHoverEvents(value); }
 
-void SceneObject::mousePressEvent(QMouseEvent* event) {}
+// Helper: AABB hit-test a cursor target using its JS proxy state
+static bool hitTestTarget(const QJSValue& thisLayerProxy,
+                          float sceneX, float sceneY) {
+    if (!thisLayerProxy.isObject()) return false;
+    QJSValue state  = thisLayerProxy.property("_state");
+    if (!state.isObject()) return false;
+    QJSValue origin = state.property("origin");
+    QJSValue scale  = state.property("scale");
+    QJSValue size   = state.property("size");
+
+    float ox = (float)origin.property("x").toNumber();
+    float oy = (float)origin.property("y").toNumber();
+    float sx = (float)scale.property("x").toNumber();
+    float sy = (float)scale.property("y").toNumber();
+    float sw = (float)size.property("x").toNumber();
+    float sh = (float)size.property("y").toNumber();
+    if (sw <= 0 || sh <= 0) return false;
+
+    float halfW = sw * std::abs(sx) / 2.0f;
+    float halfH = sh * std::abs(sy) / 2.0f;
+    return std::abs(sceneX - ox) < halfW && std::abs(sceneY - oy) < halfH;
+}
+
+// Helper: build cursor event argument with worldPosition as Vec3
+static QJSValue makeCursorEvent(QJSEngine* engine, float sceneX, float sceneY) {
+    QJSValue ev = engine->newObject();
+    ev.setProperty("x", (double)sceneX);
+    ev.setProperty("y", (double)sceneY);
+    // worldPosition as Vec3 (for drag scripts that use .add()/.subtract())
+    QJSValue wp = engine->evaluate(
+        QString("new Vec3(%1,%2,0)").arg((double)sceneX).arg((double)sceneY));
+    ev.setProperty("worldPosition", wp);
+    return ev;
+}
+
+// Helper: flush JS console.log buffer
+static void flushJsConsole(QJSEngine* engine, const char* ctx) {
+    QJSValue consoleBuf = engine->globalObject().property("console").property("_buf");
+    if (consoleBuf.isArray()) {
+        int len = consoleBuf.property("length").toInt();
+        for (int b = 0; b < len; b++) {
+            LOG_INFO("JS %s console.log: %s", ctx,
+                     qPrintable(consoleBuf.property(b).toString()));
+        }
+        if (len > 0) engine->evaluate("console._buf = [];");
+    }
+}
+
+void SceneObject::mousePressEvent(QMouseEvent* event) {
+    if (m_cursorTargets.empty() || !m_jsEngine) return;
+
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    auto pos = event->position();
+#else
+    auto pos = event->localPos();
+#endif
+    float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
+    // Iterate back to front (last target is front-most)
+    for (int i = (int)m_cursorTargets.size() - 1; i >= 0; i--) {
+        auto& target = m_cursorTargets[i];
+        bool hasClick = target.clickFn.isCallable();
+        bool hasDown  = target.downFn.isCallable();
+        if (!hasClick && !hasDown) continue;
+
+        if (hitTestTarget(target.thisLayerProxy, sceneX, sceneY)) {
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+
+            if (hasDown) {
+                m_dragTarget = target.layerName;
+                QJSValue r = target.downFn.call({ ev });
+                if (r.isError())
+                    LOG_INFO("cursorDown error on '%s': %s",
+                             target.layerName.c_str(), qPrintable(r.toString()));
+            }
+            if (hasClick) {
+                QJSValue r = target.clickFn.call({ ev });
+                if (r.isError())
+                    LOG_INFO("cursorClick error on '%s': %s",
+                             target.layerName.c_str(), qPrintable(r.toString()));
+            }
+            flushJsConsole(m_jsEngine, "click");
+            break;
+        }
+    }
+}
+
+void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_dragTarget.empty() || !m_jsEngine) return;
+
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    auto pos = event->position();
+#else
+    auto pos = event->localPos();
+#endif
+    float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
+    for (auto& target : m_cursorTargets) {
+        if (target.layerName == m_dragTarget && target.upFn.isCallable()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+            QJSValue r = target.upFn.call({ ev });
+            if (r.isError())
+                LOG_INFO("cursorUp error on '%s': %s",
+                         target.layerName.c_str(), qPrintable(r.toString()));
+            flushJsConsole(m_jsEngine, "mouseUp");
+            break;
+        }
+    }
+    m_dragTarget.clear();
+}
+
 void SceneObject::mouseMoveEvent(QMouseEvent* event) {
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
     auto pos = event->position();
@@ -354,6 +468,23 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
     auto pos = event->localPos();
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
+
+    // cursorMove on drag target
+    if (!m_dragTarget.empty() && m_jsEngine) {
+        float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+        float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+        for (auto& target : m_cursorTargets) {
+            if (target.layerName == m_dragTarget && target.moveFn.isCallable()) {
+                m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+                QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+                QJSValue r = target.moveFn.call({ ev });
+                if (r.isError())
+                    LOG_INFO("cursorMove error on '%s': %s",
+                             target.layerName.c_str(), qPrintable(r.toString()));
+                break;
+            }
+        }
+    }
 }
 
 void SceneObject::hoverMoveEvent(QHoverEvent* event) {
@@ -363,6 +494,50 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
     auto pos = event->posF();
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
+
+    // cursorEnter / cursorLeave hit-testing
+    if (m_cursorTargets.empty() || !m_jsEngine) return;
+    float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
+    std::unordered_set<std::string> nowHovered;
+    for (auto& target : m_cursorTargets) {
+        if (!target.enterFn.isCallable() && !target.leaveFn.isCallable()) continue;
+        if (hitTestTarget(target.thisLayerProxy, sceneX, sceneY)) {
+            nowHovered.insert(target.layerName);
+            // Enter: was not previously hovered
+            if (!m_hoveredLayers.count(target.layerName) && target.enterFn.isCallable()) {
+                LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)",
+                         target.layerName.c_str(), sceneX, sceneY);
+                m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+                QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+                QJSValue result = target.enterFn.call({ ev });
+                if (result.isError()) {
+                    LOG_INFO("cursorEnter ERROR: %s",
+                             result.toString().toStdString().c_str());
+                }
+                flushJsConsole(m_jsEngine, "cursorEnter");
+            }
+        }
+    }
+    // Leave: was hovered, now is not
+    for (const auto& name : m_hoveredLayers) {
+        if (!nowHovered.count(name)) {
+            for (auto& target : m_cursorTargets) {
+                if (target.layerName == name && target.leaveFn.isCallable()) {
+                    LOG_INFO("cursorLeave: layer '%s'", target.layerName.c_str());
+                    m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+                    QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+                    target.leaveFn.call({ ev });
+                    break;
+                }
+            }
+        }
+    }
+    if (nowHovered != m_hoveredLayers) {
+        m_hoveredLayers = std::move(nowHovered);
+        flushJsConsole(m_jsEngine, "hover");
+    }
 }
 
 std::string SceneObject::GetDefaultCachePath() {
@@ -375,9 +550,12 @@ void SceneObject::setupTextScripts() {
     auto scripts = m_scene->getTextScripts();
     auto colorScripts = m_scene->getColorScripts();
     auto propertyScripts = m_scene->getPropertyScripts();
-    LOG_INFO("setupTextScripts: text=%zu color=%zu property=%zu",
-             scripts.size(), colorScripts.size(), propertyScripts.size());
-    if (scripts.empty() && colorScripts.empty() && propertyScripts.empty()) return;
+    auto soundLayerControls = m_scene->getSoundLayerControls();
+    LOG_INFO("setupTextScripts: text=%zu color=%zu property=%zu soundLayers=%zu",
+             scripts.size(), colorScripts.size(), propertyScripts.size(),
+             soundLayerControls.size());
+    if (scripts.empty() && colorScripts.empty() && propertyScripts.empty()
+        && soundLayerControls.empty()) return;
 
     m_jsEngine = new QJSEngine(this);
 
@@ -393,10 +571,21 @@ void SceneObject::setupTextScripts() {
     // Provide the 'shared' global for inter-script data sharing.
     // All scripts in the scene can read/write to this object.
     m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
+    // Default shared values for common script patterns
+    m_jsEngine->evaluate("shared.volume = 1.0;\n");
 
-    // Provide a minimal 'console' object for scripts that call console.log()
+    // Provide a 'console' object that forwards to C++ logging
     m_jsEngine->evaluate(
-        "var console = { log: function() {}, warn: function() {}, error: function() {} };\n"
+        "var console = {\n"
+        "  log: function() {\n"
+        "    var args = Array.prototype.slice.call(arguments);\n"
+        "    var msg = args.map(function(a){ return String(a); }).join(' ');\n"
+        "    if (!console._buf) console._buf = [];\n"
+        "    console._buf.push(msg);\n"
+        "  },\n"
+        "  warn: function() { console.log.apply(console, arguments); },\n"
+        "  error: function() { console.log.apply(console, arguments); }\n"
+        "};\n"
     );
 
     // Engine method stubs
@@ -427,9 +616,28 @@ void SceneObject::setupTextScripts() {
         "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
         "  return v;\n"
         "}\n"
+        // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
+        "var _origMatch = String.prototype.match;\n"
+        "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
         "var localStorage = {\n"
         "  get: function(key) { return undefined; },\n"
         "  set: function(key, value) {}\n"
+        "};\n"
+    );
+
+    // WEMath module: lerp, mix, clamp, smoothstep
+    m_jsEngine->evaluate(
+        "var WEMath = {\n"
+        "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
+        "  mix: function(a, b, t) { return a + (b - a) * t; },\n"
+        "  clamp: function(v, lo, hi) { return Math.min(Math.max(v, lo), hi); },\n"
+        "  smoothstep: function(edge0, edge1, x) {\n"
+        "    var t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);\n"
+        "    return t * t * (3 - 2 * t);\n"
+        "  },\n"
+        "  fract: function(x) { return x - Math.floor(x); },\n"
+        "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
+        "  step: function(edge, x) { return x < edge ? 0 : 1; }\n"
         "};\n"
     );
 
@@ -473,6 +681,13 @@ void SceneObject::setupTextScripts() {
         }
     }
 
+    // Extract _ortho from init states and store scene ortho for JS
+    // (also used by C++ for cursorClick hit-testing)
+    m_jsEngine->evaluate(
+        "var _sceneOrtho = _layerInitStates._ortho || [1920, 1080];\n"
+        "delete _layerInitStates._ortho;\n"
+    );
+
     // thisScene.getLayer() and thisLayer infrastructure
     // Layer proxies use Object.defineProperty for dirty tracking
     m_jsEngine->evaluate(
@@ -483,10 +698,12 @@ void SceneObject::setupTextScripts() {
         "    origin: {x:init.o[0], y:init.o[1], z:init.o[2]},\n"
         "    scale: {x:init.s[0], y:init.s[1], z:init.s[2]},\n"
         "    angles: {x:init.a[0], y:init.a[1], z:init.a[2]},\n"
+        "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
         "    visible: init.v, alpha: 1.0,\n"
         "    text: '', name: name, _dirty: {}\n"
         "  } : { origin: {x:0,y:0,z:0}, scale: {x:1,y:1,z:1},\n"
-        "        angles: {x:0,y:0,z:0}, visible: true, alpha: 1.0,\n"
+        "        angles: {x:0,y:0,z:0}, size: {x:0, y:0},\n"
+        "        visible: true, alpha: 1.0,\n"
         "        text: '', name: name, _dirty: {} };\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
@@ -516,10 +733,68 @@ void SceneObject::setupTextScripts() {
         "    set: function(v){ _s.text = v; _s._dirty.text = true; },\n"
         "    enumerable: true\n"
         "  });\n"
+        "  Object.defineProperty(p, 'size', {\n"
+        "    get: function(){ return _s.size; },\n"
+        "    enumerable: true\n"
+        "  });\n"
         "  p.play = function(){};\n"
+        "  p.stop = function(){};\n"
+        "  p.pause = function(){};\n"
+        "  p.isPlaying = function(){ return false; };\n"
+        "  p.getTextureAnimation = function(){\n"
+        "    return { rate: 0, frameCount: 1, _frame: 0,\n"
+        "      getFrame: function(){ return this._frame; },\n"
+        "      setFrame: function(f){ this._frame = f; },\n"
+        "      play: function(){ this.rate = 1; },\n"
+        "      pause: function(){ this.rate = 0; },\n"
+        "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
+        "      isPlaying: function(){ return this.rate > 0; }\n"
+        "    };\n"
+        "  };\n"
         "  p._state = _s;\n"
         "  return p;\n"
         "}\n"
+        // Null-safe proxy: returned when getLayer() can't find a layer.
+        // All setters are no-ops, no dirty tracking. Prevents TypeError on missing layers.
+        "var _nullProxy = (function() {\n"
+        "  var _s = { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},\n"
+        "    angles:{x:0,y:0,z:0}, size:{x:0,y:0},\n"
+        "    visible:false, alpha:0, text:'', name:'', _dirty:{} };\n"
+        "  var p = {};\n"
+        "  Object.defineProperty(p, 'name', {get:function(){return '';}, enumerable:true});\n"
+        "  Object.defineProperty(p, 'debug', {get:function(){return undefined;}, enumerable:true});\n"
+        "  var vec3Props = ['origin','scale','angles'];\n"
+        "  for (var i=0; i<vec3Props.length; i++) {\n"
+        "    (function(prop){\n"
+        "      Object.defineProperty(p, prop, {\n"
+        "        get: function(){return _s[prop];}, set: function(v){},\n"
+        "        enumerable: true\n"
+        "      });\n"
+        "    })(vec3Props[i]);\n"
+        "  }\n"
+        "  var scalarProps = ['visible','alpha'];\n"
+        "  for (var j=0; j<scalarProps.length; j++) {\n"
+        "    (function(prop){\n"
+        "      Object.defineProperty(p, prop, {\n"
+        "        get: function(){return _s[prop];}, set: function(v){},\n"
+        "        enumerable: true\n"
+        "      });\n"
+        "    })(scalarProps[j]);\n"
+        "  }\n"
+        "  Object.defineProperty(p, 'text', {get:function(){return '';}, set:function(v){}, enumerable:true});\n"
+        "  Object.defineProperty(p, 'size', {get:function(){return _s.size;}, enumerable:true});\n"
+        "  p.play = function(){}; p.stop = function(){};\n"
+        "  p.pause = function(){}; p.isPlaying = function(){return false;};\n"
+        "  p.getTextureAnimation = function(){\n"
+        "    return { rate:0, frameCount:1, _frame:0,\n"
+        "      getFrame:function(){return this._frame;}, setFrame:function(f){},\n"
+        "      play:function(){}, pause:function(){}, stop:function(){},\n"
+        "      isPlaying:function(){return false;}\n"
+        "    };\n"
+        "  };\n"
+        "  p._state = _s;\n"
+        "  return p;\n"
+        "})();\n"
         "var thisScene = {\n"
         "  getLayer: function(name) {\n"
         "    if (_layerCache[name]) return _layerCache[name];\n"
@@ -538,7 +813,7 @@ void SceneObject::setupTextScripts() {
         "    if (keys.length === 0) continue;\n"
         "    updates.push({ name: name, dirty: d,\n"
         "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
-        "      visible: s.visible, alpha: s.alpha });\n"
+        "      visible: s.visible, alpha: s.alpha, text: s.text });\n"
         "    s._dirty = {};\n"
         "  }\n"
         "  return updates;\n"
@@ -550,6 +825,173 @@ void SceneObject::setupTextScripts() {
 
     // Get node name→id map for thisScene.getLayer() dispatch
     m_nodeNameToId = m_scene->getNodeNameToIdMap();
+
+    // Sound layer control infrastructure for SceneScript play/stop/pause API
+    {
+        auto soundLayers = m_scene->getSoundLayerControls();
+        m_soundLayerStates.clear();
+        m_soundLayerNameToIndex.clear();
+
+        if (!soundLayers.empty()) {
+            // Build _soundLayerStates JSON for JS side
+            QString statesJson = "{\n";
+            for (int32_t i = 0; i < (int32_t)soundLayers.size(); i++) {
+                const auto& sl = soundLayers[i];
+                SoundLayerState sls;
+                sls.index = i;
+                sls.name  = sl.name;
+                m_soundLayerStates.push_back(std::move(sls));
+                m_soundLayerNameToIndex[sl.name] = i;
+
+                QString nameEsc = QString::fromStdString(sl.name);
+                nameEsc.replace("'", "\\'");
+                if (i > 0) statesJson += ",\n";
+                statesJson += QString("  '%1': { idx: %2, vol: %3, silent: %4 }")
+                    .arg(nameEsc).arg(i)
+                    .arg(sl.initialVolume, 0, 'f', 3)
+                    .arg(sl.startsilent ? "true" : "false");
+            }
+            statesJson += "\n}";
+
+            m_jsEngine->evaluate(
+                QString("var _soundLayerStates = %1;\n").arg(statesJson));
+
+            // Sound playing states object — updated by C++ before each eval
+            m_jsEngine->evaluate("engine._soundPlayingStates = {};\n");
+
+            // Sound layer proxy factory with dirty tracking and command queue
+            m_jsEngine->evaluate(
+                "var _soundLayerCache = {};\n"
+                "function _makeSoundLayerProxy(name) {\n"
+                "  var info = _soundLayerStates[name];\n"
+                "  if (!info) return null;\n"
+                "  var _s = { name: name, volume: info.vol, _dirty: {}, _cmds: [] };\n"
+                "  var p = {};\n"
+                "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'volume', {\n"
+                "    get: function(){ return _s.volume; },\n"
+                "    set: function(v){ _s.volume = v; _s._dirty.volume = true; },\n"
+                "    enumerable: true\n"
+                "  });\n"
+                "  p.play = function(){ _s._cmds.push('play'); };\n"
+                "  p.stop = function(){ _s._cmds.push('stop'); };\n"
+                "  p.pause = function(){ _s._cmds.push('pause'); };\n"
+                "  p.isPlaying = function(){\n"
+                "    return !!(engine._soundPlayingStates && engine._soundPlayingStates[name]);\n"
+                "  };\n"
+                "  // No-op stubs for properties that only apply to image layers\n"
+                "  Object.defineProperty(p, 'origin', { get: function(){return {x:0,y:0,z:0};}, set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'scale', { get: function(){return {x:1,y:1,z:1};}, set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'angles', { get: function(){return {x:0,y:0,z:0};}, set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'visible', { get: function(){return true;}, set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'alpha', { get: function(){return 1;}, set: function(){}, enumerable:true });\n"
+                "  p.getTextureAnimation = function(){\n"
+                "    return { rate: 0, frameCount: 1, _frame: 0,\n"
+                "      getFrame: function(){ return this._frame; },\n"
+                "      setFrame: function(f){ this._frame = f; },\n"
+                "      play: function(){ this.rate = 1; },\n"
+                "      pause: function(){ this.rate = 0; },\n"
+                "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
+                "      isPlaying: function(){ return this.rate > 0; }\n"
+                "    };\n"
+                "  };\n"
+                "  p._state = _s;\n"
+                "  return p;\n"
+                "}\n"
+            );
+
+            // Patch thisScene.getLayer to check sound layers too
+            m_jsEngine->evaluate(
+                "var _origGetLayer = thisScene.getLayer;\n"
+                "thisScene.getLayer = function(name) {\n"
+                "  // Check image layers first\n"
+                "  var r = _origGetLayer(name);\n"
+                "  if (r) return r;\n"
+                "  // Then check sound layers\n"
+                "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
+                "  if (_soundLayerStates[name]) {\n"
+                "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
+                "    return _soundLayerCache[name];\n"
+                "  }\n"
+                "  console.log('getLayer: unknown layer: ' + name);\n"
+                "  return _nullProxy;\n"
+                "};\n"
+            );
+
+            // thisScene.enumerateLayers — returns array of proxies for all layers
+            m_jsEngine->evaluate(
+                "thisScene.enumerateLayers = function() {\n"
+                "  var layers = [];\n"
+                "  // Image layers\n"
+                "  for (var name in _layerInitStates) {\n"
+                "    layers.push(thisScene.getLayer(name));\n"
+                "  }\n"
+                "  // Sound layers\n"
+                "  for (var name in _soundLayerStates) {\n"
+                "    layers.push(thisScene.getLayer(name));\n"
+                "  }\n"
+                "  return layers;\n"
+                "};\n"
+            );
+
+            // Diagnostic: test enumerateLayers to verify sound layers are discoverable
+            {
+                QJSValue testResult = m_jsEngine->evaluate(
+                    "var _testLayers = thisScene.enumerateLayers();\n"
+                    "var _testMp3 = _testLayers.filter(function(e){ return e && e.name && e.name.toLowerCase().indexOf('.mp3') >= 0; });\n"
+                    "'total=' + _testLayers.length + ' mp3=' + _testMp3.length + ' names=[' + _testMp3.map(function(e){return e.name;}).join('|') + ']';\n"
+                );
+                LOG_INFO("enumerateLayers test: %s", qPrintable(testResult.toString()));
+            }
+
+            // Collect dirty sound layer commands for C++ dispatch
+            m_jsEngine->evaluate(
+                "function _collectDirtySoundLayers() {\n"
+                "  var updates = [];\n"
+                "  for (var name in _soundLayerCache) {\n"
+                "    var s = _soundLayerCache[name]._state;\n"
+                "    var hasDirty = Object.keys(s._dirty).length > 0;\n"
+                "    var hasCmds = s._cmds.length > 0;\n"
+                "    if (!hasDirty && !hasCmds) continue;\n"
+                "    updates.push({ name: name, dirty: s._dirty,\n"
+                "      volume: s.volume, cmds: s._cmds });\n"
+                "    s._dirty = {};\n"
+                "    s._cmds = [];\n"
+                "  }\n"
+                "  return updates;\n"
+                "}\n"
+            );
+
+            m_collectDirtySoundLayersFn = m_jsEngine->globalObject().property("_collectDirtySoundLayers");
+
+            LOG_INFO("setupTextScripts: %zu sound layers registered for SceneScript API",
+                     soundLayers.size());
+        } else {
+            // Still provide enumerateLayers even when there are no sound layers
+            m_jsEngine->evaluate(
+                "thisScene.enumerateLayers = function() {\n"
+                "  var layers = [];\n"
+                "  for (var name in _layerInitStates) {\n"
+                "    layers.push(thisScene.getLayer(name));\n"
+                "  }\n"
+                "  return layers;\n"
+                "};\n"
+            );
+        }
+    }
+
+    // Final null-safety wrapper: ensures getLayer() never returns null.
+    // The original getLayer returns null for unknown image layers so the sound-layer
+    // patch can fall through. This outermost wrapper catches any remaining nulls.
+    m_jsEngine->evaluate(
+        "var _innerGetLayer = thisScene.getLayer;\n"
+        "thisScene.getLayer = function(name) {\n"
+        "  var r = _innerGetLayer(name);\n"
+        "  if (r !== null && r !== undefined) return r;\n"
+        "  console.log('getLayer: unknown layer: ' + name);\n"
+        "  return _nullProxy;\n"
+        "};\n"
+    );
 
     // Audio resolution constants
     engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
@@ -752,6 +1194,9 @@ void SceneObject::setupTextScripts() {
         // Array spread: [...expr] → [].concat(expr)
         scriptSrc.replace(QRegularExpression("\\[\\s*\\.\\.\\.(\\w[^\\]]*)\\]"), "[].concat(\\1)");
 
+        // Replace 'new Vec3(' with 'Vec3(' — Vec3 is a factory, not a constructor
+        scriptSrc.replace("new Vec3(", "Vec3(");
+
         // Inject scriptProperties and per-IIFE createScriptProperties that merges stored values
         QString propsInit;
         if (!psi.scriptProperties.empty()) {
@@ -792,6 +1237,8 @@ void SceneObject::setupTextScripts() {
 
         // Wrap in IIFE returning {update, init}
         // Scripts that only use thisScene.getLayer() side effects may not have update()
+        // Wrap init in try-catch so partial initialization still works (variables
+        // set before the error point remain available to update)
         QString wrapped = QString(
             "(function() {\n"
             "  'use strict';\n"
@@ -800,9 +1247,32 @@ void SceneObject::setupTextScripts() {
             "  %2\n"
             "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
             "             (typeof update === 'function' ? update : null);\n"
-            "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-            "              (typeof init === 'function' ? init : null);\n"
-            "  return { update: _upd, init: _init };\n"
+            "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
+            "                 (typeof init === 'function' ? init : null);\n"
+            "  var _init = _rawInit ? function(v) {\n"
+            "    try { return _rawInit(v); }\n"
+            "    catch(e) { console.log('SceneScript init error: ' + e.message); }\n"
+            "  } : null;\n"
+            "  var _rawUpd = _upd;\n"
+            "  if (_rawUpd) _upd = function(v) {\n"
+            "    try { return _rawUpd(v); }\n"
+            "    catch(e) { return v; }\n"
+            "  };\n"
+            "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+            "               (typeof cursorClick === 'function' ? cursorClick : null);\n"
+            "  var _enter = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+            "               (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+            "  var _leave = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+            "               (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+            "  var _down  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+            "               (typeof cursorDown === 'function' ? cursorDown : null);\n"
+            "  var _up    = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+            "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
+            "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+            "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
+            "  return { update: _upd, init: _init, cursorClick: _click,\n"
+            "           cursorEnter: _enter, cursorLeave: _leave,\n"
+            "           cursorDown: _down, cursorUp: _up, cursorMove: _move };\n"
             "})()\n"
         ).arg(propsInit, scriptSrc);
 
@@ -810,8 +1280,11 @@ void SceneObject::setupTextScripts() {
         if (result.isError()) {
             static int s_err_log = 0;
             if (++s_err_log <= 10) {
-                LOG_INFO("Property script COMPILE ERROR id=%d prop=%s: %s",
-                         psi.id, psi.property.c_str(), qPrintable(result.toString()));
+                QString stack = result.property("stack").toString();
+                int line = result.property("lineNumber").toInt();
+                LOG_INFO("Property script COMPILE ERROR id=%d prop=%s: %s (line %d)\nSTACK: %s",
+                         psi.id, psi.property.c_str(), qPrintable(result.toString()),
+                         line, qPrintable(stack));
             }
             qCWarning(wekdeScene, "Property script error for id=%d prop=%s: %s",
                        psi.id, psi.property.c_str(), qPrintable(result.toString()));
@@ -821,11 +1294,20 @@ void SceneObject::setupTextScripts() {
             continue;
         }
 
-        QJSValue updateFn = result.property("update");
-        QJSValue initFn = result.property("init");
+        QJSValue updateFn      = result.property("update");
+        QJSValue initFn        = result.property("init");
+        QJSValue cursorClickFn = result.property("cursorClick");
+        QJSValue cursorEnterFn = result.property("cursorEnter");
+        QJSValue cursorLeaveFn = result.property("cursorLeave");
+        QJSValue cursorDownFn  = result.property("cursorDown");
+        QJSValue cursorUpFn    = result.property("cursorUp");
+        QJSValue cursorMoveFn  = result.property("cursorMove");
 
-        // Scripts with neither update nor init are useless
-        if (!updateFn.isCallable() && !initFn.isCallable()) {
+        // Scripts with no callable functions are useless
+        if (!updateFn.isCallable() && !initFn.isCallable() && !cursorClickFn.isCallable()
+            && !cursorEnterFn.isCallable() && !cursorLeaveFn.isCallable()
+            && !cursorDownFn.isCallable() && !cursorUpFn.isCallable()
+            && !cursorMoveFn.isCallable()) {
             continue;
         }
 
@@ -835,6 +1317,12 @@ void SceneObject::setupTextScripts() {
         state.layerName      = psi.layerName;
         state.updateFn       = updateFn;
         state.initFn         = initFn;
+        state.cursorClickFn  = cursorClickFn;
+        state.cursorEnterFn  = cursorEnterFn;
+        state.cursorLeaveFn  = cursorLeaveFn;
+        state.cursorDownFn   = cursorDownFn;
+        state.cursorUpFn     = cursorUpFn;
+        state.cursorMoveFn   = cursorMoveFn;
         state.currentVisible = psi.initialVisible;
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;
@@ -866,19 +1354,87 @@ void SceneObject::setupTextScripts() {
             }
             QJSValue initResult = initFn.call({ initVal });
             if (initResult.isError()) {
-                qCWarning(wekdeScene, "Property script init error id=%d prop=%s: %s",
-                           psi.id, psi.property.c_str(), qPrintable(initResult.toString()));
+                QString stack = initResult.property("stack").toString();
+                int line = initResult.property("lineNumber").toInt();
+                qCWarning(wekdeScene, "Property script init error id=%d prop=%s: %s (line %d)",
+                           psi.id, psi.property.c_str(), qPrintable(initResult.toString()), line);
+                LOG_INFO("Property script init STACK id=%d prop=%s:\n%s",
+                         psi.id, psi.property.c_str(), qPrintable(stack));
             }
         }
 
         m_propertyScriptStates.push_back(std::move(state));
     }
+    // Flush console.log buffer from script init
+    {
+        QJSValue consoleBuf = m_jsEngine->globalObject().property("console").property("_buf");
+        if (consoleBuf.isArray()) {
+            int len = consoleBuf.property("length").toInt();
+            for (int i = 0; i < len; i++) {
+                LOG_INFO("JS init console.log: %s", qPrintable(consoleBuf.property(i).toString()));
+            }
+            if (len > 0) {
+                m_jsEngine->evaluate("console._buf = [];");
+            }
+        }
+    }
+
     if (!m_propertyScriptStates.empty()) {
         qCInfo(wekdeScene, "Compiled %zu property scripts", (size_t)m_propertyScriptStates.size());
         LOG_INFO("Compiled %zu property scripts (of %zu total)",
                  (size_t)m_propertyScriptStates.size(), propertyScripts.size());
     } else if (!propertyScripts.empty()) {
         LOG_INFO("WARNING: 0 property scripts compiled out of %zu - all failed!", propertyScripts.size());
+    }
+
+    // Collect cursor event targets, merging by layer name
+    {
+        std::unordered_map<std::string, size_t> targetIndex;
+        for (const auto& state : m_propertyScriptStates) {
+            bool hasCursor = state.cursorClickFn.isCallable()
+                          || state.cursorEnterFn.isCallable()
+                          || state.cursorLeaveFn.isCallable()
+                          || state.cursorDownFn.isCallable()
+                          || state.cursorUpFn.isCallable()
+                          || state.cursorMoveFn.isCallable();
+            if (!hasCursor || state.layerName.empty()) continue;
+
+            auto it = targetIndex.find(state.layerName);
+            CursorTarget* tgt;
+            if (it == targetIndex.end()) {
+                targetIndex[state.layerName] = m_cursorTargets.size();
+                m_cursorTargets.push_back({});
+                tgt = &m_cursorTargets.back();
+                tgt->layerName      = state.layerName;
+                tgt->thisLayerProxy = state.thisLayerProxy;
+            } else {
+                tgt = &m_cursorTargets[it->second];
+            }
+            // Merge — first callable wins per event type
+            if (state.cursorClickFn.isCallable() && !tgt->clickFn.isCallable())
+                tgt->clickFn = state.cursorClickFn;
+            if (state.cursorEnterFn.isCallable() && !tgt->enterFn.isCallable())
+                tgt->enterFn = state.cursorEnterFn;
+            if (state.cursorLeaveFn.isCallable() && !tgt->leaveFn.isCallable())
+                tgt->leaveFn = state.cursorLeaveFn;
+            if (state.cursorDownFn.isCallable() && !tgt->downFn.isCallable())
+                tgt->downFn = state.cursorDownFn;
+            if (state.cursorUpFn.isCallable() && !tgt->upFn.isCallable())
+                tgt->upFn = state.cursorUpFn;
+            if (state.cursorMoveFn.isCallable() && !tgt->moveFn.isCallable())
+                tgt->moveFn = state.cursorMoveFn;
+        }
+        if (!m_cursorTargets.empty()) {
+            LOG_INFO("cursor targets: %zu layers registered",
+                     m_cursorTargets.size());
+        }
+    }
+
+    // Store scene ortho size for cursorClick hit-testing
+    {
+        auto orthoSize = m_scene->getOrthoSize();
+        m_sceneOrthoW = (float)orthoSize[0];
+        m_sceneOrthoH = (float)orthoSize[1];
     }
 
     // Load sound volume scripts
@@ -1029,7 +1585,8 @@ void SceneObject::setupTextScripts() {
     }
 
     // Property scripts must run first — they populate shared.* that text/color scripts depend on
-    if (!m_propertyScriptStates.empty() || !m_soundVolumeScriptStates.empty()) {
+    if (!m_propertyScriptStates.empty() || !m_soundVolumeScriptStates.empty()
+        || !m_soundLayerStates.empty()) {
         m_propertyTimer = new QTimer(this);
         m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
         connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
@@ -1187,7 +1744,9 @@ void SceneObject::evaluateColorScripts() {
 }
 
 void SceneObject::evaluatePropertyScripts() {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (!m_jsEngine) return;
+    if (m_propertyScriptStates.empty() && m_soundVolumeScriptStates.empty()
+        && m_soundLayerStates.empty()) return;
 
     // Update engine globals
     double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
@@ -1201,6 +1760,21 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Refresh audio buffers in case property scripts use audio data
     refreshAudioBuffers();
+
+    // Update sound layer isPlaying states from C++ before script evaluation
+    if (!m_soundLayerStates.empty()) {
+        QJSValue engineObj2 = m_jsEngine->globalObject().property("engine");
+        QJSValue playingStates = engineObj2.property("_soundPlayingStates");
+        if (playingStates.isUndefined()) {
+            playingStates = m_jsEngine->newObject();
+            engineObj2.setProperty("_soundPlayingStates", playingStates);
+        }
+        for (const auto& sls : m_soundLayerStates) {
+            bool playing = m_scene->soundLayerIsPlaying(sls.index);
+            playingStates.setProperty(
+                QString::fromStdString(sls.name), playing);
+        }
+    }
 
     // Cache Vec3 constructor for efficient argument creation
     QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
@@ -1242,8 +1816,11 @@ void SceneObject::evaluatePropertyScripts() {
                     erroredIds.insert(state.id * 100 + pass);
                     static int s_rt_err = 0;
                     if (++s_rt_err <= 10) {
-                        LOG_INFO("Property script RUNTIME ERROR id=%d prop=%s: %s",
-                                 state.id, state.property.c_str(), qPrintable(result.toString()));
+                        QString stack = result.property("stack").toString();
+                        int line = result.property("lineNumber").toInt();
+                        LOG_INFO("Property script RUNTIME ERROR id=%d prop=%s: %s (line %d)\nSTACK: %s",
+                                 state.id, state.property.c_str(), qPrintable(result.toString()),
+                                 line, qPrintable(stack));
                     }
                     qCWarning(wekdeScene, "Property script error id=%d prop=%s: %s",
                                state.id, state.property.c_str(), qPrintable(result.toString()));
@@ -1333,6 +1910,46 @@ void SceneObject::evaluatePropertyScripts() {
             if (dirty.property("alpha").toBool()) {
                 m_scene->updateNodeAlpha(id, (float)entry.property("alpha").toNumber());
             }
+            if (dirty.property("text").toBool()) {
+                std::string newText = entry.property("text").toString().toStdString();
+                m_scene->updateText(id, newText);
+            }
+        }
+    }
+
+    // Flush dirty sound layer proxies (play/stop/pause/volume commands)
+    if (m_collectDirtySoundLayersFn.isCallable()) {
+        QJSValue soundUpdates = m_collectDirtySoundLayersFn.call();
+        int soundUpdateCount = soundUpdates.property("length").toInt();
+        for (int i = 0; i < soundUpdateCount; i++) {
+            QJSValue entry = soundUpdates.property(i);
+            std::string name = entry.property("name").toString().toStdString();
+            auto it = m_soundLayerNameToIndex.find(name);
+            if (it == m_soundLayerNameToIndex.end()) continue;
+            int32_t idx = it->second;
+
+            // Process commands (play/stop/pause)
+            QJSValue cmds = entry.property("cmds");
+            int cmdCount = cmds.property("length").toInt();
+            for (int c = 0; c < cmdCount; c++) {
+                QString cmd = cmds.property(c).toString();
+                if (cmd == "play") {
+                    m_scene->soundLayerPlay(idx);
+                } else if (cmd == "stop") {
+                    m_scene->soundLayerStop(idx);
+                } else if (cmd == "pause") {
+                    m_scene->soundLayerPause(idx);
+                }
+            }
+
+            // Process volume changes
+            QJSValue dirty = entry.property("dirty");
+            if (dirty.property("volume").toBool()) {
+                float vol = (float)entry.property("volume").toNumber();
+                if (std::isnan(vol) || vol < 0.0f) vol = 0.0f;
+                if (vol > 1.0f) vol = 1.0f;
+                m_scene->soundLayerSetVolume(idx, vol);
+            }
         }
     }
 
@@ -1362,6 +1979,20 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    // Flush console.log buffer from scripts
+    {
+        QJSValue consoleBuf = m_jsEngine->globalObject().property("console").property("_buf");
+        if (consoleBuf.isArray()) {
+            int len = consoleBuf.property("length").toInt();
+            for (int i = 0; i < len; i++) {
+                LOG_INFO("JS console.log: %s", qPrintable(consoleBuf.property(i).toString()));
+            }
+            if (len > 0) {
+                m_jsEngine->evaluate("console._buf = [];");
+            }
+        }
+    }
+
     // Periodic diagnostic logging (~every 3 seconds at 30Hz)
     static int propEvalCount = 0;
     if (++propEvalCount % 90 == 1) {
@@ -1383,7 +2014,9 @@ void SceneObject::evaluatePropertyScripts() {
             QString dump;
             for (const char* key : {"p1x", "p1y", "p1z", "sunsize", "rotX", "rotY",
                                     "p3x", "p3y", "p3z", "p6x", "p6y",
-                                    "musicse", "musicvolume"}) {
+                                    "musicse", "musicvolume",
+                                    "volume", "songplays", "uiopacity",
+                                    "playOnStart", "progress"}) {
                 QJSValue v = sharedObj.property(key);
                 if (!v.isUndefined()) {
                     dump += QString("%1=%2 ").arg(key).arg(v.toNumber(), 0, 'f', 4);
@@ -1406,6 +2039,12 @@ void SceneObject::cleanupTextScripts() {
     m_soundVolumeScriptStates.clear();
     m_nodeNameToId.clear();
     m_collectDirtyLayersFn = QJSValue();
+    m_soundLayerStates.clear();
+    m_soundLayerNameToIndex.clear();
+    m_collectDirtySoundLayersFn = QJSValue();
+    m_cursorTargets.clear();
+    m_hoveredLayers.clear();
+    m_dragTarget.clear();
     if (m_textTimer) {
         m_textTimer->stop();
         delete m_textTimer;

@@ -874,7 +874,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Invisible nodes are processed as offscreen dependency nodes:
     // their output is written to a per-node RT (not the main scene output) so
     // that compose layers can reference it via _rt_imageLayerComposite_XXX_a → _rt_link_XXX.
-    bool isOffscreen = ! wpimgobj.visible;
+    // Exception: combo-selector visibility (e.g. character picker with condition values)
+    // must stay in the main render graph so variants can be toggled at runtime.
+    // Bool user props (clock, music, light) keep normal offscreen routing since
+    // they participate in compositing when visible.
+    bool isOffscreen = ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector;
 
     // colorBlendMode: prefer hardware blend when a direct equivalent exists;
     // fall back to shader-based effectpassthrough for complex modes.
@@ -948,6 +952,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                                  Vector3f(wpimgobj.angles.data()));
     LoadAlignment(*spImgNode, wpimgobj.alignment, { wpimgobj.size[0], wpimgobj.size[1] });
     spImgNode->ID() = wpimgobj.id;
+    // Only set m_visible for combo-selector nodes — they need runtime toggling.
+    // Other invisible nodes keep m_visible=true; isOffscreen controls rendering.
+    // Setting m_visible=false would cascade to effect chain nodes via
+    // m_visibilityOwner, preventing them from rendering to their offscreen RTs.
+    if (wpimgobj.visibleIsComboSelector) {
+        spImgNode->SetVisible(wpimgobj.visible);
+    }
     spImgNode->SetOffscreen(isOffscreen);
 
     SceneMaterial     material;
@@ -2064,7 +2075,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
             fboMap["previous"] = inRT;
             for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
                 const auto& wpfbo  = wpeffobj.fbos.at(i);
-                std::string rtname = wpfbo.name + "_" + effaddr;
+                std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
                 scene.renderTargets[rtname] = {
                     .width      = static_cast<uint16_t>(w / static_cast<float>(wpfbo.scale)),
                     .height     = static_cast<uint16_t>(h / static_cast<float>(wpfbo.scale)),
@@ -2182,25 +2193,7 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
                                             fs::VFS& vfs, audio::SoundManager& sm,
-                                            const std::string& userPropsOverride) {
-    // Load user properties from project.json if available
-    WPUserProperties userProps;
-    if (vfs.Contains("/assets/project.json")) {
-        auto projectFile = vfs.Open("/assets/project.json");
-        if (projectFile) {
-            std::string projectContent = projectFile->ReadAllStr();
-            if (userProps.LoadFromProjectJson(projectContent)) {
-                LOG_INFO("Loaded %s user properties", userProps.Empty() ? "no" : "some");
-            }
-        }
-    }
-
-    // Apply user overrides if provided
-    if (!userPropsOverride.empty()) {
-        LOG_INFO("Applying user properties override: %s", userPropsOverride.c_str());
-        userProps.ApplyOverrides(userPropsOverride);
-    }
-
+                                            const WPUserProperties& userProps) {
     // Set user properties context for the duration of parsing
     UserPropertiesScope propsScope(&userProps);
 
@@ -2348,9 +2341,24 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     WPShaderParser::InitGlslang();
     WPTextRenderer::Init();
 
+    // Build name→initial state from parsed objects (before node transforms may be reset)
+    struct ObjInitState {
+        std::array<float, 3> origin;
+        std::array<float, 3> scale;
+        std::array<float, 3> angles;
+        std::array<float, 2> size;
+        bool visible;
+    };
+    std::unordered_map<std::string, ObjInitState> nameToObjState;
     for (WPObjectVar& obj : wp_objs) {
         std::visit(visitor::overload {
-                       [&context](wpscene::WPImageObject& obj) {                           
+                       [&context, &nameToObjState](wpscene::WPImageObject& obj) {
+                            if (!obj.name.empty()) {
+                                nameToObjState[obj.name] = {
+                                    obj.origin, obj.scale, obj.angles,
+                                    obj.size, obj.visible
+                                };
+                            }
                             ParseImageObj(context, obj);
                        },
                        [&context](wpscene::WPParticleObject& obj) {
@@ -2358,13 +2366,25 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                        },
                        [&context, &sm](wpscene::WPSoundObject& obj) {
                            auto* streamPtr = WPSoundParser::Parse(obj, *context.vfs, sm);
-                           if (streamPtr && obj.hasVolumeScript) {
-                               Scene::SoundVolumeScript svs;
-                               svs.script = obj.volumeScript;
-                               svs.scriptProperties = obj.volumeScriptProperties;
-                               svs.initialVolume = obj.volume;
-                               svs.streamPtr = streamPtr;
-                               context.scene->soundVolumeScripts.push_back(std::move(svs));
+                           if (streamPtr) {
+                               if (obj.hasVolumeScript) {
+                                   Scene::SoundVolumeScript svs;
+                                   svs.script = obj.volumeScript;
+                                   svs.scriptProperties = obj.volumeScriptProperties;
+                                   svs.initialVolume = obj.volume;
+                                   svs.streamPtr = streamPtr;
+                                   context.scene->soundVolumeScripts.push_back(std::move(svs));
+                               }
+                               // Register sound layer for SceneScript play/stop/pause API
+                               Scene::SoundLayerInfo sli;
+                               sli.name          = obj.name;
+                               sli.initialVolume  = obj.volume;
+                               sli.startsilent    = obj.startsilent;
+                               sli.streamPtr      = streamPtr;
+                               context.scene->soundLayers.push_back(std::move(sli));
+                               LOG_INFO("sound layer registered: '%s' (startsilent=%d, mode=%s)",
+                                        obj.name.c_str(), (int)obj.startsilent,
+                                        obj.playbackmode.c_str());
                            }
                        },
                        [&context](wpscene::WPLightObject& obj) {
@@ -2395,12 +2415,22 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             std::string name = obj.at("name").get<std::string>();
             if (!name.empty()) {
                 context.scene->nodeNameToId[name] = id;
-                auto* node = node_it->second.get();
                 Scene::LayerInitialState lis;
-                lis.origin  = { node->Translate().x(), node->Translate().y(), node->Translate().z() };
-                lis.scale   = { node->Scale().x(), node->Scale().y(), node->Scale().z() };
-                lis.angles  = { node->Rotation().x(), node->Rotation().y(), node->Rotation().z() };
-                lis.visible = node->IsVisible();
+                // Prefer WPImageObject values (node transforms may be reset by effect chains)
+                auto objIt = nameToObjState.find(name);
+                if (objIt != nameToObjState.end()) {
+                    lis.origin  = objIt->second.origin;
+                    lis.scale   = objIt->second.scale;
+                    lis.angles  = objIt->second.angles;
+                    lis.size    = objIt->second.size;
+                    lis.visible = objIt->second.visible;
+                } else {
+                    auto* node = node_it->second.get();
+                    lis.origin  = { node->Translate().x(), node->Translate().y(), node->Translate().z() };
+                    lis.scale   = { node->Scale().x(), node->Scale().y(), node->Scale().z() };
+                    lis.angles  = { node->Rotation().x(), node->Rotation().y(), node->Rotation().z() };
+                    lis.visible = node->IsVisible();
+                }
                 context.scene->layerInitialStates[name] = lis;
             }
         }
@@ -2416,14 +2446,43 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 propName = userField.at("name").get<std::string>();
             }
             if (! propName.empty()) {
+                // Extract condition value from visible.value
+                // For boolean: "value": true/false → conditionValue "1"/"0"
+                // For combo:   "value": "6" or "value": 6 → conditionValue "6"
+                std::string conditionValue;
                 bool defaultVis = true;
                 if (obj.at("visible").contains("value")) {
-                    defaultVis = obj.at("visible").at("value").get<bool>();
+                    const auto& visValue = obj.at("visible").at("value");
+                    if (visValue.is_boolean()) {
+                        bool bv = visValue.get<bool>();
+                        conditionValue = bv ? "1" : "0";
+                        defaultVis = bv;
+                    } else if (visValue.is_number_integer()) {
+                        int iv = visValue.get<int>();
+                        conditionValue = std::to_string(iv);
+                        defaultVis = (iv != 0);
+                    } else if (visValue.is_string()) {
+                        conditionValue = visValue.get<std::string>();
+                        defaultVis = !conditionValue.empty() && conditionValue != "0";
+                    }
                 }
+                // Also check "user" object for condition value (alternative format)
+                // Format: "user": {"name": "propname", "value": 6}
+                if (conditionValue.empty() && userField.is_object() && userField.contains("value")) {
+                    const auto& cv = userField.at("value");
+                    if (cv.is_number_integer()) {
+                        conditionValue = std::to_string(cv.get<int>());
+                    } else if (cv.is_string()) {
+                        conditionValue = cv.get<std::string>();
+                    }
+                }
+                // Store raw visible JSON for runtime re-resolution
+                std::string rawVisJson = obj.at("visible").dump();
                 context.scene->userPropVisBindings[propName].push_back(
-                    { node_it->second.get(), defaultVis });
-                LOG_INFO("user prop binding: '%s' -> visibility of node id=%d (default=%d)",
-                         propName.c_str(), id, (int)defaultVis);
+                    { node_it->second.get(), defaultVis, conditionValue, rawVisJson });
+                LOG_INFO("user prop binding: '%s' -> visibility of node id=%d (default=%d, cond='%s') raw=%s",
+                         propName.c_str(), id, (int)defaultVis, conditionValue.c_str(),
+                         rawVisJson.c_str());
             }
         }
     }
