@@ -18,6 +18,7 @@ using FirstFrameCallback = std::function<void()>;
 struct TextScriptInfo {
     int32_t     id;
     std::string script;
+    std::string scriptProperties;  // JSON string
     std::string initialValue;
 };
 

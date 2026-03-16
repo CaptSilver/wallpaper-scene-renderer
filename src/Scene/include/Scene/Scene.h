@@ -39,9 +39,12 @@ struct TextLayerInfo {
     i32         padding;
     std::string halign;
     std::string valign;
-    std::string currentText;    // last rendered text
-    std::string textureKey;     // key in textures / tex_cache
-    std::string script;         // JavaScript source from text.script
+    std::string currentText;       // last rendered text
+    std::string textureKey;        // key in textures / tex_cache
+    std::string script;            // JavaScript source from text.script
+    std::string scriptProperties;  // JSON string of script properties
+    std::string pointsizeUserProp; // user property name controlling pointsize
+    bool        pointsizeDirty {false}; // set when pointsize changes at runtime
 };
 
 struct SceneColorScript {

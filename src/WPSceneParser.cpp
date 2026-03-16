@@ -2163,8 +2163,10 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         tli.halign      = textObj.horizontalalign;
         tli.valign      = textObj.verticalalign;
         tli.currentText = textObj.textValue;
-        tli.textureKey  = texKey;
-        tli.script      = textObj.textScript;
+        tli.textureKey        = texKey;
+        tli.script            = textObj.textScript;
+        tli.scriptProperties  = textObj.textScriptProperties;
+        tli.pointsizeUserProp = textObj.pointsizeUserProp;
         context.scene->textLayers.push_back(std::move(tli));
         LOG_INFO("  registered text layer id=%d for script evaluation", textObj.id);
     }

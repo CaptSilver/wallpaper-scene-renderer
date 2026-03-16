@@ -346,6 +346,35 @@ void SceneObject::setAcceptMouse(bool value) {
 
 void SceneObject::setAcceptHover(bool value) { setAcceptHoverEvents(value); }
 
+// Helper: strip ES module syntax that QJSEngine doesn't support
+static void stripESModuleSyntax(QString& src) {
+    // Normalize non-breaking spaces (U+00A0) to regular spaces — some WE scripts
+    // (e.g. workshop/3502639183) use NBSP between keywords
+    src.replace(QChar(0x00A0), QChar(' '));
+
+    // Strip 'use strict'; — it's inside our IIFE anyway
+    src.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*",
+                                   QRegularExpression::MultilineOption), "");
+    // Strip import statements
+    src.replace(QRegularExpression("^\\s*import\\s+.*?from\\s+['\"].*?['\"];?\\s*$",
+                                   QRegularExpression::MultilineOption), "");
+    // Strip 'export default ' before function/class/expression
+    src.replace(QRegularExpression("\\bexport\\s+default\\s+"), "");
+    // Strip 'export' before declarations
+    src.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
+    src.replace(QRegularExpression("\\bexport\\s+class\\b"), "class");
+    src.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
+    src.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
+    src.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+    // Strip 'export { ... };' re-export blocks
+    src.replace(QRegularExpression("^\\s*export\\s*\\{[^}]*\\};?\\s*$",
+                                   QRegularExpression::MultilineOption), "");
+    // Catch-all: strip any remaining 'export' at start of statement
+    // (covers edge cases like 'export default;' or unknown forms)
+    src.replace(QRegularExpression("^(\\s*)\\bexport\\s+",
+                                   QRegularExpression::MultilineOption), "\\1");
+}
+
 // Helper: AABB hit-test a cursor target using its JS proxy state
 static bool hitTestTarget(const QJSValue& thisLayerProxy,
                           float sceneX, float sceneY) {
@@ -599,9 +628,15 @@ void SceneObject::setupTextScripts() {
         "engine.isLandscape = function() { return true; };\n"
     );
 
-    // Screen resolution and input stubs for property scripts
+    // Screen/canvas resolution and input stubs for property scripts
+    {
+        auto orthoSize = m_scene->getOrthoSize();
+        m_jsEngine->evaluate(QString(
+            "engine.screenResolution = { x: %1, y: %2 };\n"
+            "engine.canvasSize = { x: %1, y: %2 };\n"
+        ).arg(orthoSize[0]).arg(orthoSize[1]));
+    }
     m_jsEngine->evaluate(
-        "engine.screenResolution = { x: 1920, y: 1080 };\n"
         "var input = { cursorWorldPosition: { x: 0, y: 0 } };\n"
         "function Vec3(x, y, z) {\n"
         "  var v = { x: x||0, y: y||0, z: z||0 };\n"
@@ -1097,17 +1132,7 @@ void SceneObject::setupTextScripts() {
         qCInfo(wekdeScene, "Color script source for id=%d:\n%s",
                csi.id, qPrintable(scriptSrc));
 
-        // Strip 'use strict';
-        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
-
-        // Strip import statements (we provide WEColor as a global)
-        scriptSrc.replace(QRegularExpression("^\\s*import\\s+.*?from\\s+['\"].*?['\"];?\\s*$", QRegularExpression::MultilineOption), "");
-
-        // Strip 'export ' keyword
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+        stripESModuleSyntax(scriptSrc);
 
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
@@ -1180,13 +1205,7 @@ void SceneObject::setupTextScripts() {
     for (const auto& psi : propertyScripts) {
         QString scriptSrc = QString::fromStdString(psi.script);
 
-        // Strip 'use strict', imports, exports
-        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
-        scriptSrc.replace(QRegularExpression("^\\s*import\\s+.*?from\\s+['\"].*?['\"];?\\s*$", QRegularExpression::MultilineOption), "");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+        stripESModuleSyntax(scriptSrc);
 
         // Transform spread operator (QV4 may not support it)
         // Object spread: { ...expr } → Object.assign({}, expr)
@@ -1442,12 +1461,7 @@ void SceneObject::setupTextScripts() {
     for (const auto& svsi : soundVolumeScripts) {
         QString scriptSrc = QString::fromStdString(svsi.script);
 
-        // Strip 'use strict', imports, exports
-        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+        stripESModuleSyntax(scriptSrc);
 
         // Inject scriptProperties
         QString propsInit;
@@ -1521,14 +1535,36 @@ void SceneObject::setupTextScripts() {
         qCInfo(wekdeScene, "Text script source for id=%d:\n%s",
                tsi.id, qPrintable(scriptSrc));
 
-        // Strip 'use strict'; — it's inside our IIFE anyway
-        scriptSrc.replace(QRegularExpression("^\\s*['\"]use strict['\"];?\\s*", QRegularExpression::MultilineOption), "");
+        stripESModuleSyntax(scriptSrc);
 
-        // Strip 'export ' keyword (QJSEngine doesn't support ES modules)
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+function\\b"), "function");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+var\\b"), "var");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+let\\b"), "let");
-        scriptSrc.replace(QRegularExpression("\\bexport\\s+const\\b"), "const");
+        // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
+        QString propsInit;
+        if (!tsi.scriptProperties.empty()) {
+            QString jsonStr = QString::fromStdString(tsi.scriptProperties);
+            jsonStr.replace("\\", "\\\\");
+            jsonStr.replace("'", "\\'");
+            propsInit = QString(
+                "var _storedProps = JSON.parse('%1');\n"
+                "function createScriptProperties() {\n"
+                "  var b = {};\n"
+                "  function ap(def) {\n"
+                "    var n = def.name || def.n;\n"
+                "    if (n) {\n"
+                "      if (n in _storedProps) {\n"
+                "        var sp = _storedProps[n];\n"
+                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "      } else { b[n] = def.value; }\n"
+                "    }\n"
+                "    return b;\n"
+                "  }\n"
+                "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
+                "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
+                "  b.addTextInput=ap;\n"
+                "  b.finish=function(){return b;};\n"
+                "  return b;\n"
+                "}\n"
+            ).arg(jsonStr);
+        }
 
         // Wrap in IIFE that returns {update, init} functions
         QString wrapped = QString(
@@ -1536,6 +1572,7 @@ void SceneObject::setupTextScripts() {
             "  'use strict';\n"
             "  var exports = {};\n"
             "  %1\n"
+            "  %2\n"
             "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
             "             (typeof update === 'function' ? update : null);\n"
             "  var _init = typeof exports.init === 'function' ? exports.init :\n"
@@ -1543,7 +1580,7 @@ void SceneObject::setupTextScripts() {
             "  if (!_upd) return null;\n"
             "  return { update: _upd, init: _init };\n"
             "})()\n"
-        ).arg(scriptSrc);
+        ).arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError()) {
