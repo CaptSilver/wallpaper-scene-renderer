@@ -39,10 +39,10 @@ public:
     std::string verticalalign { "center" };
     int32_t     padding { 0 };
 
-    std::string textValue;              // from text.value
-    std::string textScript;             // from text.script
-    std::string textScriptProperties;   // from text.scriptproperties (JSON)
-    std::string pointsizeUserProp;      // user property name controlling pointsize
+    std::string textValue;            // from text.value
+    std::string textScript;           // from text.script
+    std::string textScriptProperties; // from text.scriptproperties (JSON)
+    std::string pointsizeUserProp;    // user property name controlling pointsize
 
     std::vector<WPImageEffect> effects;
 };

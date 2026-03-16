@@ -32,38 +32,38 @@ class VFS;
 
 struct TextLayerInfo {
     i32         id;
-    std::string fontData;       // cached raw font bytes
+    std::string fontData; // cached raw font bytes
     float       pointsize;
     i32         texWidth;
     i32         texHeight;
     i32         padding;
     std::string halign;
     std::string valign;
-    std::string currentText;       // last rendered text
-    std::string textureKey;        // key in textures / tex_cache
-    std::string script;            // JavaScript source from text.script
-    std::string scriptProperties;  // JSON string of script properties
-    std::string pointsizeUserProp; // user property name controlling pointsize
-    bool        pointsizeDirty {false}; // set when pointsize changes at runtime
+    std::string currentText;              // last rendered text
+    std::string textureKey;               // key in textures / tex_cache
+    std::string script;                   // JavaScript source from text.script
+    std::string scriptProperties;         // JSON string of script properties
+    std::string pointsizeUserProp;        // user property name controlling pointsize
+    bool        pointsizeDirty { false }; // set when pointsize changes at runtime
 };
 
 struct SceneColorScript {
-    i32                    id;
-    SceneMaterial*         material;     // material owning g_Color4
-    std::string            script;       // JavaScript source from color.script
-    std::string            scriptProperties; // JSON string of script properties
-    std::array<float, 3>   initialColor;
+    i32                  id;
+    SceneMaterial*       material;         // material owning g_Color4
+    std::string          script;           // JavaScript source from color.script
+    std::string          scriptProperties; // JSON string of script properties
+    std::array<float, 3> initialColor;
 };
 
 struct ScenePropertyScript {
-    i32         id;
-    std::string property;          // "visible", "origin", "scale", "angles", "alpha"
-    std::string script;
-    std::string scriptProperties;  // JSON string
-    std::string layerName;         // name of the object for thisLayer.name
-    bool                 initialVisible {true};
-    std::array<float, 3> initialVec3 {0, 0, 0};
-    float                initialFloat {1.0f};
+    i32                  id;
+    std::string          property; // "visible", "origin", "scale", "angles", "alpha"
+    std::string          script;
+    std::string          scriptProperties; // JSON string
+    std::string          layerName;        // name of the object for thisLayer.name
+    bool                 initialVisible { true };
+    std::array<float, 3> initialVec3 { 0, 0, 0 };
+    float                initialFloat { 1.0f };
 };
 class Scene : NoCopy, NoMove {
 public:
@@ -101,7 +101,7 @@ public:
     bool                  depthBufferCleared { false };
 
     // Separate depth buffer for reflection passes (avoids contaminating main depth)
-    std::shared_ptr<void> reflectionDepthBuffer;
+    std::shared_ptr<void>           reflectionDepthBuffer;
     std::unordered_set<std::string> clearedRTs;
 
     // HDR content pipeline: when true, render targets use RGBA16F and FinPass tonemaps
@@ -116,11 +116,11 @@ public:
     std::shared_ptr<void> msaaReflectionDepthBuffer;
 
     struct BloomConfig {
-        bool                                     enabled { false };
-        float                                    strength { 2.0f };
-        float                                    threshold { 0.65f };
-        std::vector<std::shared_ptr<SceneNode>>  nodes;
-        std::vector<std::string>                 outputs;
+        bool                                    enabled { false };
+        float                                   strength { 2.0f };
+        float                                   threshold { 0.65f };
+        std::vector<std::shared_ptr<SceneNode>> nodes;
+        std::vector<std::string>                outputs;
     };
     BloomConfig bloomConfig;
 
@@ -132,16 +132,16 @@ public:
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer;
 
-    std::vector<TextLayerInfo> textLayers;
-    std::vector<SceneColorScript> colorScripts;
+    std::vector<TextLayerInfo>       textLayers;
+    std::vector<SceneColorScript>    colorScripts;
     std::vector<ScenePropertyScript> propertyScripts;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {
         SceneNode*  node;
-        bool        defaultVisible;   // original value without override
-        std::string conditionValue;   // combo: visible when prop == this value (empty = boolean)
-        std::string rawVisibleJson;   // raw JSON of "visible" field for re-resolution
+        bool        defaultVisible; // original value without override
+        std::string conditionValue; // combo: visible when prop == this value (empty = boolean)
+        std::string rawVisibleJson; // raw JSON of "visible" field for re-resolution
     };
     struct UserPropUniform {
         SceneMaterial* material;
@@ -159,11 +159,11 @@ public:
     std::unordered_map<std::string, i32> nodeNameToId;
     // Layer name → initial transform state for JS proxy initialization
     struct LayerInitialState {
-        std::array<float, 3> origin {0, 0, 0};
-        std::array<float, 3> scale {1, 1, 1};
-        std::array<float, 3> angles {0, 0, 0};
-        std::array<float, 2> size {0, 0}; // layer pixel dimensions for hit testing
-        bool visible {true};
+        std::array<float, 3> origin { 0, 0, 0 };
+        std::array<float, 3> scale { 1, 1, 1 };
+        std::array<float, 3> angles { 0, 0, 0 };
+        std::array<float, 2> size { 0, 0 }; // layer pixel dimensions for hit testing
+        bool                 visible { true };
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;
 
@@ -187,8 +187,8 @@ public:
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
-          frameTime = t;
-          elapsingTime += t;
+        frameTime = t;
+        elapsingTime += t;
     }
 
     void UpdateLinkedCamera(const std::string& name) {
