@@ -363,18 +363,20 @@ private:
                 std::lock_guard<std::mutex> lock(m_text_update_mutex);
                 for (auto& [id, newText] : m_pending_text_updates) {
                     for (auto& tl : m_scene->textLayers) {
-                        if (tl.id == id && tl.currentText != newText) {
-                            auto img = WPTextRenderer::RenderText(
-                                tl.fontData, tl.pointsize, newText,
-                                tl.texWidth, tl.texHeight,
-                                tl.halign, tl.valign, tl.padding);
-                            if (img) {
-                                img->key = tl.textureKey;
-                                m_render->reuploadTexture(tl.textureKey, *img);
-                                tl.currentText = newText;
-                            }
-                            break;
+                        if (tl.id != id) continue;
+                        // Re-rasterize if text or pointsize changed
+                        if (tl.currentText == newText && !tl.pointsizeDirty) break;
+                        auto img = WPTextRenderer::RenderText(
+                            tl.fontData, tl.pointsize, newText,
+                            tl.texWidth, tl.texHeight,
+                            tl.halign, tl.valign, tl.padding);
+                        if (img) {
+                            img->key = tl.textureKey;
+                            m_render->reuploadTexture(tl.textureKey, *img);
+                            tl.currentText = newText;
+                            tl.pointsizeDirty = false;
                         }
+                        break;
                     }
                 }
                 m_pending_text_updates.clear();
@@ -1046,6 +1048,23 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
     }
 
+    // Check text layer pointsize bindings for runtime re-rasterization
+    for (auto& tl : scene.textLayers) {
+        if (tl.pointsizeUserProp.empty()) continue;
+        if (!props.contains(tl.pointsizeUserProp)) continue;
+        try {
+            float newPointsize = props[tl.pointsizeUserProp].get<float>();
+            if (newPointsize > 0 && newPointsize != tl.pointsize) {
+                LOG_INFO("Runtime text pointsize: id=%d '%s' %.1f -> %.1f",
+                         tl.id, tl.pointsizeUserProp.c_str(), tl.pointsize, newPointsize);
+                tl.pointsize = newPointsize;
+                tl.pointsizeDirty = true;
+                // Queue re-rasterization with current text
+                m_render_handler->setTextUpdate(tl.id, tl.currentText);
+            }
+        } catch (...) {}
+    }
+
     // Always return true when bindings exist — unbound properties (script-driven
     // dragging, hover effects, etc.) don't need a full scene reload.
     return true;
@@ -1214,9 +1233,10 @@ void MainHandler::loadScene() {
         m_text_scripts.clear();
         for (const auto& tl : scene->textLayers) {
             TextScriptInfo tsi;
-            tsi.id           = tl.id;
-            tsi.script       = tl.script;
-            tsi.initialValue = tl.currentText;
+            tsi.id               = tl.id;
+            tsi.script           = tl.script;
+            tsi.scriptProperties = tl.scriptProperties;
+            tsi.initialValue     = tl.currentText;
             m_text_scripts.push_back(std::move(tsi));
         }
         if (!m_text_scripts.empty()) {
