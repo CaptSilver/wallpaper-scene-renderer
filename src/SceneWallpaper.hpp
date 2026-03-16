@@ -8,7 +8,10 @@
 #include "Type.hpp"
 #include "Swapchain/ExSwapchain.hpp"
 
-namespace wallpaper::audio { class AudioAnalyzer; }
+namespace wallpaper::audio
+{
+class AudioAnalyzer;
+}
 
 namespace wallpaper
 {
@@ -18,7 +21,7 @@ using FirstFrameCallback = std::function<void()>;
 struct TextScriptInfo {
     int32_t     id;
     std::string script;
-    std::string scriptProperties;  // JSON string
+    std::string scriptProperties; // JSON string
     std::string initialValue;
 };
 
@@ -30,27 +33,27 @@ struct ColorScriptInfo {
 };
 
 struct PropertyScriptInfo {
-    int32_t     id;
-    std::string property;          // "visible", "origin", "scale", "angles", "alpha"
-    std::string script;
-    std::string scriptProperties;  // JSON string
-    std::string layerName;         // name of the object for thisLayer.name
-    bool                 initialVisible {true};
-    std::array<float, 3> initialVec3 {0, 0, 0};
-    float                initialFloat {1.0f};
+    int32_t              id;
+    std::string          property; // "visible", "origin", "scale", "angles", "alpha"
+    std::string          script;
+    std::string          scriptProperties; // JSON string
+    std::string          layerName;        // name of the object for thisLayer.name
+    bool                 initialVisible { true };
+    std::array<float, 3> initialVec3 { 0, 0, 0 };
+    float                initialFloat { 1.0f };
 };
 
 struct SoundVolumeScriptInfo {
-    int32_t     index;             // index into soundVolumeScripts vector
+    int32_t     index; // index into soundVolumeScripts vector
     std::string script;
     std::string scriptProperties;
-    float       initialVolume {1.0f};
+    float       initialVolume { 1.0f };
 };
 
 struct SoundLayerControlInfo {
     std::string name;
-    float       initialVolume {1.0f};
-    bool        startsilent {false};
+    float       initialVolume { 1.0f };
+    bool        startsilent { false };
 };
 
 constexpr std::string_view PROPERTY_SOURCE               = "source";
@@ -81,30 +84,30 @@ public:
 
     void initVulkan(const RenderInitInfo&);
 
-    void play();
-    void pause();
-    void mouseInput(double x, double y);
-    void updateText(int32_t id, const std::string& text);
-    void updateColor(int32_t id, float r, float g, float b);
-    std::vector<TextScriptInfo> getTextScripts() const;
-    std::vector<ColorScriptInfo> getColorScripts() const;
-    std::vector<PropertyScriptInfo> getPropertyScripts() const;
+    void                                     play();
+    void                                     pause();
+    void                                     mouseInput(double x, double y);
+    void                                     updateText(int32_t id, const std::string& text);
+    void                                     updateColor(int32_t id, float r, float g, float b);
+    std::vector<TextScriptInfo>              getTextScripts() const;
+    std::vector<ColorScriptInfo>             getColorScripts() const;
+    std::vector<PropertyScriptInfo>          getPropertyScripts() const;
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
-    std::string getLayerInitialStatesJson() const;
-    std::array<int32_t, 2> getOrthoSize() const;
+    std::string                              getLayerInitialStatesJson() const;
+    std::array<int32_t, 2>                   getOrthoSize() const;
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
-    void updateSoundVolume(int32_t index, float volume);
+    void                               updateSoundVolume(int32_t index, float volume);
 
     // Sound layer control API for SceneScript play/stop/pause
     std::vector<SoundLayerControlInfo> getSoundLayerControls() const;
-    void soundLayerPlay(int32_t index);
-    void soundLayerStop(int32_t index);
-    void soundLayerPause(int32_t index);
-    bool soundLayerIsPlaying(int32_t index) const;
-    void soundLayerSetVolume(int32_t index, float volume);
+    void                               soundLayerPlay(int32_t index);
+    void                               soundLayerStop(int32_t index);
+    void                               soundLayerPause(int32_t index);
+    bool                               soundLayerIsPlaying(int32_t index) const;
+    void                               soundLayerSetVolume(int32_t index, float volume);
 
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);
@@ -112,7 +115,7 @@ public:
     void setPropertyString(std::string_view, std::string);
     void setPropertyObject(std::string_view, std::shared_ptr<void>);
 
-    ExSwapchain* exSwapchain() const;
+    ExSwapchain*                          exSwapchain() const;
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const;
 
 private:

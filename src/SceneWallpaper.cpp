@@ -41,10 +41,8 @@
 
 using namespace wallpaper;
 
-#define CASE_CMD(cmd)      \
-    case CMD::CMD_##cmd:   \
-        handle_##cmd(msg); \
-        break;
+#define CASE_CMD(cmd) \
+    case CMD::CMD_##cmd: handle_##cmd(msg); break;
 #define MHANDLER_CMD(cmd) void handle_##cmd(const std::shared_ptr<looper::Message>& msg)
 #define MHANDLER_CMD_IMPL(cl, cmd) \
     void impl_##cl::handle_##cmd(const std::shared_ptr<looper::Message>& msg)
@@ -201,32 +199,32 @@ private:
     bool        m_hdr_output { false };
     bool        m_system_audio_capture { false };
 
-    WPSceneParser                        m_scene_parser;
-    std::unique_ptr<audio::SoundManager> m_sound_manager;
+    WPSceneParser                         m_scene_parser;
+    std::unique_ptr<audio::SoundManager>  m_sound_manager;
     std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
-    std::unique_ptr<audio::AudioCapture> m_audio_capture;
-    FirstFrameCallback                   m_first_frame_callback;
-    std::string                          m_user_props_json;
-    std::shared_ptr<Scene>               m_scene; // shared with render handler
+    std::unique_ptr<audio::AudioCapture>  m_audio_capture;
+    FirstFrameCallback                    m_first_frame_callback;
+    std::string                           m_user_props_json;
+    std::shared_ptr<Scene>                m_scene; // shared with render handler
 
-    mutable std::mutex                   m_text_scripts_mutex;
-    std::vector<TextScriptInfo>          m_text_scripts;
-    mutable std::mutex                   m_color_scripts_mutex;
-    std::vector<ColorScriptInfo>         m_color_scripts;
-    mutable std::mutex                   m_property_scripts_mutex;
-    std::vector<PropertyScriptInfo>      m_property_scripts;
-    mutable std::mutex                   m_sound_volume_scripts_mutex;
-    std::vector<SoundVolumeScriptInfo>   m_sound_volume_scripts;
-    std::vector<void*>                   m_sound_volume_streams; // parallel: WPSoundStream*
-    mutable std::mutex                   m_sound_layers_mutex;
-    std::vector<SoundLayerControlInfo>   m_sound_layer_controls;
-    std::vector<void*>                   m_sound_layer_streams; // parallel: WPSoundStream*
-    mutable std::mutex                   m_name_map_mutex;
+    mutable std::mutex                       m_text_scripts_mutex;
+    std::vector<TextScriptInfo>              m_text_scripts;
+    mutable std::mutex                       m_color_scripts_mutex;
+    std::vector<ColorScriptInfo>             m_color_scripts;
+    mutable std::mutex                       m_property_scripts_mutex;
+    std::vector<PropertyScriptInfo>          m_property_scripts;
+    mutable std::mutex                       m_sound_volume_scripts_mutex;
+    std::vector<SoundVolumeScriptInfo>       m_sound_volume_scripts;
+    std::vector<void*>                       m_sound_volume_streams; // parallel: WPSoundStream*
+    mutable std::mutex                       m_sound_layers_mutex;
+    std::vector<SoundLayerControlInfo>       m_sound_layer_controls;
+    std::vector<void*>                       m_sound_layer_streams; // parallel: WPSoundStream*
+    mutable std::mutex                       m_name_map_mutex;
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
-    mutable std::mutex                   m_layer_init_mutex;
-    std::string                          m_layer_init_json;
-    mutable std::mutex                   m_user_props_mutex;
-    WPUserProperties                     m_user_props_resolved; // for runtime re-resolution
+    mutable std::mutex                       m_layer_init_mutex;
+    std::string                              m_layer_init_json;
+    mutable std::mutex                       m_user_props_mutex;
+    WPUserProperties                         m_user_props_resolved; // for runtime re-resolution
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -298,18 +296,23 @@ public:
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_transform_updates[{id, property}] = { x, y, z };
-        static int s_transform_log = 0;
+        m_pending_transform_updates[{ id, property }] = { x, y, z };
+        static int s_transform_log                    = 0;
         if (++s_transform_log <= 5 || s_transform_log % 1000 == 0) {
             LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)",
-                     s_transform_log, id, property.c_str(), x, y, z);
+                     s_transform_log,
+                     id,
+                     property.c_str(),
+                     x,
+                     y,
+                     z);
         }
     }
 
     void setNodeVisible(i32 id, bool visible) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_visible_updates[id] = visible;
-        static int s_visible_log = 0;
+        static int s_visible_log      = 0;
         if (++s_visible_log <= 5 || s_visible_log % 1000 == 0) {
             LOG_INFO("setNodeVisible[%d]: id=%d visible=%d", s_visible_log, id, (int)visible);
         }
@@ -318,7 +321,7 @@ public:
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
-        static int s_alpha_log = 0;
+        static int s_alpha_log      = 0;
         if (++s_alpha_log <= 5 || s_alpha_log % 1000 == 0) {
             LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f", s_alpha_log, id, alpha);
         }
@@ -365,15 +368,19 @@ private:
                     for (auto& tl : m_scene->textLayers) {
                         if (tl.id != id) continue;
                         // Re-rasterize if text or pointsize changed
-                        if (tl.currentText == newText && !tl.pointsizeDirty) break;
-                        auto img = WPTextRenderer::RenderText(
-                            tl.fontData, tl.pointsize, newText,
-                            tl.texWidth, tl.texHeight,
-                            tl.halign, tl.valign, tl.padding);
+                        if (tl.currentText == newText && ! tl.pointsizeDirty) break;
+                        auto img = WPTextRenderer::RenderText(tl.fontData,
+                                                              tl.pointsize,
+                                                              newText,
+                                                              tl.texWidth,
+                                                              tl.texHeight,
+                                                              tl.halign,
+                                                              tl.valign,
+                                                              tl.padding);
                         if (img) {
                             img->key = tl.textureKey;
                             m_render->reuploadTexture(tl.textureKey, *img);
-                            tl.currentText = newText;
+                            tl.currentText    = newText;
                             tl.pointsizeDirty = false;
                         }
                         break;
@@ -385,25 +392,30 @@ private:
             // Process pending color updates before drawing
             {
                 std::lock_guard<std::mutex> lock(m_color_update_mutex);
-                if (!m_pending_color_updates.empty()) {
+                if (! m_pending_color_updates.empty()) {
                     LOG_INFO("DRAW: %zu pending color updates, %zu colorScripts",
-                             m_pending_color_updates.size(), m_scene->colorScripts.size());
+                             m_pending_color_updates.size(),
+                             m_scene->colorScripts.size());
                 }
                 for (auto& [id, rgb] : m_pending_color_updates) {
                     for (auto& cs : m_scene->colorScripts) {
                         if (cs.id == id && cs.material) {
                             // Preserve existing alpha from g_Color4
                             float alpha = 1.0f;
-                            auto it = cs.material->customShader.constValues.find("g_Color4");
+                            auto  it    = cs.material->customShader.constValues.find("g_Color4");
                             if (it != cs.material->customShader.constValues.end() &&
                                 it->second.size() >= 4) {
                                 alpha = it->second[3];
                             }
                             cs.material->customShader.constValues["g_Color4"] =
-                                std::vector<float>{ rgb[0], rgb[1], rgb[2], alpha };
+                                std::vector<float> { rgb[0], rgb[1], rgb[2], alpha };
                             cs.material->customShader.constValuesDirty = true;
                             LOG_INFO("color update id=%d: rgb=(%.3f,%.3f,%.3f) alpha=%.3f",
-                                     id, rgb[0], rgb[1], rgb[2], alpha);
+                                     id,
+                                     rgb[0],
+                                     rgb[1],
+                                     rgb[2],
+                                     alpha);
                             break;
                         }
                     }
@@ -414,9 +426,12 @@ private:
             // Process pending property script updates (transform, visibility, alpha)
             {
                 std::lock_guard<std::mutex> lock(m_property_update_mutex);
-                static int drawDiagCount = 0;
-                if (m_drawDiagReset) { drawDiagCount = 0; m_drawDiagReset = false; }
-                bool logDiag = (++drawDiagCount % 180 == 1);  // every ~6 sec at 30fps
+                static int                  drawDiagCount = 0;
+                if (m_drawDiagReset) {
+                    drawDiagCount   = 0;
+                    m_drawDiagReset = false;
+                }
+                bool logDiag = (++drawDiagCount % 180 == 1); // every ~6 sec at 30fps
                 if (logDiag) {
                     LOG_INFO("DRAW: pending transforms=%zu visible=%zu alpha=%zu nodeById=%zu",
                              m_pending_transform_updates.size(),
@@ -425,32 +440,43 @@ private:
                              m_scene->nodeById.size());
                 }
                 int transformHit = 0, transformMiss = 0;
-                int effectRedirects = 0;
-                int sampleCount = 0;
+                int effectRedirects   = 0;
+                int sampleCount       = 0;
                 int planetSampleCount = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
                     auto [id, prop] = key;
-                    auto nit = m_scene->nodeById.find(id);
-                    if (nit == m_scene->nodeById.end()) { transformMiss++; continue; }
+                    auto nit        = m_scene->nodeById.find(id);
+                    if (nit == m_scene->nodeById.end()) {
+                        transformMiss++;
+                        continue;
+                    }
                     transformHit++;
-                    SceneNode* node = nit->second;
+                    SceneNode*      node = nit->second;
                     Eigen::Vector3f v(vec[0], vec[1], vec[2]);
                     // Sample first 5 transforms + planet-range transforms
                     if (logDiag && sampleCount < 5) {
                         sampleCount++;
                         LOG_INFO("DRAW sample: id=%d prop=%s val=(%.4f, %.4f, %.4f)",
-                                 id, prop.c_str(), vec[0], vec[1], vec[2]);
+                                 id,
+                                 prop.c_str(),
+                                 vec[0],
+                                 vec[1],
+                                 vec[2]);
                     }
                     if (logDiag && id >= 1360 && id <= 1400 && planetSampleCount < 10) {
                         planetSampleCount++;
                         LOG_INFO("DRAW planet: id=%d prop=%s val=(%.4f, %.4f, %.4f) visible=%d",
-                                 id, prop.c_str(), vec[0], vec[1], vec[2],
+                                 id,
+                                 prop.c_str(),
+                                 vec[0],
+                                 vec[1],
+                                 vec[2],
                                  (int)node->IsVisible());
                     }
                     // For nodes with effect chains, redirect transform updates
                     // to the resolved final composite node.  The world node must
                     // stay at identity so the base render fills the ping-pong RT.
-                    auto eit = m_scene->nodeEffectLayerMap.find(id);
+                    auto       eit            = m_scene->nodeEffectLayerMap.find(id);
                     SceneNode* resolvedOutput = nullptr;
                     if (eit != m_scene->nodeEffectLayerMap.end()) {
                         resolvedOutput = eit->second->ResolvedLastOutput();
@@ -495,31 +521,43 @@ private:
                     if (nit == m_scene->nodeById.end()) continue;
                     SceneNode* node = nit->second;
                     if (node->HasMaterial()) {
-                        auto* mat = node->Mesh()->Material();
-                        mat->customShader.constValues["g_UserAlpha"] =
-                            std::vector<float>{ alpha };
-                        mat->customShader.constValuesDirty = true;
+                        auto* mat                                    = node->Mesh()->Material();
+                        mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { alpha };
+                        mat->customShader.constValuesDirty           = true;
                     }
                 }
                 if (logDiag) {
-                    LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d miss=%d, alpha=%zu",
-                             transformHit, transformMiss, effectRedirects, visHit, visMiss,
+                    LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d "
+                             "miss=%d, alpha=%zu",
+                             transformHit,
+                             transformMiss,
+                             effectRedirects,
+                             visHit,
+                             visMiss,
                              m_pending_alpha_updates.size());
                     // Dump world transforms for key planet nodes after applying updates
-                    for (int checkId : {1360, 1365, 1373, 1374, 1375, 1376}) {
+                    for (int checkId : { 1360, 1365, 1373, 1374, 1375, 1376 }) {
                         auto nit = m_scene->nodeById.find(checkId);
                         if (nit != m_scene->nodeById.end()) {
                             auto* n = nit->second;
                             n->UpdateTrans();
-                            auto wt = n->ModelTrans();
-                            auto& t = n->Translate();
-                            auto& s = n->Scale();
+                            auto  wt = n->ModelTrans();
+                            auto& t  = n->Translate();
+                            auto& s  = n->Scale();
                             LOG_INFO("NODE %d: trans=(%.3f,%.3f,%.3f) scale=(%.3f,%.3f,%.3f) "
                                      "visible=%d world[0]=(%.4f,%.4f,%.4f,%.4f)",
-                                     checkId, t.x(), t.y(), t.z(),
-                                     s.x(), s.y(), s.z(),
+                                     checkId,
+                                     t.x(),
+                                     t.y(),
+                                     t.z(),
+                                     s.x(),
+                                     s.y(),
+                                     s.z(),
                                      (int)n->IsVisible(),
-                                     wt(0,0), wt(0,1), wt(0,2), wt(0,3));
+                                     wt(0, 0),
+                                     wt(0, 1),
+                                     wt(0, 2),
+                                     wt(0, 3));
                         }
                     }
                 }
@@ -532,7 +570,8 @@ private:
 
             // Check for device lost after draw
             if (m_render->deviceLost()) {
-                LOG_ERROR("VK_ERROR_DEVICE_LOST detected during drawFrame, will recover next frame");
+                LOG_ERROR(
+                    "VK_ERROR_DEVICE_LOST detected during drawFrame, will recover next frame");
                 frame_timer.FrameEnd();
                 return;
             }
@@ -561,12 +600,12 @@ private:
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
-            m_drawDiagReset = true;  // force DRAW diagnostic on next frame
+            m_drawDiagReset = true; // force DRAW diagnostic on next frame
 
             // Upgrade render targets to RGBA16F when HDR content pipeline is active
             if (m_render->hdrContent()) {
                 m_scene->hdrContent = true;
-                int upgraded = 0;
+                int upgraded        = 0;
                 for (auto& [name, rt] : m_scene->renderTargets) {
                     if (rt.format == TextureFormat::RGBA8) {
                         rt.format = TextureFormat::RGBA16F;
@@ -664,19 +703,19 @@ private:
 
     FillMode m_fillmode { FillMode::ASPECTCROP };
 
-    RenderInitInfo m_init_info;
+    RenderInitInfo                    m_init_info;
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
 
-    std::mutex                          m_text_update_mutex;
+    std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
 
-    std::mutex                                        m_color_update_mutex;
-    std::unordered_map<i32, std::array<float, 3>>     m_pending_color_updates;
+    std::mutex                                    m_color_update_mutex;
+    std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
 
-    std::mutex m_property_update_mutex;
+    std::mutex                                                  m_property_update_mutex;
     std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
-    std::unordered_map<i32, bool>  m_pending_visible_updates;
-    std::unordered_map<i32, float> m_pending_alpha_updates;
+    std::unordered_map<i32, bool>                               m_pending_visible_updates;
+    std::unordered_map<i32, float>                              m_pending_alpha_updates;
 
     bool m_drawDiagReset { false };
 };
@@ -757,8 +796,8 @@ std::array<int32_t, 2> SceneWallpaper::getOrthoSize() const {
     return m_main_handler->getOrthoSize();
 }
 
-void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property,
-                                         float x, float y, float z) {
+void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property, float x, float y,
+                                         float z) {
     m_main_handler->renderHandler()->setNodeTransform(id, property, x, y, z);
 }
 
@@ -781,15 +820,9 @@ void SceneWallpaper::updateSoundVolume(int32_t index, float volume) {
 std::vector<SoundLayerControlInfo> SceneWallpaper::getSoundLayerControls() const {
     return m_main_handler->getSoundLayerControls();
 }
-void SceneWallpaper::soundLayerPlay(int32_t index) {
-    m_main_handler->soundLayerPlay(index);
-}
-void SceneWallpaper::soundLayerStop(int32_t index) {
-    m_main_handler->soundLayerStop(index);
-}
-void SceneWallpaper::soundLayerPause(int32_t index) {
-    m_main_handler->soundLayerPause(index);
-}
+void SceneWallpaper::soundLayerPlay(int32_t index) { m_main_handler->soundLayerPlay(index); }
+void SceneWallpaper::soundLayerStop(int32_t index) { m_main_handler->soundLayerStop(index); }
+void SceneWallpaper::soundLayerPause(int32_t index) { m_main_handler->soundLayerPause(index); }
 bool SceneWallpaper::soundLayerIsPlaying(int32_t index) const {
     return m_main_handler->soundLayerIsPlaying(index);
 }
@@ -909,11 +942,12 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             msg->findString("value", &json);
             if (m_user_props_json != json) {
                 std::string oldJson = m_user_props_json;
-                m_user_props_json = json;
-                if (!json.empty() && !m_source.empty() && !m_assets.empty()) {
+                m_user_props_json   = json;
+                if (! json.empty() && ! m_source.empty() && ! m_assets.empty()) {
                     // Try runtime update first (no reload)
                     if (m_scene && applyUserPropsRuntime(json)) {
-                        LOG_INFO("Applied user properties at runtime (no reload): %s", json.c_str());
+                        LOG_INFO("Applied user properties at runtime (no reload): %s",
+                                 json.c_str());
                     } else {
                         LOG_INFO("Reloading scene to apply user properties: %s", json.c_str());
                         CALL_MHANDLER_CMD(LOAD_SCENE, msg);
@@ -985,12 +1019,12 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
 
         for (auto& [propName, bindings] : scene.userPropVisBindings) {
-            if (!props.contains(propName)) continue;
+            if (! props.contains(propName)) continue;
 
             for (auto& b : bindings) {
                 // Re-resolve the raw visible JSON with updated user properties
                 try {
-                    auto visJson = nlohmann::json::parse(b.rawVisibleJson);
+                    auto visJson  = nlohmann::json::parse(b.rawVisibleJson);
                     auto resolved = m_user_props_resolved.ResolveValue(visJson);
                     bool visible;
                     if (resolved.is_boolean()) {
@@ -998,23 +1032,26 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
                     } else if (resolved.is_number()) {
                         visible = resolved.get<double>() != 0.0;
                     } else if (resolved.is_string()) {
-                        auto s = resolved.get<std::string>();
-                        visible = !s.empty() && s != "0" && s != "false";
+                        auto s  = resolved.get<std::string>();
+                        visible = ! s.empty() && s != "0" && s != "false";
                     } else {
                         visible = b.defaultVisible;
                     }
                     LOG_INFO("Runtime resolve: '%s' raw=%s resolved=%s visible=%d was=%d",
-                             propName.c_str(), b.rawVisibleJson.c_str(),
-                             resolved.dump().c_str(), (int)visible,
+                             propName.c_str(),
+                             b.rawVisibleJson.c_str(),
+                             resolved.dump().c_str(),
+                             (int)visible,
                              (int)b.node->IsVisible());
                     if (b.node->IsVisible() != visible) {
                         b.node->SetVisible(visible);
                         LOG_INFO("Runtime user prop: '%s' -> node visible=%d",
-                                 propName.c_str(), (int)visible);
+                                 propName.c_str(),
+                                 (int)visible);
                     }
                 } catch (const std::exception& e) {
-                    LOG_INFO("Runtime user prop resolve error: '%s': %s",
-                             propName.c_str(), e.what());
+                    LOG_INFO(
+                        "Runtime user prop resolve error: '%s': %s", propName.c_str(), e.what());
                 }
             }
         }
@@ -1031,7 +1068,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
             floatVec.push_back(val.get<float>());
         } else if (val.is_string()) {
             std::istringstream iss(val.get<std::string>());
-            float f;
+            float              f;
             while (iss >> f) floatVec.push_back(f);
         } else if (val.is_array()) {
             for (const auto& elem : val) {
@@ -1044,25 +1081,31 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
             b.material->customShader.constValues[b.uniformName] = floatVec;
             b.material->customShader.constValuesDirty           = true;
             LOG_INFO("Runtime user prop: '%s' -> uniform '%s' = [%f...]",
-                     propName.c_str(), b.uniformName.c_str(), floatVec[0]);
+                     propName.c_str(),
+                     b.uniformName.c_str(),
+                     floatVec[0]);
         }
     }
 
     // Check text layer pointsize bindings for runtime re-rasterization
     for (auto& tl : scene.textLayers) {
         if (tl.pointsizeUserProp.empty()) continue;
-        if (!props.contains(tl.pointsizeUserProp)) continue;
+        if (! props.contains(tl.pointsizeUserProp)) continue;
         try {
             float newPointsize = props[tl.pointsizeUserProp].get<float>();
             if (newPointsize > 0 && newPointsize != tl.pointsize) {
                 LOG_INFO("Runtime text pointsize: id=%d '%s' %.1f -> %.1f",
-                         tl.id, tl.pointsizeUserProp.c_str(), tl.pointsize, newPointsize);
-                tl.pointsize = newPointsize;
+                         tl.id,
+                         tl.pointsizeUserProp.c_str(),
+                         tl.pointsize,
+                         newPointsize);
+                tl.pointsize      = newPointsize;
                 tl.pointsizeDirty = true;
                 // Queue re-rasterization with current text
                 m_render_handler->setTextUpdate(tl.id, tl.currentText);
             }
-        } catch (...) {}
+        } catch (...) {
+        }
     }
 
     // Always return true when bindings exist — unbound properties (script-driven
@@ -1154,23 +1197,19 @@ void MainHandler::loadScene() {
         // Used for both parse-time resolution and runtime re-resolution.
         WPUserProperties userProps;
         {
-            std::filesystem::path projPath =
-                std::filesystem::path(pkgDir) / "project.json";
+            std::filesystem::path projPath = std::filesystem::path(pkgDir) / "project.json";
             if (std::filesystem::exists(projPath)) {
                 std::ifstream ifs(projPath);
                 if (ifs.good()) {
-                    std::string content(
-                        (std::istreambuf_iterator<char>(ifs)),
-                        std::istreambuf_iterator<char>());
+                    std::string content((std::istreambuf_iterator<char>(ifs)),
+                                        std::istreambuf_iterator<char>());
                     if (userProps.LoadFromProjectJson(content)) {
-                        LOG_INFO("Loaded user property defaults from %s",
-                                 projPath.c_str());
+                        LOG_INFO("Loaded user property defaults from %s", projPath.c_str());
                     }
                 }
             }
-            if (!m_user_props_json.empty()) {
-                LOG_INFO("Applying user properties override: %s",
-                         m_user_props_json.c_str());
+            if (! m_user_props_json.empty()) {
+                LOG_INFO("Applying user properties override: %s", m_user_props_json.c_str());
                 userProps.ApplyOverrides(m_user_props_json);
             }
         }
@@ -1186,8 +1225,7 @@ void MainHandler::loadScene() {
     }
     // Connect audio analyzer to shader value updater
     scene->audioAnalyzer = m_audio_analyzer;
-    if (auto* wpUpdater =
-            dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
+    if (auto* wpUpdater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
         wpUpdater->SetAudioAnalyzer(m_audio_analyzer);
         LOG_INFO("Audio analyzer connected to shader value updater");
     }
@@ -1204,10 +1242,8 @@ void MainHandler::loadScene() {
             std::lock_guard<std::mutex> lock(m_user_props_mutex);
             m_user_props_resolved.InsertAllNames(activeProps);
         }
-        for (const auto& [name, _] : scene->userPropUniformBindings)
-            activeProps.insert(name);
-        for (const auto& [name, _] : scene->userPropVisBindings)
-            activeProps.insert(name);
+        for (const auto& [name, _] : scene->userPropUniformBindings) activeProps.insert(name);
+        for (const auto& [name, _] : scene->userPropVisBindings) activeProps.insert(name);
 
         std::string configDir;
         if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && xdg[0]) {
@@ -1215,14 +1251,15 @@ void MainHandler::loadScene() {
         } else if (const char* home = std::getenv("HOME"); home && home[0]) {
             configDir = std::string(home) + "/.config/wekde/wallpaper";
         }
-        if (!configDir.empty()) {
+        if (! configDir.empty()) {
             std::filesystem::create_directories(configDir);
-            nlohmann::json j = activeProps;
-            std::string bindingsPath = configDir + "/" + std::string(scene_id) + "_bindings.json";
+            nlohmann::json j           = activeProps;
+            std::string   bindingsPath = configDir + "/" + std::string(scene_id) + "_bindings.json";
             std::ofstream ofs(bindingsPath);
             if (ofs) {
                 ofs << j.dump();
-                LOG_INFO("Wrote %zu active bindings to %s", activeProps.size(), bindingsPath.c_str());
+                LOG_INFO(
+                    "Wrote %zu active bindings to %s", activeProps.size(), bindingsPath.c_str());
             }
         }
     }
@@ -1239,7 +1276,7 @@ void MainHandler::loadScene() {
             tsi.initialValue     = tl.currentText;
             m_text_scripts.push_back(std::move(tsi));
         }
-        if (!m_text_scripts.empty()) {
+        if (! m_text_scripts.empty()) {
             LOG_INFO("loadScene: %zu text layers with scripts", m_text_scripts.size());
         }
     }
@@ -1256,7 +1293,7 @@ void MainHandler::loadScene() {
             csi.initialColor     = cs.initialColor;
             m_color_scripts.push_back(std::move(csi));
         }
-        if (!m_color_scripts.empty()) {
+        if (! m_color_scripts.empty()) {
             LOG_INFO("loadScene: %zu color scripts", m_color_scripts.size());
         }
     }
@@ -1277,7 +1314,7 @@ void MainHandler::loadScene() {
             psi.initialFloat     = ps.initialFloat;
             m_property_scripts.push_back(std::move(psi));
         }
-        if (!m_property_scripts.empty()) {
+        if (! m_property_scripts.empty()) {
             LOG_INFO("loadScene: %zu property scripts", m_property_scripts.size());
         }
     }
@@ -1288,7 +1325,7 @@ void MainHandler::loadScene() {
         m_sound_volume_scripts.clear();
         m_sound_volume_streams.clear();
         for (int32_t i = 0; i < (int32_t)scene->soundVolumeScripts.size(); i++) {
-            const auto& svs = scene->soundVolumeScripts[i];
+            const auto&           svs = scene->soundVolumeScripts[i];
             SoundVolumeScriptInfo info;
             info.index            = i;
             info.script           = svs.script;
@@ -1297,7 +1334,7 @@ void MainHandler::loadScene() {
             m_sound_volume_scripts.push_back(std::move(info));
             m_sound_volume_streams.push_back(svs.streamPtr);
         }
-        if (!m_sound_volume_scripts.empty()) {
+        if (! m_sound_volume_scripts.empty()) {
             LOG_INFO("loadScene: %zu sound volume scripts", m_sound_volume_scripts.size());
         }
     }
@@ -1315,7 +1352,7 @@ void MainHandler::loadScene() {
             m_sound_layer_controls.push_back(std::move(info));
             m_sound_layer_streams.push_back(sl.streamPtr);
         }
-        if (!m_sound_layer_controls.empty()) {
+        if (! m_sound_layer_controls.empty()) {
             LOG_INFO("loadScene: %zu sound layers for SceneScript API",
                      m_sound_layer_controls.size());
         }
@@ -1325,7 +1362,7 @@ void MainHandler::loadScene() {
     {
         std::lock_guard<std::mutex> lock(m_name_map_mutex);
         m_node_name_to_id = scene->nodeNameToId;
-        if (!m_node_name_to_id.empty()) {
+        if (! m_node_name_to_id.empty()) {
             LOG_INFO("loadScene: %zu named layers for thisScene.getLayer()",
                      m_node_name_to_id.size());
         }
@@ -1334,17 +1371,15 @@ void MainHandler::loadScene() {
     // Serialize layer initial states as JSON for JS proxy initialization
     {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
-        nlohmann::json j = nlohmann::json::object();
+        nlohmann::json              j = nlohmann::json::object();
         for (const auto& [name, lis] : scene->layerInitialStates) {
-            j[name] = {
-                {"o", { lis.origin[0], lis.origin[1], lis.origin[2] }},
-                {"s", { lis.scale[0], lis.scale[1], lis.scale[2] }},
-                {"a", { lis.angles[0], lis.angles[1], lis.angles[2] }},
-                {"v", lis.visible},
-                {"sz", { lis.size[0], lis.size[1] }}
-            };
+            j[name] = { { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
+                        { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
+                        { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
+                        { "v", lis.visible },
+                        { "sz", { lis.size[0], lis.size[1] } } };
         }
-        j["_ortho"] = { scene->ortho[0], scene->ortho[1] };
+        j["_ortho"]       = { scene->ortho[0], scene->ortho[1] };
         m_layer_init_json = j.dump();
     }
 

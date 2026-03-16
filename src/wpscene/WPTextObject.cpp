@@ -20,18 +20,17 @@ bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "font", font);
     GET_JSON_NAME_VALUE_NOWARN(json, "pointsize", pointsize);
     // Record user property binding for runtime pointsize updates
-    if (json.contains("pointsize") && json.at("pointsize").is_object()
-        && json.at("pointsize").contains("user")) {
+    if (json.contains("pointsize") && json.at("pointsize").is_object() &&
+        json.at("pointsize").contains("user")) {
         const auto& userField = json.at("pointsize")["user"];
-        if (userField.is_string())
-            pointsizeUserProp = userField.get<std::string>();
+        if (userField.is_string()) pointsizeUserProp = userField.get<std::string>();
     }
     GET_JSON_NAME_VALUE_NOWARN(json, "horizontalalign", horizontalalign);
     GET_JSON_NAME_VALUE_NOWARN(json, "verticalalign", verticalalign);
     GET_JSON_NAME_VALUE_NOWARN(json, "padding", padding);
 
     // Extract text.value and text.script from the "text" sub-object
-    if (json.contains("text") && !json.at("text").is_null()) {
+    if (json.contains("text") && ! json.at("text").is_null()) {
         const auto& jText = json.at("text");
         if (jText.is_object()) {
             GET_JSON_NAME_VALUE_NOWARN(jText, "value", textValue);
@@ -52,6 +51,10 @@ bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
 
     LOG_INFO("WPTextObject: id=%d name='%s' font='%s' pointsize=%.1f text='%s'",
-             id, name.c_str(), font.c_str(), pointsize, textValue.c_str());
+             id,
+             name.c_str(),
+             font.c_str(),
+             pointsize,
+             textValue.c_str());
     return true;
 }
