@@ -18,6 +18,8 @@ Q_DECLARE_LOGGING_CATEGORY(wekdeScene)
 namespace scenebackend
 {
 
+class SceneTimerBridge;
+
 class SceneObject : public QQuickItem {
     Q_OBJECT
     Q_PROPERTY(QUrl source READ source WRITE setSource NOTIFY sourceChanged)
@@ -162,6 +164,7 @@ private:
         float    currentVolume {1.0f};
     };
     QJSEngine*                        m_jsEngine { nullptr };
+    SceneTimerBridge*                 m_timerBridge { nullptr };
     QTimer*                           m_textTimer { nullptr };
     QTimer*                           m_colorTimer { nullptr };
     QTimer*                           m_propertyTimer { nullptr };

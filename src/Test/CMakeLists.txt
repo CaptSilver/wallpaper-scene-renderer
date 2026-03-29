@@ -49,3 +49,20 @@ if(MUTATION_TESTING)
 endif()
 
 add_test(NAME backend_scene_tests COMMAND backend_scene_tests)
+
+# Qt-dependent tests (SceneScript timers, device detection)
+find_package(Qt6 COMPONENTS Core Qml QUIET)
+if(Qt6_FOUND)
+    add_executable(scenescript_tests
+        test_main_qt.cpp
+        test_SceneScript.cpp
+        ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
+    )
+    set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(scenescript_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/qml_helper
+        ${DOCTEST_INCLUDE_DIR}
+    )
+    target_link_libraries(scenescript_tests PRIVATE Qt6::Core Qt6::Qml)
+    add_test(NAME scenescript_tests COMMAND scenescript_tests)
+endif()
