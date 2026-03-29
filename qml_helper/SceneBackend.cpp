@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "SceneTimerBridge.h"
 
 #include <QtGlobal>
 #include <QtCore/QObject>
@@ -19,6 +20,7 @@
 #include <atomic>
 #include <array>
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTime>
@@ -617,24 +619,45 @@ void SceneObject::setupTextScripts() {
         "};\n"
     );
 
+    // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
+    m_timerBridge = new SceneTimerBridge(m_jsEngine, this,
+        [this](int id, bool error, const QString& msg) {
+            if (error) {
+                LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
+            }
+            flushJsConsole(m_jsEngine, "timer");
+        });
+    m_jsEngine->globalObject().setProperty(
+        "_timerBridge", m_jsEngine->newQObject(m_timerBridge));
+    m_jsEngine->evaluate(
+        "function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, delay || 0, false); }\n"
+        "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, delay || 0, true); }\n"
+        "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
+        "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
+    );
+
     // Engine method stubs
     m_jsEngine->evaluate(
         "engine.isDesktopDevice = function() { return true; };\n"
         "engine.isMobileDevice = function() { return false; };\n"
+        "engine.isTabletDevice = function() { return false; };\n"
         "engine.isWallpaper = function() { return true; };\n"
         "engine.isScreensaver = function() { return false; };\n"
         "engine.isRunningInEditor = function() { return false; };\n"
-        "engine.isPortrait = function() { return false; };\n"
-        "engine.isLandscape = function() { return true; };\n"
     );
 
-    // Screen/canvas resolution and input stubs for property scripts
+    // Screen/canvas resolution, orientation, and input stubs for property scripts
     {
         auto orthoSize = m_scene->getOrthoSize();
+        bool portrait = orthoSize[1] > orthoSize[0];
         m_jsEngine->evaluate(QString(
             "engine.screenResolution = { x: %1, y: %2 };\n"
             "engine.canvasSize = { x: %1, y: %2 };\n"
-        ).arg(orthoSize[0]).arg(orthoSize[1]));
+            "engine.isPortrait = function() { return %3; };\n"
+            "engine.isLandscape = function() { return %4; };\n"
+        ).arg(orthoSize[0]).arg(orthoSize[1])
+         .arg(portrait ? "true" : "false")
+         .arg(portrait ? "false" : "true"));
     }
     m_jsEngine->evaluate(
         "var input = { cursorWorldPosition: { x: 0, y: 0 } };\n"
@@ -2096,6 +2119,11 @@ void SceneObject::cleanupTextScripts() {
         m_propertyTimer->stop();
         delete m_propertyTimer;
         m_propertyTimer = nullptr;
+    }
+    if (m_timerBridge) {
+        m_timerBridge->clearAll();
+        delete m_timerBridge;
+        m_timerBridge = nullptr;
     }
     if (m_jsEngine) {
         delete m_jsEngine;
