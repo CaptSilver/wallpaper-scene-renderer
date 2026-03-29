@@ -1,0 +1,80 @@
+name: Mutation Testing
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  mutation-test:
+    name: Mull mutation testing
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            cmake \
+            pkg-config \
+            liblz4-dev \
+            libeigen3-dev \
+            libfreetype-dev \
+            libgl-dev \
+            libglvnd-dev \
+            libvulkan-dev
+
+      - name: Install Mull
+        run: |
+          LLVM_VERSION=$(clang --version | grep -oP 'clang version \K[0-9]+')
+          curl -1sLf 'https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh' | sudo -E bash
+          sudo apt-get install -y mull-${LLVM_VERSION}
+
+      - name: Find Mull plugin
+        id: mull
+        run: |
+          PLUGIN=$(find /usr/lib -name 'mull-ir-frontend-*' -type f 2>/dev/null | head -1)
+          if [ -z "$PLUGIN" ]; then
+            echo "Mull plugin not found"
+            exit 1
+          fi
+          echo "plugin=$PLUGIN" >> "$GITHUB_OUTPUT"
+          echo "Found Mull plugin: $PLUGIN"
+          RUNNER=$(which mull-runner-* 2>/dev/null || find /usr/bin -name 'mull-runner-*' | head -1)
+          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
+          echo "Found Mull runner: $RUNNER"
+
+      - name: Configure CMake with Mull
+        run: |
+          cmake -B build \
+            -DBUILD_TESTS=ON \
+            -DMUTATION_TESTING=ON \
+            -DMULL_PLUGIN_PATH=${{ steps.mull.outputs.plugin }} \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build tests
+        run: cmake --build build --target backend_scene_tests -j$(nproc)
+
+      - name: Run mutation tests
+        run: |
+          ${{ steps.mull.outputs.runner }} \
+            --reporters=Elements \
+            --report-name=mutation-report \
+            --report-dir=. \
+            build/src/Test/backend_scene_tests
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: mutation-report.*

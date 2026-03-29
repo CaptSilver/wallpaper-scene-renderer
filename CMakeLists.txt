@@ -16,6 +16,31 @@ add_subdirectory(third_party)
 add_subdirectory(src)
 
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
+option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires Clang)" OFF)
+
+if(MUTATION_TESTING AND NOT BUILD_TESTS)
+    message(FATAL_ERROR "MUTATION_TESTING requires BUILD_TESTS=ON")
+endif()
+
+if(MUTATION_TESTING)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MUTATION_TESTING requires Clang (found ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+
+    if(NOT MULL_PLUGIN_PATH)
+        file(GLOB _mull_candidates /usr/lib/mull-ir-frontend-* /usr/lib64/mull-ir-frontend-*)
+        if(_mull_candidates)
+            list(GET _mull_candidates 0 MULL_PLUGIN_PATH)
+        endif()
+    endif()
+
+    if(NOT MULL_PLUGIN_PATH)
+        message(FATAL_ERROR "Cannot find Mull IR frontend plugin. Set -DMULL_PLUGIN_PATH=...")
+    endif()
+
+    message(STATUS "Mull plugin: ${MULL_PLUGIN_PATH}")
+endif()
+
 if(BUILD_TESTS)
     enable_testing()
     add_subdirectory(src/Test)
