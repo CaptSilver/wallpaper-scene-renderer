@@ -38,6 +38,17 @@ TEST_CASE("zero radius → origin") {
     CHECK(v.z() == doctest::Approx(0.0));
 }
 
+TEST_CASE("specific angles verify trig products") {
+    // azimuth=pi/4, elevation=pi/6, radius=1
+    // x = cos(pi/4)*cos(pi/6) = 0.7071*0.8660 = 0.6124
+    // y = sin(pi/4)*cos(pi/6) = 0.7071*0.8660 = 0.6124
+    // z = sin(pi/6) = 0.5
+    auto v = algorism::sph2cart({M_PI / 4.0, M_PI / 6.0, 1.0});
+    CHECK(v.x() == doctest::Approx(std::cos(M_PI/4.0) * std::cos(M_PI/6.0)).epsilon(1e-10));
+    CHECK(v.y() == doctest::Approx(std::sin(M_PI/4.0) * std::cos(M_PI/6.0)).epsilon(1e-10));
+    CHECK(v.z() == doctest::Approx(std::sin(M_PI/6.0)).epsilon(1e-10));
+}
+
 TEST_CASE("radius 2 scales correctly") {
     auto v1 = algorism::sph2cart({0.5, 0.3, 1.0});
     auto v2 = algorism::sph2cart({0.5, 0.3, 2.0});
@@ -132,6 +143,21 @@ TEST_CASE("monotonically increasing in [0,1]") {
     }
 }
 
+TEST_CASE("t=0.25 exact polynomial value") {
+    // 0.25^3 * (0.25*(0.25*6-15)+10) = 0.103515625
+    CHECK(algorism::PerlinEase(0.25) == doctest::Approx(0.103515625));
+}
+
+TEST_CASE("t=0.75 exact polynomial value") {
+    // 0.75^3 * (0.75*(0.75*6-15)+10) = 0.896484375
+    CHECK(algorism::PerlinEase(0.75) == doctest::Approx(0.896484375));
+}
+
+TEST_CASE("t=0.1 exact polynomial value") {
+    // 0.1^3 * (0.1*(0.1*6-15)+10) = 0.00856
+    CHECK(algorism::PerlinEase(0.1) == doctest::Approx(0.00856));
+}
+
 } // TEST_SUITE
 
 // ===========================================================================
@@ -192,6 +218,14 @@ TEST_CASE("different inputs produce different outputs") {
     CHECK(different);
 }
 
+TEST_CASE("exact reference values at (0.5, 0.5, 0.5)") {
+    auto c = algorism::CurlNoise({0.5, 0.5, 0.5});
+    // Pin the exact curl formula: any sign flip in sub_to_add breaks these
+    CHECK(c.x() == doctest::Approx(0.971279865563668).epsilon(1e-6));
+    CHECK(c.y() == doctest::Approx(-1.124140522107409).epsilon(1e-6));
+    CHECK(c.z() == doctest::Approx(-0.483781251721382).epsilon(1e-6));
+}
+
 } // TEST_SUITE
 
 // ===========================================================================
@@ -214,6 +248,15 @@ TEST_CASE("components differ due to offsets") {
     bool all_same = (std::abs(v.x() - v.y()) < 1e-10) &&
                     (std::abs(v.y() - v.z()) < 1e-10);
     CHECK_FALSE(all_same);
+}
+
+TEST_CASE("components match individual PerlinNoise calls with correct offsets") {
+    Eigen::Vector3d p(1.5, 2.5, 3.5);
+    auto v = algorism::PerlinNoiseVec3(p);
+    // Verify the exact offset values used in the implementation
+    CHECK(v.x() == doctest::Approx(algorism::PerlinNoise(p[0], p[1], p[2])));
+    CHECK(v.y() == doctest::Approx(algorism::PerlinNoise(p[0] + 89.2, p[1] + 33.1, p[2] + 57.3)));
+    CHECK(v.z() == doctest::Approx(algorism::PerlinNoise(p[0] + 100.3, p[1] + 120.1, p[2] + 142.2)));
 }
 
 TEST_CASE("different inputs produce different outputs") {

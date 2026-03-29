@@ -225,6 +225,63 @@ TEST_CASE("ReadVersion consecutive reads") {
 } // TEST_SUITE
 
 // ===========================================================================
+// MemBinaryStream
+// ===========================================================================
+
+TEST_SUITE("MemBinaryStream") {
+
+TEST_CASE("SeekEnd with negative offset positions from end") {
+    std::vector<uint8_t> data(10, 0);
+    MemBinaryStream stream(std::move(data));
+    // SeekEnd(-1) → pos = 10 + (-1) = 9
+    CHECK(stream.SeekEnd(-1) == true);
+    CHECK(stream.Tell() == 9);
+}
+
+TEST_CASE("SeekEnd(0) positions at end") {
+    std::vector<uint8_t> data(10, 0);
+    MemBinaryStream stream(std::move(data));
+    CHECK(stream.SeekEnd(0) == true);
+    CHECK(stream.Tell() == 10);
+}
+
+TEST_CASE("SeekEnd beyond bounds fails") {
+    std::vector<uint8_t> data(10, 0);
+    MemBinaryStream stream(std::move(data));
+    // SeekEnd(1) → 10 + 1 = 11, out of bounds
+    CHECK(stream.SeekEnd(1) == false);
+    // SeekEnd(-11) → 10 + (-11) = -1, out of bounds
+    CHECK(stream.SeekEnd(-11) == false);
+}
+
+TEST_CASE("Read clamps at end of stream") {
+    std::vector<uint8_t> data = {1, 2, 3, 4, 5};
+    MemBinaryStream stream(std::move(data));
+    stream.SeekSet(3); // 2 bytes remaining
+    uint8_t buf[10];
+    auto read = stream.Read(buf, 10); // request 10 but only 2 available
+    CHECK(read == 2);
+    CHECK(buf[0] == 4);
+    CHECK(buf[1] == 5);
+}
+
+TEST_CASE("InArea boundary: position at Size() is valid") {
+    std::vector<uint8_t> data(5, 0);
+    MemBinaryStream stream(std::move(data));
+    // SeekSet to Size() should succeed (valid position, even though no data to read)
+    CHECK(stream.SeekSet(5) == true);
+    CHECK(stream.Tell() == 5);
+}
+
+TEST_CASE("InArea boundary: position past Size() is invalid") {
+    std::vector<uint8_t> data(5, 0);
+    MemBinaryStream stream(std::move(data));
+    CHECK(stream.SeekSet(6) == false);
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
 // ToString (TextureFormat)
 // ===========================================================================
 
