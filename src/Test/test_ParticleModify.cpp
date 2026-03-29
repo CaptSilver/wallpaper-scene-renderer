@@ -150,6 +150,26 @@ TEST_CASE("MoveApplySign zero means no change") {
     CHECK(p.position.z() == doctest::Approx(5.0f));
 }
 
+TEST_CASE("MoveApplySign positive sign preserves abs value") {
+    // Kills mul_to_div: abs(2)*1 = 2, but abs(2)/1 = 2 (same for 1)
+    // Use value != 1 to distinguish: abs(3)*2 = 6, abs(3)/2 = 1.5
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(-3.0f, -4.0f, -5.0f);
+    ParticleModify::MoveApplySign(p, 2, 2, 2);
+    CHECK(p.position.x() == doctest::Approx(6.0f));
+    CHECK(p.position.y() == doctest::Approx(8.0f));
+    CHECK(p.position.z() == doctest::Approx(10.0f));
+}
+
+TEST_CASE("MoveApplySign negative sign with magnitude") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(3.0f, 4.0f, 5.0f);
+    ParticleModify::MoveApplySign(p, -2, -3, -1);
+    CHECK(p.position.x() == doctest::Approx(-6.0f));
+    CHECK(p.position.y() == doctest::Approx(-12.0f));
+    CHECK(p.position.z() == doctest::Approx(-5.0f));
+}
+
 } // TEST_SUITE
 
 // ===========================================================================
@@ -178,6 +198,22 @@ TEST_CASE("LifetimePos at midpoint is 50 percent") {
     ParticleModify::ChangeLifetime(p, -1.0);
     double pos = ParticleModify::LifetimePos(p);
     CHECK(pos == doctest::Approx(0.5));
+}
+
+TEST_CASE("LifetimePos at zero lifetime returns 1.0") {
+    // Kills lt_to_le: lifetime==0 should NOT enter the < 0 branch
+    Particle p = makeParticle();
+    p.lifetime = 0.0f;
+    p.init.lifetime = 2.0f;
+    double pos = ParticleModify::LifetimePos(p);
+    CHECK(pos == doctest::Approx(1.0));
+}
+
+TEST_CASE("LifetimePos negative lifetime returns 1.0") {
+    Particle p = makeParticle();
+    p.lifetime = -1.0f;
+    p.init.lifetime = 2.0f;
+    CHECK(ParticleModify::LifetimePos(p) == doctest::Approx(1.0));
 }
 
 TEST_CASE("LifetimePassed returns elapsed time") {

@@ -166,6 +166,34 @@ TEST_CASE("expr.xyz + vec2 var → truncate to .xy") {
     CHECK(result.find("b.xy + a") != std::string::npos);
 }
 
+TEST_CASE("vec2 var + expr.xyz → truncate 3 to 2") {
+    std::string in  = "vec2 a = vec2(0);\nvec3 b;\na + b.xyz;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("a + b.xy") != std::string::npos);
+    CHECK(result.find("a + b.xyz") == std::string::npos);
+}
+
+TEST_CASE("truncation preserves surrounding code") {
+    std::string in = "float z = 1.0;\nvec2 uv = vec2(0);\nvec4 c;\nfloat w = uv + c.xyzw;\nfloat q = 2.0;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("uv + c.xy") != std::string::npos);
+    CHECK(result.find("float z = 1.0") != std::string::npos);
+    CHECK(result.find("float q = 2.0") != std::string::npos);
+}
+
+TEST_CASE("multiple truncations in same shader") {
+    std::string in = "vec2 a = vec2(0);\nvec4 b;\na + b.xyzw;\na - b.xyzw;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("a + b.xy") != std::string::npos);
+    CHECK(result.find("a - b.xy") != std::string::npos);
+}
+
+TEST_CASE("reverse truncation preserves surrounding code") {
+    std::string in = "vec2 uv = vec2(0);\nvec4 c;\nfloat w = c.xyzw + uv;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("c.xy + uv") != std::string::npos);
+}
+
 // --- Pattern 6: Arithmetic swizzle expansion ---
 
 TEST_CASE("vec3 var - expr.xx → expand to .xxx") {
@@ -178,6 +206,27 @@ TEST_CASE("expr.xy * vec4 var → expand to .xyyy") {
     std::string in  = "vec4 a = vec4(0);\nvec3 b;\nb.xy * a;";
     auto result = FixImplicitConversions(in);
     CHECK(result.find("b.xyyy * a") != std::string::npos);
+}
+
+TEST_CASE("expansion skipped when variable has swizzle suffix") {
+    // If the vec3 var itself already has a swizzle (.xy), don't expand the RHS
+    std::string in  = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx;";
+    auto result = FixImplicitConversions(in);
+    // Should NOT expand to .xxx since a.xy makes it a vec2 operation
+    CHECK(result.find("b.xxx") == std::string::npos);
+}
+
+TEST_CASE("reverse expansion: expr.xx * vec3 → expr.xxx") {
+    std::string in  = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("b.xxx * a") != std::string::npos);
+}
+
+TEST_CASE("expansion repeats last char correctly") {
+    // vec4 var - expr.st → expand to .sttt (last char 't' repeated twice)
+    std::string in = "vec4 a = vec4(0);\nvec2 b;\na - b.st;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("a - b.sttt") != std::string::npos);
 }
 
 // --- Pattern 7: vec3 = mat * vec4() → .xyz ---
@@ -778,6 +827,28 @@ TEST_CASE("OUT.Append with nested parens") {
     CHECK(result.find("func(a, vec2(1.0, 2.0))") != std::string::npos);
 }
 
+TEST_CASE("OUT.Append with space before semicolon") {
+    std::string in  = "OUT.Append(makeVert()) ;";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("makeVert(); EmitVertex();") != std::string::npos);
+    CHECK(result.find("OUT.Append") == std::string::npos);
+}
+
+TEST_CASE("OUT.Append preserves code before and after") {
+    std::string in  = "float x = 1.0;\nOUT.Append(buildVert(a, b));\nfloat y = 2.0;";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("float x = 1.0") != std::string::npos);
+    CHECK(result.find("float y = 2.0") != std::string::npos);
+    CHECK(result.find("buildVert(a, b); EmitVertex();") != std::string::npos);
+}
+
+TEST_CASE("multiple OUT.Append in same shader") {
+    std::string in  = "OUT.Append(makeA());\nOUT.Append(makeB());";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("makeA(); EmitVertex();") != std::string::npos);
+    CHECK(result.find("makeB(); EmitVertex();") != std::string::npos);
+}
+
 // --- Pattern 10: OUT.RestartStrip() → EndPrimitive() ---
 
 TEST_CASE("OUT.RestartStrip() → EndPrimitive()") {
@@ -821,6 +892,31 @@ TEST_CASE("gl_in[0].gl_Position NOT truncated for vec4 param") {
     if (after < result.size()) {
         CHECK(result[after] != '.');
     }
+}
+
+TEST_CASE("gl_in[0].gl_Position as second arg gets .xyz") {
+    std::string in = "vec3 doSomething(float f, vec3 pos) { return pos; }\nvoid main() { doSomething(1.0, gl_in[0].gl_Position); }";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+}
+
+TEST_CASE("gl_in[0].gl_Position in nested call correctly scanned") {
+    std::string in = "vec3 outer(vec3 p) { return p; }\nvoid main() { outer(gl_in[0].gl_Position); }";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+}
+
+TEST_CASE("multiple gl_in[0].gl_Position occurrences all processed") {
+    std::string in = "vec3 f(vec3 p) { return p; }\nvoid main() { f(gl_in[0].gl_Position); f(gl_in[0].gl_Position); }";
+    auto result = TranslateGeometryShader(in);
+    // Count occurrences of .xyz
+    size_t count = 0;
+    size_t pos = 0;
+    while ((pos = result.find("gl_in[0].gl_Position.xyz", pos)) != std::string::npos) {
+        count++;
+        pos += 24;
+    }
+    CHECK(count == 2);
 }
 
 TEST_CASE("gl_in[0].gl_Position with existing swizzle not touched") {

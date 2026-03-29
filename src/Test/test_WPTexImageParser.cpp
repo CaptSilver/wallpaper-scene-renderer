@@ -533,4 +533,154 @@ TEST_CASE("Multiple images") {
     CHECK(img->slots[1].mipmaps[0].data.get()[0] == 2);
 }
 
+// --- Mutation testing: TEXB v3/v4 header version branches ---
+
+// Build texb v3 header (has imageType field after TEXB+count)
+std::vector<uint8_t> makeTexHeaderV3(int32_t imageType, int32_t w, int32_t h) {
+    auto buf = makeTexHeader(1, 1, 3, 0, 0, w, h, w, h, 1);
+    appendInt32(buf, imageType); // imageType field (texb >= 3)
+    return buf;
+}
+
+// Build texb v4 header (has imageType + isVideoMp4 fields)
+std::vector<uint8_t> makeTexHeaderV4(int32_t imageType, int32_t w, int32_t h) {
+    auto buf = makeTexHeader(1, 1, 4, 0, 0, w, h, w, h, 1);
+    appendInt32(buf, imageType); // imageType (texb >= 3)
+    appendInt32(buf, 0);         // isVideoMp4 (texb >= 4)
+    return buf;
+}
+
+TEST_CASE("TEXB v3 header reads imageType — parses successfully") {
+    // texb==3 must read the imageType field; if ge_to_gt mutant fires
+    // (>= 3 becomes > 3), the imageType int won't be consumed and
+    // the stream will be misaligned, causing a parse failure.
+    auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
+    appendInt32(buf, 0); // imageType = UNKNOWN (texb >= 3)
+    appendInt32(buf, 1); // mipmap count
+    std::vector<uint8_t> pixels(4 * 4 * 4, 0xCC);
+    appendMipmapV2(buf, 4, 4, pixels);
+
+    VFS vfs;
+    mountTex(vfs, "texb3_test", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("texb3_test");
+    REQUIRE(img != nullptr);
+    CHECK(img->slots[0].width == 4);
+    CHECK(img->slots[0].height == 4);
+}
+
+TEST_CASE("TEXB v4 header reads imageType and isVideoMp4") {
+    auto buf = makeTexHeader(1, 1, 4, 0, 0, 4, 4, 4, 4, 1);
+    appendInt32(buf, 0); // imageType = UNKNOWN (texb >= 3)
+    appendInt32(buf, 0); // isVideoMp4 flag    (texb >= 4)
+    appendInt32(buf, 1); // mipmap count
+    appendInt32(buf, 4); // w
+    appendInt32(buf, 4); // h
+    appendInt32(buf, 0); appendInt32(buf, 0); // LZ4
+    std::vector<uint8_t> pixels(4 * 4 * 4, 0xDD);
+    appendInt32(buf, (int32_t)pixels.size());
+    append(buf, pixels.data(), pixels.size());
+
+    VFS vfs;
+    mountTex(vfs, "texb4_test", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("texb4_test");
+    REQUIRE(img != nullptr);
+    CHECK(img->slots[0].width == 4);
+    CHECK(img->slots[0].height == 4);
+}
+
+TEST_CASE("Mipmap size = width * height * sizeof(uint8_t)") {
+    // Kills mul_to_div on line 225: mipmap.size = src_size * sizeof(uint8_t)
+    // and line 219: src_size = w * h * 4
+    auto buf = makeSimpleRGBA8Tex(8, 4);
+    VFS vfs;
+    mountTex(vfs, "size_check", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("size_check");
+    REQUIRE(img != nullptr);
+    CHECK(img->slots[0].mipmaps[0].size == 8 * 4 * 4);
+}
+
+// --- Mutation testing: sprite with texs=1 (integer frame data) ---
+
+TEST_CASE("Sprite texs=1 reads integer frame coordinates") {
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 32, 32, 32, 32, 1);
+    // Image 0: 1 mipmap
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(32 * 32 * 4, 0);
+    appendMipmapV2(buf, 32, 32, pixels);
+    // Sprite section with texs=1 (integer format)
+    appendTexVersion(buf, 1); // texs=1
+    appendInt32(buf, 1);      // framecount
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.1f);   // frametime
+    // texs==1: 6 int32 values (x, y, xAxis[0], xAxis[1], yAxis[0], yAxis[1])
+    appendInt32(buf, 0);      // x (int)
+    appendInt32(buf, 0);      // y (int)
+    appendInt32(buf, 16);     // xAxis[0] (int)
+    appendInt32(buf, 0);      // xAxis[1] (int)
+    appendInt32(buf, 0);      // yAxis[0] (int)
+    appendInt32(buf, 16);     // yAxis[1] (int)
+
+    VFS vfs;
+    mountTex(vfs, "sprite_v1", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_v1");
+    CHECK(header.isSprite == true);
+    CHECK(header.spriteAnim.numFrames() == 1);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    CHECK(frame.imageId == 0);
+    CHECK(frame.frametime == doctest::Approx(0.1f));
+    // x = 0/32 = 0.0, y = 0/32 = 0.0
+    CHECK(frame.x == doctest::Approx(0.0f));
+    CHECK(frame.y == doctest::Approx(0.0f));
+    // width = sqrt(16^2 + 0^2) = 16
+    CHECK(frame.width == doctest::Approx(16.0f));
+    // height = sqrt(0^2 + 16^2) = 16
+    CHECK(frame.height == doctest::Approx(16.0f));
+    // rate = height / width = 1.0
+    CHECK(frame.rate == doctest::Approx(1.0f));
+}
+
+TEST_CASE("Sprite frame coordinate division by sprite dimensions") {
+    // Kills div_to_mul: sf.x = (float)file.ReadInt32() / spriteWidth
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 64, 32, 64, 32, 1);
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(64 * 32 * 4, 0);
+    appendMipmapV2(buf, 64, 32, pixels);
+    appendTexVersion(buf, 2); // texs=2 (float format)
+    appendInt32(buf, 1);      // framecount
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.5f);   // frametime
+    appendFloat(buf, 16.0f);  // x (float)
+    appendFloat(buf, 8.0f);   // y (float)
+    appendFloat(buf, 32.0f);  // xAxis[0]
+    appendFloat(buf, 0.0f);   // xAxis[1]
+    appendFloat(buf, 0.0f);   // yAxis[0]
+    appendFloat(buf, 16.0f);  // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_coords", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_coords");
+    CHECK(header.isSprite == true);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    // x = 16.0/64 = 0.25, y = 8.0/32 = 0.25
+    CHECK(frame.x == doctest::Approx(0.25f));
+    CHECK(frame.y == doctest::Approx(0.25f));
+    // xAxis[0]/spriteWidth = 32/64 = 0.5
+    CHECK(frame.xAxis[0] == doctest::Approx(0.5f));
+    // yAxis[1]/spriteHeight = 16/32 = 0.5
+    CHECK(frame.yAxis[1] == doctest::Approx(0.5f));
+    // width = sqrt(32^2 + 0^2) = 32
+    CHECK(frame.width == doctest::Approx(32.0f));
+    // height = sqrt(0^2 + 16^2) = 16
+    CHECK(frame.height == doctest::Approx(16.0f));
+    // rate = 16 / 32 = 0.5
+    CHECK(frame.rate == doctest::Approx(0.5f));
+}
+
 } // TEST_SUITE
