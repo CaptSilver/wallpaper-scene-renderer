@@ -28,6 +28,15 @@ TEST_CASE("valid project.json loads properties") {
     CHECK(props.HasProperty("speed"));
 }
 
+TEST_CASE("HasProperty returns false for missing key") {
+    WPUserProperties props;
+    props.LoadFromProjectJson(R"({
+        "general": { "properties": { "speed": { "type": "slider", "value": 5 } } }
+    })");
+    CHECK(props.HasProperty("speed") == true);
+    CHECK(props.HasProperty("nonexistent") == false);
+}
+
 TEST_CASE("empty properties section") {
     WPUserProperties props;
     bool ok = props.LoadFromProjectJson(R"({
