@@ -9,6 +9,9 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
 
     steps:
       - name: Checkout repository
@@ -20,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
+            clang \
             cmake \
             pkg-config \
             liblz4-dev \

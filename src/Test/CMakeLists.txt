@@ -41,4 +41,11 @@ target_link_libraries(backend_scene_tests PRIVATE
 
 target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
 
+if(MUTATION_TESTING)
+    target_compile_options(backend_scene_tests PRIVATE
+        -fpass-plugin=${MULL_PLUGIN_PATH}
+        -g -grecord-command-line
+    )
+endif()
+
 add_test(NAME backend_scene_tests COMMAND backend_scene_tests)
