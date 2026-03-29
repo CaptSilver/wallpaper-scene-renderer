@@ -307,12 +307,22 @@ void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
     }
 }
 void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count, float rate,
-                 bool render_rope, u32 rope_batch_size = 1) {
+                 bool render_rope, u32 rope_batch_size = 1, bool has_periodic = false) {
     bool sort = render_rope;
     for (const auto& em : wp.emitters) {
-        auto newEm = em;
-        newEm.rate *= count * rate;
-        pSys.AddEmitter(WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, 0.0f));
+        auto  newEm      = em;
+        float burst_rate = 0.0f;
+        if (rope_batch_size > 1 && ! has_periodic && count * rate > 0.001f) {
+            // Rope+mapsequence without periodic: rate override controls bolt frequency.
+            // Keep base emission rate, use override as burst period.
+            burst_rate = 1.0f / (count * rate);
+            LOG_INFO("burst emitter: period=%.3fs (rate_override=%.3f, batch=%u)",
+                     burst_rate, count * rate, rope_batch_size);
+        } else {
+            newEm.rate *= count * rate;
+        }
+        pSys.AddEmitter(
+            WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
     }
 }
 
@@ -1610,7 +1620,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     bool render_ropetrail   = (wppartRenderer.name == "ropetrail");
     bool render_rope        = sstart_with(wppartRenderer.name, "rope") && ! render_ropetrail;
     bool render_spritetrail = (wppartRenderer.name == "spritetrail") || render_ropetrail;
-    bool hastrail           = send_with(wppartRenderer.name, "trail");
+    bool hastrail           = render_rope || send_with(wppartRenderer.name, "trail");
 
     if (render_rope || render_spritetrail) particle_obj.material.shader = "genericropeparticle";
 
@@ -1661,8 +1671,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         };
         shaderInfo.combos["THICKFORMAT"]   = "1";
         shaderInfo.combos["TRAILRENDERER"] = "1";
-        if (render_ropetrail && wppartRenderer.subdivision > 0) {
-            shaderInfo.combos["TRAILSUBDIVISION"] = std::to_string((int)wppartRenderer.subdivision);
+        int subdiv = (int)wppartRenderer.subdivision;
+        if (subdiv > 0) {
+            shaderInfo.combos["TRAILSUBDIVISION"] = std::to_string(subdiv);
+            LOG_INFO("  rope subdivision=%d for '%s'", subdiv, wppartobj.name.c_str());
         }
     }
 
@@ -1781,7 +1793,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                 override.count,
                 override.rate,
                 render_rope && ! render_spritetrail,
-                emitter_batch);
+                emitter_batch,
+                has_periodic);
     // For rope mapsequence: use maxtoemitperperiod as count so each particle gets
     // a unique position along the line (avoids half-filled rope from maxcount mismatch)
     u32 rope_init_count = 0;

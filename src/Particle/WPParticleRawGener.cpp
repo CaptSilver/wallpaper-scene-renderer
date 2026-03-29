@@ -261,6 +261,11 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
 
     float trail_length = (float)alive.size();
 
+    // Precompute positions for Catmull-Rom tangent calculation
+    std::vector<Vector3f> positions(alive.size());
+    for (size_t i = 0; i < alive.size(); i++)
+        positions[i] = Vector3f { particles[alive[i]].position } + inst_pos;
+
     for (size_t ai = 1; ai < alive.size(); ai++) {
         const auto& pre_p = particles[alive[ai - 1]];
         const auto& p     = particles[alive[ai]];
@@ -271,16 +276,22 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
         specOp(p, { &lifetime });
         float trail_position = (float)(ai - 1);
 
-        Vector3f sp_pos  = Vector3f { pre_p.position } + inst_pos;
-        Vector3f ep_pos  = Vector3f { p.position } + inst_pos;
+        Vector3f sp_pos  = positions[ai - 1];
+        Vector3f ep_pos  = positions[ai];
         Vector3f pos_vec = ep_pos - sp_pos;
 
-        Vector3f cp_vec = AngleAxisf(p.rotation[2] + (float)M_PI / 2.0f, Vector3f::UnitZ()) *
-                          Vector3f { 0.0f, size / 2.0f, 0.0f };
-        cp_vec = pos_vec.normalized().dot(cp_vec) > 0 ? cp_vec : -1.0f * cp_vec;
+        // Catmull-Rom tangents for smooth Bézier curves
+        Vector3f tan_start = pos_vec;
+        if (ai >= 2) {
+            tan_start = (positions[ai] - positions[ai - 2]) * 0.5f;
+        }
+        Vector3f tan_end = pos_vec;
+        if (ai + 1 < alive.size()) {
+            tan_end = (positions[ai + 1] - positions[ai - 1]) * 0.5f;
+        }
 
-        Vector3f scp = sp_pos + cp_vec;
-        Vector3f ecp = ep_pos - cp_vec;
+        Vector3f scp = tan_start;
+        Vector3f ecp = tan_end;
 
         size_t offset = 0;
 
