@@ -604,6 +604,39 @@ TEST_CASE("Mipmap size = width * height * sizeof(uint8_t)") {
 
 // --- Mutation testing: sprite with texs=1 (integer frame data) ---
 
+TEST_CASE("Sprite texs=1 with non-zero coords verifies division") {
+    // Kills div_to_mul on lines 299-300: x=(float)ReadInt32()/spriteWidth
+    // With x=8, spriteWidth=32: 8/32=0.25, but 8*32=256
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 32, 16, 32, 16, 1);
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(32 * 16 * 4, 0);
+    appendMipmapV2(buf, 32, 16, pixels);
+    appendTexVersion(buf, 1); // texs=1 (integer format)
+    appendInt32(buf, 1);      // framecount
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.1f);   // frametime
+    appendInt32(buf, 8);      // x (int) → 8/32 = 0.25
+    appendInt32(buf, 4);      // y (int) → 4/16 = 0.25
+    appendInt32(buf, 16);     // xAxis[0]
+    appendInt32(buf, 0);      // xAxis[1]
+    appendInt32(buf, 0);      // yAxis[0]
+    appendInt32(buf, 8);      // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_v1_div", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_v1_div");
+    CHECK(header.isSprite == true);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    CHECK(frame.x == doctest::Approx(0.25f));
+    CHECK(frame.y == doctest::Approx(0.25f));
+    // xAxis[0]/spriteWidth = 16/32 = 0.5
+    CHECK(frame.xAxis[0] == doctest::Approx(0.5f));
+    // yAxis[1]/spriteHeight = 8/16 = 0.5
+    CHECK(frame.yAxis[1] == doctest::Approx(0.5f));
+}
+
 TEST_CASE("Sprite texs=1 reads integer frame coordinates") {
     uint32_t spriteFlag = (1u << 2);
     auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 32, 32, 32, 32, 1);
@@ -681,6 +714,70 @@ TEST_CASE("Sprite frame coordinate division by sprite dimensions") {
     CHECK(frame.height == doctest::Approx(16.0f));
     // rate = 16 / 32 = 0.5
     CHECK(frame.rate == doctest::Approx(0.5f));
+}
+
+TEST_CASE("Sprite texs=3 reads extra width/height fields") {
+    // Kills gt_to_ge and gt_to_le on line 275: texs > 3 → error
+    // texs=3 should NOT trigger the error; texs=4 should
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 16, 16, 1);
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(16 * 16 * 4, 0);
+    appendMipmapV2(buf, 16, 16, pixels);
+    appendTexVersion(buf, 3); // texs=3
+    appendInt32(buf, 1);      // framecount
+    // texs==3 has extra width/height before frames
+    appendInt32(buf, 16);     // extra width
+    appendInt32(buf, 16);     // extra height
+    // Frame data (texs >= 2 → float format)
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.5f);   // frametime
+    appendFloat(buf, 0.0f);   // x
+    appendFloat(buf, 0.0f);   // y
+    appendFloat(buf, 16.0f);  // xAxis[0]
+    appendFloat(buf, 0.0f);   // xAxis[1]
+    appendFloat(buf, 0.0f);   // yAxis[0]
+    appendFloat(buf, 16.0f);  // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_v3", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_v3");
+    CHECK(header.isSprite == true);
+    CHECK(header.spriteAnim.numFrames() == 1);
+}
+
+TEST_CASE("Count of zero produces valid empty image") {
+    // Kills lt_to_le on line 164: count < 0 returns nullptr
+    // count=0 should NOT return nullptr — it's valid (empty slots)
+    auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 0);
+    VFS vfs;
+    mountTex(vfs, "test_zero_count", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("test_zero_count");
+    REQUIRE(img != nullptr);
+    CHECK(img->slots.size() == 0);
+}
+
+TEST_CASE("Multiple mipmaps parsed correctly") {
+    // Kills post_inc_to_post_dec on loop counter (line 175)
+    auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+    appendInt32(buf, 2); // 2 mipmaps
+    // Mipmap 0: 4x4
+    std::vector<uint8_t> pix4(4 * 4 * 4, 0xAA);
+    appendMipmapV1(buf, 4, 4, pix4);
+    // Mipmap 1: 2x2
+    std::vector<uint8_t> pix2(2 * 2 * 4, 0xBB);
+    appendMipmapV1(buf, 2, 2, pix2);
+
+    VFS vfs;
+    mountTex(vfs, "test_2mip", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("test_2mip");
+    REQUIRE(img != nullptr);
+    REQUIRE(img->slots[0].mipmaps.size() == 2);
+    CHECK(img->slots[0].mipmaps[0].width == 4);
+    CHECK(img->slots[0].mipmaps[1].width == 2);
 }
 
 } // TEST_SUITE
