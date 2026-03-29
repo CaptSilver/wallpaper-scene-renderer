@@ -360,7 +360,8 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                 pathpos += perp * noise * amplitude * taper;
 
                 PM::Move(p, pathpos.cast<double>());
-                PM::ChangeVelocity(p, -PM::GetVelocity(p).cast<double>());
+                // Explicitly zero velocity — particles are placed, not moving
+                PM::InitVelocity(p, 0.0, 0.0, 0.0);
                 seq++;
             };
         } else if (name == "mapsequencearoundcontrolpoint") {
@@ -395,7 +396,8 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                                                      0.0f);
 
                 PM::Move(p, pos.cast<double>());
-                PM::ChangeVelocity(p, -PM::GetVelocity(p).cast<double>());
+                // Explicitly zero velocity — particles are placed, not moving
+                PM::InitVelocity(p, 0.0, 0.0, 0.0);
                 seq++;
             };
         }
@@ -653,10 +655,14 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             double   spd    = over.speed;
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
-                    Vector3d acc =
-                        algorism::DragForce(PM::GetVelocity(p).cast<double>(), drag) + vecG * spd;
-                    PM::Accelerate(p, acc, info.time_pass);
+                    // Gravity scaled by speed override
+                    PM::Accelerate(p, vecG * spd, info.time_pass);
                     PM::MoveByTime(p, info.time_pass);
+                    // Multiplicative drag: velocity *= (1 - drag * dt)
+                    if (drag > 0.0f) {
+                        double factor = std::max(0.0, 1.0 - drag * info.time_pass);
+                        PM::MutiplyVelocity(p, factor);
+                    }
                 }
             };
         } else if (name == "angularmovement") {
@@ -1115,13 +1121,11 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
                     if (ParticleModify::LifetimeOk(p)) aliveBefore++;
             }
 
-            // Trigger burst at start of period if maxtoemitperperiod is set.
-            // Or for ropes, always try to emit the whole batch.
+            // For non-rope periodic emitters with maxtoemitperperiod, burst at start.
+            // For ropes: let them grow naturally (1 per frame via baseOp).
             double effectiveTime = timepass;
-            if (justActivated && maxPer > 0) {
+            if (justActivated && maxPer > 0 && batch_size <= 1) {
                 effectiveTime = 1000.0; // Force immediate burst of maxPer
-            } else if (batch_size > 1 && emittedCount == 0) {
-                effectiveTime = 1000.0; // Force immediate rope batch
             }
 
             baseOp(ps, inis, maxcount, effectiveTime);
