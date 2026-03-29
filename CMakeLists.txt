@@ -28,17 +28,31 @@ if(MUTATION_TESTING)
     endif()
 
     if(NOT MULL_PLUGIN_PATH)
-        file(GLOB _mull_candidates /usr/lib/mull-ir-frontend-* /usr/lib64/mull-ir-frontend-*)
+        # Try system-installed Mull first
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} --version
+            OUTPUT_VARIABLE _clang_ver_out OUTPUT_STRIP_TRAILING_WHITESPACE)
+        string(REGEX MATCH "clang version ([0-9]+)" _ "${_clang_ver_out}")
+        set(_clang_maj "${CMAKE_MATCH_1}")
+        file(GLOB _mull_candidates
+            /usr/lib/mull-ir-frontend-${_clang_maj}
+            /usr/lib64/mull-ir-frontend-${_clang_maj})
         if(_mull_candidates)
             list(GET _mull_candidates 0 MULL_PLUGIN_PATH)
+            # Find matching runner
+            find_program(MULL_RUNNER mull-runner-${_clang_maj})
         endif()
     endif()
 
     if(NOT MULL_PLUGIN_PATH)
-        message(FATAL_ERROR "Cannot find Mull IR frontend plugin. Set -DMULL_PLUGIN_PATH=...")
+        # Auto-download from GitHub releases
+        include(cmake/FetchMull.cmake)
     endif()
 
     message(STATUS "Mull plugin: ${MULL_PLUGIN_PATH}")
+    if(MULL_RUNNER)
+        message(STATUS "Mull runner: ${MULL_RUNNER}")
+    endif()
 endif()
 
 if(BUILD_TESTS)

@@ -33,32 +33,11 @@ jobs:
             libglvnd-dev \
             libvulkan-dev
 
-      - name: Install Mull
-        run: |
-          LLVM_VERSION=$(clang --version | grep -oP 'clang version \K[0-9]+')
-          curl -1sLf 'https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh' | sudo -E bash
-          sudo apt-get install -y mull-${LLVM_VERSION}
-
-      - name: Find Mull plugin
-        id: mull
-        run: |
-          PLUGIN=$(find /usr/lib -name 'mull-ir-frontend-*' -type f 2>/dev/null | head -1)
-          if [ -z "$PLUGIN" ]; then
-            echo "Mull plugin not found"
-            exit 1
-          fi
-          echo "plugin=$PLUGIN" >> "$GITHUB_OUTPUT"
-          echo "Found Mull plugin: $PLUGIN"
-          RUNNER=$(which mull-runner-* 2>/dev/null || find /usr/bin -name 'mull-runner-*' | head -1)
-          echo "runner=$RUNNER" >> "$GITHUB_OUTPUT"
-          echo "Found Mull runner: $RUNNER"
-
       - name: Configure CMake with Mull
         run: |
           cmake -B build \
             -DBUILD_TESTS=ON \
             -DMUTATION_TESTING=ON \
-            -DMULL_PLUGIN_PATH=${{ steps.mull.outputs.plugin }} \
             -DCMAKE_BUILD_TYPE=Debug
 
       - name: Build tests
@@ -66,7 +45,9 @@ jobs:
 
       - name: Run mutation tests
         run: |
-          ${{ steps.mull.outputs.runner }} \
+          LLVM_VERSION=$(clang --version | grep -oP 'clang version \K[0-9]+')
+          build/_mull/usr/bin/mull-runner-${LLVM_VERSION} \
+            --allow-surviving \
             --reporters=Elements \
             --report-name=mutation-report \
             --report-dir=. \
