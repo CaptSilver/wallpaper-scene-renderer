@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include "Particle/Particle.h"
+#include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 
 #include <cmath>
@@ -512,6 +513,169 @@ TEST_CASE("MutiplyVelocity scales velocity") {
     CHECK(p.velocity.x() == doctest::Approx(1.0f));
     CHECK(p.velocity.y() == doctest::Approx(2.0f));
     CHECK(p.velocity.z() == doctest::Approx(3.0f));
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// ControlPointForce — radial force from control point
+// Tests the force computation pattern used by the controlpointforce operator.
+// ===========================================================================
+
+TEST_SUITE("ControlPointForce") {
+
+namespace
+{
+// Simulate controlpointforce: radial push away from control point
+void applyControlPointForce(std::span<Particle> particles,
+                            const Eigen::Vector3d& cpOffset,
+                            const Eigen::Vector3d& origin,
+                            float scale, float threshold, double dt) {
+    Eigen::Vector3d offset = cpOffset + origin;
+    for (auto& p : particles) {
+        Eigen::Vector3d diff     = ParticleModify::GetPos(p).cast<double>() - offset;
+        double          distance = diff.norm();
+        if (distance < threshold && distance > 0.0) {
+            ParticleModify::Accelerate(p, diff.normalized() * scale, dt);
+        }
+    }
+}
+
+// Simulate controlpointattract: pull toward control point
+void applyControlPointAttract(std::span<Particle> particles,
+                              const Eigen::Vector3d& cpOffset,
+                              const Eigen::Vector3d& origin,
+                              float scale, float threshold, double dt) {
+    Eigen::Vector3d offset = cpOffset + origin;
+    for (auto& p : particles) {
+        Eigen::Vector3d diff     = offset - ParticleModify::GetPos(p).cast<double>();
+        double          distance = diff.norm();
+        if (distance < threshold) {
+            ParticleModify::Accelerate(p, diff.normalized() * scale, dt);
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("Force pushes particle away from control point") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+
+    // Velocity should be in +x direction (away from CP at origin)
+    CHECK(p.velocity.x() > 0.0f);
+    CHECK(p.velocity.y() == doctest::Approx(0.0f));
+    CHECK(p.velocity.z() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("Attract pulls particle toward control point") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    applyControlPointAttract({ &p, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+
+    // Velocity should be in -x direction (toward CP at origin)
+    CHECK(p.velocity.x() < 0.0f);
+    CHECK(p.velocity.y() == doctest::Approx(0.0f));
+    CHECK(p.velocity.z() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("Threshold blocks distant particles") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(100.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    // Threshold is 50, particle is at distance 100 — no force
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 50.0f, 1.0);
+
+    CHECK(p.velocity.x() == doctest::Approx(0.0f));
+    CHECK(p.velocity.y() == doctest::Approx(0.0f));
+    CHECK(p.velocity.z() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("Threshold allows near particles") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    // Threshold is 50, particle is at distance 10 — force applied
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 50.0f, 1.0);
+
+    CHECK(p.velocity.x() == doctest::Approx(100.0f));
+}
+
+TEST_CASE("Scale affects force magnitude") {
+    Particle p1 = makeParticle();
+    p1.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+    p1.velocity = Eigen::Vector3f::Zero();
+
+    Particle p2 = p1;
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    applyControlPointForce({ &p1, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+    applyControlPointForce({ &p2, 1 }, cpOffset, origin, 200.0f, 512.0f, 1.0);
+
+    CHECK(p2.velocity.x() == doctest::Approx(p1.velocity.x() * 2.0f));
+}
+
+TEST_CASE("Origin offset shifts effective control point") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    // Origin offset puts the effective CP at (10, 0, 0) — same as particle
+    Eigen::Vector3d origin(10.0, 0.0, 0.0);
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+
+    // Zero distance → no force (distance > 0.0 guard)
+    CHECK(p.velocity.x() == doctest::Approx(0.0f));
+    CHECK(p.velocity.y() == doctest::Approx(0.0f));
+    CHECK(p.velocity.z() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("Zero distance is a no-op") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+
+    // Particle at CP — no defined direction, should not change
+    CHECK(p.velocity.x() == doctest::Approx(0.0f));
+    CHECK(p.velocity.y() == doctest::Approx(0.0f));
+    CHECK(p.velocity.z() == doctest::Approx(0.0f));
+}
+
+TEST_CASE("3D diagonal force direction") {
+    Particle p = makeParticle();
+    p.position = Eigen::Vector3f(1.0f, 1.0f, 1.0f);
+    p.velocity = Eigen::Vector3f::Zero();
+
+    Eigen::Vector3d cpOffset(0, 0, 0);
+    Eigen::Vector3d origin(0, 0, 0);
+    applyControlPointForce({ &p, 1 }, cpOffset, origin, 100.0f, 512.0f, 1.0);
+
+    // Force direction is normalized (1,1,1) = (1/√3, 1/√3, 1/√3)
+    // Velocity = direction * scale * dt = (1/√3 * 100, ...)
+    float expected = 100.0f / std::sqrt(3.0f);
+    CHECK(p.velocity.x() == doctest::Approx(expected).epsilon(0.001));
+    CHECK(p.velocity.y() == doctest::Approx(expected).epsilon(0.001));
+    CHECK(p.velocity.z() == doctest::Approx(expected).epsilon(0.001));
 }
 
 } // TEST_SUITE

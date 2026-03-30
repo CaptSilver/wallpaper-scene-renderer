@@ -99,7 +99,7 @@ to a valid fragment shader will render. Known working:
   - [x] `maintaindistancebetweencontrolpoints` — distance constraint
   - [x] `reducemovementnearcontrolpoint` — movement dampening near CP
   - [x] `remapvalue` — remap particle property values
-  - [ ] `controlpointforce` — force from control point (parsed but not implemented)
+  - [x] `controlpointforce` — radial force from control point
 - [x] **Control Points** (up to 8)
   - [x] Mouse follow (`link_mouse`)
   - [x] Worldspace mode
