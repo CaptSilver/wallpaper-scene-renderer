@@ -1036,6 +1036,19 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     }
                 }
             };
+        } else if (name == "controlpointforce") {
+            ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
+            return [=](const ParticleInfo& info) {
+                Vector3d offset = info.controlpoints[c.controlpoint].offset +
+                                  Vector3f { c.origin.data() }.cast<double>();
+                for (auto& p : info.particles) {
+                    Vector3d diff     = PM::GetPos(p).cast<double>() - offset;
+                    double   distance = diff.norm();
+                    if (distance < c.threshold && distance > 0.0) {
+                        PM::Accelerate(p, diff.normalized() * c.scale, info.time_pass);
+                    }
+                }
+            };
         }
     } while (false);
     return [](const ParticleInfo&) {
