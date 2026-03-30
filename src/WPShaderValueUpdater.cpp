@@ -101,6 +101,8 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_TEXELSIZE        = existsOp(G_TEXELSIZE);
     info.has_TEXELSIZEHALF    = existsOp(G_TEXELSIZEHALF);
     info.has_SCREEN           = existsOp(G_SCREEN);
+    info.has_LIGHTAMBIENTCOLOR  = existsOp(G_LIGHTAMBIENTCOLOR);
+    info.has_LIGHTSKYLIGHTCOLOR = existsOp(G_LIGHTSKYLIGHTCOLOR);
     info.has_LP               = existsOp(G_LP);
     info.has_LCR              = existsOp(G_LCR);
     info.has_EYEPOSITION      = existsOp(G_EYEPOSITION);
@@ -386,6 +388,11 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(G_LCR, lights_color_radius);
         updateOp(G_LCP, lights_color);
     }
+
+    if (info.has_LIGHTAMBIENTCOLOR)
+        updateOp(G_LIGHTAMBIENTCOLOR, m_scene->ambientColor);
+    if (info.has_LIGHTSKYLIGHTCOLOR)
+        updateOp(G_LIGHTSKYLIGHTCOLOR, m_scene->skylightColor);
 
     if (info.has_EYEPOSITION && camera->IsPerspective()) {
         auto pos = camera->GetPosition();

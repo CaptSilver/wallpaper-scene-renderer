@@ -881,6 +881,116 @@ void SceneObject::setupTextScripts() {
     // Store reference to _collectDirtyLayers for C++ calls
     m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
 
+    // Scene-level property control (bloom, clear color, camera, lighting)
+    {
+        std::string sceneJson = m_scene->getSceneInitialStateJson();
+        if (!sceneJson.empty()) {
+            QString escaped = QString::fromStdString(sceneJson);
+            escaped.replace("\\", "\\\\");
+            escaped.replace("'", "\\'");
+            m_jsEngine->evaluate(
+                QString("var _sceneInit = JSON.parse('%1');\n").arg(escaped));
+        } else {
+            m_jsEngine->evaluate(
+                "var _sceneInit = {cc:[0,0,0],bloom:false,bs:2,bt:0.65,"
+                "ac:[0.2,0.2,0.2],sc:[0.3,0.3,0.3],persp:false,fov:0,"
+                "eye:[0,0,1],ctr:[0,0,0],up:[0,1,0],lights:[]};\n");
+        }
+        m_jsEngine->evaluate(
+            "var _sceneState = {\n"
+            "  clearColor: {x:_sceneInit.cc[0], y:_sceneInit.cc[1], z:_sceneInit.cc[2]},\n"
+            "  bloomEnabled: _sceneInit.bloom,\n"
+            "  bloomStrength: _sceneInit.bs,\n"
+            "  bloomThreshold: _sceneInit.bt,\n"
+            "  ambientColor: {x:_sceneInit.ac[0], y:_sceneInit.ac[1], z:_sceneInit.ac[2]},\n"
+            "  skylightColor: {x:_sceneInit.sc[0], y:_sceneInit.sc[1], z:_sceneInit.sc[2]},\n"
+            "  isPerspective: _sceneInit.persp,\n"
+            "  cameraFov: _sceneInit.fov,\n"
+            "  cameraEye: {x:_sceneInit.eye[0], y:_sceneInit.eye[1], z:_sceneInit.eye[2]},\n"
+            "  cameraCenter: {x:_sceneInit.ctr[0], y:_sceneInit.ctr[1], z:_sceneInit.ctr[2]},\n"
+            "  cameraUp: {x:_sceneInit.up[0], y:_sceneInit.up[1], z:_sceneInit.up[2]},\n"
+            "  _dirty: {}\n"
+            "};\n"
+            // Build light proxies with per-light dirty tracking
+            "_sceneState.lights = _sceneInit.lights.map(function(l) {\n"
+            "  var _s = { color:{x:l.c[0],y:l.c[1],z:l.c[2]},\n"
+            "    radius:l.r, intensity:l.i,\n"
+            "    position:{x:l.p[0],y:l.p[1],z:l.p[2]}, _dirty:{} };\n"
+            "  var p = {};\n"
+            "  ['color','position'].forEach(function(prop) {\n"
+            "    Object.defineProperty(p, prop, {\n"
+            "      get: function(){ return _s[prop]; },\n"
+            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+            "      enumerable: true\n"
+            "    });\n"
+            "  });\n"
+            "  ['radius','intensity'].forEach(function(prop) {\n"
+            "    Object.defineProperty(p, prop, {\n"
+            "      get: function(){ return _s[prop]; },\n"
+            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+            "      enumerable: true\n"
+            "    });\n"
+            "  });\n"
+            "  p._state = _s;\n"
+            "  return p;\n"
+            "});\n"
+            // Extend thisScene with dirty-tracked scene properties
+            "['clearColor','ambientColor','skylightColor','cameraEye','cameraCenter','cameraUp'].forEach(function(prop) {\n"
+            "  Object.defineProperty(thisScene, prop, {\n"
+            "    get: function(){ return _sceneState[prop]; },\n"
+            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+            "    enumerable: true\n"
+            "  });\n"
+            "});\n"
+            "['bloomStrength','bloomThreshold','cameraFov'].forEach(function(prop) {\n"
+            "  Object.defineProperty(thisScene, prop, {\n"
+            "    get: function(){ return _sceneState[prop]; },\n"
+            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+            "    enumerable: true\n"
+            "  });\n"
+            "});\n"
+            // Read-only properties
+            "Object.defineProperty(thisScene, 'bloomEnabled', {\n"
+            "  get: function(){ return _sceneState.bloomEnabled; }, enumerable: true\n"
+            "});\n"
+            "Object.defineProperty(thisScene, 'isPerspective', {\n"
+            "  get: function(){ return _sceneState.isPerspective; }, enumerable: true\n"
+            "});\n"
+            // getLights() returns the pre-built light proxy array
+            "thisScene.getLights = function() { return _sceneState.lights; };\n"
+            // _collectDirtyScene — returns null if nothing dirty, else dirty update object
+            "function _collectDirtyScene() {\n"
+            "  var d = _sceneState._dirty;\n"
+            "  var keys = Object.keys(d);\n"
+            "  var dirtyLights = [];\n"
+            "  for (var i = 0; i < _sceneState.lights.length; i++) {\n"
+            "    var ls = _sceneState.lights[i]._state;\n"
+            "    var ld = ls._dirty;\n"
+            "    if (Object.keys(ld).length > 0) {\n"
+            "      dirtyLights.push({idx:i, dirty:ld,\n"
+            "        color:ls.color, radius:ls.radius,\n"
+            "        intensity:ls.intensity, position:ls.position});\n"
+            "      ls._dirty = {};\n"
+            "    }\n"
+            "  }\n"
+            "  if (keys.length === 0 && dirtyLights.length === 0) return null;\n"
+            "  var r = {dirty:d, lights:dirtyLights};\n"
+            "  if (d.clearColor) r.clearColor = _sceneState.clearColor;\n"
+            "  if (d.bloomStrength) r.bloomStrength = _sceneState.bloomStrength;\n"
+            "  if (d.bloomThreshold) r.bloomThreshold = _sceneState.bloomThreshold;\n"
+            "  if (d.ambientColor) r.ambientColor = _sceneState.ambientColor;\n"
+            "  if (d.skylightColor) r.skylightColor = _sceneState.skylightColor;\n"
+            "  if (d.cameraFov) r.cameraFov = _sceneState.cameraFov;\n"
+            "  if (d.cameraEye) r.cameraEye = _sceneState.cameraEye;\n"
+            "  if (d.cameraCenter) r.cameraCenter = _sceneState.cameraCenter;\n"
+            "  if (d.cameraUp) r.cameraUp = _sceneState.cameraUp;\n"
+            "  _sceneState._dirty = {};\n"
+            "  return r;\n"
+            "}\n"
+        );
+        m_collectDirtySceneFn = m_jsEngine->globalObject().property("_collectDirtyScene");
+    }
+
     // Get node name→id map for thisScene.getLayer() dispatch
     m_nodeNameToId = m_scene->getNodeNameToIdMap();
 
@@ -2009,6 +2119,84 @@ void SceneObject::evaluatePropertyScripts() {
                 if (std::isnan(vol) || vol < 0.0f) vol = 0.0f;
                 if (vol > 1.0f) vol = 1.0f;
                 m_scene->soundLayerSetVolume(idx, vol);
+            }
+        }
+    }
+
+    // Flush dirty scene properties (bloom, clear color, camera, lighting)
+    if (m_collectDirtySceneFn.isCallable()) {
+        QJSValue sceneUpdate = m_collectDirtySceneFn.call();
+        if (!sceneUpdate.isNull() && !sceneUpdate.isUndefined()) {
+            QJSValue dirty = sceneUpdate.property("dirty");
+
+            if (dirty.property("clearColor").toBool()) {
+                QJSValue c = sceneUpdate.property("clearColor");
+                m_scene->updateClearColor(
+                    (float)c.property("x").toNumber(),
+                    (float)c.property("y").toNumber(),
+                    (float)c.property("z").toNumber());
+            }
+            if (dirty.property("bloomStrength").toBool())
+                m_scene->updateBloomStrength((float)sceneUpdate.property("bloomStrength").toNumber());
+            if (dirty.property("bloomThreshold").toBool())
+                m_scene->updateBloomThreshold((float)sceneUpdate.property("bloomThreshold").toNumber());
+            if (dirty.property("cameraFov").toBool())
+                m_scene->updateCameraFov((float)sceneUpdate.property("cameraFov").toNumber());
+            if (dirty.property("cameraEye").toBool() ||
+                dirty.property("cameraCenter").toBool() ||
+                dirty.property("cameraUp").toBool()) {
+                // Send full lookAt when any camera vector changes
+                QJSValue e = m_jsEngine->globalObject().property("_sceneState").property("cameraEye");
+                QJSValue ct = m_jsEngine->globalObject().property("_sceneState").property("cameraCenter");
+                QJSValue u = m_jsEngine->globalObject().property("_sceneState").property("cameraUp");
+                m_scene->updateCameraLookAt(
+                    (float)e.property("x").toNumber(), (float)e.property("y").toNumber(),
+                    (float)e.property("z").toNumber(),
+                    (float)ct.property("x").toNumber(), (float)ct.property("y").toNumber(),
+                    (float)ct.property("z").toNumber(),
+                    (float)u.property("x").toNumber(), (float)u.property("y").toNumber(),
+                    (float)u.property("z").toNumber());
+            }
+            if (dirty.property("ambientColor").toBool()) {
+                QJSValue c = sceneUpdate.property("ambientColor");
+                m_scene->updateAmbientColor(
+                    (float)c.property("x").toNumber(),
+                    (float)c.property("y").toNumber(),
+                    (float)c.property("z").toNumber());
+            }
+            if (dirty.property("skylightColor").toBool()) {
+                QJSValue c = sceneUpdate.property("skylightColor");
+                m_scene->updateSkylightColor(
+                    (float)c.property("x").toNumber(),
+                    (float)c.property("y").toNumber(),
+                    (float)c.property("z").toNumber());
+            }
+
+            // Light updates
+            QJSValue lights = sceneUpdate.property("lights");
+            int lightCount = lights.property("length").toInt();
+            for (int i = 0; i < lightCount; i++) {
+                QJSValue entry = lights.property(i);
+                int32_t idx = entry.property("idx").toInt();
+                QJSValue ld = entry.property("dirty");
+                if (ld.property("color").toBool()) {
+                    QJSValue c = entry.property("color");
+                    m_scene->updateLightColor(idx,
+                        (float)c.property("x").toNumber(),
+                        (float)c.property("y").toNumber(),
+                        (float)c.property("z").toNumber());
+                }
+                if (ld.property("radius").toBool())
+                    m_scene->updateLightRadius(idx, (float)entry.property("radius").toNumber());
+                if (ld.property("intensity").toBool())
+                    m_scene->updateLightIntensity(idx, (float)entry.property("intensity").toNumber());
+                if (ld.property("position").toBool()) {
+                    QJSValue p = entry.property("position");
+                    m_scene->updateLightPosition(idx,
+                        (float)p.property("x").toNumber(),
+                        (float)p.property("y").toNumber(),
+                        (float)p.property("z").toNumber());
+                }
             }
         }
     }

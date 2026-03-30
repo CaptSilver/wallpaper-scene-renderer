@@ -875,6 +875,10 @@ void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
         gb["g_LightAmbientColor"]  = sc.general.ambientcolor;
         gb["g_LightSkylightColor"] = sc.general.skylightcolor;
         gb["g_NormalModelMatrix"]  = ShaderValue::fromMatrix(Matrix4f::Identity());
+
+        // Store mutable copies on Scene for runtime SceneScript control
+        context.scene->ambientColor  = sc.general.ambientcolor;
+        context.scene->skylightColor = sc.general.skylightcolor;
     }
 
     {

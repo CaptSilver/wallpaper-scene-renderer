@@ -188,14 +188,15 @@ to a valid fragment shader will render. Known working:
   - [x] `registerAudioBuffers(resolution)` → `AudioBuffers { left, right, average }`
   - [x] `screenResolution`, `canvasSize`, `timeOfDay`, `frametime`, `runtime`
   - [x] `userProperties` access
-  - [ ] `setTimeout` / `setInterval`
-  - [ ] Device detection (`isDesktopDevice`, `isMobileDevice`, etc.)
+  - [x] `setTimeout` / `setInterval`
+  - [x] Device detection (`isDesktopDevice`, `isMobileDevice`, etc.)
 - [x] `thisScene` global (IScene)
-  - [ ] Scene property control (bloom, clear color, camera, lighting)
+  - [x] Scene property control (bloom, clear color, camera, lighting)
+    - [ ] `bloomEnabled` runtime toggle (requires render graph recompilation)
   - [x] `getLayer(name)` — returns layer proxy with position/scale/visibility/opacity
   - [x] `enumerateLayers()` — returns array of all layer proxies
   - [ ] `createLayer`, `destroyLayer`
-  - [ ] Camera transforms
+  - [x] Camera transforms
 - [x] `thisLayer` global (ILayer)
   - [x] Position, angles, scale, visibility control
   - [ ] Parent/child hierarchy manipulation

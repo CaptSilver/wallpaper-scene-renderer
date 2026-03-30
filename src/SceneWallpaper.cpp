@@ -33,6 +33,7 @@
 #include <sstream>
 #include <atomic>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <map>
 #include <fstream>
@@ -173,6 +174,11 @@ public:
         return m_layer_init_json;
     }
 
+    std::string getSceneInitialStateJson() const {
+        std::lock_guard<std::mutex> lock(m_scene_init_mutex);
+        return m_scene_init_json;
+    }
+
     std::array<int32_t, 2> getOrthoSize() const {
         if (m_scene) return { m_scene->ortho[0], m_scene->ortho[1] };
         return { 1920, 1080 };
@@ -223,6 +229,8 @@ private:
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
     mutable std::mutex                       m_layer_init_mutex;
     std::string                              m_layer_init_json;
+    mutable std::mutex                       m_scene_init_mutex;
+    std::string                              m_scene_init_json;
     mutable std::mutex                       m_user_props_mutex;
     WPUserProperties                         m_user_props_resolved; // for runtime re-resolution
 
@@ -325,6 +333,58 @@ public:
         if (++s_alpha_log <= 5 || s_alpha_log % 1000 == 0) {
             LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f", s_alpha_log, id, alpha);
         }
+    }
+
+    // Scene-level property setters
+    void setClearColor(float r, float g, float b) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_clear_color = std::array { r, g, b };
+    }
+    void setBloomStrength(float v) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_bloom_strength = v;
+    }
+    void setBloomThreshold(float v) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_bloom_threshold = v;
+    }
+    void setCameraFov(float v) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_camera_fov = v;
+    }
+    void setCameraLookAt(float ex, float ey, float ez,
+                         float cx, float cy, float cz,
+                         float ux, float uy, float uz) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_camera_lookat = CameraLookAtUpdate {
+            { (double)ex, (double)ey, (double)ez },
+            { (double)cx, (double)cy, (double)cz },
+            { (double)ux, (double)uy, (double)uz }
+        };
+    }
+    void setAmbientColor(float r, float g, float b) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_ambient_color = std::array { r, g, b };
+    }
+    void setSkylightColor(float r, float g, float b) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_skylight_color = std::array { r, g, b };
+    }
+    void setLightColor(i32 index, float r, float g, float b) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_light_colors.push_back({ index, { r, g, b } });
+    }
+    void setLightRadius(i32 index, float v) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_light_radii.push_back({ index, v });
+    }
+    void setLightIntensity(i32 index, float v) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_light_intensities.push_back({ index, v });
+    }
+    void setLightPosition(i32 index, float x, float y, float z) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_light_positions.push_back({ index, { x, y, z } });
     }
 
 private:
@@ -564,6 +624,79 @@ private:
                 m_pending_transform_updates.clear();
                 m_pending_visible_updates.clear();
                 m_pending_alpha_updates.clear();
+
+                // Scene-level property updates
+                if (m_pending_clear_color) {
+                    m_scene->clearColor = *m_pending_clear_color;
+                    m_pending_clear_color.reset();
+                }
+                if (m_pending_bloom_strength) {
+                    m_scene->bloomConfig.strength = *m_pending_bloom_strength;
+                    if (! m_scene->bloomConfig.nodes.empty()) {
+                        auto* mat = m_scene->bloomConfig.nodes[0]->Mesh()->Material();
+                        mat->customShader.constValues["bloomstrength"] =
+                            std::vector<float> { *m_pending_bloom_strength };
+                        mat->customShader.constValuesDirty = true;
+                    }
+                    m_pending_bloom_strength.reset();
+                }
+                if (m_pending_bloom_threshold) {
+                    m_scene->bloomConfig.threshold = *m_pending_bloom_threshold;
+                    if (! m_scene->bloomConfig.nodes.empty()) {
+                        auto* mat = m_scene->bloomConfig.nodes[0]->Mesh()->Material();
+                        mat->customShader.constValues["bloomthreshold"] =
+                            std::vector<float> { *m_pending_bloom_threshold };
+                        mat->customShader.constValuesDirty = true;
+                    }
+                    m_pending_bloom_threshold.reset();
+                }
+                if (m_pending_camera_fov && m_scene->activeCamera) {
+                    m_scene->activeCamera->SetFov(*m_pending_camera_fov);
+                    m_scene->activeCamera->Update();
+                    m_pending_camera_fov.reset();
+                }
+                if (m_pending_camera_lookat && m_scene->activeCamera) {
+                    auto& u = *m_pending_camera_lookat;
+                    Eigen::Vector3d eye(u.eye[0], u.eye[1], u.eye[2]);
+                    Eigen::Vector3d ctr(u.center[0], u.center[1], u.center[2]);
+                    Eigen::Vector3d up(u.up[0], u.up[1], u.up[2]);
+                    m_scene->activeCamera->SetDirectLookAt(eye, ctr, up);
+                    m_pending_camera_lookat.reset();
+                }
+                if (m_pending_ambient_color) {
+                    m_scene->ambientColor = *m_pending_ambient_color;
+                    m_pending_ambient_color.reset();
+                }
+                if (m_pending_skylight_color) {
+                    m_scene->skylightColor = *m_pending_skylight_color;
+                    m_pending_skylight_color.reset();
+                }
+                for (auto& u : m_pending_light_colors) {
+                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size()) {
+                        m_scene->lights[u.index]->setColor(
+                            Eigen::Vector3f(u.color[0], u.color[1], u.color[2]));
+                    }
+                }
+                m_pending_light_colors.clear();
+                for (auto& u : m_pending_light_radii) {
+                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size())
+                        m_scene->lights[u.index]->setRadius(u.value);
+                }
+                m_pending_light_radii.clear();
+                for (auto& u : m_pending_light_intensities) {
+                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size())
+                        m_scene->lights[u.index]->setIntensity(u.value);
+                }
+                m_pending_light_intensities.clear();
+                for (auto& u : m_pending_light_positions) {
+                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size()) {
+                        auto* node = m_scene->lights[u.index]->node();
+                        if (node)
+                            node->SetTranslate(
+                                Eigen::Vector3f(u.position[0], u.position[1], u.position[2]));
+                    }
+                }
+                m_pending_light_positions.clear();
             }
 
             m_render->drawFrame(*m_scene);
@@ -717,6 +850,25 @@ private:
     std::unordered_map<i32, bool>                               m_pending_visible_updates;
     std::unordered_map<i32, float>                              m_pending_alpha_updates;
 
+    // Scene-level pending updates (under m_property_update_mutex)
+    std::optional<std::array<float, 3>> m_pending_clear_color;
+    std::optional<float>                m_pending_bloom_strength;
+    std::optional<float>                m_pending_bloom_threshold;
+    std::optional<float>                m_pending_camera_fov;
+    struct CameraLookAtUpdate {
+        std::array<double, 3> eye, center, up;
+    };
+    std::optional<CameraLookAtUpdate>   m_pending_camera_lookat;
+    std::optional<std::array<float, 3>> m_pending_ambient_color;
+    std::optional<std::array<float, 3>> m_pending_skylight_color;
+    struct LightColorUpdate { i32 index; std::array<float, 3> color; };
+    struct LightScalarUpdate { i32 index; float value; };
+    struct LightPositionUpdate { i32 index; std::array<float, 3> position; };
+    std::vector<LightColorUpdate>    m_pending_light_colors;
+    std::vector<LightScalarUpdate>   m_pending_light_radii;
+    std::vector<LightScalarUpdate>   m_pending_light_intensities;
+    std::vector<LightPositionUpdate> m_pending_light_positions;
+
     bool m_drawDiagReset { false };
 };
 } // namespace wallpaper
@@ -828,6 +980,45 @@ bool SceneWallpaper::soundLayerIsPlaying(int32_t index) const {
 }
 void SceneWallpaper::soundLayerSetVolume(int32_t index, float volume) {
     m_main_handler->soundLayerSetVolume(index, volume);
+}
+
+// Scene property control forwarding
+void SceneWallpaper::updateClearColor(float r, float g, float b) {
+    m_main_handler->renderHandler()->setClearColor(r, g, b);
+}
+void SceneWallpaper::updateBloomStrength(float v) {
+    m_main_handler->renderHandler()->setBloomStrength(v);
+}
+void SceneWallpaper::updateBloomThreshold(float v) {
+    m_main_handler->renderHandler()->setBloomThreshold(v);
+}
+void SceneWallpaper::updateCameraFov(float v) {
+    m_main_handler->renderHandler()->setCameraFov(v);
+}
+void SceneWallpaper::updateCameraLookAt(float ex, float ey, float ez, float cx, float cy, float cz,
+                                        float ux, float uy, float uz) {
+    m_main_handler->renderHandler()->setCameraLookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz);
+}
+void SceneWallpaper::updateAmbientColor(float r, float g, float b) {
+    m_main_handler->renderHandler()->setAmbientColor(r, g, b);
+}
+void SceneWallpaper::updateSkylightColor(float r, float g, float b) {
+    m_main_handler->renderHandler()->setSkylightColor(r, g, b);
+}
+void SceneWallpaper::updateLightColor(int32_t index, float r, float g, float b) {
+    m_main_handler->renderHandler()->setLightColor(index, r, g, b);
+}
+void SceneWallpaper::updateLightRadius(int32_t index, float v) {
+    m_main_handler->renderHandler()->setLightRadius(index, v);
+}
+void SceneWallpaper::updateLightIntensity(int32_t index, float v) {
+    m_main_handler->renderHandler()->setLightIntensity(index, v);
+}
+void SceneWallpaper::updateLightPosition(int32_t index, float x, float y, float z) {
+    m_main_handler->renderHandler()->setLightPosition(index, x, y, z);
+}
+std::string SceneWallpaper::getSceneInitialStateJson() const {
+    return m_main_handler->getSceneInitialStateJson();
 }
 
 #define BASIC_TYPE(NAME, TYPENAME)                                                       \
@@ -1381,6 +1572,49 @@ void MainHandler::loadScene() {
         }
         j["_ortho"]       = { scene->ortho[0], scene->ortho[1] };
         m_layer_init_json = j.dump();
+    }
+
+    // Serialize scene-level initial state for JS thisScene properties
+    {
+        std::lock_guard<std::mutex> lock(m_scene_init_mutex);
+        nlohmann::json              j;
+        j["cc"]   = { scene->clearColor[0], scene->clearColor[1], scene->clearColor[2] };
+        j["bloom"] = scene->bloomConfig.enabled;
+        j["bs"]   = scene->bloomConfig.strength;
+        j["bt"]   = scene->bloomConfig.threshold;
+        j["ac"]   = { scene->ambientColor[0], scene->ambientColor[1], scene->ambientColor[2] };
+        j["sc"]   = { scene->skylightColor[0], scene->skylightColor[1], scene->skylightColor[2] };
+
+        bool persp = scene->activeCamera && scene->activeCamera->IsPerspective();
+        j["persp"] = persp;
+        if (persp) {
+            auto eye = scene->activeCamera->GetEye();
+            auto ctr = scene->activeCamera->GetCenter();
+            auto up  = scene->activeCamera->GetUp();
+            j["fov"] = scene->activeCamera->Fov();
+            j["eye"] = { eye.x(), eye.y(), eye.z() };
+            j["ctr"] = { ctr.x(), ctr.y(), ctr.z() };
+            j["up"]  = { up.x(), up.y(), up.z() };
+        } else {
+            j["fov"] = 0;
+            j["eye"] = { 0, 0, 1 };
+            j["ctr"] = { 0, 0, 0 };
+            j["up"]  = { 0, 1, 0 };
+        }
+
+        nlohmann::json lightsArr = nlohmann::json::array();
+        for (auto& l : scene->lights) {
+            auto c = l->color();
+            auto p = l->node() ? l->node()->Translate() : Eigen::Vector3f::Zero();
+            lightsArr.push_back({
+                { "c", { c.x(), c.y(), c.z() } },
+                { "r", l->radius() },
+                { "i", l->intensity() },
+                { "p", { p.x(), p.y(), p.z() } }
+            });
+        }
+        j["lights"] = lightsArr;
+        m_scene_init_json = j.dump();
     }
 
     {

@@ -38,6 +38,8 @@ struct WPUniformInfo {
     bool has_TEXELSIZE { false };
     bool has_TEXELSIZEHALF { false };
     bool has_SCREEN { false };
+    bool has_LIGHTAMBIENTCOLOR { false };
+    bool has_LIGHTSKYLIGHTCOLOR { false };
     bool has_LP { false };
     bool has_LCR { false };
     bool has_EYEPOSITION { false };

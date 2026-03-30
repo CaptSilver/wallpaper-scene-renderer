@@ -95,6 +95,8 @@ public:
 
     i32                  ortho[2] { 1920, 1080 }; // w, h
     std::array<float, 3> clearColor { 1.0f, 1.0f, 1.0f };
+    std::array<float, 3> ambientColor { 0.2f, 0.2f, 0.2f };
+    std::array<float, 3> skylightColor { 0.3f, 0.3f, 0.3f };
 
     // Opaque depth buffer owned by the Vulkan layer (shared across render passes)
     std::shared_ptr<void> depthBuffer;
