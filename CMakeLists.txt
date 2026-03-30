@@ -70,6 +70,7 @@ if(BUILD_QML)
     add_library(${PROJECT_NAME}-qml
     STATIC
         qml_helper/SceneBackend.cpp
+        qml_helper/SceneTimerBridge.h
         qml_helper/glExtra.cpp
     )
     target_link_libraries(${PROJECT_NAME}-qml
