@@ -83,6 +83,7 @@ public:
     float minperiodicduration { 0.0f };
     float maxperiodicduration { 0.0f };
     u32   maxtoemitperperiod { 0 };
+    float duration { 0.0f }; // Emitter lifetime limit in seconds. 0 = unlimited.
 };
 
 class ParticleChild;

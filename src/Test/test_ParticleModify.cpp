@@ -679,3 +679,120 @@ TEST_CASE("3D diagonal force direction") {
 }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// EmitterDuration — emitter lifetime limit wrapper
+// Tests the duration wrapper pattern used by genParticleEmittOp.
+// ===========================================================================
+
+TEST_SUITE("EmitterDuration") {
+
+namespace
+{
+// A mock emitter op that counts how many times it was called.
+struct MockEmitter {
+    int callCount = 0;
+    ParticleEmittOp makeOp() {
+        return [this](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, double) {
+            callCount++;
+        };
+    }
+};
+
+// Replicate the duration wrapper logic from genParticleEmittOp
+ParticleEmittOp wrapWithDuration(ParticleEmittOp baseOp, float duration) {
+    if (duration <= 0.0f) return baseOp;
+    return [duration, elapsed = 0.0, baseOp = std::move(baseOp)](
+               std::vector<Particle>& ps, std::vector<ParticleInitOp>& inis, uint32_t maxcount,
+               double timepass) mutable {
+        elapsed += timepass;
+        if (elapsed <= duration) {
+            baseOp(ps, inis, maxcount, timepass);
+        }
+    };
+}
+} // namespace
+
+TEST_CASE("Duration zero means unlimited") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 0.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 1.0);
+    op(ps, inis, 100, 1.0);
+    op(ps, inis, 100, 1.0);
+    CHECK(mock.callCount == 3);
+}
+
+TEST_CASE("Emitter active within duration") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 5.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 2.0);
+    op(ps, inis, 100, 2.0);
+    CHECK(mock.callCount == 2);
+}
+
+TEST_CASE("Emitter stops after duration expires") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 3.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 1.0); // elapsed=1
+    op(ps, inis, 100, 1.0); // elapsed=2
+    op(ps, inis, 100, 1.0); // elapsed=3, == duration, emits
+    op(ps, inis, 100, 1.0); // elapsed=4, past
+    op(ps, inis, 100, 1.0); // elapsed=5, past
+    CHECK(mock.callCount == 3);
+}
+
+TEST_CASE("Boundary frame at exact duration still emits") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 2.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 2.0); // elapsed=2.0, == duration
+    CHECK(mock.callCount == 1);
+    op(ps, inis, 100, 0.001); // elapsed=2.001, past
+    CHECK(mock.callCount == 1);
+}
+
+TEST_CASE("Duration permanently stops emitter") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 1.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 0.5); // elapsed=0.5
+    op(ps, inis, 100, 0.5); // elapsed=1.0, boundary
+    op(ps, inis, 100, 0.5); // elapsed=1.5, past
+    CHECK(mock.callCount == 2);
+    for (int i = 0; i < 100; i++) {
+        op(ps, inis, 100, 1.0);
+    }
+    CHECK(mock.callCount == 2);
+}
+
+TEST_CASE("Small time steps accumulate correctly") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 0.1f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    for (int i = 0; i < 10; i++) {
+        op(ps, inis, 100, 0.01);
+    }
+    CHECK(mock.callCount == 10);
+    op(ps, inis, 100, 0.01);
+    CHECK(mock.callCount == 10);
+}
+
+TEST_CASE("Large time step exceeds duration on first call") {
+    MockEmitter mock;
+    auto op = wrapWithDuration(mock.makeOp(), 1.0f);
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+    op(ps, inis, 100, 100.0); // elapsed=100, way past 1s duration
+    CHECK(mock.callCount == 0);
+}
+
+} // TEST_SUITE
