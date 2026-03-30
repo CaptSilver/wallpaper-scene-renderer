@@ -26,7 +26,12 @@ public:
 
     void setNode(std::shared_ptr<SceneNode> node) { m_node = node; }
 
+    void setColor(Eigen::Vector3f c) { m_color = c; recalcPremultiplied(); }
+    void setRadius(float r) { m_radius = r; recalcPremultiplied(); }
+    void setIntensity(float i) { m_intensity = i; recalcPremultiplied(); }
+
 private:
+    void recalcPremultiplied() { m_premultiplied_color = m_color * m_intensity * m_radius * m_radius; }
     Eigen::Vector3f m_color { Eigen::Vector3f::Zero() };
     float           m_radius { 0.0f };
     float           m_intensity { 1.0f };

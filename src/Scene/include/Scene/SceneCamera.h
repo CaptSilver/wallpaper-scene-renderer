@@ -69,6 +69,9 @@ public:
 
     Eigen::Vector3d GetPosition() const;
     Eigen::Vector3d GetDirection() const;
+    Eigen::Vector3d GetEye() const { return m_eye; }
+    Eigen::Vector3d GetCenter() const { return m_center; }
+    Eigen::Vector3d GetUp() const { return m_up_vec; }
 
     Eigen::Matrix4d GetViewMatrix() const;
     Eigen::Matrix4d GetViewProjectionMatrix() const;

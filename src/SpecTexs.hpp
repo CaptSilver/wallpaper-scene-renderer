@@ -74,6 +74,8 @@ constexpr std::string_view G_MI { "g_ModelMatrixInverse" };
 constexpr std::string_view G_MVPI { "g_ModelViewProjectionMatrixInverse" };
 constexpr std::string_view G_ETVP { "g_EffectTextureProjectionMatrix" };
 constexpr std::string_view G_ETVPI { "g_EffectTextureProjectionMatrixInverse" };
+constexpr std::string_view G_LIGHTAMBIENTCOLOR { "g_LightAmbientColor" };
+constexpr std::string_view G_LIGHTSKYLIGHTCOLOR { "g_LightSkylightColor" };
 constexpr std::string_view G_LP { "g_LightsPosition" };
 constexpr std::string_view G_LCP { "g_LightsColorPremultiplied" };
 constexpr std::string_view G_LCR { "g_LightsColorRadius" };

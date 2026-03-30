@@ -175,6 +175,7 @@ private:
     std::vector<SoundVolumeScriptState> m_soundVolumeScriptStates;
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
     QJSValue                          m_collectDirtyLayersFn;
+    QJSValue                          m_collectDirtySceneFn;
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {

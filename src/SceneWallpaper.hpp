@@ -109,6 +109,22 @@ public:
     bool                               soundLayerIsPlaying(int32_t index) const;
     void                               soundLayerSetVolume(int32_t index, float volume);
 
+    // Scene property control (bloom, clear color, camera, lighting)
+    void        updateClearColor(float r, float g, float b);
+    void        updateBloomStrength(float strength);
+    void        updateBloomThreshold(float threshold);
+    void        updateCameraFov(float fov);
+    void        updateCameraLookAt(float ex, float ey, float ez,
+                                   float cx, float cy, float cz,
+                                   float ux, float uy, float uz);
+    void        updateAmbientColor(float r, float g, float b);
+    void        updateSkylightColor(float r, float g, float b);
+    void        updateLightColor(int32_t index, float r, float g, float b);
+    void        updateLightRadius(int32_t index, float radius);
+    void        updateLightIntensity(int32_t index, float intensity);
+    void        updateLightPosition(int32_t index, float x, float y, float z);
+    std::string getSceneInitialStateJson() const;
+
     void setPropertyBool(std::string_view, bool);
     void setPropertyInt32(std::string_view, int32_t);
     void setPropertyFloat(std::string_view, float);

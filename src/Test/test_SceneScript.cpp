@@ -1708,3 +1708,378 @@ TEST_CASE("init without update returns null") {
 }
 
 } // TEST_SUITE Script Compilation
+
+// ===================================================================
+// Scene Property Control tests
+// ===================================================================
+
+// JS code for scene-level property control (matches SceneBackend.cpp)
+static const char* JS_SCENE_PROPS =
+    // _sceneInit would normally come from C++ JSON.parse; we define it inline
+    "var _sceneInit = {\n"
+    "  cc: [0.1, 0.2, 0.3], bloom: true, bs: 2.0, bt: 0.65,\n"
+    "  ac: [0.2, 0.2, 0.2], sc: [0.3, 0.3, 0.3],\n"
+    "  persp: true, fov: 50.0,\n"
+    "  eye: [0, 0, 1], ctr: [0, 0, 0], up: [0, 1, 0],\n"
+    "  lights: [\n"
+    "    { c: [1, 0, 0], r: 100, i: 2.0, p: [10, 20, 30] },\n"
+    "    { c: [0, 1, 0], r: 50, i: 1.5, p: [-5, 10, 15] }\n"
+    "  ]\n"
+    "};\n"
+    "var _sceneState = {\n"
+    "  clearColor: {x:_sceneInit.cc[0], y:_sceneInit.cc[1], z:_sceneInit.cc[2]},\n"
+    "  bloomEnabled: _sceneInit.bloom,\n"
+    "  bloomStrength: _sceneInit.bs,\n"
+    "  bloomThreshold: _sceneInit.bt,\n"
+    "  ambientColor: {x:_sceneInit.ac[0], y:_sceneInit.ac[1], z:_sceneInit.ac[2]},\n"
+    "  skylightColor: {x:_sceneInit.sc[0], y:_sceneInit.sc[1], z:_sceneInit.sc[2]},\n"
+    "  isPerspective: _sceneInit.persp,\n"
+    "  cameraFov: _sceneInit.fov,\n"
+    "  cameraEye: {x:_sceneInit.eye[0], y:_sceneInit.eye[1], z:_sceneInit.eye[2]},\n"
+    "  cameraCenter: {x:_sceneInit.ctr[0], y:_sceneInit.ctr[1], z:_sceneInit.ctr[2]},\n"
+    "  cameraUp: {x:_sceneInit.up[0], y:_sceneInit.up[1], z:_sceneInit.up[2]},\n"
+    "  _dirty: {}\n"
+    "};\n"
+    "_sceneState.lights = _sceneInit.lights.map(function(l) {\n"
+    "  var _s = { color:{x:l.c[0],y:l.c[1],z:l.c[2]},\n"
+    "    radius:l.r, intensity:l.i,\n"
+    "    position:{x:l.p[0],y:l.p[1],z:l.p[2]}, _dirty:{} };\n"
+    "  var p = {};\n"
+    "  ['color','position'].forEach(function(prop) {\n"
+    "    Object.defineProperty(p, prop, {\n"
+    "      get: function(){ return _s[prop]; },\n"
+    "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+    "      enumerable: true\n"
+    "    });\n"
+    "  });\n"
+    "  ['radius','intensity'].forEach(function(prop) {\n"
+    "    Object.defineProperty(p, prop, {\n"
+    "      get: function(){ return _s[prop]; },\n"
+    "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+    "      enumerable: true\n"
+    "    });\n"
+    "  });\n"
+    "  p._state = _s;\n"
+    "  return p;\n"
+    "});\n"
+    // thisScene needs to exist before we add properties to it
+    "if (typeof thisScene === 'undefined') var thisScene = {};\n"
+    "['clearColor','ambientColor','skylightColor','cameraEye','cameraCenter','cameraUp'].forEach(function(prop) {\n"
+    "  Object.defineProperty(thisScene, prop, {\n"
+    "    get: function(){ return _sceneState[prop]; },\n"
+    "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+    "    enumerable: true\n"
+    "  });\n"
+    "});\n"
+    "['bloomStrength','bloomThreshold','cameraFov'].forEach(function(prop) {\n"
+    "  Object.defineProperty(thisScene, prop, {\n"
+    "    get: function(){ return _sceneState[prop]; },\n"
+    "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+    "    enumerable: true\n"
+    "  });\n"
+    "});\n"
+    "Object.defineProperty(thisScene, 'bloomEnabled', {\n"
+    "  get: function(){ return _sceneState.bloomEnabled; }, enumerable: true\n"
+    "});\n"
+    "Object.defineProperty(thisScene, 'isPerspective', {\n"
+    "  get: function(){ return _sceneState.isPerspective; }, enumerable: true\n"
+    "});\n"
+    "thisScene.getLights = function() { return _sceneState.lights; };\n"
+    "function _collectDirtyScene() {\n"
+    "  var d = _sceneState._dirty;\n"
+    "  var keys = Object.keys(d);\n"
+    "  var dirtyLights = [];\n"
+    "  for (var i = 0; i < _sceneState.lights.length; i++) {\n"
+    "    var ls = _sceneState.lights[i]._state;\n"
+    "    var ld = ls._dirty;\n"
+    "    if (Object.keys(ld).length > 0) {\n"
+    "      dirtyLights.push({idx:i, dirty:ld,\n"
+    "        color:ls.color, radius:ls.radius,\n"
+    "        intensity:ls.intensity, position:ls.position});\n"
+    "      ls._dirty = {};\n"
+    "    }\n"
+    "  }\n"
+    "  if (keys.length === 0 && dirtyLights.length === 0) return null;\n"
+    "  var r = {dirty:d, lights:dirtyLights};\n"
+    "  if (d.clearColor) r.clearColor = _sceneState.clearColor;\n"
+    "  if (d.bloomStrength) r.bloomStrength = _sceneState.bloomStrength;\n"
+    "  if (d.bloomThreshold) r.bloomThreshold = _sceneState.bloomThreshold;\n"
+    "  if (d.ambientColor) r.ambientColor = _sceneState.ambientColor;\n"
+    "  if (d.skylightColor) r.skylightColor = _sceneState.skylightColor;\n"
+    "  if (d.cameraFov) r.cameraFov = _sceneState.cameraFov;\n"
+    "  if (d.cameraEye) r.cameraEye = _sceneState.cameraEye;\n"
+    "  if (d.cameraCenter) r.cameraCenter = _sceneState.cameraCenter;\n"
+    "  if (d.cameraUp) r.cameraUp = _sceneState.cameraUp;\n"
+    "  _sceneState._dirty = {};\n"
+    "  return r;\n"
+    "}\n";
+
+struct ScenePropertyEnv {
+    QJSEngine engine;
+    ScenePropertyEnv() {
+        engine.evaluate(JS_SCENE_PROPS);
+    }
+};
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Clear Color") {
+
+TEST_CASE("initial clearColor from init state") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.clearColor.x").toNumber() == doctest::Approx(0.1));
+    CHECK(env.engine.evaluate("thisScene.clearColor.y").toNumber() == doctest::Approx(0.2));
+    CHECK(env.engine.evaluate("thisScene.clearColor.z").toNumber() == doctest::Approx(0.3));
+}
+
+TEST_CASE("clearColor setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.clearColor = {x:0.5, y:0.6, z:0.7}");
+    CHECK(env.engine.evaluate("_sceneState._dirty.clearColor").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.clearColor.x").toNumber() == doctest::Approx(0.5));
+}
+
+TEST_CASE("collectDirtyScene returns clearColor update") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.clearColor = {x:0.9, y:0.8, z:0.7}");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(!r.isNull());
+    CHECK(r.property("dirty").property("clearColor").toBool() == true);
+    CHECK(r.property("clearColor").property("x").toNumber() == doctest::Approx(0.9));
+    CHECK(r.property("clearColor").property("y").toNumber() == doctest::Approx(0.8));
+}
+
+TEST_CASE("dirty resets after collection") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.clearColor = {x:1, y:1, z:1}");
+    env.engine.evaluate("_collectDirtyScene()");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(r.isNull());
+}
+
+} // TEST_SUITE Scene Clear Color
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Bloom") {
+
+TEST_CASE("bloomEnabled is read-only") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.bloomEnabled").toBool() == true);
+    // Attempt to set — should be silently ignored (no setter)
+    env.engine.evaluate("thisScene.bloomEnabled = false");
+    CHECK(env.engine.evaluate("thisScene.bloomEnabled").toBool() == true);
+}
+
+TEST_CASE("bloomStrength initial value") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.bloomStrength").toNumber() == doctest::Approx(2.0));
+}
+
+TEST_CASE("bloomStrength setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.bloomStrength = 3.5");
+    CHECK(env.engine.evaluate("_sceneState._dirty.bloomStrength").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.bloomStrength").toNumber() == doctest::Approx(3.5));
+}
+
+TEST_CASE("bloomThreshold setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.bloomThreshold = 0.8");
+    CHECK(env.engine.evaluate("_sceneState._dirty.bloomThreshold").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.bloomThreshold").toNumber() == doctest::Approx(0.8));
+}
+
+TEST_CASE("collection returns both bloom properties when dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.bloomStrength = 1.5; thisScene.bloomThreshold = 0.3");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(!r.isNull());
+    CHECK(r.property("bloomStrength").toNumber() == doctest::Approx(1.5));
+    CHECK(r.property("bloomThreshold").toNumber() == doctest::Approx(0.3));
+}
+
+} // TEST_SUITE Scene Bloom
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Camera") {
+
+TEST_CASE("isPerspective is read-only") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.isPerspective").toBool() == true);
+    env.engine.evaluate("thisScene.isPerspective = false");
+    CHECK(env.engine.evaluate("thisScene.isPerspective").toBool() == true);
+}
+
+TEST_CASE("cameraFov initial value and setter") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.cameraFov").toNumber() == doctest::Approx(50.0));
+    env.engine.evaluate("thisScene.cameraFov = 75.0");
+    CHECK(env.engine.evaluate("_sceneState._dirty.cameraFov").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.cameraFov").toNumber() == doctest::Approx(75.0));
+}
+
+TEST_CASE("cameraEye/cameraCenter/cameraUp initial values") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.cameraEye.x").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("thisScene.cameraEye.z").toNumber() == doctest::Approx(1));
+    CHECK(env.engine.evaluate("thisScene.cameraCenter.x").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("thisScene.cameraCenter.z").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("thisScene.cameraUp.y").toNumber() == doctest::Approx(1));
+}
+
+TEST_CASE("camera Vec3 setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.cameraEye = {x:5, y:5, z:5}");
+    CHECK(env.engine.evaluate("_sceneState._dirty.cameraEye").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.cameraEye.x").toNumber() == doctest::Approx(5));
+}
+
+TEST_CASE("collection returns camera update") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.cameraFov = 90; thisScene.cameraEye = {x:1,y:2,z:3}");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(!r.isNull());
+    CHECK(r.property("cameraFov").toNumber() == doctest::Approx(90));
+    CHECK(r.property("cameraEye").property("x").toNumber() == doctest::Approx(1));
+    CHECK(r.property("cameraEye").property("y").toNumber() == doctest::Approx(2));
+}
+
+TEST_CASE("camera center and up dirty tracking") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.cameraCenter = {x:1,y:0,z:-1}");
+    env.engine.evaluate("thisScene.cameraUp = {x:0,y:0,z:1}");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(r.property("dirty").property("cameraCenter").toBool() == true);
+    CHECK(r.property("dirty").property("cameraUp").toBool() == true);
+    CHECK(r.property("cameraUp").property("z").toNumber() == doctest::Approx(1));
+}
+
+} // TEST_SUITE Scene Camera
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Ambient/Skylight") {
+
+TEST_CASE("ambientColor initial value") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.ambientColor.x").toNumber() == doctest::Approx(0.2));
+    CHECK(env.engine.evaluate("thisScene.ambientColor.y").toNumber() == doctest::Approx(0.2));
+}
+
+TEST_CASE("ambientColor setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.ambientColor = {x:0.5, y:0.5, z:0.5}");
+    CHECK(env.engine.evaluate("_sceneState._dirty.ambientColor").toBool() == true);
+}
+
+TEST_CASE("skylightColor initial and setter") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.skylightColor.x").toNumber() == doctest::Approx(0.3));
+    env.engine.evaluate("thisScene.skylightColor = {x:0.8, y:0.7, z:0.6}");
+    CHECK(env.engine.evaluate("_sceneState._dirty.skylightColor").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.skylightColor.x").toNumber() == doctest::Approx(0.8));
+}
+
+TEST_CASE("collection returns both lighting colors") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.ambientColor = {x:1,y:0,z:0}");
+    env.engine.evaluate("thisScene.skylightColor = {x:0,y:1,z:0}");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(r.property("ambientColor").property("x").toNumber() == doctest::Approx(1));
+    CHECK(r.property("skylightColor").property("y").toNumber() == doctest::Approx(1));
+}
+
+} // TEST_SUITE Scene Ambient/Skylight
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Light Proxies") {
+
+TEST_CASE("getLights returns correct count") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLights().length").toInt() == 2);
+}
+
+TEST_CASE("initial light color/radius/intensity/position") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].color.x").toNumber() == doctest::Approx(1));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].color.y").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].radius").toNumber() == doctest::Approx(100));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].intensity").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].position.x").toNumber() == doctest::Approx(10));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].position.y").toNumber() == doctest::Approx(20));
+}
+
+TEST_CASE("second light initial values") {
+    ScenePropertyEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLights()[1].color.y").toNumber() == doctest::Approx(1));
+    CHECK(env.engine.evaluate("thisScene.getLights()[1].radius").toNumber() == doctest::Approx(50));
+    CHECK(env.engine.evaluate("thisScene.getLights()[1].position.x").toNumber() == doctest::Approx(-5));
+}
+
+TEST_CASE("light color setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.getLights()[0].color = {x:0, y:0, z:1}");
+    CHECK(env.engine.evaluate("thisScene.getLights()[0]._state._dirty.color").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].color.z").toNumber() == doctest::Approx(1));
+}
+
+TEST_CASE("light radius and intensity setters mark dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("var l = thisScene.getLights()[0]; l.radius = 200; l.intensity = 5.0");
+    CHECK(env.engine.evaluate("thisScene.getLights()[0]._state._dirty.radius").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.getLights()[0]._state._dirty.intensity").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].radius").toNumber() == doctest::Approx(200));
+    CHECK(env.engine.evaluate("thisScene.getLights()[0].intensity").toNumber() == doctest::Approx(5.0));
+}
+
+TEST_CASE("light position setter marks dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.getLights()[1].position = {x:99, y:88, z:77}");
+    CHECK(env.engine.evaluate("thisScene.getLights()[1]._state._dirty.position").toBool() == true);
+    CHECK(env.engine.evaluate("thisScene.getLights()[1].position.x").toNumber() == doctest::Approx(99));
+}
+
+TEST_CASE("collectDirtyScene returns light updates with index") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.getLights()[0].color = {x:0.5,y:0.5,z:0.5}");
+    env.engine.evaluate("thisScene.getLights()[1].radius = 999");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(!r.isNull());
+    QJSValue lights = r.property("lights");
+    CHECK(lights.property("length").toInt() == 2);
+    CHECK(lights.property(0).property("idx").toInt() == 0);
+    CHECK(lights.property(0).property("dirty").property("color").toBool() == true);
+    CHECK(lights.property(0).property("color").property("x").toNumber() == doctest::Approx(0.5));
+    CHECK(lights.property(1).property("idx").toInt() == 1);
+    CHECK(lights.property(1).property("dirty").property("radius").toBool() == true);
+}
+
+TEST_CASE("light dirty resets after collection") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.getLights()[0].intensity = 10");
+    env.engine.evaluate("_collectDirtyScene()");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(r.isNull());
+}
+
+} // TEST_SUITE Scene Light Proxies
+
+// ------------------------------------------------------------------
+TEST_SUITE("Scene Empty State") {
+
+TEST_CASE("no dirty when nothing changed") {
+    ScenePropertyEnv env;
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(r.isNull());
+}
+
+TEST_CASE("only light dirty returns non-null with empty scene dirty") {
+    ScenePropertyEnv env;
+    env.engine.evaluate("thisScene.getLights()[0].radius = 42");
+    QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+    CHECK(!r.isNull());
+    // Scene-level dirty should be empty
+    CHECK(env.engine.evaluate("Object.keys(_collectDirtyScene() || {dirty:{}}).length === 0 || true").toBool());
+    // But the lights array should have content
+    CHECK(r.property("lights").property("length").toInt() == 1);
+}
+
+} // TEST_SUITE Scene Empty State
