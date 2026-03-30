@@ -1096,59 +1096,75 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
 
     // Wrap with periodic emission if configured
     bool hasPeriodic = wpe.maxperiodicduration > 0 || wpe.maxperiodicdelay > 0;
-    if (! hasPeriodic) return baseOp;
+    if (hasPeriodic) {
+        float minDelay = wpe.minperiodicdelay;
+        float maxDelay = wpe.maxperiodicdelay;
+        float minDur   = wpe.minperiodicduration;
+        float maxDur   = wpe.maxperiodicduration;
+        u32   maxPer   = wpe.maxtoemitperperiod;
 
-    float minDelay = wpe.minperiodicdelay;
-    float maxDelay = wpe.maxperiodicdelay;
-    float minDur   = wpe.minperiodicduration;
-    float maxDur   = wpe.maxperiodicduration;
-    u32   maxPer   = wpe.maxtoemitperperiod;
+        double phaseDur     = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+        // Random initial phase offset so different instances don't fire simultaneously
+        double totalCycle   = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
+        double timer        = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
+        bool   active       = true;
+        u32    emittedCount = 0;
 
-    double phaseDur     = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
-    // Random initial phase offset so different instances don't fire simultaneously
-    double totalCycle   = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
-    double timer        = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
-    bool   active       = true;
-    u32    emittedCount = 0;
-
-    return [=, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
-                                           std::vector<ParticleInitOp>& inis, u32 maxcount,
-                                           double timepass) mutable {
-        bool justActivated = false;
-        timer += timepass;
-        while (timer >= phaseDur) {
-            timer -= phaseDur;
-            active = ! active;
-            if (active) {
-                phaseDur      = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
-                emittedCount  = 0;
-                justActivated = true;
-            } else {
-                phaseDur = maxDelay > 0 ? Random::get((double)minDelay, (double)maxDelay) : 0.1;
+        baseOp = [=, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
+                                                  std::vector<ParticleInitOp>& inis, u32 maxcount,
+                                                  double timepass) mutable {
+            bool justActivated = false;
+            timer += timepass;
+            while (timer >= phaseDur) {
+                timer -= phaseDur;
+                active = ! active;
+                if (active) {
+                    phaseDur      = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+                    emittedCount  = 0;
+                    justActivated = true;
+                } else {
+                    phaseDur =
+                        maxDelay > 0 ? Random::get((double)minDelay, (double)maxDelay) : 0.1;
+                }
             }
-        }
-        if (active && (maxPer == 0 || emittedCount < maxPer)) {
-            u32 aliveBefore = 0;
-            if (maxPer > 0) {
-                for (const auto& p : ps)
-                    if (ParticleModify::LifetimeOk(p)) aliveBefore++;
-            }
+            if (active && (maxPer == 0 || emittedCount < maxPer)) {
+                u32 aliveBefore = 0;
+                if (maxPer > 0) {
+                    for (const auto& p : ps)
+                        if (ParticleModify::LifetimeOk(p)) aliveBefore++;
+                }
 
-            // For non-rope periodic emitters with maxtoemitperperiod, burst at start.
-            // For ropes: let them grow naturally (1 per frame via baseOp).
-            double effectiveTime = timepass;
-            if (justActivated && maxPer > 0 && batch_size <= 1) {
-                effectiveTime = 1000.0; // Force immediate burst of maxPer
-            }
+                // For non-rope periodic emitters with maxtoemitperperiod, burst at start.
+                // For ropes: let them grow naturally (1 per frame via baseOp).
+                double effectiveTime = timepass;
+                if (justActivated && maxPer > 0 && batch_size <= 1) {
+                    effectiveTime = 1000.0; // Force immediate burst of maxPer
+                }
 
-            baseOp(ps, inis, maxcount, effectiveTime);
+                baseOp(ps, inis, maxcount, effectiveTime);
 
-            if (maxPer > 0) {
-                u32 aliveAfter = 0;
-                for (const auto& p : ps)
-                    if (ParticleModify::LifetimeOk(p)) aliveAfter++;
-                if (aliveAfter > aliveBefore) emittedCount += (aliveAfter - aliveBefore);
+                if (maxPer > 0) {
+                    u32 aliveAfter = 0;
+                    for (const auto& p : ps)
+                        if (ParticleModify::LifetimeOk(p)) aliveAfter++;
+                    if (aliveAfter > aliveBefore) emittedCount += (aliveAfter - aliveBefore);
+                }
             }
-        }
-    };
+        };
+    }
+
+    // Wrap with duration limiter if configured (outermost wrapper)
+    float duration = wpe.duration;
+    if (duration > 0.0f) {
+        return [duration, elapsed = 0.0, baseOp = std::move(baseOp)](
+                   std::vector<Particle>& ps, std::vector<ParticleInitOp>& inis, u32 maxcount,
+                   double timepass) mutable {
+            elapsed += timepass;
+            if (elapsed <= duration) {
+                baseOp(ps, inis, maxcount, timepass);
+            }
+        };
+    }
+
+    return baseOp;
 }

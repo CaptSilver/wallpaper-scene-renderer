@@ -80,6 +80,7 @@ bool Emitter::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE_NOWARN(json, "minperiodicduration", minperiodicduration);
     GET_JSON_NAME_VALUE_NOWARN(json, "maxperiodicduration", maxperiodicduration);
     GET_JSON_NAME_VALUE_NOWARN(json, "maxtoemitperperiod", maxtoemitperperiod);
+    GET_JSON_NAME_VALUE_NOWARN(json, "duration", duration);
 
     uint32_t _raw_flags { 0 };
     GET_JSON_NAME_VALUE_NOWARN(json, "flags", _raw_flags);

@@ -66,7 +66,7 @@ to a valid fragment shader will render. Known working:
   - [x] Burst / instantaneous emission
   - [x] One-per-frame mode
   - [x] Periodic emission (delay, duration, max-per-period)
-  - [ ] Duration (emitter lifetime limit)
+  - [x] Duration (emitter lifetime limit)
 - [x] **Initializers**:
   - [x] `colorrandom` — random color (min/max RGB)
   - [x] `lifetimerandom` — random lifetime (min/max, exponent)
