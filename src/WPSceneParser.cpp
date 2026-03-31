@@ -789,9 +789,11 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
             reflCam->SetReflectY0(true);
             reflCam->SetDirectLookAt(eye, center, up);
             reflCam->LoadPaths(camPaths); // copy paths (not move)
+            reflCam->SetFadeEnabled(sc.general.camerafade);
             scene.cameras["reflected_perspective"] = reflCam;
 
             scene.activeCamera->LoadPaths(std::move(camPaths));
+            scene.activeCamera->SetFadeEnabled(sc.general.camerafade);
         }
     } else {
         // 2D orthographic scene (existing path)

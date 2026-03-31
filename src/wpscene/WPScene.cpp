@@ -45,6 +45,7 @@ bool WPSceneGeneral::FromJson(const nlohmann::json& json) {
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashakeamplitude", camerashakeamplitude);
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashakespeed", camerashakespeed);
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashakeroughness", camerashakeroughness);
+	GET_JSON_NAME_VALUE_NOWARN(json, "camerafade", camerafade);
     if(json.contains("orthogonalprojection")) {
         const auto& ortho = json.at("orthogonalprojection");
         if(ortho.is_null())

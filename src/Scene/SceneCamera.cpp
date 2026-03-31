@@ -105,6 +105,8 @@ void SceneCamera::LoadPaths(std::vector<CameraPath> paths) {
 	m_paths       = std::move(paths);
 	m_currentPath = 0;
 	m_pathTime    = 0;
+	m_fading      = false;
+	m_fadeTime    = 0;
 	if (!m_paths.empty() && m_paths[0].keyframes.size() >= 1) {
 		auto& kf = m_paths[0].keyframes[0];
 		SetDirectLookAt(kf.eye, kf.center, kf.up);
@@ -119,6 +121,15 @@ void SceneCamera::AdvanceTime(double dt) {
 
 	// Move to next path when current one finishes
 	if (m_pathTime >= path.duration) {
+		// Capture current camera position for crossfade
+		if (m_fadeEnabled) {
+			m_fadeFromEye    = m_eye;
+			m_fadeFromCenter = m_center;
+			m_fadeFromUp     = m_up_vec;
+			m_fading         = true;
+			m_fadeTime       = 0;
+		}
+
 		m_pathTime -= path.duration;
 		m_currentPath = (m_currentPath + 1) % m_paths.size();
 		auto& next_path = m_paths[m_currentPath];
@@ -140,6 +151,20 @@ void SceneCamera::AdvanceTime(double dt) {
 	Vector3d eye    = kf0.eye    + t * (kf1.eye    - kf0.eye);
 	Vector3d center = kf0.center + t * (kf1.center - kf0.center);
 	Vector3d up     = (kf0.up    + t * (kf1.up     - kf0.up)).normalized();
+
+	// Crossfade: blend from previous path's end position to new path
+	if (m_fading) {
+		m_fadeTime += dt;
+		if (m_fadeTime >= m_fadeDuration) {
+			m_fading = false;
+		} else {
+			double ft    = m_fadeTime / m_fadeDuration;
+			double alpha = ft * ft * (3.0 - 2.0 * ft); // smoothstep
+			eye    = m_fadeFromEye    + alpha * (eye    - m_fadeFromEye);
+			center = m_fadeFromCenter + alpha * (center - m_fadeFromCenter);
+			up     = (m_fadeFromUp    + alpha * (up     - m_fadeFromUp)).normalized();
+		}
+	}
 
 	SetDirectLookAt(eye, center, up);
 }

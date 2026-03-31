@@ -92,6 +92,10 @@ public:
     bool HasPaths() const { return !m_paths.empty(); }
     const std::vector<CameraPath>& GetPaths() const { return m_paths; }
 
+    // Camera fade: crossfade between consecutive camera paths
+    void SetFadeEnabled(bool enabled) { m_fadeEnabled = enabled; }
+    bool IsFadeEnabled() const { return m_fadeEnabled; }
+
     // Planar reflection about Y=0: negates eye.y, center.y, up.y in VP matrix
     void SetReflectY0(bool v) { m_reflect_y0 = v; }
     bool IsReflectY0() const { return m_reflect_y0; }
@@ -122,6 +126,15 @@ private:
     std::vector<CameraPath> m_paths;
     size_t                  m_currentPath { 0 };
     double                  m_pathTime { 0 };
+
+    // Camera fade (crossfade between paths)
+    bool            m_fadeEnabled { false };
+    bool            m_fading { false };
+    double          m_fadeTime { 0 };
+    double          m_fadeDuration { 1.5 };
+    Eigen::Vector3d m_fadeFromEye { Eigen::Vector3d::Zero() };
+    Eigen::Vector3d m_fadeFromCenter { Eigen::Vector3d::Zero() };
+    Eigen::Vector3d m_fadeFromUp { Eigen::Vector3d::UnitY() };
 
     // Planar reflection about Y=0
     bool m_reflect_y0 { false };
