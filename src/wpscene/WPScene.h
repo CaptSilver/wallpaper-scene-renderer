@@ -54,6 +54,8 @@ public:
     float camerashakeamplitude { 0.5f };
     float camerashakespeed { 1.0f };
     float camerashakeroughness { 0.5f };
+
+    bool camerafade { false };
 };
 
 class WPScene {
