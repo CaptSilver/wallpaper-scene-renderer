@@ -19,6 +19,7 @@ add_executable(backend_scene_tests
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
     test_SceneCamera.cpp
+    test_WPSoundHelpers.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp

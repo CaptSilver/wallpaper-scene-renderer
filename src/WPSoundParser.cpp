@@ -1,4 +1,5 @@
 #include "WPSoundParser.hpp"
+#include "WPSoundHelpers.h"
 #include "Audio/SoundManager.h"
 #include "Fs/VFS.h"
 #include "wpscene/WPSoundObject.h"
@@ -8,6 +9,7 @@
 #include <string_view>
 #include <atomic>
 #include <cstring>
+#include <random>
 
 namespace wallpaper
 {
@@ -96,6 +98,17 @@ public:
             return frameCount;
         }
 
+        // Handle inter-track delay (random mode gap between tracks)
+        if (m_delaySamples > 0) {
+            uint64_t silenceFrames = std::min((uint64_t)frameCount, m_delaySamples);
+            std::memset(pData, 0, frameCount * m_desc.channels * sizeof(float));
+            m_delaySamples -= silenceFrames;
+            if (m_delaySamples == 0) {
+                Switch();
+            }
+            return frameCount;
+        }
+
         uint64_t frameReads = m_curActive->NextPcmData(pData, frameCount);
         if (frameReads == 0) {
             // Track ended
@@ -106,7 +119,16 @@ public:
                 std::memset(pData, 0, frameCount * m_desc.channels * sizeof(float));
                 return frameCount;
             }
-            // Loop/Random: switch to next track
+            // Random mode: insert delay before next track
+            if (m_config.mode == PlaybackMode::Random) {
+                m_delaySamples = RandomDelayFrames();
+                if (m_delaySamples > 0) {
+                    m_curActive.reset();
+                    std::memset(pData, 0, frameCount * m_desc.channels * sizeof(float));
+                    return frameCount;
+                }
+            }
+            // Loop/Random (no delay): switch to next track immediately
             Switch();
             if (! m_curActive) {
                 std::memset(pData, 0, frameCount * m_desc.channels * sizeof(float));
@@ -135,7 +157,7 @@ public:
     };
     void PassDesc(const Desc& d) override { m_desc = d; }
     void Switch() {
-        std::string path   = m_soundPaths[LoopIndex()];
+        std::string path   = m_soundPaths[NextIndex()];
         LOG_INFO("audio Switch: loading '%s' (channels=%u, sampleRate=%u)",
                  path.c_str(), m_desc.channels, m_desc.sampleRate);
         auto stream = vfs.Open("/assets/" + path);
@@ -146,10 +168,14 @@ public:
         }
         m_curActive = audio::CreateSoundStream(std::move(stream), m_desc);
     }
-    uint32_t LoopIndex() {
-        m_curIndex++;
-        if (m_curIndex == m_soundPaths.size()) m_curIndex = 0;
+    uint32_t NextIndex() {
+        bool isRandom = (m_config.mode == PlaybackMode::Random);
+        m_curIndex = NextSoundIndex(m_curIndex, (uint32_t)m_soundPaths.size(), isRandom, m_rng);
         return m_curIndex;
+    }
+
+    uint64_t RandomDelayFrames() {
+        return RandomDelaySamples(m_config.mintime, m_config.maxtime, m_desc.sampleRate, m_rng);
     }
 
 private:
@@ -163,6 +189,8 @@ private:
     std::atomic<float>             m_runtimeVolume;
     std::atomic<StreamState>       m_state;
     std::atomic<bool>              m_needsReload { false };
+    std::mt19937                   m_rng { std::random_device{}() };
+    uint64_t                       m_delaySamples { 0 };
 };
 
 WPSoundStream* WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& vfs,
