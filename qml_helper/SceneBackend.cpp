@@ -736,6 +736,7 @@ void SceneObject::setupTextScripts() {
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(
         "var WEMath = {\n"
+        "  PI: Math.PI,\n"
         "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
         "  mix: function(a, b, t) { return a + (b - a) * t; },\n"
         "  clamp: function(v, lo, hi) { return Math.min(Math.max(v, lo), hi); },\n"
@@ -746,6 +747,12 @@ void SceneObject::setupTextScripts() {
         "  fract: function(x) { return x - Math.floor(x); },\n"
         "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
         "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
+        "  abs: function(x) { return Math.abs(x); },\n"
+        "  pow: function(base, exp) { return Math.pow(base, exp); },\n"
+        // GLSL-style mod: always non-negative, unlike JS % for negative x
+        "  mod: function(x, y) { return x - y * Math.floor(x / y); },\n"
+        "  degToRad: function(d) { return d * Math.PI / 180; },\n"
+        "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
         // Random helpers: WE wallpapers commonly call randomFloat/randomInteger
         "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
         "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"

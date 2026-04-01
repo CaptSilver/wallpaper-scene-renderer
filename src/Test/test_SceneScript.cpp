@@ -719,6 +719,7 @@ static const char* JS_VEC3_AND_UTILS =
 
 static const char* JS_WEMATH =
     "var WEMath = {\n"
+    "  PI: Math.PI,\n"
     "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
     "  mix: function(a, b, t) { return a + (b - a) * t; },\n"
     "  clamp: function(v, lo, hi) { return Math.min(Math.max(v, lo), hi); },\n"
@@ -729,6 +730,11 @@ static const char* JS_WEMATH =
     "  fract: function(x) { return x - Math.floor(x); },\n"
     "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
     "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
+    "  abs: function(x) { return Math.abs(x); },\n"
+    "  pow: function(base, exp) { return Math.pow(base, exp); },\n"
+    "  mod: function(x, y) { return x - y * Math.floor(x / y); },\n"
+    "  degToRad: function(d) { return d * Math.PI / 180; },\n"
+    "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
     "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
     "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
     "};\n";
@@ -1376,6 +1382,87 @@ TEST_CASE("randomInteger returns integer in [min, max]") {
     // With 500 samples of 6 possible values, min and max are very likely hit
     CHECK(env.engine.evaluate("sawMin").toBool() == true);
     CHECK(env.engine.evaluate("sawMax").toBool() == true);
+}
+
+TEST_CASE("WEMath.PI equals Math.PI") {
+    MathEnv env;
+    double pi = env.engine.evaluate("WEMath.PI").toNumber();
+    CHECK(pi == doctest::Approx(3.14159265358979323846));
+}
+
+TEST_CASE("WEMath.abs positive") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.abs(5.5)").toNumber() == doctest::Approx(5.5));
+}
+
+TEST_CASE("WEMath.abs negative") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.abs(-3.2)").toNumber() == doctest::Approx(3.2));
+}
+
+TEST_CASE("WEMath.abs zero") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.abs(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.pow basic") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.pow(2, 10)").toNumber() == doctest::Approx(1024.0));
+}
+
+TEST_CASE("WEMath.pow fractional exponent") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.pow(9, 0.5)").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("WEMath.mod positive operands") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.mod(7, 3)").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("WEMath.mod negative x always non-negative (GLSL-style)") {
+    MathEnv env;
+    // GLSL mod(-1, 3) = -1 - 3*floor(-1/3) = -1 - 3*(-1) = 2
+    CHECK(env.engine.evaluate("WEMath.mod(-1, 3)").toNumber() == doctest::Approx(2.0));
+}
+
+TEST_CASE("WEMath.mod fractional") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.mod(2.5, 1.0)").toNumber() == doctest::Approx(0.5));
+}
+
+TEST_CASE("WEMath.degToRad 180 degrees") {
+    MathEnv env;
+    double r = env.engine.evaluate("WEMath.degToRad(180)").toNumber();
+    CHECK(r == doctest::Approx(3.14159265358979323846));
+}
+
+TEST_CASE("WEMath.degToRad 90 degrees") {
+    MathEnv env;
+    double r = env.engine.evaluate("WEMath.degToRad(90)").toNumber();
+    CHECK(r == doctest::Approx(1.5707963267948966));
+}
+
+TEST_CASE("WEMath.degToRad 0 degrees") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.degToRad(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.radToDeg PI radians") {
+    MathEnv env;
+    double d = env.engine.evaluate("WEMath.radToDeg(Math.PI)").toNumber();
+    CHECK(d == doctest::Approx(180.0));
+}
+
+TEST_CASE("WEMath.radToDeg 0 radians") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.radToDeg(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.degToRad and radToDeg are inverses") {
+    MathEnv env;
+    double roundtrip = env.engine.evaluate("WEMath.radToDeg(WEMath.degToRad(45))").toNumber();
+    CHECK(roundtrip == doctest::Approx(45.0));
 }
 
 } // TEST_SUITE WEMath
