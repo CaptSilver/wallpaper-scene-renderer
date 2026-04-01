@@ -117,6 +117,7 @@ public:
 private:
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
+    void refreshJsUserProperties();
     void evaluateTextScripts();
     void evaluateColorScripts();
     void evaluatePropertyScripts();
