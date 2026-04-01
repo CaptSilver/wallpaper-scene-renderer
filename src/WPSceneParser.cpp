@@ -1990,18 +1990,33 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
              textObj.textValue.c_str(),
              (int)textObj.visible);
 
+    // For invisible, empty text, or system font objects, create a placeholder node
+    // so SceneScript can discover the layer via getLayer(). Scripts may set text
+    // dynamically or toggle visibility at runtime.
+    auto createPlaceholderNode = [&]() {
+        auto spNode  = std::make_shared<SceneNode>(Vector3f(textObj.origin.data()),
+                                                   Vector3f(textObj.scale.data()),
+                                                   Vector3f(textObj.angles.data()));
+        spNode->ID() = textObj.id;
+        spNode->SetVisible(textObj.visible);
+        context.scene->sceneGraph->AppendChild(spNode);
+        context.node_map[textObj.id] = spNode;
+        LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
+    };
+
     if (! textObj.visible) {
-        LOG_INFO("  text object is invisible, skipping");
+        LOG_INFO("  text object is invisible, creating placeholder for SceneScript");
+        createPlaceholderNode();
         return;
     }
-
-    // Skip empty text or system fonts we can't load
     if (textObj.textValue.empty()) {
-        LOG_INFO("  text is empty, skipping");
+        LOG_INFO("  text is empty, creating placeholder for SceneScript");
+        createPlaceholderNode();
         return;
     }
     if (textObj.font.empty() || textObj.font.find("systemfont") != std::string::npos) {
-        LOG_INFO("  system font or missing font '%s', skipping", textObj.font.c_str());
+        LOG_INFO("  system font or missing font '%s', creating placeholder", textObj.font.c_str());
+        createPlaceholderNode();
         return;
     }
 
