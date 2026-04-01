@@ -47,7 +47,7 @@ to a valid fragment shader will render. Known working:
 - [x] Shake (sum-of-sinusoids)
 - [x] Path animation (keyframe interpolation)
 - [x] Parallax (mouse-reactive camera offset)
-- [ ] Fade (transitions between camera paths)
+- [x] Fade (transitions between camera paths)
 
 ### Audio
 - [x] BGM playback (loop)
@@ -207,7 +207,7 @@ to a valid fragment shader will render. Known working:
   - [x] `cursorDown` / `cursorUp` / `cursorMove` events
 - [x] `shared` global (inter-script data sharing)
 - [x] Events: `init`, `update`
-- [ ] Events: `destroy`, `applyUserProperties`, `resizeScreen`
+- [x] Events: `destroy`, `applyUserProperties`, `resizeScreen`
 - [ ] Media integration events (`mediaPlaybackChanged`, `mediaPropertiesChanged`, etc.)
 - [ ] `ILocalStorage` (persistent per-wallpaper storage)
 - [x] Text layer dynamic content (scripts driving text updates)

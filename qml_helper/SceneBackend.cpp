@@ -217,9 +217,9 @@ SceneObject::~SceneObject() {
 }
 
 void SceneObject::resizeFb() {
-    QSize size;
-    size.setWidth(this->width());
-    size.setHeight(this->height());
+    int w = (int)this->width();
+    int h = (int)this->height();
+    fireResizeScreen(w, h);
 }
 
 QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
@@ -363,6 +363,78 @@ void SceneObject::refreshJsUserProperties() {
         "  engine.colorScheme = Vec3.fromString(sc);"
         "})()"
     );
+
+    // Fire applyUserProperties event on all property scripts that define it.
+    // WE SceneScript passes an object with {propertyName: {value: newValue}} entries.
+    fireApplyUserProperties();
+}
+
+void SceneObject::fireApplyUserProperties() {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+
+    // Build the properties arg: { propName: { value: val }, ... }
+    // This matches the WE SceneScript applyUserProperties(props) signature.
+    QJSValue propsArg = m_jsEngine->globalObject().property("engine").property("userProperties");
+
+    for (auto& state : m_propertyScriptStates) {
+        if (!state.applyUserPropertiesFn.isCallable()) continue;
+
+        if (!state.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+        }
+
+        QJSValue result = state.applyUserPropertiesFn.call({ propsArg });
+        if (result.isError()) {
+            LOG_INFO("applyUserProperties error id=%d prop=%s: %s",
+                     state.id, state.property.c_str(), qPrintable(result.toString()));
+        }
+    }
+}
+
+void SceneObject::fireDestroyEvent() {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+
+    for (auto& state : m_propertyScriptStates) {
+        if (!state.destroyFn.isCallable()) continue;
+
+        if (!state.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+        }
+
+        QJSValue result = state.destroyFn.call({});
+        if (result.isError()) {
+            LOG_INFO("destroy event error id=%d prop=%s: %s",
+                     state.id, state.property.c_str(), qPrintable(result.toString()));
+        }
+    }
+}
+
+void SceneObject::fireResizeScreen(int width, int height) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+
+    // Update engine.screenResolution and engine.canvasSize
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    QJSValue sr = engineObj.property("screenResolution");
+    sr.setProperty("x", width);
+    sr.setProperty("y", height);
+    QJSValue cs = engineObj.property("canvasSize");
+    cs.setProperty("x", width);
+    cs.setProperty("y", height);
+
+    for (auto& state : m_propertyScriptStates) {
+        if (!state.resizeScreenFn.isCallable()) continue;
+
+        if (!state.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+        }
+
+        QJSValue result = state.resizeScreenFn.call(
+            { QJSValue(width), QJSValue(height) });
+        if (result.isError()) {
+            LOG_INFO("resizeScreen error id=%d prop=%s: %s",
+                     state.id, state.property.c_str(), qPrintable(result.toString()));
+        }
+    }
 }
 
 void SceneObject::play() { m_scene->play(); }
@@ -1495,9 +1567,17 @@ void SceneObject::setupTextScripts() {
             "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
             "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
             "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
+            "  var _aup   = typeof exports.applyUserProperties === 'function' ? exports.applyUserProperties :\n"
+            "               (typeof applyUserProperties === 'function' ? applyUserProperties : null);\n"
+            "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
+            "               (typeof destroy === 'function' ? destroy : null);\n"
+            "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen :\n"
+            "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
             "  return { update: _upd, init: _init, cursorClick: _click,\n"
             "           cursorEnter: _enter, cursorLeave: _leave,\n"
-            "           cursorDown: _down, cursorUp: _up, cursorMove: _move };\n"
+            "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
+            "           applyUserProperties: _aup, destroy: _destr,\n"
+            "           resizeScreen: _resize };\n"
             "})()\n"
         ).arg(propsInit, scriptSrc);
 
@@ -1527,12 +1607,16 @@ void SceneObject::setupTextScripts() {
         QJSValue cursorDownFn  = result.property("cursorDown");
         QJSValue cursorUpFn    = result.property("cursorUp");
         QJSValue cursorMoveFn  = result.property("cursorMove");
+        QJSValue applyUserPropertiesFn = result.property("applyUserProperties");
+        QJSValue destroyFn     = result.property("destroy");
+        QJSValue resizeScreenFn = result.property("resizeScreen");
 
         // Scripts with no callable functions are useless
         if (!updateFn.isCallable() && !initFn.isCallable() && !cursorClickFn.isCallable()
             && !cursorEnterFn.isCallable() && !cursorLeaveFn.isCallable()
             && !cursorDownFn.isCallable() && !cursorUpFn.isCallable()
-            && !cursorMoveFn.isCallable()) {
+            && !cursorMoveFn.isCallable() && !applyUserPropertiesFn.isCallable()
+            && !destroyFn.isCallable() && !resizeScreenFn.isCallable()) {
             continue;
         }
 
@@ -1548,6 +1632,9 @@ void SceneObject::setupTextScripts() {
         state.cursorDownFn   = cursorDownFn;
         state.cursorUpFn     = cursorUpFn;
         state.cursorMoveFn   = cursorMoveFn;
+        state.applyUserPropertiesFn = applyUserPropertiesFn;
+        state.destroyFn      = destroyFn;
+        state.resizeScreenFn = resizeScreenFn;
         state.currentVisible = psi.initialVisible;
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;
@@ -2382,6 +2469,9 @@ void SceneObject::evaluatePropertyScripts() {
 }
 
 void SceneObject::cleanupTextScripts() {
+    // Fire destroy event on all scripts before cleanup
+    fireDestroyEvent();
+
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
     m_propertyScriptStates.clear();
