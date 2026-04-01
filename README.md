@@ -56,7 +56,7 @@ to a valid fragment shader will render. Known working:
 - [x] System audio capture (PipeWire/PulseAudio monitor source)
 - [x] Playback tap fallback (when system capture unavailable)
 - [x] Runtime toggle between system capture and playback tap
-- [ ] Random sound playback
+- [x] Random sound playback (random track selection + inter-track delay)
 
 ### Particle System
 - [x] **Renderers**: Sprite, Rope, Sprite Trail, Rope Trail
