@@ -212,6 +212,8 @@ private:
     std::string                    m_dragTarget;       // layer being dragged
     float m_sceneOrthoW {1920.0f};
     float m_sceneOrthoH {1080.0f};
+    float m_cursorSceneX {0.0f};   // scene-space cursor X, updated on hover/drag
+    float m_cursorSceneY {0.0f};   // scene-space cursor Y, updated on hover/drag
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

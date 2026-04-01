@@ -500,10 +500,14 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
+    // Track cursor position for input.cursorWorldPosition in scripts
+    m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    m_cursorSceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
     // cursorMove on drag target
     if (!m_dragTarget.empty() && m_jsEngine) {
-        float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-        float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+        float sceneX = m_cursorSceneX;
+        float sceneY = m_cursorSceneY;
         for (auto& target : m_cursorTargets) {
             if (target.layerName == m_dragTarget && target.moveFn.isCallable()) {
                 m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
@@ -526,10 +530,14 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
+    // Track cursor position for input.cursorWorldPosition in scripts
+    m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    m_cursorSceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
     // cursorEnter / cursorLeave hit-testing
     if (m_cursorTargets.empty() || !m_jsEngine) return;
-    float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+    float sceneX = m_cursorSceneX;
+    float sceneY = m_cursorSceneY;
 
     std::unordered_set<std::string> nowHovered;
     for (auto& target : m_cursorTargets) {
@@ -1835,6 +1843,14 @@ void SceneObject::evaluateTextScripts() {
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
     engineObj.setProperty("timeOfDay", tod);
 
+    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    {
+        QJSValue inputObj = m_jsEngine->globalObject().property("input");
+        QJSValue cwp = inputObj.property("cursorWorldPosition");
+        cwp.setProperty("x", (double)m_cursorSceneX);
+        cwp.setProperty("y", (double)m_cursorSceneY);
+    }
+
     for (auto& state : m_textScriptStates) {
         QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
         if (result.isError()) {
@@ -1869,6 +1885,14 @@ void SceneObject::evaluateColorScripts() {
     QTime now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
     engineObj.setProperty("timeOfDay", tod);
+
+    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    {
+        QJSValue inputObj = m_jsEngine->globalObject().property("input");
+        QJSValue cwp = inputObj.property("cursorWorldPosition");
+        cwp.setProperty("x", (double)m_cursorSceneX);
+        cwp.setProperty("y", (double)m_cursorSceneY);
+    }
 
     for (auto& state : m_colorScriptStates) {
         // Pass current color as Vec3 {x, y, z}
@@ -1927,6 +1951,14 @@ void SceneObject::evaluatePropertyScripts() {
     QTime now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
     engineObj.setProperty("timeOfDay", tod);
+
+    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    {
+        QJSValue inputObj = m_jsEngine->globalObject().property("input");
+        QJSValue cwp = inputObj.property("cursorWorldPosition");
+        cwp.setProperty("x", (double)m_cursorSceneX);
+        cwp.setProperty("y", (double)m_cursorSceneY);
+    }
 
     // Refresh audio buffers in case property scripts use audio data
     refreshAudioBuffers();

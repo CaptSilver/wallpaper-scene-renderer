@@ -341,6 +341,85 @@ TEST_CASE("square is landscape (not portrait)") {
 } // TEST_SUITE SceneScript Device Detection
 
 
+// ------------------------------------------------------------------
+// input.cursorWorldPosition live update
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript Cursor Position") {
+
+// Helper: engine with the input stub from SceneBackend.cpp
+struct CursorEnv {
+    QJSEngine engine;
+    CursorEnv() {
+        engine.evaluate("var input = { cursorWorldPosition: { x: 0, y: 0 } };\n");
+    }
+    // Simulate what evaluatePropertyScripts() / evaluateTextScripts() /
+    // evaluateColorScripts() do before running scripts.
+    void setCursorPos(double x, double y) {
+        QJSValue inputObj = engine.globalObject().property("input");
+        QJSValue cwp = inputObj.property("cursorWorldPosition");
+        cwp.setProperty("x", x);
+        cwp.setProperty("y", y);
+    }
+};
+
+TEST_CASE("initial cursorWorldPosition is {x:0, y:0}") {
+    CursorEnv env;
+    double x = env.engine.evaluate("input.cursorWorldPosition.x").toNumber();
+    double y = env.engine.evaluate("input.cursorWorldPosition.y").toNumber();
+    CHECK(x == doctest::Approx(0.0));
+    CHECK(y == doctest::Approx(0.0));
+}
+
+TEST_CASE("setCursorPos updates x and y readable by scripts") {
+    CursorEnv env;
+    env.setCursorPos(320.0, 240.0);
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() == doctest::Approx(320.0));
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() == doctest::Approx(240.0));
+}
+
+TEST_CASE("repeated updates replace previous values") {
+    CursorEnv env;
+    env.setCursorPos(100.0, 200.0);
+    env.setCursorPos(960.0, 540.0);
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() == doctest::Approx(960.0));
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() == doctest::Approx(540.0));
+}
+
+TEST_CASE("script reads updated cursor position") {
+    CursorEnv env;
+    // Compile a script that reads cursor position into a local var on each update() call
+    env.engine.evaluate(
+        "var capturedX = 0;\n"
+        "var capturedY = 0;\n"
+        "function readCursor() {\n"
+        "  capturedX = input.cursorWorldPosition.x;\n"
+        "  capturedY = input.cursorWorldPosition.y;\n"
+        "}\n"
+    );
+    env.setCursorPos(480.5, 270.25);
+    env.engine.evaluate("readCursor();");
+    CHECK(env.engine.evaluate("capturedX").toNumber() == doctest::Approx(480.5));
+    CHECK(env.engine.evaluate("capturedY").toNumber() == doctest::Approx(270.25));
+}
+
+TEST_CASE("cursor position zero after reset") {
+    CursorEnv env;
+    env.setCursorPos(500.0, 400.0);
+    env.setCursorPos(0.0, 0.0);
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("cursor position supports fractional scene coordinates") {
+    CursorEnv env;
+    env.setCursorPos(1.5, -2.75);
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() == doctest::Approx(1.5));
+    CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() == doctest::Approx(-2.75));
+}
+
+} // TEST_SUITE SceneScript Cursor Position
+
+
 // ===================================================================
 // Fixtures for comprehensive SceneScript tests
 // ===================================================================
