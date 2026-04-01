@@ -752,6 +752,24 @@ TEST_CASE("fade completes at exact boundary (line 158)") {
     CHECK(cam.GetEye().y() == doctest::Approx(100.0).epsilon(0.5));
 }
 
+TEST_CASE("zero-duration path uses t=0 (kills >0 → >=0 mutant)") {
+    auto cam = makePerspCamera();
+    CameraPath cp;
+    cp.duration = 0; // zero duration!
+    CameraKeyframe kf0, kf1;
+    kf0.eye = Vector3d(0, 0, 0); kf0.center = Vector3d::Zero(); kf0.up = Vector3d::UnitY();
+    kf1.eye = Vector3d(100, 0, 0); kf1.center = Vector3d::Zero(); kf1.up = Vector3d::UnitY();
+    cp.keyframes = {kf0, kf1};
+    cam.LoadPaths({cp});
+
+    cam.AdvanceTime(0.1);
+    // With duration=0: t should be 0 (not inf from 0.1/0)
+    // eye = kf0.eye + 0*(kf1.eye - kf0.eye) = (0,0,0)
+    CHECK(cam.GetEye().x() == doctest::Approx(0.0).epsilon(1.0));
+    // Must NOT be 100 (which would happen if t=inf from division by 0)
+    CHECK(cam.GetEye().x() < 50.0);
+}
+
 TEST_CASE("3-path cycling advances to next (not previous) path") {
     // Kills (m_currentPath + 1) → (m_currentPath - 1) mutant
     // With 3 paths: 0→1→2→0. Mutant: 0→2→1→0 (different order!)
