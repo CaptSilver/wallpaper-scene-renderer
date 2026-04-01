@@ -837,8 +837,25 @@ void SceneObject::setupTextScripts() {
         "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
         // Random helpers: WE wallpapers commonly call randomFloat/randomInteger
         "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
-        "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
+        "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); },\n"
+        "  min: function(a, b) { return Math.min(a, b); },\n"
+        "  max: function(a, b) { return Math.max(a, b); },\n"
+        "  floor: function(x) { return Math.floor(x); },\n"
+        "  ceil: function(x) { return Math.ceil(x); },\n"
+        "  round: function(x) { return Math.round(x); },\n"
+        "  sqrt: function(x) { return Math.sqrt(x); },\n"
+        "  sin: function(x) { return Math.sin(x); },\n"
+        "  cos: function(x) { return Math.cos(x); },\n"
+        "  tan: function(x) { return Math.tan(x); },\n"
+        "  asin: function(x) { return Math.asin(x); },\n"
+        "  acos: function(x) { return Math.acos(x); },\n"
+        "  atan: function(x) { return Math.atan(x); },\n"
+        "  atan2: function(y, x) { return Math.atan2(y, x); },\n"
+        "  log: function(x) { return Math.log(x); },\n"
+        "  exp: function(x) { return Math.exp(x); }\n"
         "};\n"
+        // camelCase aliases for GLSL-style function names
+        "WEMath.smoothStep = WEMath.smoothstep;\n"
     );
 
     // engine.colorScheme: the wallpaper's scheme/accent color as a Vec3 (r/g/b).

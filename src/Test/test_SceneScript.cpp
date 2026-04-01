@@ -745,8 +745,24 @@ static const char* JS_WEMATH =
     "  degToRad: function(d) { return d * Math.PI / 180; },\n"
     "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
     "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
-    "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
-    "};\n";
+    "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); },\n"
+    "  min: function(a, b) { return Math.min(a, b); },\n"
+    "  max: function(a, b) { return Math.max(a, b); },\n"
+    "  floor: function(x) { return Math.floor(x); },\n"
+    "  ceil: function(x) { return Math.ceil(x); },\n"
+    "  round: function(x) { return Math.round(x); },\n"
+    "  sqrt: function(x) { return Math.sqrt(x); },\n"
+    "  sin: function(x) { return Math.sin(x); },\n"
+    "  cos: function(x) { return Math.cos(x); },\n"
+    "  tan: function(x) { return Math.tan(x); },\n"
+    "  asin: function(x) { return Math.asin(x); },\n"
+    "  acos: function(x) { return Math.acos(x); },\n"
+    "  atan: function(x) { return Math.atan(x); },\n"
+    "  atan2: function(y, x) { return Math.atan2(y, x); },\n"
+    "  log: function(x) { return Math.log(x); },\n"
+    "  exp: function(x) { return Math.exp(x); }\n"
+    "};\n"
+    "WEMath.smoothStep = WEMath.smoothstep;\n";
 
 static const char* JS_WECOLOR =
     "var WEColor = (function() {\n"
@@ -1547,6 +1563,60 @@ TEST_CASE("WEMath.degToRad and radToDeg are inverses") {
     MathEnv env;
     double roundtrip = env.engine.evaluate("WEMath.radToDeg(WEMath.degToRad(45))").toNumber();
     CHECK(roundtrip == doctest::Approx(45.0));
+}
+
+TEST_CASE("WEMath.smoothStep is alias for smoothstep") {
+    MathEnv env;
+    double r1 = env.engine.evaluate("WEMath.smoothstep(0, 1, 0.5)").toNumber();
+    double r2 = env.engine.evaluate("WEMath.smoothStep(0, 1, 0.5)").toNumber();
+    CHECK(r1 == doctest::Approx(r2));
+    CHECK(r1 == doctest::Approx(0.5));
+}
+
+TEST_CASE("WEMath.min and max") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.min(3, 7)").toNumber() == doctest::Approx(3.0));
+    CHECK(env.engine.evaluate("WEMath.max(3, 7)").toNumber() == doctest::Approx(7.0));
+}
+
+TEST_CASE("WEMath.floor ceil round") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.floor(2.7)").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("WEMath.ceil(2.3)").toNumber() == doctest::Approx(3.0));
+    CHECK(env.engine.evaluate("WEMath.round(2.5)").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("WEMath.sqrt") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.sqrt(4)").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("WEMath.sqrt(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.sin cos tan") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.sin(0)").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("WEMath.cos(0)").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("WEMath.tan(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.asin acos atan") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.asin(0)").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("WEMath.acos(1)").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("WEMath.atan(0)").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("WEMath.atan2") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.atan2(1, 1)").toNumber() == doctest::Approx(M_PI / 4.0));
+}
+
+TEST_CASE("WEMath.log and exp") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.log(1)").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("WEMath.exp(0)").toNumber() == doctest::Approx(1.0));
+    // Round-trip: log(exp(2)) == 2
+    CHECK(env.engine.evaluate("WEMath.log(WEMath.exp(2))").toNumber() == doctest::Approx(2.0));
 }
 
 } // TEST_SUITE WEMath
