@@ -485,6 +485,27 @@ TEST_CASE("multiple expansions preserve inter-match text exactly") {
     CHECK(result.find("int x = 1; a - b.xxx; int y = 2; a + b.xyy; int z = 3;") != std::string::npos);
 }
 
+TEST_CASE("expansion skip with swizzle then expand without — exact output") {
+    // a.xy is a vec3 with existing swizzle → skip (no expansion)
+    // a without swizzle → expand b.xx to b.xxx
+    // Tests the vEnd position arithmetic: position() + m[1].length() for swizzle detection
+    std::string in = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx; a + b.xx;";
+    auto result = FixImplicitConversions(in);
+    // a.xy expression should NOT have b expanded (a.xy makes it vec2 context)
+    CHECK(result.find("a.xy - b.xx") != std::string::npos);
+    // bare a should have b expanded to .xxx
+    CHECK(result.find("a + b.xxx") != std::string::npos);
+}
+
+TEST_CASE("expansion reverse skip: swizzled var then bare var exact output") {
+    // Reverse direction: b.xx OP a.xy → skip (a has swizzle)
+    //                    b.xx OP a    → expand to b.xxx OP a
+    std::string in = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a.xy; b.xx + a;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("b.xx * a.xy") != std::string::npos); // skip
+    CHECK(result.find("b.xxx + a") != std::string::npos);   // expand
+}
+
 TEST_CASE("expansion reverse: expr.xx OP vec3 exact output") {
     std::string in = "vec3 a = vec3(0);\nvec4 b;\nb.xx + a;";
     auto result = FixImplicitConversions(in);
