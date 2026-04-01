@@ -188,6 +188,15 @@ TEST_CASE("multiple truncations in same shader") {
     CHECK(result.find("a - b.xy") != std::string::npos);
 }
 
+TEST_CASE("multiple truncations preserve inter-match text exactly") {
+    // Tests that position arithmetic (position()-lastPos, position()+length())
+    // correctly preserves text between matches. If mutated, second match
+    // would corrupt the inter-match text.
+    std::string in = "vec2 a = vec2(0);\nvec4 b;\nint x = 42; a + b.xyzw; int y = 99; a * b.xyz; int z = 7;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("int x = 42; a + b.xy; int y = 99; a * b.xy; int z = 7;") != std::string::npos);
+}
+
 TEST_CASE("reverse truncation preserves surrounding code") {
     std::string in = "vec2 uv = vec2(0);\nvec4 c;\nfloat w = c.xyzw + uv;";
     auto result = FixImplicitConversions(in);
@@ -259,6 +268,12 @@ TEST_CASE("expansion preserves surrounding text exactly") {
     CHECK(result.find("myVar * other.xyy") != std::string::npos);
     CHECK(result.find("float f = 1.0") != std::string::npos);
     CHECK(result.find("float g = 2.0") != std::string::npos);
+}
+
+TEST_CASE("multiple expansions preserve inter-match text exactly") {
+    std::string in = "vec3 a = vec3(0);\nvec4 b;\nint x = 1; a - b.xx; int y = 2; a + b.xy; int z = 3;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("int x = 1; a - b.xxx; int y = 2; a + b.xyy; int z = 3;") != std::string::npos);
 }
 
 TEST_CASE("expansion reverse: expr.xx OP vec3 exact output") {
