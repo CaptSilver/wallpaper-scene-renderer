@@ -209,7 +209,7 @@ to a valid fragment shader will render. Known working:
 - [x] Events: `init`, `update`
 - [x] Events: `destroy`, `applyUserProperties`, `resizeScreen`
 - [ ] Media integration events (`mediaPlaybackChanged`, `mediaPropertiesChanged`, etc.)
-- [ ] `ILocalStorage` (persistent per-wallpaper storage)
+- [x] `ILocalStorage` (in-memory key-value store: get/set/remove/clear)
 - [x] Text layer dynamic content (scripts driving text updates)
 - [x] Color scripts (`colorScript` field parsed, compiled, evaluated at 30Hz)
 - [x] `WEMath`, `WEColor` utility modules
