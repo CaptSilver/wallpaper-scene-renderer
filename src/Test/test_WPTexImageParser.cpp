@@ -412,6 +412,178 @@ TEST_CASE("Valid sprite — parsed correctly") {
     CHECK(frame.frametime == doctest::Approx(0.5f));
 }
 
+TEST_CASE("Sprite mipmap_pow2 with non-square image (kills w*h→w/h mutant)") {
+    // 2x4 sprite: width*height = 8 (isPow2=true), width/height = 0 (isPow2=false)
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 2, 4, 2, 4, 1);
+
+    // Image 0: 1 mipmap, 2x4
+    appendInt32(buf, 1); // mipmap_count
+    std::vector<uint8_t> pixels(2 * 4 * 4, 0); // 2x4 RGBA
+    appendMipmapV2(buf, 2, 4, pixels);
+
+    // Sprite section
+    appendTexVersion(buf, 2); // texs version
+    appendInt32(buf, 1);      // framecount = 1
+
+    appendInt32(buf, 0);      // imageId = 0
+    appendFloat(buf, 0.1f);   // frametime
+    appendFloat(buf, 0.0f);   // x
+    appendFloat(buf, 0.0f);   // y
+    appendFloat(buf, 2.0f);   // xAxis[0]
+    appendFloat(buf, 0.0f);   // xAxis[1]
+    appendFloat(buf, 0.0f);   // yAxis[0]
+    appendFloat(buf, 4.0f);   // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_2x4", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_2x4");
+    CHECK(header.isSprite == true);
+    // 2 * 4 = 8 → isPow2 = true
+    // If mutated to 2 / 4 = 0 → isPow2 = false (KILLED)
+    CHECK(header.mipmap_pow2 == true);
+}
+
+TEST_CASE("Sprite frame width computed from xAxis magnitude (kills +→- mutant)") {
+    // xAxis = (3, 4) → width = sqrt(9+16) = 5
+    // If mutated to sqrt(9-16) = sqrt(-7) → NaN → frame.width != 5
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 10, 10, 10, 10, 1);
+
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(10 * 10 * 4, 0);
+    appendMipmapV2(buf, 10, 10, pixels);
+
+    appendTexVersion(buf, 2);
+    appendInt32(buf, 1);
+
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.1f);   // frametime
+    appendFloat(buf, 0.0f);   // x
+    appendFloat(buf, 0.0f);   // y
+    appendFloat(buf, 3.0f);   // xAxis[0]
+    appendFloat(buf, 4.0f);   // xAxis[1] — non-zero!
+    appendFloat(buf, 0.0f);   // yAxis[0]
+    appendFloat(buf, 8.0f);   // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_diag", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_diag");
+    CHECK(header.isSprite == true);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    // width = sqrt(3^2 + 4^2) = sqrt(25) = 5
+    CHECK(frame.width == doctest::Approx(5.0f));
+    // height = sqrt(0 + 64) = 8
+    CHECK(frame.height == doctest::Approx(8.0f));
+}
+
+TEST_CASE("Sprite texs v3 with extra width/height fields") {
+    // texs version 3 has extra width/height int32s after framecount
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 8, 8, 8, 8, 1);
+
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(8 * 8 * 4, 0);
+    appendMipmapV2(buf, 8, 8, pixels);
+
+    appendTexVersion(buf, 3); // texs version 3
+    appendInt32(buf, 1);      // framecount
+    appendInt32(buf, 128);    // extra width (texs==3)
+    appendInt32(buf, 128);    // extra height (texs==3)
+
+    // Frame data (floats since texs >= 2)
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.2f);   // frametime
+    appendFloat(buf, 0.0f);   // x
+    appendFloat(buf, 0.0f);   // y
+    appendFloat(buf, 8.0f);   // xAxis[0]
+    appendFloat(buf, 0.0f);   // xAxis[1]
+    appendFloat(buf, 0.0f);   // yAxis[0]
+    appendFloat(buf, 8.0f);   // yAxis[1]
+
+    VFS vfs;
+    mountTex(vfs, "sprite_v3", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_v3");
+    CHECK(header.isSprite == true);
+    CHECK(header.spriteAnim.numFrames() == 1);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    CHECK(frame.frametime == doctest::Approx(0.2f));
+}
+
+TEST_CASE("Sprite texs v1 uses integer frame coordinates") {
+    // texs version 1 reads frame x/y/xAxis/yAxis as int32, not float
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 16, 16, 1);
+
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(16 * 16 * 4, 0);
+    appendMipmapV2(buf, 16, 16, pixels);
+
+    appendTexVersion(buf, 1); // texs version 1
+    appendInt32(buf, 1);      // framecount
+
+    // Frame data (int32s for texs==1)
+    appendInt32(buf, 0);      // imageId
+    appendFloat(buf, 0.3f);   // frametime (still float)
+    appendInt32(buf, 2);      // x (int)
+    appendInt32(buf, 3);      // y (int)
+    appendInt32(buf, 6);      // xAxis[0] (int)
+    appendInt32(buf, 8);      // xAxis[1] (int)
+    appendInt32(buf, 0);      // yAxis[0] (int)
+    appendInt32(buf, 10);     // yAxis[1] (int)
+
+    VFS vfs;
+    mountTex(vfs, "sprite_v1", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_v1");
+    CHECK(header.isSprite == true);
+    auto& frame = header.spriteAnim.GetCurFrame();
+    CHECK(frame.frametime == doctest::Approx(0.3f));
+    // x = 2/16 = 0.125, y = 3/16 = 0.1875
+    CHECK(frame.x == doctest::Approx(2.0f / 16.0f));
+    CHECK(frame.y == doctest::Approx(3.0f / 16.0f));
+    // width = sqrt(6^2 + 8^2) = sqrt(100) = 10
+    CHECK(frame.width == doctest::Approx(10.0f));
+}
+
+TEST_CASE("Sprite mipmap_pow2 with non-power-of-two product") {
+    // 3x5 sprite: width*height = 15 (isPow2=false), width/height = 0 (isPow2=false)
+    // This test verifies the multiplication is correct for non-pow2 dimensions
+    uint32_t spriteFlag = (1u << 2);
+    auto buf = makeTexHeader(1, 1, 2, 0, spriteFlag, 3, 5, 3, 5, 1);
+
+    appendInt32(buf, 1);
+    std::vector<uint8_t> pixels(3 * 5 * 4, 0);
+    appendMipmapV2(buf, 3, 5, pixels);
+
+    appendTexVersion(buf, 2);
+    appendInt32(buf, 1);
+
+    appendInt32(buf, 0);
+    appendFloat(buf, 0.1f);
+    appendFloat(buf, 0.0f);
+    appendFloat(buf, 0.0f);
+    appendFloat(buf, 3.0f);
+    appendFloat(buf, 0.0f);
+    appendFloat(buf, 0.0f);
+    appendFloat(buf, 5.0f);
+
+    VFS vfs;
+    mountTex(vfs, "sprite_3x5", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto header = parser.ParseHeader("sprite_3x5");
+    CHECK(header.isSprite == true);
+    CHECK(header.mipmap_pow2 == false); // 3*5=15 not pow2
+}
+
 TEST_CASE("LZ4 compressed mipmap") {
     auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
 
