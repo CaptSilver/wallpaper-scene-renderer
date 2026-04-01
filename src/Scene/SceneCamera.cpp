@@ -1,6 +1,7 @@
 #include "SceneCamera.h"
 #include "SceneNode.h"
 #include "Utils/Logging.h"
+#include <algorithm>
 #include <iostream>
 #include "Utils/Eigen.h"
 
@@ -145,8 +146,7 @@ void SceneCamera::AdvanceTime(double dt) {
 	auto& kf1 = cur.keyframes[1];
 
 	double t = (cur.duration > 0) ? m_pathTime / cur.duration : 0;
-	if (t < 0) t = 0;
-	if (t > 1) t = 1;
+	t = std::clamp(t, 0.0, 1.0);
 
 	Vector3d eye    = kf0.eye    + t * (kf1.eye    - kf0.eye);
 	Vector3d center = kf0.center + t * (kf1.center - kf0.center);
