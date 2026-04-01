@@ -2146,7 +2146,7 @@ static const char* TEXT_IIFE_POST =
     "  return { update: _upd, init: _init };\n"
     "})()";
 
-// Property IIFE pattern: extracts all 8 handlers with try-catch wrapping
+// Property IIFE pattern: extracts all handlers with try-catch wrapping
 static const char* PROP_IIFE_POST =
     "  var _rawUpd = typeof exports.update === 'function' ? exports.update :\n"
     "                (typeof update === 'function' ? update : null);\n"
@@ -2159,6 +2159,12 @@ static const char* PROP_IIFE_POST =
     "  var _down = typeof exports.cursorDown === 'function' ? exports.cursorDown : null;\n"
     "  var _up = typeof exports.cursorUp === 'function' ? exports.cursorUp : null;\n"
     "  var _move = typeof exports.cursorMove === 'function' ? exports.cursorMove : null;\n"
+    "  var _aup = typeof exports.applyUserProperties === 'function' ? exports.applyUserProperties :\n"
+    "             (typeof applyUserProperties === 'function' ? applyUserProperties : null);\n"
+    "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
+    "              (typeof destroy === 'function' ? destroy : null);\n"
+    "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen :\n"
+    "               (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
     "  var _init2 = _rawInit ? function(v) {\n"
     "    try { return _rawInit(v); } catch(e) { console.log('init error: ' + e.message); }\n"
     "  } : null;\n"
@@ -2167,7 +2173,8 @@ static const char* PROP_IIFE_POST =
     "  } : null;\n"
     "  return { update: _upd2, init: _init2,\n"
     "    cursorClick: _click, cursorEnter: _enter, cursorLeave: _leave,\n"
-    "    cursorDown: _down, cursorUp: _up, cursorMove: _move };\n"
+    "    cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
+    "    applyUserProperties: _aup, destroy: _destr, resizeScreen: _resize };\n"
     "})()";
 
 TEST_CASE("exports.update extracted from text IIFE") {
@@ -2206,7 +2213,7 @@ TEST_CASE("exports.init extracted alongside update") {
     CHECK(r.property("update").isCallable());
 }
 
-TEST_CASE("property IIFE extracts all 8 handlers") {
+TEST_CASE("property IIFE extracts all 11 handlers") {
     ScriptEnv env;
     QString script = QString(
         "(function() {\n"
@@ -2220,6 +2227,9 @@ TEST_CASE("property IIFE extracts all 8 handlers") {
         "  exports.cursorDown = function(){};\n"
         "  exports.cursorUp = function(){};\n"
         "  exports.cursorMove = function(){};\n"
+        "  exports.applyUserProperties = function(p){};\n"
+        "  exports.destroy = function(){};\n"
+        "  exports.resizeScreen = function(w,h){};\n"
         "%1").arg(PROP_IIFE_POST);
     QJSValue r = env.engine.evaluate(script);
     CHECK(r.property("update").isCallable());
@@ -2230,6 +2240,9 @@ TEST_CASE("property IIFE extracts all 8 handlers") {
     CHECK(r.property("cursorDown").isCallable());
     CHECK(r.property("cursorUp").isCallable());
     CHECK(r.property("cursorMove").isCallable());
+    CHECK(r.property("applyUserProperties").isCallable());
+    CHECK(r.property("destroy").isCallable());
+    CHECK(r.property("resizeScreen").isCallable());
 }
 
 TEST_CASE("property IIFE update wrapped in try-catch returns input on error") {
@@ -2306,6 +2319,185 @@ TEST_CASE("init without update returns null") {
         .arg(TEXT_IIFE_PRE).arg(TEXT_IIFE_POST);
     QJSValue r = env.engine.evaluate(script);
     CHECK(r.isNull());
+}
+
+TEST_CASE("applyUserProperties extracted from exports") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  var _captured = null;\n"
+        "  exports.update = function(v){ return _captured; };\n"
+        "  exports.applyUserProperties = function(props){\n"
+        "    _captured = props.speed;\n"
+        "  };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("applyUserProperties").isCallable());
+    // Simulate property update
+    r.property("applyUserProperties").call(
+        { env.engine.evaluate("({speed: 42})") });
+    QJSValue result = r.property("update").call({ QJSValue(0) });
+    CHECK(result.toInt() == 42);
+}
+
+TEST_CASE("applyUserProperties bare function form") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  var _captured = '';\n"
+        "  exports.update = function(v){ return _captured; };\n"
+        "  function applyUserProperties(props) {\n"
+        "    _captured = props.theme;\n"
+        "  }\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("applyUserProperties").isCallable());
+    r.property("applyUserProperties").call(
+        { env.engine.evaluate("({theme: 'dark'})") });
+    CHECK(r.property("update").call({ QJSValue(0) }).toString() == "dark");
+}
+
+TEST_CASE("applyUserProperties null when not defined") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK_FALSE(r.property("applyUserProperties").isCallable());
+}
+
+TEST_CASE("destroy extracted from exports") {
+    ScriptEnv env;
+    env.engine.evaluate("var _destroyCalled = false;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.destroy = function(){\n"
+        "    _destroyCalled = true;\n"
+        "  };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("destroy").isCallable());
+    r.property("destroy").call({});
+    CHECK(env.engine.evaluate("_destroyCalled").toBool());
+}
+
+TEST_CASE("destroy bare function form") {
+    ScriptEnv env;
+    env.engine.evaluate("var _destroyCount = 0;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  function destroy() { _destroyCount++; }\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("destroy").isCallable());
+    r.property("destroy").call({});
+    r.property("destroy").call({});
+    CHECK(env.engine.evaluate("_destroyCount").toInt() == 2);
+}
+
+TEST_CASE("destroy null when not defined") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK_FALSE(r.property("destroy").isCallable());
+}
+
+TEST_CASE("resizeScreen extracted from exports") {
+    ScriptEnv env;
+    env.engine.evaluate("var _resizeW = 0; var _resizeH = 0;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.resizeScreen = function(w, h){\n"
+        "    _resizeW = w; _resizeH = h;\n"
+        "  };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("resizeScreen").isCallable());
+    r.property("resizeScreen").call(
+        { QJSValue(2560), QJSValue(1440) });
+    CHECK(env.engine.evaluate("_resizeW").toInt() == 2560);
+    CHECK(env.engine.evaluate("_resizeH").toInt() == 1440);
+}
+
+TEST_CASE("resizeScreen bare function form") {
+    ScriptEnv env;
+    env.engine.evaluate("var _resizeArea = 0;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  function resizeScreen(w, h) { _resizeArea = w * h; }\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("resizeScreen").isCallable());
+    r.property("resizeScreen").call(
+        { QJSValue(1920), QJSValue(1080) });
+    CHECK(env.engine.evaluate("_resizeArea").toInt() == 1920 * 1080);
+}
+
+TEST_CASE("resizeScreen null when not defined") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK_FALSE(r.property("resizeScreen").isCallable());
+}
+
+TEST_CASE("script with only applyUserProperties is kept") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.applyUserProperties = function(p){};\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    // Should not be null/undefined — script has a callable handler
+    CHECK_FALSE(r.isNull());
+    CHECK_FALSE(r.isUndefined());
+    CHECK(r.property("applyUserProperties").isCallable());
+    // update/init should be null
+    CHECK_FALSE(r.property("update").isCallable());
+    CHECK_FALSE(r.property("init").isCallable());
+}
+
+TEST_CASE("script with only destroy is kept") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.destroy = function(){};\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK_FALSE(r.isNull());
+    CHECK(r.property("destroy").isCallable());
 }
 
 } // TEST_SUITE Script Compilation

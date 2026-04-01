@@ -118,6 +118,9 @@ private:
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
     void refreshJsUserProperties();
+    void fireApplyUserProperties();
+    void fireDestroyEvent();
+    void fireResizeScreen(int width, int height);
     void evaluateTextScripts();
     void evaluateColorScripts();
     void evaluatePropertyScripts();
@@ -153,6 +156,9 @@ private:
         QJSValue    cursorDownFn;
         QJSValue    cursorUpFn;
         QJSValue    cursorMoveFn;
+        QJSValue    applyUserPropertiesFn; // optional applyUserProperties handler
+        QJSValue    destroyFn;             // optional destroy handler
+        QJSValue    resizeScreenFn;        // optional resizeScreen handler
         QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
         bool                 currentVisible {true};
         std::array<float, 3> currentVec3 {0, 0, 0};
