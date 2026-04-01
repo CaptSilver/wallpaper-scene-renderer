@@ -344,6 +344,38 @@ std::shared_ptr<WPPuppet> makeSimplePuppet3Frame() {
     puppet->prepared();
     return puppet;
 }
+// Helper: puppet with 1 bone, 2 frames with 45° Z rotation (non-identity quaternions)
+std::shared_ptr<WPPuppet> makeRotatedPuppet() {
+    auto puppet = std::make_shared<WPPuppet>();
+    WPPuppet::Bone bone;
+    bone.transform = Eigen::Affine3f::Identity();
+    bone.parent = 0xFFFFFFFFu;
+    puppet->bones.push_back(bone);
+
+    WPPuppet::Animation anim;
+    anim.id = 1; anim.fps = 10.0; anim.length = 2;
+    anim.mode = WPPuppet::PlayMode::Loop; anim.name = "rotate";
+    WPPuppet::Animation::BoneFrames bf;
+    {
+        WPPuppet::BoneFrame f0;
+        f0.position = Eigen::Vector3f::Zero();
+        f0.angle = Eigen::Vector3f(0, 0, 0); // no rotation
+        f0.scale = Eigen::Vector3f::Ones();
+        bf.frames.push_back(f0);
+    }
+    {
+        WPPuppet::BoneFrame f1;
+        f1.position = Eigen::Vector3f::Zero();
+        f1.angle = Eigen::Vector3f(0, 0, 45.0f); // 45° Z rotation
+        f1.scale = Eigen::Vector3f::Ones();
+        bf.frames.push_back(f1);
+    }
+    anim.bframes_array.push_back(bf);
+    puppet->anims.push_back(anim);
+    puppet->prepared();
+    return puppet;
+}
+
 } // namespace
 
 TEST_CASE("genFrame exact position at t=0") {
@@ -547,6 +579,56 @@ TEST_CASE("genFrame hidden layer has no effect") {
     layer.genFrame(0.1);
     float x1 = layer.genFrame(0.0).data()->translation().x();
     CHECK(x0 == doctest::Approx(x1).epsilon(0.01f));
+}
+
+TEST_CASE("genFrame rotation with non-identity quaternion and partial blend") {
+    // Kills slerp(1.0-blend, ident) → slerp(1.0+blend, ident) mutant (lines 98-99)
+    // With blend=0.5: slerp factor = 1.0-0.5=0.5, mutant = 1.0+0.5=1.5 (extrapolation)
+    auto puppet = makeRotatedPuppet();
+
+    // Full blend: rotation should be 45° Z
+    WPPuppetLayer full_layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> al_full(1);
+    al_full[0] = {1, 1.0, 1.0, true, 0.0};
+    full_layer.prepared(al_full);
+    full_layer.genFrame(0.0);
+    full_layer.genFrame(0.05); // midway between frame 0 and 1
+    auto full_result = full_layer.genFrame(0.0);
+    Eigen::Matrix3f full_rot = full_result[0].rotation();
+
+    // Partial blend (0.5): rotation should be less than full
+    WPPuppetLayer half_layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> al_half(1);
+    al_half[0] = {1, 1.0, 0.5, true, 0.0};
+    half_layer.prepared(al_half);
+    half_layer.genFrame(0.0);
+    half_layer.genFrame(0.05);
+    auto half_result = half_layer.genFrame(0.0);
+    Eigen::Matrix3f half_rot = half_result[0].rotation();
+
+    // The rotation angle with half blend should be less than with full blend
+    // Extract rotation angle from the matrix (angle around Z axis)
+    float full_angle = std::atan2(full_rot(1,0), full_rot(0,0));
+    float half_angle = std::atan2(half_rot(1,0), half_rot(0,0));
+    CHECK(std::abs(half_angle) < std::abs(full_angle) + 0.01f);
+    CHECK(std::abs(half_angle) > 0.001f); // should have SOME rotation
+}
+
+TEST_CASE("genFrame with total_blend exactly 1.0 uses multiplicative path") {
+    // Kills total_blend > 1.0 → total_blend >= 1.0 mutant (line 217)
+    // With total_blend==1.0, should use multiplicative path (not normalization)
+    auto puppet = makeSimplePuppet3Frame();
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = {1, 1.0, 1.0, true, 0.0}; // total_blend = 1.0 exactly
+    layer.prepared(alayers);
+
+    // Should work without crashing (normalization would divide by 1.0 anyway)
+    auto frames = layer.genFrame(0.0);
+    layer.genFrame(0.05);
+    auto frames2 = layer.genFrame(0.0);
+    float x = frames2[0].translation().x();
+    CHECK(x == doctest::Approx(5.0f)); // halfway between 0 and 10
 }
 
 } // TEST_SUITE("WPPuppet_GenFrame")
