@@ -320,6 +320,34 @@ TEST_SUITE("WPPuppet_GenFrame") {
 
 namespace
 {
+// Helper: puppet with 1 bone at offset (5,0,0) — non-identity bone transform.
+// The offset makes the first loop's iteration observable: without it, the
+// bone matrix is identity and offset_trans * identity = offset_trans regardless.
+std::shared_ptr<WPPuppet> makePuppetWithOffset() {
+    auto puppet = std::make_shared<WPPuppet>();
+    WPPuppet::Bone bone;
+    bone.transform = Eigen::Affine3f::Identity();
+    bone.transform.pretranslate(Eigen::Vector3f(5, 0, 0));
+    bone.parent = 0xFFFFFFFFu;
+    puppet->bones.push_back(bone);
+
+    WPPuppet::Animation anim;
+    anim.id = 1; anim.fps = 10.0; anim.length = 2;
+    anim.mode = WPPuppet::PlayMode::Loop; anim.name = "offset";
+    WPPuppet::Animation::BoneFrames bf;
+    for (int f = 0; f < 2; f++) {
+        WPPuppet::BoneFrame frame;
+        frame.position = Eigen::Vector3f(f * 10.0f, 0, 0);
+        frame.angle = Eigen::Vector3f::Zero();
+        frame.scale = Eigen::Vector3f::Ones();
+        bf.frames.push_back(frame);
+    }
+    anim.bframes_array.push_back(bf);
+    puppet->anims.push_back(anim);
+    puppet->prepared();
+    return puppet;
+}
+
 // Helper: build puppet with 1 bone, 3 frames at pos (0,0,0), (10,0,0), (20,0,0)
 std::shared_ptr<WPPuppet> makeSimplePuppet3Frame() {
     auto puppet = std::make_shared<WPPuppet>();
@@ -613,6 +641,23 @@ TEST_CASE("genFrame rotation with non-identity base quaternion and partial blend
     // since slerp(0.5, ident) attenuates vs slerp(1.0, ident) = no change
     CHECK(std::abs(half_angle) != doctest::Approx(std::abs(full_angle)).epsilon(0.01f));
     CHECK(std::abs(full_angle) > 0.1f); // should have meaningful rotation
+}
+
+TEST_CASE("genFrame with non-identity bone — animation changes result") {
+    // With animated position, the final bone matrix should differ at different times.
+    // If the first loop is skipped (i++ → i-- mutant), the animation isn't applied
+    // and the result doesn't change between frames.
+    auto puppet = makePuppetWithOffset();
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = {1, 1.0, 1.0, true, 0.0};
+    layer.prepared(alayers);
+    auto f0 = layer.genFrame(0.0);
+    float x0 = f0[0](0, 3); // matrix element (0,3) = tx
+    auto f1 = layer.genFrame(0.05);
+    float x1 = f1[0](0, 3);
+    // After advancing, the bone matrix should have changed
+    CHECK(x0 != doctest::Approx(x1).epsilon(0.001f));
 }
 
 TEST_CASE("genFrame with total_blend exactly 1.0 uses multiplicative path") {
