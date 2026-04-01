@@ -222,7 +222,7 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 std::copy(result.data(), result.data() + src_size, buf.get());
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) { delete[] p; });
             }
-            mipmap.size = src_size * (i32)sizeof(uint8_t);
+            mipmap.size = src_size;
         }
     }
     return img_ptr;
