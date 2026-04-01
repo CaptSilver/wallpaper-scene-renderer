@@ -716,10 +716,15 @@ static const char* JS_VEC3_AND_UTILS =
     "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t); };\n"
     "var _origMatch = String.prototype.match;\n"
     "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
-    "var localStorage = {\n"
-    "  get: function(key) { return undefined; },\n"
-    "  set: function(key, value) {}\n"
-    "};\n";
+    "var localStorage = (function() {\n"
+    "  var _store = {};\n"
+    "  return {\n"
+    "    get: function(key) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
+    "    set: function(key, value) { _store[key] = value; },\n"
+    "    remove: function(key) { delete _store[key]; },\n"
+    "    clear: function() { _store = {}; }\n"
+    "  };\n"
+    "})();\n";
 
 static const char* JS_WEMATH =
     "var WEMath = {\n"
@@ -1631,15 +1636,62 @@ TEST_CASE("String.match global regex returns all") {
     CHECK(env.engine.evaluate("'aaa'.match(/a/g).length").toInt() == 3);
 }
 
-TEST_CASE("localStorage.get returns undefined") {
+TEST_CASE("localStorage.get returns undefined for missing key") {
     MathEnv env;
     CHECK(env.engine.evaluate("localStorage.get('anything')").isUndefined());
 }
 
-TEST_CASE("localStorage.set does not crash") {
+TEST_CASE("localStorage.set and get round-trip") {
     MathEnv env;
-    QJSValue r = env.engine.evaluate("localStorage.set('k', 'v')");
+    env.engine.evaluate("localStorage.set('key1', 'hello');");
+    CHECK(env.engine.evaluate("localStorage.get('key1')").toString() == "hello");
+}
+
+TEST_CASE("localStorage stores numbers") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('n', 42);");
+    CHECK(env.engine.evaluate("localStorage.get('n')").toInt() == 42);
+}
+
+TEST_CASE("localStorage stores booleans") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('flag', true);");
+    CHECK(env.engine.evaluate("localStorage.get('flag')").toBool() == true);
+}
+
+TEST_CASE("localStorage overwrites existing key") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('x', 1);");
+    env.engine.evaluate("localStorage.set('x', 2);");
+    CHECK(env.engine.evaluate("localStorage.get('x')").toInt() == 2);
+}
+
+TEST_CASE("localStorage.remove deletes a key") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('temp', 'val');");
+    env.engine.evaluate("localStorage.remove('temp');");
+    CHECK(env.engine.evaluate("localStorage.get('temp')").isUndefined());
+}
+
+TEST_CASE("localStorage.remove on missing key is safe") {
+    MathEnv env;
+    QJSValue r = env.engine.evaluate("localStorage.remove('nonexistent')");
     CHECK_FALSE(r.isError());
+}
+
+TEST_CASE("localStorage.clear removes all keys") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('a', 1);");
+    env.engine.evaluate("localStorage.set('b', 2);");
+    env.engine.evaluate("localStorage.clear();");
+    CHECK(env.engine.evaluate("localStorage.get('a')").isUndefined());
+    CHECK(env.engine.evaluate("localStorage.get('b')").isUndefined());
+}
+
+TEST_CASE("localStorage persists across evaluate calls") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('persist', 'yes');");
+    CHECK(env.engine.evaluate("localStorage.get('persist')").toString() == "yes");
 }
 
 TEST_CASE("shared.volume defaults to 1.0") {

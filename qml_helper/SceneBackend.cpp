@@ -804,10 +804,15 @@ void SceneObject::setupTextScripts() {
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
         "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
-        "var localStorage = {\n"
-        "  get: function(key) { return undefined; },\n"
-        "  set: function(key, value) {}\n"
-        "};\n"
+        "var localStorage = (function() {\n"
+        "  var _store = {};\n"
+        "  return {\n"
+        "    get: function(key) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
+        "    set: function(key, value) { _store[key] = value; },\n"
+        "    remove: function(key) { delete _store[key]; },\n"
+        "    clear: function() { _store = {}; }\n"
+        "  };\n"
+        "})();\n"
     );
 
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
