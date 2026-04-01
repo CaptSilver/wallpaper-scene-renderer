@@ -265,6 +265,34 @@ TEST_CASE("Read clamps at end of stream") {
     CHECK(buf[1] == 5);
 }
 
+TEST_CASE("InArea boundary: position 0 is valid") {
+    std::vector<uint8_t> data(5, 0);
+    MemBinaryStream stream(std::move(data));
+    // pos=0 should be valid (>= 0 boundary)
+    CHECK(stream.SeekSet(0) == true);
+    CHECK(stream.Tell() == 0);
+}
+
+TEST_CASE("moveForward at end returns 0") {
+    std::vector<uint8_t> data(5, 42);
+    MemBinaryStream stream(std::move(data));
+    stream.SeekSet(5); // at end
+    uint8_t buf;
+    auto read = stream.Read(&buf, 1);
+    CHECK(read == 0);
+}
+
+TEST_CASE("moveForward exactly to end") {
+    std::vector<uint8_t> data = {10, 20, 30};
+    MemBinaryStream stream(std::move(data));
+    stream.SeekSet(0);
+    uint8_t buf[3];
+    auto read = stream.Read(buf, 3); // reads exactly to Size()
+    CHECK(read == 3);
+    CHECK(stream.Tell() == 3);
+    CHECK(buf[2] == 30);
+}
+
 TEST_CASE("InArea boundary: position at Size() is valid") {
     std::vector<uint8_t> data(5, 0);
     MemBinaryStream stream(std::move(data));

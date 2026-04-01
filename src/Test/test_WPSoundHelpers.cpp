@@ -100,6 +100,29 @@ TEST_CASE("min > max clamps to min") {
     CHECK(samples == (uint64_t)(5.0f * 44100));
 }
 
+TEST_CASE("positive mintime with negative maxtime produces non-zero delay") {
+    // Kills mutant: mintime <= 0 → mintime > 0
+    // Original: 0.5<=0 is false → falls through → delay > 0
+    // Mutant:   0.5>0 is true  → returns 0 (early exit with maxtime<0)
+    std::mt19937 rng(42);
+    uint64_t samples = RandomDelaySamples(0.5f, -1.0f, 44100, rng);
+    CHECK(samples > 0);
+}
+
+TEST_CASE("zero mintime with positive maxtime produces non-zero delay") {
+    // Kills mutant: maxtime <= 0 → maxtime > 0 and maxtime <= 0 → maxtime < 0
+    // mintime=0, maxtime=1: original: 0<=0 && 1<=0 = false → falls through
+    std::mt19937 rng(42);
+    uint64_t samples = RandomDelaySamples(0.0f, 1.0f, 44100, rng);
+    CHECK(samples > 0);
+}
+
+TEST_CASE("negative mintime with positive maxtime produces non-zero delay") {
+    std::mt19937 rng(42);
+    uint64_t samples = RandomDelaySamples(-1.0f, 1.0f, 44100, rng);
+    CHECK(samples > 0);
+}
+
 TEST_CASE("sample rate affects output") {
     std::mt19937 rng1(42), rng2(42);
     uint64_t s1 = RandomDelaySamples(1.0f, 1.0f, 44100, rng1);

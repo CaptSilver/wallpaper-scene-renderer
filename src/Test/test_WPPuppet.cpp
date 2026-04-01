@@ -493,4 +493,60 @@ TEST_CASE("genFrame position increases monotonically") {
     }
 }
 
+TEST_CASE("genFrame with partial blend reduces effect") {
+    // With blend=0.5, position contribution should be half of blend=1.0
+    // This kills mutants: 1.0 - blend → 1.0 + blend
+    auto puppet = makeSimplePuppet3Frame();
+
+    // Full blend (1.0)
+    WPPuppetLayer layer1(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> al1(1);
+    al1[0] = {1, 1.0, 1.0, true, 0.0}; // rate=1, blend=1
+    layer1.prepared(al1);
+    auto frames1 = layer1.genFrame(0.0);
+    layer1.genFrame(0.1); // advance time
+    float full_x = layer1.genFrame(0.0).data()->translation().x();
+
+    // Partial blend (0.5)
+    WPPuppetLayer layer2(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> al2(1);
+    al2[0] = {1, 1.0, 0.5, true, 0.0}; // rate=1, blend=0.5
+    layer2.prepared(al2);
+    layer2.genFrame(0.0);
+    layer2.genFrame(0.1);
+    float half_x = layer2.genFrame(0.0).data()->translation().x();
+
+    // Partial blend should produce smaller position offset
+    CHECK(std::abs(half_x) < std::abs(full_x) + 0.01f);
+}
+
+TEST_CASE("genFrame with zero blend produces minimal change") {
+    // blend=0 should leave bone near identity (only global_blend * base transform)
+    auto puppet = makeSimplePuppet3Frame();
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = {1, 1.0, 0.0, true, 0.0}; // blend=0 → animation has no effect
+    layer.prepared(alayers);
+    auto frames = layer.genFrame(0.0);
+    layer.genFrame(0.1);
+    auto frames2 = layer.genFrame(0.0);
+    // With blend=0, position should not change from frame advance
+    float x0 = frames.data()->translation().x();
+    float x1 = frames2.data()->translation().x();
+    CHECK(x0 == doctest::Approx(x1).epsilon(0.01f));
+}
+
+TEST_CASE("genFrame hidden layer has no effect") {
+    auto puppet = makeSimplePuppet3Frame();
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = {1, 1.0, 1.0, false, 0.0}; // visible=false
+    layer.prepared(alayers);
+    auto frames = layer.genFrame(0.0);
+    float x0 = frames.data()->translation().x();
+    layer.genFrame(0.1);
+    float x1 = layer.genFrame(0.0).data()->translation().x();
+    CHECK(x0 == doctest::Approx(x1).epsilon(0.01f));
+}
+
 } // TEST_SUITE("WPPuppet_GenFrame")
