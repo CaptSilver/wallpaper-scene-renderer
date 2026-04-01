@@ -995,6 +995,15 @@ TEST_CASE("combined geometry shader translation") {
     CHECK(result.find("VS_OUTPUT") == std::string::npos);
 }
 
+TEST_CASE("multiple OUT.Append preserves inter-call code exactly") {
+    // Two Append calls with code between them. The second call's prefix extraction
+    // depends on pos being updated correctly after the first call.
+    // If start-pos mutated to start+pos, the second call's prefix would be wrong.
+    std::string in  = "int a=1; OUT.Append(f1()); int b=2; OUT.Append(f2()); int c=3;";
+    auto result = TranslateGeometryShader(in);
+    CHECK(result.find("int a=1; f1(); EmitVertex(); int b=2; f2(); EmitVertex(); int c=3;") != std::string::npos);
+}
+
 TEST_CASE("OUT.Append exact extraction: no extra chars leaked") {
     // Tests that start-pos subtraction and i-1-inner are exact
     std::string in  = "AAA OUT.Append(compute(x, y)); BBB";
