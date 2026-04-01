@@ -713,6 +713,9 @@ void SceneObject::setupTextScripts() {
         "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
         "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
         "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
+        "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
+        "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
+        "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
         // r/g/b aliases for use as color vectors (maps to x/y/z)
         "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
         "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
@@ -724,6 +727,8 @@ void SceneObject::setupTextScripts() {
         "  var p = String(s).trim().split(/\\s+/);\n"
         "  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);\n"
         "};\n"
+        // Vec3.lerp(a, b, t): static linear interpolation between two Vec3 values
+        "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t); };\n"
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
         "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"

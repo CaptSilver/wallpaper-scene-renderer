@@ -701,6 +701,9 @@ static const char* JS_VEC3_AND_UTILS =
     "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
     "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
     "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
+    "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
+    "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
+    "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
     "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
     "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
     "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});\n"
@@ -710,6 +713,7 @@ static const char* JS_VEC3_AND_UTILS =
     "  var p = String(s).trim().split(/\\s+/);\n"
     "  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);\n"
     "};\n"
+    "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t); };\n"
     "var _origMatch = String.prototype.match;\n"
     "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
     "var localStorage = {\n"
@@ -1257,6 +1261,81 @@ TEST_CASE("Vec3.fromString with missing components defaults to zero") {
     CHECK(v.property("x").toNumber() == doctest::Approx(0.5));
     CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
     CHECK(v.property("z").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("Vec3 divide by scalar") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3(6, 4, 2).divide(2)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(3.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("Vec3 instance lerp t=0 returns self") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3(1,2,3).lerp(Vec3(7,8,9), 0)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("Vec3 instance lerp t=1 returns other") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3(1,2,3).lerp(Vec3(7,8,9), 1)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(7.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(8.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(9.0));
+}
+
+TEST_CASE("Vec3 instance lerp t=0.5 midpoint") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3(0,0,0).lerp(Vec3(2,4,6), 0.5)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("Vec3.lerp static t=0 returns a") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.lerp(Vec3(1,2,3), Vec3(7,8,9), 0)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("Vec3.lerp static t=1 returns b") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.lerp(Vec3(1,2,3), Vec3(7,8,9), 1)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(7.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(8.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(9.0));
+}
+
+TEST_CASE("Vec3.lerp static midpoint") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.lerp(Vec3(0,0,0), Vec3(10,20,30), 0.5)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(5.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(10.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(15.0));
+}
+
+TEST_CASE("Vec3 distance to self is zero") {
+    MathEnv env;
+    double d = env.engine.evaluate("Vec3(1,2,3).distance(Vec3(1,2,3))").toNumber();
+    CHECK(d == doctest::Approx(0.0));
+}
+
+TEST_CASE("Vec3 distance axis-aligned") {
+    MathEnv env;
+    double d = env.engine.evaluate("Vec3(0,0,0).distance(Vec3(3,4,0))").toNumber();
+    CHECK(d == doctest::Approx(5.0));
+}
+
+TEST_CASE("Vec3 distance is symmetric") {
+    MathEnv env;
+    double d1 = env.engine.evaluate("Vec3(1,2,3).distance(Vec3(4,5,6))").toNumber();
+    double d2 = env.engine.evaluate("Vec3(4,5,6).distance(Vec3(1,2,3))").toNumber();
+    CHECK(d1 == doctest::Approx(d2));
 }
 
 } // TEST_SUITE Vec3
