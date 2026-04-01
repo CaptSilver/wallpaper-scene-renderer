@@ -780,4 +780,102 @@ TEST_CASE("Multiple mipmaps parsed correctly") {
     CHECK(img->slots[0].mipmaps[1].width == 2);
 }
 
+// -----------------------------------------------------------------------
+// stbi container path (TEXB v3+, imageType != UNKNOWN)
+// Kills:
+//   * src_size = w*h*4 mutation (→ w*h*3): size would be 3, not 4
+//   * type != UNKNOWN mutation (→ == UNKNOWN): falls through to raw path, size stays 21
+//   * texb >= 3 is already killed by "TEXB v3 header reads imageType" test
+// -----------------------------------------------------------------------
+
+// Minimal 1x1 red-pixel TGA (type 2, uncompressed true-color, 24 bpp, BGR order).
+// 18-byte header + 3-byte pixel.  stbi decodes to RGBA {255,0,0,255} when
+// called with n_req=4.
+static const uint8_t kRedPixelTga[] = {
+    /* id_len */  0x00,
+    /* cmap_t */  0x00,
+    /* img_t  */  0x02, // uncompressed true-color
+    /* cmap spec: first_entry, length, entry_size */
+    0x00, 0x00,  0x00, 0x00,  0x00,
+    /* x_origin */ 0x00, 0x00,
+    /* y_origin */ 0x00, 0x00,
+    /* width   */ 0x01, 0x00,  // 1 px (little-endian)
+    /* height  */ 0x01, 0x00,  // 1 px
+    /* bpp     */ 0x18,        // 24
+    /* img_desc*/ 0x00,
+    /* pixel (BGR): blue=0, green=0, red=255 */
+    0x00, 0x00, 0xFF
+};
+
+TEST_CASE("TEXB v3 stbi path — valid TGA decoded to RGBA") {
+    // imageType = TARGA (17) → stbi decodes, src_size = w*h*4 = 4
+    auto buf = makeTexHeader(1, 1, 3, /*tex_fmt=*/0, /*flags=*/0, 1, 1, 1, 1, /*count=*/1);
+    appendInt32(buf, 17); // imageType = TARGA
+    appendInt32(buf, 1);  // mipmap_count
+    std::vector<uint8_t> tgaData(kRedPixelTga, kRedPixelTga + sizeof(kRedPixelTga));
+    appendMipmapV2(buf, 1, 1, tgaData);
+
+    VFS vfs;
+    mountTex(vfs, "stbi_tga_v3", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("stbi_tga_v3");
+
+    REQUIRE(img != nullptr);
+    REQUIRE(img->slots.size() == 1);
+    REQUIRE(img->slots[0].mipmaps.size() == 1);
+    auto& mip = img->slots[0].mipmaps[0];
+    CHECK(mip.width  == 1);
+    CHECK(mip.height == 1);
+    // src_size is set to w*h*4 after stbi decode — mutation w*h*3 would give 3
+    CHECK(mip.size == 4);
+    // stbi fills alpha=255 for opaque RGB sources; pixel order is RGBA
+    REQUIRE(mip.data.get() != nullptr);
+    CHECK(mip.data.get()[0] == 255); // R
+    CHECK(mip.data.get()[1] == 0);   // G
+    CHECK(mip.data.get()[2] == 0);   // B
+    CHECK(mip.data.get()[3] == 255); // A (stbi adds opaque alpha for 24-bit source)
+}
+
+TEST_CASE("TEXB v3 stbi path skipped when imageType is UNKNOWN") {
+    // imageType = UNKNOWN (-1) → raw-copy path, size stays at sizeof(TGA)=21
+    // Kills the != UNKNOWN → == UNKNOWN mutant on the branch condition.
+    auto buf = makeTexHeader(1, 1, 3, /*tex_fmt=*/0, /*flags=*/0, 1, 1, 1, 1, /*count=*/1);
+    appendInt32(buf, -1); // imageType = UNKNOWN
+    appendInt32(buf, 1);
+    std::vector<uint8_t> tgaData(kRedPixelTga, kRedPixelTga + sizeof(kRedPixelTga));
+    appendMipmapV2(buf, 1, 1, tgaData);
+
+    VFS vfs;
+    mountTex(vfs, "stbi_unknown_v3", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("stbi_unknown_v3");
+
+    REQUIRE(img != nullptr);
+    REQUIRE(img->slots[0].mipmaps.size() == 1);
+    auto& mip = img->slots[0].mipmaps[0];
+    // Raw path: size = sizeof(TGA) = 21, not 4
+    CHECK(mip.size == (int32_t)sizeof(kRedPixelTga));
+}
+
+TEST_CASE("TEXB v2 stbi path never triggered — raw copy always used") {
+    // texb=2: condition texb>=3 is false even though imageType field is absent.
+    // Raw data kept as-is; size = sizeof(TGA) = 21.
+    auto buf = makeTexHeader(1, 1, 2, /*tex_fmt=*/0, /*flags=*/0, 1, 1, 1, 1, /*count=*/1);
+    // No imageType field for texb=2
+    appendInt32(buf, 1);
+    std::vector<uint8_t> tgaData(kRedPixelTga, kRedPixelTga + sizeof(kRedPixelTga));
+    appendMipmapV2(buf, 1, 1, tgaData);
+
+    VFS vfs;
+    mountTex(vfs, "stbi_v2_raw", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("stbi_v2_raw");
+
+    REQUIRE(img != nullptr);
+    REQUIRE(img->slots[0].mipmaps.size() == 1);
+    auto& mip = img->slots[0].mipmaps[0];
+    // Raw path: size = 21
+    CHECK(mip.size == (int32_t)sizeof(kRedPixelTga));
+}
+
 } // TEST_SUITE
