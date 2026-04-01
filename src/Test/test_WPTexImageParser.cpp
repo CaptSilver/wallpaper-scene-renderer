@@ -807,6 +807,41 @@ static const uint8_t kRedPixelTga[] = {
     0x00, 0x00, 0xFF
 };
 
+// Minimal 2x3 TGA (6 pixels, 24bpp). Kills w*h → w/h mutant: 2*3*4=24 vs 2/3*4=0.
+static const uint8_t kTga2x3[] = {
+    0x00, 0x00, 0x02, // id_len=0, cmap=0, img_type=2
+    0x00, 0x00, 0x00, 0x00, 0x00, // cmap spec
+    0x00, 0x00, 0x00, 0x00, // x/y origin
+    0x02, 0x00, // width=2
+    0x03, 0x00, // height=3
+    0x18, 0x00, // bpp=24, img_desc=0
+    // 6 pixels (BGR): all red
+    0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+    0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+    0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+};
+
+TEST_CASE("TEXB v3 stbi path — 2x3 TGA kills w*h mutation") {
+    auto buf = makeTexHeader(2, 3, 3, 0, 0, 1, 1, 1, 1, 1);
+    appendInt32(buf, 17); // imageType = TARGA
+    appendInt32(buf, 1);  // mipmap_count
+    std::vector<uint8_t> tgaData(kTga2x3, kTga2x3 + sizeof(kTga2x3));
+    appendMipmapV2(buf, 2, 3, tgaData);
+
+    VFS vfs;
+    mountTex(vfs, "stbi_2x3", std::move(buf));
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("stbi_2x3");
+
+    REQUIRE(img != nullptr);
+    REQUIRE(img->slots[0].mipmaps.size() == 1);
+    auto& mip = img->slots[0].mipmaps[0];
+    CHECK(mip.width  == 2);
+    CHECK(mip.height == 3);
+    // w*h*4 = 2*3*4 = 24. If mutated to w/h*4 = 0*4 = 0 (wrong!)
+    CHECK(mip.size == 24);
+}
+
 TEST_CASE("TEXB v3 stbi path — valid TGA decoded to RGBA") {
     // imageType = TARGA (17) → stbi decodes, src_size = w*h*4 = 4
     auto buf = makeTexHeader(1, 1, 3, /*tex_fmt=*/0, /*flags=*/0, 1, 1, 1, 1, /*count=*/1);
