@@ -556,8 +556,15 @@ static const char* JS_VEC3_AND_UTILS =
     "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
     "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
     "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
+    "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
+    "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
+    "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});\n"
     "  return v;\n"
     "}\n"
+    "Vec3.fromString = function(s) {\n"
+    "  var p = String(s).trim().split(/\\s+/);\n"
+    "  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);\n"
+    "};\n"
     "var _origMatch = String.prototype.match;\n"
     "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
     "var localStorage = {\n"
@@ -1049,6 +1056,54 @@ TEST_CASE("method chaining") {
     MathEnv env;
     QJSValue v = env.engine.evaluate("Vec3(1,2,3).multiply(2).add(Vec3(1,1,1))");
     checkVec3(v, 3, 5, 7);
+}
+
+TEST_CASE("r/g/b aliases read x/y/z") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec3(0.1,0.2,0.3).r").toNumber() == doctest::Approx(0.1));
+    CHECK(env.engine.evaluate("Vec3(0.1,0.2,0.3).g").toNumber() == doctest::Approx(0.2));
+    CHECK(env.engine.evaluate("Vec3(0.1,0.2,0.3).b").toNumber() == doctest::Approx(0.3));
+}
+
+TEST_CASE("r/g/b aliases write through to x/y/z") {
+    MathEnv env;
+    env.engine.evaluate("var v = Vec3(0,0,0); v.r = 1; v.g = 2; v.b = 3;");
+    CHECK(env.engine.evaluate("v.x").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("v.y").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("v.z").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("Vec3.fromString parses space-separated color") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.fromString('0.5 0.25 0.75')");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0.5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.25));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0.75));
+}
+
+TEST_CASE("Vec3.fromString result supports methods") {
+    MathEnv env;
+    // fromString result is a full Vec3 — can call .multiply etc.
+    QJSValue v = env.engine.evaluate("Vec3.fromString('1 0 0').multiply(2)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(2.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("Vec3.fromString handles extra whitespace") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.fromString('  0.1   0.2   0.3  ')");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0.1));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.2));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0.3));
+}
+
+TEST_CASE("Vec3.fromString with missing components defaults to zero") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec3.fromString('0.5')");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0.5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0.0));
 }
 
 } // TEST_SUITE Vec3

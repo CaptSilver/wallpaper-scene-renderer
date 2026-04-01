@@ -706,8 +706,17 @@ void SceneObject::setupTextScripts() {
         "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
         "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
         "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
+        // r/g/b aliases for use as color vectors (maps to x/y/z)
+        "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
+        "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
+        "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});\n"
         "  return v;\n"
         "}\n"
+        // Vec3.fromString: parses a WE color string "r g b" (space-separated floats)
+        "Vec3.fromString = function(s) {\n"
+        "  var p = String(s).trim().split(/\\s+/);\n"
+        "  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);\n"
+        "};\n"
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
         "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
