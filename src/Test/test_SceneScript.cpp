@@ -583,7 +583,9 @@ static const char* JS_WEMATH =
     "  },\n"
     "  fract: function(x) { return x - Math.floor(x); },\n"
     "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
-    "  step: function(edge, x) { return x < edge ? 0 : 1; }\n"
+    "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
+    "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
+    "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
     "};\n";
 
 static const char* JS_WECOLOR =
@@ -1193,6 +1195,42 @@ TEST_CASE("step function") {
     CHECK(env.engine.evaluate("WEMath.step(0.5, 0.3)").toNumber() == 0);
     CHECK(env.engine.evaluate("WEMath.step(0.5, 0.5)").toNumber() == 1);
     CHECK(env.engine.evaluate("WEMath.step(0.5, 0.7)").toNumber() == 1);
+}
+
+TEST_CASE("randomFloat returns value in [min, max)") {
+    MathEnv env;
+    // Run many samples — all must be within [min, max)
+    env.engine.evaluate(
+        "var ok = true;\n"
+        "for (var i = 0; i < 200; i++) {\n"
+        "  var v = WEMath.randomFloat(2.0, 5.0);\n"
+        "  if (v < 2.0 || v >= 5.0) { ok = false; break; }\n"
+        "}\n"
+    );
+    CHECK(env.engine.evaluate("ok").toBool() == true);
+}
+
+TEST_CASE("randomFloat with equal min/max always returns that value") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.randomFloat(3.0, 3.0)").toNumber() == doctest::Approx(3.0));
+}
+
+TEST_CASE("randomInteger returns integer in [min, max]") {
+    MathEnv env;
+    env.engine.evaluate(
+        "var ok = true;\n"
+        "var sawMin = false, sawMax = false;\n"
+        "for (var i = 0; i < 500; i++) {\n"
+        "  var v = WEMath.randomInteger(1, 6);\n"
+        "  if (v < 1 || v > 6 || v !== Math.floor(v)) { ok = false; break; }\n"
+        "  if (v === 1) sawMin = true;\n"
+        "  if (v === 6) sawMax = true;\n"
+        "}\n"
+    );
+    CHECK(env.engine.evaluate("ok").toBool() == true);
+    // With 500 samples of 6 possible values, min and max are very likely hit
+    CHECK(env.engine.evaluate("sawMin").toBool() == true);
+    CHECK(env.engine.evaluate("sawMax").toBool() == true);
 }
 
 } // TEST_SUITE WEMath

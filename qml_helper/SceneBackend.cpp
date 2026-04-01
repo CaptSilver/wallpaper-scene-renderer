@@ -726,7 +726,7 @@ void SceneObject::setupTextScripts() {
         "};\n"
     );
 
-    // WEMath module: lerp, mix, clamp, smoothstep
+    // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(
         "var WEMath = {\n"
         "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
@@ -738,7 +738,10 @@ void SceneObject::setupTextScripts() {
         "  },\n"
         "  fract: function(x) { return x - Math.floor(x); },\n"
         "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
-        "  step: function(edge, x) { return x < edge ? 0 : 1; }\n"
+        "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
+        // Random helpers: WE wallpapers commonly call randomFloat/randomInteger
+        "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
+        "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
         "};\n"
     );
 
