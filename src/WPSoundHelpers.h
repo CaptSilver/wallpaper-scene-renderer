@@ -36,7 +36,6 @@ inline uint32_t NextSoundIndex(uint32_t curIndex, uint32_t trackCount, bool rand
 /// @return number of silence frames to insert
 inline uint64_t RandomDelaySamples(float mintime, float maxtime, uint32_t sampleRate,
                                    std::mt19937& rng) {
-    if (mintime <= 0 && maxtime <= 0) return 0;
     float lo = std::max(0.0f, mintime);
     float hi = std::max(lo, maxtime);
     std::uniform_real_distribution<float> dist(lo, hi);
