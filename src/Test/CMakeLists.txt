@@ -50,6 +50,7 @@ if(MUTATION_TESTING)
     target_compile_options(backend_scene_tests PRIVATE
         -fpass-plugin=${MULL_PLUGIN_PATH}
         -g -grecord-command-line
+        -DWP_SUPPRESS_DEBUG_LOGGING
     )
 endif()
 

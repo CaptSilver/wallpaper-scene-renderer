@@ -9,8 +9,10 @@
 #include "Fs/Bswap.hpp"
 #include "WPCommon.hpp"
 #include "Fs/MemBinaryStream.h"
+#include "Utils/Logging.h"
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <vector>
 
@@ -575,4 +577,45 @@ TEST_CASE("transform type conversion") {
     CHECK(result[2] == doctest::Approx(3.5));
 }
 
-} // TEST_SUITE
+} // TEST_SUITE ArrayHelper
+
+// ===========================================================================
+// past_last_slash (Logging.h)
+// ===========================================================================
+
+TEST_SUITE("past_last_slash") {
+
+// Force runtime evaluation by using a non-constexpr string
+static const char* forceRuntime(const char* s) {
+    static char buf[256];
+    std::strncpy(buf, s, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    return past_last_slash(buf);
+}
+
+TEST_CASE("extracts filename from path") {
+    CHECK(std::strcmp(forceRuntime("/a/b/c.cpp"), "c.cpp") == 0);
+}
+
+TEST_CASE("extracts from single slash") {
+    CHECK(std::strcmp(forceRuntime("/file.h"), "file.h") == 0);
+}
+
+TEST_CASE("no slash returns whole string") {
+    CHECK(std::strcmp(forceRuntime("nopath.cpp"), "nopath.cpp") == 0);
+}
+
+TEST_CASE("trailing slash returns empty") {
+    CHECK(std::strcmp(forceRuntime("/a/b/"), "") == 0);
+}
+
+TEST_CASE("empty string returns empty") {
+    CHECK(std::strcmp(forceRuntime(""), "") == 0);
+}
+
+TEST_CASE("deep path") {
+    CHECK(std::strcmp(forceRuntime("/usr/local/include/Scene/SceneCamera.h"),
+                      "SceneCamera.h") == 0);
+}
+
+} // TEST_SUITE past_last_slash

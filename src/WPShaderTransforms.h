@@ -13,6 +13,30 @@
 #include "Utils/Logging.h"
 
 // ---------------------------------------------------------------------------
+// regexTransformAll — apply a regex to a string, replacing each match via a
+// user-supplied functor.  Consolidates the sregex_iterator + lastPos pattern
+// that repeats throughout the shader transforms below.
+// ---------------------------------------------------------------------------
+template<typename ReplacerFn>
+inline int regexTransformAll(std::string& text, const std::regex& re, ReplacerFn replacer) {
+    std::string tmp;
+    size_t      lastPos = 0;
+    int         count   = 0;
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), re);
+         it != std::sregex_iterator(); ++it) {
+        tmp.append(text, lastPos, (size_t)(*it).position() - lastPos);
+        tmp += replacer(*it);
+        lastPos = (size_t)(*it).position() + (*it).length();
+        ++count;
+    }
+    if (count > 0) {
+        tmp.append(text, lastPos, std::string::npos);
+        text = std::move(tmp);
+    }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
 // NeedsFlatDecoration
 // ---------------------------------------------------------------------------
 // Check if a GLSL I/O declaration has an integer type that requires flat interpolation.
@@ -416,46 +440,22 @@ inline std::string FixImplicitConversions(const std::string& src) {
                                               int target_width) {
             std::string swiz_chars = "xyzwrgbastpq";
             for (const auto& v : small_vars) {
-                // VAR OP WORD.XXXX  where XXXX has more than target_width components
                 for (int sw = 4; sw > target_width; --sw) {
+                    // VAR OP WORD.XXXX  where XXXX has more than target_width components
                     std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
                                   swiz_chars + "]{" + std::to_string(sw) + "})\\b");
-                    std::string tmp;
-                    size_t      lastPos = 0;
-                    bool        found   = false;
-                    for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
-                         it != std::sregex_iterator();
-                         ++it) {
-                        found              = true;
-                        std::string swizzle = (*it)[4].str().substr(0, target_width);
-                        tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
-                        tmp += (*it)[1].str() + (*it)[2].str() + (*it)[3].str() + "." + swizzle;
-                        lastPos = (size_t)(*it).position() + (*it).length();
-                    }
-                    if (found) {
-                        tmp.append(result, lastPos, std::string::npos);
-                        result = std::move(tmp);
-                    }
+                    regexTransformAll(result, re, [&](const std::smatch& m) {
+                        return m[1].str() + m[2].str() + m[3].str() + "." +
+                               m[4].str().substr(0, target_width);
+                    });
 
                     // Reverse: WORD.XXXX OP VAR
                     std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(sw) +
                                    "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
-                    tmp.clear();
-                    lastPos = 0;
-                    found   = false;
-                    for (auto it = std::sregex_iterator(result.begin(), result.end(), re2);
-                         it != std::sregex_iterator();
-                         ++it) {
-                        found              = true;
-                        std::string swizzle = (*it)[2].str().substr(0, target_width);
-                        tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
-                        tmp += (*it)[1].str() + "." + swizzle + (*it)[3].str() + (*it)[4].str();
-                        lastPos = (size_t)(*it).position() + (*it).length();
-                    }
-                    if (found) {
-                        tmp.append(result, lastPos, std::string::npos);
-                        result = std::move(tmp);
-                    }
+                    regexTransformAll(result, re2, [&](const std::smatch& m) {
+                        return m[1].str() + "." + m[2].str().substr(0, target_width) +
+                               m[3].str() + m[4].str();
+                    });
                 }
             }
         };
@@ -484,59 +484,36 @@ inline std::string FixImplicitConversions(const std::string& src) {
                                                int var_width, int swizzle_width) {
             std::string swiz_chars = "xyzwrgbastpq";
             int         pad_count  = var_width - swizzle_width;
+            auto padSwizzle = [&](const std::string& swiz) {
+                std::string out = swiz;
+                char last = out.back();
+                for (int j = 0; j < pad_count; j++) out += last;
+                return out;
+            };
             for (const auto& v : large_vars) {
                 // VAR OP WORD.XX  (swizzle_width components, smaller than var_width)
                 std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
                               swiz_chars + "]{" + std::to_string(swizzle_width) + "})\\b");
-                std::string tmp;
-                size_t      lastPos = 0;
-                bool        found   = false;
-                for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    // Skip if variable already has a swizzle
-                    size_t vEnd = (size_t)(*it).position() + (*it)[1].length();
-                    if (vEnd < result.size() && result[vEnd] == '.') continue;
-                    found = true;
-                    tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
-                    std::string swiz = (*it)[4].str();
-                    char        last = swiz.back();
-                    for (int j = 0; j < pad_count; j++) swiz += last;
-                    tmp += (*it)[1].str() + (*it)[2].str() +
-                           (*it)[3].str() + "." + swiz;
-                    lastPos = (size_t)(*it).position() + (*it).length();
-                }
-                if (found) {
-                    tmp.append(result, lastPos, std::string::npos);
-                    result = std::move(tmp);
-                }
+                // Need to capture `result` ref for the swizzle-skip check
+                const std::string& textRef = result;
+                regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+                    size_t vEnd = (size_t)m.position() + m[1].length();
+                    if (vEnd < textRef.size() && textRef[vEnd] == '.')
+                        return m[0].str(); // skip: variable has swizzle
+                    return m[1].str() + m[2].str() + m[3].str() + "." + padSwizzle(m[4].str());
+                });
 
                 // Reverse: WORD.XX OP VAR
                 std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" +
                                std::to_string(swizzle_width) + "})(\\s*[+\\-*/]\\s*)\\b(" +
                                v + ")\\b");
-                tmp.clear();
-                lastPos = 0;
-                found   = false;
-                for (auto it = std::sregex_iterator(result.begin(), result.end(), re2);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    size_t vStart = (size_t)(*it).position(4);
-                    size_t vEnd   = vStart + (*it)[4].length();
-                    if (vEnd < result.size() && result[vEnd] == '.') continue;
-                    found = true;
-                    tmp.append(result, lastPos, (size_t)(*it).position() - lastPos);
-                    std::string swiz = (*it)[2].str();
-                    char        last = swiz.back();
-                    for (int j = 0; j < pad_count; j++) swiz += last;
-                    tmp += (*it)[1].str() + "." + swiz + (*it)[3].str() +
-                           (*it)[4].str();
-                    lastPos = (size_t)(*it).position() + (*it).length();
-                }
-                if (found) {
-                    tmp.append(result, lastPos, std::string::npos);
-                    result = std::move(tmp);
-                }
+                regexTransformAll(result, re2, [&](const std::smatch& m) -> std::string {
+                    size_t vStart = (size_t)m.position(4);
+                    size_t vEnd   = vStart + m[4].length();
+                    if (vEnd < textRef.size() && textRef[vEnd] == '.')
+                        return m[0].str(); // skip
+                    return m[1].str() + "." + padSwizzle(m[2].str()) + m[3].str() + m[4].str();
+                });
             }
         };
         const auto local_vec4 = collectLocal("vec4");
@@ -816,6 +793,7 @@ inline std::string FixEffectAlpha(const std::string& src) {
     std::string result = src;
     result.insert(pos, "    glOutColor.a = texSample2D(g_Texture0, v_TexCoord.xy).a;\n");
 
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
     // Dump the fixed shader for diagnostics
     static std::atomic<int> dump_idx { 0 };
     int idx = dump_idx.fetch_add(1);
@@ -826,6 +804,7 @@ inline std::string FixEffectAlpha(const std::string& src) {
         LOG_INFO("FixEffectAlpha[%d]: injected alpha preservation → %s (%zu bytes)",
                  idx, path.c_str(), result.size());
     }
+#endif
 
     return result;
 }
