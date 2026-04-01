@@ -917,6 +917,22 @@ static const char* JS_LAYER_INFRA =
     "      isPlaying: function(){ return this.rate > 0; }\n"
     "    };\n"
     "  };\n"
+    "  if (!_s._aniLayers) _s._aniLayers = {};\n"
+    "  p.getAnimationLayerCount = function(){ return Object.keys(_s._aniLayers).length || 1; };\n"
+    "  p.getAnimationLayer = function(idx) {\n"
+    "    var key = String(idx);\n"
+    "    if (_s._aniLayers[key]) return _s._aniLayers[key];\n"
+    "    var al = { rate: 1, blend: 1, visible: true, frameCount: 60, _frame: 0, _playing: false,\n"
+    "      play: function(){ al._playing = true; },\n"
+    "      pause: function(){ al._playing = false; },\n"
+    "      stop: function(){ al._playing = false; al._frame = 0; },\n"
+    "      isPlaying: function(){ return al._playing; },\n"
+    "      getFrame: function(){ return al._frame; },\n"
+    "      setFrame: function(f){ al._frame = f; }\n"
+    "    };\n"
+    "    _s._aniLayers[key] = al;\n"
+    "    return al;\n"
+    "  };\n"
     "  p._state = _s;\n"
     "  return p;\n"
     "}\n"
@@ -954,6 +970,13 @@ static const char* JS_LAYER_INFRA =
     "      getFrame:function(){return this._frame;}, setFrame:function(f){},\n"
     "      play:function(){}, pause:function(){}, stop:function(){},\n"
     "      isPlaying:function(){return false;}\n"
+    "    };\n"
+    "  };\n"
+    "  p.getAnimationLayerCount = function(){ return 0; };\n"
+    "  p.getAnimationLayer = function(idx){\n"
+    "    return { rate:0, blend:0, visible:false, frameCount:0, _frame:0, _playing:false,\n"
+    "      play:function(){}, pause:function(){}, stop:function(){},\n"
+    "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, setFrame:function(f){}\n"
     "    };\n"
     "  };\n"
     "  p._state = _s;\n"
@@ -2010,6 +2033,81 @@ TEST_CASE("getTextureAnimation lifecycle") {
     env.engine.evaluate("anim.stop();");
     CHECK_FALSE(env.engine.evaluate("anim.isPlaying()").toBool());
     CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 0);
+}
+
+TEST_CASE("getAnimationLayerCount defaults to 1") {
+    ScriptEnv env;
+    // Non-null proxy returns at least 1 (stub)
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getAnimationLayerCount()").toInt() >= 1);
+}
+
+TEST_CASE("getAnimationLayer returns proxy with methods") {
+    ScriptEnv env;
+    env.engine.evaluate("var al = thisScene.getLayer('bg').getAnimationLayer(0);");
+    CHECK(env.engine.evaluate("al.rate").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("al.blend").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("al.visible").toBool() == true);
+    CHECK(env.engine.evaluate("al.frameCount").toInt() == 60);
+}
+
+TEST_CASE("getAnimationLayer play/pause/stop lifecycle") {
+    ScriptEnv env;
+    env.engine.evaluate("var al = thisScene.getLayer('bg').getAnimationLayer(0);");
+    CHECK_FALSE(env.engine.evaluate("al.isPlaying()").toBool());
+
+    env.engine.evaluate("al.play();");
+    CHECK(env.engine.evaluate("al.isPlaying()").toBool());
+
+    env.engine.evaluate("al.pause();");
+    CHECK_FALSE(env.engine.evaluate("al.isPlaying()").toBool());
+
+    env.engine.evaluate("al.play(); al.stop();");
+    CHECK_FALSE(env.engine.evaluate("al.isPlaying()").toBool());
+    CHECK(env.engine.evaluate("al.getFrame()").toInt() == 0);
+}
+
+TEST_CASE("getAnimationLayer setFrame/getFrame") {
+    ScriptEnv env;
+    env.engine.evaluate("var al = thisScene.getLayer('bg').getAnimationLayer(0);");
+    env.engine.evaluate("al.setFrame(30);");
+    CHECK(env.engine.evaluate("al.getFrame()").toInt() == 30);
+}
+
+TEST_CASE("getAnimationLayer rate and blend are writable") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var al = thisScene.getLayer('bg').getAnimationLayer(0);\n"
+        "al.rate = 2.5; al.blend = 0.5;");
+    CHECK(env.engine.evaluate("al.rate").toNumber() == doctest::Approx(2.5));
+    CHECK(env.engine.evaluate("al.blend").toNumber() == doctest::Approx(0.5));
+}
+
+TEST_CASE("getAnimationLayer cached by index") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var a1 = thisScene.getLayer('bg').getAnimationLayer(0);\n"
+        "a1.rate = 99;\n"
+        "var a2 = thisScene.getLayer('bg').getAnimationLayer(0);");
+    CHECK(env.engine.evaluate("a2.rate").toNumber() == doctest::Approx(99.0));
+}
+
+TEST_CASE("getAnimationLayer by name") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var al = thisScene.getLayer('bg').getAnimationLayer('sway');\n"
+        "al.blend = 0.3;");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getAnimationLayer('sway').blend").toNumber()
+          == doctest::Approx(0.3));
+}
+
+TEST_CASE("nullProxy getAnimationLayer is safe") {
+    ScriptEnv env;
+    env.engine.evaluate("var al = thisScene.getLayer('nonexistent').getAnimationLayer(0);");
+    CHECK(env.engine.evaluate("al.rate").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("al.getFrame()").toInt() == 0);
+    // Methods should not crash
+    QJSValue r = env.engine.evaluate("al.play(); al.stop(); true;");
+    CHECK_FALSE(r.isError());
 }
 
 TEST_CASE("nullProxy getters return defaults") {

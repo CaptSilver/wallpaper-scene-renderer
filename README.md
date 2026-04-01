@@ -200,7 +200,7 @@ to a valid fragment shader will render. Known working:
 - [x] `thisLayer` global (ILayer)
   - [x] Position, angles, scale, visibility control
   - [ ] Parent/child hierarchy manipulation
-  - [ ] Animation access (`getAnimation`)
+  - [x] Animation layer access (`getAnimationLayer`, `getAnimationLayerCount`)
 - [x] `input` global (IInput)
   - [x] Mouse cursor position and events
   - [x] `cursorEnter` / `cursorLeave` / `cursorClick` events
