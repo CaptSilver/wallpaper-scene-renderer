@@ -48,13 +48,17 @@ TEST_CASE("ortho depth: near maps to 0, far maps to 1") {
 }
 
 TEST_CASE("perspective tan(fov/2) produces correct half-angle") {
-    // fov=90° → tan(45°) = 1.0 → at distance 1, visible height = 2*near
+    // fov=90° → tan(45°) = 1.0. Use near=0.5 so tan*near=0.5, tan/near=2 → different.
     double fov = Radians(90.0);
-    auto m = Perspective(fov, 1.0, 1.0, 100.0);
-    // Point at (1, 0, -1) should project to NDC x=1 (right edge)
-    Vector4d pt(1, 0, -1, 1);
+    auto m = Perspective(fov, 1.0, 0.5, 100.0);
+    // Point at (0.5, 0, -0.5) should be at right edge (near plane width = 2*tan(45°)*0.5 = 1.0)
+    Vector4d pt(0.5, 0, -0.5, 1);
     Vector4d r = m * pt;
     CHECK(r.x() / r.w() == doctest::Approx(1.0).epsilon(0.1));
+    // A point twice as far should project to half the NDC (perspective foreshortening)
+    Vector4d pt2(0.5, 0, -1.0, 1);
+    Vector4d r2 = m * pt2;
+    CHECK(std::abs(r2.x() / r2.w()) < std::abs(r.x() / r.w()));
 }
 
 TEST_CASE("perspective aspect scales X") {
