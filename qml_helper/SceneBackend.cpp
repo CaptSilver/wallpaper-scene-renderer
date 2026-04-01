@@ -329,7 +329,29 @@ void SceneObject::setUserProperties(const QString& value) {
     if (m_userProperties == value) return;
     m_userProperties = value;
     SET_PROPERTY(String, wallpaper::PROPERTY_USER_PROPS, value.toStdString());
+    if (m_jsEngine) refreshJsUserProperties();
     Q_EMIT userPropertiesChanged();
+}
+
+void SceneObject::refreshJsUserProperties() {
+    if (!m_jsEngine || m_userProperties.isEmpty()) return;
+    // Escape single quotes and backslashes for safe embedding in a JS string literal.
+    // JSON values use double quotes so single quotes only appear inside string values.
+    QString json = m_userProperties;
+    json.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    json.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+    QJSValue result = m_jsEngine->evaluate(QString(
+        "(function(){"
+        "try{"
+        "var p=JSON.parse('%1');"
+        "var up=engine.userProperties;"
+        "for(var k in p) up[k]=p[k];"
+        "}catch(e){}"
+        "})()"
+    ).arg(json));
+    if (result.isError()) {
+        LOG_INFO("refreshJsUserProperties error: %s", qPrintable(result.toString()));
+    }
 }
 
 void SceneObject::play() { m_scene->play(); }
@@ -606,6 +628,10 @@ void SceneObject::setupTextScripts() {
     engineObj.setProperty("timeOfDay", 0.0);
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
     m_jsEngine->globalObject().setProperty("engine", engineObj);
+
+    // Populate engine.userProperties from the current user property overrides.
+    // Format: {"propname": rawValue, ...}  Scripts read engine.userProperties.propname.
+    refreshJsUserProperties();
 
     // Provide the 'shared' global for inter-script data sharing.
     // All scripts in the scene can read/write to this object.

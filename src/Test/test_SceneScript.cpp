@@ -420,6 +420,124 @@ TEST_CASE("cursor position supports fractional scene coordinates") {
 } // TEST_SUITE SceneScript Cursor Position
 
 
+// ------------------------------------------------------------------
+// engine.userProperties population
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript engine.userProperties") {
+
+// Helper: minimal engine with engine.userProperties object, mirroring
+// the setup in SceneBackend::setupTextScripts() and refreshJsUserProperties().
+struct UserPropEnv {
+    QJSEngine engine;
+    UserPropEnv() {
+        QJSValue engineObj = engine.newObject();
+        engineObj.setProperty("userProperties", engine.newObject());
+        engine.globalObject().setProperty("engine", engineObj);
+    }
+    // Mirrors SceneObject::refreshJsUserProperties()
+    void refresh(const QString& json) {
+        if (json.isEmpty()) return;
+        QString escaped = json;
+        escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        escaped.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+        engine.evaluate(QString(
+            "(function(){"
+            "try{"
+            "var p=JSON.parse('%1');"
+            "var up=engine.userProperties;"
+            "for(var k in p) up[k]=p[k];"
+            "}catch(e){}"
+            "})()"
+        ).arg(escaped));
+    }
+};
+
+TEST_CASE("engine.userProperties is initially an empty object") {
+    UserPropEnv env;
+    // An empty JS object is not undefined/null, and has no own properties.
+    QJSValue up = env.engine.evaluate("engine.userProperties");
+    CHECK_FALSE(up.isUndefined());
+    CHECK_FALSE(up.isNull());
+    // speed is absent → undefined
+    CHECK(env.engine.evaluate("engine.userProperties.speed").isUndefined());
+}
+
+TEST_CASE("number property is populated correctly") {
+    UserPropEnv env;
+    env.refresh(R"({"speed":0.5})");
+    double val = env.engine.evaluate("engine.userProperties.speed").toNumber();
+    CHECK(val == doctest::Approx(0.5));
+}
+
+TEST_CASE("bool property is populated correctly") {
+    UserPropEnv env;
+    env.refresh(R"({"enabled":true})");
+    bool val = env.engine.evaluate("engine.userProperties.enabled").toBool();
+    CHECK(val == true);
+
+    env.refresh(R"({"enabled":false})");
+    CHECK(env.engine.evaluate("engine.userProperties.enabled").toBool() == false);
+}
+
+TEST_CASE("string property (color) is populated correctly") {
+    UserPropEnv env;
+    env.refresh(R"({"colour":"0.5 0.1 0.9"})");
+    QString val = env.engine.evaluate("engine.userProperties.colour").toString();
+    CHECK(val == QStringLiteral("0.5 0.1 0.9"));
+}
+
+TEST_CASE("multiple properties are all accessible") {
+    UserPropEnv env;
+    env.refresh(R"({"speed":2.0,"muted":false,"schemecolor":"1 0 0"})");
+    CHECK(env.engine.evaluate("engine.userProperties.speed").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("engine.userProperties.muted").toBool() == false);
+    CHECK(env.engine.evaluate("engine.userProperties.schemecolor").toString()
+          == QStringLiteral("1 0 0"));
+}
+
+TEST_CASE("script reads property value correctly") {
+    UserPropEnv env;
+    env.refresh(R"({"bloomstrength":1.78})");
+    env.engine.evaluate(
+        "var captured = 0;\n"
+        "function readProp() { captured = engine.userProperties.bloomstrength; }\n"
+    );
+    env.engine.evaluate("readProp();");
+    double val = env.engine.evaluate("captured").toNumber();
+    CHECK(val == doctest::Approx(1.78));
+}
+
+TEST_CASE("second refresh updates existing property") {
+    UserPropEnv env;
+    env.refresh(R"({"speed":1.0})");
+    CHECK(env.engine.evaluate("engine.userProperties.speed").toNumber() == doctest::Approx(1.0));
+    env.refresh(R"({"speed":3.5})");
+    CHECK(env.engine.evaluate("engine.userProperties.speed").toNumber() == doctest::Approx(3.5));
+}
+
+TEST_CASE("empty string refresh is a no-op") {
+    UserPropEnv env;
+    env.refresh(R"({"x":42})");
+    env.refresh(QString());  // empty → no-op
+    CHECK(env.engine.evaluate("engine.userProperties.x").toNumber() == doctest::Approx(42.0));
+}
+
+TEST_CASE("invalid JSON is silently ignored") {
+    UserPropEnv env;
+    env.refresh(R"({"a":1})");
+    env.refresh("not valid json");  // must not crash or alter existing props
+    CHECK(env.engine.evaluate("engine.userProperties.a").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("integer value accessible as number") {
+    UserPropEnv env;
+    env.refresh(R"({"count":7})");
+    CHECK(env.engine.evaluate("engine.userProperties.count").toInt() == 7);
+}
+
+} // TEST_SUITE SceneScript engine.userProperties
+
+
 // ===================================================================
 // Fixtures for comprehensive SceneScript tests
 // ===================================================================
