@@ -344,7 +344,8 @@ std::shared_ptr<WPPuppet> makeSimplePuppet3Frame() {
     puppet->prepared();
     return puppet;
 }
-// Helper: puppet with 1 bone, 2 frames with 45° Z rotation (non-identity quaternions)
+// Helper: puppet with 1 bone, 2 frames. Frame 0 has 30° Z rotation (NON-identity base
+// quaternion, critical for killing slerp blend mutants). Frame 1 has 90° Z rotation.
 std::shared_ptr<WPPuppet> makeRotatedPuppet() {
     auto puppet = std::make_shared<WPPuppet>();
     WPPuppet::Bone bone;
@@ -359,14 +360,14 @@ std::shared_ptr<WPPuppet> makeRotatedPuppet() {
     {
         WPPuppet::BoneFrame f0;
         f0.position = Eigen::Vector3f::Zero();
-        f0.angle = Eigen::Vector3f(0, 0, 0); // no rotation
+        f0.angle = Eigen::Vector3f(0, 0, 30.0f); // 30° Z — non-identity base!
         f0.scale = Eigen::Vector3f::Ones();
         bf.frames.push_back(f0);
     }
     {
         WPPuppet::BoneFrame f1;
         f1.position = Eigen::Vector3f::Zero();
-        f1.angle = Eigen::Vector3f(0, 0, 45.0f); // 45° Z rotation
+        f1.angle = Eigen::Vector3f(0, 0, 90.0f); // 90° Z
         f1.scale = Eigen::Vector3f::Ones();
         bf.frames.push_back(f1);
     }
@@ -581,37 +582,37 @@ TEST_CASE("genFrame hidden layer has no effect") {
     CHECK(x0 == doctest::Approx(x1).epsilon(0.01f));
 }
 
-TEST_CASE("genFrame rotation with non-identity quaternion and partial blend") {
+TEST_CASE("genFrame rotation with non-identity base quaternion and partial blend") {
     // Kills slerp(1.0-blend, ident) → slerp(1.0+blend, ident) mutant (lines 98-99)
-    // With blend=0.5: slerp factor = 1.0-0.5=0.5, mutant = 1.0+0.5=1.5 (extrapolation)
+    // Base frame has 30° Z rotation (non-identity quaternion).
+    // With anim_layer.blend=0.5: slerp(0.5, ident) attenuates the base rotation.
+    // With mutant (1.0+0.5=1.5): slerp(1.5, ident) extrapolates in reverse — different result.
     auto puppet = makeRotatedPuppet();
 
-    // Full blend: rotation should be 45° Z
+    // Full blend (1.0): advance to midpoint between frame 0 (30°) and frame 1 (90°)
     WPPuppetLayer full_layer(puppet);
     std::vector<WPPuppetLayer::AnimationLayer> al_full(1);
     al_full[0] = {1, 1.0, 1.0, true, 0.0};
     full_layer.prepared(al_full);
-    full_layer.genFrame(0.0);
-    full_layer.genFrame(0.05); // midway between frame 0 and 1
+    full_layer.genFrame(0.05); // advance to t=0.5 between frames
     auto full_result = full_layer.genFrame(0.0);
     Eigen::Matrix3f full_rot = full_result[0].rotation();
+    float full_angle = std::atan2(full_rot(1,0), full_rot(0,0));
 
-    // Partial blend (0.5): rotation should be less than full
+    // Half blend (0.5): same time advancement, but reduced blend
     WPPuppetLayer half_layer(puppet);
     std::vector<WPPuppetLayer::AnimationLayer> al_half(1);
     al_half[0] = {1, 1.0, 0.5, true, 0.0};
     half_layer.prepared(al_half);
-    half_layer.genFrame(0.0);
     half_layer.genFrame(0.05);
     auto half_result = half_layer.genFrame(0.0);
     Eigen::Matrix3f half_rot = half_result[0].rotation();
-
-    // The rotation angle with half blend should be less than with full blend
-    // Extract rotation angle from the matrix (angle around Z axis)
-    float full_angle = std::atan2(full_rot(1,0), full_rot(0,0));
     float half_angle = std::atan2(half_rot(1,0), half_rot(0,0));
-    CHECK(std::abs(half_angle) < std::abs(full_angle) + 0.01f);
-    CHECK(std::abs(half_angle) > 0.001f); // should have SOME rotation
+
+    // Half blend should produce a different (smaller) rotation than full blend
+    // since slerp(0.5, ident) attenuates vs slerp(1.0, ident) = no change
+    CHECK(std::abs(half_angle) != doctest::Approx(std::abs(full_angle)).epsilon(0.01f));
+    CHECK(std::abs(full_angle) > 0.1f); // should have meaningful rotation
 }
 
 TEST_CASE("genFrame with total_blend exactly 1.0 uses multiplicative path") {
