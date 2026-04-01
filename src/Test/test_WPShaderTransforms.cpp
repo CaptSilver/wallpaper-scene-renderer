@@ -2,6 +2,97 @@
 #include "WPShaderTransforms.h"
 
 // ===========================================================================
+// regexTransformAll
+// ===========================================================================
+
+TEST_SUITE("regexTransformAll") {
+
+TEST_CASE("zero matches returns 0 and text unchanged") {
+    std::string text = "hello world";
+    std::regex  re("MISSING");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("X"); });
+    CHECK(count == 0);
+    CHECK(text == "hello world");
+}
+
+TEST_CASE("single match at start") {
+    std::string text = "AAA BBB";
+    std::regex  re("AAA");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("XX"); });
+    CHECK(count == 1);
+    CHECK(text == "XX BBB");
+}
+
+TEST_CASE("single match at end") {
+    std::string text = "AAA BBB";
+    std::regex  re("BBB");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("YY"); });
+    CHECK(count == 1);
+    CHECK(text == "AAA YY");
+}
+
+TEST_CASE("single match in middle") {
+    std::string text = "aXb";
+    std::regex  re("X");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("---"); });
+    CHECK(count == 1);
+    CHECK(text == "a---b");
+}
+
+TEST_CASE("two matches preserve inter-match text exactly") {
+    std::string text = "prefixAAmiddleBBsuffix";
+    std::regex  re("(AA|BB)");
+    int count = regexTransformAll(text, re,
+        [](const std::smatch& m) { return "[" + m[0].str() + "]"; });
+    CHECK(count == 2);
+    CHECK(text == "prefix[AA]middle[BB]suffix");
+}
+
+TEST_CASE("three adjacent matches") {
+    std::string text = "aaa";
+    std::regex  re("a");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("bb"); });
+    CHECK(count == 3);
+    CHECK(text == "bbbbbb");
+}
+
+TEST_CASE("replacer uses match groups") {
+    std::string text = "x=1; y=2; z=3;";
+    std::regex  re("(\\w+)=(\\d+)");
+    int count = regexTransformAll(text, re,
+        [](const std::smatch& m) { return m[1].str() + " is " + m[2].str(); });
+    CHECK(count == 3);
+    CHECK(text == "x is 1; y is 2; z is 3;");
+}
+
+TEST_CASE("match at position 0 then later match") {
+    std::string text = "AB_CD_EF";
+    std::regex  re("(AB|EF)");
+    int count = regexTransformAll(text, re,
+        [](const std::smatch& m) { return "[" + m[0].str() + "]"; });
+    CHECK(count == 2);
+    CHECK(text == "[AB]_CD_[EF]");
+}
+
+TEST_CASE("replacement shorter than match") {
+    std::string text = "longword short longword";
+    std::regex  re("longword");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("s"); });
+    CHECK(count == 2);
+    CHECK(text == "s short s");
+}
+
+TEST_CASE("replacement longer than match") {
+    std::string text = "a b a";
+    std::regex  re("a");
+    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("XXXX"); });
+    CHECK(count == 2);
+    CHECK(text == "XXXX b XXXX");
+}
+
+} // TEST_SUITE regexTransformAll
+
+// ===========================================================================
 // NeedsFlatDecoration
 // ===========================================================================
 
