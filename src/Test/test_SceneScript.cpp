@@ -537,6 +537,151 @@ TEST_CASE("integer value accessible as number") {
 
 } // TEST_SUITE SceneScript engine.userProperties
 
+// ------------------------------------------------------------------
+// engine.colorScheme population
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript engine.colorScheme") {
+
+// Helper: engine with Vec3 + engine.colorScheme default + refreshJsUserProperties logic,
+// mirroring SceneBackend::setupTextScripts() and refreshJsUserProperties().
+struct ColorSchemeEnv {
+    QJSEngine engine;
+    QString   userProps;
+
+    ColorSchemeEnv() {
+        QJSValue engineObj = engine.newObject();
+        engineObj.setProperty("userProperties", engine.newObject());
+        engine.globalObject().setProperty("engine", engineObj);
+        // Define Vec3 (needed for colorScheme) — must match production Vec3 definition
+        engine.evaluate(
+            "function Vec3(x,y,z){"
+            "  var v={x:x||0,y:y||0,z:z||0};"
+            "  v.multiply=function(s){return Vec3(v.x*s,v.y*s,v.z*s);};"
+            "  v.add=function(o){return Vec3(v.x+o.x,v.y+o.y,v.z+o.z);};"
+            "  v.length=function(){return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z);};"
+            "  v.normalize=function(){var l=v.length()||1;return Vec3(v.x/l,v.y/l,v.z/l);};"
+            "  v.copy=function(){return Vec3(v.x,v.y,v.z);};"
+            "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});"
+            "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});"
+            "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});"
+            "  return v;"
+            "}"
+            "Vec3.fromString=function(s){"
+            "  var p=String(s).trim().split(/\\s+/);"
+            "  return Vec3(parseFloat(p[0])||0,parseFloat(p[1])||0,parseFloat(p[2])||0);"
+            "};"
+        );
+        // Default colorScheme (white)
+        engine.evaluate("engine.colorScheme = Vec3(1,1,1);");
+    }
+
+    void refresh(const QString& json) {
+        userProps = json;
+        if (json.isEmpty()) return;
+        QString escaped = json;
+        escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        escaped.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+        engine.evaluate(QString(
+            "(function(){"
+            "try{"
+            "var p=JSON.parse('%1');"
+            "var up=engine.userProperties;"
+            "for(var k in p) up[k]=p[k];"
+            "}catch(e){}"
+            "})()"
+        ).arg(escaped));
+        // Sync colorScheme from schemecolor (mirrors refreshJsUserProperties)
+        engine.evaluate(
+            "(function(){"
+            "if(typeof Vec3==='undefined') return;"
+            "var sc=engine.userProperties.schemecolor;"
+            "if(sc!==undefined&&sc!==null)"
+            "  engine.colorScheme=Vec3.fromString(sc);"
+            "})()"
+        );
+    }
+};
+
+TEST_CASE("engine.colorScheme default is Vec3(1,1,1)") {
+    ColorSchemeEnv env;
+    CHECK(env.engine.evaluate("engine.colorScheme.x").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.y").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.z").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("engine.colorScheme default accessible via r/g/b aliases") {
+    ColorSchemeEnv env;
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.b").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("engine.colorScheme updated from schemecolor user property") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"0.5 0.1 0.9"})");
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(0.5));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(0.1));
+    CHECK(env.engine.evaluate("engine.colorScheme.b").toNumber() == doctest::Approx(0.9));
+}
+
+TEST_CASE("engine.colorScheme also accessible via x/y/z") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"0.2 0.4 0.6"})");
+    CHECK(env.engine.evaluate("engine.colorScheme.x").toNumber() == doctest::Approx(0.2));
+    CHECK(env.engine.evaluate("engine.colorScheme.y").toNumber() == doctest::Approx(0.4));
+    CHECK(env.engine.evaluate("engine.colorScheme.z").toNumber() == doctest::Approx(0.6));
+}
+
+TEST_CASE("engine.colorScheme is a Vec3 with methods") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"1.0 0.0 0.0"})");
+    // multiply
+    double mx = env.engine.evaluate("engine.colorScheme.multiply(2).x").toNumber();
+    CHECK(mx == doctest::Approx(2.0));
+    // length of (1,0,0) = 1
+    double len = env.engine.evaluate("engine.colorScheme.length()").toNumber();
+    CHECK(len == doctest::Approx(1.0));
+}
+
+TEST_CASE("engine.colorScheme not updated when schemecolor absent") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"speed":0.5})");  // no schemecolor
+    // Should still be default white
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.b").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("engine.colorScheme updated on second refresh") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"1 0 0"})");
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(0.0));
+    env.refresh(R"({"schemecolor":"0 1 0"})");
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("engine.colorScheme black scheme color") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"0 0 0"})");
+    CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.g").toNumber() == doctest::Approx(0.0));
+    CHECK(env.engine.evaluate("engine.colorScheme.b").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("engine.colorScheme script reads colorScheme correctly") {
+    ColorSchemeEnv env;
+    env.refresh(R"({"schemecolor":"0.3 0.6 0.9"})");
+    // Simulate a wallpaper script that reads colorScheme
+    double r = env.engine.evaluate(
+        "(function(){ return engine.colorScheme.r; })()"
+    ).toNumber();
+    CHECK(r == doctest::Approx(0.3));
+}
+
+} // TEST_SUITE SceneScript engine.colorScheme
+
 
 // ===================================================================
 // Fixtures for comprehensive SceneScript tests

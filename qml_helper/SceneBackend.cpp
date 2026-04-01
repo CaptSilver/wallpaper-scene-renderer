@@ -352,6 +352,17 @@ void SceneObject::refreshJsUserProperties() {
     if (result.isError()) {
         LOG_INFO("refreshJsUserProperties error: %s", qPrintable(result.toString()));
     }
+    // Derive engine.colorScheme from the schemecolor user property if Vec3 is available.
+    // schemecolor is stored as a space-separated float string e.g. "0.5 0.1 0.9".
+    // Only update if Vec3 exists (may be called before Vec3 is defined on first init).
+    m_jsEngine->evaluate(
+        "(function(){"
+        "if (typeof Vec3 === 'undefined') return;"
+        "var sc = engine.userProperties.schemecolor;"
+        "if (sc !== undefined && sc !== null)"
+        "  engine.colorScheme = Vec3.fromString(sc);"
+        "})()"
+    );
 }
 
 void SceneObject::play() { m_scene->play(); }
@@ -629,10 +640,6 @@ void SceneObject::setupTextScripts() {
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
     m_jsEngine->globalObject().setProperty("engine", engineObj);
 
-    // Populate engine.userProperties from the current user property overrides.
-    // Format: {"propname": rawValue, ...}  Scripts read engine.userProperties.propname.
-    refreshJsUserProperties();
-
     // Provide the 'shared' global for inter-script data sharing.
     // All scripts in the scene can read/write to this object.
     m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
@@ -744,6 +751,14 @@ void SceneObject::setupTextScripts() {
         "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min + 1)); }\n"
         "};\n"
     );
+
+    // engine.colorScheme: the wallpaper's scheme/accent color as a Vec3 (r/g/b).
+    // Default white (1,1,1); refreshJsUserProperties() overrides it from schemecolor.
+    m_jsEngine->evaluate("engine.colorScheme = Vec3(1,1,1);\n");
+
+    // Populate engine.userProperties (and derive engine.colorScheme) from overrides.
+    // Must run AFTER Vec3 is defined so colorScheme derivation works.
+    refreshJsUserProperties();
 
     // engine.openUserShortcut stub
     m_jsEngine->evaluate("engine.openUserShortcut = function(name) {};\n");
