@@ -773,7 +773,40 @@ void SceneObject::setupTextScripts() {
          .arg(portrait ? "false" : "true"));
     }
     m_jsEngine->evaluate(
-        "var input = { cursorWorldPosition: { x: 0, y: 0 } };\n"
+        "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
+        "  cursorScreenPosition: { x: 0, y: 0 },\n"
+        "  cursorLeftDown: false };\n"
+        // Vec2 factory — 2D vector utility matching WE's Vec2 class
+        "function Vec2(x, y) {\n"
+        "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/); x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; }\n"
+        "  else if (x && typeof x === 'object') { y=x.y||0; x=x.x||0; }\n"
+        "  else if (y === undefined) { y = x||0; x = x||0; }\n"
+        "  var v = { x: x||0, y: y||0 };\n"
+        "  v.copy = function() { return Vec2(v.x, v.y); };\n"
+        "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };\n"
+        "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };\n"
+        "  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };\n"
+        "  v.add = function(o) { return Vec2(v.x+o.x, v.y+o.y); };\n"
+        "  v.subtract = function(o) { return Vec2(v.x-o.x, v.y-o.y); };\n"
+        "  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): Vec2(v.x*s,v.y*s); };\n"
+        "  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): Vec2(v.x/s,v.y/s); };\n"
+        "  v.dot = function(o) { return v.x*o.x+v.y*o.y; };\n"
+        "  v.perpendicular = function() { return Vec2(-v.y, v.x); };\n"
+        "  v.reflect = function(n) { var d=2*v.dot(n); return Vec2(v.x-d*n.x, v.y-d*n.y); };\n"
+        "  v.mix = function(o,t) { return Vec2(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t); };\n"
+        "  v.equals = function(o) { return v.x===o.x && v.y===o.y; };\n"
+        "  v.toString = function() { return v.x+' '+v.y; };\n"
+        "  v.min = function(o) { return Vec2(Math.min(v.x,o.x),Math.min(v.y,o.y)); };\n"
+        "  v.max = function(o) { return Vec2(Math.max(v.x,o.x),Math.max(v.y,o.y)); };\n"
+        "  v.abs = function() { return Vec2(Math.abs(v.x),Math.abs(v.y)); };\n"
+        "  v.sign = function() { return Vec2(Math.sign(v.x),Math.sign(v.y)); };\n"
+        "  v.round = function() { return Vec2(Math.round(v.x),Math.round(v.y)); };\n"
+        "  v.floor = function() { return Vec2(Math.floor(v.x),Math.floor(v.y)); };\n"
+        "  v.ceil = function() { return Vec2(Math.ceil(v.x),Math.ceil(v.y)); };\n"
+        "  return v;\n"
+        "}\n"
+        "Vec2.fromString = function(s) { var p=String(s).trim().split(/\\s+/); return Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };\n"
+        "Vec2.lerp = function(a,b,t) { return Vec2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t); };\n"
         "function Vec3(x, y, z) {\n"
         "  var v = { x: x||0, y: y||0, z: z||0 };\n"
         "  v.multiply = function(s) { return Vec3(v.x*s, v.y*s, v.z*s); };\n"
@@ -788,6 +821,18 @@ void SceneObject::setupTextScripts() {
         "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
         "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
         "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
+        "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z; };\n"
+        "  v.reflect = function(n) { var d=2*v.dot(n); return Vec3(v.x-d*n.x, v.y-d*n.y, v.z-d*n.z); };\n"
+        "  v.mix = function(o,t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
+        "  v.equals = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z; };\n"
+        "  v.toString = function() { return v.x+' '+v.y+' '+v.z; };\n"
+        "  v.min = function(o) { return Vec3(Math.min(v.x,o.x),Math.min(v.y,o.y),Math.min(v.z,o.z)); };\n"
+        "  v.max = function(o) { return Vec3(Math.max(v.x,o.x),Math.max(v.y,o.y),Math.max(v.z,o.z)); };\n"
+        "  v.abs = function() { return Vec3(Math.abs(v.x),Math.abs(v.y),Math.abs(v.z)); };\n"
+        "  v.sign = function() { return Vec3(Math.sign(v.x),Math.sign(v.y),Math.sign(v.z)); };\n"
+        "  v.round = function() { return Vec3(Math.round(v.x),Math.round(v.y),Math.round(v.z)); };\n"
+        "  v.floor = function() { return Vec3(Math.floor(v.x),Math.floor(v.y),Math.floor(v.z)); };\n"
+        "  v.ceil = function() { return Vec3(Math.ceil(v.x),Math.ceil(v.y),Math.ceil(v.z)); };\n"
         // r/g/b aliases for use as color vectors (maps to x/y/z)
         "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
         "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
@@ -807,10 +852,12 @@ void SceneObject::setupTextScripts() {
         "var localStorage = (function() {\n"
         "  var _store = {};\n"
         "  return {\n"
-        "    get: function(key) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
-        "    set: function(key, value) { _store[key] = value; },\n"
-        "    remove: function(key) { delete _store[key]; },\n"
-        "    clear: function() { _store = {}; }\n"
+        "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
+        "    get: function(key, loc) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
+        "    set: function(key, value, loc) { _store[key] = value; },\n"
+        "    remove: function(key, loc) { delete _store[key]; },\n"
+        "    'delete': function(key, loc) { delete _store[key]; },\n"
+        "    clear: function(loc) { _store = {}; }\n"
         "  };\n"
         "})();\n"
     );
@@ -854,8 +901,15 @@ void SceneObject::setupTextScripts() {
         "  log: function(x) { return Math.log(x); },\n"
         "  exp: function(x) { return Math.exp(x); }\n"
         "};\n"
-        // camelCase aliases for GLSL-style function names
+        // camelCase aliases and constant forms matching WE's official API
         "WEMath.smoothStep = WEMath.smoothstep;\n"
+        "WEMath.deg2rad = Math.PI / 180;\n"
+        "WEMath.rad2deg = 180 / Math.PI;\n"
+        // WEVector module: 2D angle↔vector conversion
+        "var WEVector = {\n"
+        "  angleVector2: function(angle) { return Vec2(Math.cos(angle), Math.sin(angle)); },\n"
+        "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x); }\n"
+        "};\n"
     );
 
     // engine.colorScheme: the wallpaper's scheme/accent color as a Vec3 (r/g/b).
@@ -1351,6 +1405,17 @@ void SceneObject::setupTextScripts() {
         "  console.log('getLayer: unknown layer: ' + name);\n"
         "  return _nullProxy;\n"
         "};\n"
+        // getLayerCount — returns total number of discoverable layers
+        "thisScene.getLayerCount = function() {\n"
+        "  return Object.keys(_layerInitStates).length;\n"
+        "};\n"
+        // thisObject global — context-dependent object (defaults to thisLayer)
+        "var thisObject = {\n"
+        "  getAnimation: function(name) {\n"
+        "    if (thisLayer && thisLayer.getAnimationLayer) return thisLayer.getAnimationLayer(name || 0);\n"
+        "    return null;\n"
+        "  }\n"
+        "};\n"
     );
 
     // Audio resolution constants
@@ -1446,7 +1511,10 @@ void SceneObject::setupTextScripts() {
         "    }\n"
         "    return { x: h, y: s, z: v };\n"
         "  }\n"
-        "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv };\n"
+        "  function normalizeColor(rgb) { return { x: rgb.x/255, y: rgb.y/255, z: rgb.z/255 }; }\n"
+        "  function expandColor(rgb) { return { x: rgb.x*255, y: rgb.y*255, z: rgb.z*255 }; }\n"
+        "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv,\n"
+        "           normalizeColor: normalizeColor, expandColor: expandColor };\n"
         "})();\n"
     );
 

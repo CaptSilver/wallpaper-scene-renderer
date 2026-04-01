@@ -214,7 +214,8 @@ to a valid fragment shader will render. Known working:
 - [x] Color scripts (`colorScript` field parsed, compiled, evaluated at 30Hz)
 - [x] `WEMath`, `WEColor` utility modules
 - [x] `Vec3` factory (position math for cursor/drag scripts)
-- [ ] `WEVector` utility module
+- [x] `WEVector` utility module (`angleVector2`, `vectorAngle2`)
+- [x] `Vec2` class (full method set matching official API)
 - [x] Sound layer control (`enumerateLayers`, `play`/`stop`/`pause`/`isPlaying`/`volume`)
 - [x] `console.log` support (buffered → LOG_INFO flush)
 
