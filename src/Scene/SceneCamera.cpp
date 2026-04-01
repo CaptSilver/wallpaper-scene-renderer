@@ -155,14 +155,14 @@ void SceneCamera::AdvanceTime(double dt) {
 	// Crossfade: blend from previous path's end position to new path
 	if (m_fading) {
 		m_fadeTime += dt;
-		if (m_fadeTime >= m_fadeDuration) {
-			m_fading = false;
-		} else {
-			double ft    = m_fadeTime / m_fadeDuration;
+		double ft    = std::clamp(m_fadeTime / m_fadeDuration, 0.0, 1.0);
+		if (ft < 1.0) {
 			double alpha = ft * ft * (3.0 - 2.0 * ft); // smoothstep
 			eye    = m_fadeFromEye    + alpha * (eye    - m_fadeFromEye);
 			center = m_fadeFromCenter + alpha * (center - m_fadeFromCenter);
 			up     = (m_fadeFromUp    + alpha * (up     - m_fadeFromUp)).normalized();
+		} else {
+			m_fading = false;
 		}
 	}
 
