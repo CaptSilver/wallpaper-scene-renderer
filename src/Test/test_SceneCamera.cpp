@@ -752,4 +752,20 @@ TEST_CASE("fade completes at exact boundary (line 158)") {
     CHECK(cam.GetEye().y() == doctest::Approx(100.0).epsilon(0.5));
 }
 
+TEST_CASE("3-path cycling advances to next (not previous) path") {
+    // Kills (m_currentPath + 1) → (m_currentPath - 1) mutant
+    // With 3 paths: 0→1→2→0. Mutant: 0→2→1→0 (different order!)
+    auto cam = makePerspCamera();
+    cam.LoadPaths({
+        makePath(Vector3d(0, 0, 0), Vector3d(10, 0, 0), 2.0),
+        makePath(Vector3d(0, 20, 0), Vector3d(0, 20, 10), 2.0),
+        makePath(Vector3d(0, 0, 40), Vector3d(10, 0, 40), 2.0),
+    });
+
+    // Advance past path 0 → should go to path 1 (not path 2)
+    cam.AdvanceTime(2.1);
+    CHECK(cam.GetEye().y() == doctest::Approx(20.0).epsilon(0.5));
+    CHECK(cam.GetEye().z() == doctest::Approx(0.5).epsilon(0.5));
+}
+
 } // TEST_SUITE SceneCamera_Boundaries
