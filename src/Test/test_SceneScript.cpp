@@ -689,7 +689,41 @@ TEST_CASE("engine.colorScheme script reads colorScheme correctly") {
 
 // JS string constants copied from SceneBackend.cpp (lines 662-700)
 static const char* JS_VEC3_AND_UTILS =
-    "var input = { cursorWorldPosition: { x: 0, y: 0 } };\n"
+    "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
+    "  cursorScreenPosition: { x: 0, y: 0 },\n"
+    "  cursorLeftDown: false };\n"
+    // Vec2
+    "function Vec2(x, y) {\n"
+    "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/); x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; }\n"
+    "  else if (x && typeof x === 'object') { y=x.y||0; x=x.x||0; }\n"
+    "  else if (y === undefined) { y = x||0; x = x||0; }\n"
+    "  var v = { x: x||0, y: y||0 };\n"
+    "  v.copy = function() { return Vec2(v.x, v.y); };\n"
+    "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };\n"
+    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };\n"
+    "  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };\n"
+    "  v.add = function(o) { return Vec2(v.x+o.x, v.y+o.y); };\n"
+    "  v.subtract = function(o) { return Vec2(v.x-o.x, v.y-o.y); };\n"
+    "  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): Vec2(v.x*s,v.y*s); };\n"
+    "  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): Vec2(v.x/s,v.y/s); };\n"
+    "  v.dot = function(o) { return v.x*o.x+v.y*o.y; };\n"
+    "  v.perpendicular = function() { return Vec2(-v.y, v.x); };\n"
+    "  v.reflect = function(n) { var d=2*v.dot(n); return Vec2(v.x-d*n.x, v.y-d*n.y); };\n"
+    "  v.mix = function(o,t) { return Vec2(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t); };\n"
+    "  v.equals = function(o) { return v.x===o.x && v.y===o.y; };\n"
+    "  v.toString = function() { return v.x+' '+v.y; };\n"
+    "  v.min = function(o) { return Vec2(Math.min(v.x,o.x),Math.min(v.y,o.y)); };\n"
+    "  v.max = function(o) { return Vec2(Math.max(v.x,o.x),Math.max(v.y,o.y)); };\n"
+    "  v.abs = function() { return Vec2(Math.abs(v.x),Math.abs(v.y)); };\n"
+    "  v.sign = function() { return Vec2(Math.sign(v.x),Math.sign(v.y)); };\n"
+    "  v.round = function() { return Vec2(Math.round(v.x),Math.round(v.y)); };\n"
+    "  v.floor = function() { return Vec2(Math.floor(v.x),Math.floor(v.y)); };\n"
+    "  v.ceil = function() { return Vec2(Math.ceil(v.x),Math.ceil(v.y)); };\n"
+    "  return v;\n"
+    "}\n"
+    "Vec2.fromString = function(s) { var p=String(s).trim().split(/\\s+/); return Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };\n"
+    "Vec2.lerp = function(a,b,t) { return Vec2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t); };\n"
+    // Vec3
     "function Vec3(x, y, z) {\n"
     "  var v = { x: x||0, y: y||0, z: z||0 };\n"
     "  v.multiply = function(s) { return Vec3(v.x*s, v.y*s, v.z*s); };\n"
@@ -704,6 +738,18 @@ static const char* JS_VEC3_AND_UTILS =
     "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
     "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
     "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
+    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z; };\n"
+    "  v.reflect = function(n) { var d=2*v.dot(n); return Vec3(v.x-d*n.x, v.y-d*n.y, v.z-d*n.z); };\n"
+    "  v.mix = function(o,t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
+    "  v.equals = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z; };\n"
+    "  v.toString = function() { return v.x+' '+v.y+' '+v.z; };\n"
+    "  v.min = function(o) { return Vec3(Math.min(v.x,o.x),Math.min(v.y,o.y),Math.min(v.z,o.z)); };\n"
+    "  v.max = function(o) { return Vec3(Math.max(v.x,o.x),Math.max(v.y,o.y),Math.max(v.z,o.z)); };\n"
+    "  v.abs = function() { return Vec3(Math.abs(v.x),Math.abs(v.y),Math.abs(v.z)); };\n"
+    "  v.sign = function() { return Vec3(Math.sign(v.x),Math.sign(v.y),Math.sign(v.z)); };\n"
+    "  v.round = function() { return Vec3(Math.round(v.x),Math.round(v.y),Math.round(v.z)); };\n"
+    "  v.floor = function() { return Vec3(Math.floor(v.x),Math.floor(v.y),Math.floor(v.z)); };\n"
+    "  v.ceil = function() { return Vec3(Math.ceil(v.x),Math.ceil(v.y),Math.ceil(v.z)); };\n"
     "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
     "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
     "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});\n"
@@ -719,10 +765,12 @@ static const char* JS_VEC3_AND_UTILS =
     "var localStorage = (function() {\n"
     "  var _store = {};\n"
     "  return {\n"
-    "    get: function(key) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
-    "    set: function(key, value) { _store[key] = value; },\n"
-    "    remove: function(key) { delete _store[key]; },\n"
-    "    clear: function() { _store = {}; }\n"
+    "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
+    "    get: function(key, loc) { return _store.hasOwnProperty(key) ? _store[key] : undefined; },\n"
+    "    set: function(key, value, loc) { _store[key] = value; },\n"
+    "    remove: function(key, loc) { delete _store[key]; },\n"
+    "    'delete': function(key, loc) { delete _store[key]; },\n"
+    "    clear: function(loc) { _store = {}; }\n"
     "  };\n"
     "})();\n";
 
@@ -762,7 +810,13 @@ static const char* JS_WEMATH =
     "  log: function(x) { return Math.log(x); },\n"
     "  exp: function(x) { return Math.exp(x); }\n"
     "};\n"
-    "WEMath.smoothStep = WEMath.smoothstep;\n";
+    "WEMath.smoothStep = WEMath.smoothstep;\n"
+    "WEMath.deg2rad = Math.PI / 180;\n"
+    "WEMath.rad2deg = 180 / Math.PI;\n"
+    "var WEVector = {\n"
+    "  angleVector2: function(angle) { return Vec2(Math.cos(angle), Math.sin(angle)); },\n"
+    "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x); }\n"
+    "};\n";
 
 static const char* JS_WECOLOR =
     "var WEColor = (function() {\n"
@@ -801,7 +855,10 @@ static const char* JS_WECOLOR =
     "    }\n"
     "    return { x: h, y: s, z: v };\n"
     "  }\n"
-    "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv };\n"
+    "  function normalizeColor(rgb) { return { x: rgb.x/255, y: rgb.y/255, z: rgb.z/255 }; }\n"
+    "  function expandColor(rgb) { return { x: rgb.x*255, y: rgb.y*255, z: rgb.z*255 }; }\n"
+    "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv,\n"
+    "           normalizeColor: normalizeColor, expandColor: expandColor };\n"
     "})();\n";
 
 static const char* JS_CONSOLE =
@@ -1168,6 +1225,134 @@ static void checkVec3(const QJSValue& v, double ex, double ey, double ez) {
     CHECK(v.property("z").toNumber() == doctest::Approx(ez).epsilon(1e-6));
 }
 
+
+// ------------------------------------------------------------------
+// Vec2
+// ------------------------------------------------------------------
+TEST_SUITE("Vec2") {
+
+TEST_CASE("default args produce zero vector") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2()");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0));
+}
+
+TEST_CASE("explicit args") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(3, 4)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(3));
+    CHECK(v.property("y").toNumber() == doctest::Approx(4));
+}
+
+TEST_CASE("single arg broadcasts") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(5)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(5));
+}
+
+TEST_CASE("string constructor") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2('1.5 2.5')");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2.5));
+}
+
+TEST_CASE("object constructor (from Vec3)") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(Vec3(7, 8, 9))");
+    CHECK(v.property("x").toNumber() == doctest::Approx(7));
+    CHECK(v.property("y").toNumber() == doctest::Approx(8));
+}
+
+TEST_CASE("length of (3,4) is 5") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec2(3,4).length()").toNumber() == doctest::Approx(5));
+}
+
+TEST_CASE("lengthSqr") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec2(3,4).lengthSqr()").toNumber() == doctest::Approx(25));
+}
+
+TEST_CASE("add and subtract") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(1,2).add(Vec2(3,4))");
+    CHECK(v.property("x").toNumber() == doctest::Approx(4));
+    CHECK(v.property("y").toNumber() == doctest::Approx(6));
+}
+
+TEST_CASE("multiply scalar") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(2,3).multiply(2)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(4));
+    CHECK(v.property("y").toNumber() == doctest::Approx(6));
+}
+
+TEST_CASE("multiply element-wise") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(2,3).multiply(Vec2(4,5))");
+    CHECK(v.property("x").toNumber() == doctest::Approx(8));
+    CHECK(v.property("y").toNumber() == doctest::Approx(15));
+}
+
+TEST_CASE("dot product") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec2(1,0).dot(Vec2(0,1))").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("Vec2(2,3).dot(Vec2(4,5))").toNumber() == doctest::Approx(23));
+}
+
+TEST_CASE("perpendicular") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(1,0).perpendicular()");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(1));
+}
+
+TEST_CASE("normalize") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(3,4).normalize()");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0.6));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.8));
+}
+
+TEST_CASE("equals") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec2(1,2).equals(Vec2(1,2))").toBool());
+    CHECK_FALSE(env.engine.evaluate("Vec2(1,2).equals(Vec2(1,3))").toBool());
+}
+
+TEST_CASE("toString") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("Vec2(1,2).toString()").toString() == "1 2");
+}
+
+TEST_CASE("Vec2.fromString") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2.fromString('3.5 4.5')");
+    CHECK(v.property("x").toNumber() == doctest::Approx(3.5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(4.5));
+}
+
+TEST_CASE("Vec2.lerp") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2.lerp(Vec2(0,0), Vec2(10,20), 0.5)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(5));
+    CHECK(v.property("y").toNumber() == doctest::Approx(10));
+}
+
+TEST_CASE("floor ceil round") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("Vec2(1.7, 2.3).floor()");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1));
+    CHECK(v.property("y").toNumber() == doctest::Approx(2));
+    v = env.engine.evaluate("Vec2(1.3, 2.7).ceil()");
+    CHECK(v.property("x").toNumber() == doctest::Approx(2));
+    CHECK(v.property("y").toNumber() == doctest::Approx(3));
+}
+
+} // TEST_SUITE Vec2
 
 // ------------------------------------------------------------------
 // Vec3
@@ -1642,6 +1827,22 @@ TEST_CASE("WEMath.log and exp") {
     CHECK(env.engine.evaluate("WEMath.log(WEMath.exp(2))").toNumber() == doctest::Approx(2.0));
 }
 
+TEST_CASE("WEMath.deg2rad constant") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.deg2rad").toNumber()
+          == doctest::Approx(M_PI / 180.0));
+    CHECK(env.engine.evaluate("90 * WEMath.deg2rad").toNumber()
+          == doctest::Approx(M_PI / 2.0));
+}
+
+TEST_CASE("WEMath.rad2deg constant") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEMath.rad2deg").toNumber()
+          == doctest::Approx(180.0 / M_PI));
+    CHECK(env.engine.evaluate("Math.PI * WEMath.rad2deg").toNumber()
+          == doctest::Approx(180.0));
+}
+
 } // TEST_SUITE WEMath
 
 
@@ -1704,7 +1905,72 @@ TEST_CASE("round-trip rgb to hsv to rgb") {
     }
 }
 
+TEST_CASE("normalizeColor 255 to 1") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("WEColor.normalizeColor({x:255,y:127.5,z:0})");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.5));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("expandColor 1 to 255") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("WEColor.expandColor({x:1,y:0.5,z:0})");
+    CHECK(v.property("x").toNumber() == doctest::Approx(255));
+    CHECK(v.property("y").toNumber() == doctest::Approx(127.5));
+    CHECK(v.property("z").toNumber() == doctest::Approx(0));
+}
+
+TEST_CASE("normalizeColor and expandColor round-trip") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate(
+        "var c = WEColor.expandColor(WEColor.normalizeColor({x:200,y:100,z:50})); c");
+    CHECK(v.property("x").toNumber() == doctest::Approx(200));
+    CHECK(v.property("y").toNumber() == doctest::Approx(100));
+    CHECK(v.property("z").toNumber() == doctest::Approx(50));
+}
+
 } // TEST_SUITE WEColor
+
+// ------------------------------------------------------------------
+// WEVector
+// ------------------------------------------------------------------
+TEST_SUITE("WEVector") {
+
+TEST_CASE("angleVector2 at 0 returns (1,0)") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("WEVector.angleVector2(0)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
+    CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
+}
+
+TEST_CASE("angleVector2 at PI/2 returns (0,1)") {
+    MathEnv env;
+    QJSValue v = env.engine.evaluate("WEVector.angleVector2(Math.PI/2)");
+    CHECK(v.property("x").toNumber() == doctest::Approx(0.0).epsilon(0.001));
+    CHECK(v.property("y").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("vectorAngle2 of (1,0) returns 0") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEVector.vectorAngle2(Vec2(1,0))").toNumber()
+          == doctest::Approx(0.0));
+}
+
+TEST_CASE("vectorAngle2 of (0,1) returns PI/2") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("WEVector.vectorAngle2(Vec2(0,1))").toNumber()
+          == doctest::Approx(M_PI / 2.0));
+}
+
+TEST_CASE("round-trip angle to vector to angle") {
+    MathEnv env;
+    double angle = env.engine.evaluate(
+        "WEVector.vectorAngle2(WEVector.angleVector2(1.23))").toNumber();
+    CHECK(angle == doctest::Approx(1.23));
+}
+
+} // TEST_SUITE WEVector
 
 
 // ------------------------------------------------------------------
@@ -1785,6 +2051,36 @@ TEST_CASE("localStorage persists across evaluate calls") {
     MathEnv env;
     env.engine.evaluate("localStorage.set('persist', 'yes');");
     CHECK(env.engine.evaluate("localStorage.get('persist')").toString() == "yes");
+}
+
+TEST_CASE("localStorage.delete is alias for remove") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('d', 1);");
+    env.engine.evaluate("localStorage['delete']('d');");
+    CHECK(env.engine.evaluate("localStorage.get('d')").isUndefined());
+}
+
+TEST_CASE("localStorage constants exist") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("localStorage.LOCATION_GLOBAL").toInt() == 0);
+    CHECK(env.engine.evaluate("localStorage.LOCATION_SCREEN").toInt() == 1);
+}
+
+TEST_CASE("localStorage location parameter is accepted") {
+    MathEnv env;
+    env.engine.evaluate("localStorage.set('k', 'v', localStorage.LOCATION_GLOBAL);");
+    CHECK(env.engine.evaluate("localStorage.get('k', localStorage.LOCATION_GLOBAL)").toString() == "v");
+}
+
+TEST_CASE("input.cursorScreenPosition exists") {
+    MathEnv env;
+    CHECK(env.engine.evaluate("input.cursorScreenPosition.x").toNumber() == doctest::Approx(0));
+    CHECK(env.engine.evaluate("input.cursorScreenPosition.y").toNumber() == doctest::Approx(0));
+}
+
+TEST_CASE("input.cursorLeftDown defaults to false") {
+    MathEnv env;
+    CHECK_FALSE(env.engine.evaluate("input.cursorLeftDown").toBool());
 }
 
 TEST_CASE("shared.volume defaults to 1.0") {
