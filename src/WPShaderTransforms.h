@@ -60,6 +60,43 @@ inline size_t skipWhitespaceAndSemicolon(const std::string& text, size_t pos) {
 }
 
 // ---------------------------------------------------------------------------
+// findEnclosingCallInfo — given a position inside a function call, scan backward
+// to find the enclosing '(' and extract function name + argument index.
+// Returns {funcName, argIndex} or {"", -1} if not inside a function call.
+// ---------------------------------------------------------------------------
+struct CallInfo {
+    std::string funcName;
+    int         argIndex { -1 };
+};
+inline CallInfo findEnclosingCallInfo(const std::string& text, size_t innerPos) {
+    size_t scan  = innerPos;
+    int    depth = 0;
+    while (scan > 0) {
+        --scan;
+        if (text[scan] == ')') ++depth;
+        else if (text[scan] == '(') {
+            if (depth == 0) {
+                // Count commas between '(' and innerPos at depth 0
+                int argIdx = 0, cd = 0;
+                for (size_t j = scan + 1; j < innerPos; ++j) {
+                    if (text[j] == '(') ++cd;
+                    else if (text[j] == ')') --cd;
+                    else if (text[j] == ',' && cd == 0) ++argIdx;
+                }
+                // Extract function name before '('
+                size_t ne = scan;
+                while (ne > 0 && std::isspace(text[ne - 1])) --ne;
+                size_t ns = ne;
+                while (ns > 0 && (std::isalnum(text[ns - 1]) || text[ns - 1] == '_')) --ns;
+                return { text.substr(ns, ne - ns), argIdx };
+            }
+            --depth;
+        }
+    }
+    return { "", -1 };
+}
+
+// ---------------------------------------------------------------------------
 // NeedsFlatDecoration
 // ---------------------------------------------------------------------------
 // Check if a GLSL I/O declaration has an integer type that requires flat interpolation.
@@ -291,38 +328,13 @@ inline std::string TranslateGeometryShader(const std::string& src) {
                 continue;
             }
 
-            // Find enclosing function call: scan backward for '(' at depth 0
+            // Find enclosing function call and check if parameter is vec3
             bool needsTrunc = false;
-            size_t scan = found;
-            int depth = 0;
-            while (scan > 0) {
-                scan--;
-                if (result[scan] == ')') depth++;
-                else if (result[scan] == '(') {
-                    if (depth == 0) {
-                        // Count commas between '(' and gl_pos at depth 0 → arg index
-                        int argIdx = 0, cd = 0;
-                        for (size_t j = scan + 1; j < found; j++) {
-                            if (result[j] == '(') cd++;
-                            else if (result[j] == ')') cd--;
-                            else if (result[j] == ',' && cd == 0) argIdx++;
-                        }
-                        // Extract function name before '('
-                        size_t ne = scan;
-                        while (ne > 0 && std::isspace(result[ne - 1])) ne--;
-                        size_t ns = ne;
-                        while (ns > 0 && (std::isalnum(result[ns - 1]) || result[ns - 1] == '_'))
-                            ns--;
-                        std::string fn = result.substr(ns, ne - ns);
-                        if (funcSigs.count(fn)) {
-                            auto& p = funcSigs[fn];
-                            if (argIdx < (int)p.size() && p[argIdx] == "vec3")
-                                needsTrunc = true;
-                        }
-                        break;
-                    }
-                    depth--;
-                }
+            auto callInfo = findEnclosingCallInfo(result, found);
+            if (!callInfo.funcName.empty() && funcSigs.count(callInfo.funcName)) {
+                auto& p = funcSigs[callInfo.funcName];
+                if (callInfo.argIndex < (int)p.size() && p[callInfo.argIndex] == "vec3")
+                    needsTrunc = true;
             }
 
             out.append(result, pos, found - pos);

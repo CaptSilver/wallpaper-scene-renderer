@@ -159,6 +159,58 @@ TEST_CASE("spaces without semicolon") {
 } // TEST_SUITE skipWhitespaceAndSemicolon
 
 // ===========================================================================
+// findEnclosingCallInfo
+// ===========================================================================
+
+TEST_SUITE("findEnclosingCallInfo") {
+
+TEST_CASE("simple function first arg") {
+    // foo(X)  — X at position 4
+    auto info = findEnclosingCallInfo("foo(X)", 4);
+    CHECK(info.funcName == "foo");
+    CHECK(info.argIndex == 0);
+}
+
+TEST_CASE("second arg after comma") {
+    // func(a, X)  — X at position 8
+    auto info = findEnclosingCallInfo("func(a, X)", 8);
+    CHECK(info.funcName == "func");
+    CHECK(info.argIndex == 1);
+}
+
+TEST_CASE("third arg") {
+    // f(a, b, X)  — X at position 8
+    auto info = findEnclosingCallInfo("f(a, b, X)", 8);
+    CHECK(info.funcName == "f");
+    CHECK(info.argIndex == 2);
+}
+
+TEST_CASE("nested paren in earlier arg") {
+    // f(g(1,2), X) — commas inside g() don't count
+    auto info = findEnclosingCallInfo("f(g(1,2), X)", 10);
+    CHECK(info.funcName == "f");
+    CHECK(info.argIndex == 1);
+}
+
+TEST_CASE("not inside a function call") {
+    auto info = findEnclosingCallInfo("just text X", 10);
+    CHECK(info.funcName == "");
+    CHECK(info.argIndex == -1);
+}
+
+TEST_CASE("function name with underscores") {
+    auto info = findEnclosingCallInfo("my_func(X)", 8);
+    CHECK(info.funcName == "my_func");
+}
+
+TEST_CASE("space before paren") {
+    auto info = findEnclosingCallInfo("func (X)", 6);
+    CHECK(info.funcName == "func");
+}
+
+} // TEST_SUITE findEnclosingCallInfo
+
+// ===========================================================================
 // NeedsFlatDecoration
 // ===========================================================================
 
