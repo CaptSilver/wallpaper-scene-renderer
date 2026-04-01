@@ -1930,11 +1930,12 @@ void SceneObject::evaluateColorScripts() {
     }
 
     for (auto& state : m_colorScriptStates) {
-        // Pass current color as Vec3 {x, y, z}
-        QJSValue colorVal = m_jsEngine->newObject();
-        colorVal.setProperty("x", (double)state.currentColor[0]);
-        colorVal.setProperty("y", (double)state.currentColor[1]);
-        colorVal.setProperty("z", (double)state.currentColor[2]);
+        // Pass current color as a full Vec3 so scripts can use both .x/.y/.z and .r/.g/.b
+        QString colorJs = QString("Vec3(%1,%2,%3)")
+            .arg((double)state.currentColor[0], 0, 'g', 8)
+            .arg((double)state.currentColor[1], 0, 'g', 8)
+            .arg((double)state.currentColor[2], 0, 'g', 8);
+        QJSValue colorVal = m_jsEngine->evaluate(colorJs);
 
         QJSValue result = state.updateFn.call({ colorVal });
         if (result.isError()) {
@@ -1943,12 +1944,15 @@ void SceneObject::evaluateColorScripts() {
             continue;
         }
 
-        // Result is Vec3 {x, y, z} = RGB
+        // Result is Vec3 {x, y, z} = RGB (r/g/b aliases also accepted as fallback)
         float r, g, b;
         if (result.isObject()) {
-            r = (float)result.property("x").toNumber();
-            g = (float)result.property("y").toNumber();
-            b = (float)result.property("z").toNumber();
+            QJSValue rx = result.property("x");
+            r = (float)(rx.isUndefined() ? result.property("r").toNumber() : rx.toNumber());
+            QJSValue gy = result.property("y");
+            g = (float)(gy.isUndefined() ? result.property("g").toNumber() : gy.toNumber());
+            QJSValue bz = result.property("z");
+            b = (float)(bz.isUndefined() ? result.property("b").toNumber() : bz.toNumber());
         } else {
             // Skip silently — color scripts that depend on shared.* may return
             // undefined until property scripts populate the data
