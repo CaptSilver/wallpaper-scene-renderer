@@ -93,6 +93,72 @@ TEST_CASE("replacement longer than match") {
 } // TEST_SUITE regexTransformAll
 
 // ===========================================================================
+// findMatchingParen
+// ===========================================================================
+
+TEST_SUITE("findMatchingParen") {
+
+TEST_CASE("simple pair") {
+    CHECK(findMatchingParen("(abc)", 0) == 5);
+}
+
+TEST_CASE("nested") {
+    CHECK(findMatchingParen("(a(b)c)", 0) == 7);
+}
+
+TEST_CASE("deeply nested") {
+    CHECK(findMatchingParen("(((x)))", 0) == 7);
+}
+
+TEST_CASE("returns npos for unmatched") {
+    CHECK(findMatchingParen("(abc", 0) == std::string::npos);
+}
+
+TEST_CASE("inner open paren") {
+    //  01234567
+    //  xx(a(b))
+    CHECK(findMatchingParen("xx(a(b))", 2) == 8);
+}
+
+TEST_CASE("empty parens") {
+    CHECK(findMatchingParen("()", 0) == 2);
+}
+
+} // TEST_SUITE findMatchingParen
+
+// ===========================================================================
+// skipWhitespaceAndSemicolon
+// ===========================================================================
+
+TEST_SUITE("skipWhitespaceAndSemicolon") {
+
+TEST_CASE("no whitespace or semicolon") {
+    CHECK(skipWhitespaceAndSemicolon("abc", 0) == 0);
+}
+
+TEST_CASE("spaces then semicolon") {
+    CHECK(skipWhitespaceAndSemicolon("  ;rest", 0) == 3);
+}
+
+TEST_CASE("tab then semicolon") {
+    CHECK(skipWhitespaceAndSemicolon("\t;x", 0) == 2);
+}
+
+TEST_CASE("just semicolon") {
+    CHECK(skipWhitespaceAndSemicolon(";", 0) == 1);
+}
+
+TEST_CASE("at end of string") {
+    CHECK(skipWhitespaceAndSemicolon("abc", 3) == 3);
+}
+
+TEST_CASE("spaces without semicolon") {
+    CHECK(skipWhitespaceAndSemicolon("   x", 0) == 3);
+}
+
+} // TEST_SUITE skipWhitespaceAndSemicolon
+
+// ===========================================================================
 // NeedsFlatDecoration
 // ===========================================================================
 

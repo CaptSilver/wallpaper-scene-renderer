@@ -37,6 +37,29 @@ inline int regexTransformAll(std::string& text, const std::regex& re, ReplacerFn
 }
 
 // ---------------------------------------------------------------------------
+// findMatchingParen — find the position after the closing ')' that matches
+// the '(' at position `openPos`.  Returns npos if unmatched.
+// ---------------------------------------------------------------------------
+inline size_t findMatchingParen(const std::string& text, size_t openPos) {
+    int    depth = 1;
+    size_t i     = openPos + 1;
+    for (; i < text.size() && depth > 0; ++i) {
+        if (text[i] == '(') ++depth;
+        else if (text[i] == ')') --depth;
+    }
+    return (depth == 0) ? i : std::string::npos;
+}
+
+// ---------------------------------------------------------------------------
+// skipWhitespaceAndSemicolon — advance past optional whitespace + semicolon.
+// ---------------------------------------------------------------------------
+inline size_t skipWhitespaceAndSemicolon(const std::string& text, size_t pos) {
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) ++pos;
+    if (pos < text.size() && text[pos] == ';') ++pos;
+    return pos;
+}
+
+// ---------------------------------------------------------------------------
 // NeedsFlatDecoration
 // ---------------------------------------------------------------------------
 // Check if a GLSL I/O declaration has an integer type that requires flat interpolation.
@@ -187,24 +210,22 @@ inline std::string TranslateGeometryShader(const std::string& src) {
                 break;
             }
             replaced.append(result, pos, start - pos);
-            size_t inner = start + marker.size();
-            int    depth = 1;
-            size_t i     = inner;
-            for (; i < result.size() && depth > 0; i++) {
-                if (result[i] == '(') depth++;
-                else if (result[i] == ')') depth--;
+            // inner starts after "OUT.Append(" — the opening paren is at start+marker.size()-1
+            size_t openParen = start + marker.size() - 1;
+            size_t afterClose = findMatchingParen(result, openParen);
+            if (afterClose == std::string::npos) {
+                // Unmatched paren — keep original text
+                replaced.append(result, start, marker.size());
+                pos = start + marker.size();
+                continue;
             }
-            // i now points past the matching ')'
-            // Skip optional trailing whitespace and semicolon
-            size_t after = i;
-            while (after < result.size() && (result[after] == ' ' || result[after] == '\t'))
-                after++;
-            if (after < result.size() && result[after] == ';') after++;
+            size_t inner     = openParen + 1;
+            size_t innerEnd  = afterClose - 1; // position of ')'
+            size_t after     = skipWhitespaceAndSemicolon(result, afterClose);
 
-            std::string innerExpr = result.substr(inner, i - 1 - inner);
+            std::string innerExpr = result.substr(inner, innerEnd - inner);
             // If inner expr is just a bare identifier (the old PS_INPUT var),
             // skip it — the output varyings are already set directly.
-            // Only keep the expr if it's a function call or complex expression.
             if (std::regex_match(innerExpr, std::regex(R"(\s*\w+\s*)")))
                 replaced += "EmitVertex();";
             else
