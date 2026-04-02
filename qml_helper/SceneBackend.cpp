@@ -438,6 +438,88 @@ void SceneObject::fireResizeScreen(int width, int height) {
     }
 }
 
+// Media integration event dispatch — called from QML MprisMonitor via Q_INVOKABLE
+
+void SceneObject::mediaPlaybackChanged(int state) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    QJSValue event = m_jsEngine->newObject();
+    event.setProperty("state", state);
+    for (auto& s : m_propertyScriptStates) {
+        if (!s.mediaPlaybackChangedFn.isCallable()) continue;
+        if (!s.layerName.empty())
+            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+        s.mediaPlaybackChangedFn.call({ event });
+    }
+}
+
+void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
+                                         const QString& albumTitle, const QString& albumArtist,
+                                         const QString& genres) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    QJSValue event = m_jsEngine->newObject();
+    event.setProperty("title", title);
+    event.setProperty("artist", artist);
+    event.setProperty("albumTitle", albumTitle);
+    event.setProperty("albumArtist", albumArtist);
+    event.setProperty("genres", genres);
+    event.setProperty("contentType", QJSValue("media"));
+    for (auto& s : m_propertyScriptStates) {
+        if (!s.mediaPropertiesChangedFn.isCallable()) continue;
+        if (!s.layerName.empty())
+            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+        s.mediaPropertiesChangedFn.call({ event });
+    }
+}
+
+void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
+    auto toVec3 = [&](int idx) -> QJSValue {
+        if (idx * 3 + 2 >= colors.size()) return vec3Fn.call({ QJSValue(0), QJSValue(0), QJSValue(0) });
+        return vec3Fn.call({ QJSValue(colors[idx*3].toDouble()),
+                             QJSValue(colors[idx*3+1].toDouble()),
+                             QJSValue(colors[idx*3+2].toDouble()) });
+    };
+    QJSValue event = m_jsEngine->newObject();
+    event.setProperty("hasThumbnail", hasThumbnail);
+    event.setProperty("primaryColor", toVec3(0));
+    event.setProperty("secondaryColor", toVec3(1));
+    event.setProperty("tertiaryColor", toVec3(2));
+    event.setProperty("textColor", toVec3(3));
+    event.setProperty("highContrastColor", toVec3(4));
+    for (auto& s : m_propertyScriptStates) {
+        if (!s.mediaThumbnailChangedFn.isCallable()) continue;
+        if (!s.layerName.empty())
+            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+        s.mediaThumbnailChangedFn.call({ event });
+    }
+}
+
+void SceneObject::mediaTimelineChanged(double position, double duration) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    QJSValue event = m_jsEngine->newObject();
+    event.setProperty("position", position);
+    event.setProperty("duration", duration);
+    for (auto& s : m_propertyScriptStates) {
+        if (!s.mediaTimelineChangedFn.isCallable()) continue;
+        if (!s.layerName.empty())
+            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+        s.mediaTimelineChangedFn.call({ event });
+    }
+}
+
+void SceneObject::mediaStatusChanged(bool enabled) {
+    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    QJSValue event = m_jsEngine->newObject();
+    event.setProperty("enabled", enabled);
+    for (auto& s : m_propertyScriptStates) {
+        if (!s.mediaStatusChangedFn.isCallable()) continue;
+        if (!s.layerName.empty())
+            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+        s.mediaStatusChangedFn.call({ event });
+    }
+}
+
 void SceneObject::play() { m_scene->play(); }
 void SceneObject::pause() { m_scene->pause(); }
 
@@ -1451,6 +1533,11 @@ void SceneObject::setupTextScripts() {
     engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
     engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
 
+    // Media playback event constants (WE SceneScript MediaPlaybackEvent)
+    m_jsEngine->evaluate(
+        "var MediaPlaybackEvent = { CYCLIC: -1, PLAYBACK_STOPPED: 0, PLAYBACK_PLAYING: 1, PLAYBACK_PAUSED: 2 };\n"
+    );
+
     // engine.registerAudioBuffers(resolution) — implemented as native C++ callback
     {
         // Store 'this' pointer for the closure; safe because cleanupTextScripts() removes timer
@@ -1716,11 +1803,24 @@ void SceneObject::setupTextScripts() {
             "               (typeof destroy === 'function' ? destroy : null);\n"
             "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen :\n"
             "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
+            "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? exports.mediaPlaybackChanged :\n"
+            "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged : null);\n"
+            "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? exports.mediaPropertiesChanged :\n"
+            "              (typeof mediaPropertiesChanged === 'function' ? mediaPropertiesChanged : null);\n"
+            "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? exports.mediaThumbnailChanged :\n"
+            "              (typeof mediaThumbnailChanged === 'function' ? mediaThumbnailChanged : null);\n"
+            "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? exports.mediaTimelineChanged :\n"
+            "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged : null);\n"
+            "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? exports.mediaStatusChanged :\n"
+            "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : null);\n"
             "  return { update: _upd, init: _init, cursorClick: _click,\n"
             "           cursorEnter: _enter, cursorLeave: _leave,\n"
             "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
             "           applyUserProperties: _aup, destroy: _destr,\n"
-            "           resizeScreen: _resize };\n"
+            "           resizeScreen: _resize,\n"
+            "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
+            "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
+            "           mediaStatusChanged: _mstc };\n"
             "})()\n"
         ).arg(propsInit, scriptSrc);
 
@@ -1753,13 +1853,21 @@ void SceneObject::setupTextScripts() {
         QJSValue applyUserPropertiesFn = result.property("applyUserProperties");
         QJSValue destroyFn     = result.property("destroy");
         QJSValue resizeScreenFn = result.property("resizeScreen");
+        QJSValue mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+        QJSValue mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+        QJSValue mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+        QJSValue mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+        QJSValue mediaStatusChangedFn     = result.property("mediaStatusChanged");
 
         // Scripts with no callable functions are useless
         if (!updateFn.isCallable() && !initFn.isCallable() && !cursorClickFn.isCallable()
             && !cursorEnterFn.isCallable() && !cursorLeaveFn.isCallable()
             && !cursorDownFn.isCallable() && !cursorUpFn.isCallable()
             && !cursorMoveFn.isCallable() && !applyUserPropertiesFn.isCallable()
-            && !destroyFn.isCallable() && !resizeScreenFn.isCallable()) {
+            && !destroyFn.isCallable() && !resizeScreenFn.isCallable()
+            && !mediaPlaybackChangedFn.isCallable() && !mediaPropertiesChangedFn.isCallable()
+            && !mediaThumbnailChangedFn.isCallable() && !mediaTimelineChangedFn.isCallable()
+            && !mediaStatusChangedFn.isCallable()) {
             continue;
         }
 
@@ -1778,6 +1886,11 @@ void SceneObject::setupTextScripts() {
         state.applyUserPropertiesFn = applyUserPropertiesFn;
         state.destroyFn      = destroyFn;
         state.resizeScreenFn = resizeScreenFn;
+        state.mediaPlaybackChangedFn   = mediaPlaybackChangedFn;
+        state.mediaPropertiesChangedFn = mediaPropertiesChangedFn;
+        state.mediaThumbnailChangedFn  = mediaThumbnailChangedFn;
+        state.mediaTimelineChangedFn   = mediaTimelineChangedFn;
+        state.mediaStatusChangedFn     = mediaStatusChangedFn;
         state.currentVisible = psi.initialVisible;
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;

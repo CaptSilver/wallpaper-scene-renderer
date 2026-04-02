@@ -75,6 +75,15 @@ public:
     Q_INVOKABLE void setAcceptMouse(bool);
     Q_INVOKABLE void setAcceptHover(bool);
 
+    // Media integration events (called from QML MprisMonitor, dispatched to JS)
+    Q_INVOKABLE void mediaPlaybackChanged(int state);
+    Q_INVOKABLE void mediaPropertiesChanged(const QString& title, const QString& artist,
+                                            const QString& albumTitle, const QString& albumArtist,
+                                            const QString& genres);
+    Q_INVOKABLE void mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors);
+    Q_INVOKABLE void mediaTimelineChanged(double position, double duration);
+    Q_INVOKABLE void mediaStatusChanged(bool enabled);
+
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -159,6 +168,11 @@ private:
         QJSValue    applyUserPropertiesFn; // optional applyUserProperties handler
         QJSValue    destroyFn;             // optional destroy handler
         QJSValue    resizeScreenFn;        // optional resizeScreen handler
+        QJSValue    mediaPlaybackChangedFn;
+        QJSValue    mediaPropertiesChangedFn;
+        QJSValue    mediaThumbnailChangedFn;
+        QJSValue    mediaTimelineChangedFn;
+        QJSValue    mediaStatusChangedFn;
         QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
         bool                 currentVisible {true};
         std::array<float, 3> currentVec3 {0, 0, 0};

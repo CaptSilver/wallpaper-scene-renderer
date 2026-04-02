@@ -2785,6 +2785,16 @@ static const char* PROP_IIFE_POST =
     "              (typeof destroy === 'function' ? destroy : null);\n"
     "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen :\n"
     "               (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
+    "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? exports.mediaPlaybackChanged :\n"
+    "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged : null);\n"
+    "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? exports.mediaPropertiesChanged :\n"
+    "              (typeof mediaPropertiesChanged === 'function' ? mediaPropertiesChanged : null);\n"
+    "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? exports.mediaThumbnailChanged :\n"
+    "              (typeof mediaThumbnailChanged === 'function' ? mediaThumbnailChanged : null);\n"
+    "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? exports.mediaTimelineChanged :\n"
+    "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged : null);\n"
+    "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? exports.mediaStatusChanged :\n"
+    "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : null);\n"
     "  var _init2 = _rawInit ? function(v) {\n"
     "    try { return _rawInit(v); } catch(e) { console.log('init error: ' + e.message); }\n"
     "  } : null;\n"
@@ -2794,7 +2804,10 @@ static const char* PROP_IIFE_POST =
     "  return { update: _upd2, init: _init2,\n"
     "    cursorClick: _click, cursorEnter: _enter, cursorLeave: _leave,\n"
     "    cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
-    "    applyUserProperties: _aup, destroy: _destr, resizeScreen: _resize };\n"
+    "    applyUserProperties: _aup, destroy: _destr, resizeScreen: _resize,\n"
+    "    mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
+    "    mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
+    "    mediaStatusChanged: _mstc };\n"
     "})()";
 
 TEST_CASE("exports.update extracted from text IIFE") {
@@ -2833,7 +2846,7 @@ TEST_CASE("exports.init extracted alongside update") {
     CHECK(r.property("update").isCallable());
 }
 
-TEST_CASE("property IIFE extracts all 11 handlers") {
+TEST_CASE("property IIFE extracts all 16 handlers") {
     ScriptEnv env;
     QString script = QString(
         "(function() {\n"
@@ -2850,6 +2863,11 @@ TEST_CASE("property IIFE extracts all 11 handlers") {
         "  exports.applyUserProperties = function(p){};\n"
         "  exports.destroy = function(){};\n"
         "  exports.resizeScreen = function(w,h){};\n"
+        "  exports.mediaPlaybackChanged = function(e){};\n"
+        "  exports.mediaPropertiesChanged = function(e){};\n"
+        "  exports.mediaThumbnailChanged = function(e){};\n"
+        "  exports.mediaTimelineChanged = function(e){};\n"
+        "  exports.mediaStatusChanged = function(e){};\n"
         "%1").arg(PROP_IIFE_POST);
     QJSValue r = env.engine.evaluate(script);
     CHECK(r.property("update").isCallable());
@@ -2863,6 +2881,11 @@ TEST_CASE("property IIFE extracts all 11 handlers") {
     CHECK(r.property("applyUserProperties").isCallable());
     CHECK(r.property("destroy").isCallable());
     CHECK(r.property("resizeScreen").isCallable());
+    CHECK(r.property("mediaPlaybackChanged").isCallable());
+    CHECK(r.property("mediaPropertiesChanged").isCallable());
+    CHECK(r.property("mediaThumbnailChanged").isCallable());
+    CHECK(r.property("mediaTimelineChanged").isCallable());
+    CHECK(r.property("mediaStatusChanged").isCallable());
 }
 
 TEST_CASE("property IIFE update wrapped in try-catch returns input on error") {
@@ -3118,6 +3141,118 @@ TEST_CASE("script with only destroy is kept") {
     QJSValue r = env.engine.evaluate(script);
     CHECK_FALSE(r.isNull());
     CHECK(r.property("destroy").isCallable());
+}
+
+TEST_CASE("mediaPlaybackChanged extracted from exports") {
+    ScriptEnv env;
+    env.engine.evaluate("var _capturedState = -1;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.mediaPlaybackChanged = function(e){ _capturedState = e.state; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK(r.property("mediaPlaybackChanged").isCallable());
+    // Simulate calling the handler
+    QJSValue event = env.engine.newObject();
+    event.setProperty("state", 1);
+    r.property("mediaPlaybackChanged").call({ event });
+    CHECK(env.engine.evaluate("_capturedState").toInt() == 1);
+}
+
+TEST_CASE("mediaPropertiesChanged receives event properties") {
+    ScriptEnv env;
+    env.engine.evaluate("var _capturedTitle = '';");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.mediaPropertiesChanged = function(e){ _capturedTitle = e.title; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    QJSValue event = env.engine.newObject();
+    event.setProperty("title", QJSValue("Test Song"));
+    event.setProperty("artist", QJSValue("Test Artist"));
+    r.property("mediaPropertiesChanged").call({ event });
+    CHECK(env.engine.evaluate("_capturedTitle").toString() == "Test Song");
+}
+
+TEST_CASE("mediaThumbnailChanged receives Vec3 colors") {
+    ScriptEnv env;
+    env.engine.evaluate("var _hasThumbnail = false; var _primaryR = 0;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.mediaThumbnailChanged = function(e){\n"
+        "    _hasThumbnail = e.hasThumbnail;\n"
+        "    _primaryR = e.primaryColor.r;\n"
+        "  };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    QJSValue event = env.engine.newObject();
+    event.setProperty("hasThumbnail", true);
+    QJSValue vec3Fn = env.engine.globalObject().property("Vec3");
+    event.setProperty("primaryColor", vec3Fn.call({ QJSValue(0.8), QJSValue(0.2), QJSValue(0.1) }));
+    r.property("mediaThumbnailChanged").call({ event });
+    CHECK(env.engine.evaluate("_hasThumbnail").toBool());
+    CHECK(env.engine.evaluate("_primaryR").toNumber() == doctest::Approx(0.8));
+}
+
+TEST_CASE("mediaTimelineChanged receives position and duration") {
+    ScriptEnv env;
+    env.engine.evaluate("var _pos = 0; var _dur = 0;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.mediaTimelineChanged = function(e){ _pos = e.position; _dur = e.duration; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    QJSValue event = env.engine.newObject();
+    event.setProperty("position", 42.5);
+    event.setProperty("duration", 180.0);
+    r.property("mediaTimelineChanged").call({ event });
+    CHECK(env.engine.evaluate("_pos").toNumber() == doctest::Approx(42.5));
+    CHECK(env.engine.evaluate("_dur").toNumber() == doctest::Approx(180.0));
+}
+
+TEST_CASE("mediaStatusChanged receives enabled flag") {
+    ScriptEnv env;
+    env.engine.evaluate("var _enabled = false;");
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "  exports.mediaStatusChanged = function(e){ _enabled = e.enabled; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    QJSValue event = env.engine.newObject();
+    event.setProperty("enabled", true);
+    r.property("mediaStatusChanged").call({ event });
+    CHECK(env.engine.evaluate("_enabled").toBool());
+}
+
+TEST_CASE("media handler null when not defined") {
+    ScriptEnv env;
+    QString script = QString(
+        "(function() {\n"
+        "  'use strict';\n"
+        "  var exports = {};\n"
+        "  exports.update = function(v){ return v; };\n"
+        "%1").arg(PROP_IIFE_POST);
+    QJSValue r = env.engine.evaluate(script);
+    CHECK_FALSE(r.property("mediaPlaybackChanged").isCallable());
+    CHECK_FALSE(r.property("mediaPropertiesChanged").isCallable());
+    CHECK_FALSE(r.property("mediaThumbnailChanged").isCallable());
+    CHECK_FALSE(r.property("mediaTimelineChanged").isCallable());
+    CHECK_FALSE(r.property("mediaStatusChanged").isCallable());
 }
 
 } // TEST_SUITE Script Compilation
