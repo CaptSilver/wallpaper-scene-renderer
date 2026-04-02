@@ -1453,6 +1453,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
 
             if (eff_mat_ok) {
+                imgEffect->name = wpeffobj.name;
                 imgEffectLayer->AddEffect(imgEffect);
                 LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
                          i_eff,
@@ -1460,6 +1461,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                          imgEffect->nodes.size());
             } else {
                 LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
+            }
+        }
+        // Store effect names per layer for SceneScript getEffect()
+        {
+            std::vector<std::string> effNames;
+            for (size_t i = 0; i < imgEffectLayer->EffectCount(); i++) {
+                effNames.push_back(imgEffectLayer->GetEffect(i)->name);
+            }
+            if (!effNames.empty()) {
+                context.scene->layerEffectNames[wpimgobj.name] = std::move(effNames);
             }
         }
         LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",

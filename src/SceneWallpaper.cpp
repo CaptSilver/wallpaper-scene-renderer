@@ -326,6 +326,11 @@ public:
         }
     }
 
+    void setEffectVisible(i32 nodeId, i32 effectIndex, bool visible) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_effect_visible.emplace_back(nodeId, effectIndex, visible);
+    }
+
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
@@ -586,6 +591,19 @@ private:
                         mat->customShader.constValuesDirty           = true;
                     }
                 }
+                // Apply effect visibility changes
+                for (auto& [nodeId, effIdx, vis] : m_pending_effect_visible) {
+                    auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
+                    if (eit == m_scene->nodeEffectLayerMap.end()) continue;
+                    auto* effLayer = eit->second;
+                    if (effIdx < 0 || effIdx >= (i32)effLayer->EffectCount()) continue;
+                    auto& eff = effLayer->GetEffect(effIdx);
+                    eff->visible = vis;
+                    for (auto& en : eff->nodes) {
+                        en.sceneNode->SetVisible(vis);
+                    }
+                }
+                m_pending_effect_visible.clear();
                 if (logDiag) {
                     LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d "
                              "miss=%d, alpha=%zu",
@@ -849,6 +867,7 @@ private:
     std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
     std::unordered_map<i32, bool>                               m_pending_visible_updates;
     std::unordered_map<i32, float>                              m_pending_alpha_updates;
+    std::vector<std::tuple<i32, i32, bool>>                     m_pending_effect_visible; // (nodeId, effectIdx, visible)
 
     // Scene-level pending updates (under m_property_update_mutex)
     std::optional<std::array<float, 3>> m_pending_clear_color;
@@ -959,6 +978,10 @@ void SceneWallpaper::updateNodeVisible(int32_t id, bool visible) {
 
 void SceneWallpaper::updateNodeAlpha(int32_t id, float alpha) {
     m_main_handler->renderHandler()->setNodeAlpha(id, alpha);
+}
+
+void SceneWallpaper::updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible) {
+    m_main_handler->renderHandler()->setEffectVisible(nodeId, effectIndex, visible);
 }
 
 std::vector<SoundVolumeScriptInfo> SceneWallpaper::getSoundVolumeScripts() const {
@@ -1564,11 +1587,18 @@ void MainHandler::loadScene() {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
         nlohmann::json              j = nlohmann::json::object();
         for (const auto& [name, lis] : scene->layerInitialStates) {
-            j[name] = { { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
-                        { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
-                        { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
-                        { "v", lis.visible },
-                        { "sz", { lis.size[0], lis.size[1] } } };
+            auto entry = nlohmann::json{
+                { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
+                { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
+                { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
+                { "v", lis.visible },
+                { "sz", { lis.size[0], lis.size[1] } } };
+            // Include effect names for SceneScript getEffect()
+            auto eit = scene->layerEffectNames.find(name);
+            if (eit != scene->layerEffectNames.end()) {
+                entry["efx"] = eit->second;
+            }
+            j[name] = std::move(entry);
         }
         j["_ortho"]       = { scene->ortho[0], scene->ortho[1] };
         m_layer_init_json = j.dump();

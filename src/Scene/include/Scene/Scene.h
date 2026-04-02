@@ -169,6 +169,9 @@ public:
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;
 
+    // Layer name → ordered list of effect names for SceneScript getEffect()
+    std::unordered_map<std::string, std::vector<std::string>> layerEffectNames;
+
     // Sound layer info for SceneScript play/stop/pause API (enumerateLayers)
     struct SoundLayerInfo {
         std::string name;

@@ -98,6 +98,7 @@ public:
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
+    void updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);
 

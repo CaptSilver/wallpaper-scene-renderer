@@ -990,6 +990,31 @@ static const char* JS_LAYER_INFRA =
     "    _s._aniLayers[key] = al;\n"
     "    return al;\n"
     "  };\n"
+    // getEffect(name) — effect proxy with dirty-tracked visible
+    "  if (!_s._effCache) _s._effCache = {};\n"
+    "  p.getEffect = function(ename) {\n"
+    "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
+    "    var efxList = init ? init.efx : null;\n"
+    "    if (!efxList) return null;\n"
+    "    var idx = -1;\n"
+    "    for (var i = 0; i < efxList.length; i++) {\n"
+    "      if (efxList[i] === ename) { idx = i; break; }\n"
+    "    }\n"
+    "    if (idx < 0) return null;\n"
+    "    var es = { visible: true, name: ename, _idx: idx };\n"
+    "    var ep = {};\n"
+    "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: true });\n"
+    "    Object.defineProperty(ep, 'visible', {\n"
+    "      get: function(){ return es.visible; },\n"
+    "      set: function(v){ es.visible = v; _s._dirty['_efx_' + idx] = { idx: idx, v: v }; },\n"
+    "      enumerable: true\n"
+    "    });\n"
+    "    _s._effCache[ename] = ep;\n"
+    "    return ep;\n"
+    "  };\n"
+    "  p.getEffectCount = function() {\n"
+    "    return (init && init.efx) ? init.efx.length : 0;\n"
+    "  };\n"
     "  p._state = _s;\n"
     "  return p;\n"
     "}\n"
@@ -1036,6 +1061,8 @@ static const char* JS_LAYER_INFRA =
     "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, setFrame:function(f){}\n"
     "    };\n"
     "  };\n"
+    "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
+    "  p.getEffectCount = function() { return 0; };\n"
     "  p._state = _s;\n"
     "  return p;\n"
     "})();\n"
@@ -1204,7 +1231,8 @@ struct ScriptEnv {
         // Layer init states (test data)
         engine.evaluate(
             "var _layerInitStates = {\n"
-            "  'bg': { o: [100, 200, 0], s: [1, 1, 1], a: [0, 0, 45], sz: [1920, 1080], v: true },\n"
+            "  'bg': { o: [100, 200, 0], s: [1, 1, 1], a: [0, 0, 45], sz: [1920, 1080], v: true,\n"
+            "          efx: ['Blur', 'Shake_Glitch_3', 'ChromAb'] },\n"
             "  'fg': { o: [0, 0, 0], s: [2, 2, 2], a: [0, 0, 0], sz: [800, 600], v: false }\n"
             "};\n"
             "var _sceneOrtho = [1920, 1080];\n"
@@ -2394,6 +2422,82 @@ TEST_CASE("getAnimationLayer by name") {
         "al.blend = 0.3;");
     CHECK(env.engine.evaluate("thisScene.getLayer('bg').getAnimationLayer('sway').blend").toNumber()
           == doctest::Approx(0.3));
+}
+
+// ------------------------------------------------------------------
+// Effect Proxy (getEffect)
+// ------------------------------------------------------------------
+
+TEST_CASE("getEffect returns proxy with correct name") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getEffect('Blur').name").toString() == "Blur");
+}
+
+TEST_CASE("getEffect returns null for unknown effect") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getEffect('NoSuchEffect')").isNull());
+}
+
+TEST_CASE("getEffect returns null on layer without effects") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('fg').getEffect('Blur')").isNull());
+}
+
+TEST_CASE("getEffect visible defaults to true") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getEffect('Shake_Glitch_3').visible").toBool());
+}
+
+TEST_CASE("getEffect visible setter updates value") {
+    ScriptEnv env;
+    env.engine.evaluate("thisScene.getLayer('bg').getEffect('Shake_Glitch_3').visible = false;");
+    CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('bg').getEffect('Shake_Glitch_3').visible").toBool());
+}
+
+TEST_CASE("getEffect visible setter marks dirty") {
+    ScriptEnv env;
+    env.engine.evaluate("thisScene.getLayer('bg').getEffect('Blur').visible = false;");
+    QJSValue updates = env.engine.evaluate("_collectDirtyLayers()");
+    CHECK(updates.property("length").toInt() == 1);
+    QJSValue dirty = updates.property(0).property("dirty");
+    CHECK(dirty.property("_efx_0").isObject());
+    CHECK(dirty.property("_efx_0").property("idx").toInt() == 0);
+    CHECK(dirty.property("_efx_0").property("v").toBool() == false);
+}
+
+TEST_CASE("getEffect dirty resets after collection") {
+    ScriptEnv env;
+    env.engine.evaluate("thisScene.getLayer('bg').getEffect('ChromAb').visible = false;");
+    env.engine.evaluate("_collectDirtyLayers()");
+    QJSValue updates2 = env.engine.evaluate("_collectDirtyLayers()");
+    CHECK(updates2.property("length").toInt() == 0);
+}
+
+TEST_CASE("getEffectCount returns correct count") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').getEffectCount()").toInt() == 3);
+    CHECK(env.engine.evaluate("thisScene.getLayer('fg').getEffectCount()").toInt() == 0);
+}
+
+TEST_CASE("getEffect cached by name") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var e1 = thisScene.getLayer('bg').getEffect('Blur');\n"
+        "e1.visible = false;\n"
+        "var e2 = thisScene.getLayer('bg').getEffect('Blur');");
+    CHECK_FALSE(env.engine.evaluate("e2.visible").toBool());
+}
+
+TEST_CASE("nullProxy getEffect returns safe stub") {
+    ScriptEnv env;
+    QJSValue eff = env.engine.evaluate("thisScene.getLayer('nonexistent').getEffect('X')");
+    CHECK(eff.property("name").toString() == "X");
+    CHECK(eff.property("visible").toBool() == false);
+}
+
+TEST_CASE("nullProxy getEffectCount returns 0") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('nonexistent').getEffectCount()").toInt() == 0);
 }
 
 TEST_CASE("nullProxy getAnimationLayer is safe") {

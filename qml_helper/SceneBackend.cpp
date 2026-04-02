@@ -1,6 +1,7 @@
 #include "SceneBackend.hpp"
 #include "SceneTimerBridge.h"
 
+#include <QJSValueIterator>
 #include <QtGlobal>
 #include <QtCore/QObject>
 #include <QtCore/QDir>
@@ -1048,6 +1049,31 @@ void SceneObject::setupTextScripts() {
         "    _s._aniLayers[key] = al;\n"
         "    return al;\n"
         "  };\n"
+        // getEffect(name) — returns effect proxy with dirty-tracked visible property
+        "  if (!_s._effCache) _s._effCache = {};\n"
+        "  p.getEffect = function(ename) {\n"
+        "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
+        "    var efxList = init ? init.efx : null;\n"
+        "    if (!efxList) return null;\n"
+        "    var idx = -1;\n"
+        "    for (var i = 0; i < efxList.length; i++) {\n"
+        "      if (efxList[i] === ename) { idx = i; break; }\n"
+        "    }\n"
+        "    if (idx < 0) return null;\n"
+        "    var es = { visible: true, name: ename, _idx: idx };\n"
+        "    var ep = {};\n"
+        "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: true });\n"
+        "    Object.defineProperty(ep, 'visible', {\n"
+        "      get: function(){ return es.visible; },\n"
+        "      set: function(v){ es.visible = v; _s._dirty['_efx_' + idx] = { idx: idx, v: v }; },\n"
+        "      enumerable: true\n"
+        "    });\n"
+        "    _s._effCache[ename] = ep;\n"
+        "    return ep;\n"
+        "  };\n"
+        "  p.getEffectCount = function() {\n"
+        "    return (init && init.efx) ? init.efx.length : 0;\n"
+        "  };\n"
         "  p._state = _s;\n"
         "  return p;\n"
         "}\n"
@@ -1096,6 +1122,8 @@ void SceneObject::setupTextScripts() {
         "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, setFrame:function(f){}\n"
         "    };\n"
         "  };\n"
+        "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
+        "  p.getEffectCount = function() { return 0; };\n"
         "  p._state = _s;\n"
         "  return p;\n"
         "})();\n"
@@ -2386,6 +2414,19 @@ void SceneObject::evaluatePropertyScripts() {
             if (dirty.property("text").toBool()) {
                 std::string newText = entry.property("text").toString().toStdString();
                 m_scene->updateText(id, newText);
+            }
+            // Handle effect visibility dirty entries (_efx_N keys)
+            {
+                QJSValueIterator it(dirty);
+                while (it.hasNext()) {
+                    it.next();
+                    if (it.name().startsWith("_efx_")) {
+                        QJSValue efxEntry = it.value();
+                        int effIdx = efxEntry.property("idx").toInt();
+                        bool effVis = efxEntry.property("v").toBool();
+                        m_scene->updateEffectVisible(id, effIdx, effVis);
+                    }
+                }
             }
         }
     }
