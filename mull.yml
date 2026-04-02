@@ -9,5 +9,8 @@ mutators:
 timeout: 10000  # 10 seconds per mutant (test suite runs in ~1s)
 
 excludePaths:
-  - third_party/.*
-  - src/Test/.*
+  - .*/third_party/.*
+  - .*/src/Test/.*
+  - .*/nlohmann/.*
+  - .*/Eigen/.*
+  - .*/doctest/.*
