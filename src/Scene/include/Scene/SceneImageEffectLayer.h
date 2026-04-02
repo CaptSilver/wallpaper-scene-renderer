@@ -30,6 +30,8 @@ struct SceneImageEffect {
         std::string src;
         i32         afterpos { 0 }; // start at 1, 0 for begin at all
     };
+    std::string                     name;    // effect name from scene.json
+    bool                            visible { true }; // runtime visibility toggle
     std::vector<Command>            commands;
     std::list<SceneImageEffectNode> nodes;
 };
