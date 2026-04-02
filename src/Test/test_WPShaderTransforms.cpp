@@ -770,6 +770,31 @@ TEST_CASE("glOutColor component write not wrapped") {
     CHECK(result.find("vec4(") == std::string::npos);
 }
 
+TEST_CASE("mix vec4 arg truncated to .rgb when LHS is .rgb") {
+    std::string in = "albedo.rgb = mix(albedo, hsv2rgb(colors), mask);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
+}
+
+TEST_CASE("mix vec4 arg truncated to .xyz when LHS is .xyz") {
+    std::string in = "color.xyz = mix(color, other_vec3, t);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("mix(color.xyz,") != std::string::npos);
+}
+
+TEST_CASE("mix already swizzled — no double swizzle") {
+    std::string in = "albedo.rgb = mix(albedo.rgb, hsv2rgb(colors), mask);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
+    CHECK(result.find("albedo.rgb.rgb") == std::string::npos);
+}
+
+TEST_CASE("mix different var on LHS — unchanged") {
+    std::string in = "result.rgb = mix(albedo, hsv2rgb(colors), mask);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("mix(albedo,") != std::string::npos);
+}
+
 } // TEST_SUITE("FixImplicitConversions")
 
 // ===========================================================================

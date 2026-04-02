@@ -2780,3 +2780,4 @@ void SceneObject::cleanupTextScripts() {
 }
 
 #include "SceneBackend.moc"
+#include "moc_SceneTimerBridge.cpp"

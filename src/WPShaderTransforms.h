@@ -794,6 +794,14 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "glOutColor = vec4($1);");
     }
 
+    // Fix: VAR.rgb = mix(VAR, ...) or VAR.xyz = mix(VAR, ...)
+    // HLSL lerp() auto-truncates vec4→vec3; GLSL mix() requires matching types.
+    // When a vec4 var is swizzled on the LHS but used bare as first arg to mix(), add swizzle.
+    {
+        std::regex re(R"((\w+)\.(rgb|xyz)(\s*=\s*mix\s*\(\s*)\1\b(?!\s*[.\[]))");
+        result = std::regex_replace(result, re, "$1.$2$3$1.$2");
+    }
+
     return result;
 }
 
