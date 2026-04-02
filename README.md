@@ -208,7 +208,7 @@ to a valid fragment shader will render. Known working:
 - [x] `shared` global (inter-script data sharing)
 - [x] Events: `init`, `update`
 - [x] Events: `destroy`, `applyUserProperties`, `resizeScreen`
-- [ ] Media integration events (`mediaPlaybackChanged`, `mediaPropertiesChanged`, etc.)
+- [x] Media integration events (MPRIS D-Bus → `mediaPlaybackChanged`, `mediaPropertiesChanged`, `mediaThumbnailChanged`, `mediaTimelineChanged`, `mediaStatusChanged`)
 - [x] `ILocalStorage` (in-memory key-value store: get/set/remove/clear)
 - [x] Text layer dynamic content (scripts driving text updates)
 - [x] Color scripts (`colorScript` field parsed, compiled, evaluated at 30Hz)
