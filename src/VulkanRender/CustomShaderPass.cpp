@@ -353,10 +353,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                             image->header.height,
                             m_desc.node,
                         });
-                        LOG_INFO("video texture registered: '%s' %dx%d path=%s",
+                        LOG_INFO("video texture registered: '%s' %dx%d ownerNode=%d path=%s",
                                  tex_name.c_str(),
                                  image->header.width,
                                  image->header.height,
+                                 m_desc.node ? m_desc.node->ID() : -999,
                                  image->header.videoFilePath.c_str());
                     }
                 }
