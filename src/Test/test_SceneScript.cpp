@@ -1074,6 +1074,35 @@ static const char* JS_LAYER_INFRA =
     "    return _layerCache[name];\n"
     "  }\n"
     "};\n"
+    "var _sceneListeners = {};\n"
+    "thisScene.on = function(eventName, callback) {\n"
+    "  if (typeof eventName !== 'string' || typeof callback !== 'function') return;\n"
+    "  if (!_sceneListeners[eventName]) _sceneListeners[eventName] = [];\n"
+    "  _sceneListeners[eventName].push(callback);\n"
+    "};\n"
+    "thisScene.off = function(eventName, callback) {\n"
+    "  if (!_sceneListeners[eventName]) return;\n"
+    "  if (typeof callback === 'function') {\n"
+    "    _sceneListeners[eventName] = _sceneListeners[eventName].filter(\n"
+    "      function(cb) { return cb !== callback; });\n"
+    "  } else { delete _sceneListeners[eventName]; }\n"
+    "};\n"
+    "function _fireSceneEvent(eventName) {\n"
+    "  var listeners = _sceneListeners[eventName];\n"
+    "  if (!listeners || listeners.length === 0) return 0;\n"
+    "  var args = Array.prototype.slice.call(arguments, 1);\n"
+    "  var count = 0;\n"
+    "  for (var i = 0; i < listeners.length; i++) {\n"
+    "    try { listeners[i].apply(null, args); count++; }\n"
+    "    catch(e) { console.log('scene.on(' + eventName + ') error: ' + e.message); }\n"
+    "  }\n"
+    "  return count;\n"
+    "}\n"
+    "function _hasSceneListeners(eventName) {\n"
+    "  var l = _sceneListeners[eventName];\n"
+    "  return l && l.length > 0;\n"
+    "}\n"
+    "var scene = thisScene;\n"
     "var thisLayer = null;\n"
     "function _collectDirtyLayers() {\n"
     "  var updates = [];\n"
@@ -2541,8 +2570,161 @@ TEST_CASE("getLayer returns nullProxy for unknown") {
     CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('nope').visible").toBool());
 }
 
+TEST_CASE("scene is alias for thisScene") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("scene === thisScene").toBool());
+    CHECK(env.engine.evaluate("typeof scene.getLayer").toString() == "function");
+}
+
 } // TEST_SUITE Layer Proxy
 
+// ------------------------------------------------------------------
+// Scene Event Bus
+// ------------------------------------------------------------------
+
+TEST_SUITE("Scene Event Bus") {
+
+TEST_CASE("scene.on and scene.off are functions") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("typeof scene.on").toString() == "function");
+    CHECK(env.engine.evaluate("typeof scene.off").toString() == "function");
+}
+
+TEST_CASE("scene.on registers listener that _fireSceneEvent invokes") {
+    ScriptEnv env;
+    env.engine.evaluate("var called = 0; scene.on('update', function() { called++; })");
+    env.engine.evaluate("_fireSceneEvent('update')");
+    CHECK(env.engine.evaluate("called").toInt() == 1);
+}
+
+TEST_CASE("_fireSceneEvent returns listener count") {
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("_fireSceneEvent('nope')").toInt() == 0);
+    env.engine.evaluate("scene.on('test', function() {})");
+    CHECK(env.engine.evaluate("_fireSceneEvent('test')").toInt() == 1);
+}
+
+TEST_CASE("multiple listeners for same event all fire") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var a = 0, b = 0;"
+        "scene.on('tick', function() { a++; });"
+        "scene.on('tick', function() { b++; });");
+    env.engine.evaluate("_fireSceneEvent('tick')");
+    CHECK(env.engine.evaluate("a").toInt() == 1);
+    CHECK(env.engine.evaluate("b").toInt() == 1);
+}
+
+TEST_CASE("listener receives arguments") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var gotW = 0, gotH = 0;"
+        "scene.on('resizeScreen', function(w, h) { gotW = w; gotH = h; });");
+    env.engine.evaluate("_fireSceneEvent('resizeScreen', 1920, 1080)");
+    CHECK(env.engine.evaluate("gotW").toInt() == 1920);
+    CHECK(env.engine.evaluate("gotH").toInt() == 1080);
+}
+
+TEST_CASE("listener receives event object") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var gotState = -1;"
+        "scene.on('mediaPlaybackChanged', function(e) { gotState = e.state; });");
+    env.engine.evaluate("_fireSceneEvent('mediaPlaybackChanged', { state: 1 })");
+    CHECK(env.engine.evaluate("gotState").toInt() == 1);
+}
+
+TEST_CASE("error in one listener does not prevent others") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var ok = false;"
+        "scene.on('test', function() { throw new Error('boom'); });"
+        "scene.on('test', function() { ok = true; });");
+    auto result = env.engine.evaluate("_fireSceneEvent('test')");
+    CHECK_FALSE(result.isError());
+    CHECK(env.engine.evaluate("ok").toBool());
+}
+
+TEST_CASE("scene.off removes specific callback") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var count = 0;"
+        "var fn = function() { count++; };"
+        "scene.on('test', fn);"
+        "scene.on('test', function() { count += 10; });");
+    env.engine.evaluate("_fireSceneEvent('test')");
+    CHECK(env.engine.evaluate("count").toInt() == 11);
+    env.engine.evaluate("count = 0; scene.off('test', fn)");
+    env.engine.evaluate("_fireSceneEvent('test')");
+    CHECK(env.engine.evaluate("count").toInt() == 10);
+}
+
+TEST_CASE("scene.off with event name only removes all listeners") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "scene.on('test', function() {});"
+        "scene.on('test', function() {});");
+    CHECK(env.engine.evaluate("_hasSceneListeners('test')").toBool());
+    env.engine.evaluate("scene.off('test')");
+    CHECK_FALSE(env.engine.evaluate("_hasSceneListeners('test')").toBool());
+}
+
+TEST_CASE("scene.on ignores non-string event name") {
+    ScriptEnv env;
+    auto result = env.engine.evaluate("scene.on(123, function() {})");
+    CHECK_FALSE(result.isError());
+    CHECK_FALSE(env.engine.evaluate("_hasSceneListeners(123)").toBool());
+}
+
+TEST_CASE("scene.on ignores non-function callback") {
+    ScriptEnv env;
+    auto result = env.engine.evaluate("scene.on('test', 'notAFunction')");
+    CHECK_FALSE(result.isError());
+    CHECK_FALSE(env.engine.evaluate("_hasSceneListeners('test')").toBool());
+}
+
+TEST_CASE("_hasSceneListeners returns false when empty") {
+    ScriptEnv env;
+    CHECK_FALSE(env.engine.evaluate("_hasSceneListeners('update')").toBool());
+}
+
+TEST_CASE("_hasSceneListeners returns true after registration") {
+    ScriptEnv env;
+    env.engine.evaluate("scene.on('update', function() {})");
+    CHECK(env.engine.evaluate("_hasSceneListeners('update')").toBool());
+}
+
+TEST_CASE("listeners fire in registration order") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var order = [];"
+        "scene.on('test', function() { order.push(1); });"
+        "scene.on('test', function() { order.push(2); });"
+        "scene.on('test', function() { order.push(3); });");
+    env.engine.evaluate("_fireSceneEvent('test')");
+    CHECK(env.engine.evaluate("order.join(',')").toString() == "1,2,3");
+}
+
+TEST_CASE("update listener can modify layer proxy") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "scene.on('update', function() {"
+        "  var layer = thisScene.getLayer('bg');"
+        "  if (layer) layer.visible = false;"
+        "});");
+    env.engine.evaluate("_fireSceneEvent('update')");
+    auto dirty = env.engine.evaluate("_collectDirtyLayers()");
+    CHECK(dirty.property("length").toInt() == 1);
+    CHECK(dirty.property(0).property("name").toString() == "bg");
+}
+
+TEST_CASE("scene.off for unknown event is no-op") {
+    ScriptEnv env;
+    auto result = env.engine.evaluate("scene.off('nonexistent')");
+    CHECK_FALSE(result.isError());
+}
+
+} // TEST_SUITE Scene Event Bus
 
 // ------------------------------------------------------------------
 // Dirty Layer Collection

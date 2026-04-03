@@ -719,7 +719,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     }
 
     // Fix: writing to 'in' varying — HLSL allows mutable inputs; GLSL doesn't.
-    // Create a mutable copy for any 'in' variable that has compound assignment (+=,-=,*=,/=).
+    // Create a mutable copy for any 'in' variable that is assigned to (plain or compound).
     {
         std::regex re_in(R"(\bin\s+(vec[234]|float)\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
@@ -727,8 +727,10 @@ inline std::string FixImplicitConversions(const std::string& src) {
              ++it) {
             std::string type = (*it)[1].str();
             std::string name = (*it)[2].str();
-            std::regex  re_compound("\\b" + name + R"(\s*[\+\-\*\/]=)");
-            if (! std::regex_search(result, re_compound)) continue;
+            // Detect plain assignment (NAME = ...), component (NAME.x = ...) or
+            // compound (NAME +=/-=/*=//=), but not == (comparison).
+            std::regex  re_assign("\\b" + name + R"((\.\w+)?\s*[\+\-\*\/]?=(?!=))");
+            if (! std::regex_search(result, re_assign)) continue;
 
             // Rename all body uses: NAME → _m_NAME, then fix the 'in' declaration back
             std::string mut = "_m_" + name;
@@ -800,6 +802,60 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"((\w+)\.(rgb|xyz)(\s*=\s*mix\s*\(\s*)\1\b(?!\s*[.\[]))");
         result = std::regex_replace(result, re, "$1.$2$3$1.$2");
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// StripStrayEndifs
+// ---------------------------------------------------------------------------
+// Some workshop shaders have stray #endif directives with no matching #if.
+// glslang's preprocessor truncates all output after a stray #endif, causing
+// "unexpected end of file" errors.  Windows HLSL preprocessor is more lenient.
+// This pass removes #endif lines that would bring the nesting depth below zero.
+inline std::string StripStrayEndifs(const std::string& src) {
+    std::string result;
+    result.reserve(src.size());
+    int         depth = 0;
+    std::size_t pos   = 0;
+
+    while (pos < src.size()) {
+        auto lineEnd = src.find('\n', pos);
+        if (lineEnd == std::string::npos) lineEnd = src.size();
+
+        std::string_view line(src.data() + pos, lineEnd - pos);
+
+        // Find first non-whitespace character
+        auto first = line.find_first_not_of(" \t");
+        if (first != std::string_view::npos && line[first] == '#') {
+            auto directive = line.substr(first + 1);
+            auto dstart    = directive.find_first_not_of(" \t");
+            if (dstart != std::string_view::npos) {
+                directive = directive.substr(dstart);
+                if (directive.starts_with("if")) {
+                    ++depth;
+                } else if (directive.starts_with("endif")) {
+                    if (depth > 0) {
+                        --depth;
+                    } else {
+                        // Stray #endif — skip this line
+                        pos = (lineEnd < src.size()) ? lineEnd + 1 : lineEnd;
+                        continue;
+                    }
+                } else if (directive.starts_with("else") || directive.starts_with("elif")) {
+                    if (depth <= 0) {
+                        // Stray #else/#elif — skip
+                        pos = (lineEnd < src.size()) ? lineEnd + 1 : lineEnd;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result.append(src, pos, lineEnd - pos);
+        if (lineEnd < src.size()) result.push_back('\n');
+        pos = (lineEnd < src.size()) ? lineEnd + 1 : lineEnd;
     }
 
     return result;

@@ -197,6 +197,10 @@ private:
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
     QJSValue                          m_collectDirtyLayersFn;
     QJSValue                          m_collectDirtySceneFn;
+    QJSValue                          m_fireSceneEventFn;
+    QJSValue                          m_hasSceneListenersFn;
+    void fireSceneEventListeners(const QString& eventName,
+                                 const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {
