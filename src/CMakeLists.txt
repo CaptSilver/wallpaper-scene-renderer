@@ -2,6 +2,7 @@ find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Freetype REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
+pkg_check_modules(MPV REQUIRED mpv)
 
 option(ENABLE_RENDERDOC "Build with renderdoc api" OFF)
 
@@ -53,6 +54,7 @@ add_library(
   WPSoundParser.cpp
   WPMdlParser.cpp
   WPPuppet.cpp
+  VideoTextureDecoder.cpp
   SceneWallpaper.cpp)
 
 set(InteralLib
@@ -69,7 +71,7 @@ set(InteralLib
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
-  PRIVATE ${InteralLib} nlohmann_json ${LZ4_LIBRARIES}
+  PRIVATE ${InteralLib} nlohmann_json ${LZ4_LIBRARIES} ${MPV_LIBRARIES}
           Freetype::Freetype ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
 target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain)

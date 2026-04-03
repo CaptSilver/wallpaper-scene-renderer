@@ -4,6 +4,9 @@
 #include "WPTexImageHelpers.h"
 #include "WPCommon.hpp"
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <lz4.h>
 
 #include "SpriteAnimation.hpp"
@@ -212,9 +215,33 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             // MP4 containers start with a size field + "ftyp" signature.
             if (src_size > 8 && result.size() >= 8 &&
                 std::memcmp(result.data() + 4, "ftyp", 4) == 0) {
-                LOG_INFO("tex '%s' mip[%zu]: detected MP4 video data (%d bytes), "
-                         "using solid fallback (video textures not supported)",
-                         name.c_str(), i_mipmap, src_size);
+                // Extract MP4 to temp file for video decoder
+                std::string cacheDir = m_cachePath.empty()
+                    ? std::filesystem::temp_directory_path().string()
+                    : m_cachePath;
+                std::string videoDir = cacheDir + "/video_tex";
+                std::filesystem::create_directories(videoDir);
+                // Sanitize name for filename
+                std::string safeName = name;
+                for (char& c : safeName) {
+                    if (c == '/' || c == '\\' || c == ':') c = '_';
+                }
+                std::string videoPath = videoDir + "/" + safeName + ".mp4";
+                {
+                    std::ofstream f(videoPath, std::ios::binary);
+                    if (f) {
+                        f.write(result.data(), src_size);
+                        LOG_INFO("tex '%s' mip[%zu]: extracted MP4 video (%d bytes) to %s",
+                                 name.c_str(), i_mipmap, src_size, videoPath.c_str());
+                    } else {
+                        LOG_ERROR("tex '%s': failed to write video to %s",
+                                  name.c_str(), videoPath.c_str());
+                    }
+                }
+                img.header.isVideoTexture = true;
+                img.header.videoFilePath  = videoPath;
+
+                // Use black placeholder for initial texture upload
                 i32 raw_size = mipmap.width * mipmap.height * 4;
                 auto buf = std::make_unique<uint8_t[]>((usize)raw_size);
                 std::memset(buf.get(), 0, (usize)raw_size);

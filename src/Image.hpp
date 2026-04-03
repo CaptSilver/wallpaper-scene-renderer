@@ -45,6 +45,8 @@ struct ImageHeader {
     i32           count { 0 };
 
     bool          isSprite { false };
+    bool          isVideoTexture { false };
+    std::string   videoFilePath; // extracted MP4 temp file path
     TextureSample sample;
 
     SpriteAnimation spriteAnim;
