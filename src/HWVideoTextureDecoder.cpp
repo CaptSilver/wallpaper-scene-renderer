@@ -219,6 +219,68 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
     return true;
 }
 
+bool HWVideoTextureDecoder::exportDmaBuf() {
+    // Create EGLImage from the GL texture
+    auto eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)
+        eglGetProcAddress("eglCreateImageKHR");
+    auto eglExportDMABUFImageQueryMESA = (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)
+        eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+    auto eglExportDMABUFImageMESA = (PFNEGLEXPORTDMABUFIMAGEMESAPROC)
+        eglGetProcAddress("eglExportDMABUFImageMESA");
+
+    if (! eglCreateImageKHR || ! eglExportDMABUFImageQueryMESA || ! eglExportDMABUFImageMESA) {
+        LOG_INFO("HWVideoTextureDecoder: DMA-BUF export not available, using readback");
+        return false;
+    }
+
+    EGLint imageAttribs[] = {
+        EGL_GL_TEXTURE_LEVEL_KHR, 0,
+        EGL_NONE,
+    };
+    EGLImageKHR eglImage = eglCreateImageKHR(
+        m_eglDisplay, m_eglContext,
+        EGL_GL_TEXTURE_2D_KHR,
+        (EGLClientBuffer)(uintptr_t)m_fboTex,
+        imageAttribs);
+    if (eglImage == EGL_NO_IMAGE_KHR) {
+        LOG_INFO("HWVideoTextureDecoder: eglCreateImageKHR failed, using readback");
+        return false;
+    }
+
+    // Query format and modifier
+    int fourcc = 0, numPlanes = 0;
+    EGLuint64KHR modifier = 0;
+    if (! eglExportDMABUFImageQueryMESA(m_eglDisplay, eglImage,
+                                         &fourcc, &numPlanes, &modifier)) {
+        LOG_INFO("HWVideoTextureDecoder: DMA-BUF query failed, using readback");
+        return false;
+    }
+
+    if (numPlanes != 1) {
+        LOG_INFO("HWVideoTextureDecoder: DMA-BUF has %d planes (need 1), using readback", numPlanes);
+        return false;
+    }
+
+    // Export fd, stride, offset
+    int fd = -1;
+    EGLint stride = 0, offset = 0;
+    if (! eglExportDMABUFImageMESA(m_eglDisplay, eglImage, &fd, &stride, &offset)) {
+        LOG_INFO("HWVideoTextureDecoder: DMA-BUF export failed, using readback");
+        return false;
+    }
+
+    m_dmabufFd       = fd;
+    m_dmabufStride   = stride;
+    m_dmabufOffset   = offset;
+    m_drmFourcc      = fourcc;
+    m_drmModifier    = modifier;
+    m_dmabufExported = true;
+
+    LOG_INFO("HWVideoTextureDecoder: DMA-BUF exported fd=%d stride=%d fourcc=0x%08x modifier=0x%llx",
+             fd, stride, fourcc, (unsigned long long)modifier);
+    return true;
+}
+
 void HWVideoTextureDecoder::renderFrame() {
     if (! m_renderCtx || ! m_needsRender.exchange(false)) return;
 
@@ -242,16 +304,19 @@ void HWVideoTextureDecoder::renderFrame() {
 
     if (mpv_render_context_render(m_renderCtx, render_params) < 0) return;
 
-    // Read back pixels from FBO to CPU buffer
-    int decIdx = m_decodeIdx.load();
-    uint8_t* buf = m_buffers[decIdx].get();
+    // Export DMA-BUF on first successful render (for future zero-copy Vulkan import)
+    if (! m_dmabufExported) exportDmaBuf();
 
-    auto glBindFB = (void(*)(GLenum, GLuint))
-        eglGetProcAddress("glBindFramebuffer");
-    glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
-    glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-
-    publishFrame();
+    // Always readback for now — zero-copy Vulkan import not yet implemented
+    {
+        int decIdx = m_decodeIdx.load();
+        uint8_t* buf = m_buffers[decIdx].get();
+        auto glBindFB = (void(*)(GLenum, GLuint))
+            eglGetProcAddress("glBindFramebuffer");
+        glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
+        glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+        publishFrame();
+    }
 }
 
 } // namespace wallpaper

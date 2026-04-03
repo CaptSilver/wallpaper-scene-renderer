@@ -24,6 +24,7 @@ protected:
 
 private:
     bool initEGL();
+    bool exportDmaBuf();
     void cleanupEGL();
     void cleanupGL();
 
@@ -34,6 +35,23 @@ private:
 
     GLuint m_fbo { 0 };
     GLuint m_fboTex { 0 };
+
+    // DMA-BUF zero-copy: exported from GL texture for Vulkan import
+    int      m_dmabufFd { -1 };
+    int      m_dmabufStride { 0 };
+    int      m_dmabufOffset { 0 };
+    int      m_drmFourcc { 0 };
+    uint64_t m_drmModifier { 0 };
+    bool     m_dmabufExported { false };
+
+public:
+    /// DMA-BUF info for Vulkan import. Valid after first frame rendered.
+    bool     hasDmaBuf()    const { return m_dmabufExported; }
+    int      dmabufFd()     const { return m_dmabufFd; }
+    int      dmabufStride() const { return m_dmabufStride; }
+    int      dmabufOffset() const { return m_dmabufOffset; }
+    int      drmFourcc()    const { return m_drmFourcc; }
+    uint64_t drmModifier()  const { return m_drmModifier; }
 };
 
 } // namespace wallpaper
