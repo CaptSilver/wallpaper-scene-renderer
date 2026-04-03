@@ -21,6 +21,8 @@
 #include "Audio/SoundManager.h"
 #include "Audio/AudioAnalyzer.h"
 #include "Audio/AudioCapture.h"
+#include "VideoTextureDecoder.hpp"
+#include "Image.hpp"
 
 #include "RenderGraph/RenderGraph.hpp"
 
@@ -454,6 +456,37 @@ private:
                 m_pending_text_updates.clear();
             }
 
+            // Process video texture frame updates
+            for (auto& vd : m_video_decoders) {
+                if (! vd.decoder || ! vd.decoder->hasNewFrame()) continue;
+                const uint8_t* frameData = vd.decoder->acquireFrame();
+                if (! frameData) continue;
+
+                Image img;
+                img.key = vd.textureKey;
+                img.header.format    = TextureFormat::RGBA8;
+                img.header.width     = vd.decoder->width();
+                img.header.height    = vd.decoder->height();
+                img.header.mapWidth  = vd.decoder->width();
+                img.header.mapHeight = vd.decoder->height();
+                img.header.count     = 1;
+
+                Image::Slot slot;
+                slot.width  = vd.decoder->width();
+                slot.height = vd.decoder->height();
+                ImageData mip;
+                mip.width  = vd.decoder->width();
+                mip.height = vd.decoder->height();
+                mip.size   = vd.decoder->width() * vd.decoder->height() * 4;
+                // Use non-owning pointer — data is owned by the decoder's triple buffer
+                mip.data = ImageDataPtr(const_cast<uint8_t*>(frameData), [](uint8_t*) {});
+                slot.mipmaps.push_back(std::move(mip));
+                img.slots.push_back(std::move(slot));
+
+                m_render->reuploadTexture(vd.textureKey, img);
+                vd.decoder->releaseFrame();
+            }
+
             // Process pending color updates before drawing
             {
                 std::lock_guard<std::mutex> lock(m_color_update_mutex);
@@ -771,6 +804,15 @@ private:
             if (main_handler.isGenGraphviz()) m_rg->ToGraphviz("graph.dot");
             m_render->compileRenderGraph(*m_scene, *m_rg);
             m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+
+            // Create video texture decoders for MP4 textures detected during loading
+            m_video_decoders.clear();
+            for (auto& vt : m_scene->videoTextures) {
+                auto decoder = std::make_shared<VideoTextureDecoder>(vt.width, vt.height);
+                if (decoder->open(vt.videoFilePath)) {
+                    m_video_decoders.push_back({ vt.textureKey, decoder });
+                }
+            }
         }
     }
     MHANDLER_CMD(SET_SPEED) { msg->findFloat("value", &m_speed); }
@@ -889,6 +931,13 @@ private:
     std::vector<LightPositionUpdate> m_pending_light_positions;
 
     bool m_drawDiagReset { false };
+
+    // Video texture decoders
+    struct VideoDecoderEntry {
+        std::string                          textureKey;
+        std::shared_ptr<VideoTextureDecoder> decoder;
+    };
+    std::vector<VideoDecoderEntry> m_video_decoders;
 };
 } // namespace wallpaper
 

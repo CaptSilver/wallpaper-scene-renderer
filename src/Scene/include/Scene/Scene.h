@@ -55,6 +55,13 @@ struct SceneColorScript {
     std::array<float, 3> initialColor;
 };
 
+struct VideoTextureInfo {
+    std::string textureKey;    // key in Scene::textures / tex_cache
+    std::string videoFilePath; // extracted MP4 temp file path
+    i32         width { 0 };
+    i32         height { 0 };
+};
+
 struct ScenePropertyScript {
     i32                  id;
     std::string          property; // "visible", "origin", "scale", "angles", "alpha"
@@ -137,6 +144,7 @@ public:
     std::vector<TextLayerInfo>       textLayers;
     std::vector<SceneColorScript>    colorScripts;
     std::vector<ScenePropertyScript> propertyScripts;
+    std::vector<VideoTextureInfo>    videoTextures;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {

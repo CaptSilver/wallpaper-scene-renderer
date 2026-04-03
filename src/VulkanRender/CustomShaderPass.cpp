@@ -340,6 +340,25 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
                 img_slots = device.tex_cache().CreateTex(*image);
+                // Record video textures for frame decoding
+                if (image->header.isVideoTexture && ! image->header.videoFilePath.empty()) {
+                    bool already = false;
+                    for (const auto& vt : scene.videoTextures)
+                        if (vt.textureKey == tex_name) { already = true; break; }
+                    if (! already) {
+                        scene.videoTextures.push_back({
+                            tex_name,
+                            image->header.videoFilePath,
+                            image->header.width,
+                            image->header.height,
+                        });
+                        LOG_INFO("video texture registered: '%s' %dx%d path=%s",
+                                 tex_name.c_str(),
+                                 image->header.width,
+                                 image->header.height,
+                                 image->header.videoFilePath.c_str());
+                    }
+                }
             } else {
                 LOG_ERROR("parse tex \"%s\" failed", tex_name.c_str());
             }
