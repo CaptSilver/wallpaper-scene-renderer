@@ -414,6 +414,10 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
         src = result;
     }
 
+    // Strip stray #endif directives before glslang preprocessing.
+    // Some workshop shaders have unmatched #endif that truncates glslang output.
+    src = StripStrayEndifs(src);
+
     glslang::TShader::ForbidIncluder includer;
     glslang::TShader                 shader(ToGLSL(type));
     const EShMessages emsg { (EShMessages)(EShMsgDefault | EShMsgSpvRules | EShMsgRelaxedErrors |

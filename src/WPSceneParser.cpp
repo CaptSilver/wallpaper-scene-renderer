@@ -2626,6 +2626,23 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         }
     }
 
+    // Sync layerInitialStates visibility with user property bindings.
+    // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
+    // causing the JS proxy to think the node is visible when it's actually hidden.
+    for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
+        for (const auto& binding : bindings) {
+            auto* node = binding.node;
+            if (! node) continue;
+            for (auto& [layerName, lis] : context.scene->layerInitialStates) {
+                auto nameIt = context.scene->nodeNameToId.find(layerName);
+                if (nameIt != context.scene->nodeNameToId.end() &&
+                    nameIt->second == node->ID()) {
+                    lis.visible = binding.defaultVisible;
+                }
+            }
+        }
+    }
+
     // Extract property scripts from raw JSON (visible, origin, scale, angles, alpha)
     for (auto& obj : json.at("objects")) {
         if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;

@@ -707,6 +707,20 @@ TEST_CASE("in varying without mutation unchanged") {
     CHECK(result.find("_m_v_TexCoord") == std::string::npos);
 }
 
+TEST_CASE("in varying with plain assignment gets mutable copy") {
+    std::string in = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord = v_TexCoord.yx;\n}";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("in vec2 v_TexCoord;") != std::string::npos);
+    CHECK(result.find("_m_v_TexCoord") != std::string::npos);
+    CHECK(result.find("_m_v_TexCoord = v_TexCoord") != std::string::npos);
+}
+
+TEST_CASE("in varying with component assignment gets mutable copy") {
+    std::string in = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord.y = 1.0;\n}";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("_m_v_TexCoord") != std::string::npos);
+}
+
 // --- Pattern 18: vec3 = vec4() → .xyz ---
 
 TEST_CASE("vec3 = vec4 constructor gets .xyz") {
@@ -1323,3 +1337,81 @@ TEST_CASE("gl_in[0].gl_Position multiple occurrences") {
 }
 
 } // TEST_SUITE("TranslateGeometryShader")
+
+// ===========================================================================
+// StripStrayEndifs
+// ===========================================================================
+
+TEST_SUITE("StripStrayEndifs") {
+
+TEST_CASE("no preprocessor directives — unchanged") {
+    std::string in = "void main() {\n  gl_Position = vec4(0);\n}\n";
+    CHECK_EQ(StripStrayEndifs(in), in);
+}
+
+TEST_CASE("balanced #if/#endif — unchanged") {
+    std::string in = "#if FOO\nint x = 1;\n#endif\nvoid main() {}\n";
+    CHECK_EQ(StripStrayEndifs(in), in);
+}
+
+TEST_CASE("stray #endif removed") {
+    std::string in = "#if FOO\nint x;\n#endif\n#endif\nvoid main() {}\n";
+    std::string out = "#if FOO\nint x;\n#endif\nvoid main() {}\n";
+    CHECK_EQ(StripStrayEndifs(in), out);
+}
+
+TEST_CASE("multiple stray #endifs removed") {
+    std::string in = "#endif\n#if A\n#endif\n#endif\n#endif\ncode;\n";
+    std::string out = "#if A\n#endif\ncode;\n";
+    CHECK_EQ(StripStrayEndifs(in), out);
+}
+
+TEST_CASE("stray #else removed — code between kept") {
+    std::string in = "#if X\nfoo;\n#endif\n#else\nbar;\n#endif\n";
+    auto result = StripStrayEndifs(in);
+    // Stray #else and #endif stripped, but bar; (regular code) survives
+    CHECK(result.find("#else") == std::string::npos);
+    CHECK(result.find("bar;") != std::string::npos);
+    CHECK(result.find("foo;") != std::string::npos);
+}
+
+TEST_CASE("nested #if/#else/#endif preserved") {
+    std::string in = "#if A\n#if B\nx;\n#else\ny;\n#endif\n#endif\n";
+    CHECK_EQ(StripStrayEndifs(in), in);
+}
+
+TEST_CASE("indented directives handled") {
+    std::string in = "  #if FOO\n  code;\n  #endif\n  #endif\n";
+    std::string out = "  #if FOO\n  code;\n  #endif\n";
+    CHECK_EQ(StripStrayEndifs(in), out);
+}
+
+TEST_CASE("Simple_Audio_Bars pattern — stray #endif mid-main") {
+    std::string in =
+        "void main() {\n"
+        "#if BAR_STYLE == 1\n"
+        "  setup();\n"
+        "#endif\n"
+        "#if DEFORMITY == 3\n"
+        "  deform();\n"
+        "#endif\n"
+        "#endif\n"  // stray
+        "#if TRANSFORM\n"
+        "  transform();\n"
+        "#endif\n"
+        "  gl_Position = pos;\n"
+        "}\n";
+    auto result = StripStrayEndifs(in);
+    CHECK(result.find("gl_Position") != std::string::npos);
+    CHECK(result.find("}\n") != std::string::npos);
+    // The stray #endif should be gone, but the rest preserved
+    // Count #if and #endif — should be balanced
+    int ifs = 0, endifs = 0;
+    std::size_t p = 0;
+    while ((p = result.find("#if", p)) != std::string::npos) { ++ifs; p += 3; }
+    p = 0;
+    while ((p = result.find("#endif", p)) != std::string::npos) { ++endifs; p += 6; }
+    CHECK_EQ(ifs, endifs);
+}
+
+} // TEST_SUITE("StripStrayEndifs")

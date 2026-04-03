@@ -370,6 +370,23 @@ void SceneObject::refreshJsUserProperties() {
     fireApplyUserProperties();
 }
 
+void SceneObject::fireSceneEventListeners(const QString& eventName,
+                                           const QJSValueList& args) {
+    if (! m_fireSceneEventFn.isCallable()) return;
+    QJSValue has = m_hasSceneListenersFn.call({ QJSValue(eventName) });
+    if (! has.toBool()) return;
+    QJSValueList callArgs;
+    callArgs << QJSValue(eventName);
+    callArgs.append(args);
+    QJSValue result = m_fireSceneEventFn.call(callArgs);
+    static std::unordered_set<std::string> loggedEvents;
+    std::string key = eventName.toStdString();
+    if (loggedEvents.find(key) == loggedEvents.end()) {
+        LOG_INFO("scene.on('%s'): fired %d listener(s)", key.c_str(), result.toInt());
+        loggedEvents.insert(key);
+    }
+}
+
 void SceneObject::fireApplyUserProperties() {
     if (!m_jsEngine || m_propertyScriptStates.empty()) return;
 
@@ -390,6 +407,7 @@ void SceneObject::fireApplyUserProperties() {
                      state.id, state.property.c_str(), qPrintable(result.toString()));
         }
     }
+    fireSceneEventListeners("applyUserProperties", { propsArg });
 }
 
 void SceneObject::fireDestroyEvent() {
@@ -408,6 +426,7 @@ void SceneObject::fireDestroyEvent() {
                      state.id, state.property.c_str(), qPrintable(result.toString()));
         }
     }
+    fireSceneEventListeners("destroy");
 }
 
 void SceneObject::fireResizeScreen(int width, int height) {
@@ -436,26 +455,28 @@ void SceneObject::fireResizeScreen(int width, int height) {
                      state.id, state.property.c_str(), qPrintable(result.toString()));
         }
     }
+    fireSceneEventListeners("resizeScreen", { QJSValue(width), QJSValue(height) });
 }
 
 // Media integration event dispatch — called from QML MprisMonitor via Q_INVOKABLE
 
 void SceneObject::mediaPlaybackChanged(int state) {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("state", state);
     for (auto& s : m_propertyScriptStates) {
-        if (!s.mediaPlaybackChangedFn.isCallable()) continue;
-        if (!s.layerName.empty())
+        if (! s.mediaPlaybackChangedFn.isCallable()) continue;
+        if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         s.mediaPlaybackChangedFn.call({ event });
     }
+    fireSceneEventListeners("mediaPlaybackChanged", { event });
 }
 
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
                                          const QString& albumTitle, const QString& albumArtist,
                                          const QString& genres) {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("title", title);
     event.setProperty("artist", artist);
@@ -464,15 +485,16 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
     event.setProperty("genres", genres);
     event.setProperty("contentType", QJSValue("media"));
     for (auto& s : m_propertyScriptStates) {
-        if (!s.mediaPropertiesChangedFn.isCallable()) continue;
-        if (!s.layerName.empty())
+        if (! s.mediaPropertiesChangedFn.isCallable()) continue;
+        if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         s.mediaPropertiesChangedFn.call({ event });
     }
+    fireSceneEventListeners("mediaPropertiesChanged", { event });
 }
 
 void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors) {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (! m_jsEngine) return;
     QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
     auto toVec3 = [&](int idx) -> QJSValue {
         if (idx * 3 + 2 >= colors.size()) return vec3Fn.call({ QJSValue(0), QJSValue(0), QJSValue(0) });
@@ -488,36 +510,39 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
     event.setProperty("textColor", toVec3(3));
     event.setProperty("highContrastColor", toVec3(4));
     for (auto& s : m_propertyScriptStates) {
-        if (!s.mediaThumbnailChangedFn.isCallable()) continue;
-        if (!s.layerName.empty())
+        if (! s.mediaThumbnailChangedFn.isCallable()) continue;
+        if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         s.mediaThumbnailChangedFn.call({ event });
     }
+    fireSceneEventListeners("mediaThumbnailChanged", { event });
 }
 
 void SceneObject::mediaTimelineChanged(double position, double duration) {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("position", position);
     event.setProperty("duration", duration);
     for (auto& s : m_propertyScriptStates) {
-        if (!s.mediaTimelineChangedFn.isCallable()) continue;
-        if (!s.layerName.empty())
+        if (! s.mediaTimelineChangedFn.isCallable()) continue;
+        if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         s.mediaTimelineChangedFn.call({ event });
     }
+    fireSceneEventListeners("mediaTimelineChanged", { event });
 }
 
 void SceneObject::mediaStatusChanged(bool enabled) {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("enabled", enabled);
     for (auto& s : m_propertyScriptStates) {
-        if (!s.mediaStatusChangedFn.isCallable()) continue;
-        if (!s.layerName.empty())
+        if (! s.mediaStatusChangedFn.isCallable()) continue;
+        if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         s.mediaStatusChangedFn.call({ event });
     }
+    fireSceneEventListeners("mediaStatusChanged", { event });
 }
 
 void SceneObject::play() { m_scene->play(); }
@@ -1217,6 +1242,35 @@ void SceneObject::setupTextScripts() {
         "    return _layerCache[name];\n"
         "  }\n"
         "};\n"
+        "var _sceneListeners = {};\n"
+        "thisScene.on = function(eventName, callback) {\n"
+        "  if (typeof eventName !== 'string' || typeof callback !== 'function') return;\n"
+        "  if (!_sceneListeners[eventName]) _sceneListeners[eventName] = [];\n"
+        "  _sceneListeners[eventName].push(callback);\n"
+        "};\n"
+        "thisScene.off = function(eventName, callback) {\n"
+        "  if (!_sceneListeners[eventName]) return;\n"
+        "  if (typeof callback === 'function') {\n"
+        "    _sceneListeners[eventName] = _sceneListeners[eventName].filter(\n"
+        "      function(cb) { return cb !== callback; });\n"
+        "  } else { delete _sceneListeners[eventName]; }\n"
+        "};\n"
+        "function _fireSceneEvent(eventName) {\n"
+        "  var listeners = _sceneListeners[eventName];\n"
+        "  if (!listeners || listeners.length === 0) return 0;\n"
+        "  var args = Array.prototype.slice.call(arguments, 1);\n"
+        "  var count = 0;\n"
+        "  for (var i = 0; i < listeners.length; i++) {\n"
+        "    try { listeners[i].apply(null, args); count++; }\n"
+        "    catch(e) { console.log('scene.on(' + eventName + ') error: ' + e.message); }\n"
+        "  }\n"
+        "  return count;\n"
+        "}\n"
+        "function _hasSceneListeners(eventName) {\n"
+        "  var l = _sceneListeners[eventName];\n"
+        "  return l && l.length > 0;\n"
+        "}\n"
+        "var scene = thisScene;\n"
         "var thisLayer = null;\n"
         "function _collectDirtyLayers() {\n"
         "  var updates = [];\n"
@@ -1234,8 +1288,10 @@ void SceneObject::setupTextScripts() {
         "}\n"
     );
 
-    // Store reference to _collectDirtyLayers for C++ calls
+    // Store references to JS dispatch functions for C++ calls
     m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
+    m_fireSceneEventFn     = m_jsEngine->globalObject().property("_fireSceneEvent");
+    m_hasSceneListenersFn  = m_jsEngine->globalObject().property("_hasSceneListeners");
 
     // Scene-level property control (bloom, clear color, camera, lighting)
     {
@@ -1955,6 +2011,9 @@ void SceneObject::setupTextScripts() {
         LOG_INFO("WARNING: 0 property scripts compiled out of %zu - all failed!", propertyScripts.size());
     }
 
+    // Fire scene.on("init") listeners
+    fireSceneEventListeners("init");
+
     // Collect cursor event targets, merging by layer name
     {
         std::unordered_map<std::string, size_t> targetIndex;
@@ -2170,9 +2229,13 @@ void SceneObject::setupTextScripts() {
         qCInfo(wekdeScene, "Text script compiled for id=%d", tsi.id);
     }
 
+    // Check if scene.on("update") listeners were registered during script compilation
+    bool hasUpdateListeners = m_hasSceneListenersFn.isCallable()
+        && m_hasSceneListenersFn.call({ QJSValue("update") }).toBool();
+
     // Property scripts must run first — they populate shared.* that text/color scripts depend on
     if (!m_propertyScriptStates.empty() || !m_soundVolumeScriptStates.empty()
-        || !m_soundLayerStates.empty()) {
+        || !m_soundLayerStates.empty() || hasUpdateListeners) {
         m_propertyTimer = new QTimer(this);
         m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
         connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
@@ -2473,6 +2536,9 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    // Fire scene.on("update") listeners — after IIFE updates, before dirty flush
+    fireSceneEventListeners("update");
+
     // Flush dirty layer proxies from thisScene.getLayer() side effects
     int dirtyLayerCount = 0;
     int dirtyLayerMiss = 0;
@@ -2747,6 +2813,8 @@ void SceneObject::cleanupTextScripts() {
     m_soundVolumeScriptStates.clear();
     m_nodeNameToId.clear();
     m_collectDirtyLayersFn = QJSValue();
+    m_fireSceneEventFn     = QJSValue();
+    m_hasSceneListenersFn  = QJSValue();
     m_soundLayerStates.clear();
     m_soundLayerNameToIndex.clear();
     m_collectDirtySoundLayersFn = QJSValue();
