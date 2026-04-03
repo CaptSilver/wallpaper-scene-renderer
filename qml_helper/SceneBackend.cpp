@@ -378,13 +378,7 @@ void SceneObject::fireSceneEventListeners(const QString& eventName,
     QJSValueList callArgs;
     callArgs << QJSValue(eventName);
     callArgs.append(args);
-    QJSValue result = m_fireSceneEventFn.call(callArgs);
-    static std::unordered_set<std::string> loggedEvents;
-    std::string key = eventName.toStdString();
-    if (loggedEvents.find(key) == loggedEvents.end()) {
-        LOG_INFO("scene.on('%s'): fired %d listener(s)", key.c_str(), result.toInt());
-        loggedEvents.insert(key);
-    }
+    m_fireSceneEventFn.call(callArgs);
 }
 
 void SceneObject::fireApplyUserProperties() {

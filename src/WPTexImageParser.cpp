@@ -208,6 +208,20 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                     return nullptr;
                 }
             }
+            // Detect MP4 video data misidentified as raw texture (isVideoMp4 flag not set).
+            // MP4 containers start with a size field + "ftyp" signature.
+            if (src_size > 8 && result.size() >= 8 &&
+                std::memcmp(result.data() + 4, "ftyp", 4) == 0) {
+                LOG_INFO("tex '%s' mip[%zu]: detected MP4 video data (%d bytes), "
+                         "using solid fallback (video textures not supported)",
+                         name.c_str(), i_mipmap, src_size);
+                i32 raw_size = mipmap.width * mipmap.height * 4;
+                auto buf = std::make_unique<uint8_t[]>((usize)raw_size);
+                std::memset(buf.get(), 0, (usize)raw_size);
+                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) { delete[] p; });
+                mipmap.size = raw_size;
+                continue;
+            }
             // is image container
             if (img.header.extraHeader["texb"].val >= 3 && img.header.type != ImageType::UNKNOWN) {
                 int32_t w, h, n;
