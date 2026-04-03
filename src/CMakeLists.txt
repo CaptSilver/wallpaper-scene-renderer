@@ -3,6 +3,8 @@ find_package(Threads REQUIRED)
 find_package(Freetype REQUIRED)
 pkg_check_modules(LZ4 REQUIRED liblz4)
 pkg_check_modules(MPV REQUIRED mpv)
+pkg_check_modules(EGL egl)
+pkg_check_modules(GL gl)
 
 option(ENABLE_RENDERDOC "Build with renderdoc api" OFF)
 
@@ -55,6 +57,7 @@ add_library(
   WPMdlParser.cpp
   WPPuppet.cpp
   VideoTextureDecoder.cpp
+  $<$<BOOL:${EGL_FOUND}>:HWVideoTextureDecoder.cpp>
   SceneWallpaper.cpp)
 
 set(InteralLib
@@ -72,7 +75,16 @@ target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
   PRIVATE ${InteralLib} nlohmann_json ${LZ4_LIBRARIES} ${MPV_LIBRARIES}
+          $<$<BOOL:${EGL_FOUND}>:${EGL_LIBRARIES}>
+          $<$<BOOL:${GL_FOUND}>:${GL_LIBRARIES}>
           Freetype::Freetype ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
+
+if(EGL_FOUND AND GL_FOUND)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_EGL_HWDEC=1)
+    message(STATUS "HW video texture decoder: enabled (EGL + GL)")
+else()
+    message(STATUS "HW video texture decoder: disabled (EGL/GL not found)")
+endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain)
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
