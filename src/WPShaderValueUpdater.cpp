@@ -399,7 +399,8 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(G_EYEPOSITION, std::array { (float)pos.x(), (float)pos.y(), (float)pos.z() });
     }
 
-    // Audio spectrum uniforms
+    // Audio spectrum uniforms — write zeros when no data available to avoid
+    // uninitialized UBO reads that produce noise in audio visualizer effects.
     if (m_audioAnalyzer && m_audioAnalyzer->HasData()) {
         if (info.has_AUDIOSPECTRUM16LEFT)
             updateOp(G_AUDIOSPECTRUM16LEFT, m_audioAnalyzer->GetSpectrum16Left());
@@ -413,6 +414,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             updateOp(G_AUDIOSPECTRUM64LEFT, m_audioAnalyzer->GetSpectrum64Left());
         if (info.has_AUDIOSPECTRUM64RIGHT)
             updateOp(G_AUDIOSPECTRUM64RIGHT, m_audioAnalyzer->GetSpectrum64Right());
+    } else {
+        // Zero-fill when audio analyzer isn't ready yet
+        static const std::array<float, 64> zeros {};
+        if (info.has_AUDIOSPECTRUM16LEFT)  updateOp(G_AUDIOSPECTRUM16LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM16RIGHT) updateOp(G_AUDIOSPECTRUM16RIGHT, zeros);
+        if (info.has_AUDIOSPECTRUM32LEFT)  updateOp(G_AUDIOSPECTRUM32LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM32RIGHT) updateOp(G_AUDIOSPECTRUM32RIGHT, zeros);
+        if (info.has_AUDIOSPECTRUM64LEFT)  updateOp(G_AUDIOSPECTRUM64LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM64RIGHT) updateOp(G_AUDIOSPECTRUM64RIGHT, zeros);
     }
 }
 
