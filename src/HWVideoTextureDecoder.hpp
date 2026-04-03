@@ -5,6 +5,7 @@ typedef void*   EGLDisplay;
 typedef void*   EGLContext;
 typedef void*   EGLConfig;
 typedef unsigned int GLuint;
+struct gbm_device;
 
 namespace wallpaper {
 
@@ -28,6 +29,8 @@ private:
 
     EGLDisplay m_eglDisplay { nullptr };
     EGLContext m_eglContext { nullptr };
+    ::gbm_device*      m_gbmDevice { nullptr };
+    int                m_drmFd { -1 };
 
     GLuint m_fbo { 0 };
     GLuint m_fboTex { 0 };

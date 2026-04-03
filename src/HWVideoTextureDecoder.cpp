@@ -8,9 +8,13 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/gl.h>
+#include <gbm.h>
 
 #include <cstring>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <filesystem>
 
 namespace wallpaper {
 
@@ -36,63 +40,79 @@ HWVideoTextureDecoder::~HWVideoTextureDecoder() {
 }
 
 bool HWVideoTextureDecoder::initEGL() {
-    // Use surfaceless platform — no window or GBM needed
-    m_eglDisplay = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
-                                          EGL_DEFAULT_DISPLAY, nullptr);
-    if (m_eglDisplay == EGL_NO_DISPLAY) {
-        LOG_ERROR("HWVideoTextureDecoder: eglGetPlatformDisplay failed");
-        return false;
+    // Find a working GPU render node via GBM
+    for (const auto& entry : std::filesystem::directory_iterator("/dev/dri")) {
+        std::string name = entry.path().filename().string();
+        if (name.find("renderD") != 0) continue;
+
+        int fd = ::open(entry.path().c_str(), O_RDWR | O_CLOEXEC);
+        if (fd < 0) continue;
+
+        struct gbm_device* gbm = gbm_create_device(fd);
+        if (! gbm) { ::close(fd); continue; }
+
+        EGLDisplay display = eglGetPlatformDisplay(
+            EGL_PLATFORM_GBM_KHR, gbm, nullptr);
+        if (display == EGL_NO_DISPLAY) {
+            gbm_device_destroy(gbm);
+            ::close(fd);
+            continue;
+        }
+
+        EGLint major, minor;
+        if (! eglInitialize(display, &major, &minor)) {
+            gbm_device_destroy(gbm);
+            ::close(fd);
+            continue;
+        }
+
+        // Try desktop GL config
+        eglBindAPI(EGL_OPENGL_API);
+        EGLint    configAttribs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE };
+        EGLConfig config = nullptr;
+        EGLint    numConfigs = 0;
+        eglChooseConfig(display, configAttribs, &config, 1, &numConfigs);
+
+        if (numConfigs == 0) {
+            eglTerminate(display);
+            gbm_device_destroy(gbm);
+            ::close(fd);
+            continue;
+        }
+
+        EGLint ctxAttribs[] = {
+            EGL_CONTEXT_MAJOR_VERSION, 3,
+            EGL_CONTEXT_MINOR_VERSION, 2,
+            EGL_NONE,
+        };
+        EGLContext ctx = eglCreateContext(display, config, EGL_NO_CONTEXT, ctxAttribs);
+        if (ctx == EGL_NO_CONTEXT) {
+            eglTerminate(display);
+            gbm_device_destroy(gbm);
+            ::close(fd);
+            continue;
+        }
+
+        if (! eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) {
+            eglDestroyContext(display, ctx);
+            eglTerminate(display);
+            gbm_device_destroy(gbm);
+            ::close(fd);
+            continue;
+        }
+
+        // Success!
+        m_eglDisplay = display;
+        m_eglContext = ctx;
+        m_gbmDevice  = gbm;
+        m_drmFd      = fd;
+        LOG_INFO("HWVideoTextureDecoder: EGL %d.%d on %s (GBM)",
+                 major, minor, entry.path().c_str());
+        return true;
     }
 
-    EGLint major, minor;
-    if (! eglInitialize(m_eglDisplay, &major, &minor)) {
-        LOG_ERROR("HWVideoTextureDecoder: eglInitialize failed");
-        return false;
-    }
-
-    // Try desktop GL first, then GLES
-    EGLConfig config = nullptr;
-    EGLint    numConfigs = 0;
-
-    // Attempt 1: Desktop OpenGL
-    eglBindAPI(EGL_OPENGL_API);
-    {
-        EGLint attribs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE };
-        eglChooseConfig(m_eglDisplay, attribs, &config, 1, &numConfigs);
-    }
-
-    bool useGLES = false;
-    if (numConfigs == 0) {
-        // Attempt 2: OpenGL ES 3.x
-        eglBindAPI(EGL_OPENGL_ES_API);
-        EGLint attribs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_NONE };
-        eglChooseConfig(m_eglDisplay, attribs, &config, 1, &numConfigs);
-        useGLES = true;
-    }
-
-    if (numConfigs == 0) {
-        LOG_ERROR("HWVideoTextureDecoder: eglChooseConfig failed (no GL or GLES3 config)");
-        return false;
-    }
-
-    EGLint contextAttribs[] = {
-        EGL_CONTEXT_MAJOR_VERSION, useGLES ? 3 : 3,
-        EGL_CONTEXT_MINOR_VERSION, useGLES ? 0 : 2,
-        EGL_NONE,
-    };
-    m_eglContext = eglCreateContext(m_eglDisplay, config, EGL_NO_CONTEXT, contextAttribs);
-    if (m_eglContext == EGL_NO_CONTEXT) {
-        LOG_ERROR("HWVideoTextureDecoder: eglCreateContext failed");
-        return false;
-    }
-
-    if (! eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglContext)) {
-        LOG_ERROR("HWVideoTextureDecoder: eglMakeCurrent failed");
-        return false;
-    }
-
-    LOG_INFO("HWVideoTextureDecoder: EGL %d.%d initialized (surfaceless)", major, minor);
-    return true;
+    LOG_ERROR("HWVideoTextureDecoder: no working GPU render node found");
+    return false;
 }
 
 void HWVideoTextureDecoder::cleanupGL() {
@@ -120,6 +140,14 @@ void HWVideoTextureDecoder::cleanupEGL() {
         }
         eglTerminate(m_eglDisplay);
         m_eglDisplay = nullptr;
+    }
+    if (m_gbmDevice) {
+        gbm_device_destroy(m_gbmDevice);
+        m_gbmDevice = nullptr;
+    }
+    if (m_drmFd >= 0) {
+        ::close(m_drmFd);
+        m_drmFd = -1;
     }
 }
 
@@ -152,15 +180,22 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
         return false;
     }
 
-    // Create OpenGL render context
+    // Create OpenGL render context with DRM render node for VA-API
     mpv_opengl_init_params gl_init_params {
         eglGetProcAddressWrapper,
         nullptr,
     };
+    mpv_opengl_drm_params_v2 drm_params {};
+    drm_params.fd        = -1;
+    drm_params.crtc_id   = -1;
+    drm_params.connector_id = -1;
+    drm_params.render_fd = m_drmFd; // render node for VA-API interop
+
     mpv_render_param params[] = {
         { MPV_RENDER_PARAM_API_TYPE,
           const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL) },
         { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },
+        { MPV_RENDER_PARAM_DRM_DISPLAY_V2,     &drm_params },
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
@@ -173,9 +208,13 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
     }
 
     mpv_render_context_set_update_callback(m_renderCtx, onMpvRenderUpdate, this);
+
+    // Force VA-API hwdec now that GL context is available
+    mpv_set_property_string(m_mpv, "hwdec", "vaapi");
+
     loadFile(path);
 
-    LOG_INFO("HWVideoTextureDecoder(GL+VA-API): opened '%s' (%dx%d)",
+    LOG_INFO("HWVideoTextureDecoder(GL): opened '%s' (%dx%d)",
              path.c_str(), m_width, m_height);
     return true;
 }
@@ -211,17 +250,6 @@ void HWVideoTextureDecoder::renderFrame() {
         eglGetProcAddress("glBindFramebuffer");
     glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
     glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
-
-    // GL renders bottom-up, flip vertically
-    size_t rowSize = (size_t)m_width * 4;
-    auto rowBuf = std::make_unique<uint8_t[]>(rowSize);
-    for (int y = 0; y < m_height / 2; y++) {
-        uint8_t* top = buf + y * rowSize;
-        uint8_t* bot = buf + (m_height - 1 - y) * rowSize;
-        std::memcpy(rowBuf.get(), top, rowSize);
-        std::memcpy(top, bot, rowSize);
-        std::memcpy(bot, rowBuf.get(), rowSize);
-    }
 
     publishFrame();
 }
