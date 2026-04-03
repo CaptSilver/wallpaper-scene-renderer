@@ -37,7 +37,7 @@ bool VideoTextureDecoder::initMpv() {
     mpv_set_option_string(m_mpv, "loop", "inf");
     mpv_set_option_string(m_mpv, "terminal", "no");
     mpv_set_option_string(m_mpv, "msg-level", "all=warn");
-    mpv_set_option_string(m_mpv, "hwdec", "auto");
+    mpv_set_option_string(m_mpv, "hwdec", "vaapi");
 
     if (mpv_initialize(m_mpv) < 0) {
         LOG_ERROR("VideoTextureDecoder: mpv_initialize failed");
