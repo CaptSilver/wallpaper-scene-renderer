@@ -60,6 +60,7 @@ struct VideoTextureInfo {
     std::string videoFilePath; // extracted MP4 temp file path
     i32         width { 0 };
     i32         height { 0 };
+    SceneNode*  ownerNode { nullptr }; // node that uses this texture (for visibility gating)
 };
 
 struct ScenePropertyScript {

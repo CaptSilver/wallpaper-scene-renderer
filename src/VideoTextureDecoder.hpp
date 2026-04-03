@@ -11,26 +11,24 @@ struct mpv_render_context;
 
 namespace wallpaper {
 
-/// Decodes MP4 video frames via libmpv software rendering into RGBA pixel buffers.
-/// Thread-safe: mpv decodes on internal threads, render thread reads frames via
-/// acquireFrame()/releaseFrame(). Uses triple buffering for lock-free handoff.
+/// Base class for video texture decoders. Provides triple-buffered frame handoff
+/// between decoder and render threads.
 class VideoTextureDecoder {
 public:
     VideoTextureDecoder(int width, int height);
-    ~VideoTextureDecoder();
+    virtual ~VideoTextureDecoder();
 
     /// Load video file and start decoding. Returns false on failure.
-    bool open(const std::string& path);
+    virtual bool open(const std::string& path);
 
     /// Playback control
-    void play();
-    void pause();
-    void stop();
+    virtual void play();
+    virtual void pause();
+    virtual void stop();
     bool isPlaying() const { return m_playing.load(); }
 
     /// Returns true if a new frame is available since last acquireFrame().
-    /// Also triggers pending mpv renders.
-    bool hasNewFrame();
+    virtual bool hasNewFrame();
 
     /// Get pointer to the latest decoded frame (RGBA8, width*height*4 bytes).
     /// Returns nullptr if no frame decoded yet.
@@ -41,10 +39,9 @@ public:
     int width()  const { return m_width; }
     int height() const { return m_height; }
 
-private:
+protected:
     static void onMpvRenderUpdate(void* ctx);
-    void        renderFrame();
-    std::atomic<bool> m_needsRender { false };
+    virtual void renderFrame();
 
     int    m_width;
     int    m_height;
@@ -56,15 +53,27 @@ private:
     // Triple buffer: 0=decode target, 1=ready, 2=read target
     static constexpr int NUM_BUFFERS = 3;
     std::unique_ptr<uint8_t[]> m_buffers[NUM_BUFFERS];
-    std::atomic<int>           m_decodeIdx { 0 };  // decoder writes here
-    std::atomic<int>           m_readyIdx  { 1 };  // latest complete frame
-    std::atomic<int>           m_readIdx   { 2 };  // render reads here
-    std::atomic<uint64_t>      m_frameNum  { 0 };  // monotonic frame counter
+    std::atomic<int>           m_decodeIdx { 0 };
+    std::atomic<int>           m_readyIdx  { 1 };
+    std::atomic<int>           m_readIdx   { 2 };
+    std::atomic<uint64_t>      m_frameNum  { 0 };
     uint64_t                   m_lastReadFrame { 0 };
 
     std::atomic<bool> m_playing  { false };
     std::atomic<bool> m_opened   { false };
-    std::mutex        m_renderMutex; // protects mpv_render_context_render
+    std::atomic<bool> m_needsRender { false };
+    std::mutex        m_renderMutex;
+
+    /// Publish a newly decoded frame (called after writing to m_buffers[m_decodeIdx])
+    void publishFrame();
+    /// Set alpha channel to 255 for the given buffer
+    void fillAlpha(uint8_t* buf);
+
+    /// Initialize mpv handle with common options. Subclasses call this then
+    /// create their own render context.
+    bool initMpv();
+    /// Load video file into an already-initialized mpv instance.
+    bool loadFile(const std::string& path);
 };
 
 } // namespace wallpaper

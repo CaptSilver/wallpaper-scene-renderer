@@ -351,6 +351,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                             image->header.videoFilePath,
                             image->header.width,
                             image->header.height,
+                            m_desc.node,
                         });
                         LOG_INFO("video texture registered: '%s' %dx%d path=%s",
                                  tex_name.c_str(),

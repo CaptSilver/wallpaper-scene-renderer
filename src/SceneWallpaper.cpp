@@ -22,6 +22,9 @@
 #include "Audio/AudioAnalyzer.h"
 #include "Audio/AudioCapture.h"
 #include "VideoTextureDecoder.hpp"
+#ifdef HAVE_EGL_HWDEC
+#include "HWVideoTextureDecoder.hpp"
+#endif
 #include "Image.hpp"
 
 #include "RenderGraph/RenderGraph.hpp"
@@ -456,9 +459,17 @@ private:
                 m_pending_text_updates.clear();
             }
 
-            // Process video texture frame updates
+            // Process video texture frame updates — only decode visible videos
             for (auto& vd : m_video_decoders) {
-                if (! vd.decoder || ! vd.decoder->hasNewFrame()) continue;
+                if (! vd.decoder) continue;
+                // Visibility gating: pause invisible, resume visible
+                bool visible = (! vd.ownerNode || vd.ownerNode->IsVisible());
+                if (! visible) {
+                    if (vd.decoder->isPlaying()) vd.decoder->pause();
+                    continue;
+                }
+                if (! vd.decoder->isPlaying()) vd.decoder->play();
+                if (! vd.decoder->hasNewFrame()) continue;
                 const uint8_t* frameData = vd.decoder->acquireFrame();
                 if (! frameData) continue;
 
@@ -806,11 +817,22 @@ private:
             m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
 
             // Create video texture decoders for MP4 textures detected during loading
+            // Try HW decoder first (EGL + GL + VA-API), fall back to SW
             m_video_decoders.clear();
             for (auto& vt : m_scene->videoTextures) {
-                auto decoder = std::make_shared<VideoTextureDecoder>(vt.width, vt.height);
-                if (decoder->open(vt.videoFilePath)) {
-                    m_video_decoders.push_back({ vt.textureKey, decoder });
+                std::shared_ptr<VideoTextureDecoder> decoder;
+#ifdef HAVE_EGL_HWDEC
+                {
+                    auto hw = std::make_shared<HWVideoTextureDecoder>(vt.width, vt.height);
+                    if (hw->open(vt.videoFilePath)) decoder = hw;
+                }
+#endif
+                if (! decoder) {
+                    auto sw = std::make_shared<VideoTextureDecoder>(vt.width, vt.height);
+                    if (sw->open(vt.videoFilePath)) decoder = sw;
+                }
+                if (decoder) {
+                    m_video_decoders.push_back({ vt.textureKey, decoder, vt.ownerNode });
                 }
             }
         }
@@ -936,6 +958,7 @@ private:
     struct VideoDecoderEntry {
         std::string                          textureKey;
         std::shared_ptr<VideoTextureDecoder> decoder;
+        SceneNode*                           ownerNode { nullptr };
     };
     std::vector<VideoDecoderEntry> m_video_decoders;
 };
