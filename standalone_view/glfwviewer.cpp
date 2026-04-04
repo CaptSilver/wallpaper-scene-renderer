@@ -1,6 +1,7 @@
 #include <iostream>
 #include <set>
 #include <fstream>
+#include <csignal>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -14,6 +15,11 @@
 using namespace std;
 
 atomic<bool> renderCall(false);
+GLFWwindow*  g_window = nullptr;
+
+void sigint_handler(int) {
+    if (g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+}
 
 struct UserData {
     wallpaper::SceneWallpaper* psw { nullptr };
@@ -63,6 +69,9 @@ int main(int argc, char** argv) {
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window = glfwCreateWindow(w_width, w_height, "WP", nullptr, nullptr);
+    g_window           = window;
+    std::signal(SIGINT, sigint_handler);
+    std::signal(SIGTERM, sigint_handler);
 
     UserData data;
     data.width  = w_width;

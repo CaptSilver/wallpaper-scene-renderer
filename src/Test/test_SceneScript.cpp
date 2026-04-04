@@ -184,6 +184,11 @@ struct TimerEnv {
             "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
         );
     }
+
+    ~TimerEnv() {
+        bridge->clearAll();
+        delete bridge;
+    }
 };
 
 TEST_CASE("setTimeout calls callback") {

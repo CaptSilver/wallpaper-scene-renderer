@@ -10,6 +10,8 @@
 
 #include <glslang/Public/ShaderLang.h>
 #include <unordered_set>
+#include <chrono>
+#include <cstdio>
 
 #include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
@@ -330,7 +332,43 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 void VulkanRender::Impl::drawFrame(Scene& scene) {
     if (! (m_inited && m_pass_loaded)) return;
 
-        // LOG_INFO("used ram: %fm", (m_device->GetUsage()/1024.0f)/1024.0f);
+    // Periodic diagnostics: frame time + VMA usage + process RSS
+    {
+        static int  s_diag_frame = 0;
+        static auto s_diag_start = std::chrono::steady_clock::now();
+        static auto s_last_frame = s_diag_start;
+        static double s_frame_sum_ms = 0;
+        static double s_frame_max_ms = 0;
+        static int    s_frame_count  = 0;
+
+        auto now = std::chrono::steady_clock::now();
+        double frame_ms = std::chrono::duration<double, std::milli>(now - s_last_frame).count();
+        s_last_frame = now;
+        s_frame_sum_ms += frame_ms;
+        if (frame_ms > s_frame_max_ms) s_frame_max_ms = frame_ms;
+        s_frame_count++;
+
+        if (++s_diag_frame % 1800 == 0) { // every ~60s at 30fps
+            double elapsed_s = std::chrono::duration<double>(now - s_diag_start).count();
+            double avg_ms    = s_frame_count > 0 ? s_frame_sum_ms / s_frame_count : 0;
+            double vma_mb    = m_device->GetUsage() / (1024.0 * 1024.0);
+
+            // Read process RSS from /proc/self/statm
+            long rss_pages = 0;
+            if (FILE* f = fopen("/proc/self/statm", "r")) {
+                long dummy;
+                fscanf(f, "%ld %ld", &dummy, &rss_pages);
+                fclose(f);
+            }
+            double rss_mb = rss_pages * 4096.0 / (1024.0 * 1024.0);
+
+            LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB",
+                     elapsed_s, s_diag_frame, avg_ms, s_frame_max_ms, vma_mb, rss_mb);
+            s_frame_sum_ms = 0;
+            s_frame_max_ms = 0;
+            s_frame_count  = 0;
+        }
+    }
 
 #if ENABLE_RENDERDOC_API
     if (rdoc_api)
