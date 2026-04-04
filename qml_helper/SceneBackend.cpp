@@ -2411,6 +2411,14 @@ void SceneObject::evaluatePropertyScripts() {
     if (m_propertyScriptStates.empty() && m_soundVolumeScriptStates.empty()
         && m_soundLayerStates.empty()) return;
 
+    // Periodic GC to prevent JS heap growth during long sessions
+    {
+        static int s_gc_counter = 0;
+        if (++s_gc_counter % 900 == 0) { // every ~30s at 30Hz
+            m_jsEngine->collectGarbage();
+        }
+    }
+
     // Update engine globals
     double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
     QJSValue engineObj = m_jsEngine->globalObject().property("engine");

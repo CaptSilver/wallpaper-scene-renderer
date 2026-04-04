@@ -184,9 +184,11 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
 }
 
 VkDeviceSize Device::GetUsage() const {
-    VmaBudget budget;
-    vmaGetHeapBudgets(*m_allocator, &budget);
-    return budget.usage;
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS] {};
+    vmaGetHeapBudgets(*m_allocator, budgets);
+    VkDeviceSize total = 0;
+    for (auto& b : budgets) total += b.usage;
+    return total;
 }
 
 void Device::Destroy() { VVK_CHECK(m_device.WaitIdle()); }
