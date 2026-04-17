@@ -179,10 +179,30 @@ private:
         float                currentFloat {1.0f};
     };
     // Sound volume script evaluation
+    struct SoundVolumeAnimState {
+        std::string name;
+        std::string mode;   // "loop", "single", "mirror"
+        float       fps { 1 };
+        float       length { 0 };
+        struct Keyframe { float frame; float value; };
+        std::vector<Keyframe> keyframes;
+        double      time { 0 };      // current animation time (seconds)
+        bool        playing { false };
+        // Scene-time of the last eval (for computing delta against scene clock).
+        // Negative sentinel means "not yet sampled" — first eval skips the delta.
+        double      lastSceneTime { -1.0 };
+        // Evaluate at current time → interpolated value
+        float evaluate() const;
+    };
     struct SoundVolumeScriptState {
-        int32_t  index;
-        QJSValue updateFn;
-        float    currentVolume {1.0f};
+        int32_t     index;
+        QJSValue    updateFn;
+        QJSValue    applyUserPropertiesFn;
+        QJSValue    thisLayerProxy;
+        std::string layerName;
+        float       currentVolume {1.0f};
+        bool        hasAnimation { false };
+        SoundVolumeAnimState anim;
     };
     QJSEngine*                        m_jsEngine { nullptr };
     SceneTimerBridge*                 m_timerBridge { nullptr };

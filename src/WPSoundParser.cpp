@@ -59,7 +59,12 @@ public:
 
     // Thread-safe playback control (called from QML thread via SceneScript)
     void Play() {
-        m_needsReload.store(true, std::memory_order_relaxed);
+        auto prev = m_state.load(std::memory_order_acquire);
+        if (prev == StreamState::Playing) return; // already playing, no-op
+        // Only reload decoder if stopped (decoder was destroyed on stop)
+        if (prev == StreamState::Stopped) {
+            m_needsReload.store(true, std::memory_order_relaxed);
+        }
         m_state.store(StreamState::Playing, std::memory_order_release);
     }
     void Stop() {
@@ -128,7 +133,11 @@ public:
                     return frameCount;
                 }
             }
-            // Loop/Random (no delay): switch to next track immediately
+            // Loop boundary: always recreate the decoder. stb_vorbis push-mode
+            // seek is documented as unreliable (miniaudio's own comments mark it
+            // as "wildly inefficient... hopefully be removed"), and Switch() from
+            // an in-memory PKG stream is cheap: reopen LimitedBinaryStream + fresh
+            // ma_decoder. Applies to single-file loops and multi-file playlists alike.
             Switch();
             if (! m_curActive) {
                 std::memset(pData, 0, frameCount * m_desc.channels * sizeof(float));

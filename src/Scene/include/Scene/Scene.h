@@ -191,11 +191,25 @@ public:
     std::vector<SoundLayerInfo> soundLayers;
 
     // Sound volume scripts: evaluated at runtime to control per-stream volume
+    struct VolumeKeyframe {
+        float frame { 0 };
+        float value { 0 };
+    };
+    struct VolumeAnimationData {
+        std::string                 name;
+        std::string                 mode { "loop" };
+        float                       fps { 30.0f };
+        float                       length { 0 };
+        std::vector<VolumeKeyframe> keyframes;
+    };
     struct SoundVolumeScript {
-        std::string script;
-        std::string scriptProperties;
-        float       initialVolume { 1.0f };
-        void*       streamPtr { nullptr }; // WPSoundStream* (type-erased)
+        std::string        script;
+        std::string        scriptProperties;
+        std::string        layerName;              // sound layer name for thisLayer binding
+        float              initialVolume { 1.0f };
+        void*              streamPtr { nullptr }; // WPSoundStream* (type-erased)
+        bool               hasAnimation { false };
+        VolumeAnimationData animation;
     };
     std::vector<SoundVolumeScript> soundVolumeScripts;
 

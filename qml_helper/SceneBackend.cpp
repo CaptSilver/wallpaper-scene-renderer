@@ -39,6 +39,16 @@
 
 using namespace scenebackend;
 
+// Delegate to pure function in WPVolumeAnimation.h
+#include "WPVolumeAnimation.h"
+float SceneObject::SoundVolumeAnimState::evaluate() const {
+    std::vector<wallpaper::VolumeAnimKeyframe> kfs;
+    kfs.reserve(keyframes.size());
+    for (const auto& kf : keyframes)
+        kfs.push_back({ kf.frame, kf.value });
+    return wallpaper::EvaluateVolumeAnimation(kfs, fps, length, mode, time);
+}
+
 Q_LOGGING_CATEGORY(wekdeScene, "wekde.scene")
 
 #define _Q_INFO(fmt, ...) qCInfo(wekdeScene, fmt, __VA_ARGS__)
@@ -382,7 +392,7 @@ void SceneObject::fireSceneEventListeners(const QString& eventName,
 }
 
 void SceneObject::fireApplyUserProperties() {
-    if (!m_jsEngine || m_propertyScriptStates.empty()) return;
+    if (!m_jsEngine) return;
 
     // Build the properties arg: { propName: { value: val }, ... }
     // This matches the WE SceneScript applyUserProperties(props) signature.
@@ -401,6 +411,22 @@ void SceneObject::fireApplyUserProperties() {
                      state.id, state.property.c_str(), qPrintable(result.toString()));
         }
     }
+
+    // Also fire on sound volume scripts that define applyUserProperties
+    for (auto& svState : m_soundVolumeScriptStates) {
+        if (!svState.applyUserPropertiesFn.isCallable()) continue;
+
+        if (!svState.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
+        }
+
+        QJSValue result = svState.applyUserPropertiesFn.call({ propsArg });
+        if (result.isError()) {
+            LOG_INFO("applyUserProperties error vol index=%d: %s",
+                     svState.index, qPrintable(result.toString()));
+        }
+    }
+
     fireSceneEventListeners("applyUserProperties", { propsArg });
 }
 
@@ -1018,8 +1044,24 @@ void SceneObject::setupTextScripts() {
     // Default white (1,1,1); refreshJsUserProperties() overrides it from schemecolor.
     m_jsEngine->evaluate("engine.colorScheme = Vec3(1,1,1);\n");
 
-    // Populate engine.userProperties (and derive engine.colorScheme) from overrides.
-    // Must run AFTER Vec3 is defined so colorScheme derivation works.
+    // Populate engine.userProperties with defaults from project.json first,
+    // then apply QML-side overrides (if any). Must run AFTER Vec3 is defined
+    // so colorScheme derivation works.
+    {
+        std::string defaultsJson = m_scene->getUserPropertiesJson();
+        if (!defaultsJson.empty() && defaultsJson != "{}") {
+            QString escaped = QString::fromStdString(defaultsJson);
+            escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+            escaped.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+            m_jsEngine->evaluate(QString(
+                "(function(){"
+                "var p=JSON.parse('%1');"
+                "var up=engine.userProperties;"
+                "for(var k in p) up[k]=p[k];"
+                "})()"
+            ).arg(escaped));
+        }
+    }
     refreshJsUserProperties();
 
     // engine.openUserShortcut stub
@@ -1468,6 +1510,19 @@ void SceneObject::setupTextScripts() {
                 "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
                 "      isPlaying: function(){ return this.rate > 0; }\n"
                 "    };\n"
+                "  };\n"
+                "  // Volume animation controller (getAnimation returns same interface as WE)\n"
+                "  if (!_s._animCtrl) _s._animCtrl = {};\n"
+                "  p.getAnimation = function(animName) {\n"
+                "    if (_s._animCtrl[animName]) return _s._animCtrl[animName];\n"
+                "    var ctrl = { _playing: false, _name: animName,\n"
+                "      play:  function(){ this._playing = true;  _s._cmds.push('anim_play:'  + animName); },\n"
+                "      pause: function(){ this._playing = false; _s._cmds.push('anim_pause:' + animName); },\n"
+                "      stop:  function(){ this._playing = false; _s._cmds.push('anim_stop:'  + animName); },\n"
+                "      isPlaying: function(){ return this._playing; }\n"
+                "    };\n"
+                "    _s._animCtrl[animName] = ctrl;\n"
+                "    return ctrl;\n"
                 "  };\n"
                 "  p._state = _s;\n"
                 "  return p;\n"
@@ -2065,6 +2120,15 @@ void SceneObject::setupTextScripts() {
 
         stripESModuleSyntax(scriptSrc);
 
+        // Set thisLayer to the sound layer proxy for this script's own layer
+        if (!svsi.layerName.empty()) {
+            QString nameEsc = QString::fromStdString(svsi.layerName);
+            nameEsc.replace("'", "\\'");
+            m_jsEngine->globalObject().setProperty("thisLayer",
+                m_jsEngine->evaluate(
+                    QString("thisScene.getLayer('%1')").arg(nameEsc)));
+        }
+
         // Inject scriptProperties
         QString propsInit;
         if (!svsi.scriptProperties.empty()) {
@@ -2101,10 +2165,17 @@ void SceneObject::setupTextScripts() {
             "  %2\n"
             "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
             "             (typeof update === 'function' ? update : null);\n"
+            "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+            "              (typeof init === 'function' ? init : null);\n"
+            "  var _aup  = typeof exports.applyUserProperties === 'function' ? exports.applyUserProperties :\n"
+            "              (typeof applyUserProperties === 'function' ? applyUserProperties : null);\n"
             "  if (!_upd) return null;\n"
-            "  return { update: _upd };\n"
+            "  try { if (_init) _init(%3); } catch(e) { console.log('vol init error: ' + e); }\n"
+            "  try { if (_aup && engine && engine.userProperties) _aup(engine.userProperties); }\n"
+            "  catch(e) { console.log('vol applyUserProperties error: ' + e); }\n"
+            "  return { update: _upd, applyUserProperties: _aup };\n"
             "})()\n"
-        ).arg(propsInit, scriptSrc);
+        ).arg(propsInit, scriptSrc).arg((double)svsi.initialVolume);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError()) {
@@ -2126,10 +2197,47 @@ void SceneObject::setupTextScripts() {
         state.index         = svsi.index;
         state.updateFn      = updateFn;
         state.currentVolume = svsi.initialVolume;
+
+        // Cache thisLayer proxy and applyUserProperties for this volume script
+        if (!svsi.layerName.empty()) {
+            state.thisLayerProxy = m_jsEngine->globalObject().property("thisLayer");
+            state.layerName      = svsi.layerName;
+        }
+        QJSValue applyFn = result.property("applyUserProperties");
+        if (applyFn.isCallable()) {
+            state.applyUserPropertiesFn = applyFn;
+        }
+
+        // Initialize volume animation if present
+        if (svsi.hasAnimation && !svsi.animation.keyframes.empty()) {
+            state.hasAnimation    = true;
+            state.anim.name       = svsi.animation.name;
+            state.anim.mode       = svsi.animation.mode;
+            state.anim.fps        = svsi.animation.fps;
+            state.anim.length     = svsi.animation.length;
+            state.anim.playing    = true; // auto-start: animation drives volume from scene load
+            for (const auto& kf : svsi.animation.keyframes)
+                state.anim.keyframes.push_back({ kf.frame, kf.value });
+            // Set initial volume from animation at t=0
+            state.currentVolume = state.anim.evaluate();
+        }
+
+        // Sync the stream's runtime volume to the script-side currentVolume.
+        // Otherwise the stream stays at the scene-JSON static volume and the
+        // delta-threshold check in evaluatePropertyScripts() suppresses the
+        // first update when script volume happens to equal the eval result.
+        m_scene->updateSoundVolume(svsi.index, state.currentVolume);
+
         m_soundVolumeScriptStates.push_back(std::move(state));
-        qCInfo(wekdeScene, "Sound volume script compiled for index=%d (initial=%.3f)",
-               svsi.index, svsi.initialVolume);
+        qCInfo(wekdeScene, "Sound volume script compiled for index=%d (initial=%.3f, layer='%s', anim=%d)",
+               svsi.index, svsi.initialVolume, svsi.layerName.c_str(), (int)svsi.hasAnimation);
     }
+
+    // Fire applyUserProperties on all compiled scripts (property + volume).
+    // refreshJsUserProperties() at line ~1039 fired this too early (before scripts existed).
+    // This ensures volume scripts get user properties even if engine.userProperties was
+    // empty during IIFE compilation.
+    fireApplyUserProperties();
 
     for (const auto& tsi : scripts) {
         QString scriptSrc = QString::fromStdString(tsi.script);
@@ -2634,6 +2742,22 @@ void SceneObject::evaluatePropertyScripts() {
                     m_scene->soundLayerStop(idx);
                 } else if (cmd == "pause") {
                     m_scene->soundLayerPause(idx);
+                } else if (cmd.startsWith("anim_")) {
+                    // Animation control: anim_play:name, anim_pause:name, anim_stop:name
+                    for (auto& sv : m_soundVolumeScriptStates) {
+                        if (sv.layerName == name && sv.hasAnimation) {
+                            if (cmd.startsWith("anim_play:")) {
+                                sv.anim.playing = true;
+                                LOG_INFO("anim_play: layer='%s' anim='%s'", name.c_str(), sv.anim.name.c_str());
+                            } else if (cmd.startsWith("anim_pause:")) {
+                                sv.anim.playing = false;
+                            } else if (cmd.startsWith("anim_stop:")) {
+                                sv.anim.playing = false;
+                                sv.anim.time    = 0;
+                            }
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -2730,7 +2854,39 @@ void SceneObject::evaluatePropertyScripts() {
     for (auto& svState : m_soundVolumeScriptStates) {
         if (!svState.updateFn.isCallable()) continue;
 
-        QJSValue result = svState.updateFn.call({ QJSValue((double)svState.currentVolume) });
+        // Set thisLayer for this volume script (same as property scripts)
+        if (!svState.layerName.empty()) {
+            m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
+        }
+
+        // Advance volume animation and use animated value as base.
+        // Clock source: render-thread scene time (m_scene->elapsingTime), so audio
+        // stays locked to visual animations even if the render loop throttles.
+        float baseVolume = svState.currentVolume;
+        if (svState.hasAnimation) {
+            double sceneTime = m_scene->getSceneTime();
+            if (svState.anim.lastSceneTime < 0.0) {
+                svState.anim.lastSceneTime = sceneTime;
+            }
+            double delta = sceneTime - svState.anim.lastSceneTime;
+            if (delta < 0.0) delta = 0.0; // guard against scene reload resetting clock
+            svState.anim.lastSceneTime = sceneTime;
+            if (svState.anim.playing) {
+                svState.anim.time += delta;
+            }
+            baseVolume = svState.anim.evaluate();
+            // Log animation state periodically (every ~3s at 30Hz)
+            static int animDiagCounter = 0;
+            if (++animDiagCounter % 90 == 1) {
+                LOG_INFO("volAnim[%d] '%s': playing=%d t=%.1f frame=%.1f val=%.3f",
+                         svState.index, svState.anim.name.c_str(),
+                         (int)svState.anim.playing, svState.anim.time,
+                         (float)(svState.anim.time * svState.anim.fps),
+                         baseVolume);
+            }
+        }
+
+        QJSValue result = svState.updateFn.call({ QJSValue((double)baseVolume) });
         if (result.isError()) {
             static std::unordered_set<int> erroredIndices;
             if (erroredIndices.find(svState.index) == erroredIndices.end()) {

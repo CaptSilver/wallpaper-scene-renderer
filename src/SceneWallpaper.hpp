@@ -6,6 +6,7 @@
 #include <vector>
 #include <functional>
 #include "Type.hpp"
+#include "WPVolumeAnimation.h"
 #include "Swapchain/ExSwapchain.hpp"
 
 namespace wallpaper::audio
@@ -43,11 +44,21 @@ struct PropertyScriptInfo {
     float                initialFloat { 1.0f };
 };
 
+struct VolumeAnimInfo {
+    std::string                               name;
+    std::string                               mode { "loop" };
+    float                                     fps { 30.0f };
+    float                                     length { 0 };
+    std::vector<wallpaper::VolumeAnimKeyframe> keyframes;
+};
 struct SoundVolumeScriptInfo {
-    int32_t     index; // index into soundVolumeScripts vector
-    std::string script;
-    std::string scriptProperties;
-    float       initialVolume { 1.0f };
+    int32_t        index;
+    std::string    script;
+    std::string    scriptProperties;
+    std::string    layerName;
+    float          initialVolume { 1.0f };
+    bool           hasAnimation { false };
+    VolumeAnimInfo animation;
 };
 
 struct SoundLayerControlInfo {
@@ -101,6 +112,11 @@ public:
     void updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);
+    std::string                        getUserPropertiesJson() const;
+    // Render-thread scene clock (seconds since scene load). Same clock as visuals:
+    // advances only when drawFrame() runs, so audio animations stay locked to render
+    // cadence instead of wall-clock.
+    double                             getSceneTime() const;
 
     // Sound layer control API for SceneScript play/stop/pause
     std::vector<SoundLayerControlInfo> getSoundLayerControls() const;

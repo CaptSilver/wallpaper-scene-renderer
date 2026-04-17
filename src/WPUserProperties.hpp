@@ -162,6 +162,14 @@ public:
     // Check if empty
     bool Empty() const { return m_properties.empty(); }
 
+    // Serialize all properties to JSON string: {"name": value, ...}
+    std::string ToJson() const {
+        nlohmann::json j;
+        for (const auto& [name, value] : m_properties)
+            j[name] = value;
+        return j.dump();
+    }
+
     // Set a single property value (used for overrides)
     void SetProperty(const std::string& name, const nlohmann::json& value) {
         m_properties[name] = value;

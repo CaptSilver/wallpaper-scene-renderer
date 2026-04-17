@@ -20,6 +20,8 @@ add_executable(backend_scene_tests
     test_WPTextLayer.cpp
     test_SceneCamera.cpp
     test_WPSoundHelpers.cpp
+    test_SoundStreamSeek.cpp
+    test_WPVolumeAnimation.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
@@ -39,6 +41,7 @@ target_include_directories(backend_scene_tests PRIVATE
 target_link_libraries(backend_scene_tests PRIVATE
     wpUtils
     wpFs
+    wpAudio
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
     nlohmann_json

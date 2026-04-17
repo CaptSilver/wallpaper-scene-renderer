@@ -15,6 +15,19 @@ class VFS;
 namespace wpscene
 {
 
+struct VolumeKeyframe {
+    float frame { 0 };
+    float value { 0 };
+};
+
+struct VolumeAnimation {
+    std::string                  name;
+    std::string                  mode { "loop" };
+    float                        fps { 30.0f };
+    float                        length { 0 };
+    std::vector<VolumeKeyframe>  keyframes;
+};
+
 struct WPSoundObject {
     std::string              playbackmode { "loop" };
     float                    maxtime { 10.0f };
@@ -27,6 +40,8 @@ struct WPSoundObject {
     bool                     hasVolumeScript { false };
     std::string              volumeScript;
     std::string              volumeScriptProperties;
+    bool                     hasVolumeAnimation { false };
+    VolumeAnimation          volumeAnimation;
 
     bool FromJson(const nlohmann::json& json, fs::VFS&) {
         // Volume can be a plain number, a user-property object, or a scripted object
@@ -41,6 +56,25 @@ struct WPSoundObject {
                     volumeScript = vol.at("script").get<std::string>();
                     if (vol.contains("scriptproperties"))
                         volumeScriptProperties = vol.at("scriptproperties").dump();
+                }
+                if (vol.contains("animation")) {
+                    auto& anim = vol.at("animation");
+                    if (anim.contains("c0") && anim.at("c0").is_array()) {
+                        hasVolumeAnimation = true;
+                        for (const auto& kf : anim.at("c0")) {
+                            VolumeKeyframe vk;
+                            vk.frame = kf.value("frame", 0.0f);
+                            vk.value = kf.value("value", 0.0f);
+                            volumeAnimation.keyframes.push_back(vk);
+                        }
+                        if (anim.contains("options")) {
+                            auto& opts = anim.at("options");
+                            volumeAnimation.fps    = opts.value("fps", 30.0f);
+                            volumeAnimation.length = opts.value("length", 0.0f);
+                            volumeAnimation.mode   = opts.value("mode", "loop");
+                            volumeAnimation.name   = opts.value("name", "");
+                        }
+                    }
                 }
             }
         }

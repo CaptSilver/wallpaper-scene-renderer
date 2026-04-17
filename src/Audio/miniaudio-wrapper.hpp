@@ -61,15 +61,25 @@ public:
         if (! m_inited) return 0;
         decltype(frameCount) readed { 0 };
         ma_result result = ma_decoder_read_pcm_frames(&m_decoder, pData, frameCount, &readed);
-        return result == MA_SUCCESS ? readed : 0;
+        // Preserve partial reads at MA_AT_END — otherwise tail frames are dropped at
+        // every loop boundary, causing an audible glitch. Callers treat readed==0
+        // as "EOF, reload" regardless of the ma_result code.
+        if (result == MA_SUCCESS || result == MA_AT_END) return readed;
+        return 0;
     }
     bool IsInited() { return m_inited; }
 
 private:
     static ma_result Read(ma_decoder* pMaDecoder, void* pBufferOut, size_t bytesToRead,
                           size_t* pBytesRead) {
-        auto* pDecoder = static_cast<Decoder<TStream>*>(pMaDecoder->pUserData);
-        *pBytesRead    = pDecoder->m_stream.Read(pBufferOut, bytesToRead);
+        auto*  pDecoder = static_cast<Decoder<TStream>*>(pMaDecoder->pUserData);
+        size_t r        = pDecoder->m_stream.Read(pBufferOut, bytesToRead);
+        *pBytesRead     = r;
+        // Match miniaudio's stdio-vfs convention: short read at EOF must signal
+        // MA_AT_END. Format-format matters — WAV stops on its known sample count,
+        // but OGG (stb_vorbis push mode) relies on this return code to know the
+        // stream is done. Without it, Musik loops never trigger EOF.
+        if (r == 0) return MA_AT_END;
         return MA_SUCCESS;
     }
     static ma_result Seek(ma_decoder* pMaDecoder, ma_int64 byteOffset, ma_seek_origin origin) {

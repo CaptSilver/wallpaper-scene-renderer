@@ -131,6 +131,11 @@ public:
         return m_sound_volume_scripts;
     }
 
+    std::string getUserPropertiesJson() const {
+        std::lock_guard<std::mutex> lock(m_user_props_mutex);
+        return m_user_props_resolved.ToJson();
+    }
+
     void updateSoundVolume(int32_t index, float volume) {
         std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
         if (index >= 0 && index < (int32_t)m_sound_volume_streams.size()) {
@@ -772,6 +777,7 @@ private:
             }
 
             m_scene->PassFrameTime(frame_timer.IdeaTime() * m_speed);
+            m_scene_time.store(m_scene->elapsingTime, std::memory_order_relaxed);
 
             m_scene->shaderValueUpdater->FrameEnd();
             // fps_counter.RegisterFrame();
@@ -921,6 +927,14 @@ private:
     RenderInitInfo                    m_init_info;
     std::atomic<std::array<float, 2>> m_mouse_pos { std::array { 0.5f, 0.5f } };
 
+    // Published scene clock (m_scene->elapsingTime) — read cross-thread from QML.
+    // Writers: this render thread after each PassFrameTime(). Readers: SceneBackend.
+    std::atomic<double> m_scene_time { 0.0 };
+
+public:
+    double getSceneTime() const { return m_scene_time.load(std::memory_order_relaxed); }
+private:
+
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
 
@@ -1062,6 +1076,15 @@ std::vector<SoundVolumeScriptInfo> SceneWallpaper::getSoundVolumeScripts() const
 
 void SceneWallpaper::updateSoundVolume(int32_t index, float volume) {
     m_main_handler->updateSoundVolume(index, volume);
+}
+
+std::string SceneWallpaper::getUserPropertiesJson() const {
+    return m_main_handler->getUserPropertiesJson();
+}
+
+double SceneWallpaper::getSceneTime() const {
+    auto rh = m_main_handler->renderHandler();
+    return rh ? rh->getSceneTime() : 0.0;
 }
 
 std::vector<SoundLayerControlInfo> SceneWallpaper::getSoundLayerControls() const {
@@ -1616,7 +1639,17 @@ void MainHandler::loadScene() {
             info.index            = i;
             info.script           = svs.script;
             info.scriptProperties = svs.scriptProperties;
+            info.layerName        = svs.layerName;
             info.initialVolume    = svs.initialVolume;
+            info.hasAnimation     = svs.hasAnimation;
+            if (svs.hasAnimation) {
+                info.animation.name   = svs.animation.name;
+                info.animation.mode   = svs.animation.mode;
+                info.animation.fps    = svs.animation.fps;
+                info.animation.length = svs.animation.length;
+                for (const auto& kf : svs.animation.keyframes)
+                    info.animation.keyframes.push_back({ kf.frame, kf.value });
+            }
             m_sound_volume_scripts.push_back(std::move(info));
             m_sound_volume_streams.push_back(svs.streamPtr);
         }

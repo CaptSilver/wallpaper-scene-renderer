@@ -2496,12 +2496,28 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                        [&context, &sm](wpscene::WPSoundObject& obj) {
                            auto* streamPtr = WPSoundParser::Parse(obj, *context.vfs, sm);
                            if (streamPtr) {
-                               if (obj.hasVolumeScript) {
+                               if (obj.hasVolumeScript || obj.hasVolumeAnimation) {
                                    Scene::SoundVolumeScript svs;
                                    svs.script           = obj.volumeScript;
                                    svs.scriptProperties = obj.volumeScriptProperties;
+                                   svs.layerName        = obj.name;
                                    svs.initialVolume    = obj.volume;
                                    svs.streamPtr        = streamPtr;
+                                   if (obj.hasVolumeAnimation) {
+                                       svs.hasAnimation       = true;
+                                       svs.animation.name     = obj.volumeAnimation.name;
+                                       svs.animation.mode     = obj.volumeAnimation.mode;
+                                       svs.animation.fps      = obj.volumeAnimation.fps;
+                                       svs.animation.length   = obj.volumeAnimation.length;
+                                       for (const auto& kf : obj.volumeAnimation.keyframes) {
+                                           svs.animation.keyframes.push_back(
+                                               { kf.frame, kf.value });
+                                       }
+                                       LOG_INFO("sound '%s': volume animation '%s' (%zu keyframes, %.0f frames @ %.0f fps)",
+                                                obj.name.c_str(), svs.animation.name.c_str(),
+                                                svs.animation.keyframes.size(),
+                                                svs.animation.length, svs.animation.fps);
+                                   }
                                    context.scene->soundVolumeScripts.push_back(std::move(svs));
                                }
                                // Register sound layer for SceneScript play/stop/pause API
