@@ -2,8 +2,10 @@
 
 #include "WPPuppet.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 
 using namespace wallpaper;
 
@@ -678,3 +680,318 @@ TEST_CASE("genFrame with total_blend exactly 1.0 uses multiplicative path") {
 }
 
 } // TEST_SUITE("WPPuppet_GenFrame")
+
+// ===========================================================================
+// Keyframe event dispatch (Phase 1+2 of the animationEvent pipeline)
+// ===========================================================================
+
+namespace
+{
+// Make a puppet carrying a single 1-bone animation plus a list of keyframe
+// events.  Enough to drive WPPuppetLayer::updateInterpolation and drain
+// fired events.
+std::shared_ptr<WPPuppet>
+makePuppetWithEvents(int length, double fps, WPPuppet::PlayMode mode,
+                     std::vector<WPPuppet::Animation::Event> events,
+                     int anim_id = 42) {
+    auto puppet = makePuppet(1, anim_id, fps, length, mode);
+    puppet->anims[0].events = std::move(events);
+    puppet->prepared();
+    return puppet;
+}
+
+std::vector<std::string> drainNames(WPPuppetLayer& layer) {
+    auto events = layer.drainEvents();
+    std::vector<std::string> names;
+    for (auto& e : events) names.push_back(e.name);
+    return names;
+}
+} // namespace
+
+TEST_SUITE("WPPuppetLayer_Events") {
+
+TEST_CASE("no events when animation has none") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop, {});
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    layer.genFrame(0.5);
+    CHECK(drainNames(layer).empty());
+}
+
+TEST_CASE("loop mode fires event each cycle") {
+    // length=10 @ 10fps → 1s period; event at frame 5 (0.5s)
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "flashStart" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+
+    // tick forward past frame 5 → event fires once
+    layer.genFrame(0.6);
+    CHECK(drainNames(layer) == std::vector<std::string> { "flashStart" });
+
+    // tick to t=1.5s (one full cycle + past event) → event fires once more
+    layer.genFrame(0.9);
+    CHECK(drainNames(layer) == std::vector<std::string> { "flashStart" });
+}
+
+TEST_CASE("loop mode fires events in chronological order within one tick") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 3, "flashStart" }, { 7, "flashStop" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+
+    // Advance across both events in one tick — both fire
+    layer.genFrame(0.9);
+    auto names = drainNames(layer);
+    CHECK(names.size() == 2);
+    // Ordering inside a single tick isn't strictly guaranteed across events
+    // because we iterate per-event; accept either order but require both present.
+    bool hasStart = std::find(names.begin(), names.end(), "flashStart") != names.end();
+    bool hasStop  = std::find(names.begin(), names.end(), "flashStop")  != names.end();
+    CHECK(hasStart);
+    CHECK(hasStop);
+}
+
+TEST_CASE("event on frame 0 fires at very first forward tick") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 0, "start" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // First forward tick uses inclusive lower bound so frame-0 events fire
+    // at t=0 (matches WE's "reaches this frame" semantic).
+    layer.genFrame(0.05);
+    auto names = drainNames(layer);
+    CHECK_MESSAGE(names == std::vector<std::string> { "start" },
+                  "expected frame-0 event to fire on first tick");
+    // Further sub-period ticks must NOT refire the frame-0 event.
+    layer.genFrame(0.2);
+    CHECK(drainNames(layer).empty());
+    // After wrapping past the full period, frame-0 fires exactly once more.
+    layer.genFrame(1.0);
+    CHECK(drainNames(layer) == std::vector<std::string> { "start" });
+}
+
+TEST_CASE("single mode fires event once and no more") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Single,
+                                       { { 5, "ding" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+
+    layer.genFrame(0.8);
+    CHECK(drainNames(layer) == std::vector<std::string> { "ding" });
+    // Further advances past clamp must NOT refire
+    layer.genFrame(5.0);
+    layer.genFrame(5.0);
+    CHECK(drainNames(layer).empty());
+}
+
+TEST_CASE("mirror mode fires on forward AND reverse crossings") {
+    // length=10 @ 10fps → 1s forward + 1s reverse period (2s total).
+    // Event at frame 5 → forward fire at 0.5s, reverse fire at 1.5s.
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Mirror,
+                                       { { 5, "bounce" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+
+    layer.genFrame(0.6); // crosses forward fire
+    CHECK(drainNames(layer) == std::vector<std::string> { "bounce" });
+
+    layer.genFrame(1.0); // crosses reverse fire
+    CHECK(drainNames(layer) == std::vector<std::string> { "bounce" });
+
+    layer.genFrame(1.0); // crosses second forward fire (period 2.5s)
+    CHECK(drainNames(layer) == std::vector<std::string> { "bounce" });
+}
+
+TEST_CASE("paused (rate=0) dispatches nothing") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "noop" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 0.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    layer.genFrame(2.0);
+    CHECK(drainNames(layer).empty());
+}
+
+TEST_CASE("large delta covering multiple periods fires event once per period") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "tick" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+
+    layer.genFrame(3.2); // covers 3 events
+    auto names = drainNames(layer);
+    CHECK(names.size() == 3);
+    for (auto& n : names) CHECK(n == "tick");
+}
+
+TEST_CASE("drainEvents empties the queue") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "e" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    layer.genFrame(0.6);
+    CHECK(layer.drainEvents().size() == 1);
+    CHECK(layer.drainEvents().empty()); // second drain is idempotent
+}
+
+// Zero-advance tick must fire nothing — guards against `cur <= prev` →
+// `cur < prev` mutant in collectPeriodicFires: at cur==prev the original
+// returns early; the mutant would proceed and fire duplicates.
+TEST_CASE("zero time advance fires nothing") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "e" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // First genFrame with zero advance and event at frame 0 would fire
+    // because of the first-tick inclusive bound; use event at frame 5 so
+    // zero-advance never triggers it.
+    layer.genFrame(0.0);
+    CHECK(drainNames(layer).empty());
+    layer.genFrame(0.7);
+    CHECK(drainNames(layer) == std::vector<std::string> { "e" });
+    // Another zero-advance must still fire nothing even after events seen
+    layer.genFrame(0.0);
+    CHECK(drainNames(layer).empty());
+}
+
+// Rate-scaled advance: tick delta * rate == actual playback advance.
+// Kills the `time * rate` mul→div mutant by making result differ for
+// rate=0.5 vs rate=2.0.
+TEST_CASE("rate scales playback advance for event timing") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "e" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 0.5, 1.0, true, 0.0 }; // rate=0.5 → half-speed
+    layer.prepared(alayers);
+    // time=0.6 at rate=0.5 → effective advance = 0.3 (before frame 5 @ t=0.5)
+    layer.genFrame(0.6);
+    CHECK(drainNames(layer).empty());
+    // further 0.6 seconds → cumulative effective = 0.6 (past frame 5 @ t=0.5)
+    layer.genFrame(0.6);
+    CHECK(drainNames(layer) == std::vector<std::string> { "e" });
+}
+
+// Single-mode event at exact event_time boundary must fire on the tick
+// that crosses it — guards `event_time > prev_bound && event_time <= next`
+// from > → >= and <= → < mutants (line 304).
+TEST_CASE("single mode fires exactly when crossing event boundary") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Single,
+                                       { { 5, "hit" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // advance to exactly event_time (0.5s) → fire
+    layer.genFrame(0.5);
+    CHECK(drainNames(layer) == std::vector<std::string> { "hit" });
+}
+
+// Very large delta must be capped by kMaxPeriodsPerTick (line 258) so
+// the fire list can't explode.  With delta = 10 * period we'd only emit
+// ≤256 events; with period=0.1s and delta=30s we cover many cycles but
+// not an absurd number.
+TEST_CASE("excessive advance clamps to kMaxPeriodsPerTick") {
+    auto puppet = makePuppetWithEvents(1, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 0, "tock" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // First tick: inclusive lower bound fires frame-0 event once.
+    layer.genFrame(0.05);
+    (void)drainNames(layer); // first-tick event
+    // period = 1/10 = 0.1s.  Advance 100s → 1000 periods naively; clamped
+    // by kMaxPeriodsPerTick (cap is inclusive on both ends so emits
+    // cap+1 fires at most).  Also exercises sub→add on k_start = k_end - cap.
+    layer.genFrame(100.0);
+    auto names = drainNames(layer);
+    CHECK(names.size() <= 257);       // kMaxPeriodsPerTick (256) + 1 inclusive
+    CHECK(names.size() > 100);        // healthy batch, not near zero
+    CHECK(names.size() < 1000);       // confirms the cap actually engaged
+}
+
+// Interval boundary: an event precisely at `next` fires on that tick;
+// an event precisely at `prev` on a later tick must NOT re-fire.
+// Kills the `t > prev` > → >= mutant on line 264.
+TEST_CASE("half-open interval — event at prev does not re-fire") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "e" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // First tick: inclusive; advance 0.5 exactly — event at 0.5s fires.
+    layer.genFrame(0.5);
+    auto names = drainNames(layer);
+    CHECK(names == std::vector<std::string> { "e" });
+    // Subsequent tiny tick (first_fwd_tick now false) must NOT refire
+    // the event sitting exactly at the previous boundary.
+    layer.genFrame(0.0001);
+    CHECK(drainNames(layer).empty());
+}
+
+// Single mode elapsed clamp: additional forward ticks past max_time must
+// still not refire the event.  Guards `elapsed > max_time` → `>=` mutant
+// on line 330 and the `layer.elapsed = max_time` assignment.
+TEST_CASE("single mode elapsed freezes past max_time without re-firing") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Single,
+                                       { { 2, "once" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    layer.genFrame(5.0); // way past max_time (1.0s), event fires once
+    CHECK(drainNames(layer) == std::vector<std::string> { "once" });
+    // Repeated large advances must keep elapsed clamped, no refire
+    for (int i = 0; i < 5; i++) {
+        layer.genFrame(5.0);
+        CHECK(drainNames(layer).empty());
+    }
+}
+
+// Loop mode elapsed must NOT be clamped — event still fires on subsequent
+// tick after many wraps.  Kills the `anim.mode == Single` → `!= Single`
+// mutant on line 329 which would incorrectly clamp elapsed for Loop/Mirror,
+// causing subsequent ticks to miss events.
+TEST_CASE("loop mode does not clamp elapsed — events keep firing across ticks") {
+    auto puppet = makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Loop,
+                                       { { 5, "tick" } });
+    WPPuppetLayer layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    // Advance 2.5 periods in tick 1 — fires at t=0.5, 1.5, 2.5 (3 fires).
+    layer.genFrame(2.5);
+    CHECK(drainNames(layer).size() == 3);
+    // Tick 2: advance a sub-period (0.6s) that doesn't cross a new event.
+    //   Original: elapsed 2.5→3.1.  Next fire at t=3.5 → NO fire.
+    //   Single-clamp mutant: elapsed pinned to 1.0 on tick 1 → 1.0→1.6.
+    //                        Previously-fired event at t=1.5 sits in (1.0,1.6]
+    //                        and re-fires → 1 fire.
+    // Only the correct (unclamped) elapsed yields zero fires here.
+    layer.genFrame(0.6);
+    CHECK(drainNames(layer).empty());
+}
+
+} // TEST_SUITE

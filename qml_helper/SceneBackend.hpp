@@ -173,6 +173,7 @@ private:
         QJSValue    mediaThumbnailChangedFn;
         QJSValue    mediaTimelineChangedFn;
         QJSValue    mediaStatusChangedFn;
+        QJSValue    animationEventFn;           // optional animationEvent(event,value) handler
         QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
         bool                 currentVisible {true};
         std::array<float, 3> currentVec3 {0, 0, 0};

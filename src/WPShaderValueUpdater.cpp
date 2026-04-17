@@ -209,6 +209,13 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 _bones_logged = true;
             }
             updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
+            // Collect keyframe events fired during updateInterpolation inside
+            // genFrame(); forwarded to the owning node's SceneScript via the
+            // QML-side drain on the next evaluation tick.
+            auto events = nodeData.puppet_layer.drainEvents();
+            if (! events.empty()) {
+                PushAnimationEvents(pNode->ID(), std::move(events));
+            }
         } else {
             static bool _no_bones_logged = false;
             if (!_no_bones_logged && (nodeData.puppet_layer.hasPuppet() || info.has_BONES)) {
@@ -428,6 +435,23 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
 void WPShaderValueUpdater::SetNodeData(void* nodeAddr, const WPShaderValueData& data) {
     m_nodeDataMap[nodeAddr] = data;
+}
+
+void WPShaderValueUpdater::PushAnimationEvents(i32 nodeId,
+                                               std::vector<WPPuppetLayer::PendingEvent> events) {
+    if (events.empty()) return;
+    std::lock_guard<std::mutex> lock(m_anim_events_mtx);
+    m_anim_events.reserve(m_anim_events.size() + events.size());
+    for (auto& e : events) {
+        m_anim_events.push_back({ nodeId, e.frame, std::move(e.name) });
+    }
+}
+
+std::vector<PendingAnimationEvent> WPShaderValueUpdater::DrainAnimationEvents() {
+    std::vector<PendingAnimationEvent> out;
+    std::lock_guard<std::mutex> lock(m_anim_events_mtx);
+    out.swap(m_anim_events);
+    return out;
 }
 
 void WPShaderValueUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y }; }

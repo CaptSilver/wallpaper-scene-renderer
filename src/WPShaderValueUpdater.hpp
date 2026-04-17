@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <array>
 #include <unordered_map>
@@ -80,6 +81,14 @@ struct WPCameraShake {
     float roughness { 0.5f };
 };
 
+// Puppet animation event fired by the render thread. Drained by the QML
+// thread each tick and forwarded to the owning node's SceneScript handler.
+struct PendingAnimationEvent {
+    i32         nodeId { -1 };
+    i32         frame { 0 };
+    std::string name;
+};
+
 class WPShaderValueUpdater : public IShaderValueUpdater {
 public:
     WPShaderValueUpdater(Scene* scene): m_scene(scene) {}
@@ -101,6 +110,15 @@ public:
     void SetAudioAnalyzer(std::shared_ptr<audio::AudioAnalyzer> analyzer) {
         m_audioAnalyzer = std::move(analyzer);
     }
+
+    // Append events fired by a specific node's puppet animation layer during
+    // this frame.  Called from the render thread; not thread-safe.
+    void PushAnimationEvents(i32 nodeId, std::vector<WPPuppetLayer::PendingEvent> events);
+
+    // Move all pending animation events out (and reset the queue).  Designed
+    // to be called from the QML/script thread; holds a mutex to synchronise
+    // with render-thread pushes.
+    std::vector<PendingAnimationEvent> DrainAnimationEvents();
 
     void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
 
@@ -128,5 +146,8 @@ private:
 
     Map<void*, WPShaderValueData> m_nodeDataMap;
     Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;
+
+    std::mutex                         m_anim_events_mtx;
+    std::vector<PendingAnimationEvent> m_anim_events;
 };
 } // namespace wallpaper

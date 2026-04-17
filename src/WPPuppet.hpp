@@ -54,6 +54,15 @@ public:
         };
         std::vector<BoneFrames> bframes_array;
 
+        // Keyframe events attached to specific frames in the animation.
+        // Emitted by the runtime when playback crosses the event's frame so
+        // SceneScripts can react via their animationEvent(event, value) handler.
+        struct Event {
+            i32         frame { 0 };
+            std::string name;
+        };
+        std::vector<Event> events;
+
         // prepared
         double max_time;
         double frame_time;
@@ -94,11 +103,24 @@ public:
         double cur_time { 0.0f };
     };
 
+    // Emitted when playback crosses an event keyframe during updateInterpolation.
+    // Consumers (SceneBackend) drain these each tick and forward them to the
+    // owning object's SceneScript animationEvent handler.
+    struct PendingEvent {
+        i32         frame { 0 };
+        std::string name;
+    };
+
     void prepared(std::span<AnimationLayer>);
 
     std::span<const Eigen::Affine3f> genFrame(double time) noexcept;
 
     void updateInterpolation(double time) noexcept;
+
+    // Move pending events out and reset the internal queue.  Not thread-safe;
+    // expected to be called on the render thread in the same tick as
+    // genFrame/updateInterpolation.
+    std::vector<PendingEvent> drainEvents() noexcept;
 
 private:
     struct Layer {
@@ -107,6 +129,15 @@ private:
         const WPPuppet::Animation*             anim { nullptr };
         WPPuppet::Animation::InterpolationInfo interp_info {};
 
+        // Monotonically increasing playback position used for event crossing
+        // detection.  Unaffected by Loop/Mirror wrap (unlike anim_layer.cur_time
+        // which is folded inside the mode's period).
+        double elapsed { 0.0 };
+
+        // True until the first forward tick completes.  Used so events at
+        // frame 0 fire at t=0 (inclusive) instead of only on loop wraps.
+        bool first_fwd_tick { true };
+
         operator bool() const noexcept { return anim != nullptr; };
     };
 
@@ -114,6 +145,7 @@ private:
     double m_total_blend { 0.0 };
 
     std::vector<Layer>        m_layers;
+    std::vector<PendingEvent> m_pending_events;
     std::shared_ptr<WPPuppet> m_puppet;
 };
 

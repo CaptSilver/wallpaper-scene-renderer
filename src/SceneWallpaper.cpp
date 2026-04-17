@@ -196,6 +196,24 @@ public:
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
+    std::vector<AnimationEventInfo> drainAnimationEvents() {
+        // m_scene is assigned once at load on the main thread; read from QML
+        // thread here.  Matches the lockless pattern used elsewhere
+        // (e.g. getOrthoSize()).  The underlying DrainAnimationEvents() is
+        // itself mutex-protected against the render-thread writer.
+        auto scene = m_scene;
+        if (! scene) return {};
+        auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
+        if (! updater) return {};
+        auto raw = updater->DrainAnimationEvents();
+        std::vector<AnimationEventInfo> out;
+        out.reserve(raw.size());
+        for (auto& e : raw) {
+            out.push_back({ e.nodeId, e.frame, std::move(e.name) });
+        }
+        return out;
+    }
+
 private:
     void loadScene();
     bool applyUserPropsRuntime(const std::string& newJson);
@@ -766,6 +784,13 @@ private:
                 m_pending_light_positions.clear();
             }
 
+            // Tick property animations (alpha.animation keyframe tracks).
+            // Advances time on playing tracks, evaluates, writes resulting
+            // value into the target node's material const (g_UserAlpha for
+            // "alpha").  Driven by render-thread frame time so it stays in
+            // lockstep with visuals.
+            tickPropertyAnimations(frame_timer.IdeaTime() * m_speed);
+
             m_render->drawFrame(*m_scene);
 
             // Check for device lost after draw
@@ -877,6 +902,109 @@ private:
         }
     }
 
+public:
+    // Advance all playing property animations on the current scene and
+    // push each track's evaluated value into every material that renders
+    // the owner node — source material, effect chain nodes, and final
+    // composite.  Required because layers with effects bake alpha into
+    // the effect chain's own material copies, so updating only the source
+    // leaves the rendered output unchanged.  Runs on the render thread.
+    void tickPropertyAnimations(double dt) {
+        if (! m_scene) return;
+        if (m_scene->nodePropertyAnimations.empty()) return;
+        applyPendingPropertyAnimCommands();
+        for (auto& [nodeId, anims] : m_scene->nodePropertyAnimations) {
+            auto nit = m_scene->nodeById.find(nodeId);
+            SceneNode* sourceNode = (nit != m_scene->nodeById.end()) ? nit->second : nullptr;
+
+            for (auto& anim : anims) {
+                if (anim.playing) anim.time += dt;
+                float value = EvaluatePropertyAnimation(anim, anim.time);
+                if (anim.property == "alpha") {
+                    writeAlphaToAllMaterials(sourceNode, nodeId, value);
+                }
+                // Extend here for other properties (color, brightness, …).
+            }
+        }
+    }
+
+    // Apply an alpha value to every material participating in the node's
+    // render path so layers with effect chains don't render with a stale
+    // baked-in alpha from their per-effect material copy.
+    void writeAlphaToAllMaterials(SceneNode* sourceNode, i32 nodeId, float value) {
+        auto pushAlpha = [value](SceneMaterial* mat) {
+            if (! mat) return;
+            mat->customShader.constValues["g_UserAlpha"] =
+                std::vector<float> { value };
+            // Also update g_Color4.a so shaders that sample color alpha
+            // (rather than the explicit g_UserAlpha uniform) pick this up.
+            auto it = mat->customShader.constValues.find("g_Color4");
+            if (it != mat->customShader.constValues.end() && it->second.size() >= 4) {
+                it->second[3] = value;
+            }
+            mat->customShader.constValuesDirty = true;
+        };
+
+        if (sourceNode && sourceNode->HasMaterial()) {
+            pushAlpha(sourceNode->Mesh()->Material());
+        }
+        auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
+        if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+            auto* eff = eit->second;
+            for (std::size_t i = 0; i < eff->EffectCount(); i++) {
+                auto& e = eff->GetEffect(i);
+                for (auto& en : e->nodes) {
+                    if (en.sceneNode && en.sceneNode->HasMaterial()) {
+                        pushAlpha(en.sceneNode->Mesh()->Material());
+                    }
+                }
+            }
+            pushAlpha(eff->FinalMesh().Material());
+        }
+    }
+
+    void propertyAnimCommand(int32_t nodeId, const std::string& name,
+                             const std::string& cmd) {
+        std::lock_guard<std::mutex> lock(m_prop_anim_cmds_mutex);
+        m_prop_anim_cmds.push_back({ nodeId, name, cmd });
+    }
+
+    bool propertyAnimIsPlaying(int32_t nodeId, const std::string& name) const {
+        if (! m_scene) return false;
+        auto it = m_scene->nodePropertyAnimations.find(nodeId);
+        if (it == m_scene->nodePropertyAnimations.end()) return false;
+        for (const auto& a : it->second) {
+            if (a.name == name) return a.playing;
+        }
+        return false;
+    }
+
+    void applyPendingPropertyAnimCommands() {
+        std::vector<PropertyAnimCmd> cmds;
+        {
+            std::lock_guard<std::mutex> lock(m_prop_anim_cmds_mutex);
+            cmds.swap(m_prop_anim_cmds);
+        }
+        if (cmds.empty()) return;
+        for (auto& c : cmds) {
+            auto it = m_scene->nodePropertyAnimations.find(c.nodeId);
+            if (it == m_scene->nodePropertyAnimations.end()) continue;
+            for (auto& a : it->second) {
+                if (a.name != c.name) continue;
+                if (c.cmd == "play") {
+                    a.playing = true;
+                } else if (c.cmd == "pause") {
+                    a.playing = false;
+                } else if (c.cmd == "stop") {
+                    a.playing = false;
+                    a.time    = 0.0;
+                }
+                break;
+            }
+        }
+    }
+
+private:
     void recoverFromDeviceLost() {
         LOG_INFO("Recovering from VK_ERROR_DEVICE_LOST...");
 
@@ -975,6 +1103,13 @@ private:
         SceneNode*                           ownerNode { nullptr };
     };
     std::vector<VideoDecoderEntry> m_video_decoders;
+
+    // Queue of script-driven play/stop/pause commands for property animations
+    // (layer.getAnimation(name).play() etc.).  Drained at the start of every
+    // tickPropertyAnimations() so script intent lands before evaluation.
+    struct PropertyAnimCmd { int32_t nodeId; std::string name; std::string cmd; };
+    mutable std::mutex           m_prop_anim_cmds_mutex;
+    std::vector<PropertyAnimCmd> m_prop_anim_cmds;
 };
 } // namespace wallpaper
 
@@ -1098,6 +1233,23 @@ bool SceneWallpaper::soundLayerIsPlaying(int32_t index) const {
 }
 void SceneWallpaper::soundLayerSetVolume(int32_t index, float volume) {
     m_main_handler->soundLayerSetVolume(index, volume);
+}
+
+std::vector<AnimationEventInfo> SceneWallpaper::drainAnimationEvents() {
+    return m_main_handler->drainAnimationEvents();
+}
+
+void SceneWallpaper::propertyAnimPlay(int32_t nodeId, const std::string& name) {
+    m_main_handler->renderHandler()->propertyAnimCommand(nodeId, name, "play");
+}
+void SceneWallpaper::propertyAnimPause(int32_t nodeId, const std::string& name) {
+    m_main_handler->renderHandler()->propertyAnimCommand(nodeId, name, "pause");
+}
+void SceneWallpaper::propertyAnimStop(int32_t nodeId, const std::string& name) {
+    m_main_handler->renderHandler()->propertyAnimCommand(nodeId, name, "stop");
+}
+bool SceneWallpaper::propertyAnimIsPlaying(int32_t nodeId, const std::string& name) const {
+    return m_main_handler->renderHandler()->propertyAnimIsPlaying(nodeId, name);
 }
 
 // Scene property control forwarding

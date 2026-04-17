@@ -8,6 +8,7 @@
 #include "SceneRenderTarget.h"
 #include "SceneNode.h"
 #include "SceneLight.hpp"
+#include "WPPropertyAnimation.h"
 
 #include "Core/NoCopyMove.hpp"
 
@@ -212,6 +213,12 @@ public:
         VolumeAnimationData animation;
     };
     std::vector<SoundVolumeScript> soundVolumeScripts;
+
+    // Keyframe property animations keyed by scene-node id.  One vector entry
+    // per named animation (uniqueness within a node's vector is enforced by
+    // WE authoring; we don't deduplicate).  Ticked each frame on the render
+    // thread; values written directly into the node's material const data.
+    std::unordered_map<i32, std::vector<PropertyAnimation>> nodePropertyAnimations;
 
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {

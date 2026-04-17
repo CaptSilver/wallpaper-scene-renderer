@@ -1123,11 +1123,11 @@ void SceneObject::setupTextScripts() {
         "    angles: {x:init.a[0], y:init.a[1], z:init.a[2]},\n"
         "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
         "    visible: init.v, alpha: 1.0,\n"
-        "    text: '', name: name, _dirty: {}\n"
+        "    text: '', name: name, _dirty: {}, _cmds: []\n"
         "  } : { origin: {x:0,y:0,z:0}, scale: {x:1,y:1,z:1},\n"
         "        angles: {x:0,y:0,z:0}, size: {x:0, y:0},\n"
         "        visible: true, alpha: 1.0,\n"
-        "        text: '', name: name, _dirty: {} };\n"
+        "        text: '', name: name, _dirty: {}, _cmds: [] };\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
         "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true });\n"
@@ -1191,6 +1191,21 @@ void SceneObject::setupTextScripts() {
         "    };\n"
         "    _s._aniLayers[key] = al;\n"
         "    return al;\n"
+        "  };\n"
+        // Named keyframe animation controller for image-layer properties
+        // (alpha.animation etc).  Matches the WE IAnimation shape used by
+        // scripts: getAnimation(name).play()/stop()/pause()/isPlaying.
+        "  if (!_s._namedAnims) _s._namedAnims = {};\n"
+        "  p.getAnimation = function(animName) {\n"
+        "    if (_s._namedAnims[animName]) return _s._namedAnims[animName];\n"
+        "    var ctrl = { _playing: false, _name: animName,\n"
+        "      play:  function(){ this._playing = true;  _s._cmds.push('panim_play:'  + animName); _s._dirty._cmds = true; },\n"
+        "      pause: function(){ this._playing = false; _s._cmds.push('panim_pause:' + animName); _s._dirty._cmds = true; },\n"
+        "      stop:  function(){ this._playing = false; _s._cmds.push('panim_stop:'  + animName); _s._dirty._cmds = true; },\n"
+        "      isPlaying: function(){ return this._playing; }\n"
+        "    };\n"
+        "    _s._namedAnims[animName] = ctrl;\n"
+        "    return ctrl;\n"
         "  };\n"
         // getEffect(name) — returns effect proxy with dirty-tracked visible property
         "  if (!_s._effCache) _s._effCache = {};\n"
@@ -1265,6 +1280,12 @@ void SceneObject::setupTextScripts() {
         "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, setFrame:function(f){}\n"
         "    };\n"
         "  };\n"
+        "  p.getAnimation = function(animName){\n"
+        "    return { _playing: false, _name: animName,\n"
+        "      play:function(){}, pause:function(){}, stop:function(){},\n"
+        "      isPlaying:function(){return false;}\n"
+        "    };\n"
+        "  };\n"
         "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
         "  p.getEffectCount = function() { return 0; };\n"
         "  p._state = _s;\n"
@@ -1313,12 +1334,14 @@ void SceneObject::setupTextScripts() {
         "  for (var name in _layerCache) {\n"
         "    var s = _layerCache[name]._state;\n"
         "    var d = s._dirty;\n"
+        "    var cmds = s._cmds || [];\n"
         "    var keys = Object.keys(d);\n"
-        "    if (keys.length === 0) continue;\n"
-        "    updates.push({ name: name, dirty: d,\n"
+        "    if (keys.length === 0 && cmds.length === 0) continue;\n"
+        "    updates.push({ name: name, dirty: d, cmds: cmds.slice(),\n"
         "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
         "      visible: s.visible, alpha: s.alpha, text: s.text });\n"
         "    s._dirty = {};\n"
+        "    if (cmds.length) s._cmds = [];\n"
         "  }\n"
         "  return updates;\n"
         "}\n"
@@ -1918,6 +1941,12 @@ void SceneObject::setupTextScripts() {
             "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged : null);\n"
             "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? exports.mediaStatusChanged :\n"
             "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : null);\n"
+            "  var _anim = typeof exports.animationEvent === 'function' ? exports.animationEvent :\n"
+            "              (typeof animationEvent === 'function' ? animationEvent : null);\n"
+            "  var _animSafe = _anim ? function(ev, v) {\n"
+            "    try { return _anim(ev, v); }\n"
+            "    catch(e) { console.log('SceneScript animationEvent error: ' + e.message); return v; }\n"
+            "  } : null;\n"
             "  return { update: _upd, init: _init, cursorClick: _click,\n"
             "           cursorEnter: _enter, cursorLeave: _leave,\n"
             "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
@@ -1925,7 +1954,8 @@ void SceneObject::setupTextScripts() {
             "           resizeScreen: _resize,\n"
             "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
             "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
-            "           mediaStatusChanged: _mstc };\n"
+            "           mediaStatusChanged: _mstc,\n"
+            "           animationEvent: _animSafe };\n"
             "})()\n"
         ).arg(propsInit, scriptSrc);
 
@@ -1963,6 +1993,7 @@ void SceneObject::setupTextScripts() {
         QJSValue mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
         QJSValue mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
         QJSValue mediaStatusChangedFn     = result.property("mediaStatusChanged");
+        QJSValue animationEventFn         = result.property("animationEvent");
 
         // Scripts with no callable functions are useless
         if (!updateFn.isCallable() && !initFn.isCallable() && !cursorClickFn.isCallable()
@@ -1972,7 +2003,7 @@ void SceneObject::setupTextScripts() {
             && !destroyFn.isCallable() && !resizeScreenFn.isCallable()
             && !mediaPlaybackChangedFn.isCallable() && !mediaPropertiesChangedFn.isCallable()
             && !mediaThumbnailChangedFn.isCallable() && !mediaTimelineChangedFn.isCallable()
-            && !mediaStatusChangedFn.isCallable()) {
+            && !mediaStatusChangedFn.isCallable() && !animationEventFn.isCallable()) {
             continue;
         }
 
@@ -1996,6 +2027,7 @@ void SceneObject::setupTextScripts() {
         state.mediaThumbnailChangedFn  = mediaThumbnailChangedFn;
         state.mediaTimelineChangedFn   = mediaTimelineChangedFn;
         state.mediaStatusChangedFn     = mediaStatusChangedFn;
+        state.animationEventFn         = animationEventFn;
         state.currentVisible = psi.initialVisible;
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;
@@ -2566,6 +2598,62 @@ void SceneObject::evaluatePropertyScripts() {
     // Cache Vec3 constructor for efficient argument creation
     QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
 
+    // Drain puppet-animation keyframe events fired by the render thread
+    // since the last tick, and dispatch each to the matching script's
+    // animationEvent(event, value) handler.  Fired BEFORE update() so the
+    // handler can mutate state (play sounds, toggle visibility) that update
+    // then consumes on the same tick.
+    if (m_scene) {
+        auto events = m_scene->drainAnimationEvents();
+        if (! events.empty()) {
+            auto buildValue = [&](const PropertyScriptState& state) {
+                if (state.property == "visible") return QJSValue(state.currentVisible);
+                if (state.property == "alpha")   return QJSValue((double)state.currentFloat);
+                return vec3Fn.call({ QJSValue((double)state.currentVec3[0]),
+                                     QJSValue((double)state.currentVec3[1]),
+                                     QJSValue((double)state.currentVec3[2]) });
+            };
+            for (const auto& evt : events) {
+                bool delivered = false;
+                for (auto& state : m_propertyScriptStates) {
+                    if (state.id != evt.nodeId) continue;
+                    if (! state.animationEventFn.isCallable()) continue;
+
+                    if (! state.layerName.empty()) {
+                        m_jsEngine->globalObject().setProperty(
+                            "thisLayer", state.thisLayerProxy);
+                    }
+                    QJSValue eventObj = m_jsEngine->newObject();
+                    eventObj.setProperty("name", QString::fromStdString(evt.name));
+                    eventObj.setProperty("frame", QJSValue(evt.frame));
+
+                    QJSValue result = state.animationEventFn.call(
+                        { eventObj, buildValue(state) });
+                    if (result.isError()) {
+                        QString stack = result.property("stack").toString();
+                        int line = result.property("lineNumber").toInt();
+                        LOG_INFO("animationEvent handler error id=%d name='%s': %s (line %d)\nSTACK: %s",
+                                 state.id, evt.name.c_str(),
+                                 qPrintable(result.toString()), line,
+                                 qPrintable(stack));
+                    }
+                    delivered = true;
+                }
+                // scene-level listeners so scripts on OTHER objects can listen
+                QJSValue sceneEvt = m_jsEngine->newObject();
+                sceneEvt.setProperty("name",   QString::fromStdString(evt.name));
+                sceneEvt.setProperty("frame",  QJSValue(evt.frame));
+                sceneEvt.setProperty("nodeId", QJSValue(evt.nodeId));
+                fireSceneEventListeners("animationEvent", { sceneEvt });
+
+                if (! delivered) {
+                    LOG_INFO("animationEvent '%s' fired for node %d but no handler listening",
+                             evt.name.c_str(), evt.nodeId);
+                }
+            }
+        }
+    }
+
     // Evaluate in order: visible first (computes shared.*), then vec3 props, then alpha
     for (int pass = 0; pass < 3; pass++) {
         for (auto& state : m_propertyScriptStates) {
@@ -2716,6 +2804,25 @@ void SceneObject::evaluatePropertyScripts() {
                         m_scene->updateEffectVisible(id, effIdx, effVis);
                     }
                 }
+            }
+
+            // Layer-level command queue: named property-animation controls
+            // from layer.getAnimation(name).play()/stop()/pause().  Commands
+            // are prefixed "panim_<cmd>:<name>" so we can grow this channel
+            // without extra dirty keys.
+            QJSValue cmds = entry.property("cmds");
+            int cmdCount = cmds.isArray() ? cmds.property("length").toInt() : 0;
+            for (int c = 0; c < cmdCount; c++) {
+                QString cmd = cmds.property(c).toString();
+                if (! cmd.startsWith("panim_")) continue;
+                int sep = cmd.indexOf(':');
+                if (sep < 0) continue;
+                QString action = cmd.mid(6, sep - 6);       // between "panim_" and ':'
+                QString animName = cmd.mid(sep + 1);
+                std::string an = animName.toStdString();
+                if (action == "play")  m_scene->propertyAnimPlay(id, an);
+                else if (action == "stop")  m_scene->propertyAnimStop(id, an);
+                else if (action == "pause") m_scene->propertyAnimPause(id, an);
             }
         }
     }

@@ -1005,6 +1005,21 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                                  Vector3f(wpimgobj.angles.data()));
     LoadAlignment(*spImgNode, wpimgobj.alignment, { wpimgobj.size[0], wpimgobj.size[1] });
     spImgNode->ID() = wpimgobj.id;
+    // Copy parsed property animations (alpha.animation etc.) into the scene
+    // registry so they can be ticked by the render thread and controlled via
+    // SceneScript's layer.getAnimation(name).  Apply startPaused: WE plays by
+    // default unless the author marks it paused.
+    if (! wpimgobj.propertyAnimations.empty()) {
+        auto& vec = context.scene->nodePropertyAnimations[wpimgobj.id];
+        for (auto panim : wpimgobj.propertyAnimations) {
+            panim.playing = ! panim.startPaused;
+            panim.time    = 0.0;
+            LOG_INFO("register prop anim: node=%d prop=%s name='%s' playing=%d",
+                     wpimgobj.id, panim.property.c_str(), panim.name.c_str(),
+                     (int)panim.playing);
+            vec.push_back(std::move(panim));
+        }
+    }
     // Only set m_visible for combo-selector nodes — they need runtime toggling.
     // Other invisible nodes keep m_visible=true; isOffscreen controls rendering.
     // Setting m_visible=false would cascade to effect chain nodes via

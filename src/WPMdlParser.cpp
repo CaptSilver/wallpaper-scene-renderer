@@ -1,8 +1,10 @@
 #include "WPMdlParser.hpp"
+#include <nlohmann/json.hpp>
 #include "Fs/VFS.h"
 #include "Fs/IBinaryStream.h"
 #include "Fs/MemBinaryStream.h"
 #include "WPCommon.hpp"
+#include "WPJson.hpp"
 #include "Utils/Logging.h"
 #include "Scene/SceneMesh.h"
 #include "SpecTexs.hpp"
@@ -439,11 +441,29 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                     // it here.
                     f.ReadUint8();
                 } else {
-                    uint32_t unk_extra_uint = f.ReadUint32();
-                    for (uint i = 0; i < unk_extra_uint; i++) {
+                    // The trailer after each animation's bone frames is a list of
+                    // keyframe event records.  Each record is:
+                    //   float  — animation timestamp of the event (redundant w/ frame)
+                    //   string — small JSON blob: {"frame":N,"name":"eventName",...}
+                    // SceneScripts react to these via animationEvent(event,value).
+                    uint32_t event_count = f.ReadUint32();
+                    for (uint i = 0; i < event_count; i++) {
                         f.ReadFloat();
-                        // data is like: {"$$hashKey":"object:2110","frame":1,"name":"random_anim"}
-                        std::string unk_extra = f.ReadStr();
+                        std::string evt_json = f.ReadStr();
+                        if (evt_json.empty()) continue;
+                        nlohmann::json j;
+                        if (! PARSE_JSON(evt_json, j)) {
+                            LOG_ERROR("anim %d: failed to parse event json: %s",
+                                      anim.id, evt_json.c_str());
+                            continue;
+                        }
+                        WPPuppet::Animation::Event e {};
+                        GET_JSON_NAME_VALUE_NOWARN(j, "frame", e.frame);
+                        GET_JSON_NAME_VALUE_NOWARN(j, "name", e.name);
+                        if (e.name.empty()) continue;
+                        LOG_INFO("    anim[%d] event frame=%d name='%s'",
+                                 anim.id, e.frame, e.name.c_str());
+                        anim.events.push_back(std::move(e));
                     }
                 }
             }

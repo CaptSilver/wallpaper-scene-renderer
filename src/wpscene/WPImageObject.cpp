@@ -8,6 +8,73 @@ using namespace wallpaper::wpscene;
 
 namespace
 {
+using wallpaper::PropertyAnimation;
+using wallpaper::PropertyAnimKeyframe;
+using wallpaper::PropertyAnimMode;
+using wallpaper::ParsePropertyAnimMode;
+
+// Try to extract a scalar property's embedded keyframe animation:
+//   "<prop>": { "animation": { "c0":[…], "options":{name,fps,length,mode,startpaused} },
+//               "value": <fallback> }
+// Returns true iff an animation was found and parsed.  Silently returns
+// false for the common case where <prop> is a plain scalar.
+bool TryParsePropertyAnimation(const nlohmann::json& fieldJson,
+                               std::string_view propertyName, float fallbackInitial,
+                               PropertyAnimation& out) {
+    if (! fieldJson.is_object()) return false;
+    if (! fieldJson.contains("animation")) return false;
+    const auto& animJson = fieldJson.at("animation");
+    if (! animJson.is_object()) return false;
+
+    out = PropertyAnimation {};
+    out.property     = std::string(propertyName);
+    out.initialValue = fallbackInitial;
+    if (fieldJson.contains("value") && fieldJson.at("value").is_number()) {
+        out.initialValue = fieldJson.at("value").get<float>();
+    }
+
+    if (animJson.contains("options") && animJson.at("options").is_object()) {
+        const auto& opts = animJson.at("options");
+        GET_JSON_NAME_VALUE_NOWARN(opts, "name", out.name);
+        float fps    = out.fps;
+        float length = out.length;
+        GET_JSON_NAME_VALUE_NOWARN(opts, "fps", fps);
+        GET_JSON_NAME_VALUE_NOWARN(opts, "length", length);
+        out.fps    = fps;
+        out.length = length;
+        std::string mode;
+        GET_JSON_NAME_VALUE_NOWARN(opts, "mode", mode);
+        out.mode = ParsePropertyAnimMode(mode);
+        bool sp = false;
+        GET_JSON_NAME_VALUE_NOWARN(opts, "startpaused", sp);
+        out.startPaused = sp;
+    }
+
+    // WE stores keyframes under "c0" for single-channel tracks, "c0"/"c1"/"c2"
+    // for multi-channel.  We only handle scalar (c0) today; color vec3 support
+    // would extend this.
+    if (animJson.contains("c0") && animJson.at("c0").is_array()) {
+        for (const auto& kfJson : animJson.at("c0")) {
+            PropertyAnimKeyframe kf {};
+            GET_JSON_NAME_VALUE_NOWARN(kfJson, "frame", kf.frame);
+            GET_JSON_NAME_VALUE_NOWARN(kfJson, "value", kf.value);
+            out.keyframes.push_back(kf);
+        }
+    }
+
+    if (out.name.empty()) {
+        // WE allows unnamed animations; scripts can't address them, but they
+        // should still play if not startPaused.  Give a synthetic name derived
+        // from the property for script lookup determinism.
+        out.name = std::string(propertyName);
+    }
+
+    LOG_INFO("property anim parsed: prop=%s name='%s' mode=%d fps=%.2f len=%.2f paused=%d keys=%zu",
+             out.property.c_str(), out.name.c_str(), (int)out.mode, out.fps, out.length,
+             (int)out.startPaused, out.keyframes.size());
+    return true;
+}
+
 // Parse color field: may be a simple vec3 array or an object with {script, scriptproperties, value}
 void ParseColorField(const nlohmann::json& json, std::array<float, 3>& color,
                      std::string& colorScript, std::string& colorScriptProperties, int32_t id) {
@@ -253,6 +320,12 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(jImage, "nopadding", nopadding);
     ParseColorField(json, color, colorScript, colorScriptProperties, id);
     GET_JSON_NAME_VALUE_NOWARN(json, "alpha", alpha);
+    if (json.contains("alpha") && json.at("alpha").is_object()) {
+        PropertyAnimation panim;
+        if (TryParsePropertyAnimation(json.at("alpha"), "alpha", alpha, panim)) {
+            propertyAnimations.push_back(std::move(panim));
+        }
+    }
     GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
 
 	GET_JSON_NAME_VALUE_NOWARN(jImage, "puppet", puppet);

@@ -67,6 +67,15 @@ struct SoundLayerControlInfo {
     bool        startsilent { false };
 };
 
+// Puppet animation keyframe event fired by the render thread and drained by
+// the QML/script thread. Routed to the owning object's SceneScript handler
+// (animationEvent(event, value)).
+struct AnimationEventInfo {
+    int32_t     nodeId { -1 };
+    int32_t     frame { 0 };
+    std::string name;
+};
+
 constexpr std::string_view PROPERTY_SOURCE               = "source";
 constexpr std::string_view PROPERTY_ASSETS               = "assets";
 constexpr std::string_view PROPERTY_FPS                  = "fps";
@@ -125,6 +134,16 @@ public:
     void                               soundLayerPause(int32_t index);
     bool                               soundLayerIsPlaying(int32_t index) const;
     void                               soundLayerSetVolume(int32_t index, float volume);
+
+    // Drain puppet-animation keyframe events that fired since the last call.
+    // Polled by SceneBackend each script evaluation tick.
+    std::vector<AnimationEventInfo>    drainAnimationEvents();
+
+    // Named property-animation control (layer.getAnimation(name).play()/etc).
+    void propertyAnimPlay(int32_t nodeId, const std::string& name);
+    void propertyAnimPause(int32_t nodeId, const std::string& name);
+    void propertyAnimStop(int32_t nodeId, const std::string& name);
+    bool propertyAnimIsPlaying(int32_t nodeId, const std::string& name) const;
 
     // Scene property control (bloom, clear color, camera, lighting)
     void        updateClearColor(float r, float g, float b);

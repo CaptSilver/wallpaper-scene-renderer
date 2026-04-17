@@ -4,6 +4,7 @@
 #include "WPMaterial.h"
 #include <vector>
 #include "WPPuppet.hpp"
+#include "WPPropertyAnimation.h"
 #include <unordered_set>
 #include <string>
 #include <filesystem>
@@ -84,6 +85,10 @@ public:
 
     std::string                                puppet;
     std::vector<WPPuppetLayer::AnimationLayer> puppet_layers;
+
+    // Keyframe animations parsed out of <prop>.animation blocks.
+    // Each entry targets a specific scalar property on this object (e.g. alpha).
+    std::vector<PropertyAnimation> propertyAnimations;
 
     // Color property script (e.g. audio-reactive color)
     std::string colorScript;
