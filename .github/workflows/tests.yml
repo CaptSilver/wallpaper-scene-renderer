@@ -31,7 +31,8 @@ jobs:
             libfreetype-dev \
             libgl-dev \
             libglvnd-dev \
-            libvulkan-dev
+            libvulkan-dev \
+            libmpv-dev
 
       - name: Configure CMake
         run: cmake -B build -DBUILD_TESTS=ON
