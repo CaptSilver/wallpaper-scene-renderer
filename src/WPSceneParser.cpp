@@ -1652,6 +1652,11 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()));
         spNode->ID()   = wppartobj.id;
+        // Apply visible field to the scene node so pool particle layers (which
+        // declare visible=false at load) start hidden and only render when
+        // SceneScript's createLayer pops them.  Existing wallpapers that don't
+        // set visible default to true (WPParticleObject::visible = true).
+        spNode->SetVisible(wppartobj.visible);
     }
 
     wpscene::ParticleInstanceoverride override = wppartobj.instanceoverride;
@@ -1707,8 +1712,17 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
         if (is_child)
             child_ptr.particle_parent->AddChild(std::move(particleSub));
-        else
+        else {
+            // Pool particle nodes get registered so createLayer can reset
+            // them and auto-hide when their burst FX plays out.  Non-pool
+            // particles (regular wallpaper emitters) must NOT be in this
+            // map — a continuous emitter could momentarily have zero live
+            // particles and get wrongly flagged as "done".
+            if (wppartobj.name.rfind("__pool_", 0) == 0) {
+                context.scene->particleSubByNodeId[wppartobj.id] = particleSub.get();
+            }
             context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
+        }
 
         if (is_child)
             child_ptr.node_parent->AppendChild(spNode);
@@ -1944,8 +1958,13 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
     if (is_child)
         child_ptr.particle_parent->AddChild(std::move(particleSub));
-    else
+    else {
+        // Pool-only: see comment in the spawner-only branch above
+        if (wppartobj.name.rfind("__pool_", 0) == 0) {
+            context.scene->particleSubByNodeId[wppartobj.id] = particleSub.get();
+        }
         context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
+    }
 
     if (is_child) {
         child_ptr.node_parent->AppendChild(spNode);
@@ -2634,7 +2653,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // large offset.
         size_t    poolOrderBase = obj_idx + 1'000'000;
         for (const auto& assetPath : context.registered_asset_paths) {
-            if (assetPath.find("particles/") == 0) continue;
+            bool isParticle = assetPath.find("particles/") == 0;
             // Sanitize asset path into a unique layer-name prefix.
             std::string safePrefix = "__pool_" + assetPath;
             for (char& c : safePrefix)
@@ -2642,21 +2661,26 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             for (int i = 0; i < kPoolSize; i++) {
                 std::string poolName = safePrefix + "_" + std::to_string(i);
                 i32         thisId   = synthId++;
-                // No size declared — if the model JSON sets autosize=true,
-                // ParseImageObj resolves the dimensions from the first
-                // texture's sprite frame.  Scripts always set origin at
-                // runtime so the off-center zero default isn't an issue.
+                // Particle pool layers store the particle path under
+                // "particle"; image pool layers store under "image" and rely
+                // on the model's autosize to resolve dimensions.  Scripts
+                // always set origin at runtime so the off-center zero
+                // default isn't an issue.
                 nlohmann::json poolObj = {
                     { "id",      thisId        },
-                    { "image",   assetPath     },
                     { "name",    poolName      },
                     { "origin",  "0 0 0"       },
                     { "scale",   "1 1 1"       },
                     { "angles",  "0 0 0"       },
                     { "visible", false         },
                 };
+                if (isParticle) poolObj["particle"] = assetPath;
+                else            poolObj["image"]    = assetPath;
                 size_t beforeSize = wp_objs.size();
-                AddWPObject<wpscene::WPImageObject>(wp_objs, poolObj, vfs);
+                if (isParticle)
+                    AddWPObject<wpscene::WPParticleObject>(wp_objs, poolObj, vfs);
+                else
+                    AddWPObject<wpscene::WPImageObject>(wp_objs, poolObj, vfs);
                 if (wp_objs.size() > beforeSize) {
                     context.script_referenced_layers.insert(poolName);
                     context.scene->assetPools[assetPath].push_back(poolName);
@@ -2693,7 +2717,19 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                            }
                            ParseImageObj(context, obj);
                        },
-                       [&context](wpscene::WPParticleObject& obj) {
+                       [&context, &nameToObjState](wpscene::WPParticleObject& obj) {
+                           // Particle layers don't have a size in the same
+                           // sense as image quads, but nameToObjState is
+                           // what the pool-layer registration loop consults
+                           // below — populate it so __pool_particles_* nodes
+                           // get registered in nodeNameToId / initialStates.
+                           if (! obj.name.empty()) {
+                               nameToObjState[obj.name] = {
+                                   obj.origin, obj.scale, obj.angles,
+                                   std::array<float, 2> { 0.0f, 0.0f },
+                                   obj.visible
+                               };
+                           }
                            ParseParticleObj(context, obj);
                        },
                        [&context, &sm](wpscene::WPSoundObject& obj) {

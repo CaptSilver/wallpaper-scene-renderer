@@ -3,6 +3,7 @@
 #include "Particle/Particle.h"
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
+#include "Particle/ParticleSystem.h"
 
 #include <cmath>
 
@@ -793,6 +794,75 @@ TEST_CASE("Large time step exceeds duration on first call") {
     std::vector<ParticleInitOp> inis;
     op(ps, inis, 100, 100.0); // elapsed=100, way past 1s duration
     CHECK(mock.callCount == 0);
+}
+
+} // TEST_SUITE
+
+// ===========================================================================
+// ParticleInstance::Refresh — underpins ParticleSubSystem::Reset which the
+// dynamic-asset pool uses to rearm spent burst particle FX (e.g. dino_run's
+// coinget pickup sparkle).  Without proper refresh, pool-reuse would leave
+// dead particles in the instance and the instantaneous emitter would never
+// re-fire.
+// ===========================================================================
+
+TEST_SUITE("ParticleInstance_Refresh") {
+
+TEST_CASE("Refresh clears particles vector") {
+    ParticleInstance inst;
+    inst.ParticlesVec().push_back(makeParticle());
+    inst.ParticlesVec().push_back(makeParticle());
+    REQUIRE(inst.ParticlesVec().size() == 2);
+
+    inst.Refresh();
+    CHECK(inst.ParticlesVec().empty());
+}
+
+TEST_CASE("Refresh resets death flags to false") {
+    ParticleInstance inst;
+    inst.SetDeath(true);
+    inst.SetNoLiveParticle(true);
+    REQUIRE(inst.IsDeath());
+    REQUIRE(inst.IsNoLiveParticle());
+
+    inst.Refresh();
+    CHECK_FALSE(inst.IsDeath());
+    CHECK_FALSE(inst.IsNoLiveParticle());
+}
+
+TEST_CASE("Refresh clears bounded-data link") {
+    ParticleInstance parent;
+    ParticleInstance child;
+    child.GetBoundedData().parent       = &parent;
+    child.GetBoundedData().particle_idx = 42;
+    REQUIRE(child.GetBoundedData().parent == &parent);
+
+    child.Refresh();
+    CHECK(child.GetBoundedData().parent == nullptr);
+    CHECK(child.GetBoundedData().particle_idx == -1);
+}
+
+TEST_CASE("Refresh clears trail histories") {
+    ParticleInstance inst;
+    inst.InitTrails(4, 1.0f);
+    // Seed a few trail points so Refresh has something to clear
+    auto& trails = inst.TrailHistories();
+    if (trails.empty()) {
+        // Instance doesn't pre-size — allocate one ourselves
+        trails.emplace_back();
+        trails.back().Init(4, 1.0f);
+    }
+    ParticleTrailPoint pt;
+    pt.position = Eigen::Vector3f(1, 2, 3);
+    pt.size     = 1.0f;
+    pt.alpha    = 1.0f;
+    trails[0].Push(pt);
+    REQUIRE(trails[0].Count() == 1);
+
+    inst.Refresh();
+    for (auto& trail : inst.TrailHistories()) {
+        CHECK(trail.Count() == 0);
+    }
 }
 
 } // TEST_SUITE

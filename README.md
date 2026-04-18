@@ -13,7 +13,7 @@ Open source Vulkan scene renderer for Wallpaper Engine wallpapers on Linux.
 - [x] Image layers
   - [x] `autosize: true` in model JSON — size resolved from the first texture's sprite frame dimensions (or `mapWidth/mapHeight` for non-sprite pictures)
   - [x] Script-referenced layers stay in the main render graph even when initially invisible (so SceneScript visibility toggles actually render — e.g. dino_run's jump sprite)
-  - [x] Dynamic-asset pool for `thisScene.createLayer(asset)` — pre-allocated pool of hidden scene nodes per `engine.registerAsset(path)` (image assets only; particles not yet pooled)
+  - [x] Dynamic-asset pool for `thisScene.createLayer(asset)` — pre-allocated pool of hidden scene nodes per `engine.registerAsset(path)` (both image and particle assets).  Burst particle FX rearm via `ParticleSubSystem::Reset` on each pool-pop and auto-hide once all particles die (`IsBurstDone`), so pool slots release even when scripts forget to call `destroyLayer`.
 - [x] Composition / Fullscreen layers
 - [x] Text (static rasterization via FreeType)
 - [x] Text (dynamic via SceneScript — clocks, dates, counters)
@@ -198,7 +198,7 @@ to a valid fragment shader will render. Known working:
     - [ ] `bloomEnabled` runtime toggle (requires render graph recompilation)
   - [x] `getLayer(name)` — returns layer proxy with position/scale/visibility/opacity
   - [x] `enumerateLayers()` — returns array of all layer proxies
-  - [x] `createLayer(asset)` / `destroyLayer(layer)` — pool-backed (images only; particle assets fall through to a no-op stub)
+  - [x] `createLayer(asset)` / `destroyLayer(layer)` — pool-backed for image and particle assets (burst particle FX rearm via `ParticleSubSystem::Reset`; auto-hide on `IsBurstDone`)
   - [x] Camera transforms
 - [x] `thisLayer` global (ILayer)
   - [x] Position, angles, scale, visibility control
@@ -235,4 +235,3 @@ to a valid fragment shader will render. Known working:
 - [ ] `IParticleSystem` / `IParticleSystemInstance` SceneScript control
 - [ ] `IMaterial` dynamic shader property access via SceneScript
 - [ ] `IVideoTexture` (video as texture source)
-- [ ] Dynamic particle instantiation (pool support for `particles/*.json` assets registered via `engine.registerAsset`)

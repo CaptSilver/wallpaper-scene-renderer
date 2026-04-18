@@ -73,6 +73,20 @@ public:
 
     void Emitt();
 
+    // Clears all particle instances and trail histories so the next Emitt()
+    // treats the subsystem as freshly created — instantaneous emitters fire
+    // again.  Used by the dynamic-asset pool to re-arm spent particle FX
+    // (e.g. dino_run's coinget burst) when the script pops a new instance.
+    void Reset();
+
+    // True after the subsystem has had at least one live particle since the
+    // last Reset() and all particles are now dead.  The dynamic-asset pool
+    // uses this to auto-hide a burst-FX node once its effect has played out,
+    // so scripts that don't promptly call destroyLayer don't leave lingering
+    // slots visible on screen.
+    bool IsBurstDone() const { return m_burst_done; }
+    void ClearBurstDone() { m_burst_done = false; }
+
     ParticleInstance* QueryNewInstance();
 
     void AddEmitter(ParticleEmittOp&&);
@@ -120,6 +134,12 @@ private:
     bool  m_is_spritetrail { false };
     u32   m_trail_capacity { 0 };
     float m_trail_length { 0.0f };
+
+    // Tracks burst-FX completion for the dynamic-asset pool.  Set true by
+    // Emitt() when the subsystem has had at least one live particle since
+    // the last Reset() but currently has none.
+    bool  m_burst_done { false };
+    bool  m_any_alive_since_reset { false };
 };
 
 class Scene;

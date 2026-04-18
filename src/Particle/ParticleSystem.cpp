@@ -83,6 +83,24 @@ void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
     m_children.emplace_back(std::move(child));
 }
 
+void ParticleSubSystem::Reset() {
+    // Rearm every instance so emitters with instantaneous>0 see ps.empty()
+    // next frame and re-fire their burst.  Also reset the subsystem clock so
+    // periodic / delayed emitters restart from time zero.
+    // Refresh() clears the particle vector, trail histories, bounded-data
+    // link, and flips death/no-live-particle flags back to false — exactly
+    // the state we need for the emitter to treat this like a fresh spawn.
+    for (auto& inst : m_instances) {
+        if (inst) inst->Refresh();
+    }
+    m_time = 0.0;
+    m_burst_done             = false;
+    m_any_alive_since_reset  = false;
+    for (auto& child : m_children) {
+        if (child) child->Reset();
+    }
+}
+
 ParticleInstance* ParticleSubSystem::QueryNewInstance() {
     if (Random::get(0.0, 1.0) <= m_probability) {
         for (auto& inst : m_instances) {
@@ -267,6 +285,24 @@ void ParticleSubSystem::Emitt() {
             }
         }
     }
+
+    // Burst-completion tracking for the dynamic-asset pool: once a subsystem
+    // has had particles alive since its last Reset() and all instances now
+    // report no live particles, flag m_burst_done so the render thread can
+    // auto-hide the owning node.  Without this, burst FX (e.g. dino_run's
+    // coin-pickup sparkle) would leave their node visible indefinitely after
+    // particles die — a non-issue visually (dead particles skip rendering)
+    // but it keeps pool slots "out" until the script explicitly destroys
+    // them, which some wallpapers forget to do.
+    bool any_alive = false;
+    for (auto& inst : m_instances) {
+        if (inst && ! inst->IsNoLiveParticle()) {
+            any_alive = true;
+            break;
+        }
+    }
+    if (any_alive) m_any_alive_since_reset = true;
+    else if (m_any_alive_since_reset && ! m_burst_done) m_burst_done = true;
 
     // Spawner-only particles have no vertex arrays — skip render data generation
     if (m_mesh->VertexCount() > 0) {

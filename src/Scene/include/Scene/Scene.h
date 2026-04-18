@@ -17,6 +17,7 @@
 namespace wallpaper
 {
 class ParticleSystem;
+class ParticleSubSystem;
 class IShaderValueUpdater;
 class IImageParser;
 class SceneImageEffectLayer;
@@ -189,6 +190,12 @@ public:
     // stores the pool layer names; look them up via nodeNameToId /
     // layerInitialStates like any other named layer.
     std::unordered_map<std::string, std::vector<std::string>> assetPools;
+
+    // Node ID → particle subsystem, for pool-backed particle assets.  When
+    // the render thread sees a pool particle node's visibility flip from
+    // false to true (via createLayer), it calls Reset() on the matching
+    // subsystem so the burst emitter re-fires.
+    std::unordered_map<i32, ParticleSubSystem*> particleSubByNodeId;
 
     // Sound layer info for SceneScript play/stop/pause API (enumerateLayers)
     struct SoundLayerInfo {

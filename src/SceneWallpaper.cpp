@@ -454,6 +454,27 @@ private:
             }
             m_scene->paritileSys->Emitt();
 
+            // Auto-hide pool particle nodes whose burst has played out.
+            // SceneScript pool-particle assets (e.g. dino_run's coinget)
+            // fire their instantaneous emitter on first tick after
+            // createLayer, particles live their lifetime, then die.  If the
+            // script doesn't promptly call destroyLayer, the node stays
+            // "visible" with zero active particles.  Hide it here so pool
+            // slots release automatically; JS destroyLayer then re-pushes
+            // the name to the pool for reuse.
+            for (auto& [nodeId, sub] : m_scene->particleSubByNodeId) {
+                if (! sub || ! sub->IsBurstDone()) continue;
+                auto nit = m_scene->nodeById.find(nodeId);
+                if (nit == m_scene->nodeById.end() || ! nit->second) {
+                    sub->ClearBurstDone();
+                    continue;
+                }
+                if (nit->second->IsVisible()) {
+                    nit->second->SetVisible(false);
+                }
+                sub->ClearBurstDone();
+            }
+
             // Process pending text updates before drawing
             {
                 std::lock_guard<std::mutex> lock(m_text_update_mutex);
@@ -643,10 +664,21 @@ private:
                     auto nit = m_scene->nodeById.find(id);
                     if (nit != m_scene->nodeById.end()) {
                         visHit++;
+                        bool wasVisible = nit->second->IsVisible();
                         nit->second->SetVisible(visible);
-                        // Diagnostic for dynamic-asset pool nodes — confirms
-                        // createLayer/destroyLayer visibility writes reach
-                        // the scene node.
+                        // Pool-particle rearm: on a false→true transition,
+                        // reset the associated particle subsystem so its
+                        // burst emitters refire.  Without this, a pool'd
+                        // burst particle (e.g. dino_run's coinget) only
+                        // fires its instantaneous emit on the first frame
+                        // after scene load and never again.
+                        if (visible && ! wasVisible) {
+                            auto pit = m_scene->particleSubByNodeId.find(id);
+                            if (pit != m_scene->particleSubByNodeId.end() && pit->second) {
+                                pit->second->Reset();
+                            }
+                        }
+                        // Diagnostic for dynamic-asset pool nodes
                         if (id >= 2'000'000 && id < 2'000'100) {
                             LOG_INFO("POOL visible apply: id=%d visible=%d translate=(%.1f,%.1f)",
                                      id, (int)visible,

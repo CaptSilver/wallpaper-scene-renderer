@@ -43,6 +43,7 @@ target_link_libraries(backend_scene_tests PRIVATE
     wpUtils
     wpFs
     wpAudio
+    wpParticle
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
     nlohmann_json
