@@ -747,10 +747,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
         }
     }
 
-    // Fix: "vec3 VAR = vec4(EXPR)" → "vec3 VAR = vec4(EXPR).xyz"
-    // HLSL implicit truncation from vec4 constructor result to vec3.
+    // Fix: "vec3 VAR = vec4(EXPR)" or "vec3 VAR = texture(...)" → append .xyz
+    // HLSL implicit truncation from vec4 result to vec3.  Handles both the vec4()
+    // constructor and the texture() family (all return vec4).
     {
-        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*(vec4\s*\([^;]*?\))\s*;)");
+        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*((?:vec4|texture\w*)\s*\([^;]*?\))\s*;)");
         result = std::regex_replace(result, re, "vec3 $1 = $2.xyz;");
     }
 
@@ -804,7 +805,92 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "$1.$2$3$1.$2");
     }
 
+    // Fix: "const <type> <funcname>(...)" — remove const qualifier on function return.
+    // GLSL disallows qualifiers on function return types; some workshop shaders write
+    // "const float fract(float x) { ... }" (shadowing the builtin).  The const is only
+    // invalid when followed by '(' (function); const variable decls (const float PI = 3.14;)
+    // are left alone because the identifier is followed by '=' instead.
+    {
+        std::regex re(R"(\bconst\s+(vec[234]|float|int|uint|bool)\s+(\w+)\s*\()");
+        result = std::regex_replace(result, re, "$1 $2(");
+    }
+
+    // Fix: user-defined functions shadowing GLSL builtins.
+    // HLSL lets you redefine fract/mod/etc. with your own precision; glslang errors
+    // with "overloaded functions must have the same parameter precision qualifiers".
+    // When we detect a user definition of a shadowing name, rename the function and
+    // all call sites to _w_<name>.  Call sites that were targeting the user function
+    // still hit our renamed copy; calls that meant the builtin also get renamed but
+    // the user's body is equivalent enough that this is a no-op in practice.
+    {
+        static const char* const kShadowBuiltins[] = {
+            "fract", "mod", "mix", "step", "smoothstep", "clamp", "sign",
+        };
+        for (const char* bn : kShadowBuiltins) {
+            std::regex re_def(std::string(R"(\b(?:vec[234]|float|int|uint|bool)\s+)") + bn +
+                              R"(\s*\([^)]*\)\s*\{)");
+            if (! std::regex_search(result, re_def)) continue;
+            std::string renamed = std::string("_w_") + bn;
+            std::regex  re_word(std::string(R"(\b)") + bn + R"(\b)");
+            result = std::regex_replace(result, re_word, renamed);
+        }
+    }
+
+    // Fix: user function expecting vecN called with a wider 'in' varying.
+    // HLSL implicitly truncates vec4→vec2 at call sites (e.g. rotateVec2(v_TexCoord, ...)
+    // where v_TexCoord is vec4 but rotateVec2 takes vec2); GLSL requires exact match.
+    // Collect user function signatures with vec2/vec3 first parameter, then swizzle any
+    // bare-varying first argument that's wider than the parameter.
+    {
+        std::map<std::string, int> func_first_param_dim;
+        {
+            std::regex re_func(
+                R"(\b(?:void|float|int|uint|bool|vec[234])\s+(\w+)\s*\(\s*(vec[234])\s+\w+)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_func);
+                 it != std::sregex_iterator();
+                 ++it) {
+                std::string name = (*it)[1].str();
+                std::string type = (*it)[2].str();
+                int         dim  = type == "vec2" ? 2 : type == "vec3" ? 3 : 4;
+                func_first_param_dim[name] = dim;
+            }
+        }
+        std::map<std::string, int> varying_dim;
+        {
+            std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
+                 it != std::sregex_iterator();
+                 ++it) {
+                varying_dim[(*it)[2].str()] = std::stoi((*it)[1].str());
+            }
+        }
+        for (const auto& [fname, expected_dim] : func_first_param_dim) {
+            for (const auto& [vname, actual_dim] : varying_dim) {
+                if (actual_dim <= expected_dim) continue;
+                const char* swiz = expected_dim == 2 ? "xy" : "xyz";
+                // Match FNAME( VNAME [,)]) where VNAME is not already swizzled.
+                std::regex re(std::string(R"(\b)") + fname + R"(\s*\(\s*)" + vname +
+                              R"(\s*([,\)]))");
+                result =
+                    std::regex_replace(result, re, fname + "(" + vname + "." + swiz + "$1");
+            }
+        }
+    }
+
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// FixFragmentGlPosition
+// ---------------------------------------------------------------------------
+// HLSL pixel shaders receive SV_Position which maps to window-space coords.
+// The WE cross-compiler sometimes emits `gl_Position` for this — but in GLSL,
+// gl_Position is a vertex-stage-only output, undeclared in fragment shaders.
+// The semantic equivalent is gl_FragCoord.  Replace unqualified gl_Position
+// references.  Caller must only invoke this on fragment-stage shader source.
+inline std::string FixFragmentGlPosition(const std::string& src) {
+    static const std::regex re(R"(\bgl_Position\b)");
+    return std::regex_replace(src, re, "gl_FragCoord");
 }
 
 // ---------------------------------------------------------------------------

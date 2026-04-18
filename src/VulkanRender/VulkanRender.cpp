@@ -123,6 +123,12 @@ VulkanRender::~VulkanRender() {};
 bool VulkanRender::inited() const { return pImpl->m_inited; }
 bool VulkanRender::deviceLost() const { return pImpl->m_device_lost; }
 bool VulkanRender::hdrContent() const { return pImpl->m_hdr_content; }
+void VulkanRender::setSceneHdrContent(bool hdr) {
+    if (! pImpl->m_finpass) return;
+    if (pImpl->m_finpass->hdrContent() == hdr) return;
+    pImpl->m_finpass->setHdrContent(hdr);
+    pImpl->m_finpass->markNeedsReprepare();
+}
 
 bool VulkanRender::init(RenderInitInfo info) { return pImpl->init(info); }
 void VulkanRender::destroy() { pImpl->destroy(); }

@@ -828,10 +828,15 @@ private:
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
             m_drawDiagReset = true; // force DRAW diagnostic on next frame
 
-            // Upgrade render targets to RGBA16F when HDR content pipeline is active
-            if (m_render->hdrContent()) {
-                m_scene->hdrContent = true;
-                int upgraded        = 0;
+            // HDR takes effect only when the renderer pipeline supports it AND the
+            // scene's project.json declared hdr:true.  Scenes that set hdr:false
+            // expect SDR accumulation (values clamp at 1.0); forcing RGBA16F on
+            // those makes overbright materials + additive blending blow out and
+            // trip bloom thresholds too aggressively.
+            const bool scene_wants_hdr = m_scene->hdrContent;
+            const bool effective_hdr   = m_render->hdrContent() && scene_wants_hdr;
+            if (effective_hdr) {
+                int upgraded = 0;
                 for (auto& [name, rt] : m_scene->renderTargets) {
                     if (rt.format == TextureFormat::RGBA8) {
                         rt.format = TextureFormat::RGBA16F;
@@ -839,7 +844,16 @@ private:
                     }
                 }
                 LOG_INFO("HDR content: upgraded %d render targets to RGBA16F", upgraded);
+            } else {
+                LOG_INFO("HDR content: disabled (scene_hdr=%d, render_hdr=%d)",
+                         (int)scene_wants_hdr,
+                         (int)m_render->hdrContent());
             }
+            m_scene->hdrContent = effective_hdr;
+            // Align FinPass tonemap with the effective HDR mode for this scene.
+            // If the mode differs from the previous scene, FinPass is marked for
+            // re-prepare so it picks the matching tonemap/passthrough shader.
+            m_render->setSceneHdrContent(effective_hdr);
 
             m_rg = sceneToRenderGraph(*m_scene);
 

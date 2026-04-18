@@ -45,6 +45,10 @@ public:
     void setPresentQueueIndex(uint32_t);
     void setHdrPassthrough(bool hdr);
     void setHdrContent(bool hdr);
+    bool hdrContent() const { return m_desc.hdr_content; }
+    // Force re-prepare so the tonemap shader is rebuilt with the current
+    // hdr_content/hdr_passthrough setting.  Called when scene HDR mode changes.
+    void markNeedsReprepare() { setPrepared(false); }
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

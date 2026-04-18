@@ -582,6 +582,7 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
         if (unit.stage == ShaderType::FRAGMENT) {
             unit.src = FixCombineAlpha(unit.src);
             unit.src = FixEffectAlpha(unit.src);
+            unit.src = FixFragmentGlPosition(unit.src);
         }
 
         vunit.src   = unit.src;

@@ -38,9 +38,12 @@ bool WPSceneGeneral::FromJson(const nlohmann::json& json) {
 	GET_JSON_NAME_VALUE_NOWARN(json, "fov", fov);
 	GET_JSON_NAME_VALUE_NOWARN(json, "nearz", nearz);
 	GET_JSON_NAME_VALUE_NOWARN(json, "farz", farz);
+	GET_JSON_NAME_VALUE_NOWARN(json, "hdr", hdr);
 	GET_JSON_NAME_VALUE_NOWARN(json, "bloom", bloom);
 	GET_JSON_NAME_VALUE_NOWARN(json, "bloomstrength", bloomstrength);
 	GET_JSON_NAME_VALUE_NOWARN(json, "bloomthreshold", bloomthreshold);
+	GET_JSON_NAME_VALUE_NOWARN(json, "bloomhdrstrength", bloomhdrstrength);
+	GET_JSON_NAME_VALUE_NOWARN(json, "bloomhdrthreshold", bloomhdrthreshold);
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashake", camerashake);
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashakeamplitude", camerashakeamplitude);
 	GET_JSON_NAME_VALUE_NOWARN(json, "camerashakespeed", camerashakespeed);

@@ -105,7 +105,13 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
 void ParticleSubSystem::Emitt() {
     if (m_sys.scene.elapsingTime < (double)m_starttime) return;
 
-    double frameTime    = m_sys.scene.frameTime;
+    // Cap per-frame particle time to avoid burst emission when the frame is
+    // slow (e.g. first frame after scene compile, or when fps target is low
+    // like 15 — a 66ms frame otherwise emits 33 particles at once, visible
+    // as a pulse of new stars on screen).  A cap of 32ms spreads bursts over
+    // at most two render ticks at 60fps target.
+    constexpr double kMaxParticleFrameTime = 0.032;
+    double frameTime    = std::min(m_sys.scene.frameTime, kMaxParticleFrameTime);
     double particleTime = frameTime * m_rate;
     m_time += particleTime;
 
@@ -190,6 +196,13 @@ void ParticleSubSystem::Emitt() {
 
             bool is_new = ParticleModify::IsNew(p);
             if (is_new) {
+                // Slot may have been reused from a dead particle — wipe the old
+                // trail so the new particle doesn't inherit a streak from the
+                // previous life's final position.  Without this, reincarnated
+                // particles render as giant streaks from old position to new.
+                if (m_is_spritetrail && i < (isize)inst->TrailHistories().size()) {
+                    inst->TrailHistories()[i].Clear();
+                }
                 // new spawn
                 for (auto& child : m_children) {
                     if (child->Type() == SpawnType::EVENT_FOLLOW ||

@@ -319,7 +319,13 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
             LOG_INFO("burst emitter: period=%.3fs (rate_override=%.3f, batch=%u)",
                      burst_rate, count * rate, rope_batch_size);
         } else {
-            newEm.rate *= count * rate;
+            // Only instanceoverride.count scales emission rate.  The `rate` field
+            // in instanceoverride does NOT mean "emit-rate multiplier" in WE — when
+            // we treated it that way (count*rate), Voyager's rate=5.0 inflated emit
+            // rate 5x past maxcount/lifetime, producing a 1Hz population pulse.
+            // (rate may control playback speed / time dilation in WE; we don't
+            // implement that yet, but ignoring it is safer than misapplying it.)
+            newEm.rate *= count;
         }
         pSys.AddEmitter(
             WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
@@ -815,6 +821,11 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
                  cori.x(),
                  cori.y(),
                  general.zoom);
+
+        // Enable 4x MSAA for 2D scenes too — warp-streak particles and
+        // similar thin additive quads alias badly at 1spp (blocky edges).
+        scene.msaaSamples = 4;
+        LOG_INFO("MSAA enabled: x%d (2D scene)", scene.msaaSamples);
 
         scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
             (float)context.ortho_w / (float)context.ortho_h,
@@ -1607,13 +1618,19 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                  particle_obj.children.size());
 
         // Minimal setup: no mesh/material, just particle subsystem for children
-        u32  maxcount    = std::min(particle_obj.maxcount, 20000u);
+        u32 maxcount = std::min(particle_obj.maxcount, 20000u);
+        // instanceoverride.rate = time-dilation factor: system clock runs at
+        // 1/rate of scene time (rate=5.0 → 5x slower).  Applied to the subsystem
+        // as m_rate, it scales particleTime, which naturally slows emit timing,
+        // lifetime decrement, and movement operators in lockstep.
+        const double time_scale =
+            override.enabled && override.rate > 0.0f ? 1.0 / (double)override.rate : 1.0;
         auto spMesh      = std::make_shared<SceneMesh>(true);
         auto particleSub = std::make_unique<ParticleSubSystem>(
             *context.scene->paritileSys,
             spMesh,
             maxcount,
-            1.0,
+            time_scale,
             child_data.maxcount,
             child_data.probability,
             ParseSpawnType(child_data.type),
@@ -1686,7 +1703,13 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
     }
 
-    u32 maxcount = particle_obj.maxcount;
+    // instanceoverride.count scales the effective particle count.  LoadEmitter
+    // also scales emission rate by the same factor so capacity / emit-rate
+    // stays balanced (otherwise emit_rate*lifetime exceeds maxcount and the
+    // population cycles visibly at 1Hz — the Voyager starfield bug).
+    const float count_factor =
+        override.enabled ? std::max(override.count, 0.001f) : 1.0f;
+    u32 maxcount = (u32)std::ceil(particle_obj.maxcount * count_factor);
     maxcount     = std::min(maxcount, 20000u);
 
     u32 trail_segments =
@@ -1756,11 +1779,19 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
     }
 
+    // instanceoverride.rate = time-dilation factor (rate=5.0 → 5x slower).  See
+    // the spawner-only branch above for detailed rationale.
+    // instanceoverride.rate = playback-speed multiplier: rate=5.0 → system
+    // runs 5× faster (emit timing, lifetime decrement, movement all accelerate).
+    // We apply it to the subsystem's m_rate, which multiplies particleTime
+    // passed to the emitter + operators.
+    const double time_scale =
+        override.enabled && override.rate > 0.0f ? (double)override.rate : 1.0;
     auto particleSub = std::make_unique<ParticleSubSystem>(
         *context.scene->paritileSys,
         spMesh,
         maxcount,
-        1.0,
+        time_scale,
         child_data.maxcount,
         child_data.probability,
         ParseSpawnType(child_data.type),
@@ -2729,11 +2760,26 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             return it_a->second < it_b->second;
         });
 
+    // Record scene's HDR intent so SceneWallpaper can decide whether to upgrade
+    // render targets.  If the scene declares hdr:false, we should stay in SDR to
+    // avoid over-brightness from overbright materials + additive blending.
+    context.scene->hdrContent = sc.general.hdr;
+
+    // Pick the bloom parameter variant matching scene's HDR intent.  WE scenes
+    // carry both SDR (bloomstrength/bloomthreshold) and HDR
+    // (bloomhdrstrength/bloomhdrthreshold) values; the SDR threshold is tuned
+    // for 0..1 framebuffers while the HDR threshold expects 0..∞ accumulation.
+    const float scene_bloom_strength =
+        sc.general.hdr ? sc.general.bloomhdrstrength : sc.general.bloomstrength;
+    const float scene_bloom_threshold =
+        sc.general.hdr ? sc.general.bloomhdrthreshold : sc.general.bloomthreshold;
+
     // Create bloom post-processing passes if enabled
     if (sc.general.bloom) {
-        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f",
-                 sc.general.bloomstrength,
-                 sc.general.bloomthreshold);
+        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d)",
+                 scene_bloom_strength,
+                 scene_bloom_threshold,
+                 (int)sc.general.hdr);
 
         auto& scene = *context.scene;
         auto& vfs   = *context.vfs;
@@ -2780,8 +2826,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         } };
 
         scene.bloomConfig.enabled   = true;
-        scene.bloomConfig.strength  = sc.general.bloomstrength;
-        scene.bloomConfig.threshold = sc.general.bloomthreshold;
+        scene.bloomConfig.strength  = scene_bloom_strength;
+        scene.bloomConfig.threshold = scene_bloom_threshold;
 
         for (auto& def : bloomPasses) {
             wpscene::WPMaterial wpmat;
@@ -2790,8 +2836,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
             // Pass bloom parameters to downsample_quarter_bloom (first pass extracts bright pixels)
             if (def.shader == "downsample_quarter_bloom") {
-                wpmat.constantshadervalues["bloomstrength"]  = { sc.general.bloomstrength };
-                wpmat.constantshadervalues["bloomthreshold"] = { sc.general.bloomthreshold };
+                wpmat.constantshadervalues["bloomstrength"]  = { scene_bloom_strength };
+                wpmat.constantshadervalues["bloomthreshold"] = { scene_bloom_threshold };
             }
 
             auto         spNode = std::make_shared<SceneNode>();

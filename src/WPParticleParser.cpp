@@ -128,7 +128,16 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
             SingleRandom r = { 0.0f, 1.0f };
             SingleRandom::ReadFromJson(wpj, r);
             return [=](Particle& p, double) {
-                PM::InitLifetime(p, r.get());
+                float t = r.get();
+                // When the wallpaper fixes min==max (common for star-field / warp
+                // presets, e.g. Voyager starfield min=1 max=1), every particle in
+                // a batch dies on exactly the same frame, producing a visible
+                // death-pulse.  Add ±5% jitter so deaths stagger across several
+                // frames naturally.  No-op when min != max already provides jitter.
+                if (r.min == r.max && t > 0.0f) {
+                    t *= 1.0f + Random::get(-0.05f, 0.05f);
+                }
+                PM::InitLifetime(p, t);
             };
         } else if (name == "sizerandom") {
             SingleRandom r = { 0.0f, 20.0f };

@@ -809,6 +809,154 @@ TEST_CASE("mix different var on LHS — unchanged") {
     CHECK(result.find("mix(albedo,") != std::string::npos);
 }
 
+// --- Pattern: const qualifier on function return type ---
+
+TEST_CASE("const on function return type stripped") {
+    // Note: fract is also a GLSL builtin, so the builtin-shadowing rename
+    // pass also kicks in and renames to _w_fract.
+    std::string in = "const float fract(float x) {\n return x - floor(x);\n}";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("float _w_fract(float x)") != std::string::npos);
+    CHECK(result.find("const float") == std::string::npos);
+}
+
+TEST_CASE("const on non-shadowing function return type stripped (no rename)") {
+    std::string in = "const vec3 myHelper(vec3 a) { return a; }";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("vec3 myHelper(vec3 a)") != std::string::npos);
+    CHECK(result.find("const vec3") == std::string::npos);
+}
+
+TEST_CASE("const on vec3 function return stripped") {
+    std::string in = "const vec3 mymix(vec3 a, vec3 b) { return a * b; }";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("vec3 mymix(") != std::string::npos);
+    CHECK(result.find("const vec3 mymix(") == std::string::npos);
+}
+
+TEST_CASE("const variable decl NOT touched") {
+    std::string in = "const float PI = 3.14159;";
+    CHECK_EQ(FixImplicitConversions(in), in);
+}
+
+TEST_CASE("const vec3 variable decl NOT touched") {
+    std::string in = "const vec3 LumCoeff = vec3(0.2125, 0.7154, 0.0721);";
+    CHECK_EQ(FixImplicitConversions(in), in);
+}
+
+// --- Pattern: user function with vecN param called with wider varying ---
+
+TEST_CASE("shimmer regression: rotateVec2(v_TexCoord) gets .xy") {
+    std::string in =
+        "in vec4 v_TexCoord;\n"
+        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+        "void main() {\n"
+        "  vec2 c = rotateVec2(v_TexCoord, 1.57);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
+}
+
+TEST_CASE("user function vec3 param called with vec4 varying gets .xyz") {
+    std::string in =
+        "in vec4 v_Color;\n"
+        "vec3 desaturate(vec3 c, float s) { return c; }\n"
+        "void main() {\n"
+        "  vec3 d = desaturate(v_Color, 0.5);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("desaturate(v_Color.xyz,") != std::string::npos);
+}
+
+TEST_CASE("matching-width varying call NOT touched") {
+    std::string in =
+        "in vec2 v_UV;\n"
+        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+        "void main() {\n"
+        "  vec2 c = rotateVec2(v_UV, 1.57);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("rotateVec2(v_UV,") != std::string::npos);
+    CHECK(result.find("v_UV.xy") == std::string::npos);
+}
+
+TEST_CASE("already-swizzled varying arg NOT double-swizzled") {
+    std::string in =
+        "in vec4 v_TexCoord;\n"
+        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+        "void main() {\n"
+        "  vec2 c = rotateVec2(v_TexCoord.xy, 1.57);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    // Should not insert another .xy after the existing one
+    CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
+    CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
+}
+
+TEST_CASE("unknown function (builtin) call NOT touched") {
+    std::string in =
+        "in vec4 v_TexCoord;\n"
+        "void main() {\n"
+        "  vec4 c = texture(g_Texture0, v_TexCoord);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    // texture() is handled by the dedicated earlier pass; our new pass doesn't
+    // know texture's signature because it's not declared in the shader body.
+    // (The earlier pass already produces v_TexCoord.xy.)
+    CHECK(result.find("texture(g_Texture0, v_TexCoord.xy)") != std::string::npos);
+}
+
+// --- Pattern: user function shadowing a GLSL builtin gets renamed ---
+
+TEST_CASE("user-defined fract renamed to _w_fract at def + calls") {
+    std::string in =
+        "float fract(float x) {\n"
+        "  return x - floor(x);\n"
+        "}\n"
+        "void main() {\n"
+        "  float a = fract(1.5);\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("float _w_fract(float x)") != std::string::npos);
+    CHECK(result.find("_w_fract(1.5)") != std::string::npos);
+    // Original bare fract at call site should be gone
+    CHECK(result.find(" fract(") == std::string::npos);
+}
+
+TEST_CASE("no user fract definition → builtin calls unchanged") {
+    std::string in = "void main() {\n  float a = fract(1.5);\n}";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("fract(1.5)") != std::string::npos);
+    CHECK(result.find("_w_fract") == std::string::npos);
+}
+
+// --- Pattern: vec3 VAR = texture(...) gets .xyz ---
+
+TEST_CASE("vec3 assigned texture() gets .xyz") {
+    std::string in = "vec3 col = texture(g_Tex, uv);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("texture(g_Tex, uv).xyz;") != std::string::npos);
+}
+
+TEST_CASE("vec3 assigned texture() with nested call gets .xyz") {
+    std::string in = "vec3 col = texture(g_Tex, fract(uv));";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("texture(g_Tex, fract(uv)).xyz;") != std::string::npos);
+}
+
+TEST_CASE("vec3 assigned textureLod also handled") {
+    std::string in = "vec3 col = textureLod(g_Tex, uv, 0.0);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("textureLod(g_Tex, uv, 0.0).xyz;") != std::string::npos);
+}
+
+TEST_CASE("vec4 VAR = texture() NOT touched (no truncation needed)") {
+    std::string in = "vec4 col = texture(g_Tex, uv);";
+    auto result = FixImplicitConversions(in);
+    // Must not get .xyz
+    CHECK(result.find(".xyz") == std::string::npos);
+}
+
 } // TEST_SUITE("FixImplicitConversions")
 
 // ===========================================================================
@@ -1341,6 +1489,37 @@ TEST_CASE("gl_in[0].gl_Position multiple occurrences") {
 // ===========================================================================
 // StripStrayEndifs
 // ===========================================================================
+
+TEST_SUITE("FixFragmentGlPosition") {
+
+TEST_CASE("gl_Position in fragment shader → gl_FragCoord") {
+    std::string in  = "float rnd = noise(gl_Position.xy);";
+    std::string out = "float rnd = noise(gl_FragCoord.xy);";
+    CHECK_EQ(FixFragmentGlPosition(in), out);
+}
+
+TEST_CASE("multiple gl_Position references all replaced") {
+    std::string in  = "vec2 a = gl_Position.xy; float b = gl_Position.z;";
+    std::string out = "vec2 a = gl_FragCoord.xy; float b = gl_FragCoord.z;";
+    CHECK_EQ(FixFragmentGlPosition(in), out);
+}
+
+TEST_CASE("no gl_Position → unchanged") {
+    std::string in = "vec4 color = texture(tex, uv);";
+    CHECK_EQ(FixFragmentGlPosition(in), in);
+}
+
+TEST_CASE("identifier containing gl_Position not touched") {
+    std::string in = "float mygl_PositionHack = 1.0;";
+    CHECK_EQ(FixFragmentGlPosition(in), in);
+}
+
+TEST_CASE("gl_PositionIn not touched (different identifier)") {
+    std::string in = "vec4 a = gl_PositionIn[0];";
+    CHECK_EQ(FixFragmentGlPosition(in), in);
+}
+
+} // TEST_SUITE("FixFragmentGlPosition")
 
 TEST_SUITE("StripStrayEndifs") {
 

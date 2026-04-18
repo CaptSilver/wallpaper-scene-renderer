@@ -46,9 +46,12 @@ public:
     std::array<float, 3> ambientcolor { 0.2f, 0.2f, 0.2f };
     std::array<float, 3> skylightcolor { 0.3f, 0.3f, 0.3f };
 
+    bool  hdr { false };
     bool  bloom { false };
     float bloomstrength { 2.0f };
     float bloomthreshold { 0.65f };
+    float bloomhdrstrength { 2.0f };
+    float bloomhdrthreshold { 1.0f };
 
     bool  camerashake { false };
     float camerashakeamplitude { 0.5f };

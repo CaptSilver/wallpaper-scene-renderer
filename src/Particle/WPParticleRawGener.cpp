@@ -473,9 +473,19 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
 
             float trail_length = (float)active;
 
+            // Linear alpha fade along the trail: head (newest) stays bright,
+            // tail (oldest) fades to transparent.  Without this the trail is a
+            // uniformly bright line that just vanishes at the tail — matches WE
+            // Windows behaviour, which fades the per-vertex alpha along trail index.
+            const float fade_denom = active > 1 ? (float)(active - 1) : 1.0f;
+
             for (u32 ti = 1; ti < active; ti++) {
                 const auto& tp_new = trail.At(ti - 1);
                 const auto& tp_old = trail.At(ti);
+
+                // Per-endpoint fade (0 = oldest endpoint, 1 = newest endpoint)
+                const float fade_new = 1.0f - (float)(ti - 1) / fade_denom;
+                const float fade_old = 1.0f - (float)ti / fade_denom;
 
                 float    trail_position = (float)(ti - 1);
                 float    size           = tp_new.size / 2.0f;
@@ -517,9 +527,9 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                         std::array { ecp[0], ecp[1], ecp[2], size_end }.data(), 4,
                         data + offset);
                     offset += 4;
-                    // a_TexCoordVec4C3: color_end
+                    // a_TexCoordVec4C3: color_end (older endpoint, fades toward tail)
                     std::copy_n(std::array { tp_old.color[0], tp_old.color[1],
-                                             tp_old.color[2], tp_old.alpha }
+                                             tp_old.color[2], tp_old.alpha * fade_old }
                                     .data(),
                                 4, data + offset);
                     offset += 4;
@@ -531,9 +541,9 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                     offset += 4;
                 }
 
-                // a_Color
+                // a_Color (newer endpoint, fades toward head but stays brightest)
                 std::copy_n(std::array { tp_new.color[0], tp_new.color[1],
-                                         tp_new.color[2], tp_new.alpha }
+                                         tp_new.color[2], tp_new.alpha * fade_new }
                                 .data(),
                             4, data + offset);
 
