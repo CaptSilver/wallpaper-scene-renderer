@@ -74,6 +74,10 @@ public:
     float                      brightness { 1.0f };
     bool                       fullscreen { false };
     bool                       nopadding { false };
+    // Set when the image-model JSON declares "autosize": true.  Resolved in
+    // ParseImageObj by reading the first texture's sprite-frame dimensions
+    // (or mapWidth × mapHeight for non-sprite textures).
+    bool                       autosize { false };
     bool                       visible { true };
     bool                       visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
     bool                       perspective { false }; // Use perspective camera (default: flat/ortho)

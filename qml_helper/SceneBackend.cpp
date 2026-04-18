@@ -669,38 +669,54 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
     float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
 
-    // Iterate back to front (last target is front-most)
+    // cursorDown: fire for ALL registered handlers regardless of hit-test.
+    // WE treats cursorDown/cursorUp as game-control events — e.g. the built-in
+    // dino_run wallpaper makes the dino jump on any click, and the handler
+    // lives on the tiny walking sprite's layer.  Hit-testing would gate it to
+    // clicks that happen to land on the moving sprite.
+    QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+    for (auto& target : m_cursorTargets) {
+        if (!target.downFn.isCallable()) continue;
+        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        bool visBefore = target.thisLayerProxy.property("visible").toBool();
+        QJSValue r = target.downFn.call({ ev });
+        bool visAfter = target.thisLayerProxy.property("visible").toBool();
+        // Also peek at vita_jump for dino_run debugging — checks whether the
+        // jump sprite's visibility + origin are being updated.
+        QJSValue jumpProxy = m_jsEngine->evaluate("thisScene.getLayer('vita_jump')");
+        bool     jumpVis   = jumpProxy.property("visible").toBool();
+        double   jumpY     = jumpProxy.property("origin").property("y").toNumber();
+        LOG_INFO("cursorDown '%s': walk.vis %d->%d | jump.vis=%d jump.y=%.2f%s",
+                 target.layerName.c_str(), (int)visBefore, (int)visAfter,
+                 (int)jumpVis, jumpY, r.isError() ? " ERROR" : "");
+        if (r.isError())
+            LOG_INFO("  cursorDown error detail: %s", qPrintable(r.toString()));
+    }
+
+    // cursorClick keeps AABB hit-test semantics (tap-on-object).  Also tracks
+    // the front-most hit target as the drag target for subsequent cursorMove /
+    // cursorUp dispatch.  Iterate back to front so top-most layer wins.
     for (int i = (int)m_cursorTargets.size() - 1; i >= 0; i--) {
         auto& target = m_cursorTargets[i];
-        bool hasClick = target.clickFn.isCallable();
-        bool hasDown  = target.downFn.isCallable();
-        if (!hasClick && !hasDown) continue;
-
+        if (!target.clickFn.isCallable()) continue;
         if (hitTestTarget(target.thisLayerProxy, sceneX, sceneY)) {
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-
-            if (hasDown) {
-                m_dragTarget = target.layerName;
-                QJSValue r = target.downFn.call({ ev });
-                if (r.isError())
-                    LOG_INFO("cursorDown error on '%s': %s",
-                             target.layerName.c_str(), qPrintable(r.toString()));
-            }
-            if (hasClick) {
-                QJSValue r = target.clickFn.call({ ev });
-                if (r.isError())
-                    LOG_INFO("cursorClick error on '%s': %s",
-                             target.layerName.c_str(), qPrintable(r.toString()));
-            }
-            flushJsConsole(m_jsEngine, "click");
+            m_dragTarget = target.layerName;
+            QJSValue r = target.clickFn.call({ ev });
+            if (r.isError())
+                LOG_INFO("cursorClick error on '%s': %s",
+                         target.layerName.c_str(), qPrintable(r.toString()));
             break;
         }
     }
+    flushJsConsole(m_jsEngine, "click");
 }
 
 void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
-    if (m_dragTarget.empty() || !m_jsEngine) return;
+    if (m_cursorTargets.empty() || !m_jsEngine) {
+        m_dragTarget.clear();
+        return;
+    }
 
 #if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
     auto pos = event->position();
@@ -710,18 +726,18 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
     float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
 
+    // cursorUp: mirror cursorDown — fire for all registered handlers
+    // regardless of hit-test (game-control semantics).
+    QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
     for (auto& target : m_cursorTargets) {
-        if (target.layerName == m_dragTarget && target.upFn.isCallable()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-            QJSValue r = target.upFn.call({ ev });
-            if (r.isError())
-                LOG_INFO("cursorUp error on '%s': %s",
-                         target.layerName.c_str(), qPrintable(r.toString()));
-            flushJsConsole(m_jsEngine, "mouseUp");
-            break;
-        }
+        if (!target.upFn.isCallable()) continue;
+        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        QJSValue r = target.upFn.call({ ev });
+        if (r.isError())
+            LOG_INFO("cursorUp error on '%s': %s",
+                     target.layerName.c_str(), qPrintable(r.toString()));
     }
+    flushJsConsole(m_jsEngine, "mouseUp");
     m_dragTarget.clear();
 }
 
@@ -766,6 +782,18 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
     // Track cursor position for input.cursorWorldPosition in scripts
     m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
     m_cursorSceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+
+    // Sample log — once per ~4s — to confirm hover events reach the scene.
+    // If this line is missing entirely from journals, the MouseGrabber isn't
+    // forwarding hover events (e.g. target not set, hookParent filtering).
+    {
+        static int s_hover_log = 0;
+        if (++s_hover_log % 120 == 1) {
+            LOG_INFO("hover: widget=(%.1f,%.1f) scene=(%.1f,%.1f) ortho=(%d,%d)",
+                     pos.x(), pos.y(), m_cursorSceneX, m_cursorSceneY,
+                     (int)m_sceneOrthoW, (int)m_sceneOrthoH);
+        }
+    }
 
     // cursorEnter / cursorLeave hit-testing
     if (m_cursorTargets.empty() || !m_jsEngine) return;
@@ -1067,6 +1095,15 @@ void SceneObject::setupTextScripts() {
     // engine.openUserShortcut stub
     m_jsEngine->evaluate("engine.openUserShortcut = function(name) {};\n");
 
+    // engine.registerAsset — describes a dynamic asset; a pool of hidden
+    // scene nodes is pre-allocated by WPSceneParser (Scene::assetPools).
+    // engine._assetPools is populated later when _layerInitStates is read —
+    // until then, registerAsset just returns a descriptor.  createLayer
+    // below pops from the pool at runtime.
+    m_jsEngine->evaluate(
+        "engine._assetPools = {};\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n");
+
     // createScriptProperties() — WE SceneScript API for declaring user-configurable properties
     // Returns a chainable builder: createScriptProperties().addSlider({name,value,...}).addCheckbox(...)
     // After chaining, the result object has properties accessible by name (e.g. scriptProperties.mode)
@@ -1109,6 +1146,13 @@ void SceneObject::setupTextScripts() {
     m_jsEngine->evaluate(
         "var _sceneOrtho = _layerInitStates._ortho || [1920, 1080];\n"
         "delete _layerInitStates._ortho;\n"
+        // Extract asset pools — these are per-asset arrays of pool layer
+        // names.  createLayer/destroyLayer use them to rent hidden nodes.
+        "if (_layerInitStates._assetPools) {\n"
+        "  for (var k in _layerInitStates._assetPools)\n"
+        "    engine._assetPools[k] = _layerInitStates._assetPools[k].slice();\n"
+        "  delete _layerInitStates._assetPools;\n"
+        "}\n"
     );
 
     // thisScene.getLayer() and thisLayer infrastructure
@@ -1118,25 +1162,31 @@ void SceneObject::setupTextScripts() {
         "function _makeLayerProxy(name) {\n"
         "  var init = _layerInitStates[name];\n"
         "  var _s = init ? {\n"
-        "    origin: {x:init.o[0], y:init.o[1], z:init.o[2]},\n"
-        "    scale: {x:init.s[0], y:init.s[1], z:init.s[2]},\n"
-        "    angles: {x:init.a[0], y:init.a[1], z:init.a[2]},\n"
+        "    origin: Vec3(init.o[0], init.o[1], init.o[2]),\n"
+        "    scale:  Vec3(init.s[0], init.s[1], init.s[2]),\n"
+        "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
         "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
         "    visible: init.v, alpha: 1.0,\n"
         "    text: '', name: name, _dirty: {}, _cmds: []\n"
-        "  } : { origin: {x:0,y:0,z:0}, scale: {x:1,y:1,z:1},\n"
-        "        angles: {x:0,y:0,z:0}, size: {x:0, y:0},\n"
+        "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
+        "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
         "        visible: true, alpha: 1.0,\n"
         "        text: '', name: name, _dirty: {}, _cmds: [] };\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
         "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true });\n"
+        // Getters return a fresh Vec3 copy each call — matches WE semantics where
+        // `let o = thisLayer.origin; o.x = 5;` mutates a snapshot, and only an
+        // explicit `thisLayer.origin = o` writes back.  Without this, scripts that
+        // cache `initialPosition = thisLayer.origin` end up sharing a reference
+        // with `marioOrigin = thisLayer.origin`, so `isInAir` checks always fail.
         "  var vec3Props = ['origin','scale','angles'];\n"
         "  for (var i=0; i<vec3Props.length; i++) {\n"
         "    (function(prop){\n"
         "      Object.defineProperty(p, prop, {\n"
-        "        get: function(){ return _s[prop]; },\n"
-        "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+        "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
+        "        set: function(v){ _s[prop] = Vec3(v && v.x||0, v && v.y||0, v && v.z||0);\n"
+        "                          _s._dirty[prop] = true; },\n"
         "        enumerable: true\n"
         "      });\n"
         "    })(vec3Props[i]);\n"
@@ -1238,8 +1288,8 @@ void SceneObject::setupTextScripts() {
         // Null-safe proxy: returned when getLayer() can't find a layer.
         // All setters are no-ops, no dirty tracking. Prevents TypeError on missing layers.
         "var _nullProxy = (function() {\n"
-        "  var _s = { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},\n"
-        "    angles:{x:0,y:0,z:0}, size:{x:0,y:0},\n"
+        "  var _s = { origin:Vec3(0,0,0), scale:Vec3(1,1,1),\n"
+        "    angles:Vec3(0,0,0), size:{x:0,y:0},\n"
         "    visible:false, alpha:0, text:'', name:'', _dirty:{} };\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', {get:function(){return '';}, enumerable:true});\n"
@@ -1248,7 +1298,8 @@ void SceneObject::setupTextScripts() {
         "  for (var i=0; i<vec3Props.length; i++) {\n"
         "    (function(prop){\n"
         "      Object.defineProperty(p, prop, {\n"
-        "        get: function(){return _s[prop];}, set: function(v){},\n"
+        "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
+        "        set: function(v){},\n"
         "        enumerable: true\n"
         "      });\n"
         "    })(vec3Props[i]);\n"
@@ -1329,6 +1380,46 @@ void SceneObject::setupTextScripts() {
         "}\n"
         "var scene = thisScene;\n"
         "var thisLayer = null;\n"
+        // createLayer pops a hidden pool node; destroyLayer returns it.
+        // Fallback: if asset wasn't pre-scanned or pool exhausted, return a
+        // throwaway stub so scripts don't crash (but the "layer" renders
+        // nothing).
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && asset.__asset;\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name  = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      layer.visible = true;\n"
+        "      console.log('createLayer OK: path=' + path + ' name=' + name +\n"
+        "                  ' pool.remaining=' + pool.length);\n"
+        "      return layer;\n"
+        "    }\n"
+        "    console.log('createLayer: pool layer ' + name + ' not a real proxy');\n"
+        "  }\n"
+        "  console.log('createLayer FALLBACK stub: path=' + path +\n"
+        "              ' poolSize=' + (pool ? pool.length : 'none'));\n"
+        "  return { __stub: true, __asset: path,\n"
+        "    origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
+        "    alpha: 1.0, visible: true, text: '',\n"
+        "    getAnimation: function(n) {\n"
+        "      return { play:function(){}, stop:function(){}, pause:function(){},\n"
+        "               isPlaying:function(){ return false; } }; } };\n"
+        "};\n"
+        "thisScene.destroyLayer = function(layer) {\n"
+        "  if (!layer || layer.__stub) return;\n"
+        "  layer.visible = false;\n"
+        "  var path = layer.__asset;\n"
+        "  if (path && engine._assetPools[path] && layer.name)\n"
+        "    engine._assetPools[path].push(layer.name);\n"
+        "};\n"
+        "thisScene.sortLayer    = function(layer, index) { /* noop */ };\n"
+        "thisScene.getLayerIndex = function(name) {\n"
+        "  var l = thisScene.getLayer(name);\n"
+        "  return l && typeof l._index === 'number' ? l._index : 0;\n"
+        "};\n"
         "function _collectDirtyLayers() {\n"
         "  var updates = [];\n"
         "  for (var name in _layerCache) {\n"
@@ -1911,7 +2002,7 @@ void SceneObject::setupTextScripts() {
             "  var _rawUpd = _upd;\n"
             "  if (_rawUpd) _upd = function(v) {\n"
             "    try { return _rawUpd(v); }\n"
-            "    catch(e) { return v; }\n"
+            "    catch(e) { console.log('update error: ' + e.message + ' line=' + e.lineNumber); return v; }\n"
             "  };\n"
             "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
             "               (typeof cursorClick === 'function' ? cursorClick : null);\n"

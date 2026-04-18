@@ -644,6 +644,15 @@ private:
                     if (nit != m_scene->nodeById.end()) {
                         visHit++;
                         nit->second->SetVisible(visible);
+                        // Diagnostic for dynamic-asset pool nodes — confirms
+                        // createLayer/destroyLayer visibility writes reach
+                        // the scene node.
+                        if (id >= 2'000'000 && id < 2'000'100) {
+                            LOG_INFO("POOL visible apply: id=%d visible=%d translate=(%.1f,%.1f)",
+                                     id, (int)visible,
+                                     nit->second->Translate().x(),
+                                     nit->second->Translate().y());
+                        }
                     } else {
                         visMiss++;
                     }
@@ -1872,6 +1881,17 @@ void MainHandler::loadScene() {
             j[name] = std::move(entry);
         }
         j["_ortho"]       = { scene->ortho[0], scene->ortho[1] };
+        // Dynamic-asset pools: { "models/coin_0.json": ["__pool_..._0", ...], ... }
+        // JS createLayer(asset) pops a pool name, getLayer() turns it into a
+        // proxy, and visibility/origin toggling flows through the standard
+        // dirty pipeline.
+        if (! scene->assetPools.empty()) {
+            nlohmann::json pools = nlohmann::json::object();
+            for (const auto& [path, names] : scene->assetPools) {
+                pools[path] = names;
+            }
+            j["_assetPools"] = std::move(pools);
+        }
         m_layer_init_json = j.dump();
     }
 

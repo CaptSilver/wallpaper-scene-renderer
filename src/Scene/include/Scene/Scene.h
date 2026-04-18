@@ -182,6 +182,14 @@ public:
     // Layer name → ordered list of effect names for SceneScript getEffect()
     std::unordered_map<std::string, std::vector<std::string>> layerEffectNames;
 
+    // SceneScript dynamic-asset pools.  For each path passed to
+    // engine.registerAsset(...), a pre-allocated pool of hidden scene nodes is
+    // created at parse time.  thisScene.createLayer(asset) pops one off the
+    // pool (sets visible=true), and destroyLayer pushes it back.  The vector
+    // stores the pool layer names; look them up via nodeNameToId /
+    // layerInitialStates like any other named layer.
+    std::unordered_map<std::string, std::vector<std::string>> assetPools;
+
     // Sound layer info for SceneScript play/stop/pause API (enumerateLayers)
     struct SoundLayerInfo {
         std::string name;

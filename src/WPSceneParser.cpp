@@ -41,6 +41,7 @@
 #include <cmath>
 #include <functional>
 #include <regex>
+#include <unordered_set>
 #include <variant>
 #include <Eigen/Dense>
 
@@ -71,6 +72,19 @@ struct ParseContext {
     // from the parent chain) so proxy nodes can be created for correct
     // child placement.
     std::map<i32, Eigen::Matrix4d> original_world_transforms;
+
+    // Layer names referenced by any SceneScript (via getLayer('X')).  These
+    // layers may have their visibility toggled at runtime, so we keep them in
+    // the main render graph even if they start with visible=false.  Without
+    // this carve-out, invisible layers get routed to an offscreen RT and
+    // subsequent SetVisible(true) has no visible effect — see dino_run's
+    // jump sprite.
+    std::unordered_set<std::string> script_referenced_layers;
+
+    // Asset paths that SceneScript registered via engine.registerAsset('path').
+    // A pool of hidden scene nodes gets pre-allocated for each so that
+    // thisScene.createLayer(asset) can instantiate them at runtime.
+    std::unordered_set<std::string> registered_asset_paths;
 };
 
 using WPObjectVar =
@@ -916,6 +930,33 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
 
+    // Autosize resolution: when the image-model JSON declared "autosize": true
+    // and neither the model nor the scene object provided explicit dimensions,
+    // derive size from the first texture's sprite-frame metadata (or the
+    // texture's mapWidth/mapHeight for non-sprite pictures).  WPImageObject's
+    // FromJson intentionally leaves size at default (2,2) in that case so we
+    // can resolve here with the texture parser in scope.
+    if (wpimgobj.autosize && context.scene && context.scene->imageParser &&
+        ! wpimgobj.material.textures.empty()) {
+        const auto& texName = wpimgobj.material.textures.front();
+        if (! texName.empty()) {
+            auto header = context.scene->imageParser->ParseHeader(texName);
+            std::array<float, 2> resolved { 0.0f, 0.0f };
+            if (header.isSprite && header.spriteAnim.numFrames() > 0) {
+                const auto& frame = header.spriteAnim.GetCurFrame();
+                resolved = { frame.width, frame.height };
+            } else if (header.mapWidth > 0 && header.mapHeight > 0) {
+                resolved = { (float)header.mapWidth, (float)header.mapHeight };
+            }
+            if (resolved[0] > 0.0f && resolved[1] > 0.0f) {
+                LOG_INFO("  autosize id=%d name='%s' tex='%s' resolved=(%.1f,%.1f)",
+                         wpimgobj.id, wpimgobj.name.c_str(), texName.c_str(),
+                         resolved[0], resolved[1]);
+                wpimgobj.size = resolved;
+            }
+        }
+    }
+
     LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d size=(%.0f,%.0f) fullscreen=%d "
              "origin=(%.1f,%.1f)",
              wpimgobj.id,
@@ -942,7 +983,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // must stay in the main render graph so variants can be toggled at runtime.
     // Bool user props (clock, music, light) keep normal offscreen routing since
     // they participate in compositing when visible.
-    bool isOffscreen = ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector;
+    // Layers whose visibility can flip at runtime need to stay in the main
+    // render graph: combo-selectors (character picker user props) and layers
+    // referenced by SceneScript via getLayer('name').  Everything else that
+    // starts invisible gets routed to an offscreen RT so compose layers can
+    // still reference its texture.
+    bool isScriptedLayer = ! wpimgobj.name.empty()
+        && context.script_referenced_layers.count(wpimgobj.name) > 0;
+    bool isOffscreen = ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector
+                       && ! isScriptedLayer;
 
     // colorBlendMode: prefer hardware blend when a direct equivalent exists;
     // fall back to shader-based effectpassthrough for complex modes.
@@ -1035,7 +1084,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Other invisible nodes keep m_visible=true; isOffscreen controls rendering.
     // Setting m_visible=false would cascade to effect chain nodes via
     // m_visibilityOwner, preventing them from rendering to their offscreen RTs.
-    if (wpimgobj.visibleIsComboSelector) {
+    //
+    // Scripted layers are the exception — they're kept in the main render
+    // graph so SetVisible() can toggle them at runtime.  Initialize their
+    // m_visible to match the JSON so they start in the correct state.
+    if (wpimgobj.visibleIsComboSelector || isScriptedLayer) {
         spImgNode->SetVisible(wpimgobj.visible);
     }
     spImgNode->SetOffscreen(isOffscreen);
@@ -2387,6 +2440,51 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     std::map<i32, size_t> json_order;
     size_t                obj_idx = 0;
 
+    // Pre-scan all embedded SceneScript sources for two things:
+    //   1. getLayer('name') references — layers that the script may toggle at
+    //      runtime, so we keep them in the main render graph.
+    //   2. engine.registerAsset('path') references — assets the script will
+    //      instantiate at runtime via thisScene.createLayer(), which need
+    //      pre-allocated scene nodes (C++-side pool, see below).
+    {
+        static const std::regex getLayerRe(
+            R"(getLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
+        static const std::regex registerAssetRe(
+            R"(registerAsset\s*\(\s*['"]([^'"]+)['"]\s*\))");
+        std::function<void(const nlohmann::json&)> scan;
+        scan = [&](const nlohmann::json& j) {
+            if (j.is_string()) {
+                const std::string& s = j.get_ref<const std::string&>();
+                for (auto it = std::sregex_iterator(s.begin(), s.end(), getLayerRe);
+                     it != std::sregex_iterator(); ++it) {
+                    context.script_referenced_layers.insert((*it)[1].str());
+                }
+                for (auto it = std::sregex_iterator(s.begin(), s.end(), registerAssetRe);
+                     it != std::sregex_iterator(); ++it) {
+                    context.registered_asset_paths.insert((*it)[1].str());
+                }
+                return;
+            }
+            if (j.is_object()) {
+                for (auto& [k, v] : j.items()) scan(v);
+            } else if (j.is_array()) {
+                for (auto& v : j) scan(v);
+            }
+        };
+        scan(json);
+        if (! context.script_referenced_layers.empty()) {
+            LOG_INFO("Scripts reference %zu named layers",
+                     context.script_referenced_layers.size());
+        }
+        if (! context.registered_asset_paths.empty()) {
+            LOG_INFO("Scripts register %zu dynamic assets",
+                     context.registered_asset_paths.size());
+            for (const auto& p : context.registered_asset_paths) {
+                LOG_INFO("  asset: %s", p.c_str());
+            }
+        }
+    }
+
     for (auto& obj : json.at("objects")) {
         if (obj.contains("id") && obj.at("id").is_number_integer()) {
             json_order[obj.at("id").get<i32>()] = obj_idx;
@@ -2516,6 +2614,65 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     WPShaderParser::InitGlslang();
     WPTextRenderer::Init();
+
+    // Pre-allocate dynamic-asset pool nodes.  SceneScript calls
+    // engine.registerAsset(path) to declare a dynamic image, then creates
+    // instances at runtime via thisScene.createLayer(asset).  Since our
+    // render graph is static, we pre-build a pool of hidden scene nodes per
+    // asset; createLayer/destroyLayer toggle visibility rather than
+    // instantiating at runtime.  Particles are skipped — they'd need pool
+    // support on the particle pipeline too.
+    std::map<i32, std::string> pool_id_to_name;
+    {
+        const int kPoolSize = 8; // enough for typical coin-spawn patterns
+        i32       synthId   = 2'000'000;
+        // Assign pool nodes a json_order LATER than every real scene object.
+        // The z-order sort at the end of parse uses json_order; nodes not in
+        // the map are treated as cameras and sorted to the FRONT, which means
+        // pool coins render before backgrounds and get painted over.  We
+        // want them rendered LAST (on top), so base their order on obj_idx +
+        // large offset.
+        size_t    poolOrderBase = obj_idx + 1'000'000;
+        for (const auto& assetPath : context.registered_asset_paths) {
+            if (assetPath.find("particles/") == 0) continue;
+            // Sanitize asset path into a unique layer-name prefix.
+            std::string safePrefix = "__pool_" + assetPath;
+            for (char& c : safePrefix)
+                if (c == '/' || c == '.') c = '_';
+            for (int i = 0; i < kPoolSize; i++) {
+                std::string poolName = safePrefix + "_" + std::to_string(i);
+                i32         thisId   = synthId++;
+                // No size declared — if the model JSON sets autosize=true,
+                // ParseImageObj resolves the dimensions from the first
+                // texture's sprite frame.  Scripts always set origin at
+                // runtime so the off-center zero default isn't an issue.
+                nlohmann::json poolObj = {
+                    { "id",      thisId        },
+                    { "image",   assetPath     },
+                    { "name",    poolName      },
+                    { "origin",  "0 0 0"       },
+                    { "scale",   "1 1 1"       },
+                    { "angles",  "0 0 0"       },
+                    { "visible", false         },
+                };
+                size_t beforeSize = wp_objs.size();
+                AddWPObject<wpscene::WPImageObject>(wp_objs, poolObj, vfs);
+                if (wp_objs.size() > beforeSize) {
+                    context.script_referenced_layers.insert(poolName);
+                    context.scene->assetPools[assetPath].push_back(poolName);
+                    pool_id_to_name[thisId]  = poolName;
+                    json_order[thisId]       = poolOrderBase++;
+                }
+            }
+        }
+        if (! context.scene->assetPools.empty()) {
+            LOG_INFO("Dynamic asset pools allocated: %zu assets",
+                     context.scene->assetPools.size());
+            for (const auto& [path, names] : context.scene->assetPools) {
+                LOG_INFO("  %s × %zu slots", path.c_str(), names.size());
+            }
+        }
+    }
 
     // Build name→initial state from parsed objects (before node transforms may be reset)
     struct ObjInitState {
@@ -2686,6 +2843,27 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                          rawVisJson.c_str());
             }
         }
+    }
+
+    // Register dynamic-asset pool nodes in nodeNameToId / layerInitialStates.
+    // The main loop above iterates the raw scene.json objects only; pool
+    // nodes were synthesized in C++ and bypass that registration path.
+    // Without this, thisScene.getLayer('__pool_...') returns null and
+    // createLayer falls through to its stub.
+    for (const auto& [poolId, poolName] : pool_id_to_name) {
+        auto nodeIt = context.node_map.find(poolId);
+        if (nodeIt == context.node_map.end()) continue;
+        auto stateIt = nameToObjState.find(poolName);
+        if (stateIt == nameToObjState.end()) continue;
+        context.scene->nodeById[poolId]      = nodeIt->second.get();
+        context.scene->nodeNameToId[poolName] = poolId;
+        Scene::LayerInitialState lis;
+        lis.origin  = stateIt->second.origin;
+        lis.scale   = stateIt->second.scale;
+        lis.angles  = stateIt->second.angles;
+        lis.size    = stateIt->second.size;
+        lis.visible = stateIt->second.visible;
+        context.scene->layerInitialStates[poolName] = lis;
     }
 
     // Sync layerInitialStates visibility with user property bindings.

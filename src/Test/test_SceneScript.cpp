@@ -923,14 +923,14 @@ static const char* JS_LAYER_INFRA =
     "function _makeLayerProxy(name) {\n"
     "  var init = _layerInitStates[name];\n"
     "  var _s = init ? {\n"
-    "    origin: {x:init.o[0], y:init.o[1], z:init.o[2]},\n"
-    "    scale: {x:init.s[0], y:init.s[1], z:init.s[2]},\n"
-    "    angles: {x:init.a[0], y:init.a[1], z:init.a[2]},\n"
+    "    origin: Vec3(init.o[0], init.o[1], init.o[2]),\n"
+    "    scale:  Vec3(init.s[0], init.s[1], init.s[2]),\n"
+    "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
     "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
     "    visible: init.v, alpha: 1.0,\n"
     "    text: '', name: name, _dirty: {}\n"
-    "  } : { origin: {x:0,y:0,z:0}, scale: {x:1,y:1,z:1},\n"
-    "        angles: {x:0,y:0,z:0}, size: {x:0, y:0},\n"
+    "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
+    "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
     "        visible: true, alpha: 1.0,\n"
     "        text: '', name: name, _dirty: {} };\n"
     "  var p = {};\n"
@@ -940,8 +940,9 @@ static const char* JS_LAYER_INFRA =
     "  for (var i=0; i<vec3Props.length; i++) {\n"
     "    (function(prop){\n"
     "      Object.defineProperty(p, prop, {\n"
-    "        get: function(){ return _s[prop]; },\n"
-    "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+    "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
+    "        set: function(v){ _s[prop] = Vec3(v && v.x||0, v && v.y||0, v && v.z||0);\n"
+    "                          _s._dirty[prop] = true; },\n"
     "        enumerable: true\n"
     "      });\n"
     "    })(vec3Props[i]);\n"
@@ -2346,6 +2347,54 @@ TEST_CASE("setting origin marks dirty") {
     CHECK(env.engine.evaluate("thisScene.getLayer('bg')._state._dirty.origin").toBool());
 }
 
+TEST_CASE("origin getter returns Vec3 with methods") {
+    // Regression: dino_run's update() does `marioOrigin.subtract(origin).lengthSqr()`.
+    // If the getter returns a POJO without Vec3 methods, the script throws
+    // TypeError at the coin-iteration step and update() silently stops running.
+    ScriptEnv env;
+    QJSValue r = env.engine.evaluate(
+        "var o = thisScene.getLayer('bg').origin;\n"
+        "typeof o.subtract + ',' + typeof o.lengthSqr + ',' + typeof o.length;\n");
+    CHECK(r.toString() == "function,function,function");
+}
+
+TEST_CASE("origin getter returns independent Vec3 copies") {
+    // Regression: dino_run caches `initialPosition = thisLayer.origin` and
+    // later `marioOrigin = thisLayer.origin`; it then does `isInAir =
+    // marioOrigin.y > initialPosition.y + 1`. If both reads share the same
+    // reference, isInAir is always false (gravity never applies).
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var a = thisScene.getLayer('bg').origin;\n"
+        "var b = thisScene.getLayer('bg').origin;\n"
+        "var originalA = a.y;\n"
+        "b.y += 100;\n");
+    CHECK(env.engine.evaluate("a.y").toNumber()
+          == doctest::Approx(env.engine.evaluate("originalA").toNumber()));
+    CHECK(env.engine.evaluate("b.y").toNumber()
+          == doctest::Approx(env.engine.evaluate("originalA").toNumber() + 100));
+}
+
+TEST_CASE("mutating returned origin does not affect proxy state") {
+    // WE semantics: get-copy-then-mutate does NOT persist without explicit set.
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var l = thisScene.getLayer('bg');\n"
+        "var o = l.origin; o.x = 999;\n");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').origin.x").toNumber()
+          != doctest::Approx(999));
+}
+
+TEST_CASE("origin round-trip get-mutate-set persists") {
+    // The canonical WE pattern: get -> mutate -> set.
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var l = thisScene.getLayer('bg');\n"
+        "var o = l.origin; o.x = 42; l.origin = o;\n");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').origin.x").toNumber()
+          == doctest::Approx(42));
+}
+
 TEST_CASE("setting visible marks dirty") {
     ScriptEnv env;
     env.engine.evaluate("thisScene.getLayer('bg').visible = false;");
@@ -2369,6 +2418,111 @@ TEST_CASE("play stop pause are no-ops") {
     QJSValue r = env.engine.evaluate(
         "var l = thisScene.getLayer('bg'); l.play(); l.stop(); l.pause(); true;");
     CHECK_FALSE(r.isError());
+}
+
+// Dynamic-asset pool: dino_run / any game-style wallpaper that spawns
+// runtime layers via thisScene.createLayer(asset).  The pool holds hidden
+// scene-node names that createLayer pops and destroyLayer returns.
+TEST_CASE("createLayer pops from asset pool and marks visible") {
+    ScriptEnv env;
+    // Simulate parser-supplied pool data: 3 hidden pool layers
+    env.engine.evaluate(
+        "_layerInitStates['__pool_coin_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "_layerInitStates['__pool_coin_1'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "_layerInitStates['__pool_coin_2'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'coin': ['__pool_coin_0','__pool_coin_1','__pool_coin_2'] };\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && asset.__asset;\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      layer.visible = true;\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "thisScene.destroyLayer = function(layer) {\n"
+        "  if (!layer || layer.__stub) return;\n"
+        "  layer.visible = false;\n"
+        "  var path = layer.__asset;\n"
+        "  if (path && engine._assetPools[path] && layer.name)\n"
+        "    engine._assetPools[path].push(layer.name);\n"
+        "};\n"
+        "var coinAsset = engine.registerAsset('coin');\n"
+        "var c1 = thisScene.createLayer(coinAsset);\n"
+        "var c2 = thisScene.createLayer(coinAsset);\n");
+    // First two pool slots were popped; visible flags set
+    CHECK(env.engine.evaluate("c1.name").toString() == "__pool_coin_0");
+    CHECK(env.engine.evaluate("c2.name").toString() == "__pool_coin_1");
+    CHECK(env.engine.evaluate("c1.visible").toBool());
+    CHECK(env.engine.evaluate("c2.visible").toBool());
+    CHECK(env.engine.evaluate("engine._assetPools.coin.length").toInt() == 1);
+}
+
+TEST_CASE("destroyLayer returns slot to pool and hides it") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_x_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'x': ['__pool_x_0'] };\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && asset.__asset;\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      layer.visible = true;\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "thisScene.destroyLayer = function(layer) {\n"
+        "  if (!layer || layer.__stub) return;\n"
+        "  layer.visible = false;\n"
+        "  var path = layer.__asset;\n"
+        "  if (path && engine._assetPools[path] && layer.name)\n"
+        "    engine._assetPools[path].push(layer.name);\n"
+        "};\n"
+        "var a  = engine.registerAsset('x');\n"
+        "var l1 = thisScene.createLayer(a);\n"
+        "thisScene.destroyLayer(l1);\n");
+    CHECK(env.engine.evaluate("engine._assetPools.x.length").toInt() == 1);
+    CHECK(env.engine.evaluate("engine._assetPools.x[0]").toString() == "__pool_x_0");
+    CHECK_FALSE(env.engine.evaluate("l1.visible").toBool());
+}
+
+TEST_CASE("createLayer falls back to stub when pool exhausted") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "engine._assetPools = { 'empty': [] };\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && asset.__asset;\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path; layer.visible = true; return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true, origin: Vec3(0,0,0), visible: true };\n"
+        "};\n"
+        "var a = engine.registerAsset('empty');\n"
+        "var l = thisScene.createLayer(a);\n");
+    CHECK(env.engine.evaluate("l.__stub").toBool());
 }
 
 TEST_CASE("isPlaying returns false") {

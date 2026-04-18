@@ -297,6 +297,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         return false;
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
+    GET_JSON_NAME_VALUE_NOWARN(jImage, "autosize", autosize);
 	GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
 	GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
 	GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
@@ -311,8 +312,13 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 			GET_JSON_NAME_VALUE(jImage, "width", w);
 			GET_JSON_NAME_VALUE(jImage, "height", h);
 			size = {(float)w, (float)h};
+			autosize = false; // explicit dimensions win
 		} else if(json.contains("size")) {
 			GET_JSON_NAME_VALUE(json, "size", size);
+			autosize = false; // scene-level size wins
+		} else if(autosize) {
+			// Leave size at default (2,2); ParseImageObj resolves from the
+			// first texture's sprite frame dimensions.
 		} else {
 			size = {origin.at(0)*2, origin.at(1)*2};
 		}
