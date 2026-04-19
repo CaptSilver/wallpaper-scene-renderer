@@ -180,4 +180,50 @@ TEST_CASE("REGRESSION: anim-at-t0 diverges from static volume (trainsound init-s
     CHECK(firstAudibleT > 20.0f);
 }
 
+// ---------------------------------------------------------------------------
+// Targeted boundary tests — kill mutants that survive generic coverage because
+// length/fps default to 1 or keyframes don't exercise exact edges.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("loop mode wraps time modulo maxTime (mutation: / → * would change maxTime)") {
+    // At 30fps and length=60f, maxTime = 2s.  Past two seconds, loop wraps.
+    // Under a cxx_div_to_mul mutation, maxTime would be 1800s (no wrap), so
+    // the result at t=100 would be frame=3000 (past end → back().value=1.0).
+    std::vector<VolumeAnimKeyframe> kfs = { { 0, 0 }, { 30, 1.0f } };
+    float v = EvaluateVolumeAnimation(kfs, 30, 60, "loop", 100.0);
+    // 100 mod 2 = 0 → frame 0 → front().value = 0 (not 1.0)
+    CHECK(v == doctest::Approx(0.0f));
+}
+
+TEST_CASE("maxTime==0 disables loop wrap (mutation: > → >= would fmod by zero)") {
+    // length=0 ⇒ maxTime=0; original skips the fmod block because `maxTime > 0`
+    // is false.  Under a `>=` mutation the code would call fmod(t, 0)=NaN and
+    // the rest of the function would fall through to back().value.
+    std::vector<VolumeAnimKeyframe> kfs = { { 0, 0.0f }, { 10, 1.0f } };
+    float v = EvaluateVolumeAnimation(kfs, 1, 0, "loop", 5.0);
+    // frame=5 interpolates halfway between (0,0) and (10,1) → 0.5
+    CHECK(v == doctest::Approx(0.5f));
+}
+
+TEST_CASE("t==0 stays 0 in loop mode (mutation: < → <= would add maxTime)") {
+    // `if (t < 0) t += maxTime;` — mutation to <= would add maxTime when
+    // t exactly equals 0, shifting the evaluated frame to the back keyframe.
+    std::vector<VolumeAnimKeyframe> kfs = { { 0, 0.3f }, { 10, 0.7f } };
+    float v = EvaluateVolumeAnimation(kfs, 1, 10, "loop", 0.0);
+    CHECK(v == doctest::Approx(0.3f));
+}
+
+TEST_CASE("duplicate-frame keyframes: span==0 returns left value, not NaN") {
+    // Two keyframes at the same frame — span becomes 0.  The early return
+    // `if (span <= 0) return kf[i].value;` guards against division by zero;
+    // mutation `<=` → `<` would let the NaN through.
+    std::vector<VolumeAnimKeyframe> kfs = {
+        { 0, 0.5f }, { 5, 0.5f }, { 5, 0.9f }, { 10, 1.0f }
+    };
+    float v = EvaluateVolumeAnimation(kfs, 1, 10, "loop", 5.0);
+    // At frame=5 the first matching i=1 finds span = 5-5 = 0 → returns 0.5.
+    CHECK(v == doctest::Approx(0.5f));
+    CHECK(!std::isnan(v));
+}
+
 } // TEST_SUITE

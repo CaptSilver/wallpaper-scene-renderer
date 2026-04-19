@@ -195,4 +195,59 @@ TEST_CASE("mirror at exactly one-way period is max value") {
     CHECK(EvaluatePropertyAnimation(a, 1.001) == doctest::Approx(1.0f).epsilon(0.01));
 }
 
+// ---------------------------------------------------------------------------
+// Boundary mutation killers matching the WPVolumeAnimation set.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("loop: fps/length give distinct period — cxx_div_to_mul mutant") {
+    // fps=30, length=60 → period=2s.  Without the guard below the test,
+    // cxx_div_to_mul on `length / fps` would compute 1800 and never wrap.
+    PropertyAnimation a;
+    a.mode      = PropertyAnimMode::Loop;
+    a.fps       = 30.0f;
+    a.length    = 60.0f;
+    a.keyframes = { { 0, 0 }, { 30, 1.0f } };
+    CHECK(EvaluatePropertyAnimation(a, 100.0) == doctest::Approx(0.0f));
+}
+
+TEST_CASE("loop: fps<=0 skips evaluation (cxx_le_to_lt on fps guard)") {
+    PropertyAnimation a;
+    a.mode      = PropertyAnimMode::Loop;
+    a.fps       = 0.0f;               // boundary: fps==0 triggers fallback
+    a.length    = 1.0f;
+    a.keyframes = { { 0, 0.2f }, { 1, 0.8f } };
+    CHECK(EvaluatePropertyAnimation(a, 0.5) == doctest::Approx(0.2f));
+}
+
+TEST_CASE("duplicate-frame keyframes: span==0 returns first, not NaN") {
+    PropertyAnimation a;
+    a.mode      = PropertyAnimMode::Loop;
+    a.fps       = 1.0f;
+    a.length    = 10.0f;
+    a.keyframes = { { 0, 0.5f }, { 5, 0.5f }, { 5, 0.9f }, { 10, 1.0f } };
+    float v = EvaluatePropertyAnimation(a, 5.0);
+    CHECK(v == doctest::Approx(0.5f));
+    CHECK(!std::isnan(v));
+}
+
+TEST_CASE("loop: negative t wraps to positive via +=period (< boundary at 0)") {
+    // Under mutation `t < 0` → `t <= 0`, t==0 would incorrectly add period,
+    // shifting the result.  Direct boundary test at exactly time=0.
+    PropertyAnimation a;
+    a.mode      = PropertyAnimMode::Loop;
+    a.fps       = 1.0f;
+    a.length    = 10.0f;
+    a.keyframes = { { 0, 0.3f }, { 10, 0.7f } };
+    CHECK(EvaluatePropertyAnimation(a, 0.0) == doctest::Approx(0.3f));
+}
+
+TEST_CASE("mirror: negative t wraps via +=T (< boundary at 0)") {
+    PropertyAnimation a;
+    a.mode      = PropertyAnimMode::Mirror;
+    a.fps       = 1.0f;
+    a.length    = 10.0f;
+    a.keyframes = { { 0, 0.0f }, { 10, 1.0f } };
+    CHECK(EvaluatePropertyAnimation(a, 0.0) == doctest::Approx(0.0f));
+}
+
 } // TEST_SUITE

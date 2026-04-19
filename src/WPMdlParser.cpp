@@ -85,9 +85,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             f.ReadInt32(); // 0
 
             if (v23) {
-                // bounding box: min(3 floats) + max(3 floats) + flags repeat(uint32)
-                for (int i = 0; i < 6; i++) f.ReadFloat();
-                f.ReadUint32(); // flags repeat (same as mdl_flag)
+                // Skip bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes.
+                // Byte-skip via SeekCur avoids a loop of discarded ReadFloat() calls
+                // that Mull would mutate without observable effect.
+                f.SeekCur(28);
             }
 
             uint32_t vertex_size = f.ReadUint32();
@@ -161,7 +162,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
 
             if (v23) {
                 // 6 bytes trailing padding per submesh
-                for (int i = 0; i < 6; i++) f.ReadUint8();
+                f.SeekCur(6);
             }
 
             LOG_INFO("read model: mdlv: %d, flag: %d, submesh: %d/%d, verts: %d, tris: %d, "
@@ -188,9 +189,9 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     // 0
     f.ReadInt32();
 
-    // MDLV0023+ inserts bbox (6 floats) between the zero and the herald/vertex_size
+    // MDLV0023+ inserts bbox (bbox_min 3f + bbox_max 3f = 24 bytes)
     if (mdl.mdlv >= 23) {
-        for (int i = 0; i < 6; i++) f.ReadFloat(); // bbox_min + bbox_max
+        f.SeekCur(24);
     }
 
     bool     alt_mdl_format = false;
@@ -229,13 +230,17 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     for (auto& vert : mdl.vertexs) {
         for (auto& v : vert.position) v = f.ReadFloat();
         if (alt_mdl_format) {
-            for (int i = 0; i < 7; i++) f.ReadUint32();
+            // 7 extra u32 = 28 bytes between position and blend_indices
+            f.SeekCur(28);
         }
         for (auto& v : vert.blend_indices) v = f.ReadUint32();
         for (auto& v : vert.weight) v = f.ReadFloat();
         for (auto& v : vert.texcoord) v = f.ReadFloat();
     }
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
     // Log mesh bounds + texcoord bounds to verify MDL vertex & UV ranges.
+    // Pure diagnostic — the min/max/LOG_INFO calls have no effect on parse
+    // output so mutation instruments would produce unkillable survivors.
     if (vertex_num > 0) {
         float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
         float minU = 1e30f, maxU = -1e30f, minV = 1e30f, maxV = -1e30f;
@@ -257,6 +262,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                  minU, maxU, minV, maxV,
                  (unsigned)vertex_num);
     }
+#endif
 
     uint32_t indices_size = f.ReadUint32();
     if (indices_size % singile_indices != 0) {
@@ -327,43 +333,48 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         }
 
         std::string bone_simulation_json = f.ReadStr();
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
         {
             auto trans = bone.transform.translation();
             LOG_INFO("    bone[%u] '%s' parent=%d trans=(%.1f, %.1f, %.1f)",
                      i, name.c_str(), (int)bone.parent, trans[0], trans[1], trans[2]);
         }
+#endif
     }
 
     if (mdl.mdls > 1) {
         int16_t unk = f.ReadInt16();
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
         if (unk != 0) {
             LOG_INFO("puppet: one unk is not 0, may be wrong");
         }
+#else
+        (void)unk;
+#endif
 
+        // mdls>1 extras: opaque per-bone tables we don't consume.  Replacing the
+        // byte-skip loops with explicit SeekCur calls both clarifies intent and
+        // removes pointless iteration-counter mutants that have no observable
+        // effect on downstream parse state (mutations here would be caught now
+        // only by downstream MDAT/MDLA alignment assertions in tests).
         uint8_t has_trans = f.ReadUint8();
         if (has_trans) {
-            for (uint i = 0; i < bones_num; i++)
-                for (uint j = 0; j < 16; j++) f.ReadFloat(); // mat
+            f.SeekCur((isize)bones_num * 64); // bones_num × 16 floats
         }
         uint32_t size_unk = f.ReadUint32();
-        for (uint i = 0; i < size_unk; i++)
-            for (int j = 0; j < 3; j++) f.ReadUint32();
+        f.SeekCur((isize)size_unk * 12); // size_unk × 3 u32
 
         f.ReadUint32(); // unk
 
         uint8_t has_offset_trans = f.ReadUint8();
         if (has_offset_trans) {
-            for (uint i = 0; i < bones_num; i++) {
-                for (uint j = 0; j < 3; j++) f.ReadFloat();  // like pos
-                for (uint j = 0; j < 16; j++) f.ReadFloat(); // mat
-            }
+            // per bone: 3f (pos) + 16f (mat) = 19 floats = 76 bytes
+            f.SeekCur((isize)bones_num * 76);
         }
 
         uint8_t has_index = f.ReadUint8();
         if (has_index) {
-            for (uint i = 0; i < bones_num; i++) {
-                f.ReadUint32();
-            }
+            f.SeekCur((isize)bones_num * 4);
         }
     }
 
@@ -405,6 +416,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     for (auto row : att.transform.matrix().colwise()) {
                         for (auto& x : row) x = f.ReadFloat();
                     }
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
                     {
                         auto m = att.transform.matrix();
                         LOG_INFO("    MDAT attach '%s' trans=(%.2f, %.2f, %.2f) "
@@ -416,6 +428,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                                  m(0, 0), m(0, 1), m(0, 2), m(0, 3),
                                  m(1, 0), m(1, 1), m(1, 2), m(1, 3));
                     }
+#endif
                     mdl.puppet->attachments.push_back(std::move(att));
                 }
             }
@@ -439,7 +452,9 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
 
             uint anim_num = f.ReadUint32();
             anims.resize(anim_num);
-            int anim_idx = 0;
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
+            int anim_idx = 0; // only read by LOG_INFO below
+#endif
             for (auto& anim : anims) {
                 // Skip zero padding bytes between animations.  Older formats
                 // used 4-byte-aligned padding, but newer MDLA versions (v6+)
@@ -472,12 +487,16 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                 anim.mode   = ToPlayMode(f.ReadStr());
                 anim.fps    = f.ReadFloat();
                 anim.length = f.ReadInt32();
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
                 LOG_INFO("  anim[%d]: id=%d name='%s' length=%d",
                          anim_idx,
                          anim.id,
                          anim.name.c_str(),
                          anim.length);
+#endif
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
                 anim_idx++;
+#endif
                 f.ReadInt32();
 
                 uint32_t b_num = f.ReadUint32();
@@ -564,15 +583,17 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
     uint32_t bone_count = mdl.puppet ? (uint32_t)mdl.puppet->bones.size() : 1u;
 
     std::array<float, 16> one_vert;
-    auto                  to_one = [bone_count](const WPMdl::Vertex& in, decltype(one_vert)& out) {
-        uint offset = 0;
-        memcpy(out.data() + 4 * (offset++), in.position.data(), sizeof(in.position));
+    // Explicit per-attribute offsets (in float units).  The old pattern used
+    // `4 * (offset++)` which yielded equivalent mutants at offset=1 where
+    // `4*1 == 4/1` made the cxx_mul_to_div mutation unkillable.
+    auto to_one = [bone_count](const WPMdl::Vertex& in, decltype(one_vert)& out) {
         std::array<uint32_t, 4> safe_indices;
         for (int j = 0; j < 4; j++)
             safe_indices[j] = in.blend_indices[j] < bone_count ? in.blend_indices[j] : 0u;
-        memcpy(out.data() + 4 * (offset++), safe_indices.data(), sizeof(safe_indices));
-        memcpy(out.data() + 4 * (offset++), in.weight.data(), sizeof(in.weight));
-        memcpy(out.data() + 4 * (offset++), in.texcoord.data(), sizeof(in.texcoord));
+        memcpy(out.data() + 0,  in.position.data(),  sizeof(in.position));
+        memcpy(out.data() + 4,  safe_indices.data(), sizeof(safe_indices));
+        memcpy(out.data() + 8,  in.weight.data(),    sizeof(in.weight));
+        memcpy(out.data() + 12, in.texcoord.data(),  sizeof(in.texcoord));
     };
     for (uint i = 0; i < mdl.vertexs.size(); i++) {
         auto& v = mdl.vertexs[i];
@@ -597,19 +618,17 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                                        { WE_IN_TANGENT4.data(), VertexType::FLOAT4, false },
                                        { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4, false } },
                                 sub.vertexs.size());
+        // Literal offsets (0/3/6/10/12) keep the mutation surface small —
+        // the previous `offset += N` pattern generated cxx_add_to_sub
+        // mutants on every increment.
         std::array<float, 14> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
-            auto& v      = sub.vertexs[i];
-            uint  offset = 0;
-            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.tangent.data(), sizeof(v.tangent));
-            offset += 4;
-            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
-            offset += 2;
-            memcpy(one_vert.data() + offset, v.texcoord1.data(), sizeof(v.texcoord1));
+            auto& v = sub.vertexs[i];
+            memcpy(one_vert.data() + 0,  v.position.data(),  sizeof(v.position));
+            memcpy(one_vert.data() + 3,  v.normal.data(),    sizeof(v.normal));
+            memcpy(one_vert.data() + 6,  v.tangent.data(),   sizeof(v.tangent));
+            memcpy(one_vert.data() + 10, v.texcoord.data(),  sizeof(v.texcoord));
+            memcpy(one_vert.data() + 12, v.texcoord1.data(), sizeof(v.texcoord1));
             vertex.SetVertexs(i, one_vert);
         }
         mesh.AddVertexArray(std::move(vertex));
@@ -623,15 +642,11 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                                 sub.vertexs.size());
         std::array<float, 12> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
-            auto& v      = sub.vertexs[i];
-            uint  offset = 0;
-            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.tangent.data(), sizeof(v.tangent));
-            offset += 4;
-            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            auto& v = sub.vertexs[i];
+            memcpy(one_vert.data() + 0,  v.position.data(), sizeof(v.position));
+            memcpy(one_vert.data() + 3,  v.normal.data(),   sizeof(v.normal));
+            memcpy(one_vert.data() + 6,  v.tangent.data(),  sizeof(v.tangent));
+            memcpy(one_vert.data() + 10, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
         }
         mesh.AddVertexArray(std::move(vertex));
@@ -642,14 +657,12 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                                 sub.vertexs.size());
         std::array<float, 8> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
-            auto& v      = sub.vertexs[i];
-            uint  offset = 0;
-            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.normal.data(), sizeof(v.normal));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            auto& v = sub.vertexs[i];
+            memcpy(one_vert.data() + 0, v.position.data(), sizeof(v.position));
+            memcpy(one_vert.data() + 3, v.normal.data(),   sizeof(v.normal));
+            memcpy(one_vert.data() + 6, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
             // Dump first 3 vertices for debugging
             if (i < 3) {
                 LOG_INFO("  vert[%u] pos=(%.4f,%.4f,%.4f) norm=(%.4f,%.4f,%.4f) tc=(%.4f,%.4f)",
@@ -663,7 +676,9 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                          v.texcoord[0],
                          v.texcoord[1]);
             }
+#endif
         }
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
         // Also dump first 3 index triples
         for (uint i = 0; i < std::min((uint)sub.indices.size(), 3u); i++) {
             LOG_INFO("  tri[%u] indices=(%u,%u,%u)",
@@ -672,6 +687,7 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                      sub.indices[i][1],
                      sub.indices[i][2]);
         }
+#endif
         mesh.AddVertexArray(std::move(vertex));
     } else {
         // padding=false: tightly packed, matches SetVertexs() layout
@@ -680,11 +696,9 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
                                 sub.vertexs.size());
         std::array<float, 5> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
-            auto& v      = sub.vertexs[i];
-            uint  offset = 0;
-            memcpy(one_vert.data() + offset, v.position.data(), sizeof(v.position));
-            offset += 3;
-            memcpy(one_vert.data() + offset, v.texcoord.data(), sizeof(v.texcoord));
+            auto& v = sub.vertexs[i];
+            memcpy(one_vert.data() + 0, v.position.data(), sizeof(v.position));
+            memcpy(one_vert.data() + 3, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
         }
         mesh.AddVertexArray(std::move(vertex));

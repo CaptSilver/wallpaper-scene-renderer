@@ -12,12 +12,23 @@ include_directories(SYSTEM third_party)
 
 link_libraries(Eigen3::Eigen)
 
-add_subdirectory(third_party)
-add_subdirectory(src)
-
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
 option(BUILD_TOOLS "Build pkg inspection / extraction tools (wp-pkg)" OFF)
 option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires Clang)" OFF)
+option(COVERAGE "Enable Clang source-based coverage instrumentation (requires Clang)" OFF)
+
+if(COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "COVERAGE requires Clang (found ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    # Applied here (before add_subdirectory) so it reaches all project targets;
+    # third_party gets filtered at report time via -ignore-filename-regex.
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping -g -O0)
+    add_link_options(-fprofile-instr-generate)
+endif()
+
+add_subdirectory(third_party)
+add_subdirectory(src)
 
 if(BUILD_TOOLS)
     add_subdirectory(tools)

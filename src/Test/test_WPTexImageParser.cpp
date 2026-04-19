@@ -627,6 +627,43 @@ TEST_CASE("Zero src_size returns nullptr") {
     CHECK(img == nullptr);
 }
 
+TEST_CASE("Zero width returns nullptr (boundary, kills <=0 → <0 mutant)") {
+    // width == 0 must hit the early-return.  Under cxx_le_to_lt the guard
+    // becomes `< 0` and lets zero through, allocating a 0-size buffer and
+    // eventually writing to NULL mipmap.data.
+    auto buf = makeTexHeader(1, 1, 1, 0, 0, 0, 4, 0, 4, 1);
+    appendInt32(buf, 1);       // mipmap_count
+    appendInt32(buf, 0);       // mip width = 0
+    appendInt32(buf, 4);       // mip height
+    appendInt32(buf, 64);      // src_size (non-zero so other checks pass)
+    std::vector<uint8_t> pixels(64, 0);
+    append(buf, pixels.data(), pixels.size());
+
+    VFS vfs;
+    mountTex(vfs, "test_zerow", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("test_zerow");
+    CHECK(img == nullptr);
+}
+
+TEST_CASE("Zero height returns nullptr (boundary)") {
+    auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 0, 4, 0, 1);
+    appendInt32(buf, 1);
+    appendInt32(buf, 4);
+    appendInt32(buf, 0);       // mip height = 0
+    appendInt32(buf, 64);
+    std::vector<uint8_t> pixels(64, 0);
+    append(buf, pixels.data(), pixels.size());
+
+    VFS vfs;
+    mountTex(vfs, "test_zeroh", std::move(buf));
+
+    WPTexImageParser parser(&vfs);
+    auto img = parser.Parse("test_zeroh");
+    CHECK(img == nullptr);
+}
+
 TEST_CASE("Negative width returns nullptr") {
     auto buf = makeTexHeader(1, 1, 1, 0, 0, -1, 4, 4, 4, 1);
     appendInt32(buf, 1);

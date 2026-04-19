@@ -15,15 +15,30 @@ add_executable(backend_scene_tests
     test_Algorism.cpp
     test_WPUserProperties.cpp
     test_ParticleModify.cpp
+    test_ParticleSystem.cpp
+    test_ParticleTrail.cpp
     test_WPPuppet.cpp
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
     test_SceneCamera.cpp
+    test_SceneNode.cpp
+    test_SceneLight.cpp
+    test_SceneMesh.cpp
+    test_SceneShader.cpp
+    test_Scene.cpp
+    test_SceneIndexArray.cpp
+    test_SceneVertexArray.cpp
+    test_WPJson.cpp
     test_WPSoundHelpers.cpp
+    test_AudioAnalyzer.cpp
+    test_SoundManager.cpp
+    test_BinaryStream.cpp
+    test_VFS.cpp
     test_SoundStreamSeek.cpp
     test_WPVolumeAnimation.cpp
     test_WPPropertyAnimation.cpp
     test_WPMdlParser.cpp
+    test_WPMdlParserFormats.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
@@ -32,6 +47,9 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/WPJson.cpp
     ${SRC_DIR}/Scene/SceneCamera.cpp
     ${SRC_DIR}/Scene/SceneNode.cpp
+    ${SRC_DIR}/Scene/SceneIndexArray.cpp
+    ${SRC_DIR}/Scene/SceneVertexArray.cpp
+    ${SRC_DIR}/Scene/SceneShader.cpp
 )
 
 target_include_directories(backend_scene_tests PRIVATE
@@ -79,4 +97,52 @@ if(Qt6_FOUND)
     )
     target_link_libraries(scenescript_tests PRIVATE Qt6::Core Qt6::Qml)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
+endif()
+
+# ── Coverage report target ────────────────────────────────────────────────────
+if(COVERAGE)
+    find_program(LLVM_PROFDATA llvm-profdata REQUIRED)
+    find_program(LLVM_COV      llvm-cov      REQUIRED)
+
+    set(_cov_dir  ${CMAKE_BINARY_DIR}/coverage)
+    set(_cov_prof ${_cov_dir}/merged.profdata)
+    set(_cov_objs $<TARGET_FILE:backend_scene_tests>)
+    set(_cov_tests backend_scene_tests)
+    if(TARGET scenescript_tests)
+        list(APPEND _cov_objs -object=$<TARGET_FILE:scenescript_tests>)
+        list(APPEND _cov_tests scenescript_tests)
+    endif()
+
+    # Only report on first-party backend_scene source — strip third_party,
+    # Qt/system headers, the tests themselves, and generated moc files.
+    set(_cov_ignore
+        -ignore-filename-regex=\(^/usr/\|/Qt6/\|/third_party/\|/src/Test/\|/moc_\|_autogen/\)
+    )
+
+    add_custom_target(coverage
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${_cov_dir}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_cov_dir}
+        COMMAND ${CMAKE_COMMAND} -E env
+                LLVM_PROFILE_FILE=${_cov_dir}/%p.profraw
+                ${CMAKE_CTEST_COMMAND} --output-on-failure
+        COMMAND ${CMAKE_COMMAND} -E env bash -c
+                "${LLVM_PROFDATA} merge -sparse ${_cov_dir}/*.profraw -o ${_cov_prof}"
+        COMMAND ${LLVM_COV} report ${_cov_objs}
+                -instr-profile=${_cov_prof} ${_cov_ignore}
+        DEPENDS ${_cov_tests}
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Running backend_scene tests with coverage and generating report"
+        VERBATIM
+        USES_TERMINAL
+    )
+
+    add_custom_target(coverage-html
+        COMMAND ${LLVM_COV} show ${_cov_objs}
+                -instr-profile=${_cov_prof} ${_cov_ignore}
+                -format=html -output-dir=${_cov_dir}/html
+                -show-line-counts-or-regions
+        DEPENDS coverage
+        COMMENT "Generating HTML coverage report in ${_cov_dir}/html"
+        VERBATIM
+    )
 endif()

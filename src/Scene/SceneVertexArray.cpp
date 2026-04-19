@@ -56,7 +56,10 @@ SceneVertexArray& SceneVertexArray::operator=(SceneVertexArray&& o) noexcept {
 }
 
 bool SceneVertexArray::AddVertex(const float* data) {
-    if (m_size + m_oneSize >= m_capacity) return false;
+    // Off-by-one: `>=` rejected the final valid vertex (and for count=1
+    // made AddVertex always fail since m_size + m_oneSize == m_capacity
+    // on the first call).
+    if (m_size + m_oneSize > m_capacity) return false;
     usize pos  = 0;
     usize mpos = 0;
     for (const auto& el : m_attributes) {
@@ -99,7 +102,11 @@ bool SceneVertexArray::SetVertexs(usize index, std::span<const float> data) noex
 }
 
 bool SceneVertexArray::TrySetSize(usize new_size) noexcept {
-    assert(new_size <= m_capacity);
+    // Don't assert here: this function is the defensive capacity gate for
+    // SetVertex/SetVertexs and is explicitly allowed to be called with a
+    // too-large new_size (returning false).  The previous `assert` made
+    // the `return false` branch unreachable in debug builds and aborted
+    // on any oversize caller.
     if (new_size > m_capacity) {
         return false;
     }
