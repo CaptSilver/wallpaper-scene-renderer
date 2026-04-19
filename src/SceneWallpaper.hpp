@@ -90,6 +90,7 @@ constexpr std::string_view PROPERTY_USER_PROPS           = "user_props";
 constexpr std::string_view PROPERTY_HDR_OUTPUT           = "hdr_output";
 constexpr std::string_view PROPERTY_HDR_CONTENT          = "hdr_content";
 constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE = "system_audio_capture";
+constexpr std::string_view PROPERTY_SCREENSHOT_PATH      = "screenshot_path";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;
@@ -169,6 +170,11 @@ public:
 
     ExSwapchain*                          exSwapchain() const;
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const;
+
+    // Screenshot capture: request a PPM dump of the next presented swapchain
+    // image.  screenshotDone() flips true once the file is written.
+    void requestScreenshot(const std::string& path);
+    bool screenshotDone() const;
 
 private:
     bool m_inited { false };

@@ -13,6 +13,8 @@ constexpr std::string_view OPT_RESOLUTION  = "--resolution";
 constexpr std::string_view OPT_CACHE_PATH  = "--cache-path";
 constexpr std::string_view OPT_HDR         = "--hdr";
 constexpr std::string_view OPT_USER_PROPS  = "--user-props";
+constexpr std::string_view OPT_SCREENSHOT  = "--screenshot";
+constexpr std::string_view OPT_SCREENSHOT_FRAMES = "--screenshot-frames";
 
 struct Resolution {
 	uint w;
@@ -82,6 +84,18 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .default_value(std::string())
         .nargs(1)
         .append();
+
+    arg.add_argument("-S", OPT_SCREENSHOT)
+        .help("capture a PPM screenshot to the given path, then exit")
+        .default_value(std::string())
+        .nargs(1)
+        .append();
+
+    arg.add_argument(OPT_SCREENSHOT_FRAMES)
+        .help("number of frames to render before capturing (default 30)")
+        .default_value<int32_t>(30)
+        .nargs(1)
+        .scan<'i', int32_t>();
 
     try {
         arg.parse_args(argc, argv);

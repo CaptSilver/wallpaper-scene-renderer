@@ -291,6 +291,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         visibleIsComboSelector = true;
     GET_JSON_NAME_VALUE_NOWARN(json, "perspective", perspective);
     GET_JSON_NAME_VALUE_NOWARN(json, "alignment", alignment);
+    GET_JSON_NAME_VALUE_NOWARN(json, "attachment", attachment);
     nlohmann::json jImage;
     if(!PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + image), jImage)) {
         LOG_ERROR("Can't load image json: %s", image.c_str());

@@ -23,10 +23,13 @@ add_executable(backend_scene_tests
     test_SoundStreamSeek.cpp
     test_WPVolumeAnimation.cpp
     test_WPPropertyAnimation.cpp
+    test_WPMdlParser.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp
+    ${SRC_DIR}/WPMdlParser.cpp
+    ${SRC_DIR}/WPJson.cpp
     ${SRC_DIR}/Scene/SceneCamera.cpp
     ${SRC_DIR}/Scene/SceneNode.cpp
 )

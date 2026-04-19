@@ -42,6 +42,13 @@ public:
     // to re-prepare on next compileRenderGraph if the state changes.
     void setSceneHdrContent(bool hdr);
 
+    // Screenshot support: record a path, then takeScreenshotIfRequested()
+    // will capture the most recently presented swapchain image to a PPM file
+    // and clear the path.  Thread-safe; called from the render thread right
+    // after WaitIdle in drawFrameSwapchain.
+    void setScreenshotPath(const std::string& path);
+    bool screenshotDone() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;

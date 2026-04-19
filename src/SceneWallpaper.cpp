@@ -317,6 +317,13 @@ public:
 
     bool renderInited() const { return m_render->inited(); }
 
+    void requestScreenshot(const std::string& path) {
+        if (m_render) m_render->setScreenshotPath(path);
+    }
+    bool screenshotDone() const {
+        return m_render && m_render->screenshotDone();
+    }
+
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
     void setTextUpdate(i32 id, const std::string& text) {
@@ -1366,6 +1373,14 @@ ExSwapchain* SceneWallpaper::exSwapchain() const {
 
 std::shared_ptr<audio::AudioAnalyzer> SceneWallpaper::audioAnalyzer() const {
     return m_main_handler->audioAnalyzer();
+}
+
+void SceneWallpaper::requestScreenshot(const std::string& path) {
+    m_main_handler->renderHandler()->requestScreenshot(path);
+}
+
+bool SceneWallpaper::screenshotDone() const {
+    return m_main_handler->renderHandler()->screenshotDone();
 }
 
 MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {

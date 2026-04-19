@@ -55,10 +55,12 @@ constexpr uint32_t singile_bone_frame = 4 * 9;
 bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     auto str_path = std::string(path);
     auto pfile    = vfs.Open("/assets/" + str_path);
-    auto memfile  = fs::MemBinaryStream(*pfile);
     if (! pfile) return false;
-    auto& f = memfile;
+    auto memfile = fs::MemBinaryStream(*pfile);
+    return ParseStream(memfile, path, mdl);
+}
 
+bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl& mdl) {
     mdl.mdlv = ReadMDLVesion(f);
 
     int32_t mdl_flag = f.ReadInt32();
@@ -200,6 +202,10 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     if (curr == 0) {
         alt_mdl_format = true;
         while (curr != alt_format_vertex_size_herald_value) {
+            if (f.Tell() >= f.Size()) {
+                LOG_ERROR("mdl: EOF scanning for alt-format herald in '%s'", path.data());
+                return false;
+            }
             curr = f.ReadUint32();
         }
         curr = f.ReadUint32();
@@ -228,6 +234,28 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         for (auto& v : vert.blend_indices) v = f.ReadUint32();
         for (auto& v : vert.weight) v = f.ReadFloat();
         for (auto& v : vert.texcoord) v = f.ReadFloat();
+    }
+    // Log mesh bounds + texcoord bounds to verify MDL vertex & UV ranges.
+    if (vertex_num > 0) {
+        float minX = 1e30f, maxX = -1e30f, minY = 1e30f, maxY = -1e30f;
+        float minU = 1e30f, maxU = -1e30f, minV = 1e30f, maxV = -1e30f;
+        for (const auto& vert : mdl.vertexs) {
+            minX = std::min(minX, vert.position[0]);
+            maxX = std::max(maxX, vert.position[0]);
+            minY = std::min(minY, vert.position[1]);
+            maxY = std::max(maxY, vert.position[1]);
+            minU = std::min(minU, vert.texcoord[0]);
+            maxU = std::max(maxU, vert.texcoord[0]);
+            minV = std::min(minV, vert.texcoord[1]);
+            maxV = std::max(maxV, vert.texcoord[1]);
+        }
+        LOG_INFO("  mdl '%.*s' vert bounds: X=[%.1f, %.1f] (w=%.1f) Y=[%.1f, %.1f] (h=%.1f) "
+                 "UV=[%.3f-%.3f, %.3f-%.3f] n=%u",
+                 (int)path.size(), path.data(),
+                 minX, maxX, maxX - minX,
+                 minY, maxY, maxY - minY,
+                 minU, maxU, minV, maxV,
+                 (unsigned)vertex_num);
     }
 
     uint32_t indices_size = f.ReadUint32();
@@ -277,6 +305,7 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     auto& anims = mdl.puppet->anims;
 
     bones.resize(bones_num);
+    LOG_INFO("  mdl '%.*s': reading %u bones", (int)path.size(), path.data(), (unsigned)bones_num);
     for (uint i = 0; i < bones_num; i++) {
         auto&       bone = bones[i];
         std::string name = f.ReadStr();
@@ -298,10 +327,11 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
         }
 
         std::string bone_simulation_json = f.ReadStr();
-        /*
-        auto trans = bone.transform.translation();
-        LOG_INFO("trans: %f %f %f", trans[0], trans[1], trans[2]);
-        */
+        {
+            auto trans = bone.transform.translation();
+            LOG_INFO("    bone[%u] '%s' parent=%d trans=(%.1f, %.1f, %.1f)",
+                     i, name.c_str(), (int)bone.parent, trans[0], trans[1], trans[2]);
+        }
     }
 
     if (mdl.mdls > 1) {
@@ -342,8 +372,16 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
     std::string mdType = "";
     std::string mdVersion;
 
+    bool reached_eof_without_mdla = false;
     do {
-        std::string mdPrefix = f.ReadStr();
+        if (f.Tell() >= f.Size()) {
+            // No animation section — valid for static deform puppets (hair
+            // strands, body parts that only receive bone skinning).
+            reached_eof_without_mdla = true;
+            break;
+        }
+        auto        pos_before = f.Tell();
+        std::string mdPrefix   = f.ReadStr();
 
         // sometimes there can be other garbage in this gap, so we need to
         // skip over that as well
@@ -357,18 +395,43 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                     f.ReadUint16(); // number of attachments in the MDAT section
 
                 for (int i = 0; i < num_attachments; i++) {
-                    f.ReadUint16();                            // skip 2 bytes
-                    std::string attachment_name = f.ReadStr(); // attachment name
-                    int         bytesToRead     = mdat_attachment_data_byte_length;
-                    for (int j = 0; j < bytesToRead; j++) {
-                        f.ReadUint8();
+                    f.ReadUint16(); // skip 2 bytes
+                    WPPuppet::Attachment att;
+                    att.name = f.ReadStr();
+                    // 64 bytes = 4x4 float matrix (column-major) describing
+                    // the attachment point's transform in puppet local space.
+                    // Children that rig to this attachment (via scene.json's
+                    // "attachment" field) land at this transform.
+                    for (auto row : att.transform.matrix().colwise()) {
+                        for (auto& x : row) x = f.ReadFloat();
                     }
+                    {
+                        auto m = att.transform.matrix();
+                        LOG_INFO("    MDAT attach '%s' trans=(%.2f, %.2f, %.2f) "
+                                 "row0=[%.3f %.3f %.3f %.3f] row1=[%.3f %.3f %.3f %.3f]",
+                                 att.name.c_str(),
+                                 att.transform.translation().x(),
+                                 att.transform.translation().y(),
+                                 att.transform.translation().z(),
+                                 m(0, 0), m(0, 1), m(0, 2), m(0, 3),
+                                 m(1, 0), m(1, 1), m(1, 2), m(1, 3));
+                    }
+                    mdl.puppet->attachments.push_back(std::move(att));
                 }
             }
         }
+
+        // Bail if the stream didn't advance — a zero-length read at EOF would loop forever.
+        if (f.Tell() == pos_before) {
+            LOG_ERROR("mdl: stalled scanning for MDLA section in '%s'", path.data());
+            return false;
+        }
     } while (mdType != "MDLA");
 
-    if (mdType == "MDLA" && mdVersion.length() > 0) {
+    if (reached_eof_without_mdla) {
+        LOG_INFO("mdl: no animation section in '%s' (static skinned puppet)",
+                 path.data());
+    } else if (mdType == "MDLA" && mdVersion.length() > 0) {
         mdl.mdla = std::stoi(mdVersion);
         if (mdl.mdla != 0) {
             uint end_size = f.ReadUint32();
@@ -385,7 +448,14 @@ bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
                 // the full 32-bit animation ID.
                 {
                     uint8_t b = 0;
-                    while (b == 0) b = f.ReadUint8();
+                    while (b == 0) {
+                        if (f.Tell() >= f.Size()) {
+                            LOG_ERROR("mdl: EOF scanning animation padding in '%s'",
+                                      path.data());
+                            return false;
+                        }
+                        b = f.ReadUint8();
+                    }
                     f.SeekCur(-1);
                     anim.id = f.ReadInt32();
                 }

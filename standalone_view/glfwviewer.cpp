@@ -2,6 +2,8 @@
 #include <set>
 #include <fstream>
 #include <csignal>
+#include <chrono>
+#include <thread>
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -132,6 +134,30 @@ int main(int argc, char** argv) {
 
     // Start the render loop (frame timer)
     psw->play();
+
+    // Screenshot capture mode: render N frames, request screenshot, wait for
+    // it to be written, then exit.  Keeps iteration fast when iterating on
+    // rendering bugs — no window interaction needed.
+    std::string screenshot_path = program.get<std::string>(OPT_SCREENSHOT);
+    if (! screenshot_path.empty()) {
+        std::thread([psw, screenshot_path, &program]() {
+            int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
+            if (frames_to_wait < 1) frames_to_wait = 30;
+            // A simple wall-clock wait tied to --fps gives enough frames without
+            // needing a frame counter hook.  At default 60fps, 30 frames ~ 0.5s.
+            int32_t fps   = program.get<int32_t>(OPT_FPS);
+            if (fps < 5) fps = 60;
+            double  wait_seconds = (double)frames_to_wait / (double)fps + 0.3;
+            std::this_thread::sleep_for(std::chrono::milliseconds((int64_t)(wait_seconds * 1000)));
+            psw->requestScreenshot(screenshot_path);
+            // Poll for completion (max 5 seconds).
+            for (int i = 0; i < 500 && ! psw->screenshotDone(); i++) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            if (g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+            glfwPostEmptyEvent();
+        }).detach();
+    }
 
     while (! glfwWindowShouldClose(window)) {
         glfwPollEvents();

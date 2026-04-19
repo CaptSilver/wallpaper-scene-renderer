@@ -28,6 +28,9 @@
 #include <cassert>
 #include <vector>
 #include <cstdint>
+#include <mutex>
+#include <atomic>
+#include <cstdio>
 
 #if ENABLE_RENDERDOC_API
 #    include "RenderDoc.h"
@@ -115,7 +118,189 @@ struct VulkanRender::Impl {
     vvk::Semaphore m_sem_render_finished;
 
     std::vector<VulkanPass*> m_passes;
+
+    // Screenshot request.  Set from any thread via setScreenshotPath;
+    // consumed on the render thread inside drawFrameSwapchain after WaitIdle.
+    std::mutex        m_screenshot_mutex;
+    std::string       m_pending_screenshot_path;
+    std::atomic<bool> m_screenshot_done { false };
+
+    void takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format,
+                                   uint32_t width, uint32_t height);
 };
+
+// Write a swapchain image to a PPM file.  Called with the device idle.
+// Returns true on success.  Keeps a small code footprint — PPM is a trivial
+// header-plus-RGB format, avoids pulling in a PNG encoder.
+static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swap_format,
+                                uint32_t width, uint32_t height, const std::string& path) {
+    const VkDeviceSize bufferSize = (VkDeviceSize)width * height * 4;
+
+    // 1) Host-visible staging buffer that we can map after the copy.
+    VmaBufferParameters staging;
+    staging.req_size = bufferSize;
+    {
+        VkBufferCreateInfo ci {
+            .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            .pNext                 = nullptr,
+            .flags                 = 0,
+            .size                  = bufferSize,
+            .usage                 = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+            .queueFamilyIndexCount = 0,
+            .pQueueFamilyIndices   = nullptr,
+        };
+        VmaAllocationCreateInfo vma_info = {};
+        vma_info.usage                   = VMA_MEMORY_USAGE_CPU_ONLY;
+        if (vvk::CreateBuffer(device.vma_allocator(), ci, vma_info, staging.handle) != VK_SUCCESS) {
+            LOG_ERROR("Screenshot: failed to create staging buffer");
+            return false;
+        }
+    }
+
+    // 2) Allocate a one-shot command buffer.  CommandPool::Allocate returns
+    //    VkResult (VK_SUCCESS == 0), so check against VK_SUCCESS rather than
+    //    the implicit-bool convert that would invert the meaning.
+    vvk::CommandBuffers cmds;
+    if (device.cmd_pool().Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, cmds) != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: failed to allocate command buffer");
+        return false;
+    }
+    vvk::CommandBuffer cmd(cmds[0], device.handle().Dispatch());
+
+    // 3) Record: transition swapchain image to TRANSFER_SRC, copy to buffer, back to PRESENT_SRC.
+    VkCommandBufferBeginInfo begin {
+        .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .pNext            = nullptr,
+        .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        .pInheritanceInfo = nullptr,
+    };
+    if (cmd.Begin(begin) != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: cmd Begin failed");
+        return false;
+    }
+
+    VkImageMemoryBarrier toSrc {
+        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext               = nullptr,
+        .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout           = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image               = swap_image,
+        .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
+    };
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        toSrc);
+
+    VkBufferImageCopy region {
+        .bufferOffset      = 0,
+        .bufferRowLength   = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+        .imageOffset       = { 0, 0, 0 },
+        .imageExtent       = { width, height, 1 },
+    };
+    cmd.CopyImageToBuffer(swap_image,
+                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          *staging.handle,
+                          region);
+
+    VkImageMemoryBarrier toPresent = toSrc;
+    toPresent.srcAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
+    toPresent.dstAccessMask        = VK_ACCESS_MEMORY_READ_BIT;
+    toPresent.oldLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toPresent.newLayout            = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0,
+                        toPresent);
+
+    if (cmd.End() != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: cmd End failed");
+        return false;
+    }
+
+    // 4) Submit and wait.  Using graphics queue — same one the swapchain image
+    //    belongs to, so no queue ownership transfer needed.
+    VkSubmitInfo sub {
+        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext                = nullptr,
+        .waitSemaphoreCount   = 0,
+        .pWaitSemaphores      = nullptr,
+        .pWaitDstStageMask    = nullptr,
+        .commandBufferCount   = 1,
+        .pCommandBuffers      = cmd.address(),
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores    = nullptr,
+    };
+    if (device.graphics_queue().handle.Submit(sub, {}) != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: queue Submit failed");
+        return false;
+    }
+    if (device.graphics_queue().handle.WaitIdle() != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: queue WaitIdle failed");
+        return false;
+    }
+
+    // 5) Map memory, write PPM header + RGB rows.  Swapchain formats in this
+    //    codebase are BGRA8_UNORM or RGBA8_UNORM (see chooseSwapSurfaceFormat).
+    void* mapped = nullptr;
+    if (staging.handle.MapMemory(&mapped) != VK_SUCCESS) {
+        LOG_ERROR("Screenshot: map failed");
+        return false;
+    }
+
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (! f) {
+        LOG_ERROR("Screenshot: cannot open '%s' for write", path.c_str());
+        staging.handle.UnMapMemory();
+        return false;
+    }
+    std::fprintf(f, "P6\n%u %u\n255\n", width, height);
+
+    const bool bgr = (swap_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                      swap_format == VK_FORMAT_B8G8R8A8_SRGB);
+    const auto* pixels = static_cast<const uint8_t*>(mapped);
+    std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t* src = pixels + (size_t)y * width * 4;
+        for (uint32_t x = 0; x < width; x++) {
+            if (bgr) {
+                row[x * 3 + 0] = src[x * 4 + 2];
+                row[x * 3 + 1] = src[x * 4 + 1];
+                row[x * 3 + 2] = src[x * 4 + 0];
+            } else {
+                row[x * 3 + 0] = src[x * 4 + 0];
+                row[x * 3 + 1] = src[x * 4 + 1];
+                row[x * 3 + 2] = src[x * 4 + 2];
+            }
+        }
+        std::fwrite(row.data(), 1, row.size(), f);
+    }
+    std::fclose(f);
+    staging.handle.UnMapMemory();
+
+    LOG_INFO("Screenshot saved: %s (%ux%u)", path.c_str(), width, height);
+    return true;
+}
+
+void VulkanRender::Impl::takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format,
+                                                    uint32_t width, uint32_t height) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(m_screenshot_mutex);
+        path = std::move(m_pending_screenshot_path);
+        m_pending_screenshot_path.clear();
+    }
+    if (path.empty()) return;
+    writeSwapchainToPPM(*m_device, swap_image, swap_format, width, height, path);
+    m_screenshot_done.store(true, std::memory_order_release);
+}
 
 VulkanRender::VulkanRender(): pImpl(std::make_unique<Impl>()) {}
 VulkanRender::~VulkanRender() {};
@@ -146,6 +331,15 @@ void VulkanRender::UpdateCameraFillMode(Scene& scene, wallpaper::FillMode fill) 
 };
 
 wallpaper::ExSwapchain* VulkanRender::exSwapchain() const { return pImpl->m_ex_swapchain.get(); };
+
+void VulkanRender::setScreenshotPath(const std::string& path) {
+    std::lock_guard<std::mutex> lk(pImpl->m_screenshot_mutex);
+    pImpl->m_pending_screenshot_path = path;
+    pImpl->m_screenshot_done.store(false, std::memory_order_release);
+}
+bool VulkanRender::screenshotDone() const {
+    return pImpl->m_screenshot_done.load(std::memory_order_acquire);
+}
 
 bool VulkanRender::Impl::init(RenderInitInfo info) {
     if (m_inited) return true;
@@ -476,6 +670,14 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     // Wait for ALL queue operations (submit + present) to complete.
     // This ensures semaphores are fully consumed before reuse.
     VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.WaitIdle());
+
+    // After present + idle, the swapchain image is in PRESENT_SRC_KHR layout
+    // and safe to read back.  If a screenshot has been requested, capture it
+    // now before the next frame overwrites the image.
+    takeScreenshotIfRequested(image.handle,
+                              m_device->swapchain().format(),
+                              m_device->swapchain().extent().width,
+                              m_device->swapchain().extent().height);
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
     RenderingResources& rr    = m_rendering_resources;

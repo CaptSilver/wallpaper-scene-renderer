@@ -34,6 +34,15 @@ public:
         Eigen::Vector3f world_axis_z;
         */
     };
+    // MDAT attachment record — a named anchor point in the puppet's local
+    // space.  Child image objects reference these by name via scene.json's
+    // "attachment" field to rig themselves to the right body part (e.g.
+    // hair pieces attach to "head", which places them at the character's
+    // head instead of the mesh center).
+    struct Attachment {
+        std::string     name;
+        Eigen::Affine3f transform { Eigen::Affine3f::Identity() };
+    };
     struct BoneFrame {
         Eigen::Vector3f position;
         Eigen::Vector3f angle;
@@ -75,8 +84,19 @@ public:
     };
 
 public:
-    std::vector<Bone>      bones;
-    std::vector<Animation> anims;
+    std::vector<Bone>       bones;
+    std::vector<Animation>  anims;
+    std::vector<Attachment> attachments;
+
+    // Find a named attachment; returns nullptr if the puppet has no
+    // attachment by that name.  Names are stored from the puppet's MDAT
+    // section (e.g. "head", "hair back", "Attachment").
+    const Attachment* findAttachment(std::string_view name) const {
+        for (const auto& a : attachments) {
+            if (a.name == name) return &a;
+        }
+        return nullptr;
+    }
 
     std::span<const Eigen::Affine3f> genFrame(WPPuppetLayer&, double time) noexcept;
     void                             prepared();

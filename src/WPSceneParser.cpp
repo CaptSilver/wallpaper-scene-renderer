@@ -73,6 +73,18 @@ struct ParseContext {
     // child placement.
     std::map<i32, Eigen::Matrix4d> original_world_transforms;
 
+    // Child-attachment world transform for puppet nodes: equals the node's own
+    // world * puppet.bone[0].transform (legacy — kept for fallback when a
+    // child doesn't name a specific attachment).  For nodes without a
+    // puppet this is identical to original_world_transforms.
+    std::map<i32, Eigen::Matrix4d> child_attachment_transforms;
+
+    // Per-node puppet pointer, populated when a scene.json object declares
+    // "puppet": "models/X.mdl".  Children use this to resolve their
+    // "attachment": "<bone-or-attachment-name>" field against the parent's
+    // MDAT attachment table.
+    std::map<i32, std::shared_ptr<WPPuppet>> node_puppet;
+
     // Layer names referenced by any SceneScript (via getLayer('X')).  These
     // layers may have their visibility toggled at runtime, so we keep them in
     // the main render graph even if they start with visible=false.  Without
@@ -1250,15 +1262,77 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Compute and save this node's original world transform before effects
     // potentially reset it to identity.  Children that inherit_parent use
     // the parent's saved transform via a proxy node.
+    //
+    // The node's OWN world transform chains through the parent's original
+    // world (no bone offset) — this node renders itself at the mesh center.
+    //
+    // A separate "child-attachment" transform is computed for puppet objects:
+    // self.child_attachment = self.original * self.puppet.bone[0].transform.
+    // Children of this node use it as their anchor so hair/body pieces latch
+    // onto the puppet's root bone (head) instead of the mesh center.  Bone
+    // offsets do NOT compound through the chain — only the direct puppet
+    // parent's bone[0] applies to a given child.
     {
         Eigen::Matrix4d local = spImgNode->GetLocalTrans();
-        if (wpimgobj.parent_id >= 0 &&
-            context.original_world_transforms.count(wpimgobj.parent_id)) {
-            context.original_world_transforms[wpimgobj.id] =
-                context.original_world_transforms[wpimgobj.parent_id] * local;
+        // Track this node's puppet so its children can resolve their
+        // "attachment" field against this puppet's MDAT attachment table.
+        if (puppet && puppet->puppet) {
+            context.node_puppet[wpimgobj.id] = puppet->puppet;
+        }
+
+        if (wpimgobj.parent_id >= 0) {
+            // scene.json stores each child's "attachment" = name of an MDAT
+            // attachment point in the PARENT puppet's skeleton (e.g. "head",
+            // "hair back", "Attachment").  If the parent has a puppet with a
+            // matching attachment, anchor this child to that attachment's
+            // transform — that's how WE rigs hair to head, body to pelvis, etc.
+            // Otherwise fall back to the parent's mesh center.
+            Eigen::Matrix4d parent_chain = Eigen::Matrix4d::Identity();
+            if (context.original_world_transforms.count(wpimgobj.parent_id)) {
+                parent_chain =
+                    context.original_world_transforms[wpimgobj.parent_id];
+            }
+            if (! wpimgobj.attachment.empty()) {
+                auto pit = context.node_puppet.find(wpimgobj.parent_id);
+                if (pit != context.node_puppet.end() && pit->second) {
+                    if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
+                        Eigen::Matrix4d attMat =
+                            att->transform.matrix().cast<double>();
+                        parent_chain = parent_chain * attMat;
+                    }
+                }
+            }
+            context.original_world_transforms[wpimgobj.id] = parent_chain * local;
         } else {
             context.original_world_transforms[wpimgobj.id] = local;
         }
+
+        // POS dump: log final world (x,y), name, parent, attachment, local
+        // origin, size.  Grep for "POS " in the sceneviewer log.
+        {
+            const auto& w = context.original_world_transforms[wpimgobj.id];
+            LOG_INFO("POS id=%d name='%s' world=(%.1f,%.1f) parent=%d attach='%s' "
+                     "local=(%.1f,%.1f) size=(%.0f,%.0f) autosize=%d puppet='%s'",
+                     wpimgobj.id,
+                     wpimgobj.name.c_str(),
+                     (float)w(0, 3), (float)w(1, 3),
+                     wpimgobj.parent_id,
+                     wpimgobj.attachment.c_str(),
+                     wpimgobj.origin[0], wpimgobj.origin[1],
+                     wpimgobj.size[0], wpimgobj.size[1],
+                     (int)wpimgobj.autosize,
+                     wpimgobj.puppet.c_str());
+        }
+
+        // Legacy child_attachment_transforms — kept for children that don't
+        // name a specific attachment (falls back to bone[0]).  Will likely
+        // become unused once all children rely on the scene.json
+        // "attachment" field.
+        Eigen::Matrix4d attach = context.original_world_transforms[wpimgobj.id];
+        if (puppet && puppet->puppet && ! puppet->puppet->bones.empty()) {
+            attach = attach * puppet->puppet->bones[0].transform.matrix().cast<double>();
+        }
+        context.child_attachment_transforms[wpimgobj.id] = attach;
     }
 
     if (hasEffect) {
@@ -1307,7 +1381,23 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             if (! isOffscreen && wpimgobj.parent_id >= 0 &&
                 context.original_world_transforms.count(wpimgobj.parent_id)) {
                 auto proxy = std::make_shared<SceneNode>();
-                proxy->SetWorldTransform(context.original_world_transforms[wpimgobj.parent_id]);
+                // Resolve the attachment anchor the same way original_world_
+                // transforms does above: start from the parent's mesh center,
+                // then apply the named MDAT attachment from the parent's
+                // puppet if one is present.
+                Eigen::Matrix4d parent_chain =
+                    context.original_world_transforms[wpimgobj.parent_id];
+                if (! wpimgobj.attachment.empty()) {
+                    auto pit = context.node_puppet.find(wpimgobj.parent_id);
+                    if (pit != context.node_puppet.end() && pit->second) {
+                        if (auto* att =
+                                pit->second->findAttachment(wpimgobj.attachment)) {
+                            parent_chain = parent_chain *
+                                           att->transform.matrix().cast<double>();
+                        }
+                    }
+                }
+                proxy->SetWorldTransform(parent_chain);
                 imgEffectLayer->SetParentProxy(std::move(proxy));
             }
             imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);

@@ -20,6 +20,7 @@ class WPMaterial;
 namespace fs
 {
 class VFS;
+class IBinaryStream;
 };
 
 struct WPMdl {
@@ -74,6 +75,8 @@ class SceneMesh;
 class WPMdlParser {
 public:
     static bool Parse(std::string_view path, fs::VFS&, WPMdl&);
+    // Parse from an already-loaded binary stream (exposed for tests).
+    static bool ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl&);
 
     static void AddPuppetShaderInfo(WPShaderInfo& info, const WPMdl& mdl);
     static void AddPuppetMatInfo(wpscene::WPMaterial& mat, const WPMdl& mdl);

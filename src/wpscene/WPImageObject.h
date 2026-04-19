@@ -90,6 +90,13 @@ public:
     std::string                                puppet;
     std::vector<WPPuppetLayer::AnimationLayer> puppet_layers;
 
+    // Parent-puppet attachment point name (scene.json "attachment" field).
+    // When non-empty and the parent is a puppet, this child anchors to the
+    // named MDAT attachment in the parent puppet's skeleton instead of the
+    // parent mesh center.  e.g. hair pieces with attachment="head" end up
+    // at the head anchor in asuna body's skeleton.
+    std::string                                attachment;
+
     // Keyframe animations parsed out of <prop>.animation blocks.
     // Each entry targets a specific scalar property on this object (e.g. alpha).
     std::vector<PropertyAnimation> propertyAnimations;
