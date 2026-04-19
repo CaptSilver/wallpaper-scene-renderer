@@ -132,9 +132,14 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         return nullptr;
     }
 
-    // Convert pointsize from typographic points to pixels at 96 DPI (Windows standard).
-    // WE authors specify pointsize in points; at 96 DPI: pixels = points * 96/72 = points * 4/3.
-    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f + 0.5f);
+    // Convert pointsize from typographic points to pixels.
+    // WE authors a scene against a 3840x2160 virtual ortho — pointsize is
+    // intended to render at the native full-resolution scale, not at 96 DPI
+    // of the VIEWER.  At the 2x implied "Retina"-style DPI the glyphs end
+    // up the correct relative size for the reference look (comparing against
+    // the YouTube capture of wallpaper 2866203962's VHS Time/Date label).
+    // Net formula: points * 96/72 * 2 = points * 8/3 ≈ 2.67 × pointsize.
+    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * 2.0f + 0.5f);
     if (pixelSize < 4) pixelSize = 4;
     FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
 

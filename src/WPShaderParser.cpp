@@ -579,6 +579,11 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
 
         unit.src = Finalprocessor(unit, pre_info, post_info);
         unit.src = FixImplicitConversions(unit.src);
+        // Apply to both stages: the vertex shader computes v_AudioShift
+        // but the fragment shader is the one that multiplies by u_*Offset
+        // inside the texture sample.  Fragment is where the clamp takes
+        // effect; vertex is untouched by this regex.
+        unit.src = ClampAudioReactiveShift(unit.src);
         if (unit.stage == ShaderType::FRAGMENT) {
             unit.src = FixCombineAlpha(unit.src);
             unit.src = FixEffectAlpha(unit.src);

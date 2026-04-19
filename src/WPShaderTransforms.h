@@ -720,6 +720,10 @@ inline std::string FixImplicitConversions(const std::string& src) {
 
     // Fix: writing to 'in' varying — HLSL allows mutable inputs; GLSL doesn't.
     // Create a mutable copy for any 'in' variable that is assigned to (plain or compound).
+    // Skip varyings that are *shadowed* by a local declaration (e.g.
+    //   `vec4 rValue = texture(...);` inside main) — those aren't mutating the
+    // varying, they're introducing a local with the same name.  Renaming would
+    // cause a redefinition clash with the mutable-copy we'd insert at the top.
     {
         std::regex re_in(R"(\bin\s+(vec[234]|float)\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
@@ -727,6 +731,32 @@ inline std::string FixImplicitConversions(const std::string& src) {
              ++it) {
             std::string type = (*it)[1].str();
             std::string name = (*it)[2].str();
+
+            // Shadow check: a LOCAL declaration `TYPE name [= …];` anywhere.
+            // Must exclude the varying's own `in TYPE name;` decl, and
+            // uniform/out/attribute/varying qualifiers.  C++ regex has no
+            // variable-length lookbehind, so we inspect preceding context
+            // per match.
+            bool shadowed = false;
+            std::regex re_decl(
+                R"(\b(?:vec[234]|float|int|uint|bool|mat[234](?:x[234])?)\s+)"
+                + name + R"(\s*(?:=|;|,|\)))");
+            for (auto dit = std::sregex_iterator(result.begin(), result.end(), re_decl);
+                 dit != std::sregex_iterator();
+                 ++dit) {
+                auto pos = (size_t)dit->position();
+                // Look back ~20 chars for a qualifier keyword.
+                size_t start = pos > 20 ? pos - 20 : 0;
+                std::string ctx = result.substr(start, pos - start);
+                static const std::regex re_qual(
+                    R"(\b(?:in|uniform|out|attribute|varying|flat\s+in|centroid\s+in|smooth\s+in|noperspective\s+in)\s+$)");
+                if (! std::regex_search(ctx, re_qual)) {
+                    shadowed = true;
+                    break;
+                }
+            }
+            if (shadowed) continue;
+
             // Detect plain assignment (NAME = ...), component (NAME.x = ...) or
             // compound (NAME +=/-=/*=//=), but not == (comparison).
             std::regex  re_assign("\\b" + name + R"((\.\w+)?\s*[\+\-\*\/]?=(?!=))");
@@ -1009,6 +1039,57 @@ inline std::string FixEffectAlpha(const std::string& src) {
 // Only matches `VAR.a = saturate(VAR.a + OTHER.a);` where the SAME variable
 // appears on both sides — this avoids touching fluidsimulation_combine which
 // uses `albedo.a = saturate(prev.a + albedo.a)` (different LHS/first operand).
+// ClampAudioReactiveShift
+//
+// WE's `chromatic_aberration` effect (and similar shake/displace shaders)
+// multiplies a per-channel UV offset by `v_AudioShift`, a varying computed in
+// the vertex shader from `g_AudioSpectrum16Left/Right`.  The varying is
+// `smoothstep(bounds) * g_AudioMultiply`, nominally [0, 1+].  When the
+// effect is STACKED (id=210 on wallpaper 2866203962 applies two CA passes
+// back-to-back on a ping-pong pair), each pass's sampling offset reads from
+// the previous pass's already-shifted output.  With loud sustained audio the
+// cumulative R–B separation reaches 5-10% of the texture and shreds text
+// layers into illegible RGB fragments a few seconds after scene load.
+//
+// Cap the effective shift to a modest fraction by wrapping every
+// `<u_Offset_uniform> * v_AudioShift` term into
+// `<u_Offset_uniform> * min(v_AudioShift, 0.25)`.  0.25 keeps the effect
+// visible on isolated passes but prevents pathological compounding across
+// stacked passes.  Logged once per process so repeat hits don't spam.
+//
+// Future direction — see [pass-dump.md] "Not" note: the architecturally
+// purer fix is to rebind the ORIGINAL base texture to the second+ CA pass
+// (extra texture slot + graph change) so channels sample from a pristine
+// source each pass.  That's a render-graph refactor, not a shader tweak.
+inline std::string ClampAudioReactiveShift(const std::string& src) {
+    // Pattern: (u_<WORD>Offset * v_AudioShift) — also tolerate whitespace
+    // and optional parentheses.  Capture the offset uniform so we emit the
+    // minimum rewrite.
+    static const std::regex re(
+        R"(\b(u_\w*[Oo]ffset)\s*\*\s*v_AudioShift\b)");
+    if (! std::regex_search(src, re)) return src;
+
+    // Cap at 1.0 — not a real clamp (softSat in AudioAnalyzer already peaks
+    // well below 1.0), but prevents unbounded values from bugs in our audio
+    // pipeline.  Previously we used 0.25 but that muted authored CA stacking
+    // on wallpaper 2866203962 so the signature yellow/cyan split barely
+    // appeared.  The AUDIOPROCESSING=0 text-shift bug it was originally
+    // guarding against is now addressed upstream in WPSceneParser (combo
+    // override for chromatic_aberration).
+    std::string result = std::regex_replace(
+        src, re, "$1 * min(v_AudioShift, 1.0)");
+
+    // Log only the first time in the process — diagnostic so we can see
+    // this fire on new wallpapers without flooding the journal.
+    static bool s_logged = false;
+    if (! s_logged) {
+        s_logged = true;
+        LOG_INFO("ClampAudioReactiveShift: applied (v_AudioShift capped at 1.0 "
+                 "where multiplied by u_*Offset).  See pass-dump.md.");
+    }
+    return result;
+}
+
 inline std::string FixCombineAlpha(const std::string& src) {
     // After macro expansion, `saturate(x)` becomes `(clamp(x, 0.0, 1.0))`.
     // Match: VAR.a = (clamp(VAR.a + OTHER.a, 0.0, 1.0));

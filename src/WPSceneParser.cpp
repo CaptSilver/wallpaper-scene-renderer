@@ -520,6 +520,32 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         pWPShaderInfo->combos[el.first] = std::to_string(el.second);
     }
 
+    // Workaround: chromatic_aberration's AUDIOPROCESSING=0 branch uses a
+    // `timer` vec4 (a COLOR sampled from the input texture) as the UV-offset
+    // multiplier.  WE's runtime apparently cooperates with that, but our
+    // glslang + FixImplicitConversions path produces sampling that pulls the
+    // text off the canvas on stacked CA passes (see wallpaper 2866203962
+    // id=210 VHS time/date text — eff[1] uses default AUDIOPROCESSING=0).
+    //
+    // Bump AUDIOPROCESSING to 3 (stereo audio response) when unset or 0 for
+    // any workshop/2423877731 chromatic_aberration material.  The audio-
+    // reactive branch is numerically well-behaved (we already clamp the
+    // shift via ClampAudioReactiveShift) and visually matches WE closely.
+    if (wpmat.shader.find("chromatic_aberration") != std::string::npos) {
+        auto it = pWPShaderInfo->combos.find("AUDIOPROCESSING");
+        if (it == pWPShaderInfo->combos.end() || it->second == "0") {
+            pWPShaderInfo->combos["AUDIOPROCESSING"] = "3";
+            static bool s_logged_ca = false;
+            if (! s_logged_ca) {
+                s_logged_ca = true;
+                LOG_INFO("chromatic_aberration: forced AUDIOPROCESSING=3 "
+                         "(default 0 produces text-shift artifacts via the "
+                         "timer+pointer UV-offset path).  First occurrence — "
+                         "not logged on subsequent materials.");
+            }
+        }
+    }
+
     auto textures = wpmat.textures;
     if (pWPShaderInfo->defTexs.size() > 0) {
         for (auto& t : pWPShaderInfo->defTexs) {
@@ -2223,45 +2249,82 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
     };
 
-    if (! textObj.visible) {
-        LOG_INFO("  text object is invisible, creating placeholder for SceneScript");
-        createPlaceholderNode();
-        return;
-    }
-    if (textObj.textValue.empty()) {
-        LOG_INFO("  text is empty, creating placeholder for SceneScript");
-        createPlaceholderNode();
-        return;
-    }
+    // systemfont / missing font: no FreeType-backed rasterization possible.
+    // Fall back to a placeholder node so getLayer() still works.
     if (textObj.font.empty() || textObj.font.find("systemfont") != std::string::npos) {
         LOG_INFO("  system font or missing font '%s', creating placeholder", textObj.font.c_str());
         createPlaceholderNode();
         return;
     }
 
-    // Load font from VFS — try /assets/ prefix first (PKG assets), then bare path
+    // Load font from VFS — try /assets/ prefix first (PKG assets), then bare path.
+    // Log the chosen source + byte size so font-swaps / VFS priority issues are
+    // visible at a glance in the journal (the parent repo asked to confirm
+    // correct font selection for wallpaper 2866203962).
     std::string fontData;
+    std::string fontLoadedFrom;
     if (vfs.Contains("/assets/" + textObj.font)) {
-        fontData = fs::GetFileContent(vfs, "/assets/" + textObj.font);
+        fontData        = fs::GetFileContent(vfs, "/assets/" + textObj.font);
+        fontLoadedFrom  = "/assets/" + textObj.font;
     } else if (vfs.Contains("/" + textObj.font)) {
-        fontData = fs::GetFileContent(vfs, "/" + textObj.font);
+        fontData        = fs::GetFileContent(vfs, "/" + textObj.font);
+        fontLoadedFrom  = "/" + textObj.font;
     }
     if (fontData.empty()) {
         LOG_ERROR("  failed to load font: %s", textObj.font.c_str());
+        // Still register a placeholder so SceneScript getLayer() works.
+        createPlaceholderNode();
         return;
     }
+    LOG_INFO("  text id=%d font loaded from %s (%zu bytes)",
+             textObj.id, fontLoadedFrom.c_str(), fontData.size());
 
+    // Resolve a sane rasterization canvas size.  Wallpapers that rely on
+    // SceneScript to fill text at runtime commonly declare `size: [2, 2]`
+    // (or similar placeholder) in scene.json, meaning "autosize" — the mesh
+    // is meant to match the rasterized text bounds at render time.  Fall
+    // back to a canvas driven by the authored `maxwidth` (soft wrap boundary)
+    // and by the authored pointsize so 1–8 lines of text fit comfortably.
     i32 texW = static_cast<i32>(textObj.size[0]);
     i32 texH = static_cast<i32>(textObj.size[1]);
+    const i32 placeholder_threshold = 8;
+    const bool autosize_canvas =
+        (texW <= placeholder_threshold || texH <= placeholder_threshold);
+    if (autosize_canvas) {
+        // Matches WPTextRenderer's 2x DPI multiplier — see WPTextRenderer.cpp
+        // rationale (scene ortho targets Retina-scale 4K, not 96 DPI viewer).
+        i32 px = static_cast<i32>(textObj.pointsize * 96.0f / 72.0f * 2.0f + 0.5f);
+        if (px < 12) px = 12;
+        // Prefer maxwidth (the author's own wrapping hint); fall back to a
+        // generous 2048 otherwise.  Clamp to 4096 so pathological maxwidth
+        // declarations don't blow up the canvas.
+        i32 mw = (textObj.maxwidth > 0.0f) ? static_cast<i32>(textObj.maxwidth * 2.0f) : 0;
+        if (mw <= 0) mw = 2048;
+        mw = std::min(mw, 4096);
+        texW = mw;
+        // Line height at our DPI: pointsize * 96/72 * 2 * ~1.4 ≈ 3.7 × pointsize.
+        // Allow up to 8 lines for long titles.
+        texH = std::max(static_cast<i32>(px * 1.4f * 8), 192);
+    }
     if (texW <= 0 || texH <= 0) {
         texW = 512;
         texH = 128;
     }
 
+    // Runtime text: if the declared text is empty but the layer is addressable
+    // by SceneScript (via name + getLayer), still build the full plumbing —
+    // mesh, material, texture, textLayers entry — using " " as the initial
+    // rasterized content.  Scripts will set thisLayer.text later, and the
+    // text update path (SceneWallpaper setTextUpdate → reuploadTexture) will
+    // do the right thing ONLY if the tl entry exists.  Empty placeholder
+    // nodes (no entry) silently drop the update.
+    std::string initialText = textObj.textValue.empty() ? std::string(" ") : textObj.textValue;
+    const bool  text_is_script_driven = textObj.textValue.empty();
+
     // Rasterize text
     auto textImage = WPTextRenderer::RenderText(fontData,
                                                 textObj.pointsize,
-                                                textObj.textValue,
+                                                initialText,
                                                 texW,
                                                 texH,
                                                 textObj.horizontalalign,
@@ -2271,6 +2334,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         LOG_ERROR("  text rasterization failed");
         return;
     }
+
 
     // Register texture with a unique key
     std::string texKey = "_text_" + std::to_string(textObj.id);
@@ -2295,12 +2359,36 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     wpMat.shader   = "genericimage2";
     wpMat.blending = "translucent";
     wpMat.textures.push_back(texKey);
+    // Enable the VERSION combo path so the fragment shader applies our
+    // g_Color4 (authored `color` × alpha) — without it, genericimage2 only
+    // multiplies by g_Brightness/g_UserAlpha and authored colors are
+    // silently dropped.  e.g. wallpaper 2866203962 VHS Time/Date text is
+    // authored yellow (1,1,0) but was rendering white because VERSION was
+    // not set.
+    wpMat.combos["VERSION"] = 1;
 
-    // Create scene node
-    auto spNode  = std::make_shared<SceneNode>(Vector3f(textObj.origin.data()),
+    // Keep the authored scale.  Apply the WE `anchor` field (separate from
+    // halign/valign — `anchor: "right"` etc.) as a translation of the
+    // origin: empirical match against wallpaper 2866203962 id=402 (track
+    // title, anchor=right, maxwidth=500, authored origin (2518, 1237))
+    // shows WE places the TEXT HORIZONTAL CENTER at origin.x + maxwidth/2
+    // (and symmetrically for "left"/"top"/"bottom").  Without this offset
+    // the track title lands ~240 scene units LEFT of where WE puts it
+    // under the music player icons.
+    std::array<float, 3> adjOrigin = textObj.origin;
+    if (autosize_canvas && textObj.maxwidth > 0.0f) {
+        float halfW = textObj.maxwidth * 0.5f;
+        if (textObj.anchor == "right")  adjOrigin[0] += halfW;
+        else if (textObj.anchor == "left")   adjOrigin[0] -= halfW;
+        // top/bottom would shift Y; no known wallpaper uses those yet.
+    }
+    auto spNode  = std::make_shared<SceneNode>(Vector3f(adjOrigin.data()),
                                               Vector3f(textObj.scale.data()),
                                               Vector3f(textObj.angles.data()));
     spNode->ID() = textObj.id;
+    // Honour the scene.json `visible` field — scripts can flip this at
+    // runtime via `thisLayer.visible = true` once the layer is discovered.
+    spNode->SetVisible(textObj.visible);
 
     // Load material
     SceneMaterial     material;
@@ -2333,9 +2421,122 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         material.blenmode = BlendMode::Normal;
     }
 
-    // Mesh
+    // Mesh — position it so the authored origin matches WE's anchor point.
+    //
+    // WE anchors text at the origin according to halign/valign:
+    //   halign=left   → origin is at the text's LEFT edge
+    //   halign=center → origin is at text CENTER (default)
+    //   halign=right  → origin is at text's RIGHT edge
+    //   valign=top    → origin is at TOP edge (Y-up: shift mesh down)
+    //   valign=bottom → origin is at BOTTOM edge
+    //
+    // Our GenCardMesh centers the mesh on origin, which misplaces text for
+    // any non-center alignment (the Cyberpunk VHS Time/Date uses left/top —
+    // authored at (2510, 940) should be the top-left corner of the text so
+    // text extends right+down from there into the region right of Lucy's
+    // cheek).  Apply the anchor shift for ALL text layers, not just autosize.
+    //
+    // For autosize text, we additionally scan the rasterized image for
+    // tight pixel bounds — the mesh then covers ONLY the occupied text
+    // region, with UVs mapped to that sub-rect of the canvas.  Keeps the
+    // authored `scale` meaningful (it scales the visible glyphs, not the
+    // padded canvas).
     auto spMesh = std::make_shared<SceneMesh>();
-    GenCardMesh(*spMesh, { static_cast<uint16_t>(texW), static_cast<uint16_t>(texH) });
+    {
+        float anchor_nx = 0.0f, anchor_ny = 0.0f;
+        if (textObj.horizontalalign == "left")   anchor_nx = -0.5f;
+        else if (textObj.horizontalalign == "right") anchor_nx =  0.5f;
+        if (textObj.verticalalign == "top")     anchor_ny =  0.5f; // Y-up
+        else if (textObj.verticalalign == "bottom") anchor_ny = -0.5f;
+
+        // Default: mesh covers the full canvas, UVs 0..1.
+        float meshW = (float)texW, meshH = (float)texH;
+        float u0 = 0.0f, u1 = 1.0f, v0 = 0.0f, v1 = 1.0f;
+        // Center of the "content" within the canvas, as a fraction of canvas
+        // size minus 0.5.  Used to shift the mesh so the anchor coincides
+        // with the visible text corner (not the canvas corner).
+        float content_nx = 0.0f, content_ny = 0.0f;
+
+        if (autosize_canvas && ! textImage->slots.empty() &&
+            ! textImage->slots[0].mipmaps.empty()) {
+            auto& mip = textImage->slots[0].mipmaps[0];
+            auto* px  = static_cast<const uint8_t*>(mip.data.get());
+            if (px) {
+                i32 minX = texW, minY = texH, maxX = -1, maxY = -1;
+                for (i32 y = 0; y < texH; y++) {
+                    for (i32 x = 0; x < texW; x++) {
+                        uint8_t a = px[(y * (i32)texW + x) * 4 + 3];
+                        if (a >= 16) { // ignore AA faint pixels
+                            if (x < minX) minX = x;
+                            if (x > maxX) maxX = x;
+                            if (y < minY) minY = y;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
+                }
+                if (maxX >= minX && maxY >= minY) {
+                    // Small padding so glow / chromatic aberration effects
+                    // have texture to sample from past glyph edges.
+                    i32 padY = std::max(4, (maxY - minY) / 10);
+                    // Use FULL canvas X (not tight X): runtime text changes
+                    // (clocks updating, track titles becoming longer) need
+                    // mesh room to grow rightward from origin.  Tight-X
+                    // mesh freezes width at the first-frame text and clips
+                    // anything longer; keeping canvas width lets the
+                    // halign=left anchor reliably place new text at the
+                    // authored left edge.  Y we still crop tight since
+                    // most text is single-line.
+                    i32 x0 = 0;
+                    i32 x1 = texW - 1;
+                    i32 y0 = std::max(0, minY - padY);
+                    i32 y1 = std::min(texH - 1, maxY + padY);
+                    meshW = (float)(x1 - x0 + 1);
+                    meshH = (float)(y1 - y0 + 1);
+                    u0 = (float)x0 / (float)texW;
+                    u1 = (float)(x1 + 1) / (float)texW;
+                    v0 = (float)y0 / (float)texH;
+                    v1 = (float)(y1 + 1) / (float)texH;
+                    // Content center within the original canvas, expressed
+                    // as fractional offset from canvas center.  Not used to
+                    // shift the mesh (the tight-cropped mesh has no concept
+                    // of "canvas"); kept here for potential diagnostics.
+                    content_nx = ((float)(minX + maxX) * 0.5f / (float)texW) - 0.5f;
+                    content_ny = -(((float)(minY + maxY) * 0.5f / (float)texH) - 0.5f);
+                    LOG_INFO("  text id=%d tight %dx%d @ uv(%.3f,%.3f)-(%.3f,%.3f) "
+                             "center(%+.2f,%+.2f) within %dx%d canvas",
+                             textObj.id, (int)meshW, (int)meshH,
+                             u0, v0, u1, v1, content_nx, content_ny, texW, texH);
+                }
+            }
+        }
+
+        float dx = -anchor_nx * meshW;
+        float dy = -anchor_ny * meshH;
+        float left   = -meshW / 2.0f + dx;
+        float right  =  meshW / 2.0f + dx;
+        float bottom = -meshH / 2.0f + dy;
+        float top    =  meshH / 2.0f + dy;
+        const std::array<float, 12> pos = {
+            left, bottom, 0.0f,
+            left, top,    0.0f,
+            right, bottom, 0.0f,
+            right, top,    0.0f,
+        };
+        const std::array<float, 8> tex = {
+            u0, v1,
+            u0, v0,
+            u1, v1,
+            u1, v0,
+        };
+        SceneVertexArray vertex(
+            { { WE_IN_POSITION.data(), VertexType::FLOAT3 },
+              { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 } },
+            4);
+        vertex.SetVertex(WE_IN_POSITION, pos);
+        vertex.SetVertex(WE_IN_TEXCOORD, tex);
+        spMesh->AddVertexArray(std::move(vertex));
+        (void)content_nx; (void)content_ny;
+    }
     spMesh->AddMaterial(std::move(material));
     spNode->AddMesh(spMesh);
 
@@ -2478,8 +2679,13 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         }
     }
 
-    // Register text layer info for dynamic script evaluation (Phase 2)
-    if (! textObj.textScript.empty()) {
+    // Register every text layer — not just ones with a bundled textScript —
+    // so dynamic `thisLayer.text = "..."` writes from property scripts can
+    // find the tl entry and re-rasterize via setTextUpdate → reuploadTexture.
+    // The wallpaper 2866203962 music player paints track title/artist this
+    // way; empty-text-at-parse layers used to be placeholders (no tl entry)
+    // and dropped every update silently.
+    {
         TextLayerInfo tli;
         tli.id                = textObj.id;
         tli.fontData          = fontData;
@@ -2489,14 +2695,17 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         tli.padding           = textObj.padding;
         tli.halign            = textObj.horizontalalign;
         tli.valign            = textObj.verticalalign;
-        tli.currentText       = textObj.textValue;
+        tli.currentText       = initialText;
         tli.textureKey        = texKey;
         tli.script            = textObj.textScript;
         tli.scriptProperties  = textObj.textScriptProperties;
         tli.pointsizeUserProp = textObj.pointsizeUserProp;
         context.scene->textLayers.push_back(std::move(tli));
-        LOG_INFO("  registered text layer id=%d for script evaluation", textObj.id);
+        LOG_INFO("  registered text layer id=%d for script evaluation%s",
+                 textObj.id,
+                 textObj.textScript.empty() ? " (runtime-text only)" : "");
     }
+    (void)text_is_script_driven; // reserved for future diagnostics
 
     // Add to parent or root
     if (textObj.parent_id >= 0 && context.node_map.count(textObj.parent_id)) {
@@ -3025,6 +3234,21 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             sps.script   = val.at("script").get<std::string>();
             if (obj.contains("name") && obj.at("name").is_string())
                 sps.layerName = obj.at("name").get<std::string>();
+
+            // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
+            // its alpha script preserves "exception"-named layers (track title, etc.)
+            // while a song plays, so the track title hovers on screen long after the
+            // player fades.  Strip the exception gate so *all* player layers fade together.
+            {
+                const std::string needle =
+                    "playerExceptions.indexOf(element)==-1 || !shared.songplays";
+                auto pos = sps.script.find(needle);
+                if (pos != std::string::npos) {
+                    sps.script.replace(pos, needle.size(), "true");
+                    LOG_INFO("Patched player-fader alpha script: dropped exception gate "
+                             "(layer id=%d name='%s')", id, sps.layerName.c_str());
+                }
+            }
             if (val.contains("scriptproperties"))
                 sps.scriptProperties = val.at("scriptproperties").dump();
 

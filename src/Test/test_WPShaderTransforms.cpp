@@ -721,6 +721,37 @@ TEST_CASE("in varying with component assignment gets mutable copy") {
     CHECK(result.find("_m_v_TexCoord") != std::string::npos);
 }
 
+TEST_CASE("in varying shadowed by local declaration not renamed") {
+    // Regression: wallpaper 2866203962 chromatic_aberration had
+    //   in vec4 rValue;
+    //   void main() { vec4 rValue = texture(g_Tex, ...); }
+    // Earlier we mistook the local declaration for an assignment-to-varying,
+    // renamed all rValue → _m_rValue AND inserted a top-of-main mutable copy.
+    // Result: two `vec4 _m_rValue` decls -> redefinition compile error.
+    std::string in =
+        "in vec4 rValue;\n"
+        "void main() {\n"
+        "vec4 rValue = texture(g_Tex, v_TexCoord);\n"
+        "color = rValue;\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("_m_rValue") == std::string::npos);
+    CHECK(result.find("in vec4 rValue;") != std::string::npos);
+}
+
+TEST_CASE("in varying with local shadow AND true assignment still not renamed") {
+    // Local shadow takes precedence — we can't safely rename because the user
+    // already chose to introduce their own local.  Accept the shadow.
+    std::string in =
+        "in float threshold;\n"
+        "void main() {\n"
+        "float threshold = 0.5;\n"
+        "threshold += 0.1;\n"
+        "}\n";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("_m_threshold") == std::string::npos);
+}
+
 // --- Pattern 18: vec3 = vec4() → .xyz ---
 
 TEST_CASE("vec3 = vec4 constructor gets .xyz") {
@@ -1594,3 +1625,51 @@ TEST_CASE("Simple_Audio_Bars pattern — stray #endif mid-main") {
 }
 
 } // TEST_SUITE("StripStrayEndifs")
+
+// --- ClampAudioReactiveShift ---
+
+TEST_SUITE("ClampAudioReactiveShift") {
+
+TEST_CASE("clamps u_rOffset * v_AudioShift inside texture sample") {
+    std::string in =
+        "vec4 rValue = texture(g_Texture0, v_TexCoord.xy - (u_rOffset * v_AudioShift));";
+    auto result = ClampAudioReactiveShift(in);
+    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    CHECK(result.find("u_rOffset * v_AudioShift)") == std::string::npos);
+}
+
+TEST_CASE("clamps all three u_rOffset/u_gOffset/u_bOffset occurrences") {
+    std::string in =
+        "r = tex(t, c - (u_rOffset * v_AudioShift));\n"
+        "g = tex(t, c - (u_gOffset * v_AudioShift));\n"
+        "b = tex(t, c - (u_bOffset * v_AudioShift));\n";
+    auto result = ClampAudioReactiveShift(in);
+    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    CHECK(result.find("u_bOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+}
+
+TEST_CASE("shader without v_AudioShift unchanged") {
+    std::string in = "vec4 c = texture(g_Tex, v_TexCoord);\n";
+    auto result = ClampAudioReactiveShift(in);
+    CHECK_EQ(result, in);
+}
+
+TEST_CASE("v_AudioShift without u_*Offset multiplier unchanged") {
+    // Other uses of v_AudioShift (e.g. as a scale parameter) are not
+    // touched — the clamp is scoped specifically to UV sampling offsets.
+    std::string in = "float scale = 1.0 + v_AudioShift * 0.2;\n";
+    auto result = ClampAudioReactiveShift(in);
+    CHECK_EQ(result, in);
+}
+
+TEST_CASE("whitespace variations") {
+    std::string in =
+        "r = tex(t, c - (u_rOffset*v_AudioShift));\n"     // no spaces
+        "g = tex(t, c - (u_gOffset  *  v_AudioShift));";   // extra spaces
+    auto result = ClampAudioReactiveShift(in);
+    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+}
+
+} // TEST_SUITE("ClampAudioReactiveShift")

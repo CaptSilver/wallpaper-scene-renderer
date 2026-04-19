@@ -38,22 +38,33 @@ target_link_libraries(${PROJECT_NAME}
 )
 
 if(BUILD_QML)
-    find_package(Qt${QT_MAJOR_VERSION} COMPONENTS Qml REQUIRED)
+    if(NOT QT_MAJOR_VERSION)
+        set(QT_MAJOR_VERSION 6)
+    endif()
+    find_package(Qt${QT_MAJOR_VERSION} COMPONENTS Qml Quick Gui REQUIRED)
 
-    set(CMAKE_AUTOMOC ON) 
-    set(CMAKE_AUTORCC ON) 
+    set(CMAKE_AUTOMOC ON)
+    set(CMAKE_AUTORCC ON)
     set(CMAKE_AUTOUIC ON)
 
-    add_executable(${PROJECT_NAME}-qml
+    # sceneviewer-script: same renderer, but links the QJSEngine-powered
+    # SceneBackend so SceneScript (property/color/init/update scripts), media
+    # integration, audio analyzer and the full JS API are live.  Pick this
+    # variant when you want to iterate on scripted wallpapers.
+    add_executable(${PROJECT_NAME}-script
         qmlviewer.cpp
         main.qml
         pkg.qrc
     )
-    target_link_libraries(${PROJECT_NAME}-qml
-        PUBLIC 
+    target_link_libraries(${PROJECT_NAME}-script
+        PUBLIC
         wescene-renderer-qml
     )
-    set(CMAKE_AUTOMOC OFF) 
-    set(CMAKE_AUTORCC OFF) 
+
+    # Back-compat alias target: old docs referred to sceneviewer-qml.
+    add_custom_target(${PROJECT_NAME}-qml DEPENDS ${PROJECT_NAME}-script)
+
+    set(CMAKE_AUTOMOC OFF)
+    set(CMAKE_AUTORCC OFF)
     set(CMAKE_AUTOUIC OFF)
 endif()

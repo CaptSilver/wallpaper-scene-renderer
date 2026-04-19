@@ -109,6 +109,14 @@ public:
     void                                     pause();
     void                                     mouseInput(double x, double y);
     void                                     updateText(int32_t id, const std::string& text);
+    // Dynamic pointsize override: scripts call `thisLayer.pointsize = 20`
+    // when fitting long track titles.  Next text update will rasterize at
+    // the new pointsize.  <=0 means "keep whatever was authored".
+    void                                     updateTextPointsize(int32_t id, float pointsize);
+    // Debug per-pass RT dump: writes every CustomShaderPass output image
+    // after the next frame completes.  See VulkanRender::setPassDumpDir.
+    void                                     requestPassDump(const std::string& dir);
+    bool                                     passDumpDone() const;
     void                                     updateColor(int32_t id, float r, float g, float b);
     std::vector<TextScriptInfo>              getTextScripts() const;
     std::vector<ColorScriptInfo>             getColorScripts() const;

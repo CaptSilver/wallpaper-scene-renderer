@@ -49,6 +49,15 @@ public:
     void setScreenshotPath(const std::string& path);
     bool screenshotDone() const;
 
+    // Per-pass dump: after the NEXT frame finishes, iterate all
+    // CustomShaderPasses and write each one's output render target to
+    // `<dir>/pass_<NNN>_<id>_<shader>_<out>.ppm`.  Shows the state of each
+    // render target immediately after its producing pass completed —
+    // useful for locating where text / colour corruption first appears in
+    // an effect chain.  No-op outside first dump frame, so cost is bounded.
+    void setPassDumpDir(const std::string& dir);
+    bool passDumpDone() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;

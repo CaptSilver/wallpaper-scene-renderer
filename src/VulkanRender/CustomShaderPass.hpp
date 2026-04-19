@@ -91,6 +91,10 @@ public:
     void invalidateCache() { m_cached = false; }
     void markCached() { m_cached = true; }
 
+    // Accessors for per-pass debug dump (VulkanRender::Impl reads output image
+    // info after a frame WaitIdle to produce PPMs of each pass's render target).
+    const Desc& desc() const { return m_desc; }
+
 private:
     Desc m_desc;
     bool m_cached { false };

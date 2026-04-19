@@ -27,7 +27,10 @@ bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
     GET_JSON_NAME_VALUE_NOWARN(json, "horizontalalign", horizontalalign);
     GET_JSON_NAME_VALUE_NOWARN(json, "verticalalign", verticalalign);
+    GET_JSON_NAME_VALUE_NOWARN(json, "anchor", anchor);
     GET_JSON_NAME_VALUE_NOWARN(json, "padding", padding);
+    GET_JSON_NAME_VALUE_NOWARN(json, "maxwidth", maxwidth);
+    GET_JSON_NAME_VALUE_NOWARN(json, "maxrows", maxrows);
 
     // Extract text.value and text.script from the "text" sub-object
     if (json.contains("text") && ! json.at("text").is_null()) {

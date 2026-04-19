@@ -581,6 +581,53 @@ void SceneObject::setAcceptMouse(bool value) {
 
 void SceneObject::setAcceptHover(bool value) { setAcceptHoverEvents(value); }
 
+// Headless test hooks.  We construct Qt events with the requested widget-space
+// coordinates and dispatch them through the same overrides a real Qt event
+// pump would, so cursor script handlers + m_scene->mouseInput fire identically.
+void SceneObject::simulateHoverAt(double x, double y) {
+    QPointF pos(x, y);
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    QHoverEvent ev(QEvent::HoverMove, pos, pos, pos);
+#else
+    QHoverEvent ev(QEvent::HoverMove, pos.toPoint(), pos.toPoint());
+#endif
+    hoverMoveEvent(&ev);
+}
+
+void SceneObject::simulateClickAt(double x, double y) {
+    simulateHoverAt(x, y); // make sure scripts see the hover state first
+    QPointF pos(x, y);
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    QMouseEvent press(QEvent::MouseButtonPress, pos, pos, pos,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, pos, pos,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+#else
+    QMouseEvent press(QEvent::MouseButtonPress, pos, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+#endif
+    mousePressEvent(&press);
+    mouseReleaseEvent(&release);
+}
+
+void SceneObject::requestScreenshot(const QString& path) {
+    if (m_scene) m_scene->requestScreenshot(path.toStdString());
+}
+
+bool SceneObject::screenshotDone() const {
+    return m_scene ? m_scene->screenshotDone() : false;
+}
+
+void SceneObject::requestPassDump(const QString& dir) {
+    if (m_scene) m_scene->requestPassDump(dir.toStdString());
+}
+
+bool SceneObject::passDumpDone() const {
+    return m_scene ? m_scene->passDumpDone() : false;
+}
+
 // Helper: strip ES module syntax that QJSEngine doesn't support
 static void stripESModuleSyntax(QString& src) {
     // Normalize non-breaking spaces (U+00A0) to regular spaces — some WE scripts
@@ -1167,11 +1214,13 @@ void SceneObject::setupTextScripts() {
         "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
         "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
         "    visible: init.v, alpha: 1.0,\n"
-        "    text: '', name: name, _dirty: {}, _cmds: []\n"
+        "    text: '', pointsize: init.ps || 0,\n"
+        "    name: name, _dirty: {}, _cmds: []\n"
         "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
         "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
         "        visible: true, alpha: 1.0,\n"
-        "        text: '', name: name, _dirty: {}, _cmds: [] };\n"
+        "        text: '', pointsize: 0,\n"
+        "        name: name, _dirty: {}, _cmds: [] };\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
         "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true });\n"
@@ -1204,6 +1253,12 @@ void SceneObject::setupTextScripts() {
         "  Object.defineProperty(p, 'text', {\n"
         "    get: function(){ return _s.text; },\n"
         "    set: function(v){ _s.text = v; _s._dirty.text = true; },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        "  Object.defineProperty(p, 'pointsize', {\n"
+        "    get: function(){ return _s.pointsize; },\n"
+        "    set: function(v){ _s.pointsize = v; _s._dirty.pointsize = true;\n"
+        "                      _s._dirty.text = true; },\n"
         "    enumerable: true\n"
         "  });\n"
         "  Object.defineProperty(p, 'size', {\n"
@@ -1430,7 +1485,8 @@ void SceneObject::setupTextScripts() {
         "    if (keys.length === 0 && cmds.length === 0) continue;\n"
         "    updates.push({ name: name, dirty: d, cmds: cmds.slice(),\n"
         "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
-        "      visible: s.visible, alpha: s.alpha, text: s.text });\n"
+        "      visible: s.visible, alpha: s.alpha, text: s.text,\n"
+        "      pointsize: s.pointsize });\n"
         "    s._dirty = {};\n"
         "    if (cmds.length) s._cmds = [];\n"
         "  }\n"
@@ -2878,6 +2934,10 @@ void SceneObject::evaluatePropertyScripts() {
             }
             if (dirty.property("alpha").toBool()) {
                 m_scene->updateNodeAlpha(id, (float)entry.property("alpha").toNumber());
+            }
+            if (dirty.property("pointsize").toBool()) {
+                float ps = (float)entry.property("pointsize").toNumber();
+                m_scene->updateTextPointsize(id, ps);
             }
             if (dirty.property("text").toBool()) {
                 std::string newText = entry.property("text").toString().toStdString();

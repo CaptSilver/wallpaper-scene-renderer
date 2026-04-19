@@ -16,7 +16,12 @@ add_subdirectory(third_party)
 add_subdirectory(src)
 
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
+option(BUILD_TOOLS "Build pkg inspection / extraction tools (wp-pkg)" OFF)
 option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires Clang)" OFF)
+
+if(BUILD_TOOLS)
+    add_subdirectory(tools)
+endif()
 
 if(MUTATION_TESTING AND NOT BUILD_TESTS)
     message(FATAL_ERROR "MUTATION_TESTING requires BUILD_TESTS=ON")

@@ -26,7 +26,14 @@ constexpr float    MIN_FREQ       = 20.0f;
 constexpr float    MAX_FREQ       = 20000.0f;
 // Gain applied to raw FFT magnitudes to bring them into a useful [0,1] range.
 // Raw FFT gives ~0.01-0.05 for typical music; WE expects ~0.3-0.8 peaks.
-constexpr float    SPECTRUM_GAIN  = 15.0f;
+// We previously used 15.0 with a hard min()-clamp to 1.0, which saturated on
+// louder tracks and pinned bands at 1.0.  Wallpaper 2866203962 stacks two
+// chromatic_aberration passes on its VHS Time/Date text; with saturated bands
+// the audio-reactive shift pushed the RGB channels so far apart that the
+// glyphs looked corrupted / disappeared.  Dropping gain + using a smooth
+// saturation keeps peaks around 0.3–0.6 on louder music (never hits 1.0) so
+// audio-reactive effects stay musical without shredding text layers.
+constexpr float    SPECTRUM_GAIN  = 4.0f;
 
 // Precompute Hanning window coefficients
 struct HanningWindow {
@@ -199,10 +206,17 @@ void AudioAnalyzer::Process() {
             sumR += d.magR[k];
         }
         float n    = (float)(hi - lo);
-        // Gain + sqrt for perceptual scaling: raw FFT magnitudes are small
-        // (0.01-0.05 for typical music); apply gain and sqrt to map to [0,1].
-        float newL = std::min(1.0f, std::sqrt(std::min(sumL / n * SPECTRUM_GAIN, 1.0f)));
-        float newR = std::min(1.0f, std::sqrt(std::min(sumR / n * SPECTRUM_GAIN, 1.0f)));
+        // Gain + soft saturate for perceptual scaling: raw FFT magnitudes are
+        // small (0.01-0.05 for typical music); apply gain and sqrt for
+        // perceptual loudness.  We then pass through x/(1+x) for a smooth
+        // asymptote ~1.0 — never hits hard 1.0 so stacked audio-reactive
+        // effects (see chromatic_aberration comment above) don't clamp.
+        auto softSat = [](float x) {
+            x = std::sqrt(std::max(x, 0.0f));
+            return x / (1.0f + x * 0.4f);
+        };
+        float newL = softSat(sumL / n * SPECTRUM_GAIN);
+        float newR = softSat(sumR / n * SPECTRUM_GAIN);
 
         // Exponential smoothing: fast attack, slow decay
         if (newL >= d.smoothL64[b])

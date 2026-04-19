@@ -324,11 +324,23 @@ public:
         return m_render && m_render->screenshotDone();
     }
 
+    void requestPassDump(const std::string& dir) {
+        if (m_render) m_render->setPassDumpDir(dir);
+    }
+    bool passDumpDone() const {
+        return m_render && m_render->passDumpDone();
+    }
+
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
     void setTextUpdate(i32 id, const std::string& text) {
         std::lock_guard<std::mutex> lock(m_text_update_mutex);
         m_pending_text_updates[id] = text;
+    }
+
+    void setTextPointsize(i32 id, float pointsize) {
+        std::lock_guard<std::mutex> lock(m_text_update_mutex);
+        m_pending_pointsize_updates[id] = pointsize;
     }
 
     void setColorUpdate(i32 id, float r, float g, float b) {
@@ -485,6 +497,18 @@ private:
             // Process pending text updates before drawing
             {
                 std::lock_guard<std::mutex> lock(m_text_update_mutex);
+                // Pointsize updates first — they influence every subsequent
+                // rasterization for the same layer in this frame.
+                for (auto& [id, newSize] : m_pending_pointsize_updates) {
+                    for (auto& tl : m_scene->textLayers) {
+                        if (tl.id != id) continue;
+                        if (newSize > 0.0f && std::abs(tl.pointsize - newSize) > 0.01f) {
+                            tl.pointsize      = newSize;
+                            tl.pointsizeDirty = true;
+                        }
+                        break;
+                    }
+                }
                 for (auto& [id, newText] : m_pending_text_updates) {
                     for (auto& tl : m_scene->textLayers) {
                         if (tl.id != id) continue;
@@ -508,6 +532,7 @@ private:
                     }
                 }
                 m_pending_text_updates.clear();
+                m_pending_pointsize_updates.clear();
             }
 
             // Process video texture frame updates — only decode visible videos
@@ -1127,6 +1152,7 @@ private:
 
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
+    std::unordered_map<i32, float>       m_pending_pointsize_updates;
 
     std::mutex                                    m_color_update_mutex;
     std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
@@ -1220,6 +1246,17 @@ void SceneWallpaper::mouseInput(double x, double y) {
 
 void SceneWallpaper::updateText(int32_t id, const std::string& text) {
     m_main_handler->renderHandler()->setTextUpdate(id, text);
+}
+
+void SceneWallpaper::updateTextPointsize(int32_t id, float pointsize) {
+    m_main_handler->renderHandler()->setTextPointsize(id, pointsize);
+}
+
+void SceneWallpaper::requestPassDump(const std::string& dir) {
+    m_main_handler->renderHandler()->requestPassDump(dir);
+}
+bool SceneWallpaper::passDumpDone() const {
+    return m_main_handler->renderHandler()->passDumpDone();
 }
 
 void SceneWallpaper::updateColor(int32_t id, float r, float g, float b) {

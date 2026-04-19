@@ -75,6 +75,16 @@ public:
     Q_INVOKABLE void setAcceptMouse(bool);
     Q_INVOKABLE void setAcceptHover(bool);
 
+    // Headless test hooks — let standalone viewers drive cursor + capture
+    // frames without an X11/Wayland event pump.  Same dispatch path as the
+    // normal Qt event handlers, so JS cursorEnter/Leave/Click scripts fire.
+    Q_INVOKABLE void simulateHoverAt(double x, double y);
+    Q_INVOKABLE void simulateClickAt(double x, double y);
+    Q_INVOKABLE void requestScreenshot(const QString& path);
+    Q_INVOKABLE bool screenshotDone() const;
+    Q_INVOKABLE void requestPassDump(const QString& dir);
+    Q_INVOKABLE bool passDumpDone() const;
+
     // Media integration events (called from QML MprisMonitor, dispatched to JS)
     Q_INVOKABLE void mediaPlaybackChanged(int state);
     Q_INVOKABLE void mediaPropertiesChanged(const QString& title, const QString& artist,

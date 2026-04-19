@@ -1196,6 +1196,36 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     }
 
     cmd.EndRenderPass();
+
+    // Per-pass RT dump (debug).  When active, record a copy of our output
+    // image into a pre-allocated staging buffer BEFORE any later pass
+    // rewrites the same ping-pong slot.  VulkanRender maps the staging
+    // buffers after the frame's submit+wait and writes PPMs.
+    extern bool g_pass_dump_active;
+    extern std::vector<struct PassDumpEntry>* g_pass_dump_entries;
+    extern struct Device const* g_pass_dump_device;
+    if (g_pass_dump_active && g_pass_dump_entries && g_pass_dump_device &&
+        m_desc.vk_output.handle != VK_NULL_HANDLE) {
+        // Forward-declare the structure for header-less access (defined in
+        // VulkanRender.cpp).  We just record the copy here; VulkanRender
+        // owns the staging buffer lifetime + PPM write.
+        extern void g_pass_dump_record(const vvk::CommandBuffer& cmd,
+                                       VkImage image, uint32_t w, uint32_t h,
+                                       const std::string& shader,
+                                       const std::string& output,
+                                       int32_t node_id);
+        auto shaderName =
+            (m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material())
+                ? m_desc.node->Mesh()->Material()->customShader.shader->name
+                : std::string("noshader");
+        g_pass_dump_record(cmd,
+                           m_desc.vk_output.handle,
+                           m_desc.vk_output.extent.width,
+                           m_desc.vk_output.extent.height,
+                           shaderName,
+                           m_desc.output,
+                           m_desc.node ? m_desc.node->ID() : -1);
+    }
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {
