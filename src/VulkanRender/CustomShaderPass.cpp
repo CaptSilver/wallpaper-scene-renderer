@@ -340,19 +340,30 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
                 img_slots = device.tex_cache().CreateTex(*image);
-                // Record video textures for frame decoding
+                // Record video textures for frame decoding. Multiple passes
+                // may sample the same MP4 (e.g. 3276911872 has 8+ layers
+                // sharing the character video).  Append every owner so the
+                // decoder runs as long as ANY sampler is visible.
                 if (image->header.isVideoTexture && ! image->header.videoFilePath.empty()) {
-                    bool already = false;
-                    for (const auto& vt : scene.videoTextures)
-                        if (vt.textureKey == tex_name) { already = true; break; }
-                    if (! already) {
-                        scene.videoTextures.push_back({
-                            tex_name,
-                            image->header.videoFilePath,
-                            image->header.width,
-                            image->header.height,
-                            m_desc.node,
-                        });
+                    VideoTextureInfo* existing = nullptr;
+                    for (auto& vt : scene.videoTextures)
+                        if (vt.textureKey == tex_name) { existing = &vt; break; }
+                    if (existing) {
+                        if (m_desc.node) {
+                            bool dup = false;
+                            for (auto* n : existing->ownerNodes)
+                                if (n == m_desc.node) { dup = true; break; }
+                            if (! dup) existing->ownerNodes.push_back(m_desc.node);
+                        }
+                    } else {
+                        VideoTextureInfo vti;
+                        vti.textureKey    = tex_name;
+                        vti.videoFilePath = image->header.videoFilePath;
+                        vti.width         = image->header.width;
+                        vti.height        = image->header.height;
+                        vti.ownerNode     = m_desc.node;
+                        if (m_desc.node) vti.ownerNodes.push_back(m_desc.node);
+                        scene.videoTextures.push_back(std::move(vti));
                         LOG_INFO("video texture registered: '%s' %dx%d ownerNode=%d path=%s",
                                  tex_name.c_str(),
                                  image->header.width,

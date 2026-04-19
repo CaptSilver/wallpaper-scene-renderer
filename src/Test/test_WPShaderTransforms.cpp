@@ -780,6 +780,64 @@ TEST_CASE("float = expr * vec_uniform gets .x") {
     CHECK(result.find("u_Offset.x;") != std::string::npos);
 }
 
+TEST_CASE("vec2 assignment with trailing vec uniform NOT wrongly .x'd") {
+    // Regression: re2 used to match any "OP VEC_NAME;" regardless of LHS type,
+    // incorrectly appending .x to a vec2 uniform in a vec2-typed statement
+    // (breaks wallpaper 3276911872 clipping_mask effect).
+    std::string in  = "uniform vec2 u_textureOffset;\nvec2 uvTex = foo - u_textureOffset;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("u_textureOffset.x;") == std::string::npos);
+    CHECK(result.find("u_textureOffset;") != std::string::npos);
+}
+
+// --- Pattern 19b: wider varying truncated in narrower assignment ---
+
+TEST_CASE("vec4 varying truncated to .xy in vec2 assignment arithmetic") {
+    std::string in = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
+                     "vec2 uv = v_TexCoord * 2.0 - u_c;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("v_TexCoord.xy") != std::string::npos);
+}
+
+TEST_CASE("vec4 varying NOT truncated inside vec4 assignment") {
+    std::string in = "in vec4 v_TexCoord;\nvec4 r = v_TexCoord * 2.0;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("v_TexCoord.xy") == std::string::npos);
+}
+
+TEST_CASE("vec4 varying NOT truncated when passed bare to function") {
+    // v_TexCoord is a bare arg to someFunc — must not add .xy (callee may want vec4).
+    std::string in = "in vec4 v_TexCoord;\nvec2 r = someFunc(v_TexCoord);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("someFunc(v_TexCoord)") != std::string::npos);
+    CHECK(result.find("v_TexCoord.xy") == std::string::npos);
+}
+
+TEST_CASE("vec4 varying truncated when preceded by arithmetic op in vec2 assign") {
+    std::string in = "in vec4 v_TexCoord;\nvec2 uv = 1.0 - v_TexCoord;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("- v_TexCoord.xy") != std::string::npos);
+}
+
+TEST_CASE("vec4 varying + vec2 varying inside texture() gets .xy") {
+    // Regression: clipping_mask.frag line 470 —
+    //   texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth)
+    // v_TexCoord (vec4) adjacent to v_ParallaxOffset (vec2) must truncate.
+    std::string in = "in vec4 v_TexCoord;\n"
+                     "in vec2 v_ParallaxOffset;\n"
+                     "uniform vec2 u_textureDepth;\n"
+                     "vec4 clip = texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth);";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("v_TexCoord.xy + v_ParallaxOffset") != std::string::npos);
+}
+
+TEST_CASE("vec2 var + vec4 varying symmetry — varying gets .xy") {
+    std::string in = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
+                     "vec2 r = u_c + v_TexCoord;";
+    auto result = FixImplicitConversions(in);
+    CHECK(result.find("u_c + v_TexCoord.xy") != std::string::npos);
+}
+
 // --- Pattern 20: for-loop float-to-int ---
 
 TEST_CASE("for loop int var from float expr gets int() cast") {

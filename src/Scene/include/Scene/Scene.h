@@ -62,7 +62,14 @@ struct VideoTextureInfo {
     std::string videoFilePath; // extracted MP4 temp file path
     i32         width { 0 };
     i32         height { 0 };
-    SceneNode*  ownerNode { nullptr }; // node that uses this texture (for visibility gating)
+    // Nodes that sample this texture. The decoder pauses only when ALL owners
+    // are invisible; otherwise at least one visible layer needs fresh frames.
+    // Wallpaper 3276911872 has 8+ layers sharing one MP4 (morning5, day5,
+    // dusk5, night5, and variants "1"/"2"/"3"/"4" under 精细 group) — any one
+    // visible means the decoder must run.
+    std::vector<SceneNode*> ownerNodes;
+    // Back-compat for callers that want any owner pointer:
+    SceneNode* ownerNode { nullptr };
 };
 
 struct ScenePropertyScript {

@@ -94,6 +94,18 @@ public:
     Q_INVOKABLE void mediaTimelineChanged(double position, double duration);
     Q_INVOKABLE void mediaStatusChanged(bool enabled);
 
+    // Video texture control — bridge for thisLayer.getVideoTexture().
+    // Takes a layer name; all methods are safe no-ops / zero-return on unknown
+    // layers.  Bound into QJSEngine as __sceneBridge so JS proxies can call them.
+    Q_INVOKABLE double videoGetCurrentTime(const QString& layerName) const;
+    Q_INVOKABLE double videoGetDuration(const QString& layerName) const;
+    Q_INVOKABLE bool   videoIsPlaying(const QString& layerName) const;
+    Q_INVOKABLE void   videoPlay(const QString& layerName);
+    Q_INVOKABLE void   videoPause(const QString& layerName);
+    Q_INVOKABLE void   videoStop(const QString& layerName);
+    Q_INVOKABLE void   videoSetCurrentTime(const QString& layerName, double t);
+    Q_INVOKABLE void   videoSetRate(const QString& layerName, double rate);
+
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;

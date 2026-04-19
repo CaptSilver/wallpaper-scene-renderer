@@ -315,6 +315,13 @@ void HWVideoTextureDecoder::renderFrame() {
             eglGetProcAddress("glBindFramebuffer");
         glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
         glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
+        // libmpv renders video frames without alpha (no source channel) so the
+        // FBO's alpha slot stays at its clear value (0).  Downstream samplers
+        // with translucent/premultiplied blending then multiply RGB by 0 and
+        // produce a fully black output.  Fill alpha to 255 so the frame is
+        // treated as opaque — the colorkey effect on top of this then computes
+        // the actual transparency from the blue-screen RGB channels.
+        fillAlpha(buf);
         publishFrame();
     }
 }

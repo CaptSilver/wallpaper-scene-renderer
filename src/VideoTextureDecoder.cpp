@@ -3,6 +3,7 @@
 
 #include <mpv/client.h>
 #include <mpv/render.h>
+#include <clocale>
 #include <cstring>
 
 namespace wallpaper {
@@ -27,6 +28,12 @@ VideoTextureDecoder::~VideoTextureDecoder() {
 }
 
 bool VideoTextureDecoder::initMpv() {
+    // mpv refuses to initialize when LC_NUMERIC is non-C (prints "Non-C locale
+    // detected" and returns NULL from mpv_create).  Qt sets the process locale
+    // from the environment during QCoreApplication init, so we force LC_NUMERIC
+    // back to "C" for numeric parsing before handing off to libmpv.  Scoped to
+    // LC_NUMERIC so time/message formatting elsewhere is unaffected.
+    std::setlocale(LC_NUMERIC, "C");
     m_mpv = mpv_create();
     if (! m_mpv) {
         LOG_ERROR("VideoTextureDecoder: mpv_create failed");
@@ -95,6 +102,37 @@ void VideoTextureDecoder::stop() {
     if (! m_mpv) return;
     mpv_command_string(m_mpv, "stop");
     m_playing.store(false);
+}
+
+double VideoTextureDecoder::getCurrentTimeSec() const {
+    if (! m_mpv) return 0.0;
+    double v = 0.0;
+    if (mpv_get_property(m_mpv, "time-pos", MPV_FORMAT_DOUBLE, &v) < 0) return 0.0;
+    return v;
+}
+
+double VideoTextureDecoder::getDurationSec() const {
+    if (! m_mpv) return 0.0;
+    double v = 0.0;
+    if (mpv_get_property(m_mpv, "duration", MPV_FORMAT_DOUBLE, &v) < 0) return 0.0;
+    return v;
+}
+
+void VideoTextureDecoder::setCurrentTimeSec(double t) {
+    if (! m_mpv) return;
+    // "time-pos" seek is only valid once the file is loaded.  Clamp negatives
+    // (mpv rejects them) but let overrun pass through; libmpv will cap at
+    // duration-on-its-own.
+    if (t < 0) t = 0;
+    mpv_set_property(m_mpv, "time-pos", MPV_FORMAT_DOUBLE, &t);
+}
+
+void VideoTextureDecoder::setRate(double r) {
+    if (! m_mpv) return;
+    // libmpv's "speed" must be > 0.  A zero rate would be semantically "pause"
+    // — map to pause() to mirror mpv's own behavior and avoid EINVAL.
+    if (r <= 0.0) { pause(); return; }
+    mpv_set_property(m_mpv, "speed", MPV_FORMAT_DOUBLE, &r);
 }
 
 void VideoTextureDecoder::onMpvRenderUpdate(void* ctx) {

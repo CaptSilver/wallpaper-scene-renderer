@@ -538,8 +538,18 @@ private:
             // Process video texture frame updates — only decode visible videos
             for (auto& vd : m_video_decoders) {
                 if (! vd.decoder) continue;
-                // Visibility gating: pause invisible, resume visible
-                bool visible = (! vd.ownerNode || vd.ownerNode->IsVisible());
+                // Visibility gating: a single MP4 may be sampled by many
+                // layers (e.g. 3276911872's morning5/day5/dusk5/night5 plus
+                // the "1"/"2"/"3"/"4" variants under 精细).  Play as long as
+                // ANY sampler is visible; pause only when all are hidden.
+                bool visible = false;
+                if (! vd.ownerNode && vd.ownerNodes.empty()) {
+                    visible = true; // no owner info — assume always-on
+                } else {
+                    if (vd.ownerNode && vd.ownerNode->IsVisible()) visible = true;
+                    for (auto* n : vd.ownerNodes)
+                        if (n && n->IsVisible()) { visible = true; break; }
+                }
                 if (! visible) {
                     if (vd.decoder->isPlaying()) vd.decoder->pause();
                     continue;
@@ -936,7 +946,10 @@ private:
 
             // Create video texture decoders for MP4 textures detected during loading
             // Try HW decoder first (EGL + GL + VA-API), fall back to SW
-            m_video_decoders.clear();
+            {
+                std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
+                m_video_decoders.clear();
+            }
             for (auto& vt : m_scene->videoTextures) {
                 std::shared_ptr<VideoTextureDecoder> decoder;
 #ifdef HAVE_EGL_HWDEC
@@ -950,7 +963,9 @@ private:
                     if (sw->open(vt.videoFilePath)) decoder = sw;
                 }
                 if (decoder) {
-                    m_video_decoders.push_back({ vt.textureKey, decoder, vt.ownerNode });
+                    std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
+                    m_video_decoders.push_back(
+                        { vt.textureKey, decoder, vt.ownerNode, vt.ownerNodes });
                 }
             }
         }
@@ -1189,8 +1204,34 @@ private:
         std::string                          textureKey;
         std::shared_ptr<VideoTextureDecoder> decoder;
         SceneNode*                           ownerNode { nullptr };
+        std::vector<SceneNode*>              ownerNodes;
     };
     std::vector<VideoDecoderEntry> m_video_decoders;
+    // Guards m_video_decoders when read from outside the render thread
+    // (SceneScript bridge methods: videoPlay / videoGetCurrentTime / ...).
+    mutable std::mutex             m_video_decoders_mutex;
+
+public:
+    // Find the decoder owning a given nodeId. Returns nullptr if no match.
+    // Takes a shared_ptr copy under the mutex so the caller can safely use
+    // it after releasing the lock.
+    std::shared_ptr<VideoTextureDecoder> findVideoDecoder(int32_t nodeId) const {
+        std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
+        for (auto& vd : m_video_decoders) {
+            if (vd.ownerNode && vd.ownerNode->ID() == nodeId) return vd.decoder;
+        }
+        return nullptr;
+    }
+    std::vector<int32_t> getVideoNodeIds() const {
+        std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
+        std::vector<int32_t> ids;
+        ids.reserve(m_video_decoders.size());
+        for (auto& vd : m_video_decoders) {
+            if (vd.ownerNode) ids.push_back(vd.ownerNode->ID());
+        }
+        return ids;
+    }
+private:
 
     // Queue of script-driven play/stop/pause commands for property animations
     // (layer.getAnimation(name).play() etc.).  Drained at the start of every
@@ -1319,6 +1360,54 @@ std::string SceneWallpaper::getUserPropertiesJson() const {
 double SceneWallpaper::getSceneTime() const {
     auto rh = m_main_handler->renderHandler();
     return rh ? rh->getSceneTime() : 0.0;
+}
+
+std::vector<int32_t> SceneWallpaper::getVideoTextureNodeIds() const {
+    auto rh = m_main_handler->renderHandler();
+    return rh ? rh->getVideoNodeIds() : std::vector<int32_t> {};
+}
+double SceneWallpaper::videoGetCurrentTime(int32_t nodeId) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return 0.0;
+    auto d = rh->findVideoDecoder(nodeId);
+    return d ? d->getCurrentTimeSec() : 0.0;
+}
+double SceneWallpaper::videoGetDuration(int32_t nodeId) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return 0.0;
+    auto d = rh->findVideoDecoder(nodeId);
+    return d ? d->getDurationSec() : 0.0;
+}
+bool SceneWallpaper::videoIsPlaying(int32_t nodeId) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return false;
+    auto d = rh->findVideoDecoder(nodeId);
+    return d ? d->isPlaying() : false;
+}
+void SceneWallpaper::videoPlay(int32_t nodeId) {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return;
+    if (auto d = rh->findVideoDecoder(nodeId)) d->play();
+}
+void SceneWallpaper::videoPause(int32_t nodeId) {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return;
+    if (auto d = rh->findVideoDecoder(nodeId)) d->pause();
+}
+void SceneWallpaper::videoStop(int32_t nodeId) {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return;
+    if (auto d = rh->findVideoDecoder(nodeId)) d->stop();
+}
+void SceneWallpaper::videoSetCurrentTime(int32_t nodeId, double t) {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return;
+    if (auto d = rh->findVideoDecoder(nodeId)) d->setCurrentTimeSec(t);
+}
+void SceneWallpaper::videoSetRate(int32_t nodeId, double rate) {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return;
+    if (auto d = rh->findVideoDecoder(nodeId)) d->setRate(rate);
 }
 
 std::vector<SoundLayerControlInfo> SceneWallpaper::getSoundLayerControls() const {

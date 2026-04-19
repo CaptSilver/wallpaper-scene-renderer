@@ -33,6 +33,11 @@ public:
     void        AddMesh(std::shared_ptr<SceneMesh> mesh) { m_mesh = mesh; }
     void        AppendChild(std::shared_ptr<SceneNode> sub) {
                sub->m_parent = this;
+               // Track the scene-graph parent separately from the transform
+               // parent so visibility inheritance survives a later
+               // InheritParent(empty) call that disconnects transform chaining
+               // for per-image effect RTs (see WPSceneParser non-compose path).
+               sub->m_visibility_parent = this;
                m_children.push_back(sub);
     }
     Eigen::Matrix4d GetLocalTrans() const;
@@ -97,8 +102,14 @@ public:
 
     bool IsVisible() const {
         if (! m_visible) return false;
-        // Effect nodes inherit visibility from their owner (the image object node)
-        if (m_visibilityOwner && ! m_visibilityOwner->m_visible) return false;
+        // Effect nodes inherit visibility from their owner (the image object node).
+        // Owner is checked recursively so the owner's own parent chain propagates.
+        if (m_visibilityOwner && ! m_visibilityOwner->IsVisible()) return false;
+        // Scene-graph parent visibility inheritance: a hidden parent group
+        // hides all descendants (mirrors Wallpaper Engine behavior).  The
+        // post-processing script at scene root toggles parent-group m_visible
+        // to select between time-of-day layer sets; children must follow.
+        if (m_visibility_parent && ! m_visibility_parent->IsVisible()) return false;
         return true;
     }
     void SetVisible(bool v) { m_visible = v; }
@@ -114,6 +125,7 @@ private:
     bool        m_offscreen { false };
     bool        m_visible { true };
     SceneNode*  m_visibilityOwner { nullptr };
+    SceneNode*  m_visibility_parent { nullptr };
     std::string m_name;
 
     bool            m_dirty;

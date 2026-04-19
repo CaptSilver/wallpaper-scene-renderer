@@ -628,6 +628,59 @@ bool SceneObject::passDumpDone() const {
     return m_scene ? m_scene->passDumpDone() : false;
 }
 
+// Video texture bridge for thisLayer.getVideoTexture() — resolves a JS layer
+// name to a node id via m_nodeNameToId, then delegates to SceneWallpaper.
+// Returns safe defaults (0 / false / no-op) for unknown layers so scripts
+// never throw even when run against a layer with no video texture.
+double SceneObject::videoGetCurrentTime(const QString& layerName) const {
+    if (! m_scene) return 0.0;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return 0.0;
+    return m_scene->videoGetCurrentTime(it->second);
+}
+double SceneObject::videoGetDuration(const QString& layerName) const {
+    if (! m_scene) return 0.0;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return 0.0;
+    return m_scene->videoGetDuration(it->second);
+}
+bool SceneObject::videoIsPlaying(const QString& layerName) const {
+    if (! m_scene) return false;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return false;
+    return m_scene->videoIsPlaying(it->second);
+}
+void SceneObject::videoPlay(const QString& layerName) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->videoPlay(it->second);
+}
+void SceneObject::videoPause(const QString& layerName) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->videoPause(it->second);
+}
+void SceneObject::videoStop(const QString& layerName) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->videoStop(it->second);
+}
+void SceneObject::videoSetCurrentTime(const QString& layerName, double t) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->videoSetCurrentTime(it->second, t);
+}
+void SceneObject::videoSetRate(const QString& layerName, double rate) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->videoSetRate(it->second, rate);
+}
+
 // Helper: strip ES module syntax that QJSEngine doesn't support
 static void stripESModuleSyntax(QString& src) {
     // Normalize non-breaking spaces (U+00A0) to regular spaces — some WE scripts
@@ -714,7 +767,10 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     auto pos = event->localPos();
 #endif
     float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+    // Qt window Y is top-down; WE scene coords are Y-up (layer origins from
+    // scene.json grow upward from the bottom).  Flip so cursor tracking and
+    // AABB hit-testing both match layer origin convention.
+    float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
     // cursorDown: fire for ALL registered handlers regardless of hit-test.
     // WE treats cursorDown/cursorUp as game-control events — e.g. the built-in
@@ -771,7 +827,10 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     auto pos = event->localPos();
 #endif
     float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    float sceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+    // Qt window Y is top-down; WE scene coords are Y-up (layer origins from
+    // scene.json grow upward from the bottom).  Flip so cursor tracking and
+    // AABB hit-testing both match layer origin convention.
+    float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
     // cursorUp: mirror cursorDown — fire for all registered handlers
     // regardless of hit-test (game-control semantics).
@@ -796,9 +855,10 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
-    // Track cursor position for input.cursorWorldPosition in scripts
+    // Track cursor position for input.cursorWorldPosition in scripts.
+    // Qt Y is top-down; WE scene coords are Y-up — flip.
     m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    m_cursorSceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+    m_cursorSceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
     // cursorMove on drag target
     if (!m_dragTarget.empty() && m_jsEngine) {
@@ -826,9 +886,10 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
-    // Track cursor position for input.cursorWorldPosition in scripts
+    // Track cursor position for input.cursorWorldPosition in scripts.
+    // Qt Y is top-down; WE scene coords are Y-up — flip.
     m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    m_cursorSceneY = (float)(pos.y() / height()) * m_sceneOrthoH;
+    m_cursorSceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
     // Sample log — once per ~4s — to confirm hover events reach the scene.
     // If this line is missing entirely from journals, the MouseGrabber isn't
@@ -905,6 +966,13 @@ void SceneObject::setupTextScripts() {
         && soundLayerControls.empty()) return;
 
     m_jsEngine = new QJSEngine(this);
+
+    // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
+    // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
+    // to the QJSEngine which we own; newQObject wraps without taking ownership
+    // (QJSEngine::ObjectOwnership::CppOwnership by default for child QObjects).
+    m_jsEngine->globalObject().setProperty("__sceneBridge",
+                                           m_jsEngine->newQObject(this));
 
     // Provide a minimal 'engine' global with runtime and timeOfDay
     m_runtimeTimer.start();
@@ -1279,6 +1347,30 @@ void SceneObject::setupTextScripts() {
         "      isPlaying: function(){ return this.rate > 0; }\n"
         "    };\n"
         "  };\n"
+        // getVideoTexture(): returns IVideoTexture proxy bound to this layer.
+        // Methods delegate to SceneObject Q_INVOKABLEs via the __sceneBridge
+        // global.  Rate is cached JS-side (libmpv readback would race with
+        // writes issued the same tick).  Safe on layers with no video — the
+        // bridge returns 0/no-op defaults.
+        "  p.getVideoTexture = function() {\n"
+        "    var name = _s.name;\n"
+        "    var _rate = 1.0;\n"
+        "    var o = {\n"
+        "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },\n"
+        "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },\n"
+        "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
+        "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
+        "      pause: function(){ __sceneBridge.videoPause(name); },\n"
+        "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
+        "    };\n"
+        "    Object.defineProperty(o, 'duration', {\n"
+        "      get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true });\n"
+        "    Object.defineProperty(o, 'rate', {\n"
+        "      get: function(){ return _rate; },\n"
+        "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },\n"
+        "      enumerable:true });\n"
+        "    return o;\n"
+        "  };\n"
         // Animation layer stub: getAnimationLayer(index|name) returns an IAnimationLayer proxy.
         // Scripts control puppet animation layers (play, pause, rate, blend, frame).
         "  if (!_s._aniLayers) _s._aniLayers = {};\n"
@@ -1378,6 +1470,27 @@ void SceneObject::setupTextScripts() {
         "      play:function(){}, pause:function(){}, stop:function(){},\n"
         "      isPlaying:function(){return false;}\n"
         "    };\n"
+        "  };\n"
+        // Empty-layer proxy: getVideoTexture returns functional object bound to
+        // the layer name. Bridge returns 0/no-op for non-video layers.
+        "  p.getVideoTexture = function() {\n"
+        "    var name = _s.name;\n"
+        "    var _rate = 1.0;\n"
+        "    var o = {\n"
+        "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },\n"
+        "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },\n"
+        "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
+        "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
+        "      pause: function(){ __sceneBridge.videoPause(name); },\n"
+        "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
+        "    };\n"
+        "    Object.defineProperty(o, 'duration', {\n"
+        "      get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true });\n"
+        "    Object.defineProperty(o, 'rate', {\n"
+        "      get: function(){ return _rate; },\n"
+        "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },\n"
+        "      enumerable:true });\n"
+        "    return o;\n"
         "  };\n"
         "  p.getAnimationLayerCount = function(){ return 0; };\n"
         "  p.getAnimationLayer = function(idx){\n"
@@ -1680,6 +1793,29 @@ void SceneObject::setupTextScripts() {
                 "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
                 "      isPlaying: function(){ return this.rate > 0; }\n"
                 "    };\n"
+                "  };\n"
+                "  // Sound-layer proxy getVideoTexture: same functional shape as image\n"
+                "  // proxies — scripts that probe any layer type should get a usable\n"
+                "  // object rather than undefined.  Bridge returns 0/no-op when the\n"
+                "  // sound layer has no associated video (typical case).\n"
+                "  p.getVideoTexture = function() {\n"
+                "    var name = _s.name;\n"
+                "    var _rate = 1.0;\n"
+                "    var o = {\n"
+                "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },\n"
+                "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },\n"
+                "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
+                "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
+                "      pause: function(){ __sceneBridge.videoPause(name); },\n"
+                "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
+                "    };\n"
+                "    Object.defineProperty(o, 'duration', {\n"
+                "      get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true });\n"
+                "    Object.defineProperty(o, 'rate', {\n"
+                "      get: function(){ return _rate; },\n"
+                "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },\n"
+                "      enumerable:true });\n"
+                "    return o;\n"
                 "  };\n"
                 "  // Volume animation controller (getAnimation returns same interface as WE)\n"
                 "  if (!_s._animCtrl) _s._animCtrl = {};\n"

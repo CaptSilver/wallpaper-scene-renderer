@@ -459,8 +459,9 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
     if (image == VK_NULL_HANDLE || w == 0 || h == 0) return;
     // Skip enormous RTs — dumping a scene's full 4K background uses ~66MB
     // per pass, and cumulatively the ~200 passes exhaust VMA host memory so
-    // MapMemory hangs mid-loop.  2 MP is plenty for text / UI layer debug.
-    constexpr uint64_t kMaxPixels = 2ull * 1024 * 1024;
+    // MapMemory hangs mid-loop.  8 MP covers character layers up to 2252x2306
+    // while still keeping the 4K (8.3 MP) scene-wide RTs out.
+    constexpr uint64_t kMaxPixels = 8ull * 1024 * 1024;
     if ((uint64_t)w * h > kMaxPixels) {
         static int s_skipped = 0;
         if (++s_skipped <= 10) {

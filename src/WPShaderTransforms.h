@@ -800,9 +800,110 @@ inline std::string FixImplicitConversions(const std::string& src) {
             std::regex re(R"(\bfloat\s+(\w+)\s*=\s*)" + name + R"(\s*([*+\-/]))");
             result = std::regex_replace(result, re, "float $1 = " + name + ".x $2");
             // float VAR = EXPR * VEC_NAME;  →  float VAR = EXPR * VEC_NAME.x;
-            std::regex re2(R"(([*+\-/])\s*)" + name + R"(\s*;)");
-            result = std::regex_replace(result, re2, "$1 " + name + ".x;");
+            // Must scope to float-assignment context — otherwise this wrongly appends .x
+            // to vec uniforms at the tail of any statement (e.g. "vec2 x = a - u_Offset;"
+            // became "vec2 x = a - u_Offset.x;", introducing a type mismatch).
+            std::regex re2(
+                R"((\bfloat\s+\w+\s*=\s*[^;]*[*+\-/]\s*))" + name + R"((\s*;))");
+            result = std::regex_replace(result, re2, "$1" + name + ".x$2");
         }
+    }
+
+    // Fix: wider `in` varying arithmetically adjacent to a known narrower vec var.
+    // HLSL auto-truncates vec4→vec2 silently; GLSL errors on vec4 + vec2.
+    // Works everywhere (inside texture() calls, nested expressions, etc.) because
+    // the heuristic requires the narrower operand to be named and adjacent.
+    {
+        std::map<std::string, int> wider_varyings;
+        {
+            std::regex re_wide(R"(\bin\s+vec([34])\s+(\w+)\s*;)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_wide);
+                 it != std::sregex_iterator();
+                 ++it)
+                wider_varyings[(*it)[2].str()] = std::stoi((*it)[1].str());
+        }
+        auto collectByWidth = [&](int width) {
+            std::set<std::string> names;
+            std::regex re(std::string(R"(\b(?:uniform|in|varying)\s+vec)") +
+                          std::to_string(width) + R"(\s+(\w+)\s*;|\bvec)" +
+                          std::to_string(width) + R"(\s+(\w+)\s*[;=])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator();
+                 ++it) {
+                std::string n = (*it)[1].str();
+                if (n.empty()) n = (*it)[2].str();
+                if (! n.empty()) names.insert(std::move(n));
+            }
+            return names;
+        };
+        const auto vec2_names = collectByWidth(2);
+        const auto vec3_names = collectByWidth(3);
+
+        auto applyTrunc = [&](const std::string&           wname,
+                              const std::set<std::string>& narrowNames,
+                              const char*                  swizzle) {
+            for (const auto& nn : narrowNames) {
+                if (nn == wname) continue;
+                // W OP N (bare both sides)
+                std::regex re_a(R"(\b)" + wname + R"(\b(?![.\[(\w])(\s*[+\-*/]\s*))" + nn +
+                                R"(\b(?![.\[(\w]))");
+                result = std::regex_replace(result, re_a,
+                                             wname + "." + swizzle + "$1" + nn);
+                // N OP W
+                std::regex re_b(R"(\b)" + nn + R"(\b(?![.\[(\w])(\s*[+\-*/]\s*))" + wname +
+                                R"(\b(?![.\[(\w]))");
+                result = std::regex_replace(result, re_b,
+                                             nn + "$1" + wname + "." + swizzle);
+            }
+        };
+        for (const auto& [wname, wwidth] : wider_varyings) {
+            if (wwidth == 4) applyTrunc(wname, vec2_names, "xy");
+            applyTrunc(wname, vec3_names, "xyz");
+        }
+    }
+
+    // Fix: wider `in` varying used bare in a narrower vec2/vec3 assignment arithmetic.
+    // HLSL auto-truncates vec4→vec2 silently; GLSL errors with type mismatch.
+    // Scope the rewrite to `vec2 VAR = ...;` / `vec3 VAR = ...;` statements so we
+    // only truncate where the target type demands it.  Only rewrite when the bare
+    // varying is adjacent to an arithmetic operator (avoids breaking function-call
+    // args like `someFunc(v_TexCoord)` where the callee may want the full vec4).
+    {
+        std::map<std::string, int> varying_widths;
+        {
+            std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
+                 it != std::sregex_iterator();
+                 ++it)
+                varying_widths[(*it)[2].str()] = std::stoi((*it)[1].str());
+        }
+
+        auto processAssign = [&](const char* targetType, int targetWidth,
+                                 const char* targetSwizzle) {
+            std::regex re_stmt(std::string(R"(\b)") + targetType + R"(\s+\w+\s*=\s*[^;]*;)");
+            regexTransformAll(result, re_stmt, [&](const std::smatch& m) -> std::string {
+                std::string stmt = m[0].str();
+                size_t eq_pos = stmt.find('=');
+                if (eq_pos == std::string::npos) return stmt;
+                std::string lhs = stmt.substr(0, eq_pos + 1);
+                std::string rhs = stmt.substr(eq_pos + 1);
+                for (const auto& [vname, vwidth] : varying_widths) {
+                    if (vwidth <= targetWidth) continue;
+                    std::string rep = vname + "." + targetSwizzle;
+                    // VARYING followed by arithmetic op (bare — not already swizzled).
+                    std::regex re_after(
+                        R"(\b)" + vname + R"(\b(?![.\[(\w])(?=\s*[*+\-/]))");
+                    rhs = std::regex_replace(rhs, re_after, rep);
+                    // Arithmetic op followed by VARYING (bare).
+                    std::regex re_before(
+                        R"(([*+\-/]\s*))" + vname + R"(\b(?![.\[(\w]))");
+                    rhs = std::regex_replace(rhs, re_before, "$1" + rep);
+                }
+                return lhs + rhs;
+            });
+        };
+        processAssign("vec2", 2, "xy");
+        processAssign("vec3", 3, "xyz");
     }
 
     // Fix: "for (int VAR = -FLOAT_EXPR" → "for (int VAR = int(-FLOAT_EXPR)"

@@ -136,6 +136,19 @@ public:
     // cadence instead of wall-clock.
     double                             getSceneTime() const;
 
+    // Video texture control API for SceneScript thisLayer.getVideoTexture().
+    // All operations take the nodeId of the layer owning the video texture.
+    // Calls on unknown IDs are safe no-ops / return 0.
+    std::vector<int32_t> getVideoTextureNodeIds() const;
+    double               videoGetCurrentTime(int32_t nodeId) const;
+    double               videoGetDuration(int32_t nodeId) const;
+    bool                 videoIsPlaying(int32_t nodeId) const;
+    void                 videoPlay(int32_t nodeId);
+    void                 videoPause(int32_t nodeId);
+    void                 videoStop(int32_t nodeId);
+    void                 videoSetCurrentTime(int32_t nodeId, double t);
+    void                 videoSetRate(int32_t nodeId, double rate);
+
     // Sound layer control API for SceneScript play/stop/pause
     std::vector<SoundLayerControlInfo> getSoundLayerControls() const;
     void                               soundLayerPlay(int32_t index);

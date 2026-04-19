@@ -27,6 +27,14 @@ public:
     virtual void stop();
     bool isPlaying() const { return m_playing.load(); }
 
+    /// libmpv property queries. Return 0 / no-op when the decoder's mpv handle
+    /// isn't yet initialized or the property isn't available yet (pre-frame).
+    /// Thread-safe: libmpv property R/W is safe across threads.
+    double getCurrentTimeSec() const;
+    double getDurationSec() const;
+    void   setCurrentTimeSec(double t);
+    void   setRate(double r);
+
     /// Returns true if a new frame is available since last acquireFrame().
     virtual bool hasNewFrame();
 

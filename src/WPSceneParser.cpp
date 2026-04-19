@@ -1079,10 +1079,31 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     (void)hasPuppet;
 
     bool isCompose = (wpimgobj.image == "models/util/composelayer.json");
-    // skip no effect compose layer
-    // it's not the correct behaviour, but do it for now
+    // A no-effect compose layer still needs an output RT so dependent nodes can
+    // reference `_rt_imageLayerComposite_<id>_a` via their `dependencies` list
+    // and `textures` slots.  Synthesize an effectpassthrough so the compose
+    // layer runs its normal offscreen path and produces the expected RT.
     if (! hasEffect && isCompose) {
-        return;
+        wpscene::WPImageEffect passEffect;
+        wpscene::WPMaterial    passMat;
+        nlohmann::json         json;
+        if (PARSE_JSON(
+                fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"), json)) {
+            passMat.FromJson(json);
+            passMat.combos["BONECOUNT"] = 1;
+            passMat.blending            = "normal";
+            passEffect.materials.push_back(std::move(passMat));
+            wpimgobj.effects.push_back(std::move(passEffect));
+            count_eff = 1;
+            hasEffect = true;
+            LOG_INFO("  compose layer id=%d has no effect — synthesized effectpassthrough "
+                     "for dependent link RT",
+                     wpimgobj.id);
+        } else {
+            LOG_ERROR("compose layer id=%d: failed to load effectpassthrough.json",
+                     wpimgobj.id);
+            return;
+        }
     }
 
     std::unique_ptr<WPMdl> puppet;
@@ -1707,16 +1728,28 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Add to parent node if this object has a parent, otherwise to root scene graph
     if (wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id)) {
         context.node_map.at(wpimgobj.parent_id)->AppendChild(spImgNode);
-        // Offscreen nodes render into dedicated RTs with their own camera;
-        // clear parent so UpdateTrans() doesn't chain the group transform
-        // (the node stays in the parent's children list for traversal).
-        if (isOffscreen) {
+        // Disconnect parent-chain transform for nodes whose base pass uses a
+        // per-node effect camera at origin:
+        //   - Offscreen nodes render to dedicated RTs with the "effect" camera.
+        //   - Non-compose effect images render their base pass to pingpong_a
+        //     with a per-image ortho camera attached to effect_camera_node
+        //     (at origin).  Leaving the parent chain attached would place
+        //     the image's world position outside [-1,1] NDC (e.g. characters
+        //     positioned at scene center (1920,1080) when camera ortho is
+        //     sized to the image), clipping all geometry.  CopyTrans(identity)
+        //     earlier reset the local transform; clearing the parent here
+        //     completes the reset so ModelTrans = identity for this pass.
+        // Compose layers keep the parent chain — their base pass renders to
+        // the scene-sized compose RT via the scene ortho camera, so world
+        // position is correct there.
+        bool disconnect_parent = isOffscreen || (hasEffect && ! isCompose);
+        if (disconnect_parent) {
             spImgNode->InheritParent(SceneNode());
         }
         LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
                  wpimgobj.id,
                  wpimgobj.parent_id,
-                 (int)isOffscreen);
+                 (int)disconnect_parent);
     } else {
         context.scene->sceneGraph->AppendChild(spImgNode);
         LOG_INFO("  ParseImageObj id=%d completed, added to scene graph", wpimgobj.id);
@@ -3204,10 +3237,17 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // Sync layerInitialStates visibility with user property bindings.
     // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
     // causing the JS proxy to think the node is visible when it's actually hidden.
+    // Also apply the binding's default visibility directly on the node itself —
+    // otherwise m_visible stays at the ctor default (true) until the first
+    // applyUserPropertyChanges() (which only fires on user-driven changes).
+    // This matters for scene-graph visibility inheritance: a hidden parent
+    // group (e.g. 24088 "人物" bound to timevarying==0 while default==1)
+    // must actually have m_visible=false at frame 0 so children stop rendering.
     for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
         for (const auto& binding : bindings) {
             auto* node = binding.node;
             if (! node) continue;
+            node->SetVisible(binding.defaultVisible);
             for (auto& [layerName, lis] : context.scene->layerInitialStates) {
                 auto nameIt = context.scene->nodeNameToId.find(layerName);
                 if (nameIt != context.scene->nodeNameToId.end() &&

@@ -426,6 +426,126 @@ TEST_CASE("cursor position supports fractional scene coordinates") {
 
 
 // ------------------------------------------------------------------
+// getVideoTexture() proxy (JS side)
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript Video Texture") {
+
+// Mock __sceneBridge that tracks calls so tests can assert the JS proxy
+// delegates correctly without pulling libmpv into the test harness.
+struct VideoBridgeEnv {
+    QJSEngine engine;
+    VideoBridgeEnv() {
+        // Fake bridge: returns known numeric values, tracks last calls.
+        engine.evaluate(R"JS(
+            var __sceneBridge = {
+                _lastSet: null, _lastRate: null, _lastPlay: null,
+                _duration: 12.5, _curTime: 3.25, _playing: true,
+                videoGetCurrentTime: function(n){ this._lastGet = n; return this._curTime; },
+                videoGetDuration:    function(n){ return this._duration; },
+                videoIsPlaying:      function(n){ return this._playing; },
+                videoPlay:           function(n){ this._lastPlay = ['play', n]; },
+                videoPause:          function(n){ this._lastPlay = ['pause', n]; },
+                videoStop:           function(n){ this._lastPlay = ['stop', n]; },
+                videoSetCurrentTime: function(n, t){ this._lastSet = [n, t]; },
+                videoSetRate:        function(n, r){ this._lastRate = [n, r]; }
+            };
+        )JS");
+        // Minimal getVideoTexture matching the real proxy shape.
+        engine.evaluate(R"JS(
+            function makeVideo(name) {
+                var _rate = 1.0;
+                var o = {
+                    getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },
+                    setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },
+                    isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },
+                    play:  function(){ __sceneBridge.videoPlay(name); },
+                    pause: function(){ __sceneBridge.videoPause(name); },
+                    stop:  function(){ __sceneBridge.videoStop(name); }
+                };
+                Object.defineProperty(o, 'duration', {
+                    get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true });
+                Object.defineProperty(o, 'rate', {
+                    get: function(){ return _rate; },
+                    set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },
+                    enumerable:true });
+                return o;
+            }
+        )JS");
+    }
+};
+
+TEST_CASE("video.getCurrentTime() delegates to bridge") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    double t = env.engine.evaluate("v.getCurrentTime()").toNumber();
+    CHECK(t == doctest::Approx(3.25));
+    CHECK(env.engine.evaluate("__sceneBridge._lastGet").toString() == "layerA");
+}
+
+TEST_CASE("video.duration is a getter reading bridge") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    CHECK(env.engine.evaluate("v.duration").toNumber() == doctest::Approx(12.5));
+    // Mutating the underlying bridge value reflects in the getter (proves it's not cached).
+    env.engine.evaluate("__sceneBridge._duration = 42;");
+    CHECK(env.engine.evaluate("v.duration").toNumber() == doctest::Approx(42.0));
+}
+
+TEST_CASE("video.rate setter pushes to bridge and readback matches") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    env.engine.evaluate("v.rate = 2.5;");
+    CHECK(env.engine.evaluate("v.rate").toNumber() == doctest::Approx(2.5));
+    CHECK(env.engine.evaluate("__sceneBridge._lastRate[0]").toString() == "layerA");
+    CHECK(env.engine.evaluate("__sceneBridge._lastRate[1]").toNumber() == doctest::Approx(2.5));
+}
+
+TEST_CASE("video.rate falls back to 1.0 for invalid values") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    env.engine.evaluate("v.rate = 'not-a-number';");
+    CHECK(env.engine.evaluate("v.rate").toNumber() == doctest::Approx(1.0));
+}
+
+TEST_CASE("video.setCurrentTime coerces to number and forwards") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    env.engine.evaluate("v.setCurrentTime('4.5');");
+    CHECK(env.engine.evaluate("__sceneBridge._lastSet[0]").toString() == "layerA");
+    CHECK(env.engine.evaluate("__sceneBridge._lastSet[1]").toNumber() == doctest::Approx(4.5));
+}
+
+TEST_CASE("video.play/pause/stop dispatch with layer name") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerB');");
+    env.engine.evaluate("v.play();");
+    CHECK(env.engine.evaluate("__sceneBridge._lastPlay[0]").toString() == "play");
+    CHECK(env.engine.evaluate("__sceneBridge._lastPlay[1]").toString() == "layerB");
+    env.engine.evaluate("v.stop();");
+    CHECK(env.engine.evaluate("__sceneBridge._lastPlay[0]").toString() == "stop");
+}
+
+TEST_CASE("video.isPlaying returns bool from bridge") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var v = makeVideo('layerA');");
+    CHECK(env.engine.evaluate("v.isPlaying()").toBool() == true);
+    env.engine.evaluate("__sceneBridge._playing = false;");
+    CHECK(env.engine.evaluate("v.isPlaying()").toBool() == false);
+}
+
+TEST_CASE("getVideoTexture per-call produces fresh objects") {
+    VideoBridgeEnv env;
+    env.engine.evaluate("var a = makeVideo('l'); var b = makeVideo('l');");
+    // Mutating rate on one must not affect the other.
+    env.engine.evaluate("a.rate = 3.0;");
+    CHECK(env.engine.evaluate("a.rate").toNumber() == doctest::Approx(3.0));
+    CHECK(env.engine.evaluate("b.rate").toNumber() == doctest::Approx(1.0));
+}
+
+} // TEST_SUITE SceneScript Video Texture
+
+
+// ------------------------------------------------------------------
 // engine.userProperties population
 // ------------------------------------------------------------------
 TEST_SUITE("SceneScript engine.userProperties") {
