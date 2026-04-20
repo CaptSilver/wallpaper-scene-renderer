@@ -1,5 +1,6 @@
 #include "SceneBackend.hpp"
 #include "SceneCursorHitTest.h"
+#include "HoverLeaveDebounce.h"
 #include "SceneTimerBridge.h"
 
 #include <QJSValueIterator>
@@ -573,6 +574,45 @@ bool SceneObject::vulkanValid() const { return m_enable_valid; }
 void SceneObject::enableVulkanValid() { m_enable_valid = true; }
 void SceneObject::enableGenGraphviz() { SET_PROPERTY(Bool, wallpaper::PROPERTY_GRAPHIVZ, true); }
 
+// Build the CursorParallax arg for hitTestLayerProxy from the cached
+// scene-level config + the last-known widget-normalised cursor position.
+static CursorParallax buildCursorParallax(const SceneObject* obj,
+                                          float mouseNx, float mouseNy,
+                                          float orthoW, float orthoH,
+                                          bool enable, float amount,
+                                          float mouseInfluence,
+                                          float camX, float camY) {
+    (void)obj;
+    CursorParallax p;
+    p.enable         = enable;
+    p.amount         = amount;
+    p.mouseInfluence = mouseInfluence;
+    p.camX           = camX;
+    p.camY           = camY;
+    p.mouseNx        = mouseNx;
+    p.mouseNy        = mouseNy;
+    p.orthoW         = orthoW;
+    p.orthoH         = orthoH;
+    return p;
+}
+
+void SceneObject::refreshParallaxCache() {
+    if (!m_scene) return;
+    auto info = m_scene->getParallaxInfo();
+    m_parallaxCache.enable         = info.enable;
+    m_parallaxCache.amount         = info.amount;
+    m_parallaxCache.mouseInfluence = info.mouseInfluence;
+    m_parallaxCache.camX           = info.camX;
+    m_parallaxCache.camY           = info.camY;
+    // The hit-test uses each layer's effective parallaxDepth (already set
+    // to 0 by WPSceneParser for layers whose main-camera draw is a compose
+    // node that doesn't inherit parallax).  So even when the scene enables
+    // parallax globally, an un-shifted layer contributes no offset.
+    LOG_INFO("parallax: enable=%d amount=%.3f mouseInfluence=%.3f cam=(%.1f,%.1f)",
+             (int)info.enable, info.amount, info.mouseInfluence,
+             info.camX, info.camY);
+}
+
 void SceneObject::setAcceptMouse(bool value) {
     if (value)
         setAcceptedMouseButtons(Qt::LeftButton);
@@ -771,11 +811,13 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
 #else
     auto pos = event->localPos();
 #endif
-    float sceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
+    m_mouseNx = (float)(pos.x() / width());
+    m_mouseNy = (float)(pos.y() / height());
+    float sceneX = m_mouseNx * m_sceneOrthoW;
     // Qt window Y is top-down; WE scene coords are Y-up (layer origins from
     // scene.json grow upward from the bottom).  Flip so cursor tracking and
     // AABB hit-testing both match layer origin convention.
-    float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
+    float sceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
 
     // Hit-test to pick the target layer.  All four press-time cursor events
     // (cursorDown, cursorClick, cursorMove on drag, cursorUp) go to this
@@ -789,12 +831,17 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // fullscreen toggle-background like 2866203962 bg0), moveIdx → smallest
     // hit with moveFn.  downFn / upFn ride on the selected drag target,
     // which prefers moveIdx (drag scripts) and falls back to clickIdx.
+    CursorParallax para = buildCursorParallax(
+        this, m_mouseNx, m_mouseNy, m_sceneOrthoW, m_sceneOrthoH,
+        m_parallaxCache.enable, m_parallaxCache.amount,
+        m_parallaxCache.mouseInfluence,
+        m_parallaxCache.camX, m_parallaxCache.camY);
     QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
     int    clickIdx = -1, moveIdx = -1, downIdx = -1;
     double clickArea = 0.0, moveArea = 0.0, downArea = 0.0;
     for (int i = 0; i < (int)m_cursorTargets.size(); i++) {
         auto& target = m_cursorTargets[i];
-        if (!hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) continue;
+        if (!hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY, para)) continue;
         QJSValue state = target.thisLayerProxy.property("_state");
         QJSValue size  = state.property("size");
         QJSValue scale = state.property("scale");
@@ -853,9 +900,11 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
         auto& target = m_cursorTargets[clickIdx];
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
         QJSValue r = target.clickFn.call({ ev });
+        LOG_INFO("cursorClick fired on '%s'%s",
+                 target.layerName.c_str(),
+                 r.isError() ? " ERROR" : "");
         if (r.isError())
-            LOG_INFO("cursorClick error on '%s': %s",
-                     target.layerName.c_str(), qPrintable(r.toString()));
+            LOG_INFO("  cursorClick error: %s", qPrintable(r.toString()));
     }
     // Drag target: prefer the smallest-hit layer with moveFn, fall back to
     // downFn (so cursorUp lands on the same layer that saw cursorDown),
@@ -933,8 +982,10 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
 
     // Track cursor position for input.cursorWorldPosition in scripts.
     // Qt Y is top-down; WE scene coords are Y-up — flip.
-    m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    m_cursorSceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
+    m_mouseNx = (float)(pos.x() / width());
+    m_mouseNy = (float)(pos.y() / height());
+    m_cursorSceneX = m_mouseNx * m_sceneOrthoW;
+    m_cursorSceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
 
     // cursorMove on drag target.  The target is selected once on press via
     // hit-test; subsequent moves only reach that layer's moveFn (WE semantics
@@ -975,8 +1026,10 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 
     // Track cursor position for input.cursorWorldPosition in scripts.
     // Qt Y is top-down; WE scene coords are Y-up — flip.
-    m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
-    m_cursorSceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
+    m_mouseNx = (float)(pos.x() / width());
+    m_mouseNy = (float)(pos.y() / height());
+    m_cursorSceneX = m_mouseNx * m_sceneOrthoW;
+    m_cursorSceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
 
     // Sample log — once per ~4s — to confirm hover events reach the scene.
     // If this line is missing entirely from journals, the MouseGrabber isn't
@@ -994,44 +1047,92 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
     if (m_cursorTargets.empty() || !m_jsEngine) return;
     float sceneX = m_cursorSceneX;
     float sceneY = m_cursorSceneY;
+    CursorParallax para = buildCursorParallax(
+        this, m_mouseNx, m_mouseNy, m_sceneOrthoW, m_sceneOrthoH,
+        m_parallaxCache.enable, m_parallaxCache.amount,
+        m_parallaxCache.mouseInfluence,
+        m_parallaxCache.camX, m_parallaxCache.camY);
 
-    std::unordered_set<std::string> nowHovered;
+    // Hover-leave debounce: see HoverLeaveDebounce.h for the state machine.
+    // kHoverLeaveGraceMs is the grace window between the cursor leaving a
+    // layer and cursorLeave actually firing — long enough that
+    // proximity-driven UI (2866203962 music-player fade) stays visible
+    // when the user grazes the edge on their way to click a button.
+    constexpr int64_t kHoverLeaveGraceMs = 400;
+    qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+
+    // Build the set of layers the cursor is currently over.
+    std::unordered_set<std::string> currentHit;
     for (auto& target : m_cursorTargets) {
         if (!target.enterFn.isCallable() && !target.leaveFn.isCallable()) continue;
-        if (hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) {
-            nowHovered.insert(target.layerName);
-            // Enter: was not previously hovered
-            if (!m_hoveredLayers.count(target.layerName) && target.enterFn.isCallable()) {
-                LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)",
-                         target.layerName.c_str(), sceneX, sceneY);
+        if (hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY, para)) {
+            currentHit.insert(target.layerName);
+        }
+    }
+
+    auto result = processHoverFrame(m_hoveredLayers, currentHit,
+                                    m_pendingLeaves, nowMs, kHoverLeaveGraceMs);
+
+    // Fire cursorEnter on freshly entered layers.
+    for (const auto& name : result.toEnter) {
+        for (auto& target : m_cursorTargets) {
+            if (target.layerName != name || !target.enterFn.isCallable()) continue;
+            LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)",
+                     name.c_str(), sceneX, sceneY);
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+            QJSValue r = target.enterFn.call({ ev });
+            if (r.isError())
+                LOG_INFO("cursorEnter ERROR: %s",
+                         r.toString().toStdString().c_str());
+            break;
+        }
+    }
+    if (!result.toEnter.empty()) flushJsConsole(m_jsEngine, "cursorEnter");
+
+    bool stateChanged = (result.newHovered != m_hoveredLayers);
+    m_hoveredLayers   = std::move(result.newHovered);
+    if (stateChanged) flushJsConsole(m_jsEngine, "hover");
+
+    // Arm the debounce timer so expired leaves actually fire.
+    if (! m_pendingLeaves.empty()) {
+        if (! m_hoverLeaveTimer) {
+            m_hoverLeaveTimer = new QTimer(this);
+            m_hoverLeaveTimer->setSingleShot(true);
+            QObject::connect(m_hoverLeaveTimer, &QTimer::timeout,
+                             this, &SceneObject::flushPendingLeaves);
+        }
+        if (!m_hoverLeaveTimer->isActive()) {
+            int64_t next   = nextLeaveDeadlineMs(m_pendingLeaves);
+            int64_t remain = next > nowMs ? next - nowMs : 0;
+            m_hoverLeaveTimer->start((int)remain + 10);
+        }
+    }
+}
+
+void SceneObject::flushPendingLeaves() {
+    if (! m_jsEngine) return;
+    qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    auto toFire = drainExpiredLeaves(m_pendingLeaves, (int64_t)nowMs);
+    for (const auto& name : toFire) {
+        for (auto& target : m_cursorTargets) {
+            if (target.layerName != name) continue;
+            if (target.leaveFn.isCallable()) {
+                LOG_INFO("cursorLeave: layer '%s' (after grace)",
+                         target.layerName.c_str());
                 m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-                QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-                QJSValue result = target.enterFn.call({ ev });
-                if (result.isError()) {
-                    LOG_INFO("cursorEnter ERROR: %s",
-                             result.toString().toStdString().c_str());
-                }
-                flushJsConsole(m_jsEngine, "cursorEnter");
+                QJSValue ev = makeCursorEvent(m_jsEngine, m_cursorSceneX, m_cursorSceneY);
+                target.leaveFn.call({ ev });
             }
+            m_hoveredLayers.erase(name);
+            break;
         }
     }
-    // Leave: was hovered, now is not
-    for (const auto& name : m_hoveredLayers) {
-        if (!nowHovered.count(name)) {
-            for (auto& target : m_cursorTargets) {
-                if (target.layerName == name && target.leaveFn.isCallable()) {
-                    LOG_INFO("cursorLeave: layer '%s'", target.layerName.c_str());
-                    m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-                    QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-                    target.leaveFn.call({ ev });
-                    break;
-                }
-            }
-        }
-    }
-    if (nowHovered != m_hoveredLayers) {
-        m_hoveredLayers = std::move(nowHovered);
-        flushJsConsole(m_jsEngine, "hover");
+    if (! toFire.empty()) flushJsConsole(m_jsEngine, "hover-leave");
+    if (! m_pendingLeaves.empty() && m_hoverLeaveTimer) {
+        int64_t next   = nextLeaveDeadlineMs(m_pendingLeaves);
+        int64_t remain = next > nowMs ? next - nowMs : 0;
+        m_hoverLeaveTimer->start((int)remain + 10);
     }
 }
 
@@ -1368,11 +1469,13 @@ void SceneObject::setupTextScripts() {
         "    scale:  Vec3(init.s[0], init.s[1], init.s[2]),\n"
         "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
         "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
+        "    parallaxDepth: init.pd ? {x:init.pd[0], y:init.pd[1]} : {x:0, y:0},\n"
         "    visible: init.v, alpha: 1.0,\n"
         "    text: '', pointsize: init.ps || 0,\n"
         "    name: name, _dirty: {}, _cmds: []\n"
         "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
         "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
+        "        parallaxDepth: {x:0, y:0},\n"
         "        visible: true, alpha: 1.0,\n"
         "        text: '', pointsize: 0,\n"
         "        name: name, _dirty: {}, _cmds: [] };\n"
@@ -1878,9 +1981,35 @@ void SceneObject::setupTextScripts() {
                 "    set: function(v){ _s.volume = v; _s._dirty.volume = true; },\n"
                 "    enumerable: true\n"
                 "  });\n"
-                "  p.play = function(){ _s._cmds.push('play'); };\n"
-                "  p.stop = function(){ _s._cmds.push('stop'); };\n"
-                "  p.pause = function(){ _s._cmds.push('pause'); };\n"
+                // Update _soundPlayingStates synchronously on play/pause/stop
+                // so subsequent isPlaying() reads within the same tick are
+                // consistent.  C++ drains the _cmds queue AFTER the script
+                // pass, AND the stream state can take one more render tick
+                // to reflect the command, so without this shadow a
+                // wallpaper script that pauses and then reads isPlaying()
+                // would see stale "still playing" and act on it (on
+                // 2866203962 playerplay.origin.update's anyPlaying() uses
+                // the reading to side-effect playStatus=true, which
+                // triggers skip() when C++ finally reports paused).
+                //
+                // `_soundPlayingStatesDirty[name] = true` blocks the next
+                // C++ refresh from overwriting our shadow until C++
+                // actually matches the intended state.
+                "  p.play = function(){ _s._cmds.push('play');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = true;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
+                "  p.stop = function(){ _s._cmds.push('stop');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = false;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
+                "  p.pause = function(){ _s._cmds.push('pause');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = false;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
                 "  p.isPlaying = function(){\n"
                 "    return !!(engine._soundPlayingStates && engine._soundPlayingStates[name]);\n"
                 "  };\n"
@@ -2174,7 +2303,26 @@ void SceneObject::setupTextScripts() {
                 "    if (n) {\n"
                 "      if (n in _storedProps) {\n"
                 "        var sp = _storedProps[n];\n"
-                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "        // WE scene.json lets a scriptProperty bind to a\n"
+                "        // user property via `user: '<name>'`.  Resolve from\n"
+                "        // engine.userProperties first, fall back to the\n"
+                "        // stored `value`, then the script's own default.\n"
+                "        // Wallpaper 2866203962's Player Options binds\n"
+                "        // `enableplayer` to user prop `ui` with fallback\n"
+                "        // `false`; without the user-resolve step the UI\n"
+                "        // always faded because shared.enablePlayer=false.\n"
+                "        if (typeof sp === 'object' && sp !== null) {\n"
+                "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
+                "              engine.userProperties && sp.user in engine.userProperties) {\n"
+                "            b[n] = engine.userProperties[sp.user];\n"
+                "          } else if ('value' in sp) {\n"
+                "            b[n] = sp.value;\n"
+                "          } else {\n"
+                "            b[n] = def.value;\n"
+                "          }\n"
+                "        } else {\n"
+                "          b[n] = sp;\n"
+                "        }\n"
                 "      } else { b[n] = def.value; }\n"
                 "    }\n"
                 "    return b;\n"
@@ -2257,7 +2405,26 @@ void SceneObject::setupTextScripts() {
                 "    if (n) {\n"
                 "      if (n in _storedProps) {\n"
                 "        var sp = _storedProps[n];\n"
-                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "        // WE scene.json lets a scriptProperty bind to a\n"
+                "        // user property via `user: '<name>'`.  Resolve from\n"
+                "        // engine.userProperties first, fall back to the\n"
+                "        // stored `value`, then the script's own default.\n"
+                "        // Wallpaper 2866203962's Player Options binds\n"
+                "        // `enableplayer` to user prop `ui` with fallback\n"
+                "        // `false`; without the user-resolve step the UI\n"
+                "        // always faded because shared.enablePlayer=false.\n"
+                "        if (typeof sp === 'object' && sp !== null) {\n"
+                "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
+                "              engine.userProperties && sp.user in engine.userProperties) {\n"
+                "            b[n] = engine.userProperties[sp.user];\n"
+                "          } else if ('value' in sp) {\n"
+                "            b[n] = sp.value;\n"
+                "          } else {\n"
+                "            b[n] = def.value;\n"
+                "          }\n"
+                "        } else {\n"
+                "          b[n] = sp;\n"
+                "        }\n"
                 "      } else { b[n] = def.value; }\n"
                 "    }\n"
                 "    return b;\n"
@@ -2536,9 +2703,12 @@ void SceneObject::setupTextScripts() {
                 double sh = st.property("size").property("y").toNumber();
                 double sx = st.property("scale").property("x").toNumber();
                 double sy = st.property("scale").property("y").toNumber();
+                double pdx = st.property("parallaxDepth").property("x").toNumber();
+                double pdy = st.property("parallaxDepth").property("y").toNumber();
                 LOG_INFO("  cursor[%zu] '%s': origin=(%.1f,%.1f) size=%.0fx%.0f "
-                         "scale=(%.3f,%.3f) handlers=%s%s%s%s%s%s",
+                         "scale=(%.3f,%.3f) parallax=(%.2f,%.2f) handlers=%s%s%s%s%s%s",
                          i, t.layerName.c_str(), ox, oy, sw, sh, sx, sy,
+                         pdx, pdy,
                          t.clickFn.isCallable() ? "click " : "",
                          t.downFn.isCallable()  ? "down "  : "",
                          t.upFn.isCallable()    ? "up "    : "",
@@ -2555,6 +2725,7 @@ void SceneObject::setupTextScripts() {
         m_sceneOrthoW = (float)orthoSize[0];
         m_sceneOrthoH = (float)orthoSize[1];
     }
+    refreshParallaxCache();
 
     // Load sound volume scripts
     auto soundVolumeScripts = m_scene->getSoundVolumeScripts();
@@ -2587,7 +2758,26 @@ void SceneObject::setupTextScripts() {
                 "    if (n) {\n"
                 "      if (n in _storedProps) {\n"
                 "        var sp = _storedProps[n];\n"
-                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' in sp) ? sp.value : sp;\n"
+                "        // WE scene.json lets a scriptProperty bind to a\n"
+                "        // user property via `user: '<name>'`.  Resolve from\n"
+                "        // engine.userProperties first, fall back to the\n"
+                "        // stored `value`, then the script's own default.\n"
+                "        // Wallpaper 2866203962's Player Options binds\n"
+                "        // `enableplayer` to user prop `ui` with fallback\n"
+                "        // `false`; without the user-resolve step the UI\n"
+                "        // always faded because shared.enablePlayer=false.\n"
+                "        if (typeof sp === 'object' && sp !== null) {\n"
+                "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
+                "              engine.userProperties && sp.user in engine.userProperties) {\n"
+                "            b[n] = engine.userProperties[sp.user];\n"
+                "          } else if ('value' in sp) {\n"
+                "            b[n] = sp.value;\n"
+                "          } else {\n"
+                "            b[n] = def.value;\n"
+                "          }\n"
+                "        } else {\n"
+                "          b[n] = sp;\n"
+                "        }\n"
                 "      } else { b[n] = def.value; }\n"
                 "    }\n"
                 "    return b;\n"
@@ -2991,7 +3181,13 @@ void SceneObject::evaluatePropertyScripts() {
     // Refresh audio buffers in case property scripts use audio data
     refreshAudioBuffers();
 
-    // Update sound layer isPlaying states from C++ before script evaluation
+    // Update sound layer isPlaying states from C++ before script evaluation.
+    // Layers that had a JS command this tick (play/pause/stop) are marked
+    // "dirty" in _soundPlayingStatesDirty; the shadow value already reflects
+    // the commanded intent, so we DON'T overwrite them from C++ until C++
+    // actually matches (stream transitioning can take a frame or two —
+    // meanwhile anyPlaying()-style polling would see stale "still playing"
+    // and misbehave).  Clear the dirty flag once the two agree.
     if (!m_soundLayerStates.empty()) {
         QJSValue engineObj2 = m_jsEngine->globalObject().property("engine");
         QJSValue playingStates = engineObj2.property("_soundPlayingStates");
@@ -2999,10 +3195,26 @@ void SceneObject::evaluatePropertyScripts() {
             playingStates = m_jsEngine->newObject();
             engineObj2.setProperty("_soundPlayingStates", playingStates);
         }
+        QJSValue dirtyMap = engineObj2.property("_soundPlayingStatesDirty");
+        if (dirtyMap.isUndefined()) {
+            dirtyMap = m_jsEngine->newObject();
+            engineObj2.setProperty("_soundPlayingStatesDirty", dirtyMap);
+        }
         for (const auto& sls : m_soundLayerStates) {
-            bool playing = m_scene->soundLayerIsPlaying(sls.index);
-            playingStates.setProperty(
-                QString::fromStdString(sls.name), playing);
+            QString nameKey = QString::fromStdString(sls.name);
+            bool cppPlaying = m_scene->soundLayerIsPlaying(sls.index);
+            bool jsDirty    = dirtyMap.property(nameKey).toBool();
+            if (jsDirty) {
+                bool shadow = playingStates.property(nameKey).toBool();
+                if (shadow == cppPlaying) {
+                    // C++ has caught up to the commanded state — clear dirty,
+                    // resume tracking C++ from next tick onward.
+                    dirtyMap.setProperty(nameKey, QJSValue(false));
+                }
+                // else: leave shadow alone, wait for C++ to catch up.
+            } else {
+                playingStates.setProperty(nameKey, cppPlaying);
+            }
         }
     }
 
@@ -3259,10 +3471,13 @@ void SceneObject::evaluatePropertyScripts() {
             for (int c = 0; c < cmdCount; c++) {
                 QString cmd = cmds.property(c).toString();
                 if (cmd == "play") {
+                    LOG_INFO("soundLayer.play '%s' idx=%d", name.c_str(), idx);
                     m_scene->soundLayerPlay(idx);
                 } else if (cmd == "stop") {
+                    LOG_INFO("soundLayer.stop '%s' idx=%d", name.c_str(), idx);
                     m_scene->soundLayerStop(idx);
                 } else if (cmd == "pause") {
+                    LOG_INFO("soundLayer.pause '%s' idx=%d", name.c_str(), idx);
                     m_scene->soundLayerPause(idx);
                 } else if (cmd.startsWith("anim_")) {
                     // Animation control: anim_play:name, anim_pause:name, anim_stop:name
@@ -3467,7 +3682,9 @@ void SceneObject::evaluatePropertyScripts() {
                                     "p3x", "p3y", "p3z", "p6x", "p6y",
                                     "musicse", "musicvolume",
                                     "volume", "songplays", "uiopacity",
-                                    "playOnStart", "progress"}) {
+                                    "playOnStart", "progress",
+                                    // 2866203962 player UI visibility drivers
+                                    "playerproximity", "enablePlayer"}) {
                 QJSValue v = sharedObj.property(key);
                 if (!v.isUndefined()) {
                     dump += QString("%1=%2 ").arg(key).arg(v.toNumber(), 0, 'f', 4);

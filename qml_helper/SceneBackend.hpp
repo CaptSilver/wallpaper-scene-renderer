@@ -8,9 +8,11 @@
 #include <QtGui/QHoverEvent>
 #include <QtQml/QJSEngine>
 #include <QtQml/QJSValue>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "HoverLeaveDebounce.h"
 #include "SceneWallpaper.hpp"
 
 Q_DECLARE_LOGGING_CATEGORY(wekdeScene)
@@ -282,10 +284,35 @@ private:
     std::vector<CursorTarget>      m_cursorTargets;
     std::unordered_set<std::string> m_hoveredLayers;   // layers cursor is over
     std::string                    m_dragTarget;       // layer being dragged
+
+    // Hover-leave debounce: when the cursor briefly leaves a layer we delay
+    // firing cursorLeave by a short window; if the cursor re-enters within
+    // the window, the pending leave is cancelled.  This is what lets the
+    // user graze the edge of the music-player hover zone on wallpaper
+    // 2866203962 without the UI fading out before they can click a button.
+    // State machine lives in qml_helper/HoverLeaveDebounce.h (pure, unit-tested).
+    std::unordered_map<std::string, PendingLeave> m_pendingLeaves;
+    QTimer* m_hoverLeaveTimer { nullptr };
+    void flushPendingLeaves(); // fires cursorLeave for layers past their deadline
     float m_sceneOrthoW {1920.0f};
     float m_sceneOrthoH {1080.0f};
     float m_cursorSceneX {0.0f};   // scene-space cursor X, updated on hover/drag
     float m_cursorSceneY {0.0f};   // scene-space cursor Y, updated on hover/drag
+    float m_mouseNx {0.5f};        // widget-normalized cursor X (0..1)
+    float m_mouseNy {0.5f};        // widget-normalized cursor Y (0..1, top-down)
+
+    // Camera-parallax config, cached from SceneWallpaper::getParallaxInfo()
+    // at load time + refreshed with live mouse coords on every hit-test
+    // so hitTestLayerProxy can mirror the shader MVP offset.
+    struct CursorParallaxCache {
+        bool  enable { false };
+        float amount { 0.5f };
+        float mouseInfluence { 0.1f };
+        float camX { 0.0f };
+        float camY { 0.0f };
+    };
+    CursorParallaxCache m_parallaxCache {};
+    void refreshParallaxCache();
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

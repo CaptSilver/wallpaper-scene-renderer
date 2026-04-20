@@ -183,6 +183,10 @@ public:
         std::array<float, 3> scale { 1, 1, 1 };
         std::array<float, 3> angles { 0, 0, 0 };
         std::array<float, 2> size { 0, 0 }; // layer pixel dimensions for hit testing
+        // Per-layer parallax depth (default 0 = no parallax).  Cursor hit-
+        // testing mirrors WPShaderValueUpdater's MVP adjustment so clicks
+        // land where the parallax-shifted layer is actually rendered.
+        std::array<float, 2> parallaxDepth { 0, 0 };
         bool                 visible { true };
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;

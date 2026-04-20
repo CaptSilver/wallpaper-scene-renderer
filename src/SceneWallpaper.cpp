@@ -194,6 +194,25 @@ public:
         return { 1920, 1080 };
     }
 
+    SceneWallpaper::ParallaxInfo getParallaxInfo() const {
+        SceneWallpaper::ParallaxInfo info;
+        auto scene = m_scene;
+        if (! scene) return info;
+        auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
+        if (updater) {
+            const auto& p = updater->GetCameraParallax();
+            info.enable         = p.enable;
+            info.amount         = p.amount;
+            info.mouseInfluence = p.mouseinfluence;
+        }
+        if (scene->activeCamera) {
+            auto pos = scene->activeCamera->GetPosition();
+            info.camX = (float)pos.x();
+            info.camY = (float)pos.y();
+        }
+        return info;
+    }
+
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
     std::vector<AnimationEventInfo> drainAnimationEvents() {
@@ -351,39 +370,39 @@ public:
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        auto key    = std::make_pair(id, property);
-        auto prev   = m_pending_transform_updates.find(key);
-        bool jumped = (prev == m_pending_transform_updates.end()) ||
+        auto key = std::make_pair(id, property);
+        m_pending_transform_updates[key] = { x, y, z };
+        static int s_transform_log = 0;
+        // Keep a long-lived "last logged" map so [jump] reflects real deltas;
+        // the pending map clears every frame, which would otherwise mark
+        // every first-of-frame write as a jump.
+        static std::map<std::pair<i32, std::string>, std::array<float, 3>>
+            s_last_logged_transform;
+        auto prev = s_last_logged_transform.find(key);
+        bool jumped = (prev == s_last_logged_transform.end()) ||
                       (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
                        std::abs(prev->second[2] - z)) > 50.0f;
-        m_pending_transform_updates[key] = { x, y, z };
-        static int s_transform_log                    = 0;
-        // Log the first handful for sanity, then every large jump (drag /
-        // teleport) — cheaper than a periodic multiple-of-1000 throttle and
-        // catches the payload we actually want to see.
         if (++s_transform_log <= 5 || jumped) {
             LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
-                     s_transform_log,
-                     id,
-                     property.c_str(),
-                     x,
-                     y,
-                     z,
+                     s_transform_log, id, property.c_str(), x, y, z,
                      jumped ? " [jump]" : "");
+            s_last_logged_transform[key] = { x, y, z };
         }
     }
 
     void setNodeVisible(i32 id, bool visible) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        auto prev   = m_pending_visible_updates.find(id);
-        bool jumped = prev == m_pending_visible_updates.end() ||
-                      prev->second != visible;
         m_pending_visible_updates[id] = visible;
-        static int s_visible_log      = 0;
+        static int s_visible_log = 0;
+        static std::unordered_map<i32, bool> s_last_logged_visible;
+        auto prev = s_last_logged_visible.find(id);
+        bool jumped = prev == s_last_logged_visible.end() ||
+                      prev->second != visible;
         if (++s_visible_log <= 5 || jumped) {
             LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
                      s_visible_log, id, (int)visible,
                      jumped ? " [jump]" : "");
+            s_last_logged_visible[id] = visible;
         }
     }
 
@@ -394,17 +413,20 @@ public:
 
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        auto prev   = m_pending_alpha_updates.find(id);
-        bool jumped = prev == m_pending_alpha_updates.end() ||
-                      std::abs(prev->second - alpha) > 0.3f;
         m_pending_alpha_updates[id] = alpha;
-        static int s_alpha_log      = 0;
-        // TEMP: trace id=441 (playervolumepercentage) to debug stuck "100%".
-        bool trace441 = (id == 441);
-        if (++s_alpha_log <= 5 || jumped || trace441) {
+        static int s_alpha_log = 0;
+        // Track the last *logged* value separately from the pending map
+        // (which gets cleared each render frame) so [jump] detects real
+        // deltas instead of firing on every first-of-frame write.
+        static std::unordered_map<i32, float> s_last_logged_alpha;
+        auto   prev   = s_last_logged_alpha.find(id);
+        bool   jumped = prev == s_last_logged_alpha.end() ||
+                        std::abs(prev->second - alpha) > 0.3f;
+        if (++s_alpha_log <= 5 || jumped) {
             LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
                      s_alpha_log, id, alpha,
                      jumped ? " [jump]" : "");
+            s_last_logged_alpha[id] = alpha;
         }
     }
 
@@ -1349,6 +1371,10 @@ std::array<int32_t, 2> SceneWallpaper::getOrthoSize() const {
     return m_main_handler->getOrthoSize();
 }
 
+SceneWallpaper::ParallaxInfo SceneWallpaper::getParallaxInfo() const {
+    return m_main_handler->getParallaxInfo();
+}
+
 void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property, float x, float y,
                                          float z) {
     m_main_handler->renderHandler()->setNodeTransform(id, property, x, y, z);
@@ -2066,7 +2092,8 @@ void MainHandler::loadScene() {
                 { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
                 { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
                 { "v", lis.visible },
-                { "sz", { lis.size[0], lis.size[1] } } };
+                { "sz", { lis.size[0], lis.size[1] } },
+                { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } } };
             // Include effect names for SceneScript getEffect()
             auto eit = scene->layerEffectNames.find(name);
             if (eit != scene->layerEffectNames.end()) {

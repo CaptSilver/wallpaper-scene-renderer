@@ -3045,6 +3045,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         std::array<float, 3> scale;
         std::array<float, 3> angles;
         std::array<float, 2> size;
+        std::array<float, 2> parallaxDepth;
         bool                 visible;
     };
     std::unordered_map<std::string, ObjInitState> nameToObjState;
@@ -3052,8 +3053,17 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         std::visit(visitor::overload {
                        [&context, &nameToObjState](wpscene::WPImageObject& obj) {
                            if (! obj.name.empty()) {
+                               // Parallax applies visually to layers with
+                               // their authored `parallaxDepth` — confirmed
+                               // empirically on wallpaper 2866203962 where
+                               // the play button is rendered at the
+                               // parallax-shifted position even though it
+                               // has an effect chain.  Forward the author's
+                               // depth straight through so the cursor
+                               // hit-test shifts with the rendered visual.
                                nameToObjState[obj.name] = {
-                                   obj.origin, obj.scale, obj.angles, obj.size, obj.visible
+                                   obj.origin, obj.scale, obj.angles, obj.size,
+                                   obj.parallaxDepth, obj.visible
                                };
                            }
                            ParseImageObj(context, obj);
@@ -3068,6 +3078,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                                nameToObjState[obj.name] = {
                                    obj.origin, obj.scale, obj.angles,
                                    std::array<float, 2> { 0.0f, 0.0f },
+                                   obj.parallaxDepth,
                                    obj.visible
                                };
                            }
@@ -3126,7 +3137,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                            if (! obj.name.empty()) {
                                nameToObjState[obj.name] = {
                                    obj.origin, obj.scale, obj.angles,
-                                   obj.size, obj.visible
+                                   obj.size,
+                                   std::array<float, 2> { 0.0f, 0.0f },
+                                   obj.visible
                                };
                            }
                            ParseTextObj(context, obj);
@@ -3154,11 +3167,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 // Prefer WPImageObject values (node transforms may be reset by effect chains)
                 auto objIt = nameToObjState.find(name);
                 if (objIt != nameToObjState.end()) {
-                    lis.origin  = objIt->second.origin;
-                    lis.scale   = objIt->second.scale;
-                    lis.angles  = objIt->second.angles;
-                    lis.size    = objIt->second.size;
-                    lis.visible = objIt->second.visible;
+                    lis.origin        = objIt->second.origin;
+                    lis.scale         = objIt->second.scale;
+                    lis.angles        = objIt->second.angles;
+                    lis.size          = objIt->second.size;
+                    lis.parallaxDepth = objIt->second.parallaxDepth;
+                    lis.visible       = objIt->second.visible;
                 } else {
                     auto* node  = node_it->second.get();
                     lis.origin  = { node->Translate().x(),
@@ -3244,11 +3258,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         context.scene->nodeById[poolId]      = nodeIt->second.get();
         context.scene->nodeNameToId[poolName] = poolId;
         Scene::LayerInitialState lis;
-        lis.origin  = stateIt->second.origin;
-        lis.scale   = stateIt->second.scale;
-        lis.angles  = stateIt->second.angles;
-        lis.size    = stateIt->second.size;
-        lis.visible = stateIt->second.visible;
+        lis.origin        = stateIt->second.origin;
+        lis.scale         = stateIt->second.scale;
+        lis.angles        = stateIt->second.angles;
+        lis.size          = stateIt->second.size;
+        lis.parallaxDepth = stateIt->second.parallaxDepth;
+        lis.visible       = stateIt->second.visible;
         context.scene->layerInitialStates[poolName] = lis;
     }
 

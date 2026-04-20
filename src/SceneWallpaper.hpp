@@ -124,6 +124,17 @@ public:
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
     std::string                              getLayerInitialStatesJson() const;
     std::array<int32_t, 2>                   getOrthoSize() const;
+    // Camera-parallax config (enable / amount / mouse-influence) + camera
+    // position in scene units.  Exposed so cursor hit-testing can mirror the
+    // MVP parallax offset WPShaderValueUpdater applies to rendered quads.
+    struct ParallaxInfo {
+        bool  enable { false };
+        float amount { 0.5f };
+        float mouseInfluence { 0.1f };
+        float camX { 0.0f };
+        float camY { 0.0f };
+    };
+    ParallaxInfo                             getParallaxInfo() const;
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);

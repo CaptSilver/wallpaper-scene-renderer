@@ -6,8 +6,16 @@
 #include "SceneTimerBridge.h"
 #include "SceneCursorHitTest.h"
 
+#include "HoverLeaveDebounce.h"
+
 using scenebackend::SceneTimerBridge;
 using scenebackend::hitTestLayerProxy;
+using scenebackend::CursorParallax;
+using scenebackend::PendingLeave;
+using scenebackend::HoverFrameResult;
+using scenebackend::processHoverFrame;
+using scenebackend::drainExpiredLeaves;
+using scenebackend::nextLeaveDeadlineMs;
 
 // Spin the Qt event loop for a given number of milliseconds.
 // This lets QTimers fire within doctest test cases.
@@ -1278,9 +1286,24 @@ static const char* JS_SOUND_INFRA =
     "    set: function(v){ _s.volume = v; _s._dirty.volume = true; },\n"
     "    enumerable: true\n"
     "  });\n"
-    "  p.play = function(){ _s._cmds.push('play'); };\n"
-    "  p.stop = function(){ _s._cmds.push('stop'); };\n"
-    "  p.pause = function(){ _s._cmds.push('pause'); };\n"
+    // Mirror production proxy: play/pause/stop update the shadow and
+    // mark dirty so the C++ refresh doesn't clobber the intended state
+    // while the render thread is still transitioning the stream.
+    "  p.play = function(){ _s._cmds.push('play');\n"
+    "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+    "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+    "    engine._soundPlayingStates[name] = true;\n"
+    "    engine._soundPlayingStatesDirty[name] = true; };\n"
+    "  p.stop = function(){ _s._cmds.push('stop');\n"
+    "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+    "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+    "    engine._soundPlayingStates[name] = false;\n"
+    "    engine._soundPlayingStatesDirty[name] = true; };\n"
+    "  p.pause = function(){ _s._cmds.push('pause');\n"
+    "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+    "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+    "    engine._soundPlayingStates[name] = false;\n"
+    "    engine._soundPlayingStatesDirty[name] = true; };\n"
     "  p.isPlaying = function(){\n"
     "    return !!(engine._soundPlayingStates && engine._soundPlayingStates[name]);\n"
     "  };\n"
@@ -3143,6 +3166,72 @@ TEST_CASE("isPlaying reads engine state") {
     CHECK(env.engine.evaluate("thisScene.getLayer('music.mp3').isPlaying()").toBool());
 }
 
+TEST_CASE("play/pause update the isPlaying shadow synchronously") {
+    // Regression for wallpaper 2866203962: calling pause() must flip
+    // isPlaying() to false on the very next read, so scripts that do
+    // `pause(); ... if (anyPlaying()) ...` on the same tick see the
+    // correct state.  Previously the shadow only updated on the next
+    // C++ refresh (a whole tick later), so the wallpaper's
+    // anyPlaying() side-effect kept resurrecting playStatus=true.
+    ScriptEnv env;
+    env.engine.evaluate("var sl = thisScene.getLayer('music.mp3');\n"
+                        "sl.play();");
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == true);
+    env.engine.evaluate("sl.pause();");
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == false);
+    env.engine.evaluate("sl.play();");
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == true);
+    env.engine.evaluate("sl.stop();");
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == false);
+}
+
+TEST_CASE("play/pause mark the layer dirty so C++ refresh doesn't clobber") {
+    ScriptEnv env;
+    env.engine.evaluate("thisScene.getLayer('music.mp3').play();");
+    CHECK(env.engine.evaluate("engine._soundPlayingStatesDirty['music.mp3']").toBool() == true);
+    env.engine.evaluate("thisScene.getLayer('music.mp3').pause();");
+    // Still dirty — the command intent hasn't been confirmed by C++ yet.
+    CHECK(env.engine.evaluate("engine._soundPlayingStatesDirty['music.mp3']").toBool() == true);
+}
+
+TEST_CASE("refresh respects the dirty flag and clears once C++ agrees") {
+    // This mirrors what SceneBackend does each tick BEFORE script eval:
+    //   for each layer:
+    //     if dirty:
+    //       if shadow == cppPlaying: clear dirty (C++ caught up)
+    //       else: leave shadow alone
+    //     else: shadow = cppPlaying (trust C++)
+    ScriptEnv env;
+    env.engine.evaluate("var sl = thisScene.getLayer('music.mp3');\n"
+                        "sl.pause();\n"  // shadow=false, dirty=true
+    );
+    // Simulate C++ refresh where the stream is still Playing (not yet paused).
+    auto refresh = [&](bool cppPlaying) {
+        env.engine.evaluate(QString(
+            "(function(cppPlaying){\n"
+            "  var name = 'music.mp3';\n"
+            "  var dirty = engine._soundPlayingStatesDirty[name];\n"
+            "  if (dirty) {\n"
+            "    if (engine._soundPlayingStates[name] === cppPlaying) {\n"
+            "      engine._soundPlayingStatesDirty[name] = false;\n"
+            "    }\n"
+            "  } else { engine._soundPlayingStates[name] = cppPlaying; }\n"
+            "})(%1);\n").arg(cppPlaying ? "true" : "false"));
+    };
+    // First refresh: C++ still reports Playing (stale).  Shadow stays false.
+    refresh(true);
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == false);
+    CHECK(env.engine.evaluate("engine._soundPlayingStatesDirty['music.mp3']").toBool() == true);
+    // Render thread catches up — C++ now reports Paused (false).  Dirty clears.
+    refresh(false);
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == false);
+    CHECK(env.engine.evaluate("engine._soundPlayingStatesDirty['music.mp3']").toBool() == false);
+    // Natural state change: track actually starts playing (e.g. external).
+    // Shadow is not dirty — refresh is trusted.
+    refresh(true);
+    CHECK(env.engine.evaluate("sl.isPlaying()").toBool() == true);
+}
+
 TEST_CASE("image layer properties are no-ops") {
     ScriptEnv env;
     env.engine.evaluate(
@@ -3449,6 +3538,90 @@ TEST_CASE("scriptProperties override in IIFE context") {
         "  return { update: exports.update };\n"
         "})();\n");
     CHECK(env.engine.evaluate("result.update(0)").toInt() == 99);
+}
+
+TEST_CASE("scriptProperties `user` binding resolves from engine.userProperties") {
+    // Wallpaper 2866203962's Player Options declares
+    // `scriptproperties: {enableplayer: {user: 'ui', value: false}}` — meaning
+    // scriptProperties.enableplayer should read from engine.userProperties.ui
+    // at runtime, NOT from the fallback `value: false`.  Without this
+    // resolution the UI fade script saw shared.enablePlayer=false forever
+    // and the player never came back on hover.  Mirrors the production
+    // createScriptProperties shadow defined in SceneBackend.cpp for property
+    // scripts.
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var engine = { userProperties: { ui: true, music: false } };\n"
+        "var result = (function() {\n"
+        "  'use strict';\n"
+        "  var _storedProps = {\n"
+        "    enableplayer: { user: 'ui', value: false },\n"
+        "    musicOn:      { user: 'music', value: true },\n"
+        "    unboundProp:  { value: 'stored-literal' }\n"
+        "  };\n"
+        "  function createScriptProperties() {\n"
+        "    var b = {};\n"
+        "    function ap(def) {\n"
+        "      var n = def.name;\n"
+        "      if (n in _storedProps) {\n"
+        "        var sp = _storedProps[n];\n"
+        "        if (typeof sp === 'object' && sp !== null) {\n"
+        "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
+        "              engine.userProperties && sp.user in engine.userProperties) {\n"
+        "            b[n] = engine.userProperties[sp.user];\n"
+        "          } else if ('value' in sp) {\n"
+        "            b[n] = sp.value;\n"
+        "          } else { b[n] = def.value; }\n"
+        "        } else { b[n] = sp; }\n"
+        "      } else { b[n] = def.value; }\n"
+        "      return b;\n"
+        "    }\n"
+        "    b.addCheckbox=ap; b.addText=ap;\n"
+        "    b.finish=function(){return b;};\n"
+        "    return b;\n"
+        "  }\n"
+        "  return createScriptProperties()\n"
+        "    .addCheckbox({ name: 'enableplayer', value: true })\n"
+        "    .addCheckbox({ name: 'musicOn',      value: false })\n"
+        "    .addText({ name: 'unboundProp',      value: 'script-default' })\n"
+        "    .finish();\n"
+        "})();\n");
+    // `user: 'ui'` resolves to engine.userProperties.ui (true), NOT `value: false`
+    CHECK(env.engine.evaluate("result.enableplayer").toBool() == true);
+    // `user: 'music'` resolves to engine.userProperties.music (false), NOT `value: true`
+    CHECK(env.engine.evaluate("result.musicOn").toBool() == false);
+    // No `user` field → falls back to the stored `value`.
+    CHECK(env.engine.evaluate("result.unboundProp").toString() == "stored-literal");
+}
+
+TEST_CASE("scriptProperties `user` binding falls back when user prop missing") {
+    // If the `user` name isn't present in engine.userProperties, the resolver
+    // falls back to the stored `value` (and ultimately the script default).
+    ScriptEnv env;
+    env.engine.evaluate(
+        "var engine = { userProperties: { other: 'x' } };\n"
+        "var result = (function() {\n"
+        "  var _storedProps = { foo: { user: 'missing', value: 42 } };\n"
+        "  function createScriptProperties() {\n"
+        "    var b = {};\n"
+        "    function ap(def) {\n"
+        "      var n = def.name;\n"
+        "      if (n in _storedProps) {\n"
+        "        var sp = _storedProps[n];\n"
+        "        if ('user' in sp && engine.userProperties && sp.user in engine.userProperties) {\n"
+        "          b[n] = engine.userProperties[sp.user];\n"
+        "        } else if ('value' in sp) { b[n] = sp.value; }\n"
+        "        else { b[n] = def.value; }\n"
+        "      } else { b[n] = def.value; }\n"
+        "      return b;\n"
+        "    }\n"
+        "    b.addSlider=ap;\n"
+        "    b.finish=function(){return b;};\n"
+        "    return b;\n"
+        "  }\n"
+        "  return createScriptProperties().addSlider({name:'foo',value:7}).finish();\n"
+        "})();\n");
+    CHECK(env.engine.evaluate("result.foo").toInt() == 42);
 }
 
 TEST_CASE("empty script produces null") {
@@ -4241,6 +4414,70 @@ TEST_CASE("solid undefined defaults to on") {
     CHECK(hitTestLayerProxy(proxy, 0.0f, 0.0f));
 }
 
+TEST_CASE("parallax offset shifts hitbox") {
+    // Wallpaper 2866203962's player buttons have parallaxDepth=(1,1) and the
+    // scene enables camera parallax with amount=0.5, mouseInfluence=0.1.
+    // The shader MVP shifts each layer by (origin - cam + mouseVec) *
+    // depth * amount — hitTestLayerProxy mirrors that so the cursor still
+    // lands on the visible button.
+    //
+    // playerplay: origin (2573, 1297), size 200×200 × scale 0.346.
+    // With mouse at widget (0.744, 0.360) (= user's real click ~(1655,451)
+    // on a 2226×1252 window mapping to scene 2856,1382):
+    //   mouseVx = (0.5 - 0.744) * 3840 * 0.1 = -93.7
+    //   mouseVy = (0.360 - 0.5) * 2160 * 0.1 = -30.2
+    //   paraX = (2573 - 1920 - 93.7) * 1 * 0.5 = 279.6
+    //   paraY = (1297 - 1080 - 30.2) * 1 * 0.5 = 93.4
+    //   visual origin ≈ (2852.6, 1390.4)
+    //   halfW = halfH = 200 * 0.346 / 2 = 34.6
+    // So a scene click at (2856.7, 1381.9) hits (within ±34.6 on each axis).
+    QJSEngine engine;
+    QJSValue proxy = engine.evaluate(
+        "({ _state: { origin:{x:2572.8,y:1297.2,z:0},"
+        "  scale:{x:0.346,y:0.346,z:1}, size:{x:200,y:200},"
+        "  parallaxDepth:{x:1,y:1} } })");
+    CursorParallax para;
+    para.enable = true;
+    para.amount = 0.5f;
+    para.mouseInfluence = 0.1f;
+    para.camX = 1920.0f;
+    para.camY = 1080.0f;
+    para.mouseNx = 0.744f;
+    para.mouseNy = 0.360f;
+    para.orthoW = 3840.0f;
+    para.orthoH = 2160.0f;
+    // Hits the parallax-shifted position.
+    CHECK(hitTestLayerProxy(proxy, 2856.7f, 1381.9f, para));
+    // MISSES the authored origin (too far from the shifted visual position).
+    CHECK_FALSE(hitTestLayerProxy(proxy, 2572.8f, 1297.2f, para));
+    // With parallax disabled, the authored origin hits and the shifted
+    // position doesn't — confirms para.enable actually gates the offset.
+    para.enable = false;
+    CHECK(hitTestLayerProxy(proxy, 2572.8f, 1297.2f, para));
+    CHECK_FALSE(hitTestLayerProxy(proxy, 2856.7f, 1381.9f, para));
+}
+
+TEST_CASE("parallax with zero depth has no effect") {
+    // parallaxDepth=(0,0) means the layer doesn't parallax — default for
+    // layers that don't set it explicitly in scene.json.  Pins that the
+    // hit-test shift is gated on non-zero depth even when para.enable.
+    QJSEngine engine;
+    QJSValue proxy = engine.evaluate(
+        "({ _state: { origin:{x:100,y:100,z:0}, scale:{x:1,y:1,z:1},"
+        "  size:{x:50,y:50}, parallaxDepth:{x:0,y:0} } })");
+    CursorParallax para;
+    para.enable = true;
+    para.amount = 0.5f;
+    para.mouseInfluence = 0.1f;
+    para.camX = 0.0f;
+    para.camY = 0.0f;
+    para.mouseNx = 0.0f; // extreme mouse position — big mouseVec
+    para.mouseNy = 1.0f;
+    para.orthoW = 3840.0f;
+    para.orthoH = 2160.0f;
+    CHECK(hitTestLayerProxy(proxy, 100.0f, 100.0f, para));
+}
+
 TEST_CASE("VHS Time/Date dimensions — regression for drag fix") {
     // Wallpaper 2866203962 (Cyberpunk Lucy music player) places the VHS
     // Time/Date text at origin (2510.94, 939.83) with size (931, 153) and
@@ -4265,3 +4502,171 @@ TEST_CASE("VHS Time/Date dimensions — regression for drag fix") {
 }
 
 } // TEST_SUITE Cursor hit-test
+
+// ------------------------------------------------------------------
+// Hover-leave debouncer: brief cursor exits from a hover zone shouldn't
+// immediately tear down the hover state — critical for wallpapers like
+// 2866203962 where the music-player fade ramps over seconds and grazes
+// off the hit-zone edge would otherwise keep it faded out.
+// ------------------------------------------------------------------
+TEST_SUITE("Hover-leave debounce") {
+
+using Set = std::unordered_set<std::string>;
+using LeaveMap = std::unordered_map<std::string, PendingLeave>;
+
+TEST_CASE("first entry reports cursorEnter") {
+    LeaveMap pending;
+    Set prev  = {};
+    Set now   = { "playerbounds" };
+    auto r = processHoverFrame(prev, now, pending, /*nowMs*/ 1000, /*grace*/ 400);
+    CHECK(r.toEnter == Set { "playerbounds" });
+    CHECK(r.newHovered == Set { "playerbounds" });
+    CHECK(pending.empty());
+}
+
+TEST_CASE("continued hover does not re-fire cursorEnter") {
+    LeaveMap pending;
+    Set prev  = { "playerbounds" };
+    Set now   = { "playerbounds" };
+    auto r = processHoverFrame(prev, now, pending, 1000, 400);
+    CHECK(r.toEnter.empty());
+    CHECK(r.newHovered == Set { "playerbounds" });
+    CHECK(pending.empty());
+}
+
+TEST_CASE("exit schedules a pending leave but stays hovered") {
+    LeaveMap pending;
+    Set prev  = { "playerbounds" };
+    Set now   = {};
+    auto r = processHoverFrame(prev, now, pending, /*nowMs*/ 1000, /*grace*/ 400);
+    CHECK(r.toEnter.empty());
+    // Still in hovered set during grace.
+    CHECK(r.newHovered == Set { "playerbounds" });
+    REQUIRE(pending.size() == 1);
+    CHECK(pending["playerbounds"].deadlineMs == 1400);
+}
+
+TEST_CASE("re-entry within grace cancels the pending leave") {
+    LeaveMap pending;
+    Set hovered = { "playerbounds" };
+    // Frame 1 — cursor leaves.
+    auto r1 = processHoverFrame(hovered, {}, pending, 1000, 400);
+    hovered = r1.newHovered;
+    CHECK(pending.count("playerbounds"));
+    // Frame 2 at 1200ms — cursor re-enters within 400ms grace.
+    auto r2 = processHoverFrame(hovered, { "playerbounds" }, pending, 1200, 400);
+    hovered = r2.newHovered;
+    // No new cursorEnter (layer was still in hovered set during grace).
+    CHECK(r2.toEnter.empty());
+    CHECK(hovered == Set { "playerbounds" });
+    // Pending leave was cancelled.
+    CHECK(pending.empty());
+}
+
+TEST_CASE("deadline is NOT extended each frame the cursor stays out") {
+    // Critical regression: an earlier implementation re-set the deadline
+    // every frame the cursor was out, so cursorLeave could never fire.
+    LeaveMap pending;
+    Set hovered = { "playerbounds" };
+    auto r1 = processHoverFrame(hovered, {}, pending, 1000, 400);
+    hovered = r1.newHovered;
+    int64_t scheduledAt = pending["playerbounds"].deadlineMs;
+    CHECK(scheduledAt == 1400);
+    // Many frames pass, still no cursor in playerbounds.
+    for (int64_t t = 1001; t <= 1399; t += 10) {
+        auto r = processHoverFrame(hovered, {}, pending, t, 400);
+        hovered = r.newHovered;
+        // Deadline must not have moved.
+        CHECK(pending["playerbounds"].deadlineMs == scheduledAt);
+    }
+}
+
+TEST_CASE("expired leaves surface from drainExpiredLeaves") {
+    LeaveMap pending;
+    pending["playerbounds"] = { 1400 };
+    pending["f1"]           = { 1800 };
+    // Nothing expired yet at t=1200.
+    auto now1 = drainExpiredLeaves(pending, 1200);
+    CHECK(now1.empty());
+    CHECK(pending.size() == 2);
+    // playerbounds expires at t=1500.
+    auto now2 = drainExpiredLeaves(pending, 1500);
+    CHECK(now2.size() == 1);
+    CHECK(now2[0] == "playerbounds");
+    CHECK(pending.count("playerbounds") == 0);
+    CHECK(pending.count("f1") == 1);
+    // f1 expires at t=1900.
+    auto now3 = drainExpiredLeaves(pending, 1900);
+    CHECK(now3.size() == 1);
+    CHECK(now3[0] == "f1");
+    CHECK(pending.empty());
+}
+
+TEST_CASE("nextLeaveDeadlineMs picks the soonest deadline") {
+    LeaveMap pending;
+    CHECK(nextLeaveDeadlineMs(pending) == 0);
+    pending["a"] = { 2000 };
+    pending["b"] = { 1500 };
+    pending["c"] = { 3000 };
+    CHECK(nextLeaveDeadlineMs(pending) == 1500);
+}
+
+TEST_CASE("end-to-end: fade grace + eventual leave after window") {
+    LeaveMap pending;
+    Set hovered;
+    // Frame 1 @ t=1000: cursor enters playerbounds.
+    auto r1 = processHoverFrame(hovered, { "playerbounds" }, pending, 1000, 400);
+    hovered = r1.newHovered;
+    CHECK(r1.toEnter.count("playerbounds"));
+    // Frame 2 @ t=1100: cursor leaves.  Leave scheduled for 1500.
+    auto r2 = processHoverFrame(hovered, {}, pending, 1100, 400);
+    hovered = r2.newHovered;
+    CHECK(hovered.count("playerbounds"));
+    CHECK(pending["playerbounds"].deadlineMs == 1500);
+    // Frame 3 @ t=1300: cursor re-enters — leave cancelled, no new enter.
+    auto r3 = processHoverFrame(hovered, { "playerbounds" }, pending, 1300, 400);
+    hovered = r3.newHovered;
+    CHECK(r3.toEnter.empty());
+    CHECK(pending.empty());
+    // Frame 4 @ t=1400: cursor leaves again.  Fresh deadline 1800.
+    auto r4 = processHoverFrame(hovered, {}, pending, 1400, 400);
+    hovered = r4.newHovered;
+    CHECK(pending["playerbounds"].deadlineMs == 1800);
+    // Frame 5–N @ t=1400..1799: cursor stays out.  Deadline does NOT move.
+    for (int64_t t = 1401; t < 1800; t += 50) {
+        auto r = processHoverFrame(hovered, {}, pending, t, 400);
+        hovered = r.newHovered;
+        CHECK(pending["playerbounds"].deadlineMs == 1800);
+    }
+    // t=1800: deadline reached — leave drains.
+    auto drained = drainExpiredLeaves(pending, 1800);
+    CHECK(drained.size() == 1);
+    CHECK(drained[0] == "playerbounds");
+    CHECK(pending.empty());
+}
+
+TEST_CASE("overlapping hover zones track independently") {
+    LeaveMap pending;
+    Set hovered;
+    // Enter playerbounds first.
+    auto r1 = processHoverFrame(hovered, { "playerbounds" }, pending, 1000, 400);
+    hovered = r1.newHovered;
+    // Enter f1 too — both should be hovered, only f1 reports a new enter.
+    auto r2 = processHoverFrame(hovered, { "playerbounds", "f1" }, pending, 1100, 400);
+    hovered = r2.newHovered;
+    CHECK(r2.toEnter == Set { "f1" });
+    CHECK(hovered == Set { "playerbounds", "f1" });
+    // Leave playerbounds, still in f1 — only playerbounds gets a pending leave.
+    auto r3 = processHoverFrame(hovered, { "f1" }, pending, 1200, 400);
+    hovered = r3.newHovered;
+    CHECK(hovered == Set { "playerbounds", "f1" }); // playerbounds kept via grace
+    CHECK(pending.count("playerbounds"));
+    CHECK(pending.count("f1") == 0);
+    // Drain at 1600 — only playerbounds expires.
+    auto drained = drainExpiredLeaves(pending, 1600);
+    CHECK(drained == std::vector<std::string> { "playerbounds" });
+    // f1 still hovered.
+    CHECK(hovered.count("f1"));
+}
+
+} // TEST_SUITE Hover-leave debounce
