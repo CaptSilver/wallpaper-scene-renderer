@@ -18,6 +18,15 @@ inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy,
     if (! thisLayerProxy.isObject()) return false;
     QJSValue state = thisLayerProxy.property("_state");
     if (! state.isObject()) return false;
+
+    // WE `solid` field: when explicitly false the layer opts out of cursor
+    // hit-testing.  Wallpaper 2866203962's playerplay alpha script toggles
+    // `element.solid = false` when media-control buttons fade out so the
+    // invisible quads don't swallow clicks meant for the layers below.
+    // Undefined means "on" by default — scripts only set it explicitly.
+    QJSValue solid = state.property("solid");
+    if (solid.isBool() && solid.toBool() == false) return false;
+
     QJSValue origin = state.property("origin");
     QJSValue scale  = state.property("scale");
     QJSValue size   = state.property("size");

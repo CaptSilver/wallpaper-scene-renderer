@@ -777,44 +777,95 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // AABB hit-testing both match layer origin convention.
     float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
-    // cursorDown: fire for ALL registered handlers regardless of hit-test.
-    // WE treats cursorDown/cursorUp as game-control events — e.g. the built-in
-    // dino_run wallpaper makes the dino jump on any click, and the handler
-    // lives on the tiny walking sprite's layer.  Hit-testing would gate it to
-    // clicks that happen to land on the moving sprite.
+    // Hit-test to pick the target layer.  All four press-time cursor events
+    // (cursorDown, cursorClick, cursorMove on drag, cursorUp) go to this
+    // single layer — that matches standard UI semantics AND is what WE
+    // scripts assume: 2866203962 playervolume.cursorDown unconditionally
+    // sets percentageLayer.text="100%", so a global fan-out meant clicking
+    // ANYWHERE on the wallpaper flashed "100%" on the volume slider.
+    //
+    // Among overlapping hit layers, pick independently for click vs. drag:
+    // clickIdx → smallest hit with clickFn (so a tiny button beats a
+    // fullscreen toggle-background like 2866203962 bg0), moveIdx → smallest
+    // hit with moveFn.  downFn / upFn ride on the selected drag target,
+    // which prefers moveIdx (drag scripts) and falls back to clickIdx.
     QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-    int downCount = 0;
-    for (auto& target : m_cursorTargets) {
-        if (!target.downFn.isCallable()) continue;
+    int    clickIdx = -1, moveIdx = -1, downIdx = -1;
+    double clickArea = 0.0, moveArea = 0.0, downArea = 0.0;
+    for (int i = 0; i < (int)m_cursorTargets.size(); i++) {
+        auto& target = m_cursorTargets[i];
+        if (!hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) continue;
+        QJSValue state = target.thisLayerProxy.property("_state");
+        QJSValue size  = state.property("size");
+        QJSValue scale = state.property("scale");
+        double sw = size.property("x").toNumber();
+        double sh = size.property("y").toNumber();
+        double sx = std::abs(scale.property("x").toNumber());
+        double sy = std::abs(scale.property("y").toNumber());
+        double area = sw * sx * sh * sy;
+        LOG_INFO("  hit[%d] '%s' area=%.0f handlers=%s%s%s",
+                 i, target.layerName.c_str(), area,
+                 target.clickFn.isCallable() ? "click " : "",
+                 target.moveFn.isCallable()  ? "move "  : "",
+                 target.downFn.isCallable()  ? "down "  : "");
+        if (target.clickFn.isCallable() && (clickIdx < 0 || area < clickArea)) {
+            clickIdx  = i;
+            clickArea = area;
+        }
+        if (target.moveFn.isCallable() && (moveIdx < 0 || area < moveArea)) {
+            moveIdx  = i;
+            moveArea = area;
+        }
+        if (target.downFn.isCallable() && (downIdx < 0 || area < downArea)) {
+            downIdx  = i;
+            downArea = area;
+        }
+    }
+    // Fire cursorDown on the smallest-hit layer with downFn.
+    int downFired = 0;
+    if (downIdx >= 0) {
+        auto& target = m_cursorTargets[downIdx];
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
         QJSValue r = target.downFn.call({ ev });
-        downCount++;
+        downFired = 1;
         if (r.isError())
             LOG_INFO("cursorDown error on '%s': %s",
                      target.layerName.c_str(), qPrintable(r.toString()));
-    }
-
-    // Hit-test to find the top-most layer under the cursor.  This target
-    // becomes both the cursorClick receiver AND the drag target for
-    // subsequent cursorMove / cursorUp dispatch.  Decoupled from clickFn
-    // presence so drag-only scripts (cursorDown+cursorMove+cursorUp without
-    // cursorClick, e.g. the VHS Time/Date layer on wallpaper 2866203962) also
-    // track correctly.  Iterate back-to-front so top-most layer wins.
-    for (int i = (int)m_cursorTargets.size() - 1; i >= 0; i--) {
-        auto& target = m_cursorTargets[i];
-        if (!hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) continue;
-        m_dragTarget = target.layerName;
-        if (target.clickFn.isCallable()) {
+    } else if (clickIdx < 0 && moveIdx < 0) {
+        // Nothing hit-tested.  Fall back to global cursorDown fan-out for
+        // "tap anywhere" game-control scripts (built-in dino_run's walking
+        // sprite is a moving 24×24 hitbox — requiring precise clicks would
+        // break its tap-to-jump).  Only engaged when no click / drag target
+        // is available, so well-defined UI wallpapers (2866203962) aren't
+        // affected.
+        for (auto& target : m_cursorTargets) {
+            if (!target.downFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            QJSValue r = target.clickFn.call({ ev });
+            QJSValue r = target.downFn.call({ ev });
+            downFired++;
             if (r.isError())
-                LOG_INFO("cursorClick error on '%s': %s",
+                LOG_INFO("cursorDown error on '%s': %s",
                          target.layerName.c_str(), qPrintable(r.toString()));
         }
-        break;
     }
-    LOG_INFO("press at scene=(%.1f,%.1f): cursorDown fan-out=%d, drag-target='%s'",
-             sceneX, sceneY, downCount,
+    // Fire cursorClick on the smallest-hit layer with clickFn.
+    if (clickIdx >= 0) {
+        auto& target = m_cursorTargets[clickIdx];
+        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        QJSValue r = target.clickFn.call({ ev });
+        if (r.isError())
+            LOG_INFO("cursorClick error on '%s': %s",
+                     target.layerName.c_str(), qPrintable(r.toString()));
+    }
+    // Drag target: prefer the smallest-hit layer with moveFn, fall back to
+    // downFn (so cursorUp lands on the same layer that saw cursorDown),
+    // else clickFn.  Saved so mouseMoveEvent can route subsequent
+    // cursorMove dispatches.
+    if      (moveIdx  >= 0) m_dragTarget = m_cursorTargets[moveIdx].layerName;
+    else if (downIdx  >= 0) m_dragTarget = m_cursorTargets[downIdx].layerName;
+    else if (clickIdx >= 0) m_dragTarget = m_cursorTargets[clickIdx].layerName;
+    LOG_INFO("press at scene=(%.1f,%.1f): cursorDown fired=%d, drag-target='%s'",
+             sceneX, sceneY, downFired,
              m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
     flushJsConsole(m_jsEngine, "click");
 }
@@ -836,21 +887,37 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     // AABB hit-testing both match layer origin convention.
     float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
-    // cursorUp: mirror cursorDown — fire for all registered handlers
-    // regardless of hit-test (game-control semantics).
+    // cursorUp: fire only on the drag target chosen at press (matches the
+    // layer that received cursorDown).  When there was no hit target at
+    // press (dino_run "tap anywhere" fallback), fan out to mirror whatever
+    // cursorDown did — otherwise game-control state machines get stuck.
     QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-    int upCount = 0;
-    for (auto& target : m_cursorTargets) {
-        if (!target.upFn.isCallable()) continue;
-        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-        QJSValue r = target.upFn.call({ ev });
-        upCount++;
-        if (r.isError())
-            LOG_INFO("cursorUp error on '%s': %s",
-                     target.layerName.c_str(), qPrintable(r.toString()));
+    int upFired = 0;
+    if (!m_dragTarget.empty()) {
+        for (auto& target : m_cursorTargets) {
+            if (target.layerName != m_dragTarget) continue;
+            if (!target.upFn.isCallable()) break;
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue r = target.upFn.call({ ev });
+            upFired = 1;
+            if (r.isError())
+                LOG_INFO("cursorUp error on '%s': %s",
+                         target.layerName.c_str(), qPrintable(r.toString()));
+            break;
+        }
+    } else {
+        for (auto& target : m_cursorTargets) {
+            if (!target.upFn.isCallable()) continue;
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue r = target.upFn.call({ ev });
+            upFired++;
+            if (r.isError())
+                LOG_INFO("cursorUp error on '%s': %s",
+                         target.layerName.c_str(), qPrintable(r.toString()));
+        }
     }
-    LOG_INFO("release at scene=(%.1f,%.1f): cursorUp fan-out=%d, drag-target was '%s'",
-             sceneX, sceneY, upCount,
+    LOG_INFO("release at scene=(%.1f,%.1f): cursorUp fired=%d, drag-target was '%s'",
+             sceneX, sceneY, upFired,
              m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
     flushJsConsole(m_jsEngine, "mouseUp");
     m_dragTarget.clear();
@@ -1351,6 +1418,25 @@ void SceneObject::setupTextScripts() {
         "  });\n"
         "  Object.defineProperty(p, 'size', {\n"
         "    get: function(){ return _s.size; },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        // opacity: WE alias for alpha.  Used by wallpaper 2866203962's
+        // playervolume.cursorUp script to hide the '100%' percentage text
+        // via `percentageLayer.opacity = 0`; without this alias the assign
+        // silently dropped into a plain JS property and the old bitmap stuck.
+        "  Object.defineProperty(p, 'opacity', {\n"
+        "    get: function(){ return _s.alpha; },\n"
+        "    set: function(v){ _s.alpha = v; _s._dirty.alpha = true; },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        // solid: WE property that toggles whether a layer participates in
+        // cursor hit-testing.  Tracked on _state so hitTestLayerProxy (C++
+        // side) can honor it.  Defaults to true — the proxy's _state.solid
+        // stays undefined until explicitly set, which hitTestLayerProxy
+        // treats as 'on' via the same undefined→true convention.
+        "  Object.defineProperty(p, 'solid', {\n"
+        "    get: function(){ return _s.solid === false ? false : true; },\n"
+        "    set: function(v){ _s.solid = !!v; },\n"
         "    enumerable: true\n"
         "  });\n"
         "  p.play = function(){};\n"
@@ -2438,6 +2524,28 @@ void SceneObject::setupTextScripts() {
         if (!m_cursorTargets.empty()) {
             LOG_INFO("cursor targets: %zu layers registered",
                      m_cursorTargets.size());
+            // Dump each target's origin/size/scale and which handlers it has
+            // — smallest-area selection depends on these values matching what
+            // hitTestLayerProxy sees at click time.  Run once at load.
+            for (size_t i = 0; i < m_cursorTargets.size(); i++) {
+                auto& t = m_cursorTargets[i];
+                QJSValue st = t.thisLayerProxy.property("_state");
+                double ox = st.property("origin").property("x").toNumber();
+                double oy = st.property("origin").property("y").toNumber();
+                double sw = st.property("size").property("x").toNumber();
+                double sh = st.property("size").property("y").toNumber();
+                double sx = st.property("scale").property("x").toNumber();
+                double sy = st.property("scale").property("y").toNumber();
+                LOG_INFO("  cursor[%zu] '%s': origin=(%.1f,%.1f) size=%.0fx%.0f "
+                         "scale=(%.3f,%.3f) handlers=%s%s%s%s%s%s",
+                         i, t.layerName.c_str(), ox, oy, sw, sh, sx, sy,
+                         t.clickFn.isCallable() ? "click " : "",
+                         t.downFn.isCallable()  ? "down "  : "",
+                         t.upFn.isCallable()    ? "up "    : "",
+                         t.moveFn.isCallable()  ? "move "  : "",
+                         t.enterFn.isCallable() ? "enter " : "",
+                         t.leaveFn.isCallable() ? "leave " : "");
+            }
         }
     }
 

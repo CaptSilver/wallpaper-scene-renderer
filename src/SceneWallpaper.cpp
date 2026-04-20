@@ -375,10 +375,15 @@ public:
 
     void setNodeVisible(i32 id, bool visible) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        auto prev   = m_pending_visible_updates.find(id);
+        bool jumped = prev == m_pending_visible_updates.end() ||
+                      prev->second != visible;
         m_pending_visible_updates[id] = visible;
         static int s_visible_log      = 0;
-        if (++s_visible_log <= 5 || s_visible_log % 1000 == 0) {
-            LOG_INFO("setNodeVisible[%d]: id=%d visible=%d", s_visible_log, id, (int)visible);
+        if (++s_visible_log <= 5 || jumped) {
+            LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
+                     s_visible_log, id, (int)visible,
+                     jumped ? " [jump]" : "");
         }
     }
 
@@ -389,10 +394,17 @@ public:
 
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        auto prev   = m_pending_alpha_updates.find(id);
+        bool jumped = prev == m_pending_alpha_updates.end() ||
+                      std::abs(prev->second - alpha) > 0.3f;
         m_pending_alpha_updates[id] = alpha;
         static int s_alpha_log      = 0;
-        if (++s_alpha_log <= 5 || s_alpha_log % 1000 == 0) {
-            LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f", s_alpha_log, id, alpha);
+        // TEMP: trace id=441 (playervolumepercentage) to debug stuck "100%".
+        bool trace441 = (id == 441);
+        if (++s_alpha_log <= 5 || jumped || trace441) {
+            LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
+                     s_alpha_log, id, alpha,
+                     jumped ? " [jump]" : "");
         }
     }
 

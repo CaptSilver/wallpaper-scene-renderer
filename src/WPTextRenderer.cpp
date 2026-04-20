@@ -115,13 +115,39 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             return nullptr;
         }
     }
-    if (fontData.empty() || text.empty()) {
-        LOG_ERROR("WPTextRenderer: empty font data or text");
+    if (fontData.empty()) {
+        LOG_ERROR("WPTextRenderer: empty font data");
         return nullptr;
     }
     if (width <= 0 || height <= 0) {
         LOG_ERROR("WPTextRenderer: invalid dimensions %dx%d", width, height);
         return nullptr;
+    }
+
+    // Empty text: return a fully-transparent canvas of the requested size.
+    // Scripts clearing a label (e.g. wallpaper 2866203962 playervolume
+    // cursorUp does `percentageLayer.text = ""`) rely on this to actually
+    // blank the texture — without it the old bitmap (e.g. "100%") persists.
+    if (text.empty()) {
+        usize bufSize = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+        auto img_ptr = std::make_shared<Image>();
+        auto& img = *img_ptr;
+        img.header.width = img.header.mapWidth = width;
+        img.header.height = img.header.mapHeight = height;
+        img.header.format = TextureFormat::RGBA8;
+        img.header.count = 1;
+        Image::Slot slot;
+        slot.width = width;
+        slot.height = height;
+        ImageData mipmap;
+        mipmap.width = width;
+        mipmap.height = height;
+        mipmap.size = static_cast<isize>(bufSize);
+        auto* rawBuf = new uint8_t[bufSize]();   // zero-initialised → RGBA=(0,0,0,0)
+        mipmap.data = ImageDataPtr(rawBuf, [](uint8_t* p) { delete[] p; });
+        slot.mipmaps.push_back(std::move(mipmap));
+        img.slots.push_back(std::move(slot));
+        return img_ptr;
     }
 
     FT_Face  face = nullptr;

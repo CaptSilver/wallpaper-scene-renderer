@@ -1088,6 +1088,19 @@ static const char* JS_LAYER_INFRA =
     "    get: function(){ return _s.size; },\n"
     "    enumerable: true\n"
     "  });\n"
+    // Mirror the production proxy: `opacity` aliases `alpha`, `solid`
+    // defaults to true and is writeable.  Kept in sync with SceneBackend's
+    // _makeLayerProxy so the tests actually cover what production runs.
+    "  Object.defineProperty(p, 'opacity', {\n"
+    "    get: function(){ return _s.alpha; },\n"
+    "    set: function(v){ _s.alpha = v; _s._dirty.alpha = true; },\n"
+    "    enumerable: true\n"
+    "  });\n"
+    "  Object.defineProperty(p, 'solid', {\n"
+    "    get: function(){ return _s.solid === false ? false : true; },\n"
+    "    set: function(v){ _s.solid = !!v; },\n"
+    "    enumerable: true\n"
+    "  });\n"
     "  p.play = function(){};\n"
     "  p.stop = function(){};\n"
     "  p.pause = function(){};\n"
@@ -2527,6 +2540,34 @@ TEST_CASE("setting alpha marks dirty") {
     ScriptEnv env;
     env.engine.evaluate("thisScene.getLayer('bg').alpha = 0.5;");
     CHECK(env.engine.evaluate("thisScene.getLayer('bg')._state._dirty.alpha").toBool());
+}
+
+TEST_CASE("opacity is an alias for alpha") {
+    // Wallpaper 2866203962 playervolume.cursorUp writes
+    // `percentageLayer.opacity = 0` to hide the "100%" text.  Without this
+    // alias the assignment silently dropped into a plain JS property, the
+    // layer's alpha stayed at 1, and the old "100%" bitmap remained on screen.
+    ScriptEnv env;
+    env.engine.evaluate("thisScene.getLayer('bg').opacity = 0.25;");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').alpha").toNumber()
+          == doctest::Approx(0.25));
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg')._state._dirty.alpha").toBool());
+    // Reading opacity returns alpha.
+    env.engine.evaluate("thisScene.getLayer('bg').alpha = 0.7;");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').opacity").toNumber()
+          == doctest::Approx(0.7));
+}
+
+TEST_CASE("solid defaults to true and is writeable") {
+    // Scripts (e.g. wallpaper 2866203962 playerplay alpha update) toggle
+    // `element.solid = false` so faded-out UI doesn't catch clicks.
+    ScriptEnv env;
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').solid").toBool() == true);
+    env.engine.evaluate("thisScene.getLayer('bg').solid = false;");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').solid").toBool() == false);
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg')._state.solid").toBool() == false);
+    env.engine.evaluate("thisScene.getLayer('bg').solid = true;");
+    CHECK(env.engine.evaluate("thisScene.getLayer('bg').solid").toBool() == true);
 }
 
 TEST_CASE("setting text marks dirty") {
@@ -4172,6 +4213,32 @@ TEST_CASE("edge exactly on boundary does not hit (strict <)") {
     CHECK_FALSE(hitTestLayerProxy(proxy, 50.0f, 0.0f));
     CHECK_FALSE(hitTestLayerProxy(proxy, 0.0f, 50.0f));
     CHECK(hitTestLayerProxy(proxy, 49.9f, 49.9f));
+}
+
+TEST_CASE("solid=false opts out of hit-test") {
+    // Wallpaper 2866203962 playerplay alpha script sets element.solid = false
+    // when media-control buttons fade out — the invisible quad shouldn't
+    // swallow clicks.  Pins the solid gate in hitTestLayerProxy.
+    QJSEngine engine;
+    QJSValue proxy = engine.evaluate(
+        "({ _state: { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},"
+        "  size:{x:100,y:100}, solid:false } })");
+    CHECK_FALSE(hitTestLayerProxy(proxy, 0.0f, 0.0f));
+    // Flip back on → hits again.
+    engine.evaluate("(function(){ var p = arguments.callee.caller; })();");
+    QJSValue proxy2 = engine.evaluate(
+        "({ _state: { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},"
+        "  size:{x:100,y:100}, solid:true } })");
+    CHECK(hitTestLayerProxy(proxy2, 0.0f, 0.0f));
+}
+
+TEST_CASE("solid undefined defaults to on") {
+    // Scripts only set solid explicitly — unset should mean interactive.
+    QJSEngine engine;
+    QJSValue proxy = engine.evaluate(
+        "({ _state: { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},"
+        "  size:{x:100,y:100} } })");
+    CHECK(hitTestLayerProxy(proxy, 0.0f, 0.0f));
 }
 
 TEST_CASE("VHS Time/Date dimensions — regression for drag fix") {
