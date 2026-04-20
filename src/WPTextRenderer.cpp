@@ -139,7 +139,9 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // up the correct relative size for the reference look (comparing against
     // the YouTube capture of wallpaper 2866203962's VHS Time/Date label).
     // Net formula: points * 96/72 * 2 = points * 8/3 ≈ 2.67 × pointsize.
-    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * 2.0f + 0.5f);
+    // ParseTextObj applies the same kRasterDpiScale to the texture canvas
+    // so glyphs don't clip at the edges of an authored 1× size.
+    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * kRasterDpiScale + 0.5f);
     if (pixelSize < 4) pixelSize = 4;
     FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
 

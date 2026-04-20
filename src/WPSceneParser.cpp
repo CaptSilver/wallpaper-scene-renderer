@@ -2318,26 +2318,35 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     // is meant to match the rasterized text bounds at render time.  Fall
     // back to a canvas driven by the authored `maxwidth` (soft wrap boundary)
     // and by the authored pointsize so 1–8 lines of text fit comfortably.
+    const float kDpi = WPTextRenderer::kRasterDpiScale;
     i32 texW = static_cast<i32>(textObj.size[0]);
     i32 texH = static_cast<i32>(textObj.size[1]);
     const i32 placeholder_threshold = 8;
     const bool autosize_canvas =
         (texW <= placeholder_threshold || texH <= placeholder_threshold);
     if (autosize_canvas) {
-        // Matches WPTextRenderer's 2x DPI multiplier — see WPTextRenderer.cpp
+        // Matches WPTextRenderer's DPI multiplier — see WPTextRenderer.cpp
         // rationale (scene ortho targets Retina-scale 4K, not 96 DPI viewer).
-        i32 px = static_cast<i32>(textObj.pointsize * 96.0f / 72.0f * 2.0f + 0.5f);
+        i32 px = static_cast<i32>(textObj.pointsize * 96.0f / 72.0f * kDpi + 0.5f);
         if (px < 12) px = 12;
         // Prefer maxwidth (the author's own wrapping hint); fall back to a
         // generous 2048 otherwise.  Clamp to 4096 so pathological maxwidth
         // declarations don't blow up the canvas.
-        i32 mw = (textObj.maxwidth > 0.0f) ? static_cast<i32>(textObj.maxwidth * 2.0f) : 0;
+        i32 mw = (textObj.maxwidth > 0.0f) ? static_cast<i32>(textObj.maxwidth * kDpi) : 0;
         if (mw <= 0) mw = 2048;
         mw = std::min(mw, 4096);
         texW = mw;
-        // Line height at our DPI: pointsize * 96/72 * 2 * ~1.4 ≈ 3.7 × pointsize.
+        // Line height at our DPI: pointsize * 96/72 * DPI * ~1.4.
         // Allow up to 8 lines for long titles.
         texH = std::max(static_cast<i32>(px * 1.4f * 8), 192);
+    } else {
+        // Explicit canvas size from the model JSON (e.g. 2866203962 VHS
+        // Time/Date = 931×153).  The author sized this as if rendered at
+        // 1× DPI, but WPTextRenderer scales glyphs by kRasterDpiScale.
+        // Scale the canvas by the same factor so 2-line dynamic text
+        // (time + date) doesn't clip at the bottom of the texture.
+        texW = static_cast<i32>(texW * kDpi);
+        texH = static_cast<i32>(texH * kDpi);
     }
     if (texW <= 0 || texH <= 0) {
         texW = 512;
