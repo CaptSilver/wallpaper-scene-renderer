@@ -4,8 +4,10 @@
 #include <QJSEngine>
 #include <QJSValue>
 #include "SceneTimerBridge.h"
+#include "SceneCursorHitTest.h"
 
 using scenebackend::SceneTimerBridge;
+using scenebackend::hitTestLayerProxy;
 
 // Spin the Qt event loop for a given number of milliseconds.
 // This lets QTimers fire within doctest test cases.
@@ -4092,3 +4094,107 @@ TEST_CASE("only light dirty returns non-null with empty scene dirty") {
 }
 
 } // TEST_SUITE Scene Empty State
+
+// ------------------------------------------------------------------
+// Cursor hit-test (drives SceneObject::mousePressEvent drag-target selection)
+// ------------------------------------------------------------------
+TEST_SUITE("Cursor hit-test") {
+
+// Build a minimal layer proxy mirroring _makeLayerProxy's _state shape.
+static QJSValue makeMockProxy(QJSEngine& engine,
+                              double ox, double oy,
+                              double sx, double sy,
+                              double w,  double h) {
+    QString script = QString(
+        "({ _state: { origin: {x:%1,y:%2,z:0}, scale: {x:%3,y:%4,z:1},"
+        " size: {x:%5,y:%6} } })")
+        .arg(ox).arg(oy).arg(sx).arg(sy).arg(w).arg(h);
+    return engine.evaluate(script);
+}
+
+TEST_CASE("hit inside centered AABB") {
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, /*origin*/ 100, 200,
+                                   /*scale*/ 1, 1, /*size*/ 80, 40);
+    CHECK(hitTestLayerProxy(proxy, 100.0f, 200.0f));   // exact center
+    CHECK(hitTestLayerProxy(proxy, 139.0f, 219.0f));   // just inside corner
+}
+
+TEST_CASE("miss outside AABB") {
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, 100, 200, 1, 1, 80, 40);
+    CHECK_FALSE(hitTestLayerProxy(proxy, 141.0f, 200.0f));
+    CHECK_FALSE(hitTestLayerProxy(proxy, 100.0f, 221.0f));
+}
+
+TEST_CASE("scale widens/narrows the hitbox") {
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, 0, 0, 2.0, 0.5, 100, 100);
+    // Full width 100*2 = 200 → halfW = 100. Half height 100*0.5 = 50 → halfH = 25.
+    CHECK(hitTestLayerProxy(proxy, 90.0f, 20.0f));
+    CHECK_FALSE(hitTestLayerProxy(proxy, 90.0f, 30.0f)); // past halfH
+    CHECK_FALSE(hitTestLayerProxy(proxy, 110.0f, 0.0f)); // past halfW (< strict)
+}
+
+TEST_CASE("negative scale still hits (mirrored sprite)") {
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, 0, 0, -1, -1, 60, 60);
+    CHECK(hitTestLayerProxy(proxy, 20.0f, 20.0f));
+    CHECK(hitTestLayerProxy(proxy, -20.0f, -20.0f));
+}
+
+TEST_CASE("zero size is never hittable (fallback for unregistered text layers)") {
+    // Before the WPSceneParser fix, text layers got size={0,0} because
+    // nameToObjState was only populated for WPImageObject/WPParticleObject.
+    // This test pins the safety net: zero-size proxies don't steal drag.
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, 100, 100, 1, 1, 0, 0);
+    CHECK_FALSE(hitTestLayerProxy(proxy, 100.0f, 100.0f));
+}
+
+TEST_CASE("non-object proxy fails gracefully") {
+    QJSEngine engine;
+    CHECK_FALSE(hitTestLayerProxy(QJSValue(), 0.0f, 0.0f));
+    CHECK_FALSE(hitTestLayerProxy(QJSValue(42), 0.0f, 0.0f));
+    CHECK_FALSE(hitTestLayerProxy(QJSValue("hi"), 0.0f, 0.0f));
+}
+
+TEST_CASE("proxy missing _state fails gracefully") {
+    QJSEngine engine;
+    QJSValue proxy = engine.evaluate("({ name: 'no state here' })");
+    CHECK_FALSE(hitTestLayerProxy(proxy, 0.0f, 0.0f));
+}
+
+TEST_CASE("edge exactly on boundary does not hit (strict <)") {
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine, 0, 0, 1, 1, 100, 100);
+    // halfW = 50 exactly
+    CHECK_FALSE(hitTestLayerProxy(proxy, 50.0f, 0.0f));
+    CHECK_FALSE(hitTestLayerProxy(proxy, 0.0f, 50.0f));
+    CHECK(hitTestLayerProxy(proxy, 49.9f, 49.9f));
+}
+
+TEST_CASE("VHS Time/Date dimensions — regression for drag fix") {
+    // Wallpaper 2866203962 (Cyberpunk Lucy music player) places the VHS
+    // Time/Date text at origin (2510.94, 939.83) with size (931, 153) and
+    // scale (1,1,1) at init time.  Before WPTextObject routed through
+    // nameToObjState the size was (0,0) and the layer silently failed every
+    // hit-test, so its cursorDown/cursorMove/cursorUp drag script did
+    // nothing.  This test locks the bounding box the fix establishes.
+    QJSEngine engine;
+    QJSValue proxy = makeMockProxy(engine,
+                                   /*origin*/ 2510.94, 939.83,
+                                   /*scale*/ 1.0, 1.0,
+                                   /*size*/ 931.0, 153.0);
+    // Center click → hit.
+    CHECK(hitTestLayerProxy(proxy, 2510.94f, 939.83f));
+    // Click 400 px to the right (within halfW=465.5) → hit.
+    CHECK(hitTestLayerProxy(proxy, 2910.0f, 939.83f));
+    // Click 500 px to the right (beyond halfW) → miss.
+    CHECK_FALSE(hitTestLayerProxy(proxy, 3020.0f, 939.83f));
+    // Click on top edge (±77 px) inside → hit; just past → miss.
+    CHECK(hitTestLayerProxy(proxy, 2510.94f, 1015.0f));
+    CHECK_FALSE(hitTestLayerProxy(proxy, 2510.94f, 1020.0f));
+}
+
+} // TEST_SUITE Cursor hit-test

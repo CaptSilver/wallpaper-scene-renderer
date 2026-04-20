@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "SceneCursorHitTest.h"
 #include "SceneTimerBridge.h"
 
 #include <QJSValueIterator>
@@ -612,6 +613,30 @@ void SceneObject::simulateClickAt(double x, double y) {
     mouseReleaseEvent(&release);
 }
 
+void SceneObject::simulateDragAt(double x1, double y1, double x2, double y2) {
+    simulateHoverAt(x1, y1);
+    QPointF pos1(x1, y1);
+    QPointF pos2(x2, y2);
+#if (QT_VERSION >= QT_VERSION_CHECK(6, 0, 0))
+    QMouseEvent press(QEvent::MouseButtonPress, pos1, pos1, pos1,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, pos2, pos2, pos2,
+                     Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos2, pos2, pos2,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+#else
+    QMouseEvent press(QEvent::MouseButtonPress, pos1, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent move(QEvent::MouseMove, pos2, Qt::LeftButton,
+                     Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, pos2, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+#endif
+    mousePressEvent(&press);
+    mouseMoveEvent(&move);
+    mouseReleaseEvent(&release);
+}
+
 void SceneObject::requestScreenshot(const QString& path) {
     if (m_scene) m_scene->requestScreenshot(path.toStdString());
 }
@@ -710,28 +735,8 @@ static void stripESModuleSyntax(QString& src) {
                                    QRegularExpression::MultilineOption), "\\1");
 }
 
-// Helper: AABB hit-test a cursor target using its JS proxy state
-static bool hitTestTarget(const QJSValue& thisLayerProxy,
-                          float sceneX, float sceneY) {
-    if (!thisLayerProxy.isObject()) return false;
-    QJSValue state  = thisLayerProxy.property("_state");
-    if (!state.isObject()) return false;
-    QJSValue origin = state.property("origin");
-    QJSValue scale  = state.property("scale");
-    QJSValue size   = state.property("size");
-
-    float ox = (float)origin.property("x").toNumber();
-    float oy = (float)origin.property("y").toNumber();
-    float sx = (float)scale.property("x").toNumber();
-    float sy = (float)scale.property("y").toNumber();
-    float sw = (float)size.property("x").toNumber();
-    float sh = (float)size.property("y").toNumber();
-    if (sw <= 0 || sh <= 0) return false;
-
-    float halfW = sw * std::abs(sx) / 2.0f;
-    float halfH = sh * std::abs(sy) / 2.0f;
-    return std::abs(sceneX - ox) < halfW && std::abs(sceneY - oy) < halfH;
-}
+// hitTestLayerProxy lives in SceneCursorHitTest.h so scenescript_tests can
+// exercise the same geometry without pulling in Qt Quick.
 
 // Helper: build cursor event argument with worldPosition as Vec3
 static QJSValue makeCursorEvent(QJSEngine* engine, float sceneX, float sceneY) {
@@ -778,40 +783,39 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // lives on the tiny walking sprite's layer.  Hit-testing would gate it to
     // clicks that happen to land on the moving sprite.
     QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+    int downCount = 0;
     for (auto& target : m_cursorTargets) {
         if (!target.downFn.isCallable()) continue;
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-        bool visBefore = target.thisLayerProxy.property("visible").toBool();
         QJSValue r = target.downFn.call({ ev });
-        bool visAfter = target.thisLayerProxy.property("visible").toBool();
-        // Also peek at vita_jump for dino_run debugging — checks whether the
-        // jump sprite's visibility + origin are being updated.
-        QJSValue jumpProxy = m_jsEngine->evaluate("thisScene.getLayer('vita_jump')");
-        bool     jumpVis   = jumpProxy.property("visible").toBool();
-        double   jumpY     = jumpProxy.property("origin").property("y").toNumber();
-        LOG_INFO("cursorDown '%s': walk.vis %d->%d | jump.vis=%d jump.y=%.2f%s",
-                 target.layerName.c_str(), (int)visBefore, (int)visAfter,
-                 (int)jumpVis, jumpY, r.isError() ? " ERROR" : "");
+        downCount++;
         if (r.isError())
-            LOG_INFO("  cursorDown error detail: %s", qPrintable(r.toString()));
+            LOG_INFO("cursorDown error on '%s': %s",
+                     target.layerName.c_str(), qPrintable(r.toString()));
     }
 
-    // cursorClick keeps AABB hit-test semantics (tap-on-object).  Also tracks
-    // the front-most hit target as the drag target for subsequent cursorMove /
-    // cursorUp dispatch.  Iterate back to front so top-most layer wins.
+    // Hit-test to find the top-most layer under the cursor.  This target
+    // becomes both the cursorClick receiver AND the drag target for
+    // subsequent cursorMove / cursorUp dispatch.  Decoupled from clickFn
+    // presence so drag-only scripts (cursorDown+cursorMove+cursorUp without
+    // cursorClick, e.g. the VHS Time/Date layer on wallpaper 2866203962) also
+    // track correctly.  Iterate back-to-front so top-most layer wins.
     for (int i = (int)m_cursorTargets.size() - 1; i >= 0; i--) {
         auto& target = m_cursorTargets[i];
-        if (!target.clickFn.isCallable()) continue;
-        if (hitTestTarget(target.thisLayerProxy, sceneX, sceneY)) {
+        if (!hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) continue;
+        m_dragTarget = target.layerName;
+        if (target.clickFn.isCallable()) {
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_dragTarget = target.layerName;
             QJSValue r = target.clickFn.call({ ev });
             if (r.isError())
                 LOG_INFO("cursorClick error on '%s': %s",
                          target.layerName.c_str(), qPrintable(r.toString()));
-            break;
         }
+        break;
     }
+    LOG_INFO("press at scene=(%.1f,%.1f): cursorDown fan-out=%d, drag-target='%s'",
+             sceneX, sceneY, downCount,
+             m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
     flushJsConsole(m_jsEngine, "click");
 }
 
@@ -835,14 +839,19 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     // cursorUp: mirror cursorDown — fire for all registered handlers
     // regardless of hit-test (game-control semantics).
     QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+    int upCount = 0;
     for (auto& target : m_cursorTargets) {
         if (!target.upFn.isCallable()) continue;
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
         QJSValue r = target.upFn.call({ ev });
+        upCount++;
         if (r.isError())
             LOG_INFO("cursorUp error on '%s': %s",
                      target.layerName.c_str(), qPrintable(r.toString()));
     }
+    LOG_INFO("release at scene=(%.1f,%.1f): cursorUp fan-out=%d, drag-target was '%s'",
+             sceneX, sceneY, upCount,
+             m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
     flushJsConsole(m_jsEngine, "mouseUp");
     m_dragTarget.clear();
 }
@@ -860,20 +869,31 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
     m_cursorSceneX = (float)(pos.x() / width()) * m_sceneOrthoW;
     m_cursorSceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
-    // cursorMove on drag target
+    // cursorMove on drag target.  The target is selected once on press via
+    // hit-test; subsequent moves only reach that layer's moveFn (WE semantics
+    // — the rest of the scene shouldn't see drag motions).
     if (!m_dragTarget.empty() && m_jsEngine) {
         float sceneX = m_cursorSceneX;
         float sceneY = m_cursorSceneY;
         for (auto& target : m_cursorTargets) {
-            if (target.layerName == m_dragTarget && target.moveFn.isCallable()) {
-                m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-                QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-                QJSValue r = target.moveFn.call({ ev });
-                if (r.isError())
-                    LOG_INFO("cursorMove error on '%s': %s",
-                             target.layerName.c_str(), qPrintable(r.toString()));
-                break;
+            if (target.layerName != m_dragTarget || !target.moveFn.isCallable())
+                continue;
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+            QJSValue r = target.moveFn.call({ ev });
+            // Throttle per-frame to avoid flooding when a real user drags.
+            // Sample once every ~30 dispatches so drag tests still surface
+            // the first few events without drowning out the rest of the log.
+            static int s_moveLog = 0;
+            if ((s_moveLog++ % 30) == 0) {
+                LOG_INFO("cursorMove '%s' scene=(%.1f,%.1f)%s",
+                         target.layerName.c_str(), sceneX, sceneY,
+                         r.isError() ? " ERROR" : "");
             }
+            if (r.isError())
+                LOG_INFO("  cursorMove error detail: %s",
+                         qPrintable(r.toString()));
+            break;
         }
     }
 }
@@ -911,7 +931,7 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
     std::unordered_set<std::string> nowHovered;
     for (auto& target : m_cursorTargets) {
         if (!target.enterFn.isCallable() && !target.leaveFn.isCallable()) continue;
-        if (hitTestTarget(target.thisLayerProxy, sceneX, sceneY)) {
+        if (hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY)) {
             nowHovered.insert(target.layerName);
             // Enter: was not previously hovered
             if (!m_hoveredLayers.count(target.layerName) && target.enterFn.isCallable()) {

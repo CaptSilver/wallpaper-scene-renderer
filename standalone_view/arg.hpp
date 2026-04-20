@@ -115,8 +115,18 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .nargs(1);
 
     arg.add_argument("--click")
-        .help("simulate a click at widget-space x,y 1.5s after startup")
+        .help("simulate a click at widget-space x,y after --click-delay seconds")
         .nargs(1);
+
+    arg.add_argument("--drag")
+        .help("simulate press→move→release: 'x1,y1:x2,y2' (widget-space, after --click-delay)")
+        .nargs(1);
+
+    arg.add_argument("--click-delay")
+        .help("seconds to wait before firing --click / --drag (default 1.5)")
+        .default_value<double>(1.5)
+        .nargs(1)
+        .scan<'g', double>();
 
     arg.add_argument("-S", OPT_SCREENSHOT)
         .help("capture a PPM screenshot to the given path, then exit")

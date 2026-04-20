@@ -3110,7 +3110,16 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                        [&context](wpscene::WPModelObject& obj) {
                            ParseModelObj(context, obj);
                        },
-                       [&context](wpscene::WPTextObject& obj) {
+                       [&context, &nameToObjState](wpscene::WPTextObject& obj) {
+                           // Record text-layer transforms so layerInitialStates
+                           // gets a non-zero size — required for cursor
+                           // hit-testing on draggable text (VHS Time/Date).
+                           if (! obj.name.empty()) {
+                               nameToObjState[obj.name] = {
+                                   obj.origin, obj.scale, obj.angles,
+                                   obj.size, obj.visible
+                               };
+                           }
                            ParseTextObj(context, obj);
                        },
                    },

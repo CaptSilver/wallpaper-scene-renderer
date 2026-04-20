@@ -83,14 +83,32 @@ int main(int argc, char** argv) {
                 hover_timer->start(500);
             }
         }
+        double click_delay_s = program.get<double>("--click-delay");
+        if (click_delay_s < 0.0) click_delay_s = 1.5;
+        int click_delay_ms = (int)(click_delay_s * 1000.0);
         auto click_spec = program.present<std::string>("--click");
         if (click_spec) {
             double cx = 0, cy = 0;
             if (std::sscanf(click_spec->c_str(), "%lf,%lf", &cx, &cy) == 2) {
-                QTimer::singleShot(1500, sv, [sv, cx, cy]() {
+                QTimer::singleShot(click_delay_ms, sv, [sv, cx, cy]() {
                     QMetaObject::invokeMethod(sv, "simulateClickAt",
                                               Q_ARG(double, cx), Q_ARG(double, cy));
                 });
+            }
+        }
+        auto drag_spec = program.present<std::string>("--drag");
+        if (drag_spec) {
+            double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+            if (std::sscanf(drag_spec->c_str(), "%lf,%lf:%lf,%lf",
+                            &x1, &y1, &x2, &y2) == 4) {
+                QTimer::singleShot(click_delay_ms, sv, [sv, x1, y1, x2, y2]() {
+                    QMetaObject::invokeMethod(sv, "simulateDragAt",
+                                              Q_ARG(double, x1), Q_ARG(double, y1),
+                                              Q_ARG(double, x2), Q_ARG(double, y2));
+                });
+            } else {
+                std::cerr << "--drag: expected 'x1,y1:x2,y2', got: "
+                          << *drag_spec << std::endl;
             }
         }
         std::string screenshot_path = program.get<std::string>(OPT_SCREENSHOT);

@@ -351,16 +351,25 @@ public:
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_transform_updates[{ id, property }] = { x, y, z };
+        auto key    = std::make_pair(id, property);
+        auto prev   = m_pending_transform_updates.find(key);
+        bool jumped = (prev == m_pending_transform_updates.end()) ||
+                      (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
+                       std::abs(prev->second[2] - z)) > 50.0f;
+        m_pending_transform_updates[key] = { x, y, z };
         static int s_transform_log                    = 0;
-        if (++s_transform_log <= 5 || s_transform_log % 1000 == 0) {
-            LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)",
+        // Log the first handful for sanity, then every large jump (drag /
+        // teleport) — cheaper than a periodic multiple-of-1000 throttle and
+        // catches the payload we actually want to see.
+        if (++s_transform_log <= 5 || jumped) {
+            LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
                      s_transform_log,
                      id,
                      property.c_str(),
                      x,
                      y,
-                     z);
+                     z,
+                     jumped ? " [jump]" : "");
         }
     }
 

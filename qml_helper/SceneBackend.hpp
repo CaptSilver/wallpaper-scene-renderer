@@ -80,6 +80,10 @@ public:
     // normal Qt event handlers, so JS cursorEnter/Leave/Click scripts fire.
     Q_INVOKABLE void simulateHoverAt(double x, double y);
     Q_INVOKABLE void simulateClickAt(double x, double y);
+    // Press at (x1,y1) → drag through optional midpoint → release at (x2,y2).
+    // Drives the same event handlers as real Qt input so SceneScript drag
+    // handlers (cursorDown/cursorMove/cursorUp) fire end-to-end.
+    Q_INVOKABLE void simulateDragAt(double x1, double y1, double x2, double y2);
     Q_INVOKABLE void requestScreenshot(const QString& path);
     Q_INVOKABLE bool screenshotDone() const;
     Q_INVOKABLE void requestPassDump(const QString& dir);
