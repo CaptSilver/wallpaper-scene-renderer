@@ -66,6 +66,28 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --js-eval "src"   inject arbitrary JS into the SceneScript engine
+    // once after --js-eval-delay seconds.  Useful to force state machine
+    // transitions that are normally gated on user input (e.g. 3body's
+    // `shared.rst=1` would need a cursor click on the warning button).
+    {
+        std::string js_src = program.get<std::string>("--js-eval");
+        if (!js_src.empty()) {
+            double delay_s = program.get<double>("--js-eval-delay");
+            if (delay_s < 0.0) delay_s = 2.0;
+            QTimer::singleShot((int)(delay_s * 1000.0), sv,
+                [sv, js_src]() {
+                    QString rv;
+                    QMetaObject::invokeMethod(
+                        sv, "debugEvalJs", Qt::DirectConnection,
+                        Q_RETURN_ARG(QString, rv),
+                        Q_ARG(QString, QString::fromStdString(js_src)));
+                    std::cout << "js-eval: " << js_src
+                              << " -> " << rv.toStdString() << std::endl;
+                });
+        }
+    }
+
     // --cursor X,Y   repeat cursor hover at that widget-space position each
     //                second (keeps hover-driven UI visible for screenshots).
     // --click  X,Y   fire a single click event 1s after startup.

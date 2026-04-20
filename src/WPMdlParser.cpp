@@ -75,9 +75,14 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         mdl.is_puppet = false;
         mdl.submeshes.resize(submesh_count);
 
-        // MDLV0023+ adds per-submesh bounding box and flags before vertex data,
-        // and 6 bytes padding after index data
-        const bool v23 = (mdl.mdlv >= 23);
+        // MDLV0023+ adds per-submesh bounding box and flags before vertex data
+        // (bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes) and 6
+        // bytes padding after index data.  Older mdlv (<=16, e.g. 3body's
+        // Hollow Cylinder.mdl) only has the flags_repeat uint32 before
+        // vertex_size — no bbox.  Reading the flags_repeat as vertex_size
+        // would produce vertex_size=15 which fails the stride check.
+        const bool v23  = (mdl.mdlv >= 23);
+        const bool v_flags_only = (mdl.mdlv >= 16 && mdl.mdlv < 23);
 
         for (uint32_t si = 0; si < submesh_count; si++) {
             auto& sub         = mdl.submeshes[si];
@@ -89,6 +94,9 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                 // Byte-skip via SeekCur avoids a loop of discarded ReadFloat() calls
                 // that Mull would mutate without observable effect.
                 f.SeekCur(28);
+            } else if (v_flags_only) {
+                // Older format: just skip the 4-byte flags_repeat.
+                f.SeekCur(4);
             }
 
             uint32_t vertex_size = f.ReadUint32();

@@ -97,6 +97,14 @@ struct ParseContext {
     // A pool of hidden scene nodes gets pre-allocated for each so that
     // thisScene.createLayer(asset) can instantiate them at runtime.
     std::unordered_set<std::string> registered_asset_paths;
+
+    // Per-asset pool-size hints derived from the enclosing script.  When a
+    // script implements its own object pool (pattern: `XxxPool.pop()`), it
+    // expects createLayer to eventually return many layers — one per pool
+    // entry.  We size the backend pool from the largest integer slider `max:`
+    // value in that script (e.g. 3body's `trailLength: {..., max: 400}` × N
+    // bodies) so LRU-recycle doesn't have to visibly cycle live trails.
+    std::unordered_map<std::string, size_t> asset_pool_size_hints;
 };
 
 using WPObjectVar =
@@ -2811,6 +2819,21 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             R"(getLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
         static const std::regex registerAssetRe(
             R"(registerAsset\s*\(\s*['"]([^'"]+)['"]\s*\))");
+        // WE's real createLayer accepts an object literal with an `image:`
+        // key directly — no registerAsset call required.  Extract those
+        // paths so we pre-allocate a pool for them too.  Non-greedy,
+        // dot-matches-all (C++ regex has ECMAScript semantics, so use
+        // [\s\S] to span newlines).
+        static const std::regex createLayerLiteralRe(
+            R"(createLayer\s*\(\s*\{[\s\S]*?(?:image|"image"|'image')\s*:\s*['"]([^'"]+)['"])");
+        // Script-managed pool pattern: `identifier + Pool . (pop|push|length)`.
+        // When present, the script expects createLayer to produce many
+        // long-lived layers it manages itself — an 8-slot backend pool is
+        // nowhere near enough.
+        static const std::regex scriptPoolRe(R"(\w*[Pp]ool\s*\.\s*(pop|push|length))");
+        // Integer slider maxes in the same script — used as pool-size hints.
+        // Matches `max: 400` but skips `max: 0.5` and `max: 1e10` (only `\d+`).
+        static const std::regex intMaxRe(R"(max\s*:\s*(\d+)\s*[,\n])");
         std::function<void(const nlohmann::json&)> scan;
         scan = [&](const nlohmann::json& j) {
             if (j.is_string()) {
@@ -2822,6 +2845,35 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 for (auto it = std::sregex_iterator(s.begin(), s.end(), registerAssetRe);
                      it != std::sregex_iterator(); ++it) {
                     context.registered_asset_paths.insert((*it)[1].str());
+                }
+                // Collect paths this script creates via literal form.
+                std::vector<std::string> thisScriptPaths;
+                for (auto it = std::sregex_iterator(
+                         s.begin(), s.end(), createLayerLiteralRe);
+                     it != std::sregex_iterator(); ++it) {
+                    context.registered_asset_paths.insert((*it)[1].str());
+                    thisScriptPaths.push_back((*it)[1].str());
+                }
+                // If this script manages its own pool, bump the backend pool
+                // size hint for everything it creates.
+                if (!thisScriptPaths.empty() &&
+                    std::regex_search(s, scriptPoolRe)) {
+                    size_t largestMax = 0;
+                    for (auto it = std::sregex_iterator(s.begin(), s.end(), intMaxRe);
+                         it != std::sregex_iterator(); ++it) {
+                        try {
+                            size_t v = std::stoull((*it)[1].str());
+                            if (v > largestMax) largestMax = v;
+                        } catch (...) {}
+                    }
+                    // 3x safety for multi-body scenes (e.g. 3body uses
+                    // trailLength × 3 bodies).  Cap at 2048 per WE's
+                    // documented layer limit.
+                    size_t hint = std::min<size_t>(2048, std::max<size_t>(8, largestMax * 3));
+                    for (const auto& p : thisScriptPaths) {
+                        auto& cur = context.asset_pool_size_hints[p];
+                        if (hint > cur) cur = hint;
+                    }
                 }
                 return;
             }
@@ -2984,8 +3036,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // support on the particle pipeline too.
     std::map<i32, std::string> pool_id_to_name;
     {
-        const int kPoolSize = 8; // enough for typical coin-spawn patterns
-        i32       synthId   = 2'000'000;
+        // Default 8 slots — plenty for typical coin/spawn patterns.  Scripts
+        // that run their own object pool (3body, trail systems) get the
+        // larger hint from asset_pool_size_hints.
+        const int kDefaultPoolSize = 8;
+        i32       synthId          = 2'000'000;
         // Assign pool nodes a json_order LATER than every real scene object.
         // The z-order sort at the end of parse uses json_order; nodes not in
         // the map are treated as cameras and sorted to the FRONT, which means
@@ -2999,6 +3054,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             std::string safePrefix = "__pool_" + assetPath;
             for (char& c : safePrefix)
                 if (c == '/' || c == '.') c = '_';
+            auto hint = context.asset_pool_size_hints.find(assetPath);
+            int kPoolSize = hint != context.asset_pool_size_hints.end()
+                                ? static_cast<int>(hint->second)
+                                : kDefaultPoolSize;
             for (int i = 0; i < kPoolSize; i++) {
                 std::string poolName = safePrefix + "_" + std::to_string(i);
                 i32         thisId   = synthId++;

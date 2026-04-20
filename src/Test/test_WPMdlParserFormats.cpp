@@ -151,6 +151,37 @@ TEST_CASE("flag 11: pos + normal + texcoord") {
     CHECK(s.vertexs[0].normal[1] == doctest::Approx(1.0f));
 }
 
+// Regression: mdlv=16 (3body's Hollow Cylinder.mdl) has an extra
+// per-submesh `flags_repeat` uint32 between the `int32(0)` padding and
+// vertex_size.  Without the 4-byte skip we were reading `flags_repeat`
+// (value 15, same as the top-level mdl_flag) as vertex_size → failed
+// stride check and the cylinder mesh never loaded.  Stars (mdlv=23) use
+// a larger 28-byte bbox+flags block; older mdlv only gets the 4 bytes.
+TEST_CASE("flag 15, mdlv 16: skips flags_repeat before vertex_size") {
+    Bytes b;
+    b.append_mdlv(16);
+    b.i32(15);
+    b.i32(1);
+    b.u32(1);
+    b.str("hollow.json");
+    b.i32(0);
+    b.u32(15); // flags_repeat — must be skipped by parser
+    b.u32(1 * 12 * 4); // 1 vert * 12 floats (48 bytes)
+    b.f32(0); b.f32(0); b.f32(0);
+    b.f32(0); b.f32(1); b.f32(0);
+    b.f32(1); b.f32(0); b.f32(0); b.f32(1);
+    b.f32(0); b.f32(0);
+    b.u32(0); // empty indices
+
+    fs::MemBinaryStream f(takeBuffer(std::move(b)));
+    WPMdl               mdl;
+    REQUIRE(WPMdlParser::ParseStream(f, "hollow.mdl", mdl));
+    REQUIRE(mdl.submeshes.size() == 1);
+    CHECK(mdl.submeshes[0].vertexs.size() == 1);
+    CHECK(mdl.submeshes[0].has_tangents);
+    CHECK(mdl.submeshes[0].vertexs[0].tangent[3] == doctest::Approx(1.0f));
+}
+
 TEST_CASE("flag 15: pos + normal + tangent + texcoord") {
     Bytes b;
     b.append_mdlv(13);

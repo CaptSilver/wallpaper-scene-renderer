@@ -960,12 +960,10 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         // Reset per-frame exec pass counter (extern from CustomShaderPass)
         extern int g_exec_pass_counter;
         extern int g_exec_frame_counter;
-        extern bool g_depth_transitioned;
-        extern bool g_refl_depth_transitioned;
+        extern std::unordered_set<VkImage> g_depth_inited_frame;
         g_exec_pass_counter = 0;
         g_exec_frame_counter = _render_frame_count;
-        g_depth_transitioned = false;
-        g_refl_depth_transitioned = false;
+        g_depth_inited_frame.clear();
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -1044,12 +1042,10 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         // Reset per-frame counters (extern from CustomShaderPass)
         extern int g_exec_pass_counter;
         extern int g_exec_frame_counter;
-        extern bool g_depth_transitioned;
-        extern bool g_refl_depth_transitioned;
+        extern std::unordered_set<VkImage> g_depth_inited_frame;
         g_exec_pass_counter = 0;
         g_exec_frame_counter = _render_frame_count;
-        g_depth_transitioned = false;
-        g_refl_depth_transitioned = false;
+        g_depth_inited_frame.clear();
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);

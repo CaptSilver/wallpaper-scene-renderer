@@ -138,6 +138,21 @@ public:
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
+
+    // Batched per-tick layer update — one lock for the entire dispatch pass.
+    // Flags: 1=origin 2=scale 4=angles 8=visible 16=alpha (matches JS
+    // DIRTY_STRIDE F_* constants).  Unset fields are ignored.
+    struct LayerBatchUpdate {
+        int32_t  id;
+        uint32_t flags;
+        float    origin[3];
+        float    scale[3];
+        float    angles[3];
+        float    alpha;
+        uint8_t  visible;
+    };
+    void applyLayerBatch(const std::vector<LayerBatchUpdate>& batch);
+
     void updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);

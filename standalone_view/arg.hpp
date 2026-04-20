@@ -163,6 +163,18 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .nargs(1)
         .scan<'g', double>();
 
+    arg.add_argument("--js-eval")
+        .help("run arbitrary JS in the SceneScript QJSEngine once at tick 1 "
+              "(e.g. 'shared.rst=1' to force a 3body universe reset)")
+        .default_value(std::string())
+        .nargs(1);
+
+    arg.add_argument("--js-eval-delay")
+        .help("seconds to wait before running --js-eval (default 2.0)")
+        .default_value<double>(2.0)
+        .nargs(1)
+        .scan<'g', double>();
+
     try {
         arg.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {

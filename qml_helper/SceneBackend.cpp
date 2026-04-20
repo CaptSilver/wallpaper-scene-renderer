@@ -677,6 +677,16 @@ void SceneObject::simulateDragAt(double x1, double y1, double x2, double y2) {
     mouseReleaseEvent(&release);
 }
 
+QString SceneObject::debugEvalJs(const QString& src) {
+    if (!m_jsEngine) {
+        LOG_INFO("debugEvalJs: js engine not ready yet — queuing for next tick");
+        m_pendingJsEval = src;
+        return QStringLiteral("(queued)");
+    }
+    QJSValue r = m_jsEngine->evaluate(src);
+    return r.toString();
+}
+
 void SceneObject::requestScreenshot(const QString& path) {
     if (m_scene) m_scene->requestScreenshot(path.toStdString());
 }
@@ -1266,38 +1276,59 @@ void SceneObject::setupTextScripts() {
         "}\n"
         "Vec2.fromString = function(s) { var p=String(s).trim().split(/\\s+/); return Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };\n"
         "Vec2.lerp = function(a,b,t) { return Vec2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t); };\n"
+        // Vec3 — prototype-based class so methods are shared across
+        // instances.  The old impl closed over ~24 methods + 3 defineProperty
+        // calls per Vec3(), which ran tens of thousands of times per tick in
+        // scenes like 3body (3509243656) with 1200 trail points.  Prototype
+        // dispatch keeps construction to a single {x,y,z} allocation.
         "function Vec3(x, y, z) {\n"
-        "  var v = { x: x||0, y: y||0, z: z||0 };\n"
-        "  v.multiply = function(s) { return Vec3(v.x*s, v.y*s, v.z*s); };\n"
-        "  v.add = function(o) { return Vec3(v.x+o.x, v.y+o.y, v.z+o.z); };\n"
-        "  v.subtract = function(o) { return Vec3(v.x-o.x, v.y-o.y, v.z-o.z); };\n"
-        "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z); };\n"
-        "  v.normalize = function() { var l=v.length()||1; return Vec3(v.x/l,v.y/l,v.z/l); };\n"
-        "  v.copy = function() { return Vec3(v.x, v.y, v.z); };\n"
-        "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
-        "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
-        "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
-        "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
-        "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
-        "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
-        "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z; };\n"
-        "  v.reflect = function(n) { var d=2*v.dot(n); return Vec3(v.x-d*n.x, v.y-d*n.y, v.z-d*n.z); };\n"
-        "  v.mix = function(o,t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
-        "  v.equals = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z; };\n"
-        "  v.toString = function() { return v.x+' '+v.y+' '+v.z; };\n"
-        "  v.min = function(o) { return Vec3(Math.min(v.x,o.x),Math.min(v.y,o.y),Math.min(v.z,o.z)); };\n"
-        "  v.max = function(o) { return Vec3(Math.max(v.x,o.x),Math.max(v.y,o.y),Math.max(v.z,o.z)); };\n"
-        "  v.abs = function() { return Vec3(Math.abs(v.x),Math.abs(v.y),Math.abs(v.z)); };\n"
-        "  v.sign = function() { return Vec3(Math.sign(v.x),Math.sign(v.y),Math.sign(v.z)); };\n"
-        "  v.round = function() { return Vec3(Math.round(v.x),Math.round(v.y),Math.round(v.z)); };\n"
-        "  v.floor = function() { return Vec3(Math.floor(v.x),Math.floor(v.y),Math.floor(v.z)); };\n"
-        "  v.ceil = function() { return Vec3(Math.ceil(v.x),Math.ceil(v.y),Math.ceil(v.z)); };\n"
-        // r/g/b aliases for use as color vectors (maps to x/y/z)
-        "  Object.defineProperty(v,'r',{get:function(){return v.x;},set:function(val){v.x=val;},enumerable:true});\n"
-        "  Object.defineProperty(v,'g',{get:function(){return v.y;},set:function(val){v.y=val;},enumerable:true});\n"
-        "  Object.defineProperty(v,'b',{get:function(){return v.z;},set:function(val){v.z=val;},enumerable:true});\n"
-        "  return v;\n"
+        "  if (!(this instanceof Vec3)) {\n"
+        "    var v = Object.create(Vec3.prototype);\n"
+        "    Vec3.call(v, x, y, z);\n"
+        "    return v;\n"
+        "  }\n"
+        "  if (typeof x === 'string') {\n"
+        "    var p = x.trim().split(/\\s+/);\n"
+        "    this.x = parseFloat(p[0])||0;\n"
+        "    this.y = parseFloat(p[1])||0;\n"
+        "    this.z = parseFloat(p[2])||0;\n"
+        "  } else if (x && typeof x === 'object') {\n"
+        "    this.x = x.x||0; this.y = x.y||0; this.z = x.z||0;\n"
+        "  } else {\n"
+        "    this.x = x||0; this.y = y||0; this.z = z||0;\n"
+        "  }\n"
         "}\n"
+        "Vec3.prototype.multiply  = function(s) { return Vec3(this.x*s, this.y*s, this.z*s); };\n"
+        "Vec3.prototype.add       = function(o) { return Vec3(this.x+o.x, this.y+o.y, this.z+o.z); };\n"
+        "Vec3.prototype.subtract  = function(o) { return Vec3(this.x-o.x, this.y-o.y, this.z-o.z); };\n"
+        "Vec3.prototype.length    = function() { return Math.sqrt(this.x*this.x+this.y*this.y+this.z*this.z); };\n"
+        "Vec3.prototype.normalize = function() { var l=this.length()||1; return Vec3(this.x/l,this.y/l,this.z/l); };\n"
+        "Vec3.prototype.copy      = function() { return Vec3(this.x, this.y, this.z); };\n"
+        "Vec3.prototype.dot       = function(o) { return this.x*o.x+this.y*o.y+this.z*o.z; };\n"
+        "Vec3.prototype.cross     = function(o) { return Vec3(this.y*o.z-this.z*o.y, this.z*o.x-this.x*o.z, this.x*o.y-this.y*o.x); };\n"
+        "Vec3.prototype.negate    = function() { return Vec3(-this.x,-this.y,-this.z); };\n"
+        "Vec3.prototype.divide    = function(s) { return Vec3(this.x/s, this.y/s, this.z/s); };\n"
+        "Vec3.prototype.lerp      = function(o, t) { return Vec3(this.x+(o.x-this.x)*t, this.y+(o.y-this.y)*t, this.z+(o.z-this.z)*t); };\n"
+        "Vec3.prototype.distance  = function(o) { var dx=this.x-o.x,dy=this.y-o.y,dz=this.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
+        "Vec3.prototype.lengthSqr = function() { return this.x*this.x+this.y*this.y+this.z*this.z; };\n"
+        "Vec3.prototype.reflect   = function(n) { var d=2*this.dot(n); return Vec3(this.x-d*n.x, this.y-d*n.y, this.z-d*n.z); };\n"
+        "Vec3.prototype.mix       = function(o,t) { return Vec3(this.x+(o.x-this.x)*t, this.y+(o.y-this.y)*t, this.z+(o.z-this.z)*t); };\n"
+        "Vec3.prototype.equals    = function(o) { return this.x===o.x && this.y===o.y && this.z===o.z; };\n"
+        "Vec3.prototype.toString  = function() { return this.x+' '+this.y+' '+this.z; };\n"
+        "Vec3.prototype.min       = function(o) { return Vec3(Math.min(this.x,o.x),Math.min(this.y,o.y),Math.min(this.z,o.z)); };\n"
+        "Vec3.prototype.max       = function(o) { return Vec3(Math.max(this.x,o.x),Math.max(this.y,o.y),Math.max(this.z,o.z)); };\n"
+        "Vec3.prototype.abs       = function() { return Vec3(Math.abs(this.x),Math.abs(this.y),Math.abs(this.z)); };\n"
+        "Vec3.prototype.sign      = function() { return Vec3(Math.sign(this.x),Math.sign(this.y),Math.sign(this.z)); };\n"
+        "Vec3.prototype.round     = function() { return Vec3(Math.round(this.x),Math.round(this.y),Math.round(this.z)); };\n"
+        "Vec3.prototype.floor     = function() { return Vec3(Math.floor(this.x),Math.floor(this.y),Math.floor(this.z)); };\n"
+        "Vec3.prototype.ceil      = function() { return Vec3(Math.ceil(this.x),Math.ceil(this.y),Math.ceil(this.z)); };\n"
+        // In-place setter — lets hot-path scripts reuse a Vec3 instead of
+        // allocating a fresh object every update.  Returns `this` to chain.
+        "Vec3.prototype.set       = function(x, y, z) { this.x=x||0; this.y=y||0; this.z=z||0; return this; };\n"
+        // r/g/b aliases for color-vector usage (shared on prototype).
+        "Object.defineProperty(Vec3.prototype,'r',{get:function(){return this.x;},set:function(v){this.x=v;},enumerable:true});\n"
+        "Object.defineProperty(Vec3.prototype,'g',{get:function(){return this.y;},set:function(v){this.y=v;},enumerable:true});\n"
+        "Object.defineProperty(Vec3.prototype,'b',{get:function(){return this.z;},set:function(v){this.z=v;},enumerable:true});\n"
         // Vec3.fromString: parses a WE color string "r g b" (space-separated floats)
         "Vec3.fromString = function(s) {\n"
         "  var p = String(s).trim().split(/\\s+/);\n"
@@ -1456,13 +1487,44 @@ void SceneObject::setupTextScripts() {
         "    engine._assetPools[k] = _layerInitStates._assetPools[k].slice();\n"
         "  delete _layerInitStates._assetPools;\n"
         "}\n"
+        "engine._assetLive = {};\n"
     );
 
     // thisScene.getLayer() and thisLayer infrastructure
     // Layer proxies use Object.defineProperty for dirty tracking
     m_jsEngine->evaluate(
         "var _layerCache = {};\n"
+        // Pool-layer fast path: for slots whose name starts with __pool_,
+        // skip the defineProperty-based proxy entirely and return a plain
+        // object.  Scripts mutate origin/scale/angles/alpha/visible directly
+        // (no setter overhead).  _collectDirtyLayers snapshots and compares
+        // at tick boundary.  Cuts ~200k per-second setter invocations for
+        // 1200-slot trail scenes like 3body.
+        "function _makePoolLayerProxy(name) {\n"
+        "  var init = _layerInitStates[name];\n"
+        "  var p = {\n"
+        "    _pool: true,\n"
+        "    name: name,\n"
+        "    origin: init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0),\n"
+        "    scale:  init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1),\n"
+        "    angles: init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0),\n"
+        "    alpha: 1.0, visible: init ? init.v : true,\n"
+        "    color: Vec3(1,1,1), text: '', pointsize: 0,\n"
+        "    __asset: null\n"
+        "  };\n"
+        // Snapshot used by _collectDirtyLayers to detect changes.
+        "  p._prev = { ox: p.origin.x, oy: p.origin.y, oz: p.origin.z,\n"
+        "              sx: p.scale.x, sy: p.scale.y, sz: p.scale.z,\n"
+        "              ax: p.angles.x, ay: p.angles.y, az: p.angles.z,\n"
+        "              alpha: p.alpha, visible: p.visible };\n"
+        "  return p;\n"
+        "}\n"
         "function _makeLayerProxy(name) {\n"
+        "  if (name.charCodeAt(0) === 95 && name.charCodeAt(1) === 95 &&\n"
+        "      name.charCodeAt(2) === 112 && name.charCodeAt(3) === 111 &&\n"
+        "      name.charCodeAt(4) === 111 && name.charCodeAt(5) === 108) {\n"
+        "    return _makePoolLayerProxy(name);\n"
+        "  }\n"
         "  var init = _layerInitStates[name];\n"
         "  var _s = init ? {\n"
         "    origin: Vec3(init.o[0], init.o[1], init.o[2]),\n"
@@ -1491,8 +1553,20 @@ void SceneObject::setupTextScripts() {
         "  for (var i=0; i<vec3Props.length; i++) {\n"
         "    (function(prop){\n"
         "      Object.defineProperty(p, prop, {\n"
+        // Getter still copies — scripts that do
+        //   initialPos = thisLayer.origin; marioPos = thisLayer.origin;
+        // rely on these being independent snapshots; otherwise a later
+        // mutation to one affects the other.  See the proxy-aliasing
+        // gotcha note in dynamic-asset-pool.md.
         "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
-        "        set: function(v){ _s[prop] = Vec3(v && v.x||0, v && v.y||0, v && v.z||0);\n"
+        // Setter: skip the defensive Vec3 copy.  Scripts overwhelmingly do
+        //   thisLayer.origin = Vec3(x, y, z)
+        // with a fresh allocation — the old impl then allocated ANOTHER Vec3
+        // to copy from that one, an alloc storm in hot paths like 3body's
+        // 1200-trail updateTrailAppearance.  Stored value is what the script
+        // passed; if it later mutates that reference, that's scripts-own
+        // aliasing behavior (matches WE).
+        "        set: function(v){ _s[prop] = v ? (v instanceof Vec3 ? v : Vec3(v.x||0, v.y||0, v.z||0)) : Vec3(0,0,0);\n"
         "                          _s._dirty[prop] = true; },\n"
         "        enumerable: true\n"
         "      });\n"
@@ -1629,7 +1703,9 @@ void SceneObject::setupTextScripts() {
         "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: true });\n"
         "    Object.defineProperty(ep, 'visible', {\n"
         "      get: function(){ return es.visible; },\n"
-        "      set: function(v){ es.visible = v; _s._dirty['_efx_' + idx] = { idx: idx, v: v }; },\n"
+        "      set: function(v){ es.visible = v;\n"
+        "        if (!_s._efxDirty) _s._efxDirty = [];\n"
+        "        _s._efxDirty.push(idx, v ? 1 : 0); },\n"
         "      enumerable: true\n"
         "    });\n"
         "    _s._effCache[ename] = ep;\n"
@@ -1758,26 +1834,64 @@ void SceneObject::setupTextScripts() {
         "var scene = thisScene;\n"
         "var thisLayer = null;\n"
         // createLayer pops a hidden pool node; destroyLayer returns it.
+        // Two calling conventions:
+        //   1. engine.registerAsset('path') → { __asset: 'path' }; then
+        //      createLayer(thatAsset).  Used by dino_run etc.
+        //   2. Object literal: createLayer({image: 'path', origin:..., ...}).
+        //      WE's real API; pre-scan in WPSceneParser seeds the pool for
+        //      any paths it finds.  Extra keys (origin/scale/angles/alpha/
+        //      visible/color) are applied to the rented layer after it's
+        //      popped, so trail-style scripts that rely on "initial
+        //      position from literal" behave as on WE.
         // Fallback: if asset wasn't pre-scanned or pool exhausted, return a
         // throwaway stub so scripts don't crash (but the "layer" renders
         // nothing).
+        // Helper: apply object-literal properties to a rented layer.
+        "function _applyLayerLiteral(layer, asset) {\n"
+        "  if (asset && !asset.__asset) {\n"
+        "    if (asset.origin) layer.origin = asset.origin;\n"
+        "    if (asset.scale)  layer.scale  = asset.scale;\n"
+        "    if (asset.angles) layer.angles = asset.angles;\n"
+        "    if ('alpha' in asset) layer.alpha = asset.alpha;\n"
+        "    if (asset.color) layer.color = asset.color;\n"
+        "    layer.visible = ('visible' in asset) ? !!asset.visible : true;\n"
+        "  } else {\n"
+        "    layer.visible = true;\n"
+        "  }\n"
+        "}\n"
         "thisScene.createLayer = function(asset) {\n"
-        "  var path = asset && asset.__asset;\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
         "  var pool = path && engine._assetPools[path];\n"
+        "  if (!engine._assetLive[path]) engine._assetLive[path] = [];\n"
+        "  var live = engine._assetLive[path];\n"
+        "  var name = null;\n"
         "  if (pool && pool.length > 0) {\n"
-        "    var name  = pool.shift();\n"
+        "    name = pool.shift();\n"
+        "  } else if (live.length > 0) {\n"
+        // LRU recycle: reuse the oldest live slot.  Scripts that call
+        // createLayer in a loop without destroyLayer (3body MAIN, dino_run
+        // coins, etc.) would otherwise exhaust the 8-slot pool and hit a
+        // stub.  Recycling keeps createLayer always returning a real node.
+        "    name = live.shift();\n"
+        "    console.log('createLayer LRU-recycle: path=' + path + ' name=' + name);\n"
+        "  }\n"
+        "  if (name) {\n"
         "    var layer = thisScene.getLayer(name);\n"
         "    if (layer && layer !== _nullProxy) {\n"
         "      layer.__asset = path;\n"
-        "      layer.visible = true;\n"
+        "      _applyLayerLiteral(layer, asset);\n"
+        "      live.push(name);\n"
         "      console.log('createLayer OK: path=' + path + ' name=' + name +\n"
-        "                  ' pool.remaining=' + pool.length);\n"
+        "                  ' pool.free=' + (pool ? pool.length : 0) +\n"
+        "                  ' live=' + live.length);\n"
         "      return layer;\n"
         "    }\n"
         "    console.log('createLayer: pool layer ' + name + ' not a real proxy');\n"
         "  }\n"
-        "  console.log('createLayer FALLBACK stub: path=' + path +\n"
-        "              ' poolSize=' + (pool ? pool.length : 'none'));\n"
+        // Pool never registered for this path — pre-scan missed it.  Loudly
+        // report so the caller can extend the scan (see feedback_no_stubs).
+        "  console.log('createLayer NO-POOL: path=' + path +\n"
+        "              ' (pre-scan did not register this asset)');\n"
         "  return { __stub: true, __asset: path,\n"
         "    origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
         "    alpha: 1.0, visible: true, text: '',\n"
@@ -1789,7 +1903,13 @@ void SceneObject::setupTextScripts() {
         "  if (!layer || layer.__stub) return;\n"
         "  layer.visible = false;\n"
         "  var path = layer.__asset;\n"
-        "  if (path && engine._assetPools[path] && layer.name)\n"
+        "  if (!path) return;\n"
+        "  var live = engine._assetLive[path];\n"
+        "  if (live && layer.name) {\n"
+        "    var idx = live.indexOf(layer.name);\n"
+        "    if (idx >= 0) live.splice(idx, 1);\n"
+        "  }\n"
+        "  if (engine._assetPools[path] && layer.name)\n"
         "    engine._assetPools[path].push(layer.name);\n"
         "};\n"
         "thisScene.sortLayer    = function(layer, index) { /* noop */ };\n"
@@ -1797,22 +1917,85 @@ void SceneObject::setupTextScripts() {
         "  var l = thisScene.getLayer(name);\n"
         "  return l && typeof l._index === 'number' ? l._index : 0;\n"
         "};\n"
+        // _collectDirtyLayers returns a FLAT array.  Each dirty layer
+        // contributes a fixed 17-entry block:
+        //   [0]  name (string)
+        //   [1]  flags (int bitmask): 1=origin 2=scale 4=angles 8=visible
+        //        16=alpha 32=text 64=pointsize 128=cmds 256=efx
+        //   [2-4]  origin x,y,z
+        //   [5-7]  scale x,y,z
+        //   [8-10] angles x,y,z
+        //   [11] alpha (float)
+        //   [12] visible (0 or 1)
+        //   [13] pointsize (float)
+        //   [14] text (string) or null
+        //   [15] cmds (array of strings) or null
+        //   [16] efxList (array of [idx,visible] tuples) or null
+        // The old version returned nested objects — C++ did ~30 QJSValue
+        // property reads per layer.  Flat layout cuts that to 17, and most
+        // values short-circuit to null when their flag isn't set.
+        "var DIRTY_STRIDE = 17;\n"
+        "var F_ORIGIN=1, F_SCALE=2, F_ANGLES=4, F_VISIBLE=8, F_ALPHA=16,\n"
+        "    F_TEXT=32, F_PSIZE=64, F_CMDS=128, F_EFX=256;\n"
         "function _collectDirtyLayers() {\n"
-        "  var updates = [];\n"
+        "  var out = [];\n"
         "  for (var name in _layerCache) {\n"
-        "    var s = _layerCache[name]._state;\n"
+        "    var layer = _layerCache[name];\n"
+        "    if (layer._pool) {\n"
+        // Pool fast path: plain properties, snapshot-compare for dirty.
+        "      var prev = layer._prev;\n"
+        "      var o = layer.origin, sc = layer.scale, a = layer.angles;\n"
+        "      var flags = 0;\n"
+        "      if (o.x !== prev.ox || o.y !== prev.oy || o.z !== prev.oz)\n"
+        "        { flags |= F_ORIGIN; prev.ox = o.x; prev.oy = o.y; prev.oz = o.z; }\n"
+        "      if (sc.x !== prev.sx || sc.y !== prev.sy || sc.z !== prev.sz)\n"
+        "        { flags |= F_SCALE; prev.sx = sc.x; prev.sy = sc.y; prev.sz = sc.z; }\n"
+        "      if (a.x !== prev.ax || a.y !== prev.ay || a.z !== prev.az)\n"
+        "        { flags |= F_ANGLES; prev.ax = a.x; prev.ay = a.y; prev.az = a.z; }\n"
+        "      if (layer.alpha !== prev.alpha)\n"
+        "        { flags |= F_ALPHA; prev.alpha = layer.alpha; }\n"
+        "      if (layer.visible !== prev.visible)\n"
+        "        { flags |= F_VISIBLE; prev.visible = layer.visible; }\n"
+        "      if (flags === 0) continue;\n"
+        "      out.push(\n"
+        "        name, flags,\n"
+        "        o.x, o.y, o.z,\n"
+        "        sc.x, sc.y, sc.z,\n"
+        "        a.x, a.y, a.z,\n"
+        "        layer.alpha, layer.visible ? 1 : 0, 0,\n"
+        "        null, null, null);\n"
+        "      continue;\n"
+        "    }\n"
+        "    var s = layer._state;\n"
         "    var d = s._dirty;\n"
-        "    var cmds = s._cmds || [];\n"
-        "    var keys = Object.keys(d);\n"
-        "    if (keys.length === 0 && cmds.length === 0) continue;\n"
-        "    updates.push({ name: name, dirty: d, cmds: cmds.slice(),\n"
-        "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
-        "      visible: s.visible, alpha: s.alpha, text: s.text,\n"
-        "      pointsize: s.pointsize });\n"
+        "    var cmds = s._cmds;\n"
+        "    var efxList = s._efxDirty;\n"
+        "    var flags = 0;\n"
+        "    if (d.origin)    flags |= F_ORIGIN;\n"
+        "    if (d.scale)     flags |= F_SCALE;\n"
+        "    if (d.angles)    flags |= F_ANGLES;\n"
+        "    if (d.visible)   flags |= F_VISIBLE;\n"
+        "    if (d.alpha)     flags |= F_ALPHA;\n"
+        "    if (d.text)      flags |= F_TEXT;\n"
+        "    if (d.pointsize) flags |= F_PSIZE;\n"
+        "    if (cmds && cmds.length) flags |= F_CMDS;\n"
+        "    if (efxList && efxList.length) flags |= F_EFX;\n"
+        "    if (flags === 0) continue;\n"
+        "    var o = s.origin, sc = s.scale, a = s.angles;\n"
+        "    out.push(\n"
+        "      name, flags,\n"
+        "      o.x, o.y, o.z,\n"
+        "      sc.x, sc.y, sc.z,\n"
+        "      a.x, a.y, a.z,\n"
+        "      s.alpha, s.visible ? 1 : 0, s.pointsize,\n"
+        "      (flags & F_TEXT) ? s.text : null,\n"
+        "      (flags & F_CMDS) ? cmds.slice() : null,\n"
+        "      (flags & F_EFX) ? efxList.slice() : null);\n"
         "    s._dirty = {};\n"
-        "    if (cmds.length) s._cmds = [];\n"
+        "    if (flags & F_CMDS) s._cmds = [];\n"
+        "    if (flags & F_EFX)  s._efxDirty = [];\n"
         "  }\n"
-        "  return updates;\n"
+        "  return out;\n"
         "}\n"
     );
 
@@ -2972,7 +3155,13 @@ void SceneObject::setupTextScripts() {
     if (!m_propertyScriptStates.empty() || !m_soundVolumeScriptStates.empty()
         || !m_soundLayerStates.empty() || hasUpdateListeners) {
         m_propertyTimer = new QTimer(this);
-        m_propertyTimer->setInterval(33); // ~30Hz for smooth orbital animation
+        // PreciseTimer + 8ms for ~120Hz.  After the Vec3/slim-dirty/pool
+        // optimization pass the per-tick cost dropped from ~42ms to ~5.7ms,
+        // so we have budget to double the tick rate.  This quadruples the
+        // simulated physics time per wall-second for scenes like 3body
+        // (3509243656) whose chaotic 3-body takes sim-seconds to diverge.
+        m_propertyTimer->setTimerType(Qt::PreciseTimer);
+        m_propertyTimer->setInterval(8);
         connect(m_propertyTimer, &QTimer::timeout, this, &SceneObject::evaluatePropertyScripts);
         m_propertyTimer->start();
 
@@ -3057,12 +3246,26 @@ void SceneObject::evaluateTextScripts() {
         cwp.setProperty("y", (double)m_cursorSceneY);
     }
 
+    static const bool s_textDiag = []() {
+        const char* v = std::getenv("WEKDE_SCRIPT_DIAG");
+        return v && v[0] && v[0] != '0';
+    }();
+
+    int updated = 0, errors = 0;
     for (auto& state : m_textScriptStates) {
         QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
         if (result.isError()) {
+            errors++;
             static std::unordered_set<int> textErroredIds;
             if (textErroredIds.find(state.id) == textErroredIds.end()) {
                 textErroredIds.insert(state.id);
+                QString stack = result.property("stack").toString();
+                int line = result.property("lineNumber").toInt();
+                // Plain-C LOG_INFO matches property-script errors so they
+                // surface in the journal too (qCWarning is invisible there).
+                LOG_INFO("Text script RUNTIME ERROR id=%d: %s (line %d)\nSTACK: %s",
+                         state.id, qPrintable(result.toString()), line,
+                         qPrintable(stack));
                 qCWarning(wekdeScene, "Text script runtime error id=%d: %s",
                            state.id, qPrintable(result.toString()));
             }
@@ -3070,8 +3273,29 @@ void SceneObject::evaluateTextScripts() {
         }
         QString newText = result.toString();
         if (newText != state.currentText) {
+            if (s_textDiag) {
+                // Log the new value (truncated) — essential for blank-HUD
+                // debugging where you can't see the text on screen but want
+                // to know whether scripts are producing text at all.
+                QString preview = newText;
+                preview.replace('\n', '\\');
+                if (preview.size() > 80) preview = preview.left(80) + "...";
+                LOG_INFO("Text script id=%d update: \"%s\"",
+                         state.id, qPrintable(preview));
+            }
             state.currentText = newText;
             m_scene->updateText(state.id, newText.toStdString());
+            updated++;
+        }
+    }
+
+    if (s_textDiag) {
+        static int s_textTick = 0;
+        s_textTick++;
+        // Summary every 10 ticks (text timer is 500ms → every 5 seconds).
+        if (s_textTick % 10 == 0) {
+            LOG_INFO("DIAG text tick=%d total=%zu updated=%d errors=%d",
+                     s_textTick, m_textScriptStates.size(), updated, errors);
         }
     }
 }
@@ -3158,6 +3382,74 @@ void SceneObject::evaluatePropertyScripts() {
         if (++s_gc_counter % 900 == 0) { // every ~30s at 30Hz
             m_jsEngine->collectGarbage();
         }
+    }
+
+    // --- Per-phase timing probes ---------------------------------------------
+    // Track cumulative microseconds per phase across ~90 ticks; dump under
+    // WEKDE_SCRIPT_DIAG.  Zero overhead when diag is off (elapsed() is cheap;
+    // the branch to accumulate is the only work).
+    static const bool s_probeTimings = []() {
+        const char* v = std::getenv("WEKDE_SCRIPT_DIAG");
+        return v && v[0] && v[0] != '0';
+    }();
+    static qint64 s_t_prelude = 0;
+    static qint64 s_t_scripts = 0;
+    static qint64 s_t_dirtyCollect = 0;
+    static qint64 s_t_dirtyDispatch = 0;
+    static qint64 s_t_sound = 0;
+    static qint64 s_t_scene = 0;
+    static qint64 s_t_total = 0;
+    QElapsedTimer probe;
+    if (s_probeTimings) probe.start();
+    auto probeMark = [&](qint64& accum) {
+        if (s_probeTimings) {
+            accum += probe.nsecsElapsed() / 1000; // microseconds
+            probe.restart();
+        }
+    };
+
+    // --- SceneScript diagnostic tick ---------------------------------------
+    // Opt-in via WEKDE_SCRIPT_DIAG=1 env var.  Every ~90 ticks (~3s at 30Hz)
+    // dumps a snapshot of the JS `shared` object + per-tick update / error
+    // counts.  Cheap when disabled (one env read the first time, short
+    // counter increment otherwise); intentionally noisy when on so that a
+    // blank-screen bug like Three-Body (3509243656) exposes *what* the
+    // scripts are actually computing.
+    static const bool s_scriptDiag = []() {
+        const char* v = std::getenv("WEKDE_SCRIPT_DIAG");
+        return v && v[0] && v[0] != '0';
+    }();
+    static int         s_diagTick       = 0;
+    static int         s_updatesVec3    = 0;
+    static int         s_updatesAlpha   = 0;
+    static int         s_updatesVisible = 0;
+    static int         s_errorsThisWin  = 0;
+    if (s_scriptDiag) {
+        s_diagTick++;
+        if (s_diagTick == 1) {
+            // Boot dump: counts of compiled scripts, so users see what the
+            // scene actually registered vs. what they expect.
+            int visCount = 0, alphaCount = 0, vec3Count = 0;
+            for (auto& st : m_propertyScriptStates) {
+                if (st.property == "visible")      visCount++;
+                else if (st.property == "alpha")   alphaCount++;
+                else                                vec3Count++;
+            }
+            LOG_INFO("DIAG boot: property scripts total=%zu (visible=%d "
+                     "alpha=%d vec3=%d) text=%zu color=%zu sound_vol=%zu "
+                     "sound_layer=%zu",
+                     m_propertyScriptStates.size(), visCount, alphaCount, vec3Count,
+                     m_textScriptStates.size(), m_colorScriptStates.size(),
+                     m_soundVolumeScriptStates.size(), m_soundLayerStates.size());
+        }
+    }
+
+    // One-shot debug JS eval from --js-eval (queued before engine was ready).
+    if (!m_pendingJsEval.isEmpty()) {
+        QJSValue r = m_jsEngine->evaluate(m_pendingJsEval);
+        LOG_INFO("debugEvalJs deferred: '%s' -> %s",
+                 qPrintable(m_pendingJsEval), qPrintable(r.toString()));
+        m_pendingJsEval.clear();
     }
 
     // Update engine globals
@@ -3277,6 +3569,8 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    probeMark(s_t_prelude);
+
     // Evaluate in order: visible first (computes shared.*), then vec3 props, then alpha
     for (int pass = 0; pass < 3; pass++) {
         for (auto& state : m_propertyScriptStates) {
@@ -3309,6 +3603,7 @@ void SceneObject::evaluatePropertyScripts() {
 
             QJSValue result = state.updateFn.call({ arg });
             if (result.isError()) {
+                if (s_scriptDiag) s_errorsThisWin++;
                 static std::unordered_set<int> erroredIds;
                 if (erroredIds.find(state.id * 100 + pass) == erroredIds.end()) {
                     erroredIds.insert(state.id * 100 + pass);
@@ -3333,6 +3628,7 @@ void SceneObject::evaluatePropertyScripts() {
                     if (newVal != state.currentVisible) {
                         state.currentVisible = newVal;
                         m_scene->updateNodeVisible(state.id, newVal);
+                        if (s_scriptDiag) s_updatesVisible++;
                     }
                 }
             } else if (isAlpha) {
@@ -3341,6 +3637,7 @@ void SceneObject::evaluatePropertyScripts() {
                     if (std::abs(newVal - state.currentFloat) > 0.001f) {
                         state.currentFloat = newVal;
                         m_scene->updateNodeAlpha(state.id, newVal);
+                        if (s_scriptDiag) s_updatesAlpha++;
                     }
                 }
             } else if (result.isObject() && result.hasProperty("x")) {
@@ -3352,107 +3649,165 @@ void SceneObject::evaluatePropertyScripts() {
                     std::abs(z - state.currentVec3[2]) > 0.0001f) {
                     state.currentVec3 = { x, y, z };
                     m_scene->updateNodeTransform(state.id, state.property, x, y, z);
+                    if (s_scriptDiag) s_updatesVec3++;
                 }
             }
         }
     }
 
+    // Periodic summary every ~3s — tick counts + shared.* keys dump.  Cheap
+    // to enumerate via QJSValue.property iteration (Object.keys under the
+    // hood), but only done when diagnostics are on.
+    if (s_scriptDiag && (s_diagTick % 90 == 0)) {
+        QJSValue shared = m_jsEngine->globalObject().property("shared");
+        QJSValue keysFn = m_jsEngine->evaluate(
+            "(function(o){var k=[]; for(var n in o) k.push(n); return k;})");
+        QJSValue keys = keysFn.call({ shared });
+        int keyCount = keys.property("length").toInt();
+        QString sample;
+        sample.reserve(512);
+        int shown = 0;
+        for (int i = 0; i < keyCount && shown < 20; i++) {
+            QString k = keys.property(i).toString();
+            QJSValue v = shared.property(k);
+            QString vs;
+            if (v.isNumber())      vs = QString::number(v.toNumber(), 'g', 4);
+            else if (v.isBool())   vs = v.toBool() ? "true" : "false";
+            else if (v.isString()) {
+                QString s = v.toString();
+                if (s.size() > 32) s = s.left(32) + "...";
+                vs = '"' + s + '"';
+            }
+            else if (v.isUndefined()) vs = "undef";
+            else                      vs = "<obj>";
+            if (!sample.isEmpty()) sample += ", ";
+            sample += k + "=" + vs;
+            shown++;
+        }
+        LOG_INFO("DIAG tick=%d runtime=%.1fs shared[%d]: %s%s | "
+                 "updates vec3=%d alpha=%d visible=%d errors=%d",
+                 s_diagTick, runtimeSecs, keyCount, qPrintable(sample),
+                 keyCount > shown ? " ..." : "",
+                 s_updatesVec3, s_updatesAlpha, s_updatesVisible, s_errorsThisWin);
+        s_updatesVec3 = s_updatesAlpha = s_updatesVisible = s_errorsThisWin = 0;
+    }
+
+    probeMark(s_t_scripts);
+
     // Fire scene.on("update") listeners — after IIFE updates, before dirty flush
     fireSceneEventListeners("update");
 
-    // Flush dirty layer proxies from thisScene.getLayer() side effects
+    // Flush dirty layer proxies — flat layout (see DIRTY_STRIDE in JS).
+    // Each dirty layer uses 17 array slots; we read sequentially and
+    // branch on the flags bitmask instead of doing separate boolean reads
+    // for each dirty bit.
+    constexpr int DIRTY_STRIDE = 17;
+    constexpr uint32_t F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4,
+                       F_VISIBLE = 8, F_ALPHA = 16, F_TEXT = 32,
+                       F_PSIZE = 64, F_CMDS = 128, F_EFX = 256;
     int dirtyLayerCount = 0;
     int dirtyLayerMiss = 0;
     if (m_collectDirtyLayersFn.isCallable()) {
         QJSValue updates = m_collectDirtyLayersFn.call();
-        dirtyLayerCount = updates.property("length").toInt();
-        for (int i = 0; i < dirtyLayerCount; i++) {
-            QJSValue entry = updates.property(i);
-            std::string name = entry.property("name").toString().toStdString();
+        probeMark(s_t_dirtyCollect);
+        int totalEntries = updates.property("length").toInt();
+        dirtyLayerCount = totalEntries / DIRTY_STRIDE;
+
+        // Batch origin/scale/angles/alpha/visible updates so we take the
+        // scene's property-update mutex once instead of per-field.
+        static thread_local std::vector<wallpaper::SceneWallpaper::LayerBatchUpdate>
+            s_batch;
+        s_batch.clear();
+        s_batch.reserve(dirtyLayerCount);
+        constexpr uint32_t HOT_FLAGS =
+            F_ORIGIN | F_SCALE | F_ANGLES | F_ALPHA | F_VISIBLE;
+
+        for (int base = 0; base < totalEntries; base += DIRTY_STRIDE) {
+            std::string name =
+                updates.property(base + 0).toString().toStdString();
             auto it = m_nodeNameToId.find(name);
             if (it == m_nodeNameToId.end()) {
                 dirtyLayerMiss++;
                 static std::unordered_set<std::string> loggedMisses;
                 if (loggedMisses.find(name) == loggedMisses.end()) {
                     loggedMisses.insert(name);
-                    qCWarning(wekdeScene, "Dirty layer '%s' not found in nodeNameToId (%zu entries)",
+                    qCWarning(wekdeScene,
+                              "Dirty layer '%s' not found in nodeNameToId "
+                              "(%zu entries)",
                               name.c_str(), m_nodeNameToId.size());
                 }
                 continue;
             }
             int32_t id = it->second;
+            uint32_t flags =
+                (uint32_t)updates.property(base + 1).toInt();
 
-            QJSValue dirty = entry.property("dirty");
-
-            if (dirty.property("origin").toBool()) {
-                QJSValue o = entry.property("origin");
-                m_scene->updateNodeTransform(id, "origin",
-                    (float)o.property("x").toNumber(),
-                    (float)o.property("y").toNumber(),
-                    (float)o.property("z").toNumber());
+            if (flags & HOT_FLAGS) {
+                wallpaper::SceneWallpaper::LayerBatchUpdate bu{};
+                bu.id    = id;
+                bu.flags = flags & HOT_FLAGS;
+                if (flags & F_ORIGIN) {
+                    bu.origin[0] = (float)updates.property(base + 2).toNumber();
+                    bu.origin[1] = (float)updates.property(base + 3).toNumber();
+                    bu.origin[2] = (float)updates.property(base + 4).toNumber();
+                }
+                if (flags & F_SCALE) {
+                    bu.scale[0] = (float)updates.property(base + 5).toNumber();
+                    bu.scale[1] = (float)updates.property(base + 6).toNumber();
+                    bu.scale[2] = (float)updates.property(base + 7).toNumber();
+                }
+                if (flags & F_ANGLES) {
+                    bu.angles[0] = (float)updates.property(base + 8).toNumber();
+                    bu.angles[1] = (float)updates.property(base + 9).toNumber();
+                    bu.angles[2] = (float)updates.property(base + 10).toNumber();
+                }
+                if (flags & F_ALPHA) {
+                    bu.alpha = (float)updates.property(base + 11).toNumber();
+                }
+                if (flags & F_VISIBLE) {
+                    bu.visible = updates.property(base + 12).toInt() != 0 ? 1 : 0;
+                }
+                s_batch.push_back(bu);
             }
-            if (dirty.property("scale").toBool()) {
-                QJSValue s = entry.property("scale");
-                m_scene->updateNodeTransform(id, "scale",
-                    (float)s.property("x").toNumber(),
-                    (float)s.property("y").toNumber(),
-                    (float)s.property("z").toNumber());
+            // Low-frequency fields stay on the individual-setter path — these
+            // don't fire every tick so a per-call lock is harmless.
+            if (flags & F_PSIZE) {
+                m_scene->updateTextPointsize(
+                    id, (float)updates.property(base + 13).toNumber());
             }
-            if (dirty.property("angles").toBool()) {
-                QJSValue a = entry.property("angles");
-                m_scene->updateNodeTransform(id, "angles",
-                    (float)a.property("x").toNumber(),
-                    (float)a.property("y").toNumber(),
-                    (float)a.property("z").toNumber());
+            if (flags & F_TEXT) {
+                m_scene->updateText(
+                    id, updates.property(base + 14).toString().toStdString());
             }
-            if (dirty.property("visible").toBool()) {
-                m_scene->updateNodeVisible(id, entry.property("visible").toBool());
-            }
-            if (dirty.property("alpha").toBool()) {
-                m_scene->updateNodeAlpha(id, (float)entry.property("alpha").toNumber());
-            }
-            if (dirty.property("pointsize").toBool()) {
-                float ps = (float)entry.property("pointsize").toNumber();
-                m_scene->updateTextPointsize(id, ps);
-            }
-            if (dirty.property("text").toBool()) {
-                std::string newText = entry.property("text").toString().toStdString();
-                m_scene->updateText(id, newText);
-            }
-            // Handle effect visibility dirty entries (_efx_N keys)
-            {
-                QJSValueIterator it(dirty);
-                while (it.hasNext()) {
-                    it.next();
-                    if (it.name().startsWith("_efx_")) {
-                        QJSValue efxEntry = it.value();
-                        int effIdx = efxEntry.property("idx").toInt();
-                        bool effVis = efxEntry.property("v").toBool();
-                        m_scene->updateEffectVisible(id, effIdx, effVis);
-                    }
+            if (flags & F_CMDS) {
+                QJSValue cmds = updates.property(base + 15);
+                int cmdCount = cmds.property("length").toInt();
+                for (int c = 0; c < cmdCount; c++) {
+                    QString cmd = cmds.property(c).toString();
+                    if (!cmd.startsWith("panim_")) continue;
+                    int sep = cmd.indexOf(':');
+                    if (sep < 0) continue;
+                    std::string an = cmd.mid(sep + 1).toStdString();
+                    QString action = cmd.mid(6, sep - 6);
+                    if (action == "play")       m_scene->propertyAnimPlay(id, an);
+                    else if (action == "stop")  m_scene->propertyAnimStop(id, an);
+                    else if (action == "pause") m_scene->propertyAnimPause(id, an);
                 }
             }
-
-            // Layer-level command queue: named property-animation controls
-            // from layer.getAnimation(name).play()/stop()/pause().  Commands
-            // are prefixed "panim_<cmd>:<name>" so we can grow this channel
-            // without extra dirty keys.
-            QJSValue cmds = entry.property("cmds");
-            int cmdCount = cmds.isArray() ? cmds.property("length").toInt() : 0;
-            for (int c = 0; c < cmdCount; c++) {
-                QString cmd = cmds.property(c).toString();
-                if (! cmd.startsWith("panim_")) continue;
-                int sep = cmd.indexOf(':');
-                if (sep < 0) continue;
-                QString action = cmd.mid(6, sep - 6);       // between "panim_" and ':'
-                QString animName = cmd.mid(sep + 1);
-                std::string an = animName.toStdString();
-                if (action == "play")  m_scene->propertyAnimPlay(id, an);
-                else if (action == "stop")  m_scene->propertyAnimStop(id, an);
-                else if (action == "pause") m_scene->propertyAnimPause(id, an);
+            if (flags & F_EFX) {
+                QJSValue efxList = updates.property(base + 16);
+                int efxLen = efxList.property("length").toInt();
+                for (int e = 0; e < efxLen; e += 2) {
+                    int effIdx = efxList.property(e).toInt();
+                    bool effVis = efxList.property(e + 1).toInt() != 0;
+                    m_scene->updateEffectVisible(id, effIdx, effVis);
+                }
             }
         }
+        if (!s_batch.empty()) m_scene->applyLayerBatch(s_batch);
     }
+
+    probeMark(s_t_dirtyDispatch);
 
     // Flush dirty sound layer proxies (play/stop/pause/volume commands)
     if (m_collectDirtySoundLayersFn.isCallable()) {
@@ -3508,6 +3863,8 @@ void SceneObject::evaluatePropertyScripts() {
             }
         }
     }
+
+    probeMark(s_t_sound);
 
     // Flush dirty scene properties (bloom, clear color, camera, lighting)
     if (m_collectDirtySceneFn.isCallable()) {
@@ -3659,8 +4016,29 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    probeMark(s_t_scene);
+    s_t_total += (s_t_prelude + s_t_scripts + s_t_dirtyCollect +
+                  s_t_dirtyDispatch + s_t_sound + s_t_scene) - s_t_total;
+
     // Periodic diagnostic logging (~every 3 seconds at 30Hz)
     static int propEvalCount = 0;
+    if (s_probeTimings && propEvalCount > 0 && propEvalCount % 90 == 0) {
+        qint64 tot = s_t_prelude + s_t_scripts + s_t_dirtyCollect +
+                     s_t_dirtyDispatch + s_t_sound + s_t_scene;
+        double denom = tot > 0 ? (double)tot : 1.0;
+        LOG_INFO("TIMING per-tick avg (90 ticks): total=%.2fms = prelude=%.2fms(%.0f%%) "
+                 "scripts=%.2fms(%.0f%%) dirtyCollect=%.2fms(%.0f%%) "
+                 "dispatch=%.2fms(%.0f%%) sound=%.2fms(%.0f%%) scene=%.2fms(%.0f%%)",
+                 tot / 90000.0,
+                 s_t_prelude / 90000.0, 100.0 * s_t_prelude / denom,
+                 s_t_scripts / 90000.0, 100.0 * s_t_scripts / denom,
+                 s_t_dirtyCollect / 90000.0, 100.0 * s_t_dirtyCollect / denom,
+                 s_t_dirtyDispatch / 90000.0, 100.0 * s_t_dirtyDispatch / denom,
+                 s_t_sound / 90000.0, 100.0 * s_t_sound / denom,
+                 s_t_scene / 90000.0, 100.0 * s_t_scene / denom);
+        s_t_prelude = s_t_scripts = s_t_dirtyCollect = 0;
+        s_t_dirtyDispatch = s_t_sound = s_t_scene = s_t_total = 0;
+    }
     if (++propEvalCount % 90 == 1) {
         int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
         LOG_INFO("PROPEVAL[%d]: %zu states, shared=%d, dirty=%d (miss=%d), soundVol=%zu",
@@ -3684,7 +4062,13 @@ void SceneObject::evaluatePropertyScripts() {
                                     "volume", "songplays", "uiopacity",
                                     "playOnStart", "progress",
                                     // 2866203962 player UI visibility drivers
-                                    "playerproximity", "enablePlayer"}) {
+                                    "playerproximity", "enablePlayer",
+                                    // 3509243656 3body state machine drivers
+                                    "tj", "rst", "num", "auto", "dd",
+                                    "cfw", "kt", "ylll", "universeCount",
+                                    // MAIN update entry markers — set every
+                                    // tick if MAIN is running
+                                    "kg", "ktime", "rxz"}) {
                 QJSValue v = sharedObj.property(key);
                 if (!v.isUndefined()) {
                     dump += QString("%1=%2 ").arg(key).arg(v.toNumber(), 0, 'f', 4);
@@ -3693,6 +4077,16 @@ void SceneObject::evaluatePropertyScripts() {
             if (!dump.isEmpty()) {
                 LOG_INFO("Shared vars: %s", qPrintable(dump));
                 qCInfo(wekdeScene, "Shared vars: %s", qPrintable(dump));
+                // One-shot Math.random sanity probe — if always 0, the JS
+                // engine's PRNG is broken (bodies can't get random init).
+                static bool probed = false;
+                if (!probed) {
+                    probed = true;
+                    QJSValue r = m_jsEngine->evaluate(
+                        "Math.random().toFixed(6) + ',' + Math.random().toFixed(6) +"
+                        "',' + Math.random().toFixed(6)");
+                    LOG_INFO("Math.random probe: %s", qPrintable(r.toString()));
+                }
             } else {
                 LOG_INFO("Shared vars: (none of the expected keys found)");
             }

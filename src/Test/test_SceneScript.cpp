@@ -2689,6 +2689,215 @@ TEST_CASE("destroyLayer returns slot to pool and hides it") {
     CHECK_FALSE(env.engine.evaluate("l1.visible").toBool());
 }
 
+// Real-WE createLayer form: object literal with `image:` and other
+// properties baked in (trail-style scripts, wallpaper 3509243656 Three-Body
+// Santi).  Our JS createLayer must extract the path from asset.image and
+// apply origin/scale/alpha/visible/color/angles to the rented layer.
+TEST_CASE("createLayer accepts object literal with image key") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_trail_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'models/trail.json': ['__pool_trail_0'] };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      if (asset && !asset.__asset) {\n"
+        "        if (asset.origin) layer.origin = asset.origin;\n"
+        "        if (asset.scale)  layer.scale  = asset.scale;\n"
+        "        if (asset.angles) layer.angles = asset.angles;\n"
+        "        if ('alpha' in asset) layer.alpha = asset.alpha;\n"
+        "        if (asset.color) layer.color = asset.color;\n"
+        "        layer.visible = ('visible' in asset) ? !!asset.visible : true;\n"
+        "      } else {\n"
+        "        layer.visible = true;\n"
+        "      }\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "var l = thisScene.createLayer({\n"
+        "  image: 'models/trail.json',\n"
+        "  origin: Vec3(1, 2, 3),\n"
+        "  scale:  Vec3(0.5, 0.5, 0.5),\n"
+        "  alpha:  0.25,\n"
+        "  visible: false\n"
+        "});\n");
+    // Pool popped, layer rented
+    CHECK(env.engine.evaluate("l.name").toString() == "__pool_trail_0");
+    CHECK(env.engine.evaluate("l.__asset").toString() == "models/trail.json");
+    // Literal-supplied properties applied
+    CHECK(env.engine.evaluate("l.origin.x").toNumber() == doctest::Approx(1.0));
+    CHECK(env.engine.evaluate("l.origin.y").toNumber() == doctest::Approx(2.0));
+    CHECK(env.engine.evaluate("l.origin.z").toNumber() == doctest::Approx(3.0));
+    CHECK(env.engine.evaluate("l.scale.x").toNumber() == doctest::Approx(0.5));
+    CHECK(env.engine.evaluate("l.alpha").toNumber() == doctest::Approx(0.25));
+    // 'visible: false' in literal overrides the default-true, matching WE
+    // where scripts manually toggle visible=true after configuring.
+    CHECK_FALSE(env.engine.evaluate("l.visible").toBool());
+    CHECK(env.engine.evaluate("engine._assetPools['models/trail.json'].length").toInt() == 0);
+}
+
+TEST_CASE("createLayer literal without visible key defaults to visible=true") {
+    // Regression: earlier impl always set visible=true, breaking scripts
+    // that create trail points with visible:false then toggle later.  Now
+    // we honor the literal's explicit value but default to true when unset.
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_q_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'q.json': ['__pool_q_0'] };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      if (asset && !asset.__asset) {\n"
+        "        layer.visible = ('visible' in asset) ? !!asset.visible : true;\n"
+        "      } else {\n"
+        "        layer.visible = true;\n"
+        "      }\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "var l1 = thisScene.createLayer({ image: 'q.json' });\n");
+    CHECK(env.engine.evaluate("l1.visible").toBool());
+}
+
+// Pool exhaustion → LRU recycle.  Scripts like 3body's MAIN physics loop
+// call createLayer without matching destroyLayer; once free slots run out we
+// recycle the OLDEST live slot instead of falling back to a render-nothing
+// stub.  See feedback_no_stubs.
+TEST_CASE("createLayer recycles oldest live slot when pool exhausted") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_x_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "_layerInitStates['__pool_x_1'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'x.json': ['__pool_x_0','__pool_x_1'] };\n"
+        "engine._assetLive = {};\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (!engine._assetLive[path]) engine._assetLive[path] = [];\n"
+        "  var live = engine._assetLive[path];\n"
+        "  var name = null;\n"
+        "  if (pool && pool.length > 0) name = pool.shift();\n"
+        "  else if (live.length > 0) name = live.shift();\n"
+        "  if (name) {\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      layer.visible = true;\n"
+        "      live.push(name);\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        // Rent both, pool now empty.
+        "var l0 = thisScene.createLayer({ image: 'x.json' });\n"
+        "var l1 = thisScene.createLayer({ image: 'x.json' });\n"
+        // Third call should recycle the oldest (l0 = __pool_x_0).
+        "var l2 = thisScene.createLayer({ image: 'x.json' });\n");
+    CHECK(env.engine.evaluate("l0.name").toString() == "__pool_x_0");
+    CHECK(env.engine.evaluate("l1.name").toString() == "__pool_x_1");
+    CHECK(env.engine.evaluate("l2.name").toString() == "__pool_x_0");
+    // No stubs.
+    CHECK_FALSE(env.engine.evaluate("!!l2.__stub").toBool());
+    // Live list holds current tenants in LRU order: l1 still live, l2 newest.
+    CHECK(env.engine.evaluate("engine._assetLive['x.json'].length").toInt() == 2);
+    CHECK(env.engine.evaluate("engine._assetLive['x.json'][0]").toString() ==
+          "__pool_x_1");
+    CHECK(env.engine.evaluate("engine._assetLive['x.json'][1]").toString() ==
+          "__pool_x_0");
+}
+
+TEST_CASE("destroyLayer removes from live list and returns to free pool") {
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_y_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'y.json': ['__pool_y_0'] };\n"
+        "engine._assetLive = {};\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
+        "  var pool = engine._assetPools[path];\n"
+        "  if (!engine._assetLive[path]) engine._assetLive[path] = [];\n"
+        "  var live = engine._assetLive[path];\n"
+        "  if (pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    layer.__asset = path; layer.visible = true;\n"
+        "    live.push(name);\n"
+        "    return layer;\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "thisScene.destroyLayer = function(layer) {\n"
+        "  if (!layer || layer.__stub) return;\n"
+        "  layer.visible = false;\n"
+        "  var path = layer.__asset;\n"
+        "  var live = engine._assetLive[path];\n"
+        "  if (live && layer.name) {\n"
+        "    var idx = live.indexOf(layer.name);\n"
+        "    if (idx >= 0) live.splice(idx, 1);\n"
+        "  }\n"
+        "  if (engine._assetPools[path] && layer.name)\n"
+        "    engine._assetPools[path].push(layer.name);\n"
+        "};\n"
+        "var l = thisScene.createLayer({ image: 'y.json' });\n"
+        "thisScene.destroyLayer(l);\n");
+    // After destroy: slot back in free pool, live list empty.
+    CHECK(env.engine.evaluate("engine._assetPools['y.json'].length").toInt() == 1);
+    CHECK(env.engine.evaluate("engine._assetLive['y.json'].length").toInt() == 0);
+}
+
+TEST_CASE("createLayer legacy __asset form still works") {
+    // Dino-run style: registerAsset returns a descriptor, createLayer
+    // consumes it via __asset.  Must coexist with the new literal form.
+    ScriptEnv env;
+    env.engine.evaluate(
+        "_layerInitStates['__pool_coin_0'] = { o: [0,0,0], s: [1,1,1],\n"
+        "  a: [0,0,0], sz: [0,0], v: false };\n"
+        "engine._assetPools = { 'coin': ['__pool_coin_0'] };\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && (asset.__asset || asset.image);\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer && layer !== _nullProxy) {\n"
+        "      layer.__asset = path;\n"
+        "      if (!asset.__asset && 'visible' in asset) {\n"
+        "        layer.visible = !!asset.visible;\n"
+        "      } else {\n"
+        "        layer.visible = true;\n"
+        "      }\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        "var a = engine.registerAsset('coin');\n"
+        "var l = thisScene.createLayer(a);\n");
+    CHECK(env.engine.evaluate("l.name").toString() == "__pool_coin_0");
+    CHECK(env.engine.evaluate("l.visible").toBool());
+}
+
 TEST_CASE("createLayer falls back to stub when pool exhausted") {
     ScriptEnv env;
     env.engine.evaluate(

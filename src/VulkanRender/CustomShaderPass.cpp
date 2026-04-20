@@ -22,8 +22,17 @@ namespace wallpaper::vulkan
 {
 int  g_exec_pass_counter       = 0;
 int  g_exec_frame_counter      = 0;
-bool g_depth_transitioned      = false; // reset each frame in VulkanRender.cpp
-bool g_refl_depth_transitioned = false; // reset each frame in VulkanRender.cpp
+bool g_depth_transitioned      = false; // DEPRECATED: see g_depth_inited_frame
+bool g_refl_depth_transitioned = false; // DEPRECATED: see g_depth_inited_frame
+// Depth images are allocated per-output-RT-extent, so scenes with mixed
+// RT sizes (Three-Body 3509243656 has 4096x2048 skybox, 1280x720 main,
+// 256x256 effect pingpongs, ...) can have many live depth images in one
+// frame.  The original global bool transitioned only the FIRST depth
+// image seen each frame — the rest stayed UNDEFINED and subsequent draws
+// against them depth-failed or validated as
+// "expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL, current UNDEFINED".  Track
+// per-image; cleared each frame in VulkanRender.cpp.
+std::unordered_set<VkImage> g_depth_inited_frame;
 // MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
 // (only needs to happen once per image lifetime, not per frame)
 std::unordered_set<VkImage> g_msaa_color_inited;
@@ -736,16 +745,29 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             return;
         }
 
-        // One-time diagnostic per shader: pipeline state for 3D debugging
+        // Per-shader-output diagnostic + per-node id if it's a 3D model
+        // shader (generic4 etc.) where many nodes share the same
+        // (shader, output) key.  Without the per-id log, Three-Body-style
+        // scenes with 7 generic4 models all going to _rt_default look like
+        // a single pipeline.  Gate on WEKDE_PIPELINE_DIAG=1 to avoid spam
+        // on scenes with hundreds of effect passes.
         {
             static std::set<std::string> _pipe_logged;
             auto key = mesh.Material()->customShader.shader->name + "_" + m_desc.output;
-            if (_pipe_logged.insert(key).second) {
-                LOG_INFO("pipeline: shader='%s' out='%.*s' draw=%u indexed=%d "
-                         "depthTest=%d depthWrite=%d cull=%s blend=%d",
+            bool first = _pipe_logged.insert(key).second;
+            static const bool s_pipeDiag = []() {
+                const char* v = std::getenv("WEKDE_PIPELINE_DIAG");
+                return v && v[0] && v[0] != '0';
+            }();
+            int32_t node_id = m_desc.node ? m_desc.node->ID() : -1;
+            if (first || s_pipeDiag) {
+                LOG_INFO("pipeline: shader='%s' out='%.*s' node_id=%d "
+                         "draw=%u indexed=%d depthTest=%d depthWrite=%d "
+                         "cull=%s blend=%d",
                          mesh.Material()->customShader.shader->name.c_str(),
                          (int)m_desc.output.size(),
                          m_desc.output.data(),
+                         node_id,
                          m_desc.draw_count,
                          m_desc.index_buf ? 1 : 0,
                          (int)mesh.Material()->depthTest,
@@ -999,8 +1021,16 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
     // to work around drivers where the render pass CLEAR doesn't execute
     // correctly with a newly-created depth image (RADV GFX1201).
-    bool& depth_flag = m_desc.useReflectionDepth ? g_refl_depth_transitioned : g_depth_transitioned;
-    if (m_desc.hasDepth && ! depth_flag) {
+    //
+    // Tracks per-image-handle in g_depth_inited_frame so scenes with
+    // multiple depth images (one per RT extent) transition each one on
+    // its own first use.  The previous global bool flagged the first
+    // depth image transitioned and silently skipped all others — Three-
+    // Body (3509243656) has 4+ depth-enabled passes with different RT
+    // sizes, so 3+ stayed UNDEFINED and their draws depth-failed.
+    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE &&
+        g_depth_inited_frame.find(m_desc.depthImage) == g_depth_inited_frame.end()) {
+        g_depth_inited_frame.insert(m_desc.depthImage);
         VkImageSubresourceRange depth_range {
             .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
             .baseMipLevel   = 0,
@@ -1049,7 +1079,6 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                                 VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                             0,
                             to_attach);
-        depth_flag = true;
     }
 
     VkImageSubresourceRange base_srang {

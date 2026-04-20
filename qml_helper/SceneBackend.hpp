@@ -90,6 +90,12 @@ public:
     Q_INVOKABLE bool screenshotDone() const;
     Q_INVOKABLE void requestPassDump(const QString& dir);
     Q_INVOKABLE bool passDumpDone() const;
+    // Debug hook — evaluate an arbitrary JS snippet in the SceneScript
+    // QJSEngine.  Used by sceneviewer-script --js-eval to force state
+    // machine transitions (e.g. `shared.rst=1` to trigger 3body's universe
+    // reset without needing the right cursor conditions to line up).
+    Q_INVOKABLE QString debugEvalJs(const QString& src);
+    QString          m_pendingJsEval;
 
     // Media integration events (called from QML MprisMonitor, dispatched to JS)
     Q_INVOKABLE void mediaPlaybackChanged(int state);

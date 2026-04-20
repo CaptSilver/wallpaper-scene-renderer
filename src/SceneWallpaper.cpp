@@ -482,6 +482,40 @@ public:
         m_pending_light_positions.push_back({ index, { x, y, z } });
     }
 
+    // Batched layer-update apply: takes the property-update mutex once for
+    // the whole batch instead of per-property.  For scenes like 3body
+    // (3509243656) with 1200 dirty pool layers per tick × ~3 properties, this
+    // collapses ~3600 lock/unlock pairs into one.  Flags use the same
+    // bitmask as the JS DIRTY_STRIDE layout (F_ORIGIN=1, F_SCALE=2, etc).
+    void applyLayerBatch(const std::vector<SceneWallpaper::LayerBatchUpdate>& batch) {
+        static constexpr u32 F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4,
+                             F_VISIBLE = 8, F_ALPHA = 16;
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        for (const auto& e : batch) {
+            if (e.flags & F_ORIGIN) {
+                m_pending_transform_updates[{ e.id, std::string("origin") }] = {
+                    e.origin[0], e.origin[1], e.origin[2]
+                };
+            }
+            if (e.flags & F_SCALE) {
+                m_pending_transform_updates[{ e.id, std::string("scale") }] = {
+                    e.scale[0], e.scale[1], e.scale[2]
+                };
+            }
+            if (e.flags & F_ANGLES) {
+                m_pending_transform_updates[{ e.id, std::string("angles") }] = {
+                    e.angles[0], e.angles[1], e.angles[2]
+                };
+            }
+            if (e.flags & F_VISIBLE) {
+                m_pending_visible_updates[e.id] = e.visible != 0;
+            }
+            if (e.flags & F_ALPHA) {
+                m_pending_alpha_updates[e.id] = e.alpha;
+            }
+        }
+    }
+
 private:
     MHANDLER_CMD(STOP) {
         bool stop { false };
@@ -763,8 +797,9 @@ private:
                                 pit->second->Reset();
                             }
                         }
-                        // Diagnostic for dynamic-asset pool nodes
-                        if (id >= 2'000'000 && id < 2'000'100) {
+                        // Diagnostic for dynamic-asset pool nodes.  Range
+                        // allows for hint-sized pools (3body trails ~1200).
+                        if (id >= 2'000'000 && id < 2'020'000) {
                             LOG_INFO("POOL visible apply: id=%d visible=%d translate=(%.1f,%.1f)",
                                      id, (int)visible,
                                      nit->second->Translate().x(),
@@ -1390,6 +1425,10 @@ void SceneWallpaper::updateNodeAlpha(int32_t id, float alpha) {
 
 void SceneWallpaper::updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible) {
     m_main_handler->renderHandler()->setEffectVisible(nodeId, effectIndex, visible);
+}
+
+void SceneWallpaper::applyLayerBatch(const std::vector<LayerBatchUpdate>& batch) {
+    m_main_handler->renderHandler()->applyLayerBatch(batch);
 }
 
 std::vector<SoundVolumeScriptInfo> SceneWallpaper::getSoundVolumeScripts() const {
