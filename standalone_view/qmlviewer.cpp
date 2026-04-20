@@ -22,13 +22,13 @@ int main(int argc, char** argv) {
 
     qmlRegisterType<scenebackend::SceneObject>("scenetest", 1, 0, "SceneViewer");
     QQuickView view;
-	{
-		auto [w_width, w_height] = program.get<Resolution>(OPT_RESOLUTION);
-		view.setWidth(w_width);
-		view.setHeight(w_height);
-		view.setResizeMode(QQuickView::SizeRootObjectToView);
-		view.setSource(QUrl("qrc:///pkg/main.qml"));
-	}
+    {
+        auto [w_width, w_height] = program.get<Resolution>(OPT_RESOLUTION);
+        view.setWidth(w_width);
+        view.setHeight(w_height);
+        view.setResizeMode(QQuickView::SizeRootObjectToView);
+        view.setSource(QUrl("qrc:///pkg/main.qml"));
+    }
 
     QObject*                   obj = view.rootObject();
     scenebackend::SceneObject* sv  = obj->findChild<scenebackend::SceneObject*>();
@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
 
     // --user-props + --set key=value overrides, applied before scripts start.
     std::string user_props = BuildUserPropsJson(program);
-    if (!user_props.empty()) {
+    if (! user_props.empty()) {
         std::cout << "user props: " << user_props << std::endl;
         sv->setProperty("userProperties", QString::fromStdString(user_props));
     }
@@ -57,12 +57,11 @@ int main(int argc, char** argv) {
         if (! dump_dir.empty()) {
             double delay_s = program.get<double>(OPT_DUMP_PASSES_DELAY);
             if (delay_s < 0.0) delay_s = 2.0;
-            QTimer::singleShot((int)(delay_s * 1000.0), sv,
-                [sv, dump_dir]() {
-                    std::cout << "dump-passes: requesting dump to " << dump_dir << std::endl;
-                    QMetaObject::invokeMethod(sv, "requestPassDump",
-                        Q_ARG(QString, QString::fromStdString(dump_dir)));
-                });
+            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, dump_dir]() {
+                std::cout << "dump-passes: requesting dump to " << dump_dir << std::endl;
+                QMetaObject::invokeMethod(
+                    sv, "requestPassDump", Q_ARG(QString, QString::fromStdString(dump_dir)));
+            });
         }
     }
 
@@ -72,19 +71,18 @@ int main(int argc, char** argv) {
     // `shared.rst=1` would need a cursor click on the warning button).
     {
         std::string js_src = program.get<std::string>("--js-eval");
-        if (!js_src.empty()) {
+        if (! js_src.empty()) {
             double delay_s = program.get<double>("--js-eval-delay");
             if (delay_s < 0.0) delay_s = 2.0;
-            QTimer::singleShot((int)(delay_s * 1000.0), sv,
-                [sv, js_src]() {
-                    QString rv;
-                    QMetaObject::invokeMethod(
-                        sv, "debugEvalJs", Qt::DirectConnection,
-                        Q_RETURN_ARG(QString, rv),
-                        Q_ARG(QString, QString::fromStdString(js_src)));
-                    std::cout << "js-eval: " << js_src
-                              << " -> " << rv.toStdString() << std::endl;
-                });
+            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, js_src]() {
+                QString rv;
+                QMetaObject::invokeMethod(sv,
+                                          "debugEvalJs",
+                                          Qt::DirectConnection,
+                                          Q_RETURN_ARG(QString, rv),
+                                          Q_ARG(QString, QString::fromStdString(js_src)));
+                std::cout << "js-eval: " << js_src << " -> " << rv.toStdString() << std::endl;
+            });
         }
     }
 
@@ -99,43 +97,44 @@ int main(int argc, char** argv) {
             if (std::sscanf(cursor_spec->c_str(), "%lf,%lf", &cx, &cy) == 2) {
                 auto* hover_timer = new QTimer(&app);
                 QObject::connect(hover_timer, &QTimer::timeout, [sv, cx, cy]() {
-                    QMetaObject::invokeMethod(sv, "simulateHoverAt",
-                                              Q_ARG(double, cx), Q_ARG(double, cy));
+                    QMetaObject::invokeMethod(
+                        sv, "simulateHoverAt", Q_ARG(double, cx), Q_ARG(double, cy));
                 });
                 hover_timer->start(500);
             }
         }
         double click_delay_s = program.get<double>("--click-delay");
         if (click_delay_s < 0.0) click_delay_s = 1.5;
-        int click_delay_ms = (int)(click_delay_s * 1000.0);
-        auto click_spec = program.present<std::string>("--click");
+        int  click_delay_ms = (int)(click_delay_s * 1000.0);
+        auto click_spec     = program.present<std::string>("--click");
         if (click_spec) {
             double cx = 0, cy = 0;
             if (std::sscanf(click_spec->c_str(), "%lf,%lf", &cx, &cy) == 2) {
                 QTimer::singleShot(click_delay_ms, sv, [sv, cx, cy]() {
-                    QMetaObject::invokeMethod(sv, "simulateClickAt",
-                                              Q_ARG(double, cx), Q_ARG(double, cy));
+                    QMetaObject::invokeMethod(
+                        sv, "simulateClickAt", Q_ARG(double, cx), Q_ARG(double, cy));
                 });
             }
         }
         auto drag_spec = program.present<std::string>("--drag");
         if (drag_spec) {
             double x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-            if (std::sscanf(drag_spec->c_str(), "%lf,%lf:%lf,%lf",
-                            &x1, &y1, &x2, &y2) == 4) {
+            if (std::sscanf(drag_spec->c_str(), "%lf,%lf:%lf,%lf", &x1, &y1, &x2, &y2) == 4) {
                 QTimer::singleShot(click_delay_ms, sv, [sv, x1, y1, x2, y2]() {
-                    QMetaObject::invokeMethod(sv, "simulateDragAt",
-                                              Q_ARG(double, x1), Q_ARG(double, y1),
-                                              Q_ARG(double, x2), Q_ARG(double, y2));
+                    QMetaObject::invokeMethod(sv,
+                                              "simulateDragAt",
+                                              Q_ARG(double, x1),
+                                              Q_ARG(double, y1),
+                                              Q_ARG(double, x2),
+                                              Q_ARG(double, y2));
                 });
             } else {
-                std::cerr << "--drag: expected 'x1,y1:x2,y2', got: "
-                          << *drag_spec << std::endl;
+                std::cerr << "--drag: expected 'x1,y1:x2,y2', got: " << *drag_spec << std::endl;
             }
         }
         std::string screenshot_path = program.get<std::string>(OPT_SCREENSHOT);
-        double interval_s = program.get<double>(OPT_SCREENSHOT_INTERVAL);
-        double max_time_s = program.get<double>(OPT_SCREENSHOT_MAX_TIME);
+        double      interval_s      = program.get<double>(OPT_SCREENSHOT_INTERVAL);
+        double      max_time_s      = program.get<double>(OPT_SCREENSHOT_MAX_TIME);
 
         if (! screenshot_path.empty() && interval_s > 0.0) {
             // Interval (time-lapse) mode.  Fire a screenshot every
@@ -151,31 +150,33 @@ int main(int argc, char** argv) {
             // suffixed filenames still end with .ppm.
             std::string base = screenshot_path;
             std::string ext  = ".ppm";
-            if (base.size() > 4 &&
-                base.compare(base.size() - 4, 4, ".ppm") == 0) {
+            if (base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0) {
                 base = base.substr(0, base.size() - 4);
             }
 
-            auto* start = new qint64{ 0 };
+            auto* start      = new qint64 { 0 };
             auto* shot_timer = new QTimer(&app);
             shot_timer->setSingleShot(false);
-            QObject::connect(shot_timer, &QTimer::timeout,
+            QObject::connect(
+                shot_timer,
+                &QTimer::timeout,
                 [sv, base, ext, interval_s, max_time_s, start, shot_timer, &app]() {
                     qint64 now = QDateTime::currentMSecsSinceEpoch();
                     if (*start == 0) *start = now;
                     double elapsed_ms = (double)(now - *start);
-                    char name_buf[32];
-                    std::snprintf(name_buf, sizeof(name_buf), "_%06d",
-                                  (int)elapsed_ms);
+                    char   name_buf[32];
+                    std::snprintf(name_buf, sizeof(name_buf), "_%06d", (int)elapsed_ms);
                     std::string path = base + name_buf + ext;
-                    std::cout << "interval screenshot @ " << (elapsed_ms / 1000.0)
-                              << "s -> " << path << std::endl;
-                    QMetaObject::invokeMethod(sv, "requestScreenshot",
-                        Q_ARG(QString, QString::fromStdString(path)));
+                    std::cout << "interval screenshot @ " << (elapsed_ms / 1000.0) << "s -> "
+                              << path << std::endl;
+                    QMetaObject::invokeMethod(
+                        sv, "requestScreenshot", Q_ARG(QString, QString::fromStdString(path)));
                     if (elapsed_ms / 1000.0 >= max_time_s) {
                         shot_timer->stop();
                         // give the last capture time to flush before quitting
-                        QTimer::singleShot(500, &app, [&app]() { app.quit(); });
+                        QTimer::singleShot(500, &app, [&app]() {
+                            app.quit();
+                        });
                     }
                 });
             shot_timer->start((int)(interval_s * 1000.0));
@@ -191,18 +192,18 @@ int main(int argc, char** argv) {
             if (fps_val < 5) fps_val = 60;
             if (frames_to_wait < 1) frames_to_wait = 30;
             int delay_ms = (int)(frames_to_wait * 1000.0 / fps_val) + 300;
-            std::cout << "screenshot: will request in " << delay_ms
-                      << "ms to " << screenshot_path << std::endl;
+            std::cout << "screenshot: will request in " << delay_ms << "ms to " << screenshot_path
+                      << std::endl;
             QTimer::singleShot(delay_ms, sv, [sv, screenshot_path, &app]() {
                 std::cout << "screenshot: firing requestScreenshot now" << std::endl;
-                QMetaObject::invokeMethod(sv, "requestScreenshot",
+                QMetaObject::invokeMethod(sv,
+                                          "requestScreenshot",
                                           Q_ARG(QString, QString::fromStdString(screenshot_path)));
                 auto* poll = new QTimer(&app);
                 QObject::connect(poll, &QTimer::timeout, [sv, poll, &app]() {
                     bool done = false;
-                    QMetaObject::invokeMethod(sv, "screenshotDone",
-                                              Qt::DirectConnection,
-                                              Q_RETURN_ARG(bool, done));
+                    QMetaObject::invokeMethod(
+                        sv, "screenshotDone", Qt::DirectConnection, Q_RETURN_ARG(bool, done));
                     if (done) {
                         poll->stop();
                         app.quit();
@@ -210,7 +211,9 @@ int main(int argc, char** argv) {
                 });
                 poll->start(20);
                 // hard cap: exit even if the backend never flips the flag
-                QTimer::singleShot(5000, &app, [&app]() { app.quit(); });
+                QTimer::singleShot(5000, &app, [&app]() {
+                    app.quit();
+                });
             });
         }
     }

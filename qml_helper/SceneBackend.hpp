@@ -31,7 +31,8 @@ class SceneObject : public QQuickItem {
     Q_PROPERTY(float speed READ speed WRITE setSpeed NOTIFY speedChanged)
     Q_PROPERTY(float volume READ volume WRITE setVolume NOTIFY volumeChanged)
     Q_PROPERTY(bool muted READ muted WRITE setMuted)
-    Q_PROPERTY(QString userProperties READ userProperties WRITE setUserProperties NOTIFY userPropertiesChanged)
+    Q_PROPERTY(QString userProperties READ userProperties WRITE setUserProperties NOTIFY
+                   userPropertiesChanged)
     Q_PROPERTY(bool hdrOutput READ hdrOutput WRITE setHdrOutput)
     Q_PROPERTY(bool systemAudioCapture READ systemAudioCapture WRITE setSystemAudioCapture)
 public:
@@ -51,13 +52,13 @@ public:
     void setSource(const QUrl& source);
     void setAssets(const QUrl& assets);
 
-    int   fps() const;
-    int   fillMode() const;
-    float speed() const;
-    float volume() const;
-    bool  muted() const;
-    bool  hdrOutput() const;
-    bool  systemAudioCapture() const;
+    int     fps() const;
+    int     fillMode() const;
+    float   speed() const;
+    float   volume() const;
+    bool    muted() const;
+    bool    hdrOutput() const;
+    bool    systemAudioCapture() const;
     QString userProperties() const;
 
     void setFps(int);
@@ -95,7 +96,7 @@ public:
     // machine transitions (e.g. `shared.rst=1` to trigger 3body's universe
     // reset without needing the right cursor conditions to line up).
     Q_INVOKABLE QString debugEvalJs(const QString& src);
-    QString          m_pendingJsEval;
+    QString             m_pendingJsEval;
 
     // Media integration events (called from QML MprisMonitor, dispatched to JS)
     Q_INVOKABLE void mediaPlaybackChanged(int state);
@@ -142,13 +143,13 @@ private:
     QUrl m_source;
     QUrl m_assets;
 
-    int   m_fps { 15 };
-    int   m_fillMode { FillMode::ASPECTCROP };
-    float m_speed { 1.0f };
-    float m_volume { 1.0f };
-    bool  m_muted { false };
-    bool  m_hdrOutput { false };
-    bool  m_systemAudioCapture { false };
+    int     m_fps { 15 };
+    int     m_fillMode { FillMode::ASPECTCROP };
+    float   m_speed { 1.0f };
+    float   m_volume { 1.0f };
+    bool    m_muted { false };
+    bool    m_hdrOutput { false };
+    bool    m_systemAudioCapture { false };
     QString m_userProperties;
 
 public:
@@ -182,80 +183,82 @@ private:
     };
     // Color script evaluation
     struct ColorScriptState {
-        int32_t  id;
-        QJSValue updateFn;
+        int32_t              id;
+        QJSValue             updateFn;
         std::array<float, 3> currentColor;
     };
     // Property script evaluation
     struct PropertyScriptState {
-        int32_t     id;
-        std::string property;
-        std::string layerName;
-        QJSValue    updateFn;
-        QJSValue    initFn;
-        QJSValue    cursorClickFn;   // optional cursorClick handler from IIFE
-        QJSValue    cursorEnterFn;
-        QJSValue    cursorLeaveFn;
-        QJSValue    cursorDownFn;
-        QJSValue    cursorUpFn;
-        QJSValue    cursorMoveFn;
-        QJSValue    applyUserPropertiesFn; // optional applyUserProperties handler
-        QJSValue    destroyFn;             // optional destroy handler
-        QJSValue    resizeScreenFn;        // optional resizeScreen handler
-        QJSValue    mediaPlaybackChangedFn;
-        QJSValue    mediaPropertiesChangedFn;
-        QJSValue    mediaThumbnailChangedFn;
-        QJSValue    mediaTimelineChangedFn;
-        QJSValue    mediaStatusChangedFn;
-        QJSValue    animationEventFn;           // optional animationEvent(event,value) handler
-        QJSValue    thisLayerProxy;  // cached layer proxy (avoids evaluate per frame)
-        bool                 currentVisible {true};
-        std::array<float, 3> currentVec3 {0, 0, 0};
-        float                currentFloat {1.0f};
+        int32_t              id;
+        std::string          property;
+        std::string          layerName;
+        QJSValue             updateFn;
+        QJSValue             initFn;
+        QJSValue             cursorClickFn; // optional cursorClick handler from IIFE
+        QJSValue             cursorEnterFn;
+        QJSValue             cursorLeaveFn;
+        QJSValue             cursorDownFn;
+        QJSValue             cursorUpFn;
+        QJSValue             cursorMoveFn;
+        QJSValue             applyUserPropertiesFn; // optional applyUserProperties handler
+        QJSValue             destroyFn;             // optional destroy handler
+        QJSValue             resizeScreenFn;        // optional resizeScreen handler
+        QJSValue             mediaPlaybackChangedFn;
+        QJSValue             mediaPropertiesChangedFn;
+        QJSValue             mediaThumbnailChangedFn;
+        QJSValue             mediaTimelineChangedFn;
+        QJSValue             mediaStatusChangedFn;
+        QJSValue             animationEventFn; // optional animationEvent(event,value) handler
+        QJSValue             thisLayerProxy;   // cached layer proxy (avoids evaluate per frame)
+        bool                 currentVisible { true };
+        std::array<float, 3> currentVec3 { 0, 0, 0 };
+        float                currentFloat { 1.0f };
     };
     // Sound volume script evaluation
     struct SoundVolumeAnimState {
         std::string name;
-        std::string mode;   // "loop", "single", "mirror"
+        std::string mode; // "loop", "single", "mirror"
         float       fps { 1 };
         float       length { 0 };
-        struct Keyframe { float frame; float value; };
+        struct Keyframe {
+            float frame;
+            float value;
+        };
         std::vector<Keyframe> keyframes;
-        double      time { 0 };      // current animation time (seconds)
-        bool        playing { false };
+        double                time { 0 }; // current animation time (seconds)
+        bool                  playing { false };
         // Scene-time of the last eval (for computing delta against scene clock).
         // Negative sentinel means "not yet sampled" — first eval skips the delta.
-        double      lastSceneTime { -1.0 };
+        double lastSceneTime { -1.0 };
         // Evaluate at current time → interpolated value
         float evaluate() const;
     };
     struct SoundVolumeScriptState {
-        int32_t     index;
-        QJSValue    updateFn;
-        QJSValue    applyUserPropertiesFn;
-        QJSValue    thisLayerProxy;
-        std::string layerName;
-        float       currentVolume {1.0f};
-        bool        hasAnimation { false };
+        int32_t              index;
+        QJSValue             updateFn;
+        QJSValue             applyUserPropertiesFn;
+        QJSValue             thisLayerProxy;
+        std::string          layerName;
+        float                currentVolume { 1.0f };
+        bool                 hasAnimation { false };
         SoundVolumeAnimState anim;
     };
-    QJSEngine*                        m_jsEngine { nullptr };
-    SceneTimerBridge*                 m_timerBridge { nullptr };
-    QTimer*                           m_textTimer { nullptr };
-    QTimer*                           m_colorTimer { nullptr };
-    QTimer*                           m_propertyTimer { nullptr };
-    QElapsedTimer                     m_runtimeTimer;
-    std::vector<TextScriptState>      m_textScriptStates;
-    std::vector<ColorScriptState>     m_colorScriptStates;
-    std::vector<PropertyScriptState>  m_propertyScriptStates;
-    std::vector<SoundVolumeScriptState> m_soundVolumeScriptStates;
+    QJSEngine*                               m_jsEngine { nullptr };
+    SceneTimerBridge*                        m_timerBridge { nullptr };
+    QTimer*                                  m_textTimer { nullptr };
+    QTimer*                                  m_colorTimer { nullptr };
+    QTimer*                                  m_propertyTimer { nullptr };
+    QElapsedTimer                            m_runtimeTimer;
+    std::vector<TextScriptState>             m_textScriptStates;
+    std::vector<ColorScriptState>            m_colorScriptStates;
+    std::vector<PropertyScriptState>         m_propertyScriptStates;
+    std::vector<SoundVolumeScriptState>      m_soundVolumeScriptStates;
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
-    QJSValue                          m_collectDirtyLayersFn;
-    QJSValue                          m_collectDirtySceneFn;
-    QJSValue                          m_fireSceneEventFn;
-    QJSValue                          m_hasSceneListenersFn;
-    void fireSceneEventListeners(const QString& eventName,
-                                 const QJSValueList& args = {});
+    QJSValue                                 m_collectDirtyLayersFn;
+    QJSValue                                 m_collectDirtySceneFn;
+    QJSValue                                 m_fireSceneEventFn;
+    QJSValue                                 m_hasSceneListenersFn;
+    void fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {
@@ -274,7 +277,7 @@ private:
         QJSValue averageArray;
     };
     std::vector<AudioBufferReg> m_audioBufferRegs;
-    void refreshAudioBuffers();
+    void                        refreshAudioBuffers();
 
     // Cursor event targets (deduplicated by layer name)
     struct CursorTarget {
@@ -287,9 +290,9 @@ private:
         QJSValue    moveFn;
         QJSValue    thisLayerProxy;
     };
-    std::vector<CursorTarget>      m_cursorTargets;
-    std::unordered_set<std::string> m_hoveredLayers;   // layers cursor is over
-    std::string                    m_dragTarget;       // layer being dragged
+    std::vector<CursorTarget>       m_cursorTargets;
+    std::unordered_set<std::string> m_hoveredLayers; // layers cursor is over
+    std::string                     m_dragTarget;    // layer being dragged
 
     // Hover-leave debounce: when the cursor briefly leaves a layer we delay
     // firing cursorLeave by a short window; if the cursor re-enters within
@@ -298,14 +301,14 @@ private:
     // 2866203962 without the UI fading out before they can click a button.
     // State machine lives in qml_helper/HoverLeaveDebounce.h (pure, unit-tested).
     std::unordered_map<std::string, PendingLeave> m_pendingLeaves;
-    QTimer* m_hoverLeaveTimer { nullptr };
-    void flushPendingLeaves(); // fires cursorLeave for layers past their deadline
-    float m_sceneOrthoW {1920.0f};
-    float m_sceneOrthoH {1080.0f};
-    float m_cursorSceneX {0.0f};   // scene-space cursor X, updated on hover/drag
-    float m_cursorSceneY {0.0f};   // scene-space cursor Y, updated on hover/drag
-    float m_mouseNx {0.5f};        // widget-normalized cursor X (0..1)
-    float m_mouseNy {0.5f};        // widget-normalized cursor Y (0..1, top-down)
+    QTimer*                                       m_hoverLeaveTimer { nullptr };
+    void  flushPendingLeaves(); // fires cursorLeave for layers past their deadline
+    float m_sceneOrthoW { 1920.0f };
+    float m_sceneOrthoH { 1080.0f };
+    float m_cursorSceneX { 0.0f }; // scene-space cursor X, updated on hover/drag
+    float m_cursorSceneY { 0.0f }; // scene-space cursor Y, updated on hover/drag
+    float m_mouseNx { 0.5f };      // widget-normalized cursor X (0..1)
+    float m_mouseNy { 0.5f };      // widget-normalized cursor Y (0..1, top-down)
 
     // Camera-parallax config, cached from SceneWallpaper::getParallaxInfo()
     // at load time + refreshed with live mouse coords on every hit-test
@@ -318,7 +321,7 @@ private:
         float camY { 0.0f };
     };
     CursorParallaxCache m_parallaxCache {};
-    void refreshParallaxCache();
+    void                refreshParallaxCache();
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

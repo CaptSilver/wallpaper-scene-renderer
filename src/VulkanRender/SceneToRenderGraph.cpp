@@ -119,14 +119,18 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
             }
             auto& name = n.output;
             if (n.sceneNode->HasMaterial()) {
-                auto& texs = n.sceneNode->Mesh()->Material()->textures;
+                auto&       texs = n.sceneNode->Mesh()->Material()->textures;
                 std::string tex_list;
                 for (usize t = 0; t < texs.size(); t++) {
                     if (t > 0) tex_list += ", ";
                     tex_list += texs[t].empty() ? "(empty)" : texs[t];
                 }
                 LOG_INFO("  id=%d eff[%zu].%d: out='%.*s' cam='%s' blend=%d texs=[%s]",
-                         node->ID(), i, nodePos, (int)name.size(), name.data(),
+                         node->ID(),
+                         i,
+                         nodePos,
+                         (int)name.size(),
+                         name.data(),
                          n.sceneNode->Camera().c_str(),
                          (int)n.sceneNode->Mesh()->Material()->blenmode,
                          tex_list.c_str());
@@ -166,7 +170,8 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     // this node in the scene graph — exactly what the compose needs.
     if (imgeff != nullptr && imgeff->IsPassthrough()) {
         LOG_INFO("passthrough compose: inline copy _rt_default → '%.*s'",
-                 (int)output.size(), output.data());
+                 (int)output.size(),
+                 output.data());
         rg::addCopyPass(rgraph,
                         rg::createTexDesc(std::string(SpecTex_Default)),
                         rg::createTexDesc(std::string(output)));
@@ -283,14 +288,14 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, &scene, &extra](
-            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
-            pdesc.node            = node;
-            pdesc.output          = std::string(WE_REFLECTION);
-            pdesc.camera_override = "reflected_perspective";
-            pdesc.disableDepth        = false;
-            pdesc.flipCullMode        = false;  // col(1) and row(1) negate cancel winding
-            pdesc.useReflectionDepth  = true;
+        [material, node, &scene, &extra](rg::RenderGraphBuilder&         builder,
+                                         vulkan::CustomShaderPass::Desc& pdesc) {
+            pdesc.node               = node;
+            pdesc.output             = std::string(WE_REFLECTION);
+            pdesc.camera_override    = "reflected_perspective";
+            pdesc.disableDepth       = false;
+            pdesc.flipCullMode       = false; // col(1) and row(1) negate cancel winding
+            pdesc.useReflectionDepth = true;
             CheckAndSetSprite(scene, pdesc, material->textures);
 
             for (usize i = 0; i < material->textures.size(); i++) {
@@ -307,8 +312,8 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
                 rg::TexNode::Desc desc;
                 desc.key  = url;
                 desc.name = url;
-                desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
-                                             : rg::TexNode::TexType::Temp;
+                desc.type =
+                    ! IsSpecTex(url) ? rg::TexNode::TexType::Imported : rg::TexNode::TexType::Temp;
                 auto* input = builder.createTexNode(desc);
                 if (IsSpecTex(url)) builder.markVirtualWrite(input);
                 builder.read(input);
@@ -317,8 +322,8 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
 
             auto* output_node =
                 builder.createTexNode(rg::TexNode::Desc { .name = std::string(WE_REFLECTION),
-                                                           .key  = std::string(WE_REFLECTION),
-                                                           .type = rg::TexNode::TexType::Temp },
+                                                          .key  = std::string(WE_REFLECTION),
+                                                          .type = rg::TexNode::TexType::Temp },
                                       true);
             builder.write(output_node);
         });
@@ -330,7 +335,9 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     {
         int pos = 0;
         for (auto& child : scene.sceneGraph->GetChildren()) {
-            LOG_INFO("root child[%d]: id=%d mesh=%s", pos++, child->ID(),
+            LOG_INFO("root child[%d]: id=%d mesh=%s",
+                     pos++,
+                     child->ID(),
                      child->HasMaterial() ? "yes" : "no");
         }
     }
@@ -349,11 +356,12 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
 
         // Separable blur on _rt_Reflection to soften the reflection
         if (! scene.reflectionBlurConfig.nodes.empty()) {
-            LOG_INFO("adding %zu reflection blur passes",
-                     scene.reflectionBlurConfig.nodes.size());
+            LOG_INFO("adding %zu reflection blur passes", scene.reflectionBlurConfig.nodes.size());
             for (size_t i = 0; i < scene.reflectionBlurConfig.nodes.size(); i++) {
                 ToGraphPass(scene.reflectionBlurConfig.nodes[i].get(),
-                            scene.reflectionBlurConfig.outputs[i], -1, extra);
+                            scene.reflectionBlurConfig.outputs[i],
+                            -1,
+                            extra);
             }
         }
     }
@@ -365,9 +373,11 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
         scene.sceneGraph.get());
 
     LOG_INFO("resolving %zu link textures, id_link_map has %zu entries",
-             extra.link_info.size(), extra.id_link_map.size());
+             extra.link_info.size(),
+             extra.id_link_map.size());
     for (auto& [id, texnode] : extra.id_link_map) {
-        LOG_INFO("  id_link_map[%zu] = '%.*s'", id, (int)texnode->key().size(), texnode->key().data());
+        LOG_INFO(
+            "  id_link_map[%zu] = '%.*s'", id, (int)texnode->key().size(), texnode->key().data());
     }
     for (auto& info : extra.link_info) {
         if (! exists(extra.id_link_map, info.link_id)) {
@@ -397,8 +407,7 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
                         rg::createTexDesc(std::string(SpecTex_Default)),
                         rg::createTexDesc(std::string(WE_BLOOM_SCENE)));
         for (size_t i = 0; i < scene.bloomConfig.nodes.size(); i++) {
-            ToGraphPass(scene.bloomConfig.nodes[i].get(),
-                        scene.bloomConfig.outputs[i], -1, extra);
+            ToGraphPass(scene.bloomConfig.nodes[i].get(), scene.bloomConfig.outputs[i], -1, extra);
         }
     }
 

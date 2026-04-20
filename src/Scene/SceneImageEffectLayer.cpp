@@ -64,9 +64,8 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
     if (last_output != nullptr) {
         // Offscreen nodes write to a per-node RT to avoid compositing into the main scene;
         // their output is still accessible via id_link_map for dependent effects.
-        last_output->output = m_is_offscreen
-                                  ? GenOffscreenRT(m_worldNode->ID())
-                                  : std::string(SpecTex_Default);
+        last_output->output =
+            m_is_offscreen ? GenOffscreenRT(m_worldNode->ID()) : std::string(SpecTex_Default);
         auto& mesh     = *(last_output->sceneNode->Mesh());
         auto& material = *mesh.Material();
         {
@@ -127,9 +126,16 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
         auto& t = m_final_node->Translate();
         LOG_INFO("ResolveEffect final: output='%.*s' blend=%d (actual=%d) passthrough=%d "
                  "inherit_parent=%d offscreen=%d translate=(%.1f,%.1f,%.1f) worldNode_id=%d",
-                 (int)last_output->output.size(), last_output->output.data(),
-                 (int)m_final_blend, (int)material.blenmode, m_passthrough,
-                 m_inherit_parent, m_is_offscreen,
-                 t[0], t[1], t[2], m_worldNode->ID());
+                 (int)last_output->output.size(),
+                 last_output->output.data(),
+                 (int)m_final_blend,
+                 (int)material.blenmode,
+                 m_passthrough,
+                 m_inherit_parent,
+                 m_is_offscreen,
+                 t[0],
+                 t[1],
+                 t[2],
+                 m_worldNode->ID());
     }
 }

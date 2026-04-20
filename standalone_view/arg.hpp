@@ -7,17 +7,17 @@
 #include <argparse/argparse.hpp>
 #include <string_view>
 
-constexpr std::string_view ARG_ASSETS      = "<assets>";
-constexpr std::string_view ARG_SCENE       = "<scene>";
-constexpr std::string_view OPT_VALID_LAYER = "--valid-layer";
-constexpr std::string_view OPT_GRAPHVIZ    = "--graphviz";
-constexpr std::string_view OPT_FPS         = "--fps";
-constexpr std::string_view OPT_RESOLUTION  = "--resolution";
-constexpr std::string_view OPT_CACHE_PATH  = "--cache-path";
-constexpr std::string_view OPT_HDR         = "--hdr";
-constexpr std::string_view OPT_USER_PROPS  = "--user-props";
-constexpr std::string_view OPT_SET_PROP    = "--set";
-constexpr std::string_view OPT_SCREENSHOT  = "--screenshot";
+constexpr std::string_view ARG_ASSETS            = "<assets>";
+constexpr std::string_view ARG_SCENE             = "<scene>";
+constexpr std::string_view OPT_VALID_LAYER       = "--valid-layer";
+constexpr std::string_view OPT_GRAPHVIZ          = "--graphviz";
+constexpr std::string_view OPT_FPS               = "--fps";
+constexpr std::string_view OPT_RESOLUTION        = "--resolution";
+constexpr std::string_view OPT_CACHE_PATH        = "--cache-path";
+constexpr std::string_view OPT_HDR               = "--hdr";
+constexpr std::string_view OPT_USER_PROPS        = "--user-props";
+constexpr std::string_view OPT_SET_PROP          = "--set";
+constexpr std::string_view OPT_SCREENSHOT        = "--screenshot";
 constexpr std::string_view OPT_SCREENSHOT_FRAMES = "--screenshot-frames";
 // Interval capture: write a screenshot every N seconds for a bounded total
 // time.  Output filename becomes `<base>_<ms>.ppm` so a sorted listing is
@@ -28,12 +28,12 @@ constexpr std::string_view OPT_SCREENSHOT_MAX_TIME = "--screenshot-max-time";
 // Per-pass render-target dump — see VulkanRender::setPassDumpDir.  Writes one
 // PPM per CustomShaderPass to the given directory.  Fires once on the next
 // frame after scene load completes.
-constexpr std::string_view OPT_DUMP_PASSES_DIR     = "--dump-passes-dir";
-constexpr std::string_view OPT_DUMP_PASSES_DELAY   = "--dump-passes-delay";
+constexpr std::string_view OPT_DUMP_PASSES_DIR   = "--dump-passes-dir";
+constexpr std::string_view OPT_DUMP_PASSES_DELAY = "--dump-passes-delay";
 
 struct Resolution {
-	uint w;
-	uint h;
+    uint w;
+    uint h;
 };
 std::ostream& operator<<(std::ostream& os, const Resolution& res) {
     return os << res.w << 'x' << res.h;
@@ -78,21 +78,21 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
 
     arg.add_argument("-R", OPT_RESOLUTION)
         .help("Set the resolution, eg. 1920x1080")
-        .default_value(Resolution{1280, 720})
+        .default_value(Resolution { 1280, 720 })
         .implicit_value(true)
         .nargs(1)
         .append()
-		.action([](const std::string& value) {
-			const std::regex re_res(R"(([0-9]+)x([0-9]+))");
-			std::smatch match;
-			uint width = 1280, height = 720;
-			if(std::regex_match(value, match, re_res)) {
-				const std::string w_str = match[1].str(), h_str = match[2].str();
-				std::from_chars(w_str.c_str(), w_str.c_str() + w_str.length(), width);
-				std::from_chars(h_str.c_str(), h_str.c_str() + h_str.length(), height);
-			}
-			return Resolution{width, height};
-		});
+        .action([](const std::string& value) {
+            const std::regex re_res(R"(([0-9]+)x([0-9]+))");
+            std::smatch      match;
+            uint             width = 1280, height = 720;
+            if (std::regex_match(value, match, re_res)) {
+                const std::string w_str = match[1].str(), h_str = match[2].str();
+                std::from_chars(w_str.c_str(), w_str.c_str() + w_str.length(), width);
+                std::from_chars(h_str.c_str(), h_str.c_str() + h_str.length(), height);
+            }
+            return Resolution { width, height };
+        });
 
     arg.add_argument("-U", OPT_USER_PROPS)
         .help("user properties override JSON, e.g. '{\"lucyrebecca\":\"6\"}'")
@@ -189,8 +189,8 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
 // Returns {} when neither flag is provided. No external JSON dep — hand-built,
 // since the values we emit are tiny and already well-formed by construction.
 inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
-    std::string                    base = arg.get<std::string>(OPT_USER_PROPS);
-    std::vector<std::string>       sets = arg.get<std::vector<std::string>>(OPT_SET_PROP);
+    std::string              base = arg.get<std::string>(OPT_USER_PROPS);
+    std::vector<std::string> sets = arg.get<std::vector<std::string>>(OPT_SET_PROP);
     if (base.empty() && sets.empty()) return {};
 
     // Start from --user-props object content (strip outer braces if present
@@ -199,19 +199,19 @@ inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
     out << "{";
     bool first = true;
 
-    if (!base.empty()) {
+    if (! base.empty()) {
         // Trust the user JSON but strip outer braces if present.
         std::string inner = base;
-        auto trim = [](std::string& s) {
-            while (!s.empty() && std::isspace((unsigned char)s.front())) s.erase(0,1);
-            while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+        auto        trim  = [](std::string& s) {
+            while (! s.empty() && std::isspace((unsigned char)s.front())) s.erase(0, 1);
+            while (! s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
         };
         trim(inner);
-        if (!inner.empty() && inner.front() == '{' && inner.back() == '}') {
+        if (! inner.empty() && inner.front() == '{' && inner.back() == '}') {
             inner = inner.substr(1, inner.size() - 2);
             trim(inner);
         }
-        if (!inner.empty()) {
+        if (! inner.empty()) {
             out << inner;
             first = false;
         }
@@ -228,11 +228,11 @@ inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
         r.reserve(s.size() + 2);
         for (char c : s) {
             switch (c) {
-                case '"':  r += "\\\""; break;
-                case '\\': r += "\\\\"; break;
-                case '\n': r += "\\n"; break;
-                case '\t': r += "\\t"; break;
-                default:   r += c;
+            case '"': r += "\\\""; break;
+            case '\\': r += "\\\\"; break;
+            case '\n': r += "\\n"; break;
+            case '\t': r += "\\t"; break;
+            default: r += c;
             }
         }
         return r;
@@ -255,7 +255,7 @@ inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
         } else {
             lit = "\"" + json_escape(v) + "\"";
         }
-        if (!first) out << ",";
+        if (! first) out << ",";
         out << "\"" << json_escape(k) << "\":" << lit;
         first = false;
     }

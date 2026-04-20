@@ -45,14 +45,16 @@ constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
 constexpr uint32_t vk_command_num { 2 };
 
 // Like VVK_CHECK_VOID_RE but also sets m_device_lost on VK_ERROR_DEVICE_LOST
-#define VVK_CHECK_DEVICE_LOST(f)                                       \
-    {                                                                  \
-        VkResult _res = (f);                                           \
-        if (_res != VK_SUCCESS && _res != VK_SUBOPTIMAL_KHR) {         \
-            LOG_ERROR("VkResult is \"%s\"", vvk::ToString(_res));      \
-            if (_res == VK_ERROR_DEVICE_LOST) { m_device_lost = true; } \
-            return;                                                    \
-        }                                                              \
+#define VVK_CHECK_DEVICE_LOST(f)                                  \
+    {                                                             \
+        VkResult _res = (f);                                      \
+        if (_res != VK_SUCCESS && _res != VK_SUBOPTIMAL_KHR) {    \
+            LOG_ERROR("VkResult is \"%s\"", vvk::ToString(_res)); \
+            if (_res == VK_ERROR_DEVICE_LOST) {                   \
+                m_device_lost = true;                             \
+            }                                                     \
+            return;                                               \
+        }                                                         \
     }
 
 constexpr std::array base_inst_exts {
@@ -136,8 +138,8 @@ struct VulkanRender::Impl {
     std::string       m_pending_pass_dump_dir;
     std::atomic<bool> m_pass_dump_done { false };
 
-    void takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format,
-                                   uint32_t width, uint32_t height);
+    void takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format, uint32_t width,
+                                   uint32_t height);
     void dumpPassesIfRequested();
 };
 
@@ -204,10 +206,7 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
         .image               = swap_image,
         .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        0,
-                        toSrc);
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
 
     VkBufferImageCopy region {
         .bufferOffset      = 0,
@@ -217,20 +216,16 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
         .imageOffset       = { 0, 0, 0 },
         .imageExtent       = { width, height, 1 },
     };
-    cmd.CopyImageToBuffer(swap_image,
-                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          *staging.handle,
-                          region);
+    cmd.CopyImageToBuffer(
+        swap_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *staging.handle, region);
 
     VkImageMemoryBarrier toPresent = toSrc;
     toPresent.srcAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
     toPresent.dstAccessMask        = VK_ACCESS_MEMORY_READ_BIT;
     toPresent.oldLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     toPresent.newLayout            = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        0,
-                        toPresent);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toPresent);
 
     if (cmd.End() != VK_SUCCESS) {
         LOG_ERROR("Screenshot: cmd End failed");
@@ -275,9 +270,9 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
     }
     std::fprintf(f, "P6\n%u %u\n255\n", width, height);
 
-    const bool bgr = (swap_format == VK_FORMAT_B8G8R8A8_UNORM ||
-                      swap_format == VK_FORMAT_B8G8R8A8_SRGB);
-    const auto* pixels = static_cast<const uint8_t*>(mapped);
+    const bool bgr =
+        (swap_format == VK_FORMAT_B8G8R8A8_UNORM || swap_format == VK_FORMAT_B8G8R8A8_SRGB);
+    const auto*          pixels = static_cast<const uint8_t*>(mapped);
     std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
     for (uint32_t y = 0; y < height; y++) {
         const uint8_t* src = pixels + (size_t)y * width * 4;
@@ -302,7 +297,7 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
 }
 
 void VulkanRender::Impl::takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format,
-                                                    uint32_t width, uint32_t height) {
+                                                   uint32_t width, uint32_t height) {
     std::string path;
     {
         std::lock_guard<std::mutex> lk(m_screenshot_mutex);
@@ -369,8 +364,8 @@ static bool writeImageToPPM(Device& device, VkImage image, VkImageLayout current
         .image               = image,
         .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
 
     VkBufferImageCopy region {
         .bufferOffset      = 0,
@@ -380,16 +375,15 @@ static bool writeImageToPPM(Device& device, VkImage image, VkImageLayout current
         .imageOffset       = { 0, 0, 0 },
         .imageExtent       = { width, height, 1 },
     };
-    cmd.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          *staging.handle, region);
+    cmd.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *staging.handle, region);
 
     VkImageMemoryBarrier toBack = toSrc;
     toBack.srcAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
     toBack.dstAccessMask        = VK_ACCESS_SHADER_READ_BIT;
     toBack.oldLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     toBack.newLayout            = current_layout;
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, toBack);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, toBack);
 
     if (cmd.End() != VK_SUCCESS) return false;
 
@@ -411,9 +405,12 @@ static bool writeImageToPPM(Device& device, VkImage image, VkImageLayout current
     if (staging.handle.MapMemory(&mapped) != VK_SUCCESS) return false;
 
     FILE* f = std::fopen(path.c_str(), "wb");
-    if (! f) { staging.handle.UnMapMemory(); return false; }
+    if (! f) {
+        staging.handle.UnMapMemory();
+        return false;
+    }
     std::fprintf(f, "P6\n%u %u\n255\n", width, height);
-    const auto* pixels = static_cast<const uint8_t*>(mapped);
+    const auto*          pixels = static_cast<const uint8_t*>(mapped);
     std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
     for (uint32_t y = 0; y < height; y++) {
         const uint8_t* src = pixels + (size_t)y * width * 4;
@@ -437,24 +434,26 @@ static bool writeImageToPPM(Device& device, VkImage image, VkImageLayout current
 // writes a PPM.  Using raw globals (extern) because VulkanPass doesn't have
 // a context object we can thread state through, and adding one would touch
 // every pass subclass for a debug-only feature.
-namespace wallpaper { namespace vulkan {
+namespace wallpaper
+{
+namespace vulkan
+{
 struct PassDumpEntry {
-    VmaBufferParameters   staging;
-    uint32_t              width;
-    uint32_t              height;
-    std::string           shader;
-    std::string           output;
-    int32_t               node_id;
-    size_t                pass_index;
+    VmaBufferParameters staging;
+    uint32_t            width;
+    uint32_t            height;
+    std::string         shader;
+    std::string         output;
+    int32_t             node_id;
+    size_t              pass_index;
 };
-bool                               g_pass_dump_active   = false;
-std::vector<PassDumpEntry>*        g_pass_dump_entries  = nullptr;
-Device const*                      g_pass_dump_device   = nullptr;
-static size_t                      g_pass_dump_counter  = 0;
+bool                        g_pass_dump_active  = false;
+std::vector<PassDumpEntry>* g_pass_dump_entries = nullptr;
+Device const*               g_pass_dump_device  = nullptr;
+static size_t               g_pass_dump_counter = 0;
 
-void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
-                        uint32_t w, uint32_t h, const std::string& shader,
-                        const std::string& output, int32_t node_id) {
+void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, uint32_t w, uint32_t h,
+                        const std::string& shader, const std::string& output, int32_t node_id) {
     if (! g_pass_dump_active || ! g_pass_dump_entries || ! g_pass_dump_device) return;
     if (image == VK_NULL_HANDLE || w == 0 || h == 0) return;
     // Skip enormous RTs — dumping a scene's full 4K background uses ~66MB
@@ -466,22 +465,32 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
         static int s_skipped = 0;
         if (++s_skipped <= 10) {
             LOG_INFO("pass dump: skip idx=%zu id=%d %s -> %s (%ux%u, too large)",
-                     g_pass_dump_counter, node_id, shader.c_str(), output.c_str(), w, h);
+                     g_pass_dump_counter,
+                     node_id,
+                     shader.c_str(),
+                     output.c_str(),
+                     w,
+                     h);
         }
         g_pass_dump_counter++;
         return;
     }
     LOG_INFO("pass dump: record idx=%zu id=%d %s -> %s (%ux%u)",
-             g_pass_dump_counter, node_id, shader.c_str(), output.c_str(), w, h);
+             g_pass_dump_counter,
+             node_id,
+             shader.c_str(),
+             output.c_str(),
+             w,
+             h);
 
     const VkDeviceSize bufferSize = (VkDeviceSize)w * h * 4;
     PassDumpEntry      entry {};
-    entry.width      = w;
-    entry.height     = h;
-    entry.shader     = shader;
-    entry.output     = output;
-    entry.node_id    = node_id;
-    entry.pass_index = g_pass_dump_counter++;
+    entry.width            = w;
+    entry.height           = h;
+    entry.shader           = shader;
+    entry.output           = output;
+    entry.node_id          = node_id;
+    entry.pass_index       = g_pass_dump_counter++;
     entry.staging.req_size = bufferSize;
 
     VkBufferCreateInfo ci {
@@ -496,8 +505,9 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
     };
     VmaAllocationCreateInfo vma_info = {};
     vma_info.usage                   = VMA_MEMORY_USAGE_CPU_ONLY;
-    if (vvk::CreateBuffer(g_pass_dump_device->vma_allocator(), ci, vma_info,
-                          entry.staging.handle) != VK_SUCCESS) {
+    if (vvk::CreateBuffer(
+            g_pass_dump_device->vma_allocator(), ci, vma_info, entry.staging.handle) !=
+        VK_SUCCESS) {
         LOG_ERROR("pass dump: staging alloc failed");
         return;
     }
@@ -520,8 +530,8 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
         .image               = image,
         .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
     };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
 
     VkBufferImageCopy region {
         .bufferOffset      = 0,
@@ -531,20 +541,21 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image,
         .imageOffset       = { 0, 0, 0 },
         .imageExtent       = { w, h, 1 },
     };
-    cmd.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                          *entry.staging.handle, region);
+    cmd.CopyImageToBuffer(
+        image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *entry.staging.handle, region);
 
     VkImageMemoryBarrier toBack = toSrc;
     toBack.srcAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
     toBack.dstAccessMask        = VK_ACCESS_SHADER_READ_BIT;
     toBack.oldLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     toBack.newLayout            = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, toBack);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, toBack);
 
     g_pass_dump_entries->push_back(std::move(entry));
 }
-}} // namespace wallpaper::vulkan
+} // namespace vulkan
+} // namespace wallpaper
 
 void VulkanRender::Impl::dumpPassesIfRequested() {
     // Two phases.  On a newly requested dump, we arm the globals so the
@@ -556,23 +567,23 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
         dir = m_pending_pass_dump_dir;
     }
 
-    static std::string                              s_dump_dir;
+    static std::string                                   s_dump_dir;
     static std::vector<wallpaper::vulkan::PassDumpEntry> s_entries;
-    static int                                      s_phase = 0; // 0 idle, 1 armed
+    static int                                           s_phase = 0; // 0 idle, 1 armed
 
     using wallpaper::vulkan::g_pass_dump_active;
-    using wallpaper::vulkan::g_pass_dump_entries;
-    using wallpaper::vulkan::g_pass_dump_device;
     using wallpaper::vulkan::g_pass_dump_counter;
+    using wallpaper::vulkan::g_pass_dump_device;
+    using wallpaper::vulkan::g_pass_dump_entries;
 
     if (s_phase == 0 && ! dir.empty()) {
         s_dump_dir = dir;
         s_entries.clear();
-        wallpaper::vulkan::g_pass_dump_counter  = 0;
-        wallpaper::vulkan::g_pass_dump_entries  = &s_entries;
-        wallpaper::vulkan::g_pass_dump_device   = m_device.get();
-        wallpaper::vulkan::g_pass_dump_active   = true;
-        s_phase                                 = 1;
+        wallpaper::vulkan::g_pass_dump_counter = 0;
+        wallpaper::vulkan::g_pass_dump_entries = &s_entries;
+        wallpaper::vulkan::g_pass_dump_device  = m_device.get();
+        wallpaper::vulkan::g_pass_dump_active  = true;
+        s_phase                                = 1;
         LOG_INFO("pass dump: armed for next frame (dir=%s)", s_dump_dir.c_str());
         return;
     }
@@ -585,7 +596,8 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
         std::filesystem::create_directories(s_dump_dir, ec);
 
         auto sanitize = [](std::string s) {
-            for (auto& c : s) if (c == '/' || c == '\\' || c == ':') c = '_';
+            for (auto& c : s)
+                if (c == '/' || c == '\\' || c == ':') c = '_';
             if (s.size() > 64) s.resize(64);
             return s;
         };
@@ -596,16 +608,15 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
             if (entry.staging.handle.MapMemory(&mapped) != VK_SUCCESS) continue;
 
             char name_buf[64];
-            std::snprintf(name_buf, sizeof(name_buf), "pass_%04zu_id%d",
-                          entry.pass_index, entry.node_id);
-            std::string path = s_dump_dir + "/" + name_buf + "_" +
-                               sanitize(entry.shader) + "_" +
+            std::snprintf(
+                name_buf, sizeof(name_buf), "pass_%04zu_id%d", entry.pass_index, entry.node_id);
+            std::string path = s_dump_dir + "/" + name_buf + "_" + sanitize(entry.shader) + "_" +
                                sanitize(entry.output) + ".ppm";
 
             FILE* f = std::fopen(path.c_str(), "wb");
             if (f) {
                 std::fprintf(f, "P6\n%u %u\n255\n", entry.width, entry.height);
-                const auto* px = static_cast<const uint8_t*>(mapped);
+                const auto*          px = static_cast<const uint8_t*>(mapped);
                 std::vector<uint8_t> row((size_t)entry.width * 3);
                 for (uint32_t y = 0; y < entry.height; y++) {
                     const uint8_t* src = px + (size_t)y * entry.width * 4;
@@ -745,9 +756,8 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
 
     if (info.offscreen) {
-        VkFormat ex_fmt = info.hdr_output
-            ? VK_FORMAT_R16G16B16A16_SFLOAT
-            : VK_FORMAT_R8G8B8A8_UNORM;
+        VkFormat ex_fmt =
+            info.hdr_output ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
         m_ex_swapchain = CreateExSwapchain(*m_device,
                                            extent.width,
                                            extent.height,
@@ -875,16 +885,16 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 
     // Periodic diagnostics: frame time + VMA usage + process RSS
     {
-        static int  s_diag_frame = 0;
-        static auto s_diag_start = std::chrono::steady_clock::now();
-        static auto s_last_frame = s_diag_start;
+        static int    s_diag_frame   = 0;
+        static auto   s_diag_start   = std::chrono::steady_clock::now();
+        static auto   s_last_frame   = s_diag_start;
         static double s_frame_sum_ms = 0;
         static double s_frame_max_ms = 0;
         static int    s_frame_count  = 0;
 
-        auto now = std::chrono::steady_clock::now();
+        auto   now      = std::chrono::steady_clock::now();
         double frame_ms = std::chrono::duration<double, std::milli>(now - s_last_frame).count();
-        s_last_frame = now;
+        s_last_frame    = now;
         s_frame_sum_ms += frame_ms;
         if (frame_ms > s_frame_max_ms) s_frame_max_ms = frame_ms;
         s_frame_count++;
@@ -904,7 +914,12 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
             double rss_mb = rss_pages * 4096.0 / (1024.0 * 1024.0);
 
             LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB",
-                     elapsed_s, s_diag_frame, avg_ms, s_frame_max_ms, vma_mb, rss_mb);
+                     elapsed_s,
+                     s_diag_frame,
+                     avg_ms,
+                     s_frame_max_ms,
+                     vma_mb,
+                     rss_mb);
             s_frame_sum_ms = 0;
             s_frame_max_ms = 0;
             s_frame_count  = 0;
@@ -954,14 +969,14 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     });
     m_dyn_buf->recordUpload(rr.command);
     {
-        static bool _dumped = false;
-        static int _render_frame_count = 0;
-        int prepared_count = 0, skipped_count = 0;
+        static bool _dumped             = false;
+        static int  _render_frame_count = 0;
+        int         prepared_count = 0, skipped_count = 0;
         // Reset per-frame exec pass counter (extern from CustomShaderPass)
-        extern int g_exec_pass_counter;
-        extern int g_exec_frame_counter;
+        extern int                         g_exec_pass_counter;
+        extern int                         g_exec_frame_counter;
         extern std::unordered_set<VkImage> g_depth_inited_frame;
-        g_exec_pass_counter = 0;
+        g_exec_pass_counter  = 0;
         g_exec_frame_counter = _render_frame_count;
         g_depth_inited_frame.clear();
         for (auto* p : m_passes) {
@@ -972,9 +987,11 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                 skipped_count++;
             }
         }
-        if (!_dumped) {
+        if (! _dumped) {
             LOG_INFO("render frame: %d passes executed, %d skipped (not prepared), %zu total",
-                     prepared_count, skipped_count, m_passes.size());
+                     prepared_count,
+                     skipped_count,
+                     m_passes.size());
             _dumped = true;
         }
         _render_frame_count++;
@@ -1036,14 +1053,14 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     m_dyn_buf->recordUpload(rr.command);
 
     {
-        static bool _dumped = false;
-        static int _render_frame_count = 0;
-        int prepared_count = 0, skipped_count = 0;
+        static bool _dumped             = false;
+        static int  _render_frame_count = 0;
+        int         prepared_count = 0, skipped_count = 0;
         // Reset per-frame counters (extern from CustomShaderPass)
-        extern int g_exec_pass_counter;
-        extern int g_exec_frame_counter;
+        extern int                         g_exec_pass_counter;
+        extern int                         g_exec_frame_counter;
         extern std::unordered_set<VkImage> g_depth_inited_frame;
-        g_exec_pass_counter = 0;
+        g_exec_pass_counter  = 0;
         g_exec_frame_counter = _render_frame_count;
         g_depth_inited_frame.clear();
         for (auto* p : m_passes) {
@@ -1054,9 +1071,12 @@ void VulkanRender::Impl::drawFrameOffscreen() {
                 skipped_count++;
             }
         }
-        if (!_dumped) {
-            LOG_INFO("render frame (offscreen): %d passes executed, %d skipped (not prepared), %zu total",
-                     prepared_count, skipped_count, m_passes.size());
+        if (! _dumped) {
+            LOG_INFO("render frame (offscreen): %d passes executed, %d skipped (not prepared), %zu "
+                     "total",
+                     prepared_count,
+                     skipped_count,
+                     m_passes.size());
             _dumped = true;
         }
         _render_frame_count++;
@@ -1079,10 +1099,8 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     // swapchain path.  The presented image here is the ExSwapchain image we
     // hand to Qt's scene graph; its format is whatever ExSwapchain was
     // configured with (RGBA8 for SDR, RGBA16F for HDR).
-    takeScreenshotIfRequested(image.handle,
-                              m_ex_swapchain->format(),
-                              image.extent.width,
-                              image.extent.height);
+    takeScreenshotIfRequested(
+        image.handle, m_ex_swapchain->format(), image.extent.width, image.extent.height);
     dumpPassesIfRequested();
     m_ex_swapchain->renderFrame();
 }
@@ -1130,7 +1148,7 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     if (width == 0) return;
     double sw = scene.ortho[0], sh = scene.ortho[1];
     double fboAspect = width / (double)height, sAspect = sw / sh;
-    auto&  gCam    = *scene.cameras.at("global");
+    auto&  gCam = *scene.cameras.at("global");
 
     // 3D perspective scenes: global camera IS perspective, no separate global_perspective
     if (gCam.IsPerspective()) {
@@ -1148,7 +1166,7 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
         return;
     }
 
-    auto&  gPerCam = *scene.cameras.at("global_perspective");
+    auto& gPerCam = *scene.cameras.at("global_perspective");
     // assum cam
     switch (fillmode) {
     case FillMode::STRETCH:
@@ -1270,14 +1288,18 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             auto* pnode = rg.getPassNode(nodes[i]);
             if (! vpass->prepared()) {
                 LOG_ERROR("pass[%zu] '%.*s' FAILED to prepare",
-                          i, (int)pnode->name().size(), pnode->name().data());
+                          i,
+                          (int)pnode->name().size(),
+                          pnode->name().data());
                 failed_count++;
             } else {
                 prepared_count++;
             }
         }
         LOG_INFO("compileRenderGraph: %d passes prepared, %d FAILED, %zu total (+prepass+finpass)",
-                 prepared_count, failed_count, nodes.size());
+                 prepared_count,
+                 failed_count,
+                 nodes.size());
     }
 
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {

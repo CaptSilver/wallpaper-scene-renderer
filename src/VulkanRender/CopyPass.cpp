@@ -48,12 +48,16 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
     }
 
     LOG_INFO("CopyPass: '%s' %ux%u -> '%s' %ux%u (%s%s)",
-             m_desc.src.c_str(), m_desc.vk_src.extent.width, m_desc.vk_src.extent.height,
-             m_desc.dst.c_str(), m_desc.vk_dst.extent.width, m_desc.vk_dst.extent.height,
-             (! m_desc.flipY &&
-              m_desc.vk_src.extent.width == m_desc.vk_dst.extent.width &&
+             m_desc.src.c_str(),
+             m_desc.vk_src.extent.width,
+             m_desc.vk_src.extent.height,
+             m_desc.dst.c_str(),
+             m_desc.vk_dst.extent.width,
+             m_desc.vk_dst.extent.height,
+             (! m_desc.flipY && m_desc.vk_src.extent.width == m_desc.vk_dst.extent.width &&
               m_desc.vk_src.extent.height == m_desc.vk_dst.extent.height)
-                 ? "copy" : "blit",
+                 ? "copy"
+                 : "blit",
              m_desc.flipY ? ", flipY" : "");
 
     setPrepared();
@@ -65,11 +69,16 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
         extern int g_exec_frame_counter;
         if (g_exec_frame_counter < 1) {
             LOG_INFO("EXEC[%d] pass#%d COPY '%.*s' %ux%u -> '%.*s' %ux%u",
-                     g_exec_frame_counter, g_exec_pass_counter++,
-                     (int)m_desc.src.size(), m_desc.src.data(),
-                     m_desc.vk_src.extent.width, m_desc.vk_src.extent.height,
-                     (int)m_desc.dst.size(), m_desc.dst.data(),
-                     m_desc.vk_dst.extent.width, m_desc.vk_dst.extent.height);
+                     g_exec_frame_counter,
+                     g_exec_pass_counter++,
+                     (int)m_desc.src.size(),
+                     m_desc.src.data(),
+                     m_desc.vk_src.extent.width,
+                     m_desc.vk_src.extent.height,
+                     (int)m_desc.dst.size(),
+                     m_desc.dst.data(),
+                     m_desc.vk_dst.extent.width,
+                     m_desc.vk_dst.extent.height);
         }
     }
     auto& cmd = rr.command;
@@ -91,8 +100,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
 
     };
     // flipY requires the blit path (VkImageCopy can't flip)
-    bool size_match = ! m_desc.flipY &&
-                      src.extent.width == dst.extent.width &&
+    bool size_match = ! m_desc.flipY && src.extent.width == dst.extent.width &&
                       src.extent.height == dst.extent.height;
 
     VkImageSubresourceLayers subresource {
@@ -146,16 +154,16 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
     } else {
         // Flip source Y when flipY is set (used for reflection render targets).
         // vkCmdBlitImage natively supports this via swapped srcOffsets.
-        int32_t srcY0 = m_desc.flipY ? (int32_t)src.extent.height : 0;
-        int32_t srcY1 = m_desc.flipY ? 0 : (int32_t)src.extent.height;
+        int32_t     srcY0 = m_desc.flipY ? (int32_t)src.extent.height : 0;
+        int32_t     srcY1 = m_desc.flipY ? 0 : (int32_t)src.extent.height;
         VkImageBlit blit {
             .srcSubresource = subresource,
             .srcOffsets     = { VkOffset3D { 0, srcY0, 0 },
                                 VkOffset3D { (int32_t)src.extent.width, srcY1, 1 } },
             .dstSubresource = subresource,
             .dstOffsets     = { VkOffset3D { 0, 0, 0 },
-                                VkOffset3D { (int32_t)dst.extent.width,
-                                             (int32_t)dst.extent.height, 1 } },
+                                VkOffset3D {
+                                (int32_t)dst.extent.width, (int32_t)dst.extent.height, 1 } },
         };
         cmd.BlitImage(src.handle,
                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,

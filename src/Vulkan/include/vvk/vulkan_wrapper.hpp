@@ -39,7 +39,9 @@ const char* ToString(VkColorSpaceKHR color) noexcept;
         if (_res != VK_SUCCESS && _res != VK_SUBOPTIMAL_KHR) {    \
             LOG_ERROR("VkResult is \"%s\"", vvk::ToString(_res)); \
             assert(_res == VK_SUCCESS);                           \
-            { act; };                                             \
+            {                                                     \
+                act;                                              \
+            };                                                    \
         }                                                         \
     }
 
@@ -364,9 +366,7 @@ public:
         return dld->vkQueuePresentKHR(handle, &present_info);
     }
 
-    VkResult WaitIdle() const noexcept {
-        return dld->vkQueueWaitIdle(handle);
-    }
+    VkResult WaitIdle() const noexcept { return dld->vkQueueWaitIdle(handle); }
 };
 
 class SwapchainKHR : public Handle<VkSwapchainKHR, VkDevice, DeviceDispatch> {
@@ -616,7 +616,7 @@ public:
 
     void ClearDepthStencilImage(VkImage image, VkImageLayout imageLayout,
                                 const VkClearDepthStencilValue& depthStencil,
-                                const VkImageSubresourceRange& range) const noexcept {
+                                const VkImageSubresourceRange&  range) const noexcept {
         dld->vkCmdClearDepthStencilImage(handle, image, imageLayout, &depthStencil, 1, &range);
     }
 

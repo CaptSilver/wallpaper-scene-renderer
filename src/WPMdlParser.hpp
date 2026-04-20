@@ -21,7 +21,7 @@ namespace fs
 {
 class VFS;
 class IBinaryStream;
-};
+}; // namespace fs
 
 struct WPMdl {
     i32 mdlv { 13 };
@@ -43,9 +43,9 @@ struct WPMdl {
         std::string                          mat_json_file;
         std::vector<Vertex>                  vertexs;
         std::vector<std::array<uint16_t, 3>> indices;
-        bool has_normals { false };
-        bool has_tangents { false };
-        bool has_texcoord1 { false };
+        bool                                 has_normals { false };
+        bool                                 has_tangents { false };
+        bool                                 has_texcoord1 { false };
     };
 
     // Model path: multiple submeshes, each with own material

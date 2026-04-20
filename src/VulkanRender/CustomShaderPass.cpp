@@ -327,10 +327,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     {
         static std::unordered_set<const void*> _csp_logged;
         if (_csp_logged.insert(this).second) {
-            SceneMesh* pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
-            std::string sn = (pm && pm->Material()) ? pm->Material()->customShader.shader->name : "?";
+            SceneMesh*  pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
+            std::string sn =
+                (pm && pm->Material()) ? pm->Material()->customShader.shader->name : "?";
             LOG_INFO("CSP_PREPARE: shader='%s' vertCount=%zu",
-                     sn.c_str(), pm ? (size_t)pm->VertexCount() : 0u);
+                     sn.c_str(),
+                     pm ? (size_t)pm->VertexCount() : 0u);
         }
     }
     m_desc.vk_textures.resize(m_desc.textures.size());
@@ -356,12 +358,18 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 if (image->header.isVideoTexture && ! image->header.videoFilePath.empty()) {
                     VideoTextureInfo* existing = nullptr;
                     for (auto& vt : scene.videoTextures)
-                        if (vt.textureKey == tex_name) { existing = &vt; break; }
+                        if (vt.textureKey == tex_name) {
+                            existing = &vt;
+                            break;
+                        }
                     if (existing) {
                         if (m_desc.node) {
                             bool dup = false;
                             for (auto* n : existing->ownerNodes)
-                                if (n == m_desc.node) { dup = true; break; }
+                                if (n == m_desc.node) {
+                                    dup = true;
+                                    break;
+                                }
                             if (! dup) existing->ownerNodes.push_back(m_desc.node);
                         }
                     } else {
@@ -409,7 +417,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
     // Detect geometry shader point topology from mesh vertex array option
     {
-        bool has_gs_opt = mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER);
+        bool has_gs_opt =
+            mesh.VertexCount() > 0 && mesh.GetVertexArray(0).GetOption(WE_CB_GEOMETRY_SHADER);
         if (has_gs_opt) {
             m_desc.point_topology = true;
         }
@@ -437,7 +446,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                                                                    : "?";
             }
             LOG_INFO("GS pipeline '%s': %zu stages [%s], %zu UBO blocks",
-                     shader.name.c_str(), spvs.size(), stages_str.c_str(),
+                     shader.name.c_str(),
+                     spvs.size(),
+                     stages_str.c_str(),
                      ref.blocks.size());
             if (! ref.blocks.empty()) {
                 LOG_INFO("  UBO block: size=%zu members=%zu",
@@ -549,7 +560,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
                 if (m_desc.point_topology) {
                     LOG_INFO("  GS vtx attr '%s': loc=%u fmt=%u offset=%zu found=%d",
-                             name.c_str(), input.location, (u32)input.format, offset, (int)found);
+                             name.c_str(),
+                             input.location,
+                             (u32)input.format,
+                             offset,
+                             (int)found);
                 }
             }
             if (m_desc.point_topology) {
@@ -612,9 +627,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VkPipelineColorBlendAttachmentState color_blend;
         VkAttachmentLoadOp                  loadOp { VK_ATTACHMENT_LOAD_OP_DONT_CARE };
         {
-            VkColorComponentFlags colorMask =
-                VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            VkColorComponentFlags colorMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
             color_blend.colorWriteMask = colorMask;
 
             auto blendmode = mesh.Material()->blenmode;
@@ -732,7 +746,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
-            .setTopology(m_desc.index_buf       ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+            .setTopology(m_desc.index_buf        ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
                          : m_desc.point_topology ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
                                                  : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP)
             .addInputBindingDescription(bind_descriptions)
@@ -753,7 +767,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // on scenes with hundreds of effect passes.
         {
             static std::set<std::string> _pipe_logged;
-            auto key = mesh.Material()->customShader.shader->name + "_" + m_desc.output;
+            auto key   = mesh.Material()->customShader.shader->name + "_" + m_desc.output;
             bool first = _pipe_logged.insert(key).second;
             static const bool s_pipeDiag = []() {
                 const char* v = std::getenv("WEKDE_PIPELINE_DIAG");
@@ -824,36 +838,37 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             auto& vertex_bufs = m_desc.vertex_bufs;
             auto& draw_count  = m_desc.draw_count;
             auto& index_buf   = m_desc.index_buf;
-            auto  point_topo   = m_desc.point_topology;
-            update_dyn_buf_op = [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf,
-                                 point_topo]() {
-                if (mesh.Dirty().exchange(false)) {
-                    for (usize i = 0; i < mesh.VertexCount(); i++) {
-                        const auto& vertex = mesh.GetVertexArray(i);
-                        auto&       buf    = vertex_bufs[i];
-                        if (! dyn_buf->writeToBuf(buf,
-                                                  { (uint8_t*)vertex.Data(), vertex.DataSizeOf() }))
-                            return;
-                    }
-                    if (mesh.IndexCount() > 0) {
-                        auto& indice = mesh.GetIndexArray(0);
-                        u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
-                        draw_count   = count * 3;
-                        auto& buf    = index_buf;
-                        if (! dyn_buf->writeToBuf(buf,
-                                                  { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
-                            return;
-                    } else if (point_topo && mesh.VertexCount() > 0) {
-                        // GS particles: draw_count = active vertex count
-                        draw_count = (u32)mesh.GetVertexArray(0).RenderVertexCount();
-                        static int s_dyn_log = 0;
-                        if (++s_dyn_log % 600 == 1) {
-                            LOG_INFO("GS dyn update: draw_count=%u dataSizeOf=%zu",
-                                     draw_count, mesh.GetVertexArray(0).DataSizeOf());
+            auto  point_topo  = m_desc.point_topology;
+            update_dyn_buf_op =
+                [&mesh, &vertex_bufs, &draw_count, &index_buf, dyn_buf, point_topo]() {
+                    if (mesh.Dirty().exchange(false)) {
+                        for (usize i = 0; i < mesh.VertexCount(); i++) {
+                            const auto& vertex = mesh.GetVertexArray(i);
+                            auto&       buf    = vertex_bufs[i];
+                            if (! dyn_buf->writeToBuf(
+                                    buf, { (uint8_t*)vertex.Data(), vertex.DataSizeOf() }))
+                                return;
+                        }
+                        if (mesh.IndexCount() > 0) {
+                            auto& indice = mesh.GetIndexArray(0);
+                            u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
+                            draw_count   = count * 3;
+                            auto& buf    = index_buf;
+                            if (! dyn_buf->writeToBuf(
+                                    buf, { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
+                                return;
+                        } else if (point_topo && mesh.VertexCount() > 0) {
+                            // GS particles: draw_count = active vertex count
+                            draw_count           = (u32)mesh.GetVertexArray(0).RenderVertexCount();
+                            static int s_dyn_log = 0;
+                            if (++s_dyn_log % 600 == 1) {
+                                LOG_INFO("GS dyn update: draw_count=%u dataSizeOf=%zu",
+                                         draw_count,
+                                         mesh.GetVertexArray(0).DataSizeOf());
+                            }
                         }
                     }
-                }
-            };
+                };
         }
 
         auto  block  = ref.blocks.front();
@@ -1241,23 +1256,24 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // image into a pre-allocated staging buffer BEFORE any later pass
     // rewrites the same ping-pong slot.  VulkanRender maps the staging
     // buffers after the frame's submit+wait and writes PPMs.
-    extern bool g_pass_dump_active;
+    extern bool                               g_pass_dump_active;
     extern std::vector<struct PassDumpEntry>* g_pass_dump_entries;
-    extern struct Device const* g_pass_dump_device;
+    extern struct Device const*               g_pass_dump_device;
     if (g_pass_dump_active && g_pass_dump_entries && g_pass_dump_device &&
         m_desc.vk_output.handle != VK_NULL_HANDLE) {
         // Forward-declare the structure for header-less access (defined in
         // VulkanRender.cpp).  We just record the copy here; VulkanRender
         // owns the staging buffer lifetime + PPM write.
         extern void g_pass_dump_record(const vvk::CommandBuffer& cmd,
-                                       VkImage image, uint32_t w, uint32_t h,
-                                       const std::string& shader,
-                                       const std::string& output,
-                                       int32_t node_id);
-        auto shaderName =
-            (m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material())
-                ? m_desc.node->Mesh()->Material()->customShader.shader->name
-                : std::string("noshader");
+                                       VkImage                   image,
+                                       uint32_t                  w,
+                                       uint32_t                  h,
+                                       const std::string&        shader,
+                                       const std::string&        output,
+                                       int32_t                   node_id);
+        auto shaderName = (m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material())
+                              ? m_desc.node->Mesh()->Material()->customShader.shader->name
+                              : std::string("noshader");
         g_pass_dump_record(cmd,
                            m_desc.vk_output.handle,
                            m_desc.vk_output.extent.width,

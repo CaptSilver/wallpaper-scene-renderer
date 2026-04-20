@@ -23,7 +23,7 @@
 #include "Audio/AudioCapture.h"
 #include "VideoTextureDecoder.hpp"
 #ifdef HAVE_EGL_HWDEC
-#include "HWVideoTextureDecoder.hpp"
+#    include "HWVideoTextureDecoder.hpp"
 #endif
 #include "Image.hpp"
 
@@ -196,17 +196,17 @@ public:
 
     SceneWallpaper::ParallaxInfo getParallaxInfo() const {
         SceneWallpaper::ParallaxInfo info;
-        auto scene = m_scene;
+        auto                         scene = m_scene;
         if (! scene) return info;
         auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
         if (updater) {
-            const auto& p = updater->GetCameraParallax();
+            const auto& p       = updater->GetCameraParallax();
             info.enable         = p.enable;
             info.amount         = p.amount;
             info.mouseInfluence = p.mouseinfluence;
         }
         if (scene->activeCamera) {
-            auto pos = scene->activeCamera->GetPosition();
+            auto pos  = scene->activeCamera->GetPosition();
             info.camX = (float)pos.x();
             info.camY = (float)pos.y();
         }
@@ -224,7 +224,7 @@ public:
         if (! scene) return {};
         auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
         if (! updater) return {};
-        auto raw = updater->DrainAnimationEvents();
+        auto                            raw = updater->DrainAnimationEvents();
         std::vector<AnimationEventInfo> out;
         out.reserve(raw.size());
         for (auto& e : raw) {
@@ -339,16 +339,12 @@ public:
     void requestScreenshot(const std::string& path) {
         if (m_render) m_render->setScreenshotPath(path);
     }
-    bool screenshotDone() const {
-        return m_render && m_render->screenshotDone();
-    }
+    bool screenshotDone() const { return m_render && m_render->screenshotDone(); }
 
     void requestPassDump(const std::string& dir) {
         if (m_render) m_render->setPassDumpDir(dir);
     }
-    bool passDumpDone() const {
-        return m_render && m_render->passDumpDone();
-    }
+    bool passDumpDone() const { return m_render && m_render->passDumpDone(); }
 
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
@@ -370,21 +366,25 @@ public:
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        auto key = std::make_pair(id, property);
+        auto                        key  = std::make_pair(id, property);
         m_pending_transform_updates[key] = { x, y, z };
-        static int s_transform_log = 0;
+        static int s_transform_log       = 0;
         // Keep a long-lived "last logged" map so [jump] reflects real deltas;
         // the pending map clears every frame, which would otherwise mark
         // every first-of-frame write as a jump.
-        static std::map<std::pair<i32, std::string>, std::array<float, 3>>
-            s_last_logged_transform;
-        auto prev = s_last_logged_transform.find(key);
+        static std::map<std::pair<i32, std::string>, std::array<float, 3>> s_last_logged_transform;
+        auto prev   = s_last_logged_transform.find(key);
         bool jumped = (prev == s_last_logged_transform.end()) ||
                       (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
                        std::abs(prev->second[2] - z)) > 50.0f;
         if (++s_transform_log <= 5 || jumped) {
             LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
-                     s_transform_log, id, property.c_str(), x, y, z,
+                     s_transform_log,
+                     id,
+                     property.c_str(),
+                     x,
+                     y,
+                     z,
                      jumped ? " [jump]" : "");
             s_last_logged_transform[key] = { x, y, z };
         }
@@ -392,15 +392,16 @@ public:
 
     void setNodeVisible(i32 id, bool visible) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_visible_updates[id] = visible;
-        static int s_visible_log = 0;
+        m_pending_visible_updates[id]                      = visible;
+        static int                           s_visible_log = 0;
         static std::unordered_map<i32, bool> s_last_logged_visible;
-        auto prev = s_last_logged_visible.find(id);
-        bool jumped = prev == s_last_logged_visible.end() ||
-                      prev->second != visible;
+        auto                                 prev = s_last_logged_visible.find(id);
+        bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
         if (++s_visible_log <= 5 || jumped) {
             LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
-                     s_visible_log, id, (int)visible,
+                     s_visible_log,
+                     id,
+                     (int)visible,
                      jumped ? " [jump]" : "");
             s_last_logged_visible[id] = visible;
         }
@@ -414,17 +415,18 @@ public:
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
-        static int s_alpha_log = 0;
+        static int s_alpha_log      = 0;
         // Track the last *logged* value separately from the pending map
         // (which gets cleared each render frame) so [jump] detects real
         // deltas instead of firing on every first-of-frame write.
         static std::unordered_map<i32, float> s_last_logged_alpha;
-        auto   prev   = s_last_logged_alpha.find(id);
-        bool   jumped = prev == s_last_logged_alpha.end() ||
-                        std::abs(prev->second - alpha) > 0.3f;
+        auto                                  prev = s_last_logged_alpha.find(id);
+        bool jumped = prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
         if (++s_alpha_log <= 5 || jumped) {
             LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
-                     s_alpha_log, id, alpha,
+                     s_alpha_log,
+                     id,
+                     alpha,
                      jumped ? " [jump]" : "");
             s_last_logged_alpha[id] = alpha;
         }
@@ -447,15 +449,12 @@ public:
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_camera_fov = v;
     }
-    void setCameraLookAt(float ex, float ey, float ez,
-                         float cx, float cy, float cz,
-                         float ux, float uy, float uz) {
+    void setCameraLookAt(float ex, float ey, float ez, float cx, float cy, float cz, float ux,
+                         float uy, float uz) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_camera_lookat = CameraLookAtUpdate {
-            { (double)ex, (double)ey, (double)ez },
-            { (double)cx, (double)cy, (double)cz },
-            { (double)ux, (double)uy, (double)uz }
-        };
+        m_pending_camera_lookat = CameraLookAtUpdate { { (double)ex, (double)ey, (double)ez },
+                                                       { (double)cx, (double)cy, (double)cz },
+                                                       { (double)ux, (double)uy, (double)uz } };
     }
     void setAmbientColor(float r, float g, float b) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
@@ -488,24 +487,23 @@ public:
     // collapses ~3600 lock/unlock pairs into one.  Flags use the same
     // bitmask as the JS DIRTY_STRIDE layout (F_ORIGIN=1, F_SCALE=2, etc).
     void applyLayerBatch(const std::vector<SceneWallpaper::LayerBatchUpdate>& batch) {
-        static constexpr u32 F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4,
-                             F_VISIBLE = 8, F_ALPHA = 16;
+        static constexpr u32 F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4, F_VISIBLE = 8, F_ALPHA = 16;
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         for (const auto& e : batch) {
             if (e.flags & F_ORIGIN) {
-                m_pending_transform_updates[{ e.id, std::string("origin") }] = {
-                    e.origin[0], e.origin[1], e.origin[2]
-                };
+                m_pending_transform_updates[{ e.id, std::string("origin") }] = { e.origin[0],
+                                                                                 e.origin[1],
+                                                                                 e.origin[2] };
             }
             if (e.flags & F_SCALE) {
-                m_pending_transform_updates[{ e.id, std::string("scale") }] = {
-                    e.scale[0], e.scale[1], e.scale[2]
-                };
+                m_pending_transform_updates[{ e.id, std::string("scale") }] = { e.scale[0],
+                                                                                e.scale[1],
+                                                                                e.scale[2] };
             }
             if (e.flags & F_ANGLES) {
-                m_pending_transform_updates[{ e.id, std::string("angles") }] = {
-                    e.angles[0], e.angles[1], e.angles[2]
-                };
+                m_pending_transform_updates[{ e.id, std::string("angles") }] = { e.angles[0],
+                                                                                 e.angles[1],
+                                                                                 e.angles[2] };
             }
             if (e.flags & F_VISIBLE) {
                 m_pending_visible_updates[e.id] = e.visible != 0;
@@ -625,7 +623,10 @@ private:
                 } else {
                     if (vd.ownerNode && vd.ownerNode->IsVisible()) visible = true;
                     for (auto* n : vd.ownerNodes)
-                        if (n && n->IsVisible()) { visible = true; break; }
+                        if (n && n->IsVisible()) {
+                            visible = true;
+                            break;
+                        }
                 }
                 if (! visible) {
                     if (vd.decoder->isPlaying()) vd.decoder->pause();
@@ -637,7 +638,7 @@ private:
                 if (! frameData) continue;
 
                 Image img;
-                img.key = vd.textureKey;
+                img.key              = vd.textureKey;
                 img.header.format    = TextureFormat::RGBA8;
                 img.header.width     = vd.decoder->width();
                 img.header.height    = vd.decoder->height();
@@ -653,7 +654,8 @@ private:
                 mip.height = vd.decoder->height();
                 mip.size   = vd.decoder->width() * vd.decoder->height() * 4;
                 // Use non-owning pointer — data is owned by the decoder's triple buffer
-                mip.data = ImageDataPtr(const_cast<uint8_t*>(frameData), [](uint8_t*) {});
+                mip.data = ImageDataPtr(const_cast<uint8_t*>(frameData), [](uint8_t*) {
+                });
                 slot.mipmaps.push_back(std::move(mip));
                 img.slots.push_back(std::move(slot));
 
@@ -801,7 +803,8 @@ private:
                         // allows for hint-sized pools (3body trails ~1200).
                         if (id >= 2'000'000 && id < 2'020'000) {
                             LOG_INFO("POOL visible apply: id=%d visible=%d translate=(%.1f,%.1f)",
-                                     id, (int)visible,
+                                     id,
+                                     (int)visible,
                                      nit->second->Translate().x(),
                                      nit->second->Translate().y());
                         }
@@ -825,7 +828,7 @@ private:
                     if (eit == m_scene->nodeEffectLayerMap.end()) continue;
                     auto* effLayer = eit->second;
                     if (effIdx < 0 || effIdx >= (i32)effLayer->EffectCount()) continue;
-                    auto& eff = effLayer->GetEffect(effIdx);
+                    auto& eff    = effLayer->GetEffect(effIdx);
                     eff->visible = vis;
                     for (auto& en : eff->nodes) {
                         en.sceneNode->SetVisible(vis);
@@ -902,7 +905,7 @@ private:
                     m_pending_camera_fov.reset();
                 }
                 if (m_pending_camera_lookat && m_scene->activeCamera) {
-                    auto& u = *m_pending_camera_lookat;
+                    auto&           u = *m_pending_camera_lookat;
                     Eigen::Vector3d eye(u.eye[0], u.eye[1], u.eye[2]);
                     Eigen::Vector3d ctr(u.center[0], u.center[1], u.center[2]);
                     Eigen::Vector3d up(u.up[0], u.up[1], u.up[2]);
@@ -1094,7 +1097,7 @@ public:
         if (m_scene->nodePropertyAnimations.empty()) return;
         applyPendingPropertyAnimCommands();
         for (auto& [nodeId, anims] : m_scene->nodePropertyAnimations) {
-            auto nit = m_scene->nodeById.find(nodeId);
+            auto       nit        = m_scene->nodeById.find(nodeId);
             SceneNode* sourceNode = (nit != m_scene->nodeById.end()) ? nit->second : nullptr;
 
             for (auto& anim : anims) {
@@ -1114,8 +1117,7 @@ public:
     void writeAlphaToAllMaterials(SceneNode* sourceNode, i32 nodeId, float value) {
         auto pushAlpha = [value](SceneMaterial* mat) {
             if (! mat) return;
-            mat->customShader.constValues["g_UserAlpha"] =
-                std::vector<float> { value };
+            mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { value };
             // Also update g_Color4.a so shaders that sample color alpha
             // (rather than the explicit g_UserAlpha uniform) pick this up.
             auto it = mat->customShader.constValues.find("g_Color4");
@@ -1143,8 +1145,7 @@ public:
         }
     }
 
-    void propertyAnimCommand(int32_t nodeId, const std::string& name,
-                             const std::string& cmd) {
+    void propertyAnimCommand(int32_t nodeId, const std::string& name, const std::string& cmd) {
         std::lock_guard<std::mutex> lock(m_prop_anim_cmds_mutex);
         m_prop_anim_cmds.push_back({ nodeId, name, cmd });
     }
@@ -1241,8 +1242,8 @@ private:
 
 public:
     double getSceneTime() const { return m_scene_time.load(std::memory_order_relaxed); }
-private:
 
+private:
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
     std::unordered_map<i32, float>       m_pending_pointsize_updates;
@@ -1254,7 +1255,8 @@ private:
     std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
     std::unordered_map<i32, bool>                               m_pending_visible_updates;
     std::unordered_map<i32, float>                              m_pending_alpha_updates;
-    std::vector<std::tuple<i32, i32, bool>>                     m_pending_effect_visible; // (nodeId, effectIdx, visible)
+    std::vector<std::tuple<i32, i32, bool>>
+        m_pending_effect_visible; // (nodeId, effectIdx, visible)
 
     // Scene-level pending updates (under m_property_update_mutex)
     std::optional<std::array<float, 3>> m_pending_clear_color;
@@ -1267,9 +1269,18 @@ private:
     std::optional<CameraLookAtUpdate>   m_pending_camera_lookat;
     std::optional<std::array<float, 3>> m_pending_ambient_color;
     std::optional<std::array<float, 3>> m_pending_skylight_color;
-    struct LightColorUpdate { i32 index; std::array<float, 3> color; };
-    struct LightScalarUpdate { i32 index; float value; };
-    struct LightPositionUpdate { i32 index; std::array<float, 3> position; };
+    struct LightColorUpdate {
+        i32                  index;
+        std::array<float, 3> color;
+    };
+    struct LightScalarUpdate {
+        i32   index;
+        float value;
+    };
+    struct LightPositionUpdate {
+        i32                  index;
+        std::array<float, 3> position;
+    };
     std::vector<LightColorUpdate>    m_pending_light_colors;
     std::vector<LightScalarUpdate>   m_pending_light_radii;
     std::vector<LightScalarUpdate>   m_pending_light_intensities;
@@ -1287,7 +1298,7 @@ private:
     std::vector<VideoDecoderEntry> m_video_decoders;
     // Guards m_video_decoders when read from outside the render thread
     // (SceneScript bridge methods: videoPlay / videoGetCurrentTime / ...).
-    mutable std::mutex             m_video_decoders_mutex;
+    mutable std::mutex m_video_decoders_mutex;
 
 public:
     // Find the decoder owning a given nodeId. Returns nullptr if no match.
@@ -1302,19 +1313,23 @@ public:
     }
     std::vector<int32_t> getVideoNodeIds() const {
         std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
-        std::vector<int32_t> ids;
+        std::vector<int32_t>        ids;
         ids.reserve(m_video_decoders.size());
         for (auto& vd : m_video_decoders) {
             if (vd.ownerNode) ids.push_back(vd.ownerNode->ID());
         }
         return ids;
     }
-private:
 
+private:
     // Queue of script-driven play/stop/pause commands for property animations
     // (layer.getAnimation(name).play() etc.).  Drained at the start of every
     // tickPropertyAnimations() so script intent lands before evaluation.
-    struct PropertyAnimCmd { int32_t nodeId; std::string name; std::string cmd; };
+    struct PropertyAnimCmd {
+        int32_t     nodeId;
+        std::string name;
+        std::string cmd;
+    };
     mutable std::mutex           m_prop_anim_cmds_mutex;
     std::vector<PropertyAnimCmd> m_prop_anim_cmds;
 };
@@ -1536,9 +1551,7 @@ void SceneWallpaper::updateBloomStrength(float v) {
 void SceneWallpaper::updateBloomThreshold(float v) {
     m_main_handler->renderHandler()->setBloomThreshold(v);
 }
-void SceneWallpaper::updateCameraFov(float v) {
-    m_main_handler->renderHandler()->setCameraFov(v);
-}
+void SceneWallpaper::updateCameraFov(float v) { m_main_handler->renderHandler()->setCameraFov(v); }
 void SceneWallpaper::updateCameraLookAt(float ex, float ey, float ez, float cx, float cy, float cz,
                                         float ux, float uy, float uz) {
     m_main_handler->renderHandler()->setCameraLookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz);
@@ -2126,13 +2139,13 @@ void MainHandler::loadScene() {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
         nlohmann::json              j = nlohmann::json::object();
         for (const auto& [name, lis] : scene->layerInitialStates) {
-            auto entry = nlohmann::json{
-                { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
-                { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
-                { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
-                { "v", lis.visible },
-                { "sz", { lis.size[0], lis.size[1] } },
-                { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } } };
+            auto entry =
+                nlohmann::json { { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
+                                 { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
+                                 { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
+                                 { "v", lis.visible },
+                                 { "sz", { lis.size[0], lis.size[1] } },
+                                 { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } } };
             // Include effect names for SceneScript getEffect()
             auto eit = scene->layerEffectNames.find(name);
             if (eit != scene->layerEffectNames.end()) {
@@ -2140,7 +2153,7 @@ void MainHandler::loadScene() {
             }
             j[name] = std::move(entry);
         }
-        j["_ortho"]       = { scene->ortho[0], scene->ortho[1] };
+        j["_ortho"] = { scene->ortho[0], scene->ortho[1] };
         // Dynamic-asset pools: { "models/coin_0.json": ["__pool_..._0", ...], ... }
         // JS createLayer(asset) pops a pool name, getLayer() turns it into a
         // proxy, and visibility/origin toggling flows through the standard
@@ -2159,12 +2172,12 @@ void MainHandler::loadScene() {
     {
         std::lock_guard<std::mutex> lock(m_scene_init_mutex);
         nlohmann::json              j;
-        j["cc"]   = { scene->clearColor[0], scene->clearColor[1], scene->clearColor[2] };
+        j["cc"]    = { scene->clearColor[0], scene->clearColor[1], scene->clearColor[2] };
         j["bloom"] = scene->bloomConfig.enabled;
-        j["bs"]   = scene->bloomConfig.strength;
-        j["bt"]   = scene->bloomConfig.threshold;
-        j["ac"]   = { scene->ambientColor[0], scene->ambientColor[1], scene->ambientColor[2] };
-        j["sc"]   = { scene->skylightColor[0], scene->skylightColor[1], scene->skylightColor[2] };
+        j["bs"]    = scene->bloomConfig.strength;
+        j["bt"]    = scene->bloomConfig.threshold;
+        j["ac"]    = { scene->ambientColor[0], scene->ambientColor[1], scene->ambientColor[2] };
+        j["sc"]    = { scene->skylightColor[0], scene->skylightColor[1], scene->skylightColor[2] };
 
         bool persp = scene->activeCamera && scene->activeCamera->IsPerspective();
         j["persp"] = persp;
@@ -2187,14 +2200,12 @@ void MainHandler::loadScene() {
         for (auto& l : scene->lights) {
             auto c = l->color();
             auto p = l->node() ? l->node()->Translate() : Eigen::Vector3f::Zero();
-            lightsArr.push_back({
-                { "c", { c.x(), c.y(), c.z() } },
-                { "r", l->radius() },
-                { "i", l->intensity() },
-                { "p", { p.x(), p.y(), p.z() } }
-            });
+            lightsArr.push_back({ { "c", { c.x(), c.y(), c.z() } },
+                                  { "r", l->radius() },
+                                  { "i", l->intensity() },
+                                  { "p", { p.x(), p.y(), p.z() } } });
         }
-        j["lights"] = lightsArr;
+        j["lights"]       = lightsArr;
         m_scene_init_json = j.dump();
     }
 

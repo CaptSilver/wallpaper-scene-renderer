@@ -16,7 +16,8 @@
 #include <unistd.h>
 #include <filesystem>
 
-namespace wallpaper {
+namespace wallpaper
+{
 
 static void* eglGetProcAddressWrapper(void*, const char* name) {
     return (void*)eglGetProcAddress(name);
@@ -49,10 +50,12 @@ bool HWVideoTextureDecoder::initEGL() {
         if (fd < 0) continue;
 
         struct gbm_device* gbm = gbm_create_device(fd);
-        if (! gbm) { ::close(fd); continue; }
+        if (! gbm) {
+            ::close(fd);
+            continue;
+        }
 
-        EGLDisplay display = eglGetPlatformDisplay(
-            EGL_PLATFORM_GBM_KHR, gbm, nullptr);
+        EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, nullptr);
         if (display == EGL_NO_DISPLAY) {
             gbm_device_destroy(gbm);
             ::close(fd);
@@ -69,8 +72,8 @@ bool HWVideoTextureDecoder::initEGL() {
         // Try desktop GL config
         eglBindAPI(EGL_OPENGL_API);
         EGLint    configAttribs[] = { EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT, EGL_NONE };
-        EGLConfig config = nullptr;
-        EGLint    numConfigs = 0;
+        EGLConfig config          = nullptr;
+        EGLint    numConfigs      = 0;
         eglChooseConfig(display, configAttribs, &config, 1, &numConfigs);
 
         if (numConfigs == 0) {
@@ -81,9 +84,7 @@ bool HWVideoTextureDecoder::initEGL() {
         }
 
         EGLint ctxAttribs[] = {
-            EGL_CONTEXT_MAJOR_VERSION, 3,
-            EGL_CONTEXT_MINOR_VERSION, 2,
-            EGL_NONE,
+            EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 2, EGL_NONE,
         };
         EGLContext ctx = eglCreateContext(display, config, EGL_NO_CONTEXT, ctxAttribs);
         if (ctx == EGL_NO_CONTEXT) {
@@ -106,8 +107,8 @@ bool HWVideoTextureDecoder::initEGL() {
         m_eglContext = ctx;
         m_gbmDevice  = gbm;
         m_drmFd      = fd;
-        LOG_INFO("HWVideoTextureDecoder: EGL %d.%d on %s (GBM)",
-                 major, minor, entry.path().c_str());
+        LOG_INFO(
+            "HWVideoTextureDecoder: EGL %d.%d on %s (GBM)", major, minor, entry.path().c_str());
         return true;
     }
 
@@ -119,8 +120,8 @@ void HWVideoTextureDecoder::cleanupGL() {
     if (m_eglDisplay && m_eglContext) {
         eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, m_eglContext);
         if (m_fbo) {
-            auto glDeleteFramebuffers = (void(*)(GLsizei, const GLuint*))
-                eglGetProcAddress("glDeleteFramebuffers");
+            auto glDeleteFramebuffers =
+                (void (*)(GLsizei, const GLuint*))eglGetProcAddress("glDeleteFramebuffers");
             if (glDeleteFramebuffers) glDeleteFramebuffers(1, &m_fbo);
             m_fbo = 0;
         }
@@ -155,23 +156,20 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
     if (! initEGL()) return false;
 
     // Create GL FBO for mpv to render into
-    auto glGenFramebuffers = (void(*)(GLsizei, GLuint*))
-        eglGetProcAddress("glGenFramebuffers");
-    auto glBindFramebuffer = (void(*)(GLenum, GLuint))
-        eglGetProcAddress("glBindFramebuffer");
-    auto glFramebufferTexture2D = (void(*)(GLenum, GLenum, GLenum, GLuint, GLint))
-        eglGetProcAddress("glFramebufferTexture2D");
+    auto glGenFramebuffers = (void (*)(GLsizei, GLuint*))eglGetProcAddress("glGenFramebuffers");
+    auto glBindFramebuffer = (void (*)(GLenum, GLuint))eglGetProcAddress("glBindFramebuffer");
+    auto glFramebufferTexture2D = (void (*)(
+        GLenum, GLenum, GLenum, GLuint, GLint))eglGetProcAddress("glFramebufferTexture2D");
 
     glGenTextures(1, &m_fboTex);
     glBindTexture(GL_TEXTURE_2D, m_fboTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, m_width, m_height, 0,
-                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(
+        GL_TEXTURE_2D, 0, GL_RGBA8, m_width, m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
     glGenFramebuffers(1, &m_fbo);
     glBindFramebuffer(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
-    glFramebufferTexture2D(0x8D40, 0x8CE0 /*GL_COLOR_ATTACHMENT0*/,
-                           GL_TEXTURE_2D, m_fboTex, 0);
+    glFramebufferTexture2D(0x8D40, 0x8CE0 /*GL_COLOR_ATTACHMENT0*/, GL_TEXTURE_2D, m_fboTex, 0);
 
     // Initialize mpv
     if (! initMpv()) {
@@ -186,16 +184,15 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
         nullptr,
     };
     mpv_opengl_drm_params_v2 drm_params {};
-    drm_params.fd        = -1;
-    drm_params.crtc_id   = -1;
+    drm_params.fd           = -1;
+    drm_params.crtc_id      = -1;
     drm_params.connector_id = -1;
-    drm_params.render_fd = m_drmFd; // render node for VA-API interop
+    drm_params.render_fd    = m_drmFd; // render node for VA-API interop
 
     mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_API_TYPE,
-          const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL) },
+        { MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_OPENGL) },
         { MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, &gl_init_params },
-        { MPV_RENDER_PARAM_DRM_DISPLAY_V2,     &drm_params },
+        { MPV_RENDER_PARAM_DRM_DISPLAY_V2, &drm_params },
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
@@ -214,19 +211,17 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
 
     loadFile(path);
 
-    LOG_INFO("HWVideoTextureDecoder(GL): opened '%s' (%dx%d)",
-             path.c_str(), m_width, m_height);
+    LOG_INFO("HWVideoTextureDecoder(GL): opened '%s' (%dx%d)", path.c_str(), m_width, m_height);
     return true;
 }
 
 bool HWVideoTextureDecoder::exportDmaBuf() {
     // Create EGLImage from the GL texture
-    auto eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)
-        eglGetProcAddress("eglCreateImageKHR");
-    auto eglExportDMABUFImageQueryMESA = (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)
-        eglGetProcAddress("eglExportDMABUFImageQueryMESA");
-    auto eglExportDMABUFImageMESA = (PFNEGLEXPORTDMABUFIMAGEMESAPROC)
-        eglGetProcAddress("eglExportDMABUFImageMESA");
+    auto eglCreateImageKHR = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    auto eglExportDMABUFImageQueryMESA =
+        (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+    auto eglExportDMABUFImageMESA =
+        (PFNEGLEXPORTDMABUFIMAGEMESAPROC)eglGetProcAddress("eglExportDMABUFImageMESA");
 
     if (! eglCreateImageKHR || ! eglExportDMABUFImageQueryMESA || ! eglExportDMABUFImageMESA) {
         LOG_INFO("HWVideoTextureDecoder: DMA-BUF export not available, using readback");
@@ -234,35 +229,36 @@ bool HWVideoTextureDecoder::exportDmaBuf() {
     }
 
     EGLint imageAttribs[] = {
-        EGL_GL_TEXTURE_LEVEL_KHR, 0,
+        EGL_GL_TEXTURE_LEVEL_KHR,
+        0,
         EGL_NONE,
     };
-    EGLImageKHR eglImage = eglCreateImageKHR(
-        m_eglDisplay, m_eglContext,
-        EGL_GL_TEXTURE_2D_KHR,
-        (EGLClientBuffer)(uintptr_t)m_fboTex,
-        imageAttribs);
+    EGLImageKHR eglImage = eglCreateImageKHR(m_eglDisplay,
+                                             m_eglContext,
+                                             EGL_GL_TEXTURE_2D_KHR,
+                                             (EGLClientBuffer)(uintptr_t)m_fboTex,
+                                             imageAttribs);
     if (eglImage == EGL_NO_IMAGE_KHR) {
         LOG_INFO("HWVideoTextureDecoder: eglCreateImageKHR failed, using readback");
         return false;
     }
 
     // Query format and modifier
-    int fourcc = 0, numPlanes = 0;
+    int          fourcc = 0, numPlanes = 0;
     EGLuint64KHR modifier = 0;
-    if (! eglExportDMABUFImageQueryMESA(m_eglDisplay, eglImage,
-                                         &fourcc, &numPlanes, &modifier)) {
+    if (! eglExportDMABUFImageQueryMESA(m_eglDisplay, eglImage, &fourcc, &numPlanes, &modifier)) {
         LOG_INFO("HWVideoTextureDecoder: DMA-BUF query failed, using readback");
         return false;
     }
 
     if (numPlanes != 1) {
-        LOG_INFO("HWVideoTextureDecoder: DMA-BUF has %d planes (need 1), using readback", numPlanes);
+        LOG_INFO("HWVideoTextureDecoder: DMA-BUF has %d planes (need 1), using readback",
+                 numPlanes);
         return false;
     }
 
     // Export fd, stride, offset
-    int fd = -1;
+    int    fd     = -1;
     EGLint stride = 0, offset = 0;
     if (! eglExportDMABUFImageMESA(m_eglDisplay, eglImage, &fd, &stride, &offset)) {
         LOG_INFO("HWVideoTextureDecoder: DMA-BUF export failed, using readback");
@@ -276,8 +272,12 @@ bool HWVideoTextureDecoder::exportDmaBuf() {
     m_drmModifier    = modifier;
     m_dmabufExported = true;
 
-    LOG_INFO("HWVideoTextureDecoder: DMA-BUF exported fd=%d stride=%d fourcc=0x%08x modifier=0x%llx",
-             fd, stride, fourcc, (unsigned long long)modifier);
+    LOG_INFO(
+        "HWVideoTextureDecoder: DMA-BUF exported fd=%d stride=%d fourcc=0x%08x modifier=0x%llx",
+        fd,
+        stride,
+        fourcc,
+        (unsigned long long)modifier);
     return true;
 }
 
@@ -295,11 +295,11 @@ void HWVideoTextureDecoder::renderFrame() {
         .w   = m_width,
         .h   = m_height,
     };
-    int flip_y = 0;
+    int              flip_y          = 0;
     mpv_render_param render_params[] = {
         { MPV_RENDER_PARAM_OPENGL_FBO, &mpv_fbo },
-        { MPV_RENDER_PARAM_FLIP_Y,     &flip_y },
-        { MPV_RENDER_PARAM_INVALID,     nullptr },
+        { MPV_RENDER_PARAM_FLIP_Y, &flip_y },
+        { MPV_RENDER_PARAM_INVALID, nullptr },
     };
 
     if (mpv_render_context_render(m_renderCtx, render_params) < 0) return;
@@ -309,10 +309,9 @@ void HWVideoTextureDecoder::renderFrame() {
 
     // Always readback for now — zero-copy Vulkan import not yet implemented
     {
-        int decIdx = m_decodeIdx.load();
-        uint8_t* buf = m_buffers[decIdx].get();
-        auto glBindFB = (void(*)(GLenum, GLuint))
-            eglGetProcAddress("glBindFramebuffer");
+        int      decIdx   = m_decodeIdx.load();
+        uint8_t* buf      = m_buffers[decIdx].get();
+        auto     glBindFB = (void (*)(GLenum, GLuint))eglGetProcAddress("glBindFramebuffer");
         glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
         glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
         // libmpv renders video frames without alpha (no source channel) so the

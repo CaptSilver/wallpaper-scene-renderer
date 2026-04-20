@@ -20,8 +20,8 @@ public:
     void SetCachePath(const std::string& path) { m_cachePath = path; }
 
 private:
-    fs::VFS*                                                  m_vfs;
-    std::string                                               m_cachePath;
-    std::unordered_map<std::string, std::shared_ptr<Image>>   m_registered;
+    fs::VFS*                                                m_vfs;
+    std::string                                             m_cachePath;
+    std::unordered_map<std::string, std::shared_ptr<Image>> m_registered;
 };
 } // namespace wallpaper

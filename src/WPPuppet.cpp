@@ -45,17 +45,22 @@ void WPPuppet::prepared() {
 std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
                                                     double         time) noexcept {
     double global_blend = puppet_layer.m_global_blend;
-    double total_blend = puppet_layer.m_total_blend;
+    double total_blend  = puppet_layer.m_total_blend;
 
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
     static int _debug_frame_count = 0;
     if (_debug_frame_count == 0) {
         LOG_INFO("genFrame: global_blend=%.4f total_blend=%.4f layers=%zu bones=%zu",
-                 global_blend, total_blend, puppet_layer.m_layers.size(), bones.size());
+                 global_blend,
+                 total_blend,
+                 puppet_layer.m_layers.size(),
+                 bones.size());
         int matched = 0;
-        for (auto& l : puppet_layer.m_layers) if (l.anim != nullptr) matched++;
+        for (auto& l : puppet_layer.m_layers)
+            if (l.anim != nullptr) matched++;
         LOG_INFO("genFrame: %d/%zu layers have matched animations",
-                 matched, puppet_layer.m_layers.size());
+                 matched,
+                 puppet_layer.m_layers.size());
     }
 #endif
 
@@ -83,35 +88,39 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
             assert(i < layer.anim->bframes_array.size());
             if (i >= layer.anim->bframes_array.size()) continue;
 
-            auto&  info    = layer.interp_info;
-            auto&  frame_base = layer.anim->bframes_array[i].frames[(usize)0];
-            auto&  frame_a = layer.anim->bframes_array[i].frames[(usize)info.frame_a];
-            auto&  frame_b = layer.anim->bframes_array[i].frames[(usize)info.frame_b];
+            auto& info       = layer.interp_info;
+            auto& frame_base = layer.anim->bframes_array[i].frames[(usize)0];
+            auto& frame_a    = layer.anim->bframes_array[i].frames[(usize)info.frame_a];
+            auto& frame_b    = layer.anim->bframes_array[i].frames[(usize)info.frame_b];
 
-            double t = info.t;
-            double one_t   = 1.0f - info.t;
+            double t     = info.t;
+            double one_t = 1.0f - info.t;
 
             // break up the delta quaternions from the animation start quaternion
             // blend the starting quaternion using the reduced blending factor
             // blend the delta using the full blending factor
             auto frame_a_quat_delta = frame_a.quaternion * frame_base.quaternion.conjugate();
             auto frame_b_quat_delta = frame_b.quaternion * frame_base.quaternion.conjugate();
-            quat *= frame_a_quat_delta.slerp(info.t, frame_b_quat_delta).slerp(1.0 - layer.anim_layer.blend, ident) 
-                * frame_base.quaternion.slerp(1.0 - (layer.blend), ident);
-                       
+            quat *= frame_a_quat_delta.slerp(info.t, frame_b_quat_delta)
+                        .slerp(1.0 - layer.anim_layer.blend, ident) *
+                    frame_base.quaternion.slerp(1.0 - (layer.blend), ident);
+
             // break up the delta positions from the animation start position
             // blend the starting position using the reduced blending factor
             // blend the delta using the full blending factor
             auto frame_a_pos_delta = frame_a.position - frame_base.position;
             auto frame_b_pos_delta = frame_b.position - frame_base.position;
-            trans += (layer.blend * frame_base.position) + (layer.anim_layer.blend * (frame_a_pos_delta * one_t + frame_b_pos_delta * t));
+            trans += (layer.blend * frame_base.position) +
+                     (layer.anim_layer.blend * (frame_a_pos_delta * one_t + frame_b_pos_delta * t));
 
             // break up the delta scales from the animation start scale
             // blend the starting scale using the reduced blending factor
             // blend the delta using the full blending factor
             auto& frame_a_scale_delta = frame_a.scale - frame_base.scale;
             auto& frame_b_scale_delta = frame_b.scale - frame_base.scale;
-            scale += (layer.blend * frame_base.scale) + (layer.anim_layer.blend * (frame_a_scale_delta * one_t + frame_b_scale_delta * info.t));
+            scale += (layer.blend * frame_base.scale) +
+                     (layer.anim_layer.blend *
+                      (frame_a_scale_delta * one_t + frame_b_scale_delta * info.t));
         }
         affine.pretranslate(trans);
         affine.rotate(quat.slerp(global_blend, ident).cast<float>());
@@ -120,13 +129,18 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
     }
 
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
-    if (_debug_frame_count == 0 && !m_final_affines.empty()) {
+    if (_debug_frame_count == 0 && ! m_final_affines.empty()) {
         auto bone0_trans = m_final_affines[0].translation();
         LOG_INFO("genFrame bone[0]: trans=(%.3f,%.3f,%.3f)",
-                 bone0_trans.x(), bone0_trans.y(), bone0_trans.z());
+                 bone0_trans.x(),
+                 bone0_trans.y(),
+                 bone0_trans.z());
         Eigen::Matrix4f t0 = (m_final_affines[0] * bones[0].offset_trans.matrix()).matrix();
         LOG_INFO("genFrame final bone[0] matrix diagonal: (%.4f, %.4f, %.4f, %.4f)",
-                 t0(0,0), t0(1,1), t0(2,2), t0(3,3));
+                 t0(0, 0),
+                 t0(1, 1),
+                 t0(2, 2),
+                 t0(3, 3));
     }
     _debug_frame_count++;
 #endif
@@ -156,7 +170,7 @@ WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
     if (mode == PlayMode::Single) {
         // Play once and hold the last frame
         if (_cur_time >= max_time) {
-            _cur_time    = max_time;
+            _cur_time     = max_time;
             _info.frame_a = (idx)(length - 1);
             _info.frame_b = _info.frame_a;
             _info.t       = 0.0;
@@ -179,22 +193,28 @@ WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
 
 void WPPuppetLayer::prepared(std::span<AnimationLayer> alayers) {
     m_layers.resize(alayers.size());
-    double& blend = m_global_blend;
+    double& blend       = m_global_blend;
     double& total_blend = m_total_blend;
 
     total_blend = 0.0;
     for (int i = 0; i < alayers.size(); i++) {
-        if(alayers[i].visible){
+        if (alayers[i].visible) {
             total_blend += alayers[i].blend;
         }
     }
 
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
     LOG_INFO("puppet layer prepared: %zu scene layers, %zu mdl anims, total_blend=%.2f",
-             alayers.size(), m_puppet->anims.size(), total_blend);
+             alayers.size(),
+             m_puppet->anims.size(),
+             total_blend);
     for (usize i = 0; i < alayers.size(); i++) {
         LOG_INFO("  scene layer[%zu]: id=%d blend=%.2f rate=%.2f visible=%d",
-                 i, alayers[i].id, alayers[i].blend, alayers[i].rate, (int)alayers[i].visible);
+                 i,
+                 alayers[i].id,
+                 alayers[i].blend,
+                 alayers[i].rate,
+                 (int)alayers[i].visible);
     }
 #endif
 
@@ -209,19 +229,18 @@ void WPPuppetLayer::prepared(std::span<AnimationLayer> alayers) {
             bool ok = it != anims.end() && layer.visible;
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
             LOG_INFO("  match layer id=%d: %s (cur_blend will be %.4f)",
-                     layer.id, ok ? "MATCHED" : "NOT FOUND", ok ? layer.blend / m_total_blend : 0.0);
+                     layer.id,
+                     ok ? "MATCHED" : "NOT FOUND",
+                     ok ? layer.blend / m_total_blend : 0.0);
 #endif
 
-            double &total_blend = m_total_blend;
+            double& total_blend = m_total_blend;
 
             if (ok) {
-                if (total_blend > 1.0)
-                {
+                if (total_blend > 1.0) {
                     cur_blend = layer.blend / total_blend;
-                    blend = 0.0;
-                }
-                else
-                {
+                    blend     = 0.0;
+                } else {
                     cur_blend = blend * layer.blend;
                     blend *= 1.0f - layer.blend;
                     blend = blend < 0.0f ? 0.0f : blend;
@@ -247,14 +266,13 @@ namespace
 // event whose period-relative fire offset(s) are `offsets` and whose period
 // is `period`.  Used for Loop (one offset) and Mirror (two offsets per period).
 void collectPeriodicFires(double prev, double cur, double period,
-                          std::initializer_list<double> offsets,
-                          std::vector<double>& out) {
+                          std::initializer_list<double> offsets, std::vector<double>& out) {
     if (period <= 0.0 || cur <= prev) return;
     // Cap loop span so a pathologically huge delta (e.g. first tick after a
     // stall) cannot explode into millions of fires for a fast-loop anim.
     constexpr int64_t kMaxPeriodsPerTick = 256;
-    int64_t k_start = (int64_t)std::floor(prev / period);
-    int64_t k_end   = (int64_t)std::floor(cur / period);
+    int64_t           k_start            = (int64_t)std::floor(prev / period);
+    int64_t           k_end              = (int64_t)std::floor(cur / period);
     if (k_end - k_start > kMaxPeriodsPerTick) {
         k_start = k_end - kMaxPeriodsPerTick;
     }
@@ -310,8 +328,8 @@ void WPPuppetLayer::updateInterpolation(double time) noexcept {
                     break;
                 case WPPuppet::PlayMode::Mirror: {
                     double period = max_t * 2.0;
-                    collectPeriodicFires(prev_bound, next, period,
-                                         { event_time, period - event_time }, fires);
+                    collectPeriodicFires(
+                        prev_bound, next, period, { event_time, period - event_time }, fires);
                     break;
                 }
                 }

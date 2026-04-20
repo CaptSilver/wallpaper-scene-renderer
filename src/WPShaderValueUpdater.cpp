@@ -37,13 +37,13 @@ void WPShaderValueUpdater::FrameBegin() {
 
     // Compute camera shake offset (sum-of-sinusoids pseudo-noise)
     if (m_shake.enable) {
-        float t   = (float)m_scene->elapsingTime * m_shake.speed;
-        float r   = m_shake.roughness;
-        float sx  = std::sin(t * 1.0f) + std::sin(t * 2.3f + 1.7f) * r +
-                    std::sin(t * 4.7f + 3.1f) * r * r;
-        float sy  = std::cos(t * 1.3f + 0.5f) + std::cos(t * 2.7f + 2.1f) * r +
-                    std::cos(t * 5.1f + 0.9f) * r * r;
-        float norm = 1.0f + r + r * r;
+        float t = (float)m_scene->elapsingTime * m_shake.speed;
+        float r = m_shake.roughness;
+        float sx =
+            std::sin(t * 1.0f) + std::sin(t * 2.3f + 1.7f) * r + std::sin(t * 4.7f + 3.1f) * r * r;
+        float sy = std::cos(t * 1.3f + 0.5f) + std::cos(t * 2.7f + 2.1f) * r +
+                   std::cos(t * 5.1f + 0.9f) * r * r;
+        float norm    = 1.0f + r + r * r;
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
     }
 
@@ -93,19 +93,19 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
 
     info.has_VP = existsOp(G_VP);
 
-    info.has_BONES            = existsOp(G_BONES);
-    info.has_TIME             = existsOp(G_TIME);
-    info.has_DAYTIME          = existsOp(G_DAYTIME);
-    info.has_POINTERPOSITION  = existsOp(G_POINTERPOSITION);
-    info.has_PARALLAXPOSITION = existsOp(G_PARALLAXPOSITION);
-    info.has_TEXELSIZE        = existsOp(G_TEXELSIZE);
-    info.has_TEXELSIZEHALF    = existsOp(G_TEXELSIZEHALF);
-    info.has_SCREEN           = existsOp(G_SCREEN);
+    info.has_BONES              = existsOp(G_BONES);
+    info.has_TIME               = existsOp(G_TIME);
+    info.has_DAYTIME            = existsOp(G_DAYTIME);
+    info.has_POINTERPOSITION    = existsOp(G_POINTERPOSITION);
+    info.has_PARALLAXPOSITION   = existsOp(G_PARALLAXPOSITION);
+    info.has_TEXELSIZE          = existsOp(G_TEXELSIZE);
+    info.has_TEXELSIZEHALF      = existsOp(G_TEXELSIZEHALF);
+    info.has_SCREEN             = existsOp(G_SCREEN);
     info.has_LIGHTAMBIENTCOLOR  = existsOp(G_LIGHTAMBIENTCOLOR);
     info.has_LIGHTSKYLIGHTCOLOR = existsOp(G_LIGHTSKYLIGHTCOLOR);
-    info.has_LP               = existsOp(G_LP);
-    info.has_LCR              = existsOp(G_LCR);
-    info.has_EYEPOSITION      = existsOp(G_EYEPOSITION);
+    info.has_LP                 = existsOp(G_LP);
+    info.has_LCR                = existsOp(G_LCR);
+    info.has_EYEPOSITION        = existsOp(G_EYEPOSITION);
 
     info.has_AUDIOSPECTRUM16LEFT  = existsOp(G_AUDIOSPECTRUM16LEFT);
     info.has_AUDIOSPECTRUM16RIGHT = existsOp(G_AUDIOSPECTRUM16RIGHT);
@@ -134,13 +134,13 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
 void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
                                           const UpdateUniformOp& updateOp,
-                                          const std::string& camera_override) {
+                                          const std::string&     camera_override) {
     if (! pNode->Mesh()) return;
 
     pNode->UpdateTrans();
 
-    const SceneCamera*  camera;
-    std::string_view    cam_name;
+    const SceneCamera* camera;
+    std::string_view   cam_name;
     if (! camera_override.empty()) {
         cam_name = camera_override;
         camera   = m_scene->cameras.at(camera_override).get();
@@ -177,7 +177,9 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 static std::set<std::string> _rt_miss_logged;
                 if (_rt_miss_logged.insert(el.second).second) {
                     LOG_INFO("RT miss: tex[%zu]='%s' resolved='%s' NOT in renderTargets",
-                             el.first, el.second.c_str(), rtName.c_str());
+                             el.first,
+                             el.second.c_str(),
+                             rtName.c_str());
                 }
                 continue;
             }
@@ -186,7 +188,11 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 static std::set<std::string> _rt_res_logged;
                 if (IsSpecLinkTex(el.second) && _rt_res_logged.insert(el.second).second) {
                     LOG_INFO("RT resolution upload: tex[%zu]='%s' → '%s' (%dx%d)",
-                             el.first, el.second.c_str(), rtName.c_str(), rt.width, rt.height);
+                             el.first,
+                             el.second.c_str(),
+                             rtName.c_str(),
+                             rt.width,
+                             rt.height);
                 }
             }
 
@@ -202,10 +208,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             }
         }
         if (nodeData.puppet_layer.hasPuppet() && info.has_BONES) {
-            auto data = nodeData.puppet_layer.genFrame(m_scene->frameTime);
+            auto        data          = nodeData.puppet_layer.genFrame(m_scene->frameTime);
             static bool _bones_logged = false;
-            if (!_bones_logged) {
-                LOG_INFO("uploading g_Bones: %zu bones, frameTime=%.4f", data.size(), m_scene->frameTime);
+            if (! _bones_logged) {
+                LOG_INFO("uploading g_Bones: %zu bones, frameTime=%.4f",
+                         data.size(),
+                         m_scene->frameTime);
                 _bones_logged = true;
             }
             updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
@@ -218,9 +226,10 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             }
         } else {
             static bool _no_bones_logged = false;
-            if (!_no_bones_logged && (nodeData.puppet_layer.hasPuppet() || info.has_BONES)) {
+            if (! _no_bones_logged && (nodeData.puppet_layer.hasPuppet() || info.has_BONES)) {
                 LOG_INFO("BONES NOT uploaded: hasPuppet=%d has_BONES=%d",
-                         (int)nodeData.puppet_layer.hasPuppet(), (int)info.has_BONES);
+                         (int)nodeData.puppet_layer.hasPuppet(),
+                         (int)info.has_BONES);
                 _no_bones_logged = true;
             }
         }
@@ -251,7 +260,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
         }
         viewProTrans = viewProTrans *
-            Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
+                       Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
     }
 
     if (info.has_VP) {
@@ -284,7 +293,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         if (reqMI) updateOp(G_MI, ShaderValue::fromMatrix(modelTrans.inverse()));
 
         // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
-        if (reqM && info.has_VP && !reqMVP && cam_name.empty()) {
+        if (reqM && info.has_VP && ! reqMVP && cam_name.empty()) {
             static std::set<SceneNode*> _mvp_sep_logged;
             if (_mvp_sep_logged.insert(pNode).second) {
                 Vector4d center = viewProTrans * modelTrans * Vector4d(0, 0, 0, 1);
@@ -294,11 +303,21 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                          "clip_center=(%.3f,%.3f,%.3f,%.3f) "
                          "ndc=(%.3f,%.3f) eye=(%.3f,%.3f,%.3f) "
                          "depth=%d cull=%s",
-                         pNode->ID(), t.x(), t.y(), t.z(),
-                         center.x(), center.y(), center.z(), center.w(),
-                         center.x() / center.w(), center.y() / center.w(),
-                         eyePos.x(), eyePos.y(), eyePos.z(),
-                         (int)material->depthTest, material->cullmode.c_str());
+                         pNode->ID(),
+                         t.x(),
+                         t.y(),
+                         t.z(),
+                         center.x(),
+                         center.y(),
+                         center.z(),
+                         center.w(),
+                         center.x() / center.w(),
+                         center.y() / center.w(),
+                         eyePos.x(),
+                         eyePos.y(),
+                         eyePos.z(),
+                         (int)material->depthTest,
+                         material->cullmode.c_str());
             }
         }
         if (reqMVP) {
@@ -312,9 +331,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 auto     t      = pNode->Translate();
                 LOG_INFO("MVP diag id=%d cam='' translate=(%.1f,%.1f) model=[%.3f,%.3f,%.3f,%.3f] "
                          "clip_center=(%.3f,%.3f) blend=%d",
-                         pNode->ID(), t.x(), t.y(),
-                         modelTrans(0, 0), modelTrans(1, 1), modelTrans(0, 3), modelTrans(1, 3),
-                         center.x() / center.w(), center.y() / center.w(),
+                         pNode->ID(),
+                         t.x(),
+                         t.y(),
+                         modelTrans(0, 0),
+                         modelTrans(1, 1),
+                         modelTrans(0, 3),
+                         modelTrans(1, 3),
+                         center.x() / center.w(),
+                         center.y() / center.w(),
                          (int)material->blenmode);
             }
         }
@@ -369,8 +394,8 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         std::array<float, 16> lights { 0 };
         std::array<float, 16> lights_color_radius { 0 };
         std::array<float, 12> lights_color { 0 };
-        uint                  i = 0;
-        bool reflect_lights = (cam_name == "reflected_perspective");
+        uint                  i              = 0;
+        bool                  reflect_lights = (cam_name == "reflected_perspective");
         for (auto& l : m_scene->lights) {
             if (i == 4) break;
             assert(l->node() != nullptr);
@@ -380,7 +405,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             // objects receives the dominant lighting in the reflection.
             if (reflect_lights) lights[i * 4 + 1] = -lights[i * 4 + 1];
             // g_LightsColorRadius: vec4(color * intensity, radius)
-            const auto& ci = l->colorIntensity();
+            const auto& ci                 = l->colorIntensity();
             lights_color_radius[i * 4 + 0] = ci[0];
             lights_color_radius[i * 4 + 1] = ci[1];
             lights_color_radius[i * 4 + 2] = ci[2];
@@ -396,10 +421,8 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(G_LCP, lights_color);
     }
 
-    if (info.has_LIGHTAMBIENTCOLOR)
-        updateOp(G_LIGHTAMBIENTCOLOR, m_scene->ambientColor);
-    if (info.has_LIGHTSKYLIGHTCOLOR)
-        updateOp(G_LIGHTSKYLIGHTCOLOR, m_scene->skylightColor);
+    if (info.has_LIGHTAMBIENTCOLOR) updateOp(G_LIGHTAMBIENTCOLOR, m_scene->ambientColor);
+    if (info.has_LIGHTSKYLIGHTCOLOR) updateOp(G_LIGHTSKYLIGHTCOLOR, m_scene->skylightColor);
 
     if (info.has_EYEPOSITION && camera->IsPerspective()) {
         auto pos = camera->GetPosition();
@@ -424,11 +447,11 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     } else {
         // Zero-fill when audio analyzer isn't ready yet
         static const std::array<float, 64> zeros {};
-        if (info.has_AUDIOSPECTRUM16LEFT)  updateOp(G_AUDIOSPECTRUM16LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM16LEFT) updateOp(G_AUDIOSPECTRUM16LEFT, zeros);
         if (info.has_AUDIOSPECTRUM16RIGHT) updateOp(G_AUDIOSPECTRUM16RIGHT, zeros);
-        if (info.has_AUDIOSPECTRUM32LEFT)  updateOp(G_AUDIOSPECTRUM32LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM32LEFT) updateOp(G_AUDIOSPECTRUM32LEFT, zeros);
         if (info.has_AUDIOSPECTRUM32RIGHT) updateOp(G_AUDIOSPECTRUM32RIGHT, zeros);
-        if (info.has_AUDIOSPECTRUM64LEFT)  updateOp(G_AUDIOSPECTRUM64LEFT,  zeros);
+        if (info.has_AUDIOSPECTRUM64LEFT) updateOp(G_AUDIOSPECTRUM64LEFT, zeros);
         if (info.has_AUDIOSPECTRUM64RIGHT) updateOp(G_AUDIOSPECTRUM64RIGHT, zeros);
     }
 }
@@ -437,7 +460,7 @@ void WPShaderValueUpdater::SetNodeData(void* nodeAddr, const WPShaderValueData& 
     m_nodeDataMap[nodeAddr] = data;
 }
 
-void WPShaderValueUpdater::PushAnimationEvents(i32 nodeId,
+void WPShaderValueUpdater::PushAnimationEvents(i32                                      nodeId,
                                                std::vector<WPPuppetLayer::PendingEvent> events) {
     if (events.empty()) return;
     std::lock_guard<std::mutex> lock(m_anim_events_mtx);
@@ -449,7 +472,7 @@ void WPShaderValueUpdater::PushAnimationEvents(i32 nodeId,
 
 std::vector<PendingAnimationEvent> WPShaderValueUpdater::DrainAnimationEvents() {
     std::vector<PendingAnimationEvent> out;
-    std::lock_guard<std::mutex> lock(m_anim_events_mtx);
+    std::lock_guard<std::mutex>        lock(m_anim_events_mtx);
     out.swap(m_anim_events);
     return out;
 }

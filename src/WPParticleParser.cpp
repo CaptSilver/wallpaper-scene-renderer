@@ -99,8 +99,9 @@ std::array<float, N> mapVertex(const std::array<float, N>& v, float (*oper)(floa
     return result;
 };
 
-ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
-                                                   std::span<const ParticleControlpoint> controlpoints) {
+ParticleInitOp
+WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
+                                    std::span<const ParticleControlpoint> controlpoints) {
     using namespace std::placeholders;
     do {
         if (! wpj.contains("name")) break;
@@ -222,10 +223,10 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
             return [=](Particle& p, double) {
                 if (distance <= 0.0f) return;
                 // Small micro-variation on top of smooth noise curves from mapsequence
-                double r   = distance * 0.02 * std::cbrt(Random::get(0.0, 1.0));
-                double z   = Random::get(-1.0, 1.0);
-                double phi = Random::get(0.0, 2.0 * M_PI);
-                double rxy = std::sqrt(1.0 - z * z);
+                double   r   = distance * 0.02 * std::cbrt(Random::get(0.0, 1.0));
+                double   z   = Random::get(-1.0, 1.0);
+                double   phi = Random::get(0.0, 2.0 * M_PI);
+                double   rxy = std::sqrt(1.0 - z * z);
                 Vector3d offset(rxy * std::cos(phi), rxy * std::sin(phi), z);
                 offset *= r;
                 // Project out the along-line component so offset is perpendicular
@@ -285,8 +286,8 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                     }
                 }
                 // Map val from [inMin, inMax] to [outMin, outMax]
-                double t = (inMax > inMin) ? std::clamp((val - inMin) / (inMax - inMin), 0.0, 1.0)
-                                           : 0.0;
+                double t =
+                    (inMax > inMin) ? std::clamp((val - inMin) / (inMax - inMin), 0.0, 1.0) : 0.0;
                 double outVal = algorism::lerp(t, (double)outMin, (double)outMax);
 
                 if (output == "size") {
@@ -315,7 +316,7 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
             const ParticleControlpoint* cp_data = controlpoints.data();
             usize                       cp_size = controlpoints.size();
 
-            auto  seq_ptr = std::make_shared<u32>(0);
+            auto seq_ptr = std::make_shared<u32>(0);
             // Noise phases for smooth curves — regenerated each emission cycle
             float phase0 = 0, phase1 = 0, phase2 = 0;
             return [=](Particle& p, double) mutable {
@@ -362,10 +363,10 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                 // Amplitude scales with line length (~15% of line length)
                 float amplitude = lineLen * 0.15f;
                 // Taper to zero at endpoints so bolt connects cleanly to CPs
-                float taper     = std::sin(t * (float)M_PI);
-                float noise     = std::sin(t * 2.5f * (float)M_PI + phase0) * 0.55f
-                              + std::sin(t * 5.7f * (float)M_PI + phase1) * 0.30f
-                              + std::sin(t * 11.3f * (float)M_PI + phase2) * 0.15f;
+                float taper = std::sin(t * (float)M_PI);
+                float noise = std::sin(t * 2.5f * (float)M_PI + phase0) * 0.55f +
+                              std::sin(t * 5.7f * (float)M_PI + phase1) * 0.30f +
+                              std::sin(t * 11.3f * (float)M_PI + phase2) * 0.15f;
                 pathpos += perp * noise * amplitude * taper;
 
                 PM::Move(p, pathpos.cast<double>());
@@ -384,15 +385,19 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
             cp_id = std::clamp(cp_id, 0, 7);
 
             LOG_INFO("mapsequencearoundcontrolpoint: count=%u axis=(%.1f,%.1f,%.1f) cp=%d",
-                     count, axis[0], axis[1], axis[2], cp_id);
+                     count,
+                     axis[0],
+                     axis[1],
+                     axis[2],
+                     cp_id);
 
             const ParticleControlpoint* cp_data = controlpoints.data();
             usize                       cp_size = controlpoints.size();
             auto                        seq_ptr = std::make_shared<u32>(0);
 
             return [=](Particle& p, double) mutable {
-                u32& seq   = *seq_ptr;
-                u32  idx   = seq % count;
+                u32&  seq   = *seq_ptr;
+                u32   idx   = seq % count;
                 float angle = (float)idx / (float)count * 2.0f * (float)M_PI;
 
                 Vector3f cp_offset(0, 0, 0);
@@ -400,9 +405,8 @@ ParticleInitOp WPParticleParser::genParticleInitOp(const nlohmann::json& wpj,
                     cp_offset = cp_data[cp_id].offset.cast<float>();
                 }
 
-                Vector3f pos = cp_offset + Vector3f(axis[0] * std::cos(angle),
-                                                     axis[1] * std::sin(angle),
-                                                     0.0f);
+                Vector3f pos = cp_offset +
+                               Vector3f(axis[0] * std::cos(angle), axis[1] * std::sin(angle), 0.0f);
 
                 PM::Move(p, pos.cast<double>());
                 // Explicitly zero velocity — particles are placed, not moving
@@ -660,8 +664,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             std::array<float, 3> gravity { 0, 0, 0 };
             GET_JSON_NAME_VALUE_NOWARN(wpj, "drag", drag);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "gravity", gravity);
-            Vector3d vecG   = Vector3f(gravity.data()).cast<double>();
-            double   spd    = over.speed;
+            Vector3d vecG = Vector3f(gravity.data()).cast<double>();
+            double   spd  = over.speed;
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
                     // Gravity scaled by speed override
@@ -783,13 +787,12 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             bool hasBlend = blendinend > 0.0f || blendoutend < 1.0f;
 
             return [=](const ParticleInfo& info) {
-                double noiseRate =
-                    std::abs(tur.timescale * tur.scale * 2.0) * info.time_pass;
-                bool incoherent = noiseRate > 1.0;
+                double noiseRate  = std::abs(tur.timescale * tur.scale * 2.0) * info.time_pass;
+                bool   incoherent = noiseRate > 1.0;
 
                 for (auto& p : info.particles) {
-                    Vector3d pos = PM::GetPos(p).cast<double>();
-                    double factor = speed;
+                    Vector3d pos    = PM::GetPos(p).cast<double>();
+                    double   factor = speed;
                     if (hasBlend) {
                         double life  = PM::LifetimePos(p);
                         double blend = 1.0;
@@ -851,7 +854,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 }
             };
         } else if (name == "vortex_v2") {
-            Vortex v = Vortex::ReadFromJson(wpj);
+            Vortex v                = Vortex::ReadFromJson(wpj);
             float  ringradius       = 0.0f;
             float  ringwidth        = 0.0f;
             float  ringpulldistance = 0.0f;
@@ -861,8 +864,12 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             bool use_rotation = v.flags[1]; // flags & 2: direct rotation mode
             LOG_INFO("particle operator vortex_v2: speedinner=%.1f speedouter=%.1f "
                      "distinner=%.1f distouter=%.1f ringradius=%.1f rotation=%d",
-                     v.speedinner, v.speedouter, v.distanceinner, v.distanceouter,
-                     ringradius, (int)use_rotation);
+                     v.speedinner,
+                     v.speedouter,
+                     v.distanceinner,
+                     v.distanceouter,
+                     ringradius,
+                     (int)use_rotation);
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[v.controlpoint].offset +
                                   (Vector3f { v.offset.data() }).cast<double>();
@@ -912,8 +919,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         Vector3d radialDir  = radial / distance;
                         if (std::abs(radiusDiff) > ringwidth) {
                             double sign = radiusDiff > 0 ? 1.0 : -1.0;
-                            PM::Accelerate(p, radialDir * ringpulldistance * sign,
-                                           info.time_pass);
+                            PM::Accelerate(p, radialDir * ringpulldistance * sign, info.time_pass);
                         }
                     }
                 }
@@ -1070,8 +1076,8 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
     if (wpe.name == "boxrandom") {
         ParticleBoxEmitterArgs box;
         box.emitSpeed     = wpe.rate;
-        box.minDistance    = wpe.distancemin;
-        box.maxDistance    = wpe.distancemax;
+        box.minDistance   = wpe.distancemin;
+        box.maxDistance   = wpe.distancemax;
         box.directions    = wpe.directions;
         box.orgin         = wpe.origin;
         box.one_per_frame = wpe.flags[wpscene::Emitter::FlagEnum::one_per_frame];
@@ -1085,8 +1091,8 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
     } else if (wpe.name == "sphererandom") {
         ParticleSphereEmitterArgs sphere;
         sphere.emitSpeed     = wpe.rate;
-        sphere.minDistance    = wpe.distancemin[0];
-        sphere.maxDistance    = wpe.distancemax[0];
+        sphere.minDistance   = wpe.distancemin[0];
+        sphere.maxDistance   = wpe.distancemax[0];
         sphere.directions    = wpe.directions;
         sphere.orgin         = wpe.origin;
         sphere.sign          = wpe.sign;
@@ -1112,7 +1118,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         float maxDur   = wpe.maxperiodicduration;
         u32   maxPer   = wpe.maxtoemitperperiod;
 
-        double phaseDur     = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+        double phaseDur = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
         // Random initial phase offset so different instances don't fire simultaneously
         double totalCycle   = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
         double timer        = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
@@ -1120,8 +1126,9 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         u32    emittedCount = 0;
 
         baseOp = [=, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
-                                                  std::vector<ParticleInitOp>& inis, u32 maxcount,
-                                                  double timepass) mutable {
+                                                 std::vector<ParticleInitOp>& inis,
+                                                 u32                          maxcount,
+                                                 double                       timepass) mutable {
             bool justActivated = false;
             timer += timepass;
             while (timer >= phaseDur) {
@@ -1132,8 +1139,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
                     emittedCount  = 0;
                     justActivated = true;
                 } else {
-                    phaseDur =
-                        maxDelay > 0 ? Random::get((double)minDelay, (double)maxDelay) : 0.1;
+                    phaseDur = maxDelay > 0 ? Random::get((double)minDelay, (double)maxDelay) : 0.1;
                 }
             }
             if (active && (maxPer == 0 || emittedCount < maxPer)) {
@@ -1165,14 +1171,16 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
     // Wrap with duration limiter if configured (outermost wrapper)
     float duration = wpe.duration;
     if (duration > 0.0f) {
-        return [duration, elapsed = 0.0, baseOp = std::move(baseOp)](
-                   std::vector<Particle>& ps, std::vector<ParticleInitOp>& inis, u32 maxcount,
-                   double timepass) mutable {
-            elapsed += timepass;
-            if (elapsed <= duration) {
-                baseOp(ps, inis, maxcount, timepass);
-            }
-        };
+        return
+            [duration, elapsed = 0.0, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
+                                                                  std::vector<ParticleInitOp>& inis,
+                                                                  u32    maxcount,
+                                                                  double timepass) mutable {
+                elapsed += timepass;
+                if (elapsed <= duration) {
+                    baseOp(ps, inis, maxcount, timepass);
+                }
+            };
     }
 
     return baseOp;

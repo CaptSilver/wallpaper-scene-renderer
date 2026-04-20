@@ -81,7 +81,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         // Hollow Cylinder.mdl) only has the flags_repeat uint32 before
         // vertex_size — no bbox.  Reading the flags_repeat as vertex_size
         // would produce vertex_size=15 which fails the stride check.
-        const bool v23  = (mdl.mdlv >= 23);
+        const bool v23          = (mdl.mdlv >= 23);
         const bool v_flags_only = (mdl.mdlv >= 16 && mdl.mdlv < 23);
 
         for (uint32_t si = 0; si < submesh_count; si++) {
@@ -264,10 +264,18 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         }
         LOG_INFO("  mdl '%.*s' vert bounds: X=[%.1f, %.1f] (w=%.1f) Y=[%.1f, %.1f] (h=%.1f) "
                  "UV=[%.3f-%.3f, %.3f-%.3f] n=%u",
-                 (int)path.size(), path.data(),
-                 minX, maxX, maxX - minX,
-                 minY, maxY, maxY - minY,
-                 minU, maxU, minV, maxV,
+                 (int)path.size(),
+                 path.data(),
+                 minX,
+                 maxX,
+                 maxX - minX,
+                 minY,
+                 maxY,
+                 maxY - minY,
+                 minU,
+                 maxU,
+                 minV,
+                 maxV,
                  (unsigned)vertex_num);
     }
 #endif
@@ -345,7 +353,12 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         {
             auto trans = bone.transform.translation();
             LOG_INFO("    bone[%u] '%s' parent=%d trans=(%.1f, %.1f, %.1f)",
-                     i, name.c_str(), (int)bone.parent, trans[0], trans[1], trans[2]);
+                     i,
+                     name.c_str(),
+                     (int)bone.parent,
+                     trans[0],
+                     trans[1],
+                     trans[2]);
         }
 #endif
     }
@@ -433,8 +446,14 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                                  att.transform.translation().x(),
                                  att.transform.translation().y(),
                                  att.transform.translation().z(),
-                                 m(0, 0), m(0, 1), m(0, 2), m(0, 3),
-                                 m(1, 0), m(1, 1), m(1, 2), m(1, 3));
+                                 m(0, 0),
+                                 m(0, 1),
+                                 m(0, 2),
+                                 m(0, 3),
+                                 m(1, 0),
+                                 m(1, 1),
+                                 m(1, 2),
+                                 m(1, 3));
                     }
 #endif
                     mdl.puppet->attachments.push_back(std::move(att));
@@ -450,8 +469,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     } while (mdType != "MDLA");
 
     if (reached_eof_without_mdla) {
-        LOG_INFO("mdl: no animation section in '%s' (static skinned puppet)",
-                 path.data());
+        LOG_INFO("mdl: no animation section in '%s' (static skinned puppet)", path.data());
     } else if (mdType == "MDLA" && mdVersion.length() > 0) {
         mdl.mdla = std::stoi(mdVersion);
         if (mdl.mdla != 0) {
@@ -473,8 +491,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     uint8_t b = 0;
                     while (b == 0) {
                         if (f.Tell() >= f.Size()) {
-                            LOG_ERROR("mdl: EOF scanning animation padding in '%s'",
-                                      path.data());
+                            LOG_ERROR("mdl: EOF scanning animation padding in '%s'", path.data());
                             return false;
                         }
                         b = f.ReadUint8();
@@ -551,7 +568,8 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                         nlohmann::json j;
                         if (! PARSE_JSON(evt_json, j)) {
                             LOG_ERROR("anim %d: failed to parse event json: %s",
-                                      anim.id, evt_json.c_str());
+                                      anim.id,
+                                      evt_json.c_str());
                             continue;
                         }
                         WPPuppet::Animation::Event e {};
@@ -559,7 +577,9 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                         GET_JSON_NAME_VALUE_NOWARN(j, "name", e.name);
                         if (e.name.empty()) continue;
                         LOG_INFO("    anim[%d] event frame=%d name='%s'",
-                                 anim.id, e.frame, e.name.c_str());
+                                 anim.id,
+                                 e.frame,
+                                 e.name.c_str());
                         anim.events.push_back(std::move(e));
                     }
                 }
@@ -598,10 +618,10 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
         std::array<uint32_t, 4> safe_indices;
         for (int j = 0; j < 4; j++)
             safe_indices[j] = in.blend_indices[j] < bone_count ? in.blend_indices[j] : 0u;
-        memcpy(out.data() + 0,  in.position.data(),  sizeof(in.position));
-        memcpy(out.data() + 4,  safe_indices.data(), sizeof(safe_indices));
-        memcpy(out.data() + 8,  in.weight.data(),    sizeof(in.weight));
-        memcpy(out.data() + 12, in.texcoord.data(),  sizeof(in.texcoord));
+        memcpy(out.data() + 0, in.position.data(), sizeof(in.position));
+        memcpy(out.data() + 4, safe_indices.data(), sizeof(safe_indices));
+        memcpy(out.data() + 8, in.weight.data(), sizeof(in.weight));
+        memcpy(out.data() + 12, in.texcoord.data(), sizeof(in.texcoord));
     };
     for (uint i = 0; i < mdl.vertexs.size(); i++) {
         auto& v = mdl.vertexs[i];
@@ -621,10 +641,10 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
     if (sub.has_normals && sub.has_tangents && sub.has_texcoord1) {
         // Flag 39: pos + normal + tangent + texcoord0 + texcoord1 (lightmap)
         // Pack both texcoord sets into a_TexCoordVec4 (vec4) for lightmap shaders
-        SceneVertexArray      vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
-                                       { WE_IN_NORMAL.data(), VertexType::FLOAT3, false },
-                                       { WE_IN_TANGENT4.data(), VertexType::FLOAT4, false },
-                                       { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4, false } },
+        SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_NORMAL.data(), VertexType::FLOAT3, false },
+                                  { WE_IN_TANGENT4.data(), VertexType::FLOAT4, false },
+                                  { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4, false } },
                                 sub.vertexs.size());
         // Literal offsets (0/3/6/10/12) keep the mutation surface small —
         // the previous `offset += N` pattern generated cxx_add_to_sub
@@ -632,10 +652,10 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
         std::array<float, 14> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
             auto& v = sub.vertexs[i];
-            memcpy(one_vert.data() + 0,  v.position.data(),  sizeof(v.position));
-            memcpy(one_vert.data() + 3,  v.normal.data(),    sizeof(v.normal));
-            memcpy(one_vert.data() + 6,  v.tangent.data(),   sizeof(v.tangent));
-            memcpy(one_vert.data() + 10, v.texcoord.data(),  sizeof(v.texcoord));
+            memcpy(one_vert.data() + 0, v.position.data(), sizeof(v.position));
+            memcpy(one_vert.data() + 3, v.normal.data(), sizeof(v.normal));
+            memcpy(one_vert.data() + 6, v.tangent.data(), sizeof(v.tangent));
+            memcpy(one_vert.data() + 10, v.texcoord.data(), sizeof(v.texcoord));
             memcpy(one_vert.data() + 12, v.texcoord1.data(), sizeof(v.texcoord1));
             vertex.SetVertexs(i, one_vert);
         }
@@ -651,9 +671,9 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
         std::array<float, 12> one_vert;
         for (uint i = 0; i < sub.vertexs.size(); i++) {
             auto& v = sub.vertexs[i];
-            memcpy(one_vert.data() + 0,  v.position.data(), sizeof(v.position));
-            memcpy(one_vert.data() + 3,  v.normal.data(),   sizeof(v.normal));
-            memcpy(one_vert.data() + 6,  v.tangent.data(),  sizeof(v.tangent));
+            memcpy(one_vert.data() + 0, v.position.data(), sizeof(v.position));
+            memcpy(one_vert.data() + 3, v.normal.data(), sizeof(v.normal));
+            memcpy(one_vert.data() + 6, v.tangent.data(), sizeof(v.tangent));
             memcpy(one_vert.data() + 10, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
         }
@@ -667,7 +687,7 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
         for (uint i = 0; i < sub.vertexs.size(); i++) {
             auto& v = sub.vertexs[i];
             memcpy(one_vert.data() + 0, v.position.data(), sizeof(v.position));
-            memcpy(one_vert.data() + 3, v.normal.data(),   sizeof(v.normal));
+            memcpy(one_vert.data() + 3, v.normal.data(), sizeof(v.normal));
             memcpy(one_vert.data() + 6, v.texcoord.data(), sizeof(v.texcoord));
             vertex.SetVertexs(i, one_vert);
 #ifndef WP_SUPPRESS_DEBUG_LOGGING

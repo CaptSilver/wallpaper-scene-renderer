@@ -45,10 +45,10 @@ struct PropertyScriptInfo {
 };
 
 struct VolumeAnimInfo {
-    std::string                               name;
-    std::string                               mode { "loop" };
-    float                                     fps { 30.0f };
-    float                                     length { 0 };
+    std::string                                name;
+    std::string                                mode { "loop" };
+    float                                      fps { 30.0f };
+    float                                      length { 0 };
     std::vector<wallpaper::VolumeAnimKeyframe> keyframes;
 };
 struct SoundVolumeScriptInfo {
@@ -105,14 +105,14 @@ public:
 
     void initVulkan(const RenderInitInfo&);
 
-    void                                     play();
-    void                                     pause();
-    void                                     mouseInput(double x, double y);
-    void                                     updateText(int32_t id, const std::string& text);
+    void play();
+    void pause();
+    void mouseInput(double x, double y);
+    void updateText(int32_t id, const std::string& text);
     // Dynamic pointsize override: scripts call `thisLayer.pointsize = 20`
     // when fitting long track titles.  Next text update will rasterize at
     // the new pointsize.  <=0 means "keep whatever was authored".
-    void                                     updateTextPointsize(int32_t id, float pointsize);
+    void updateTextPointsize(int32_t id, float pointsize);
     // Debug per-pass RT dump: writes every CustomShaderPass output image
     // after the next frame completes.  See VulkanRender::setPassDumpDir.
     void                                     requestPassDump(const std::string& dir);
@@ -134,7 +134,7 @@ public:
         float camX { 0.0f };
         float camY { 0.0f };
     };
-    ParallaxInfo                             getParallaxInfo() const;
+    ParallaxInfo getParallaxInfo() const;
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
@@ -160,7 +160,7 @@ public:
     // Render-thread scene clock (seconds since scene load). Same clock as visuals:
     // advances only when drawFrame() runs, so audio animations stay locked to render
     // cadence instead of wall-clock.
-    double                             getSceneTime() const;
+    double getSceneTime() const;
 
     // Video texture control API for SceneScript thisLayer.getVideoTexture().
     // All operations take the nodeId of the layer owning the video texture.
@@ -185,7 +185,7 @@ public:
 
     // Drain puppet-animation keyframe events that fired since the last call.
     // Polled by SceneBackend each script evaluation tick.
-    std::vector<AnimationEventInfo>    drainAnimationEvents();
+    std::vector<AnimationEventInfo> drainAnimationEvents();
 
     // Named property-animation control (layer.getAnimation(name).play()/etc).
     void propertyAnimPlay(int32_t nodeId, const std::string& name);
@@ -194,19 +194,18 @@ public:
     bool propertyAnimIsPlaying(int32_t nodeId, const std::string& name) const;
 
     // Scene property control (bloom, clear color, camera, lighting)
-    void        updateClearColor(float r, float g, float b);
-    void        updateBloomStrength(float strength);
-    void        updateBloomThreshold(float threshold);
-    void        updateCameraFov(float fov);
-    void        updateCameraLookAt(float ex, float ey, float ez,
-                                   float cx, float cy, float cz,
-                                   float ux, float uy, float uz);
-    void        updateAmbientColor(float r, float g, float b);
-    void        updateSkylightColor(float r, float g, float b);
-    void        updateLightColor(int32_t index, float r, float g, float b);
-    void        updateLightRadius(int32_t index, float radius);
-    void        updateLightIntensity(int32_t index, float intensity);
-    void        updateLightPosition(int32_t index, float x, float y, float z);
+    void updateClearColor(float r, float g, float b);
+    void updateBloomStrength(float strength);
+    void updateBloomThreshold(float threshold);
+    void updateCameraFov(float fov);
+    void updateCameraLookAt(float ex, float ey, float ez, float cx, float cy, float cz, float ux,
+                            float uy, float uz);
+    void updateAmbientColor(float r, float g, float b);
+    void updateSkylightColor(float r, float g, float b);
+    void updateLightColor(int32_t index, float r, float g, float b);
+    void updateLightRadius(int32_t index, float radius);
+    void updateLightIntensity(int32_t index, float intensity);
+    void updateLightPosition(int32_t index, float x, float y, float z);
     std::string getSceneInitialStateJson() const;
 
     void setPropertyBool(std::string_view, bool);

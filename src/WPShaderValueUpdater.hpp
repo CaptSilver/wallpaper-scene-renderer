@@ -104,11 +104,11 @@ public:
     void MouseInput(double, double) override;
     void SetTexelSize(float x, float y) override;
 
-    void SetNodeData(void*, const WPShaderValueData&);
-    void SetCameraParallax(const WPCameraParallax& value) { m_parallax = value; }
+    void                    SetNodeData(void*, const WPShaderValueData&);
+    void                    SetCameraParallax(const WPCameraParallax& value) { m_parallax = value; }
     const WPCameraParallax& GetCameraParallax() const { return m_parallax; }
-    void SetCameraShake(const WPCameraShake& value) { m_shake = value; }
-    void SetAudioAnalyzer(std::shared_ptr<audio::AudioAnalyzer> analyzer) {
+    void                    SetCameraShake(const WPCameraShake& value) { m_shake = value; }
+    void                    SetAudioAnalyzer(std::shared_ptr<audio::AudioAnalyzer> analyzer) {
         m_audioAnalyzer = std::move(analyzer);
     }
 

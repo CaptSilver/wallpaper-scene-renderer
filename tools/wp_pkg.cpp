@@ -395,15 +395,17 @@ int cmd_extract(int argc, char** argv) {
 
 // Write N bytes little-endian.  Wraps ofstream put() for readability.
 void write_u32_le(std::ofstream& f, uint32_t v) {
-    uint8_t b[4] = { uint8_t(v & 0xff), uint8_t((v >> 8) & 0xff),
-                     uint8_t((v >> 16) & 0xff), uint8_t((v >> 24) & 0xff) };
+    uint8_t b[4] = { uint8_t(v & 0xff),
+                     uint8_t((v >> 8) & 0xff),
+                     uint8_t((v >> 16) & 0xff),
+                     uint8_t((v >> 24) & 0xff) };
     f.write(reinterpret_cast<const char*>(b), 4);
 }
 
 // Write a length-prefixed (u32 LE) string, matching wp-pkg layout.
 void write_sized_string(std::ofstream& f, std::string_view s) {
     write_u32_le(f, static_cast<uint32_t>(s.size()));
-    if (!s.empty()) f.write(s.data(), s.size());
+    if (! s.empty()) f.write(s.data(), s.size());
 }
 
 // `pack` — inverse of `extract` (non-flat mode).  Walks <indir>, writes a
@@ -422,8 +424,8 @@ int cmd_pack(int argc, char** argv) {
         std::fprintf(stderr, "usage: wp-pkg pack <indir> <outpkg> [--version=PKGV0023]\n");
         return 2;
     }
-    fs::path indir  = argv[2];
-    fs::path outpkg = argv[3];
+    fs::path    indir   = argv[2];
+    fs::path    outpkg  = argv[3];
     std::string version = "PKGV0023";
     for (int i = 4; i < argc; i++) {
         std::string_view a = argv[i];
@@ -434,20 +436,20 @@ int cmd_pack(int argc, char** argv) {
             return 2;
         }
     }
-    if (!fs::is_directory(indir)) {
+    if (! fs::is_directory(indir)) {
         std::fprintf(stderr, "not a directory: %s\n", indir.c_str());
         return 1;
     }
 
     // Collect entries in a stable, sorted order so `pack` is deterministic.
     struct InEntry {
-        std::string rel;  // no leading slash (matches WE format)
+        std::string rel; // no leading slash (matches WE format)
         fs::path    abs;
         uint64_t    size;
     };
     std::vector<InEntry> entries;
     for (auto& p : fs::recursive_directory_iterator(indir)) {
-        if (!p.is_regular_file()) continue;
+        if (! p.is_regular_file()) continue;
         auto rel = fs::relative(p.path(), indir).generic_string();
         // Skip bookkeeping files that `extract --raw=off` writes alongside
         // the real assets.  These are not part of the scene.
@@ -461,8 +463,9 @@ int cmd_pack(int argc, char** argv) {
         e.size = fs::file_size(p.path());
         entries.push_back(std::move(e));
     }
-    std::sort(entries.begin(), entries.end(),
-              [](const InEntry& a, const InEntry& b) { return a.rel < b.rel; });
+    std::sort(entries.begin(), entries.end(), [](const InEntry& a, const InEntry& b) {
+        return a.rel < b.rel;
+    });
 
     if (entries.empty()) {
         std::fprintf(stderr, "no files to pack under %s\n", indir.c_str());
@@ -473,13 +476,13 @@ int cmd_pack(int argc, char** argv) {
     // RELATIVE to dataStart (end of header), per load_pkg semantics.
     uint64_t header_size = 4 + version.size() + 4; // verlen + ver + count
     for (auto& e : entries) {
-        header_size += 4 + e.rel.size() + 4 + 4;   // pathlen + path + off + size
+        header_size += 4 + e.rel.size() + 4 + 4; // pathlen + path + off + size
     }
 
     // Emit header with placeholder offsets, then append data and remember
     // each entry's offset as we go.
     std::ofstream f(outpkg, std::ios::binary | std::ios::trunc);
-    if (!f) {
+    if (! f) {
         std::fprintf(stderr, "cannot open output: %s\n", outpkg.c_str());
         return 1;
     }
@@ -487,7 +490,9 @@ int cmd_pack(int argc, char** argv) {
     write_u32_le(f, static_cast<uint32_t>(entries.size()));
 
     // Reserve entry header slots so we can come back and patch offsets.
-    struct SlotPos { std::streampos off, len; };
+    struct SlotPos {
+        std::streampos off, len;
+    };
     std::vector<SlotPos> slots;
     slots.reserve(entries.size());
     for (auto& e : entries) {
@@ -502,13 +507,14 @@ int cmd_pack(int argc, char** argv) {
 
     auto data_start = f.tellp();
     if (static_cast<uint64_t>(data_start) != header_size) {
-        std::fprintf(stderr, "pack: header size mismatch (got %lld, expected %llu)\n",
+        std::fprintf(stderr,
+                     "pack: header size mismatch (got %lld, expected %llu)\n",
                      static_cast<long long>(data_start),
                      static_cast<unsigned long long>(header_size));
         return 1;
     }
 
-    uint32_t cur = 0;
+    uint32_t          cur = 0;
     std::vector<char> buf;
     for (size_t i = 0; i < entries.size(); i++) {
         auto& e = entries[i];
@@ -530,12 +536,12 @@ int cmd_pack(int argc, char** argv) {
 
         // Copy bytes from source file.
         std::ifstream src(e.abs, std::ios::binary);
-        if (!src) {
+        if (! src) {
             std::fprintf(stderr, "cannot read: %s\n", e.abs.c_str());
             return 1;
         }
         buf.resize(static_cast<size_t>(e.size));
-        if (e.size && !src.read(buf.data(), e.size)) {
+        if (e.size && ! src.read(buf.data(), e.size)) {
             std::fprintf(stderr, "short read: %s\n", e.abs.c_str());
             return 1;
         }
@@ -543,8 +549,10 @@ int cmd_pack(int argc, char** argv) {
         cur += static_cast<uint32_t>(e.size);
     }
 
-    std::fprintf(stdout, "wrote %s: %zu entries, %llu bytes payload\n",
-                 outpkg.c_str(), entries.size(),
+    std::fprintf(stdout,
+                 "wrote %s: %zu entries, %llu bytes payload\n",
+                 outpkg.c_str(),
+                 entries.size(),
                  static_cast<unsigned long long>(cur));
     return 0;
 }

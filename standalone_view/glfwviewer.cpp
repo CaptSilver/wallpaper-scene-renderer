@@ -38,7 +38,7 @@ void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) 
     UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
     // Number keys 1-9 → switch lucyrebecca to that value at runtime
     if (key >= GLFW_KEY_1 && key <= GLFW_KEY_9) {
-        std::string val = std::to_string(key - GLFW_KEY_0);
+        std::string val  = std::to_string(key - GLFW_KEY_0);
         std::string json = "{\"lucyrebecca\":\"" + val + "\"}";
         std::cout << "Runtime user prop change: " << json << std::endl;
         data->psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, json);
@@ -121,7 +121,7 @@ int main(int argc, char** argv) {
     psw->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, cache_path);
 
     std::string user_props = BuildUserPropsJson(program);
-    if (!user_props.empty()) {
+    if (! user_props.empty()) {
         std::cout << "user props: " << user_props << std::endl;
         psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, user_props);
     }
@@ -146,9 +146,9 @@ int main(int argc, char** argv) {
             if (frames_to_wait < 1) frames_to_wait = 30;
             // A simple wall-clock wait tied to --fps gives enough frames without
             // needing a frame counter hook.  At default 60fps, 30 frames ~ 0.5s.
-            int32_t fps   = program.get<int32_t>(OPT_FPS);
+            int32_t fps = program.get<int32_t>(OPT_FPS);
             if (fps < 5) fps = 60;
-            double  wait_seconds = (double)frames_to_wait / (double)fps + 0.3;
+            double wait_seconds = (double)frames_to_wait / (double)fps + 0.3;
             std::this_thread::sleep_for(std::chrono::milliseconds((int64_t)(wait_seconds * 1000)));
             psw->requestScreenshot(screenshot_path);
             // Poll for completion (max 5 seconds).

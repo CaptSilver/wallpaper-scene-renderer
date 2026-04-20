@@ -134,10 +134,9 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
         units[0] = ShaderCompUnit { .stage = EShLangVertex, .src = std::string(vert_code) };
         // Tonemap only when HDR content pipeline is active and output is SDR
         bool use_tonemap = m_desc.hdr_content && ! m_desc.hdr_passthrough;
-        units[1] = ShaderCompUnit { .stage = EShLangFragment,
-                                     .src = std::string(use_tonemap
-                                                            ? frag_code_sdr
-                                                            : frag_code_hdr) };
+        units[1] =
+            ShaderCompUnit { .stage = EShLangFragment,
+                             .src   = std::string(use_tonemap ? frag_code_sdr : frag_code_hdr) };
         CompileAndLinkShaderUnits(units, opt, spvs);
     }
 
@@ -214,8 +213,10 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         extern int g_exec_frame_counter;
         if (g_exec_frame_counter < 1) {
             LOG_INFO("EXEC[%d] pass#%d FINPASS present=%ux%u result_handle=%p",
-                     g_exec_frame_counter, g_exec_pass_counter++,
-                     m_desc.vk_present.extent.width, m_desc.vk_present.extent.height,
+                     g_exec_frame_counter,
+                     g_exec_pass_counter++,
+                     m_desc.vk_present.extent.width,
+                     m_desc.vk_present.extent.height,
                      (void*)m_desc.vk_result.handle);
         }
     }

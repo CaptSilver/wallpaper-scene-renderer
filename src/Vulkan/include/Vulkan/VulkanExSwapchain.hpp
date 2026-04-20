@@ -36,14 +36,14 @@ public:
         : m_handles(std::move(handles)), m_extent(ext), m_format(fmt) {
         // GL_RGBA8 = 0x8058, GL_RGBA16F = 0x881A
         uint32_t gl_fmt = (fmt == VK_FORMAT_R16G16B16A16_SFLOAT) ? 0x881Au : 0x8058u;
-        int index = 0;
+        int      index  = 0;
         for (auto& h : m_handles) {
-            auto& handle    = h.handle;
-            handle          = ExHandle(index++);
-            handle.width    = (i32)h.image.extent.width;
-            handle.height   = (i32)h.image.extent.height;
-            handle.fd       = h.image.fd;
-            handle.size     = h.image.mem_reqs.size;
+            auto& handle     = h.handle;
+            handle           = ExHandle(index++);
+            handle.width     = (i32)h.image.extent.width;
+            handle.height    = (i32)h.image.extent.height;
+            handle.fd        = h.image.fd;
+            handle.size      = h.image.mem_reqs.size;
             handle.gl_format = gl_fmt;
         }
         m_presented  = &m_handles[0].handle;
@@ -77,13 +77,12 @@ private:
     VkFormat                      m_format;
 };
 
-inline std::unique_ptr<VulkanExSwapchain> CreateExSwapchain(const Device& device, uint w, uint h,
-                                                            VkImageTiling tiling,
-                                                            VkFormat format = VK_FORMAT_R8G8B8A8_UNORM) {
+inline std::unique_ptr<VulkanExSwapchain>
+CreateExSwapchain(const Device& device, uint w, uint h, VkImageTiling tiling,
+                  VkFormat format = VK_FORMAT_R8G8B8A8_UNORM) {
     std::array<VulkanExHandle, 3> handles;
     for (auto& handle : handles) {
-        if (auto rv = device.tex_cache().CreateExTex(w, h, format, tiling);
-            rv.has_value())
+        if (auto rv = device.tex_cache().CreateExTex(w, h, format, tiling); rv.has_value())
             handle.image = std::move(rv.value());
         else
             return nullptr;

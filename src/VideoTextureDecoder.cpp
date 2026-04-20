@@ -6,7 +6,8 @@
 #include <clocale>
 #include <cstring>
 
-namespace wallpaper {
+namespace wallpaper
+{
 
 VideoTextureDecoder::VideoTextureDecoder(int width, int height)
     : m_width(width), m_height(height), m_stride(width * 4) {
@@ -68,8 +69,7 @@ bool VideoTextureDecoder::open(const std::string& path) {
 
     // Create SW render context
     mpv_render_param params[] = {
-        { MPV_RENDER_PARAM_API_TYPE,
-          const_cast<char*>(MPV_RENDER_API_TYPE_SW) },
+        { MPV_RENDER_PARAM_API_TYPE, const_cast<char*>(MPV_RENDER_API_TYPE_SW) },
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
@@ -131,7 +131,10 @@ void VideoTextureDecoder::setRate(double r) {
     if (! m_mpv) return;
     // libmpv's "speed" must be > 0.  A zero rate would be semantically "pause"
     // — map to pause() to mirror mpv's own behavior and avoid EINVAL.
-    if (r <= 0.0) { pause(); return; }
+    if (r <= 0.0) {
+        pause();
+        return;
+    }
     mpv_set_property(m_mpv, "speed", MPV_FORMAT_DOUBLE, &r);
 }
 
@@ -160,17 +163,17 @@ void VideoTextureDecoder::renderFrame() {
 
     std::lock_guard<std::mutex> lock(m_renderMutex);
 
-    int decIdx = m_decodeIdx.load();
-    uint8_t* buf = m_buffers[decIdx].get();
+    int      decIdx = m_decodeIdx.load();
+    uint8_t* buf    = m_buffers[decIdx].get();
 
-    int    size[2] = { m_width, m_height };
-    size_t stride  = m_stride;
+    int              size[2]     = { m_width, m_height };
+    size_t           stride      = m_stride;
     mpv_render_param sw_params[] = {
-        { MPV_RENDER_PARAM_SW_SIZE,    size },
-        { MPV_RENDER_PARAM_SW_FORMAT,  const_cast<char*>("rgb0") },
-        { MPV_RENDER_PARAM_SW_STRIDE,  &stride },
+        { MPV_RENDER_PARAM_SW_SIZE, size },
+        { MPV_RENDER_PARAM_SW_FORMAT, const_cast<char*>("rgb0") },
+        { MPV_RENDER_PARAM_SW_STRIDE, &stride },
         { MPV_RENDER_PARAM_SW_POINTER, buf },
-        { MPV_RENDER_PARAM_INVALID,    nullptr },
+        { MPV_RENDER_PARAM_INVALID, nullptr },
     };
 
     if (mpv_render_context_render(m_renderCtx, sw_params) >= 0) {

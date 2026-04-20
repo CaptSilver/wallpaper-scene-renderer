@@ -32,7 +32,7 @@ void WPTextRenderer::Shutdown() {
 // Decode one UTF-8 codepoint, advance ptr. Returns 0 on error/end.
 static uint32_t DecodeUtf8(const char*& p, const char* end) {
     if (p >= end) return 0;
-    auto b = static_cast<uint8_t>(*p);
+    auto     b  = static_cast<uint8_t>(*p);
     uint32_t cp = 0;
     int      n  = 0;
     if (b < 0x80) {
@@ -103,14 +103,14 @@ static int MeasureLineWidth(FT_Face face, const std::string& line) {
 }
 
 std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, float pointsize,
-                                                   const std::string& text, i32 width, i32 height,
-                                                   const std::string& halign,
-                                                   const std::string& valign, i32 padding) {
-    if (!s_ftLib) {
+                                                  const std::string& text, i32 width, i32 height,
+                                                  const std::string& halign,
+                                                  const std::string& valign, i32 padding) {
+    if (! s_ftLib) {
         // Lazy init — scene parser shuts down after Parse(), but render thread
         // needs FreeType for dynamic text re-rasterization
         Init();
-        if (!s_ftLib) {
+        if (! s_ftLib) {
             LOG_ERROR("WPTextRenderer: FreeType init failed");
             return nullptr;
         }
@@ -129,31 +129,36 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // cursorUp does `percentageLayer.text = ""`) rely on this to actually
     // blank the texture — without it the old bitmap (e.g. "100%") persists.
     if (text.empty()) {
-        usize bufSize = static_cast<usize>(width) * static_cast<usize>(height) * 4;
-        auto img_ptr = std::make_shared<Image>();
-        auto& img = *img_ptr;
+        usize bufSize    = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+        auto  img_ptr    = std::make_shared<Image>();
+        auto& img        = *img_ptr;
         img.header.width = img.header.mapWidth = width;
         img.header.height = img.header.mapHeight = height;
-        img.header.format = TextureFormat::RGBA8;
-        img.header.count = 1;
+        img.header.format                        = TextureFormat::RGBA8;
+        img.header.count                         = 1;
         Image::Slot slot;
-        slot.width = width;
+        slot.width  = width;
         slot.height = height;
         ImageData mipmap;
-        mipmap.width = width;
+        mipmap.width  = width;
         mipmap.height = height;
-        mipmap.size = static_cast<isize>(bufSize);
-        auto* rawBuf = new uint8_t[bufSize]();   // zero-initialised → RGBA=(0,0,0,0)
-        mipmap.data = ImageDataPtr(rawBuf, [](uint8_t* p) { delete[] p; });
+        mipmap.size   = static_cast<isize>(bufSize);
+        auto* rawBuf  = new uint8_t[bufSize](); // zero-initialised → RGBA=(0,0,0,0)
+        mipmap.data   = ImageDataPtr(rawBuf, [](uint8_t* p) {
+            delete[] p;
+        });
         slot.mipmaps.push_back(std::move(mipmap));
         img.slots.push_back(std::move(slot));
         return img_ptr;
     }
 
     FT_Face  face = nullptr;
-    FT_Error err  = FT_New_Memory_Face(s_ftLib, reinterpret_cast<const FT_Byte*>(fontData.data()),
-                                       static_cast<FT_Long>(fontData.size()), 0, &face);
-    if (err || !face) {
+    FT_Error err  = FT_New_Memory_Face(s_ftLib,
+                                      reinterpret_cast<const FT_Byte*>(fontData.data()),
+                                      static_cast<FT_Long>(fontData.size()),
+                                      0,
+                                      &face);
+    if (err || ! face) {
         LOG_ERROR("FT_New_Memory_Face failed: %d", err);
         return nullptr;
     }
@@ -177,15 +182,15 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     if (usableH < 1) usableH = 1;
 
     // Allocate RGBA buffer (white text, alpha = coverage)
-    usize              bufSize = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+    usize                bufSize = static_cast<usize>(width) * static_cast<usize>(height) * 4;
     std::vector<uint8_t> buf(bufSize, 0);
 
     i32 ascender  = static_cast<i32>(face->size->metrics.ascender >> 6);
     i32 descender = static_cast<i32>(face->size->metrics.descender >> 6); // negative
     i32 lineH     = ascender - descender;
 
-    auto lines    = SplitLines(text);
-    i32  totalH   = lineH * static_cast<i32>(lines.size());
+    auto lines  = SplitLines(text);
+    i32  totalH = lineH * static_cast<i32>(lines.size());
 
     // Vertical start position (baseline of first line)
     i32 startY;
@@ -236,8 +241,9 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                     uint8_t alpha = g->bitmap.buffer[row * g->bitmap.pitch + col];
                     if (alpha == 0) continue;
 
-                    usize idx    = (static_cast<usize>(py) * static_cast<usize>(width) +
-                                 static_cast<usize>(px)) * 4;
+                    usize idx = (static_cast<usize>(py) * static_cast<usize>(width) +
+                                 static_cast<usize>(px)) *
+                                4;
                     // White text, alpha = glyph coverage (max blend for overlapping glyphs)
                     buf[idx + 0] = 255;
                     buf[idx + 1] = 255;
@@ -252,8 +258,8 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     FT_Done_Face(face);
 
     // Build Image
-    auto  img_ptr = std::make_shared<Image>();
-    auto& img     = *img_ptr;
+    auto  img_ptr        = std::make_shared<Image>();
+    auto& img            = *img_ptr;
     img.header.width     = width;
     img.header.height    = height;
     img.header.mapWidth  = width;
@@ -272,13 +278,18 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
 
     auto* rawBuf = new uint8_t[bufSize];
     std::memcpy(rawBuf, buf.data(), bufSize);
-    mipmap.data = ImageDataPtr(rawBuf, [](uint8_t* p) { delete[] p; });
+    mipmap.data = ImageDataPtr(rawBuf, [](uint8_t* p) {
+        delete[] p;
+    });
 
     slot.mipmaps.push_back(std::move(mipmap));
     img.slots.push_back(std::move(slot));
 
     LOG_INFO("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f",
-             width, height, lines.size(), pointsize);
+             width,
+             height,
+             lines.size(),
+             pointsize);
     return img_ptr;
 }
 

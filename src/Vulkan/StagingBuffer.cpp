@@ -9,7 +9,9 @@ using namespace wallpaper::vulkan;
 #define CHECK_REF(ref, act)                                                  \
     if (! ref) {                                                             \
         LOG_ERROR("stage ref not available, index %d", ref.m_virtual_index); \
-        { act; }                                                             \
+        {                                                                    \
+            act;                                                             \
+        }                                                                    \
     }
 
 StagingBuffer::StagingBuffer(const Device& d, VkDeviceSize size, VkBufferUsageFlags usage)
@@ -73,11 +75,11 @@ StagingBuffer::VirtualBlock* StagingBuffer::newVirtualBlock(VkDeviceSize nsize) 
                                   : m_virtual_blocks.back().offset + m_virtual_blocks.back().size;
 
         m_virtual_blocks.push_back({});
-        it         = m_virtual_blocks.end() - 1;
+        it                    = m_virtual_blocks.end() - 1;
         VkDeviceSize min_size = nsize > m_size_step ? nsize : m_size_step;
         // Exponential growth: new block at least as large as all existing blocks combined.
         // This amortizes staging buffer resizes (each resize copies the full buffer).
-        it->size = std::max(min_size, offset);
+        it->size   = std::max(min_size, offset);
         it->index  = (size_t)std::distance(m_virtual_blocks.begin(), it);
         it->offset = offset;
     }

@@ -481,8 +481,8 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
                 // Geometry shader inputs: unsized arrays with gs_in_ prefix
                 if (is_geo) {
-                    n = std::regex_replace(n, std::regex(R"(\bin\s+([\w]+)\s+(v_\w+))"),
-                                           "in $1 gs_in_$2");
+                    n = std::regex_replace(
+                        n, std::regex(R"(\bin\s+([\w]+)\s+(v_\w+))"), "in $1 gs_in_$2");
                     n = std::regex_replace(n, std::regex(R"((\w)\s*;)"), "$1[];");
                 }
                 insert_str += n + '\n';
@@ -494,8 +494,7 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
             // For geometry shader inputs with gs_in_ prefix,
             // check canonical name (without prefix) against current outputs
             std::string canon = k;
-            if (canon.substr(0, 6) == "gs_in_")
-                canon = canon.substr(6);
+            if (canon.substr(0, 6) == "gs_in_") canon = canon.substr(6);
             if (! exists(cur.output, k) && ! exists(cur.output, canon)) {
                 auto n = std::regex_replace(v, std::regex(R"(\s*in\s)"), " out ");
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
@@ -598,7 +597,7 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
     if (units.size() >= 2) {
         auto parseVaryings = [](const std::string& src, const char* kw) {
             std::map<std::string, std::string> m;
-            std::regex re(std::string(R"(\b)") + kw +
+            std::regex                         re(std::string(R"(\b)") + kw +
                           R"(\s+(vec[234]|float)\s+(\w+)\s*(\[\])?\s*;)");
             for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
                  it != std::sregex_iterator();
@@ -618,10 +617,10 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
                                      const std::string& name,
                                      const std::string& old_type,
                                      const std::string& new_type) {
-            std::regex re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
+            std::regex  re_decl(std::string("\\b") + io_kw + "\\s+" + old_type + "\\s+" + name +
                                R"(\s*(\[\])?\s*;)");
             std::string suffix = "$1";
-            src = std::regex_replace(
+            src                = std::regex_replace(
                 src, re_decl, std::string(io_kw) + " " + new_type + " " + name + suffix + ";");
 
             if (std::string(io_kw) == "out") {
@@ -630,8 +629,8 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
                 for (int p = 0; p < nd - od; p++) pad += ", 0.0";
                 std::regex re_assign("\\b" + name + "(\\s*=\\s*)((?!" + new_type +
                                      "\\s*\\()[^;]+);");
-                src = std::regex_replace(
-                    src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
+                src =
+                    std::regex_replace(src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
             }
         };
 
@@ -671,15 +670,20 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
     {
         bool has_gs = false;
         for (auto& u : units) {
-            if (u.stage == ShaderType::GEOMETRY) { has_gs = true; break; }
+            if (u.stage == ShaderType::GEOMETRY) {
+                has_gs = true;
+                break;
+            }
         }
         if (has_gs) {
             std::vector<std::pair<std::string, std::string>> gs_renames;
             for (auto& unit : units) {
                 if (unit.stage != ShaderType::GEOMETRY) continue;
-                std::regex re_gs_in(R"(\bin\s+(?:flat\s+)?(?:vec[234]|float|int|ivec[234])\s+(gs_in_(\w+))\s*\[\])");
+                std::regex re_gs_in(
+                    R"(\bin\s+(?:flat\s+)?(?:vec[234]|float|int|ivec[234])\s+(gs_in_(\w+))\s*\[\])");
                 for (auto it = std::sregex_iterator(unit.src.begin(), unit.src.end(), re_gs_in);
-                     it != std::sregex_iterator(); ++it) {
+                     it != std::sregex_iterator();
+                     ++it) {
                     gs_renames.push_back({ (*it)[2].str(), (*it)[1].str() });
                 }
             }
@@ -687,8 +691,9 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
             for (auto& unit : units) {
                 if (unit.stage != ShaderType::VERTEX) continue;
                 for (auto& [canon, gs_name] : gs_renames) {
-                    std::regex re_decl("\\bout\\s+((?:flat\\s+)?(?:vec[234]|float|int|ivec[234])\\s+)" +
-                                       canon + "\\s*;");
+                    std::regex re_decl(
+                        "\\bout\\s+((?:flat\\s+)?(?:vec[234]|float|int|ivec[234])\\s+)" + canon +
+                        "\\s*;");
                     unit.src = std::regex_replace(unit.src, re_decl, "out $1" + gs_name + ";");
                     std::regex re_use("\\b" + canon + "\\b");
                     unit.src = std::regex_replace(unit.src, re_use, gs_name);
@@ -702,20 +707,21 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
             // Dump GS shaders for debugging (thread-safe counter)
             {
                 static std::atomic<int> dump_idx { 0 };
-                int idx = dump_idx.fetch_add(1);
+                int                     idx = dump_idx.fetch_add(1);
                 if (idx < 5) {
                     const char* stage_names[] = { "VERTEX", "GEOMETRY", "FRAGMENT" };
                     for (usize i = 0; i < vunits.size(); i++) {
-                        int si = (vunits[i].stage == EShLangVertex)     ? 0
-                                 : (vunits[i].stage == EShLangGeometry) ? 1
-                                                                        : 2;
-                        std::string path = "/tmp/gs_dump_" +
-                                           std::to_string(idx) + "_" +
+                        int         si   = (vunits[i].stage == EShLangVertex)     ? 0
+                                           : (vunits[i].stage == EShLangGeometry) ? 1
+                                                                                  : 2;
+                        std::string path = "/tmp/gs_dump_" + std::to_string(idx) + "_" +
                                            std::string(stage_names[si]) + ".glsl";
                         std::ofstream f(path);
                         if (f) f << vunits[i].src;
                         LOG_INFO("GS dump[%d]: stage=%s → %s (%zu bytes)",
-                                 idx, stage_names[si], path.c_str(),
+                                 idx,
+                                 stage_names[si],
+                                 path.c_str(),
                                  vunits[i].src.size());
                     }
                 }
@@ -743,7 +749,8 @@ struct PendingShaderCompilation {
     std::vector<ShaderCode>* output;
 };
 static std::mutex s_compileMtx;
-static std::unordered_map<std::string, std::shared_future<std::vector<ShaderCode>>> s_asyncCompilations;
+static std::unordered_map<std::string, std::shared_future<std::vector<ShaderCode>>>
+                                             s_asyncCompilations;
 static std::vector<PendingShaderCompilation> s_pendingOutputs;
 
 } // namespace
@@ -812,11 +819,11 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     for (auto& unit : units) {
         if (unit.stage != ShaderType::GEOMETRY) continue;
 
-        int maxVerts = 4;
-        auto it = shader_info->combos.find("TRAILSUBDIVISION");
+        int  maxVerts = 4;
+        auto it       = shader_info->combos.find("TRAILSUBDIVISION");
         if (it != shader_info->combos.end()) {
             int subdiv = std::stoi(it->second);
-            maxVerts = 4 + subdiv * 2;
+            maxVerts   = 4 + subdiv * 2;
         }
 
         std::string layouts = "layout(points) in;\n"
@@ -856,15 +863,14 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
             if (s_asyncCompilations.find(sha1) == s_asyncCompilations.end()) {
                 // First time seeing this SHA1 — copy units and launch async
                 auto units_copy = std::vector<WPShaderUnit>(units.begin(), units.end());
-                auto future = std::async(std::launch::async,
-                    [u = std::move(units_copy)]() mutable {
-                        std::vector<ShaderCode> result;
-                        CompileShaderUnits(u, result);
-                        return result;
-                    });
+                auto future = std::async(std::launch::async, [u = std::move(units_copy)]() mutable {
+                    std::vector<ShaderCode> result;
+                    CompileShaderUnits(u, result);
+                    return result;
+                });
                 s_asyncCompilations[sha1] = future.share();
             }
-            s_pendingOutputs.push_back({sha1, cache_file_path, &codes});
+            s_pendingOutputs.push_back({ sha1, cache_file_path, &codes });
         }
         return true;
 
@@ -883,7 +889,8 @@ void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
     auto t0 = std::chrono::steady_clock::now();
 
     LOG_INFO("Flushing %zu deferred shader compilations (%zu unique)...",
-             s_pendingOutputs.size(), s_asyncCompilations.size());
+             s_pendingOutputs.size(),
+             s_asyncCompilations.size());
 
     std::set<std::string> saved_to_disk;
     for (auto& pending : s_pendingOutputs) {
@@ -909,7 +916,8 @@ void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
     auto t1 = std::chrono::steady_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
     LOG_INFO("Shader compilation complete: %zu unique shaders in %lld ms",
-             saved_to_disk.size(), (long long)ms);
+             saved_to_disk.size(),
+             (long long)ms);
 
     s_pendingOutputs.clear();
     s_asyncCompilations.clear();

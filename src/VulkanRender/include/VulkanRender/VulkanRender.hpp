@@ -35,9 +35,9 @@ public:
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
 
     ExSwapchain* exSwapchain() const;
-    bool inited() const;
-    bool deviceLost() const;
-    bool hdrContent() const;
+    bool         inited() const;
+    bool         deviceLost() const;
+    bool         hdrContent() const;
     // Update FinPass tonemap state to match the scene's HDR intent. Forces FinPass
     // to re-prepare on next compileRenderGraph if the state changes.
     void setSceneHdrContent(bool hdr);

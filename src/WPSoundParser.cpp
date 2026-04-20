@@ -48,13 +48,15 @@ public:
         bool         startsilent { false };
     };
     WPSoundStream(const std::vector<std::string>& paths, fs::VFS& vfs, Config c)
-        : vfs(vfs), m_config(c), m_soundPaths(paths),
+        : vfs(vfs),
+          m_config(c),
+          m_soundPaths(paths),
           m_runtimeVolume(c.volume),
           m_state(c.startsilent ? StreamState::Stopped : StreamState::Playing) {};
     virtual ~WPSoundStream() = default;
 
     // Thread-safe volume update (called from QML thread via script evaluation)
-    void SetVolume(float v) { m_runtimeVolume.store(v, std::memory_order_relaxed); }
+    void  SetVolume(float v) { m_runtimeVolume.store(v, std::memory_order_relaxed); }
     float GetVolume() const { return m_runtimeVolume.load(std::memory_order_relaxed); }
 
     // Thread-safe playback control (called from QML thread via SceneScript)
@@ -67,12 +69,8 @@ public:
         }
         m_state.store(StreamState::Playing, std::memory_order_release);
     }
-    void Stop() {
-        m_state.store(StreamState::Stopped, std::memory_order_release);
-    }
-    void Pause() {
-        m_state.store(StreamState::Paused, std::memory_order_release);
-    }
+    void Stop() { m_state.store(StreamState::Stopped, std::memory_order_release); }
+    void Pause() { m_state.store(StreamState::Paused, std::memory_order_release); }
     bool IsPlaying() const {
         return m_state.load(std::memory_order_acquire) == StreamState::Playing;
     }
@@ -166,9 +164,11 @@ public:
     };
     void PassDesc(const Desc& d) override { m_desc = d; }
     void Switch() {
-        std::string path   = m_soundPaths[NextIndex()];
+        std::string path = m_soundPaths[NextIndex()];
         LOG_INFO("audio Switch: loading '%s' (channels=%u, sampleRate=%u)",
-                 path.c_str(), m_desc.channels, m_desc.sampleRate);
+                 path.c_str(),
+                 m_desc.channels,
+                 m_desc.sampleRate);
         auto stream = vfs.Open("/assets/" + path);
         if (! stream) {
             LOG_ERROR("audio file not found: %s", path.c_str());
@@ -179,7 +179,7 @@ public:
     }
     uint32_t NextIndex() {
         bool isRandom = (m_config.mode == PlaybackMode::Random);
-        m_curIndex = NextSoundIndex(m_curIndex, (uint32_t)m_soundPaths.size(), isRandom, m_rng);
+        m_curIndex    = NextSoundIndex(m_curIndex, (uint32_t)m_soundPaths.size(), isRandom, m_rng);
         return m_curIndex;
     }
 
@@ -198,7 +198,7 @@ private:
     std::atomic<float>             m_runtimeVolume;
     std::atomic<StreamState>       m_state;
     std::atomic<bool>              m_needsReload { false };
-    std::mt19937                   m_rng { std::random_device{}() };
+    std::mt19937                   m_rng { std::random_device {}() };
     uint64_t                       m_delaySamples { 0 };
 };
 
@@ -208,14 +208,19 @@ WPSoundStream* WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& 
 
     // Skip sound objects with zero volume (e.g. click sounds with default volume=0)
     // But allow startsilent sounds through (they'll be played later via script)
-    if (vol <= 0.001f && !obj.hasVolumeScript && !obj.startsilent) {
-        LOG_INFO("sound '%s': skipped (volume=%.3f, no script, not startsilent)", obj.name.c_str(), vol);
+    if (vol <= 0.001f && ! obj.hasVolumeScript && ! obj.startsilent) {
+        LOG_INFO(
+            "sound '%s': skipped (volume=%.3f, no script, not startsilent)", obj.name.c_str(), vol);
         return nullptr;
     }
 
     LOG_INFO("sound '%s': volume=%.3f hasScript=%d mode=%s startsilent=%d files=%zu",
-             obj.name.c_str(), vol, (int)obj.hasVolumeScript,
-             obj.playbackmode.c_str(), (int)obj.startsilent, obj.sound.size());
+             obj.name.c_str(),
+             vol,
+             (int)obj.hasVolumeScript,
+             obj.playbackmode.c_str(),
+             (int)obj.startsilent,
+             obj.sound.size());
 
     WPSoundStream::Config config { .maxtime     = obj.maxtime,
                                    .mintime     = obj.mintime,
@@ -223,7 +228,7 @@ WPSoundStream* WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& 
                                    .mode        = ToPlaybackMode(obj.playbackmode),
                                    .startsilent = obj.startsilent };
 
-    auto ss = std::make_unique<WPSoundStream>(obj.sound, vfs, config);
+    auto           ss     = std::make_unique<WPSoundStream>(obj.sound, vfs, config);
     WPSoundStream* rawPtr = ss.get();
     sm.MountStream(std::move(ss));
     return rawPtr;

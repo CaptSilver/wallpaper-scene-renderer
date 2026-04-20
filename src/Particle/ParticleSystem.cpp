@@ -24,9 +24,7 @@ void ParticleInstance::InitTrails(u32 trail_capacity, float trail_max_age) {
     m_trail_max_age  = trail_max_age;
 }
 
-std::vector<ParticleTrailHistory>& ParticleInstance::TrailHistories() {
-    return m_trail_histories;
-}
+std::vector<ParticleTrailHistory>& ParticleInstance::TrailHistories() { return m_trail_histories; }
 
 u32 ParticleInstance::TrailCapacity() const { return m_trail_capacity; }
 
@@ -93,9 +91,9 @@ void ParticleSubSystem::Reset() {
     for (auto& inst : m_instances) {
         if (inst) inst->Refresh();
     }
-    m_time = 0.0;
-    m_burst_done             = false;
-    m_any_alive_since_reset  = false;
+    m_time                  = 0.0;
+    m_burst_done            = false;
+    m_any_alive_since_reset = false;
     for (auto& child : m_children) {
         if (child) child->Reset();
     }
@@ -129,10 +127,9 @@ void ParticleSubSystem::Emitt() {
     // as a pulse of new stars on screen).  A cap of 32ms spreads bursts over
     // at most two render ticks at 60fps target.
     constexpr double kMaxParticleFrameTime = 0.032;
-    double frameTime    = std::min(m_sys.scene.frameTime, kMaxParticleFrameTime);
-    double particleTime = frameTime * m_rate;
+    double           frameTime             = std::min(m_sys.scene.frameTime, kMaxParticleFrameTime);
+    double           particleTime          = frameTime * m_rate;
     m_time += particleTime;
-
 
     if (m_spawn_type == SpawnType::STATIC) {
         if (m_instances.empty()) {
@@ -196,7 +193,8 @@ void ParticleSubSystem::Emitt() {
         }
 
         // event_death is death when no live particles left
-        if (m_spawn_type == SpawnType::EVENT_DEATH && inst->IsNoLiveParticle() && ! inst->ParticlesVec().empty()) {
+        if (m_spawn_type == SpawnType::EVENT_DEATH && inst->IsNoLiveParticle() &&
+            ! inst->ParticlesVec().empty()) {
             inst->SetDeath(true);
         }
 
@@ -281,7 +279,10 @@ void ParticleSubSystem::Emitt() {
             static int s_trail_log_counter = 0;
             if (++s_trail_log_counter % 6000 == 1 && alive_count > 0) {
                 LOG_INFO("spritetrail: alive=%zu renderable=%zu capacity=%u particles=%zu",
-                         alive_count, trail_count, m_trail_capacity, particles.size());
+                         alive_count,
+                         trail_count,
+                         m_trail_capacity,
+                         particles.size());
             }
         }
     }
@@ -301,8 +302,10 @@ void ParticleSubSystem::Emitt() {
             break;
         }
     }
-    if (any_alive) m_any_alive_since_reset = true;
-    else if (m_any_alive_since_reset && ! m_burst_done) m_burst_done = true;
+    if (any_alive)
+        m_any_alive_since_reset = true;
+    else if (m_any_alive_since_reset && ! m_burst_done)
+        m_burst_done = true;
 
     // Spawner-only particles have no vertex arrays — skip render data generation
     if (m_mesh->VertexCount() > 0) {
@@ -319,7 +322,8 @@ void ParticleSystem::Emitt() {
     static int s_ps_log = 0;
     if (++s_ps_log % 600 == 1) {
         LOG_INFO("ParticleSystem::Emitt: %zu subsystems, elapsed=%f",
-                 subsystems.size(), scene.elapsingTime);
+                 subsystems.size(),
+                 scene.elapsingTime);
     }
     for (auto& el : subsystems) {
         el->Emitt();

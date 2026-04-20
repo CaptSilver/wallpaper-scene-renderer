@@ -9,7 +9,8 @@
 struct mpv_handle;
 struct mpv_render_context;
 
-namespace wallpaper {
+namespace wallpaper
+{
 
 /// Base class for video texture decoders. Provides triple-buffered frame handoff
 /// between decoder and render threads.
@@ -25,7 +26,7 @@ public:
     virtual void play();
     virtual void pause();
     virtual void stop();
-    bool isPlaying() const { return m_playing.load(); }
+    bool         isPlaying() const { return m_playing.load(); }
 
     /// libmpv property queries. Return 0 / no-op when the decoder's mpv handle
     /// isn't yet initialized or the property isn't available yet (pre-frame).
@@ -44,11 +45,11 @@ public:
     const uint8_t* acquireFrame();
     void           releaseFrame();
 
-    int width()  const { return m_width; }
+    int width() const { return m_width; }
     int height() const { return m_height; }
 
 protected:
-    static void onMpvRenderUpdate(void* ctx);
+    static void  onMpvRenderUpdate(void* ctx);
     virtual void renderFrame();
 
     int    m_width;
@@ -59,16 +60,16 @@ protected:
     mpv_render_context* m_renderCtx { nullptr };
 
     // Triple buffer: 0=decode target, 1=ready, 2=read target
-    static constexpr int NUM_BUFFERS = 3;
+    static constexpr int       NUM_BUFFERS = 3;
     std::unique_ptr<uint8_t[]> m_buffers[NUM_BUFFERS];
     std::atomic<int>           m_decodeIdx { 0 };
-    std::atomic<int>           m_readyIdx  { 1 };
-    std::atomic<int>           m_readIdx   { 2 };
-    std::atomic<uint64_t>      m_frameNum  { 0 };
+    std::atomic<int>           m_readyIdx { 1 };
+    std::atomic<int>           m_readIdx { 2 };
+    std::atomic<uint64_t>      m_frameNum { 0 };
     uint64_t                   m_lastReadFrame { 0 };
 
-    std::atomic<bool> m_playing  { false };
-    std::atomic<bool> m_opened   { false };
+    std::atomic<bool> m_playing { false };
+    std::atomic<bool> m_opened { false };
     std::atomic<bool> m_needsRender { false };
     std::mutex        m_renderMutex;
 

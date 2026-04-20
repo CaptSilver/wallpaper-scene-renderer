@@ -113,8 +113,8 @@ inline ImageHeader MakeFallbackHeader() {
 inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
     auto  img_ptr = std::make_shared<Image>();
     auto& img     = *img_ptr;
-    img.key        = name;
-    img.header     = MakeFallbackHeader();
+    img.key       = name;
+    img.header    = MakeFallbackHeader();
 
     Image::Slot slot;
     slot.width  = 1;
@@ -124,8 +124,9 @@ inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
     mipmap.width  = 1;
     mipmap.height = 1;
     mipmap.size   = 4;
-    mipmap.data   = ImageDataPtr(new uint8_t[4] { 255, 255, 255, 255 },
-                                 [](uint8_t* p) { delete[] p; });
+    mipmap.data   = ImageDataPtr(new uint8_t[4] { 255, 255, 255, 255 }, [](uint8_t* p) {
+        delete[] p;
+    });
     slot.mipmaps.push_back(std::move(mipmap));
     img.slots.push_back(std::move(slot));
     return img_ptr;
@@ -149,7 +150,7 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     std::shared_ptr<Image> img_ptr = std::make_shared<Image>();
     auto&                  img     = *img_ptr;
     img.key                        = name;
-    auto pfile = m_vfs->Open(path);
+    auto pfile                     = m_vfs->Open(path);
     if (! pfile) return nullptr;
     auto& file     = *pfile;
     auto  startpos = file.Tell();
@@ -157,9 +158,12 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
 
     {
         LOG_INFO("tex '%s': %dx%d fmt=%s sprite=%d count=%d",
-                 name.c_str(), img.header.width, img.header.height,
+                 name.c_str(),
+                 img.header.width,
+                 img.header.height,
                  ToString(img.header.format).c_str(),
-                 (int)img.header.isSprite, img.header.count);
+                 (int)img.header.isSprite,
+                 img.header.count);
     }
 
     // image
@@ -217,8 +221,8 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 std::memcmp(result.data() + 4, "ftyp", 4) == 0) {
                 // Extract MP4 to temp file for video decoder
                 std::string cacheDir = m_cachePath.empty()
-                    ? std::filesystem::temp_directory_path().string()
-                    : m_cachePath;
+                                           ? std::filesystem::temp_directory_path().string()
+                                           : m_cachePath;
                 std::string videoDir = cacheDir + "/video_tex";
                 std::filesystem::create_directories(videoDir);
                 // Sanitize name for filename
@@ -232,28 +236,34 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                     if (f) {
                         f.write(result.data(), src_size);
                         LOG_INFO("tex '%s' mip[%zu]: extracted MP4 video (%d bytes) to %s",
-                                 name.c_str(), i_mipmap, src_size, videoPath.c_str());
+                                 name.c_str(),
+                                 i_mipmap,
+                                 src_size,
+                                 videoPath.c_str());
                     } else {
                         LOG_ERROR("tex '%s': failed to write video to %s",
-                                  name.c_str(), videoPath.c_str());
+                                  name.c_str(),
+                                  videoPath.c_str());
                     }
                 }
                 img.header.isVideoTexture = true;
                 img.header.videoFilePath  = videoPath;
 
                 // Use black placeholder for initial texture upload
-                i32 raw_size = mipmap.width * mipmap.height * 4;
-                auto buf = std::make_unique<uint8_t[]>((usize)raw_size);
+                i32  raw_size = mipmap.width * mipmap.height * 4;
+                auto buf      = std::make_unique<uint8_t[]>((usize)raw_size);
                 std::memset(buf.get(), 0, (usize)raw_size);
-                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) { delete[] p; });
+                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
+                    delete[] p;
+                });
                 mipmap.size = raw_size;
                 continue;
             }
             // is image container
             if (img.header.extraHeader["texb"].val >= 3 && img.header.type != ImageType::UNKNOWN) {
                 int32_t w, h, n;
-                auto*   data =
-                    stbi_load_from_memory((const unsigned char*)result.data(), src_size, &w, &h, &n, 4);
+                auto*   data = stbi_load_from_memory(
+                    (const unsigned char*)result.data(), src_size, &w, &h, &n, 4);
                 mipmap.data = ImageDataPtr((uint8_t*)data, [](uint8_t* data) {
                     stbi_image_free((unsigned char*)data);
                 });
@@ -261,7 +271,9 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             } else {
                 auto buf = std::make_unique<uint8_t[]>((usize)src_size);
                 std::copy(result.data(), result.data() + src_size, buf.get());
-                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) { delete[] p; });
+                mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
+                    delete[] p;
+                });
             }
             mipmap.size = src_size;
         }
@@ -328,7 +340,8 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
             sf.imageId = file.ReadInt32();
             if (sf.imageId < 0 || (usize)sf.imageId >= imageDatas.size()) {
                 LOG_ERROR("invalid sprite imageId %d (image_count=%zu), skipping sprite",
-                          sf.imageId, imageDatas.size());
+                          sf.imageId,
+                          imageDatas.size());
                 header.isSprite = false;
                 break;
             }

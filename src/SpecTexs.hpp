@@ -32,11 +32,11 @@ constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
 constexpr std::string_view WE_REFLECTION_BLUR { "_rt_Reflection_blur" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
-constexpr std::string_view WE_BLOOM_PREFIX  { "_rt_Bloom_" };
-constexpr std::string_view WE_BLOOM_SCENE   { "_rt_Bloom_Scene" };
+constexpr std::string_view WE_BLOOM_PREFIX { "_rt_Bloom_" };
+constexpr std::string_view WE_BLOOM_SCENE { "_rt_Bloom_Scene" };
 constexpr std::string_view WE_BLOOM_QUARTER { "_rt_Bloom_Quarter" };
-constexpr std::string_view WE_BLOOM_EIGHTH  { "_rt_Bloom_Eighth" };
-constexpr std::string_view WE_BLOOM_RESULT  { "_rt_Bloom_Result" };
+constexpr std::string_view WE_BLOOM_EIGHTH { "_rt_Bloom_Eighth" };
+constexpr std::string_view WE_BLOOM_RESULT { "_rt_Bloom_Result" };
 
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX { "_rt_effect_pingpong_" };
 constexpr std::string_view WE_EFFECT_PPONG_PREFIX_A { "_rt_effect_pingpong_a_" };
@@ -91,11 +91,11 @@ constexpr std::string_view G_PARALLAXPOSITION { "g_ParallaxPosition" };
 constexpr std::string_view G_EYEPOSITION { "g_EyePosition" };
 
 // Audio spectrum uniforms (std140 float arrays with vec4 stride)
-constexpr std::string_view G_AUDIOSPECTRUM16LEFT  { "g_AudioSpectrum16Left" };
+constexpr std::string_view G_AUDIOSPECTRUM16LEFT { "g_AudioSpectrum16Left" };
 constexpr std::string_view G_AUDIOSPECTRUM16RIGHT { "g_AudioSpectrum16Right" };
-constexpr std::string_view G_AUDIOSPECTRUM32LEFT  { "g_AudioSpectrum32Left" };
+constexpr std::string_view G_AUDIOSPECTRUM32LEFT { "g_AudioSpectrum32Left" };
 constexpr std::string_view G_AUDIOSPECTRUM32RIGHT { "g_AudioSpectrum32Right" };
-constexpr std::string_view G_AUDIOSPECTRUM64LEFT  { "g_AudioSpectrum64Left" };
+constexpr std::string_view G_AUDIOSPECTRUM64LEFT { "g_AudioSpectrum64Left" };
 constexpr std::string_view G_AUDIOSPECTRUM64RIGHT { "g_AudioSpectrum64Right" };
 
 constexpr std::string_view SpecTex_Default { "_rt_default" };
@@ -114,7 +114,7 @@ inline std::string GenLinkTex(idx id) { return std::string(SpecTex_Link) + std::
 
 // Per-node offscreen render target for invisible dependency nodes
 constexpr std::string_view WE_OFFSCREEN_RT_PREFIX { "_rt_offscreen_" };
-inline std::string GenOffscreenRT(i32 id) {
+inline std::string         GenOffscreenRT(i32 id) {
     return std::string(WE_OFFSCREEN_RT_PREFIX) + std::to_string(id);
 }
 

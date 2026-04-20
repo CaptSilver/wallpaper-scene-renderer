@@ -93,7 +93,7 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
     // Random initial phase so multiple emitters don't fire in sync
     double burstTimer { a.burstRate > 0 ? Random::get(0.0, (double)a.burstRate) : 0.0 };
     // Start exhausted — no emission until first burst fires
-    u32    batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
+    u32 batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
     return [a, timer, burstTimer, batchEmitted](std::vector<Particle>&       ps,
                                                 std::vector<ParticleInitOp>& inis,
                                                 u32                          maxcount,
@@ -153,7 +153,7 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
     // Random initial phase so multiple emitters don't fire in sync
     double burstTimer { a.burstRate > 0 ? Random::get(0.0, (double)a.burstRate) : 0.0 };
     // Start exhausted — no emission until first burst fires
-    u32    batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
+    u32 batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
     return [a, timer, burstTimer, batchEmitted](std::vector<Particle>&       ps,
                                                 std::vector<ParticleInitOp>& inis,
                                                 u32                          maxcount,

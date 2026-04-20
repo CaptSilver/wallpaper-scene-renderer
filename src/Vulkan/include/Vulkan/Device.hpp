@@ -18,20 +18,21 @@ public:
     ~Device();
 
     static bool Create(Instance&, std::span<const Extension> exts, VkExtent2D extent, Device&);
-    static bool CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts, VkSurfaceKHR surface);
+    static bool CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts,
+                         VkSurfaceKHR surface);
 
     void Destroy();
 
-    const auto& graphics_queue() const { return m_graphics_queue; }
-    const auto& present_queue() const { return m_present_queue; }
-    const auto& device() const { return m_device; }
-    const auto& handle() const { return m_device; }
-    const auto& gpu() const { return m_gpu; }
-    const auto& limits() const { return m_limits; }
-    float       maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }
+    const auto&           graphics_queue() const { return m_graphics_queue; }
+    const auto&           present_queue() const { return m_present_queue; }
+    const auto&           device() const { return m_device; }
+    const auto&           handle() const { return m_device; }
+    const auto&           gpu() const { return m_gpu; }
+    const auto&           limits() const { return m_limits; }
+    float                 maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }
     VkSampleCountFlagBits maxMSAASamples() const {
-        VkSampleCountFlags counts = m_limits.framebufferColorSampleCounts &
-                                     m_limits.framebufferDepthSampleCounts;
+        VkSampleCountFlags counts =
+            m_limits.framebufferColorSampleCounts & m_limits.framebufferDepthSampleCounts;
         if (counts & VK_SAMPLE_COUNT_8_BIT) return VK_SAMPLE_COUNT_8_BIT;
         if (counts & VK_SAMPLE_COUNT_4_BIT) return VK_SAMPLE_COUNT_4_BIT;
         if (counts & VK_SAMPLE_COUNT_2_BIT) return VK_SAMPLE_COUNT_2_BIT;

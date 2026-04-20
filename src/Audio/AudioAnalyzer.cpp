@@ -14,16 +14,16 @@ using namespace wallpaper::audio;
 
 namespace
 {
-constexpr uint32_t FFT_SIZE       = 512;  // power of 2, ~10.7ms at 48kHz
-constexpr uint32_t NUM_BINS       = FFT_SIZE / 2 + 1; // 257
-constexpr uint32_t NUM_BANDS_64   = 64;
-constexpr uint32_t NUM_BANDS_32   = 32;
-constexpr uint32_t NUM_BANDS_16   = 16;
-constexpr uint32_t RING_SIZE      = 8192; // ~85ms at 48kHz stereo
+constexpr uint32_t FFT_SIZE         = 512;              // power of 2, ~10.7ms at 48kHz
+constexpr uint32_t NUM_BINS         = FFT_SIZE / 2 + 1; // 257
+constexpr uint32_t NUM_BANDS_64     = 64;
+constexpr uint32_t NUM_BANDS_32     = 32;
+constexpr uint32_t NUM_BANDS_16     = 16;
+constexpr uint32_t RING_SIZE        = 8192; // ~85ms at 48kHz stereo
 constexpr float    SMOOTHING_ATTACK = 0.8f;
 constexpr float    SMOOTHING_DECAY  = 0.4f;
-constexpr float    MIN_FREQ       = 20.0f;
-constexpr float    MAX_FREQ       = 20000.0f;
+constexpr float    MIN_FREQ         = 20.0f;
+constexpr float    MAX_FREQ         = 20000.0f;
 // Gain applied to raw FFT magnitudes to bring them into a useful [0,1] range.
 // Raw FFT gives ~0.01-0.05 for typical music; WE expects ~0.3-0.8 peaks.
 // We previously used 15.0 with a hard min()-clamp to 1.0, which saturated on
@@ -33,7 +33,7 @@ constexpr float    MAX_FREQ       = 20000.0f;
 // glyphs looked corrupted / disappeared.  Dropping gain + using a smooth
 // saturation keeps peaks around 0.3–0.6 on louder music (never hits 1.0) so
 // audio-reactive effects stay musical without shredding text layers.
-constexpr float    SPECTRUM_GAIN  = 4.0f;
+constexpr float SPECTRUM_GAIN = 4.0f;
 
 // Precompute Hanning window coefficients
 struct HanningWindow {
@@ -56,9 +56,9 @@ struct BandMapping {
         float logMin     = std::log10(MIN_FREQ);
         float logMax     = std::log10(MAX_FREQ);
         for (uint32_t b = 0; b <= NUM_BANDS_64; b++) {
-            float logFreq = logMin + (logMax - logMin) * (float)b / (float)NUM_BANDS_64;
-            float freq    = std::pow(10.0f, logFreq);
-            uint32_t bin  = (uint32_t)(freq / freqPerBin + 0.5f);
+            float    logFreq = logMin + (logMax - logMin) * (float)b / (float)NUM_BANDS_64;
+            float    freq    = std::pow(10.0f, logFreq);
+            uint32_t bin     = (uint32_t)(freq / freqPerBin + 0.5f);
             if (bin >= NUM_BINS) bin = NUM_BINS - 1;
             edges[b] = bin;
         }
@@ -81,13 +81,13 @@ struct AudioAnalyzer::Impl {
     uint32_t                     readPos { 0 };
 
     // FFT state
-    kiss_fftr_cfg fftCfg { nullptr };
-    std::array<float, FFT_SIZE>       windowedL {};
-    std::array<float, FFT_SIZE>       windowedR {};
+    kiss_fftr_cfg                      fftCfg { nullptr };
+    std::array<float, FFT_SIZE>        windowedL {};
+    std::array<float, FFT_SIZE>        windowedR {};
     std::array<kiss_fft_cpx, NUM_BINS> freqL {};
     std::array<kiss_fft_cpx, NUM_BINS> freqR {};
-    std::array<float, NUM_BINS>       magL {};
-    std::array<float, NUM_BINS>       magR {};
+    std::array<float, NUM_BINS>        magL {};
+    std::array<float, NUM_BINS>        magR {};
 
     // Band mapping
     BandMapping bandMap {};
@@ -175,7 +175,7 @@ void AudioAnalyzer::Process() {
 
     // Deinterleave + apply Hanning window
     for (uint32_t i = 0; i < FFT_SIZE; i++) {
-        uint32_t idx = (rp + i * 2) % RING_SIZE;
+        uint32_t idx   = (rp + i * 2) % RING_SIZE;
         d.windowedL[i] = d.ring[idx] * g_hanning.w[i];
         d.windowedR[i] = d.ring[(idx + 1) % RING_SIZE] * g_hanning.w[i];
     }
@@ -205,7 +205,7 @@ void AudioAnalyzer::Process() {
             sumL += d.magL[k];
             sumR += d.magR[k];
         }
-        float n    = (float)(hi - lo);
+        float n = (float)(hi - lo);
         // Gain + soft saturate for perceptual scaling: raw FFT magnitudes are
         // small (0.01-0.05 for typical music); apply gain and sqrt for
         // perceptual loudness.  We then pass through x/(1+x) for a smooth
@@ -256,36 +256,25 @@ void AudioAnalyzer::Process() {
     d.hasData = true;
 }
 
-std::span<const float> AudioAnalyzer::GetSpectrum16Left() const {
-    return m_impl->padL16;
-}
-std::span<const float> AudioAnalyzer::GetSpectrum16Right() const {
-    return m_impl->padR16;
-}
-std::span<const float> AudioAnalyzer::GetSpectrum32Left() const {
-    return m_impl->padL32;
-}
-std::span<const float> AudioAnalyzer::GetSpectrum32Right() const {
-    return m_impl->padR32;
-}
-std::span<const float> AudioAnalyzer::GetSpectrum64Left() const {
-    return m_impl->padL64;
-}
-std::span<const float> AudioAnalyzer::GetSpectrum64Right() const {
-    return m_impl->padR64;
-}
+std::span<const float> AudioAnalyzer::GetSpectrum16Left() const { return m_impl->padL16; }
+std::span<const float> AudioAnalyzer::GetSpectrum16Right() const { return m_impl->padR16; }
+std::span<const float> AudioAnalyzer::GetSpectrum32Left() const { return m_impl->padL32; }
+std::span<const float> AudioAnalyzer::GetSpectrum32Right() const { return m_impl->padR32; }
+std::span<const float> AudioAnalyzer::GetSpectrum64Left() const { return m_impl->padL64; }
+std::span<const float> AudioAnalyzer::GetSpectrum64Right() const { return m_impl->padR64; }
 
 std::span<const float> AudioAnalyzer::GetRawSpectrum(int resolution, int channel) const {
     auto& d = *m_impl;
     // channel: 0=left, 1=right
     switch (resolution) {
-    case 16: return channel == 0 ? std::span<const float>(d.rawL16) : std::span<const float>(d.rawR16);
-    case 32: return channel == 0 ? std::span<const float>(d.rawL32) : std::span<const float>(d.rawR32);
-    case 64: return channel == 0 ? std::span<const float>(d.rawL64) : std::span<const float>(d.rawR64);
+    case 16:
+        return channel == 0 ? std::span<const float>(d.rawL16) : std::span<const float>(d.rawR16);
+    case 32:
+        return channel == 0 ? std::span<const float>(d.rawL32) : std::span<const float>(d.rawR32);
+    case 64:
+        return channel == 0 ? std::span<const float>(d.rawL64) : std::span<const float>(d.rawR64);
     default: return {};
     }
 }
 
-bool AudioAnalyzer::HasData() const {
-    return m_impl->hasData;
-}
+bool AudioAnalyzer::HasData() const { return m_impl->hasData; }

@@ -437,8 +437,8 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
 
     img_slots.slots.resize(image.slots.size());
 
-    auto& sam           = image.header.sample;
-    float maxAniso      = m_device.maxAnisotropy();
+    auto& sam      = image.header.sample;
+    float maxAniso = m_device.maxAnisotropy();
 
     for (usize i = 0; i < image.slots.size(); i++) {
         auto& image_paras   = img_slots.slots[i];
@@ -448,7 +448,7 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         // check data
         if (! image_slot) return {};
 
-        bool useAniso = (sam.magFilter == TextureFilter::LINEAR) && maxAniso > 1.0f;
+        bool                useAniso = (sam.magFilter == TextureFilter::LINEAR) && maxAniso > 1.0f;
         VkSamplerCreateInfo sampler_info {
             .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
             .pNext                   = nullptr,

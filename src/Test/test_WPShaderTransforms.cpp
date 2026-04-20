@@ -6,89 +6,105 @@
 // ===========================================================================
 
 TEST_SUITE("regexTransformAll") {
+    TEST_CASE("zero matches returns 0 and text unchanged") {
+        std::string text = "hello world";
+        std::regex  re("MISSING");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("X");
+        });
+        CHECK(count == 0);
+        CHECK(text == "hello world");
+    }
 
-TEST_CASE("zero matches returns 0 and text unchanged") {
-    std::string text = "hello world";
-    std::regex  re("MISSING");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("X"); });
-    CHECK(count == 0);
-    CHECK(text == "hello world");
-}
+    TEST_CASE("single match at start") {
+        std::string text = "AAA BBB";
+        std::regex  re("AAA");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("XX");
+        });
+        CHECK(count == 1);
+        CHECK(text == "XX BBB");
+    }
 
-TEST_CASE("single match at start") {
-    std::string text = "AAA BBB";
-    std::regex  re("AAA");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("XX"); });
-    CHECK(count == 1);
-    CHECK(text == "XX BBB");
-}
+    TEST_CASE("single match at end") {
+        std::string text = "AAA BBB";
+        std::regex  re("BBB");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("YY");
+        });
+        CHECK(count == 1);
+        CHECK(text == "AAA YY");
+    }
 
-TEST_CASE("single match at end") {
-    std::string text = "AAA BBB";
-    std::regex  re("BBB");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("YY"); });
-    CHECK(count == 1);
-    CHECK(text == "AAA YY");
-}
+    TEST_CASE("single match in middle") {
+        std::string text = "aXb";
+        std::regex  re("X");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("---");
+        });
+        CHECK(count == 1);
+        CHECK(text == "a---b");
+    }
 
-TEST_CASE("single match in middle") {
-    std::string text = "aXb";
-    std::regex  re("X");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("---"); });
-    CHECK(count == 1);
-    CHECK(text == "a---b");
-}
+    TEST_CASE("two matches preserve inter-match text exactly") {
+        std::string text = "prefixAAmiddleBBsuffix";
+        std::regex  re("(AA|BB)");
+        int         count = regexTransformAll(text, re, [](const std::smatch& m) {
+            return "[" + m[0].str() + "]";
+        });
+        CHECK(count == 2);
+        CHECK(text == "prefix[AA]middle[BB]suffix");
+    }
 
-TEST_CASE("two matches preserve inter-match text exactly") {
-    std::string text = "prefixAAmiddleBBsuffix";
-    std::regex  re("(AA|BB)");
-    int count = regexTransformAll(text, re,
-        [](const std::smatch& m) { return "[" + m[0].str() + "]"; });
-    CHECK(count == 2);
-    CHECK(text == "prefix[AA]middle[BB]suffix");
-}
+    TEST_CASE("three adjacent matches") {
+        std::string text = "aaa";
+        std::regex  re("a");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("bb");
+        });
+        CHECK(count == 3);
+        CHECK(text == "bbbbbb");
+    }
 
-TEST_CASE("three adjacent matches") {
-    std::string text = "aaa";
-    std::regex  re("a");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("bb"); });
-    CHECK(count == 3);
-    CHECK(text == "bbbbbb");
-}
+    TEST_CASE("replacer uses match groups") {
+        std::string text = "x=1; y=2; z=3;";
+        std::regex  re("(\\w+)=(\\d+)");
+        int         count = regexTransformAll(text, re, [](const std::smatch& m) {
+            return m[1].str() + " is " + m[2].str();
+        });
+        CHECK(count == 3);
+        CHECK(text == "x is 1; y is 2; z is 3;");
+    }
 
-TEST_CASE("replacer uses match groups") {
-    std::string text = "x=1; y=2; z=3;";
-    std::regex  re("(\\w+)=(\\d+)");
-    int count = regexTransformAll(text, re,
-        [](const std::smatch& m) { return m[1].str() + " is " + m[2].str(); });
-    CHECK(count == 3);
-    CHECK(text == "x is 1; y is 2; z is 3;");
-}
+    TEST_CASE("match at position 0 then later match") {
+        std::string text = "AB_CD_EF";
+        std::regex  re("(AB|EF)");
+        int         count = regexTransformAll(text, re, [](const std::smatch& m) {
+            return "[" + m[0].str() + "]";
+        });
+        CHECK(count == 2);
+        CHECK(text == "[AB]_CD_[EF]");
+    }
 
-TEST_CASE("match at position 0 then later match") {
-    std::string text = "AB_CD_EF";
-    std::regex  re("(AB|EF)");
-    int count = regexTransformAll(text, re,
-        [](const std::smatch& m) { return "[" + m[0].str() + "]"; });
-    CHECK(count == 2);
-    CHECK(text == "[AB]_CD_[EF]");
-}
+    TEST_CASE("replacement shorter than match") {
+        std::string text = "longword short longword";
+        std::regex  re("longword");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("s");
+        });
+        CHECK(count == 2);
+        CHECK(text == "s short s");
+    }
 
-TEST_CASE("replacement shorter than match") {
-    std::string text = "longword short longword";
-    std::regex  re("longword");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("s"); });
-    CHECK(count == 2);
-    CHECK(text == "s short s");
-}
-
-TEST_CASE("replacement longer than match") {
-    std::string text = "a b a";
-    std::regex  re("a");
-    int count = regexTransformAll(text, re, [](const std::smatch&) { return std::string("XXXX"); });
-    CHECK(count == 2);
-    CHECK(text == "XXXX b XXXX");
-}
+    TEST_CASE("replacement longer than match") {
+        std::string text = "a b a";
+        std::regex  re("a");
+        int         count = regexTransformAll(text, re, [](const std::smatch&) {
+            return std::string("XXXX");
+        });
+        CHECK(count == 2);
+        CHECK(text == "XXXX b XXXX");
+    }
 
 } // TEST_SUITE regexTransformAll
 
@@ -97,32 +113,23 @@ TEST_CASE("replacement longer than match") {
 // ===========================================================================
 
 TEST_SUITE("findMatchingParen") {
+    TEST_CASE("simple pair") { CHECK(findMatchingParen("(abc)", 0) == 5); }
 
-TEST_CASE("simple pair") {
-    CHECK(findMatchingParen("(abc)", 0) == 5);
-}
+    TEST_CASE("nested") { CHECK(findMatchingParen("(a(b)c)", 0) == 7); }
 
-TEST_CASE("nested") {
-    CHECK(findMatchingParen("(a(b)c)", 0) == 7);
-}
+    TEST_CASE("deeply nested") { CHECK(findMatchingParen("(((x)))", 0) == 7); }
 
-TEST_CASE("deeply nested") {
-    CHECK(findMatchingParen("(((x)))", 0) == 7);
-}
+    TEST_CASE("returns npos for unmatched") {
+        CHECK(findMatchingParen("(abc", 0) == std::string::npos);
+    }
 
-TEST_CASE("returns npos for unmatched") {
-    CHECK(findMatchingParen("(abc", 0) == std::string::npos);
-}
+    TEST_CASE("inner open paren") {
+        //  01234567
+        //  xx(a(b))
+        CHECK(findMatchingParen("xx(a(b))", 2) == 8);
+    }
 
-TEST_CASE("inner open paren") {
-    //  01234567
-    //  xx(a(b))
-    CHECK(findMatchingParen("xx(a(b))", 2) == 8);
-}
-
-TEST_CASE("empty parens") {
-    CHECK(findMatchingParen("()", 0) == 2);
-}
+    TEST_CASE("empty parens") { CHECK(findMatchingParen("()", 0) == 2); }
 
 } // TEST_SUITE findMatchingParen
 
@@ -131,30 +138,17 @@ TEST_CASE("empty parens") {
 // ===========================================================================
 
 TEST_SUITE("skipWhitespaceAndSemicolon") {
+    TEST_CASE("no whitespace or semicolon") { CHECK(skipWhitespaceAndSemicolon("abc", 0) == 0); }
 
-TEST_CASE("no whitespace or semicolon") {
-    CHECK(skipWhitespaceAndSemicolon("abc", 0) == 0);
-}
+    TEST_CASE("spaces then semicolon") { CHECK(skipWhitespaceAndSemicolon("  ;rest", 0) == 3); }
 
-TEST_CASE("spaces then semicolon") {
-    CHECK(skipWhitespaceAndSemicolon("  ;rest", 0) == 3);
-}
+    TEST_CASE("tab then semicolon") { CHECK(skipWhitespaceAndSemicolon("\t;x", 0) == 2); }
 
-TEST_CASE("tab then semicolon") {
-    CHECK(skipWhitespaceAndSemicolon("\t;x", 0) == 2);
-}
+    TEST_CASE("just semicolon") { CHECK(skipWhitespaceAndSemicolon(";", 0) == 1); }
 
-TEST_CASE("just semicolon") {
-    CHECK(skipWhitespaceAndSemicolon(";", 0) == 1);
-}
+    TEST_CASE("at end of string") { CHECK(skipWhitespaceAndSemicolon("abc", 3) == 3); }
 
-TEST_CASE("at end of string") {
-    CHECK(skipWhitespaceAndSemicolon("abc", 3) == 3);
-}
-
-TEST_CASE("spaces without semicolon") {
-    CHECK(skipWhitespaceAndSemicolon("   x", 0) == 3);
-}
+    TEST_CASE("spaces without semicolon") { CHECK(skipWhitespaceAndSemicolon("   x", 0) == 3); }
 
 } // TEST_SUITE skipWhitespaceAndSemicolon
 
@@ -163,50 +157,49 @@ TEST_CASE("spaces without semicolon") {
 // ===========================================================================
 
 TEST_SUITE("findEnclosingCallInfo") {
+    TEST_CASE("simple function first arg") {
+        // foo(X)  — X at position 4
+        auto info = findEnclosingCallInfo("foo(X)", 4);
+        CHECK(info.funcName == "foo");
+        CHECK(info.argIndex == 0);
+    }
 
-TEST_CASE("simple function first arg") {
-    // foo(X)  — X at position 4
-    auto info = findEnclosingCallInfo("foo(X)", 4);
-    CHECK(info.funcName == "foo");
-    CHECK(info.argIndex == 0);
-}
+    TEST_CASE("second arg after comma") {
+        // func(a, X)  — X at position 8
+        auto info = findEnclosingCallInfo("func(a, X)", 8);
+        CHECK(info.funcName == "func");
+        CHECK(info.argIndex == 1);
+    }
 
-TEST_CASE("second arg after comma") {
-    // func(a, X)  — X at position 8
-    auto info = findEnclosingCallInfo("func(a, X)", 8);
-    CHECK(info.funcName == "func");
-    CHECK(info.argIndex == 1);
-}
+    TEST_CASE("third arg") {
+        // f(a, b, X)  — X at position 8
+        auto info = findEnclosingCallInfo("f(a, b, X)", 8);
+        CHECK(info.funcName == "f");
+        CHECK(info.argIndex == 2);
+    }
 
-TEST_CASE("third arg") {
-    // f(a, b, X)  — X at position 8
-    auto info = findEnclosingCallInfo("f(a, b, X)", 8);
-    CHECK(info.funcName == "f");
-    CHECK(info.argIndex == 2);
-}
+    TEST_CASE("nested paren in earlier arg") {
+        // f(g(1,2), X) — commas inside g() don't count
+        auto info = findEnclosingCallInfo("f(g(1,2), X)", 10);
+        CHECK(info.funcName == "f");
+        CHECK(info.argIndex == 1);
+    }
 
-TEST_CASE("nested paren in earlier arg") {
-    // f(g(1,2), X) — commas inside g() don't count
-    auto info = findEnclosingCallInfo("f(g(1,2), X)", 10);
-    CHECK(info.funcName == "f");
-    CHECK(info.argIndex == 1);
-}
+    TEST_CASE("not inside a function call") {
+        auto info = findEnclosingCallInfo("just text X", 10);
+        CHECK(info.funcName == "");
+        CHECK(info.argIndex == -1);
+    }
 
-TEST_CASE("not inside a function call") {
-    auto info = findEnclosingCallInfo("just text X", 10);
-    CHECK(info.funcName == "");
-    CHECK(info.argIndex == -1);
-}
+    TEST_CASE("function name with underscores") {
+        auto info = findEnclosingCallInfo("my_func(X)", 8);
+        CHECK(info.funcName == "my_func");
+    }
 
-TEST_CASE("function name with underscores") {
-    auto info = findEnclosingCallInfo("my_func(X)", 8);
-    CHECK(info.funcName == "my_func");
-}
-
-TEST_CASE("space before paren") {
-    auto info = findEnclosingCallInfo("func (X)", 6);
-    CHECK(info.funcName == "func");
-}
+    TEST_CASE("space before paren") {
+        auto info = findEnclosingCallInfo("func (X)", 6);
+        CHECK(info.funcName == "func");
+    }
 
 } // TEST_SUITE findEnclosingCallInfo
 
@@ -215,38 +208,35 @@ TEST_CASE("space before paren") {
 // ===========================================================================
 
 TEST_SUITE("NeedsFlatDecoration") {
+    TEST_CASE("int type requires flat") { CHECK(NeedsFlatDecoration("in int v_Id;") == true); }
 
-TEST_CASE("int type requires flat") {
-    CHECK(NeedsFlatDecoration("in int v_Id;") == true);
-}
+    TEST_CASE("uint type requires flat") {
+        CHECK(NeedsFlatDecoration("out uint v_Flags;") == true);
+    }
 
-TEST_CASE("uint type requires flat") {
-    CHECK(NeedsFlatDecoration("out uint v_Flags;") == true);
-}
+    TEST_CASE("ivec3 type requires flat") {
+        CHECK(NeedsFlatDecoration("in ivec3 v_Indices;") == true);
+    }
 
-TEST_CASE("ivec3 type requires flat") {
-    CHECK(NeedsFlatDecoration("in ivec3 v_Indices;") == true);
-}
+    TEST_CASE("uvec2 type requires flat") {
+        CHECK(NeedsFlatDecoration("in uvec2 v_Pair;") == true);
+    }
 
-TEST_CASE("uvec2 type requires flat") {
-    CHECK(NeedsFlatDecoration("in uvec2 v_Pair;") == true);
-}
+    TEST_CASE("float type does NOT need flat") {
+        CHECK(NeedsFlatDecoration("in float v_Alpha;") == false);
+    }
 
-TEST_CASE("float type does NOT need flat") {
-    CHECK(NeedsFlatDecoration("in float v_Alpha;") == false);
-}
+    TEST_CASE("vec4 type does NOT need flat") {
+        CHECK(NeedsFlatDecoration("out vec4 v_Color;") == false);
+    }
 
-TEST_CASE("vec4 type does NOT need flat") {
-    CHECK(NeedsFlatDecoration("out vec4 v_Color;") == false);
-}
+    TEST_CASE("already flat-qualified is skipped") {
+        CHECK(NeedsFlatDecoration("flat in int v_Id;") == false);
+    }
 
-TEST_CASE("already flat-qualified is skipped") {
-    CHECK(NeedsFlatDecoration("flat in int v_Id;") == false);
-}
-
-TEST_CASE("flat after type keyword is skipped") {
-    CHECK(NeedsFlatDecoration("in flat uint v_Flags;") == false);
-}
+    TEST_CASE("flat after type keyword is skipped") {
+        CHECK(NeedsFlatDecoration("in flat uint v_Flags;") == false);
+    }
 
 } // TEST_SUITE
 
@@ -255,796 +245,798 @@ TEST_CASE("flat after type keyword is skipped") {
 // ===========================================================================
 
 TEST_SUITE("FixImplicitConversions") {
-
-// --- Pattern 1: float VAR = int(...) → int VAR ---
-
-TEST_CASE("float var assigned int constructor becomes int var") {
-    std::string in  = "float x = int(foo);";
-    std::string out = "int x = int(foo);";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("float var with float assignment unchanged") {
-    std::string in = "float x = 3.14;";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-// --- Pattern 2: uint modulo — 3 sub-patterns ---
-
-TEST_CASE("uint = (word + lit) % N") {
-    std::string in  = "uint b = (a + 1) % 32;";
-    std::string out = "uint b = uint((int(a) + 1) % 32);";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("uint = (word - lit) % N") {
-    std::string in  = "uint b = (a - 3) % 16;";
-    std::string out = "uint b = uint((int(a) - 3) % 16);";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("uint = word % N") {
-    std::string in  = "uint idx = val % 8;";
-    std::string out = "uint idx = uint(int(val) % 8);";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("general word % N") {
-    std::string in  = "x = foo % 10;";
-    std::string out = "x = int(foo) % 10;";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-// --- Pattern 3: vec2→vec4 upgrade for out-of-range swizzle ---
-
-TEST_CASE("vec2 upgraded to vec4 when .z accessed") {
-    std::string in  = "vec2 tc;\nfloat z = tc.z;";
-    auto result = FixImplicitConversions(in);
-    // Declaration should become vec4
-    CHECK(result.find("vec4 tc;") != std::string::npos);
-}
-
-TEST_CASE("vec2 upgraded to vec4 when .w accessed") {
-    std::string in  = "vec2 uv;\nfloat w = uv.w;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec4 uv;") != std::string::npos);
-}
-
-TEST_CASE("vec2 with only .xy access NOT upgraded") {
-    std::string in = "vec2 tc;\nfloat x = tc.x;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec2 tc;") != std::string::npos);
-}
-
-TEST_CASE("vec3 upgraded to vec4 when .w accessed") {
-    std::string in  = "vec3 pos;\nfloat w = pos.w;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec4 pos;") != std::string::npos);
-}
-
-TEST_CASE("vec3 with only .xyz access NOT upgraded") {
-    std::string in = "vec3 pos;\nfloat z = pos.z;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec3 pos;") != std::string::npos);
-}
-
-TEST_CASE("vec2 upgraded to vec4 with texture coord fixup") {
-    std::string in  = "vec2 tc;\nfloat z = tc.z;\nvec4 s = texture(g_Tex, tc);";
-    auto result = FixImplicitConversions(in);
-    // After upgrade, texture() call should get .xy swizzle
-    CHECK(result.find("texture(g_Tex, tc.xy)") != std::string::npos);
-}
-
-// --- Pattern 4: vec4→vec2, vec4→vec3, vec3→vec2 direct truncation ---
-
-TEST_CASE("vec2 = vec4 gets .xy swizzle") {
-    std::string in  = "vec2 a;\nvec4 b;\na = b;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a = b.xy;") != std::string::npos);
-}
-
-TEST_CASE("vec3 = vec4 gets .xyz swizzle") {
-    std::string in  = "vec3 a;\nvec4 b;\na = b;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a = b.xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec2 = vec3 gets .xy swizzle") {
-    std::string in  = "vec2 a;\nvec3 b;\na = b;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a = b.xy;") != std::string::npos);
-}
-
-TEST_CASE("same-type assignment unchanged") {
-    std::string in = "vec4 a;\nvec4 b;\na = b;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a = b;") != std::string::npos);
-}
-
-// --- Pattern 5: Arithmetic swizzle truncation ---
-
-TEST_CASE("vec2 var + expr.xyzw → truncate to .xy") {
-    std::string in  = "vec2 a = vec2(0);\nvec4 b;\na + b.xyzw;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xy") != std::string::npos);
-}
-
-TEST_CASE("expr.xyz + vec2 var → truncate to .xy") {
-    std::string in  = "vec2 a = vec2(0);\nvec3 b;\nb.xyz + a;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("b.xy + a") != std::string::npos);
-}
-
-TEST_CASE("vec2 var + expr.xyz → truncate 3 to 2") {
-    std::string in  = "vec2 a = vec2(0);\nvec3 b;\na + b.xyz;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xy") != std::string::npos);
-    CHECK(result.find("a + b.xyz") == std::string::npos);
-}
-
-TEST_CASE("truncation preserves surrounding code") {
-    std::string in = "float z = 1.0;\nvec2 uv = vec2(0);\nvec4 c;\nfloat w = uv + c.xyzw;\nfloat q = 2.0;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("uv + c.xy") != std::string::npos);
-    CHECK(result.find("float z = 1.0") != std::string::npos);
-    CHECK(result.find("float q = 2.0") != std::string::npos);
-}
-
-TEST_CASE("multiple truncations in same shader") {
-    std::string in = "vec2 a = vec2(0);\nvec4 b;\na + b.xyzw;\na - b.xyzw;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xy") != std::string::npos);
-    CHECK(result.find("a - b.xy") != std::string::npos);
-}
-
-TEST_CASE("multiple truncations preserve inter-match text exactly") {
-    // Tests that position arithmetic (position()-lastPos, position()+length())
-    // correctly preserves text between matches. If mutated, second match
-    // would corrupt the inter-match text.
-    std::string in = "vec2 a = vec2(0);\nvec4 b;\nint x = 42; a + b.xyzw; int y = 99; a * b.xyz; int z = 7;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("int x = 42; a + b.xy; int y = 99; a * b.xy; int z = 7;") != std::string::npos);
-}
-
-TEST_CASE("reverse truncation preserves surrounding code") {
-    std::string in = "vec2 uv = vec2(0);\nvec4 c;\nfloat w = c.xyzw + uv;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("c.xy + uv") != std::string::npos);
-}
-
-TEST_CASE("vec2 with matching 2-component swizzle NOT truncated") {
-    // sw > target_width loop: for vec2 (target=2), sw goes 4,3 — NOT 2
-    // If mutated to >=, sw would also be 2, and .xy would be "truncated" to .xy (no change,
-    // but the regex replacement would fire and potentially mangle the code)
-    std::string in = "vec2 a = vec2(0);\nvec4 b;\na + b.xy;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xy") != std::string::npos);
-    // Must NOT have been further truncated to .x
-    CHECK(result.find("a + b.x;") == std::string::npos);
-}
-
-TEST_CASE("vec3 with matching 3-component swizzle NOT truncated") {
-    std::string in = "vec3 a = vec3(0);\nvec4 b;\na + b.xyz;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xyz") != std::string::npos);
-}
-
-TEST_CASE("vec2 with 3-component swizzle truncated to 2") {
-    std::string in = "vec2 a = vec2(0);\nvec4 b;\na + b.xyz;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a + b.xy") != std::string::npos);
-}
-
-// --- Pattern 6: Arithmetic swizzle expansion ---
-
-TEST_CASE("vec3 var - expr.xx → expand to .xxx") {
-    std::string in  = "vec3 a = vec3(0);\nvec4 b;\na - b.xx;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a - b.xxx") != std::string::npos);
-}
-
-TEST_CASE("expr.xy * vec4 var → expand to .xyyy") {
-    std::string in  = "vec4 a = vec4(0);\nvec3 b;\nb.xy * a;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("b.xyyy * a") != std::string::npos);
-}
-
-TEST_CASE("expansion skipped when variable has swizzle suffix") {
-    // If the vec3 var itself already has a swizzle (.xy), don't expand the RHS
-    std::string in  = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx;";
-    auto result = FixImplicitConversions(in);
-    // Should NOT expand to .xxx since a.xy makes it a vec2 operation
-    CHECK(result.find("b.xxx") == std::string::npos);
-}
-
-TEST_CASE("reverse expansion: expr.xx * vec3 → expr.xxx") {
-    std::string in  = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("b.xxx * a") != std::string::npos);
-}
-
-TEST_CASE("expansion repeats last char correctly") {
-    // vec4 var - expr.st → expand to .sttt (last char 't' repeated twice)
-    std::string in = "vec4 a = vec4(0);\nvec2 b;\na - b.st;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("a - b.sttt") != std::string::npos);
-}
-
-TEST_CASE("expansion preserves surrounding text exactly") {
-    // This test checks substring extraction is exact — mutating position arithmetic corrupts output
-    std::string in = "vec3 myVar = vec3(1);\nvec4 other;\nfloat f = 1.0; myVar * other.xy; float g = 2.0;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("myVar * other.xyy") != std::string::npos);
-    CHECK(result.find("float f = 1.0") != std::string::npos);
-    CHECK(result.find("float g = 2.0") != std::string::npos);
-}
-
-TEST_CASE("multiple expansions preserve inter-match text exactly") {
-    std::string in = "vec3 a = vec3(0);\nvec4 b;\nint x = 1; a - b.xx; int y = 2; a + b.xy; int z = 3;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("int x = 1; a - b.xxx; int y = 2; a + b.xyy; int z = 3;") != std::string::npos);
-}
-
-TEST_CASE("expansion skip with swizzle then expand without — exact output") {
-    // a.xy is a vec3 with existing swizzle → skip (no expansion)
-    // a without swizzle → expand b.xx to b.xxx
-    // Tests the vEnd position arithmetic: position() + m[1].length() for swizzle detection
-    std::string in = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx; a + b.xx;";
-    auto result = FixImplicitConversions(in);
-    // a.xy expression should NOT have b expanded (a.xy makes it vec2 context)
-    CHECK(result.find("a.xy - b.xx") != std::string::npos);
-    // bare a should have b expanded to .xxx
-    CHECK(result.find("a + b.xxx") != std::string::npos);
-}
-
-TEST_CASE("expansion reverse skip: swizzled var then bare var exact output") {
-    // Reverse direction: b.xx OP a.xy → skip (a has swizzle)
-    //                    b.xx OP a    → expand to b.xxx OP a
-    std::string in = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a.xy; b.xx + a;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("b.xx * a.xy") != std::string::npos); // skip
-    CHECK(result.find("b.xxx + a") != std::string::npos);   // expand
-}
-
-TEST_CASE("expansion reverse: expr.xx OP vec3 exact output") {
-    std::string in = "vec3 a = vec3(0);\nvec4 b;\nb.xx + a;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("b.xxx + a") != std::string::npos);
-    // Must NOT corrupt surrounding code
-    CHECK(result.find("vec3 a = vec3(0)") != std::string::npos);
-}
-
-// --- Pattern 7: vec3 = mat * vec4() → .xyz ---
-
-TEST_CASE("vec3 = mat*vec4 gets .xyz truncation") {
-    std::string in  = "vec3 pos = (g_ModelMatrix) * (vec4(v, 1.0)) ;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find(".xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec4 = mat*vec4 unchanged") {
-    std::string in = "vec4 pos = (g_ModelMatrix) * (vec4(v, 1.0)) ;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find(".xyz") == std::string::npos);
-}
-
-// --- Pattern 8: pow in vecN constructor → pow(vecN, vecN) ---
-
-TEST_CASE("vec3(pow(x, y)) → pow(vec3(x), vec3(y))") {
-    std::string in  = "vec3(pow(a, b))";
-    std::string out = "pow(vec3(a), vec3(b))";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("vec2(pow(x, y)) → pow(vec2(x), vec2(y))") {
-    std::string in  = "vec2(pow(a, b))";
-    std::string out = "pow(vec2(a), vec2(b))";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("pow without vec wrapper unchanged") {
-    std::string in = "pow(a, b)";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-// --- Pattern 9: float = texture() → .x ---
-
-TEST_CASE("float var = texture() gets .x swizzle") {
-    std::string in  = "float val = texture(g_Texture0, uv);";
-    std::string out = "float val = texture(g_Texture0, uv).x;";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("vec4 = texture() unchanged") {
-    std::string in = "vec4 val = texture(g_Texture0, uv);";
-    CHECK(FixImplicitConversions(in).find(".x;") == std::string::npos);
-}
-
-// --- Pattern 10: vec4 texture var * float uniform → .x at use sites ---
-
-TEST_CASE("vec4 texture var in float arithmetic gets .x") {
-    std::string in = "uniform float u_Scale;\nvec4 timer = texture(g_Texture0, uv);\nfloat off = u_Scale * timer;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("u_Scale * timer.x") != std::string::npos);
-}
-
-TEST_CASE("vec4 texture var with existing swizzle unchanged") {
-    std::string in = "uniform float u_Scale;\nvec4 timer = texture(g_Texture0, uv);\nfloat off = u_Scale * timer.r;";
-    auto result = FixImplicitConversions(in);
-    // Should not double-swizzle
-    CHECK(result.find("timer.r") != std::string::npos);
-}
-
-// --- Pattern 11: integer literal in ternary → bool() ---
-
-TEST_CASE("integer ternary condition gets bool() wrap") {
-    std::string in  = "float x = 1 ? a : b;";
-    std::string out = "float x = bool(1) ? a : b;";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("integer in ternary after ( gets bool() wrap") {
-    std::string in  = "float x = (0 ? a : b);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("bool(0)") != std::string::npos);
-}
-
-TEST_CASE("non-integer ternary condition unchanged") {
-    std::string in = "float x = cond ? a : b;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("bool(") == std::string::npos);
-}
-
-// --- Pattern 12: comparison in arithmetic → float() ---
-
-TEST_CASE("parenthesized comparison in arithmetic gets float() wrap") {
-    std::string in  = "float x = (a > b) * c;";
-    std::string out = "float x = float(a > b) * c;";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("comparison with <= gets float() wrap") {
-    std::string in  = "float x = (a <= b) + d;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("float(a <= b)") != std::string::npos);
-}
-
-TEST_CASE("comparison without arithmetic unchanged") {
-    std::string in = "bool x = (a > b);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("float(a > b)") == std::string::npos);
-}
-
-// --- Pattern 13: bool var in compound assignment → float() ---
-
-TEST_CASE("bool var after *= gets float() wrap") {
-    std::string in  = "bool flag = true;\nfloat x = 1.0;\nx *= flag;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("*= float(flag)") != std::string::npos);
-}
-
-TEST_CASE("bool var after * gets float() wrap") {
-    std::string in  = "bool flag = true;\nfloat x = 1.0 * flag;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("* float(flag)") != std::string::npos);
-}
-
-TEST_CASE("non-bool var in compound assignment unchanged") {
-    std::string in = "float flag = 1.0;\nfloat x = 1.0;\nx *= flag;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("float(flag)") == std::string::npos);
-}
-
-// --- Pattern 14: int = step() → float ---
-
-TEST_CASE("int var assigned step() becomes float") {
-    std::string in  = "int bar = step(0.5, x);";
-    std::string out = "float bar = step(0.5, x);";
-    CHECK_EQ(FixImplicitConversions(in), out);
-}
-
-TEST_CASE("int var with non-step assignment unchanged") {
-    std::string in = "int bar = 42;";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-// --- Pattern 15: texture(sampler, vec4_varying) → .xy ---
-
-TEST_CASE("texture with vec4 varying gets .xy") {
-    std::string in  = "in vec4 v_TexCoord;\nvec4 s = texture(g_Tex, v_TexCoord);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("texture(g_Tex, v_TexCoord.xy)") != std::string::npos);
-}
-
-TEST_CASE("texture with vec3 varying gets .xy") {
-    std::string in  = "in vec3 v_UV;\nvec4 s = texture(g_Tex, v_UV);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("texture(g_Tex, v_UV.xy)") != std::string::npos);
-}
-
-TEST_CASE("texture with vec2 varying unchanged") {
-    std::string in = "in vec2 v_UV;\nvec4 s = texture(g_Tex, v_UV);";
-    auto result = FixImplicitConversions(in);
-    // vec2 is correct size — the "in vec[34]" regex doesn't match vec2
-    CHECK(result.find("texture(g_Tex, v_UV)") != std::string::npos);
-}
-
-// --- Pattern 16: const TYPE = texture() → remove const ---
-
-TEST_CASE("const vec4 = texture() removes const") {
-    std::string in  = "const vec4 col = texture(g_Tex, uv);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("const") == std::string::npos);
-    CHECK(result.find("vec4 col = texture(g_Tex, uv)") != std::string::npos);
-}
-
-TEST_CASE("const float = texture() removes const") {
-    std::string in  = "const float val = texture(g_Tex, uv);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("const") == std::string::npos);
-}
-
-TEST_CASE("const with non-texture unchanged") {
-    std::string in = "const vec4 col = vec4(1.0);";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-// --- Pattern 17: in-varying mutation → mutable copy ---
-
-TEST_CASE("in varying with compound assignment gets mutable copy") {
-    std::string in  = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord += offset;\n}";
-    auto result = FixImplicitConversions(in);
-    // Should still have the 'in' declaration
-    CHECK(result.find("in vec2 v_TexCoord;") != std::string::npos);
-    // Should have a mutable copy
-    CHECK(result.find("_m_v_TexCoord") != std::string::npos);
-    CHECK(result.find("_m_v_TexCoord = v_TexCoord") != std::string::npos);
-}
-
-TEST_CASE("in varying without mutation unchanged") {
-    std::string in = "in vec2 v_TexCoord;\nvoid main() {\nvec4 s = texture(g_Tex, v_TexCoord);\n}";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("_m_v_TexCoord") == std::string::npos);
-}
-
-TEST_CASE("in varying with plain assignment gets mutable copy") {
-    std::string in = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord = v_TexCoord.yx;\n}";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("in vec2 v_TexCoord;") != std::string::npos);
-    CHECK(result.find("_m_v_TexCoord") != std::string::npos);
-    CHECK(result.find("_m_v_TexCoord = v_TexCoord") != std::string::npos);
-}
-
-TEST_CASE("in varying with component assignment gets mutable copy") {
-    std::string in = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord.y = 1.0;\n}";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("_m_v_TexCoord") != std::string::npos);
-}
-
-TEST_CASE("in varying shadowed by local declaration not renamed") {
-    // Regression: wallpaper 2866203962 chromatic_aberration had
-    //   in vec4 rValue;
-    //   void main() { vec4 rValue = texture(g_Tex, ...); }
-    // Earlier we mistook the local declaration for an assignment-to-varying,
-    // renamed all rValue → _m_rValue AND inserted a top-of-main mutable copy.
-    // Result: two `vec4 _m_rValue` decls -> redefinition compile error.
-    std::string in =
-        "in vec4 rValue;\n"
-        "void main() {\n"
-        "vec4 rValue = texture(g_Tex, v_TexCoord);\n"
-        "color = rValue;\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("_m_rValue") == std::string::npos);
-    CHECK(result.find("in vec4 rValue;") != std::string::npos);
-}
-
-TEST_CASE("in varying with local shadow AND true assignment still not renamed") {
-    // Local shadow takes precedence — we can't safely rename because the user
-    // already chose to introduce their own local.  Accept the shadow.
-    std::string in =
-        "in float threshold;\n"
-        "void main() {\n"
-        "float threshold = 0.5;\n"
-        "threshold += 0.1;\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("_m_threshold") == std::string::npos);
-}
-
-// --- Pattern 18: vec3 = vec4() → .xyz ---
-
-TEST_CASE("vec3 = vec4 constructor gets .xyz") {
-    std::string in  = "vec3 pos = vec4(1.0, 2.0, 3.0, 4.0);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find(".xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec4 = vec4 constructor unchanged") {
-    std::string in = "vec4 pos = vec4(1.0, 2.0, 3.0, 4.0);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find(".xyz") == std::string::npos);
-}
-
-// --- Pattern 19: float = vec_uniform * expr → .x ---
-
-TEST_CASE("float = vec_uniform * expr gets .x") {
-    std::string in  = "uniform vec3 u_Color;\nfloat x = u_Color * 2.0;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("u_Color.x") != std::string::npos);
-}
-
-TEST_CASE("float = expr * vec_uniform gets .x") {
-    std::string in  = "uniform vec4 u_Offset;\nfloat y = 3.0 * u_Offset;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("u_Offset.x;") != std::string::npos);
-}
-
-TEST_CASE("vec2 assignment with trailing vec uniform NOT wrongly .x'd") {
-    // Regression: re2 used to match any "OP VEC_NAME;" regardless of LHS type,
-    // incorrectly appending .x to a vec2 uniform in a vec2-typed statement
-    // (breaks wallpaper 3276911872 clipping_mask effect).
-    std::string in  = "uniform vec2 u_textureOffset;\nvec2 uvTex = foo - u_textureOffset;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("u_textureOffset.x;") == std::string::npos);
-    CHECK(result.find("u_textureOffset;") != std::string::npos);
-}
-
-// --- Pattern 19b: wider varying truncated in narrower assignment ---
-
-TEST_CASE("vec4 varying truncated to .xy in vec2 assignment arithmetic") {
-    std::string in = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
-                     "vec2 uv = v_TexCoord * 2.0 - u_c;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("v_TexCoord.xy") != std::string::npos);
-}
-
-TEST_CASE("vec4 varying NOT truncated inside vec4 assignment") {
-    std::string in = "in vec4 v_TexCoord;\nvec4 r = v_TexCoord * 2.0;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("v_TexCoord.xy") == std::string::npos);
-}
-
-TEST_CASE("vec4 varying NOT truncated when passed bare to function") {
-    // v_TexCoord is a bare arg to someFunc — must not add .xy (callee may want vec4).
-    std::string in = "in vec4 v_TexCoord;\nvec2 r = someFunc(v_TexCoord);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("someFunc(v_TexCoord)") != std::string::npos);
-    CHECK(result.find("v_TexCoord.xy") == std::string::npos);
-}
-
-TEST_CASE("vec4 varying truncated when preceded by arithmetic op in vec2 assign") {
-    std::string in = "in vec4 v_TexCoord;\nvec2 uv = 1.0 - v_TexCoord;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("- v_TexCoord.xy") != std::string::npos);
-}
-
-TEST_CASE("vec4 varying + vec2 varying inside texture() gets .xy") {
-    // Regression: clipping_mask.frag line 470 —
-    //   texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth)
-    // v_TexCoord (vec4) adjacent to v_ParallaxOffset (vec2) must truncate.
-    std::string in = "in vec4 v_TexCoord;\n"
-                     "in vec2 v_ParallaxOffset;\n"
-                     "uniform vec2 u_textureDepth;\n"
-                     "vec4 clip = texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("v_TexCoord.xy + v_ParallaxOffset") != std::string::npos);
-}
-
-TEST_CASE("vec2 var + vec4 varying symmetry — varying gets .xy") {
-    std::string in = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
-                     "vec2 r = u_c + v_TexCoord;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("u_c + v_TexCoord.xy") != std::string::npos);
-}
-
-// --- Pattern 20: for-loop float-to-int ---
-
-TEST_CASE("for loop int var from float expr gets int() cast") {
-    std::string in  = "for (int i = -u_Count * 2; i <= u_Count * 2; i++)";
-    auto result = FixImplicitConversions(in);
-    bool found = result.find("int(-u_Count * 2)") != std::string::npos ||
-                 result.find("int(- u_Count * 2)") != std::string::npos;
-    CHECK(found);
-}
-
-TEST_CASE("for loop condition gets int() cast") {
-    std::string in  = "i <= u_Count * 2;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("int(u_Count * 2)") != std::string::npos);
-}
-
-// --- Pattern 21: scalar assigned to glOutColor → vec4() ---
-
-TEST_CASE("scalar expression assigned to glOutColor gets vec4() wrap") {
-    std::string in  = "glOutColor = sample.x * mask;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("glOutColor = vec4(sample.x * mask)") != std::string::npos);
-}
-
-TEST_CASE("vec4() already on glOutColor unchanged") {
-    std::string in = "glOutColor = vec4(1.0, 0.0, 0.0, 1.0);";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-TEST_CASE("glOutColor component write not wrapped") {
-    std::string in = "glOutColor.a *= mask;";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec4(") == std::string::npos);
-}
-
-TEST_CASE("mix vec4 arg truncated to .rgb when LHS is .rgb") {
-    std::string in = "albedo.rgb = mix(albedo, hsv2rgb(colors), mask);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
-}
-
-TEST_CASE("mix vec4 arg truncated to .xyz when LHS is .xyz") {
-    std::string in = "color.xyz = mix(color, other_vec3, t);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("mix(color.xyz,") != std::string::npos);
-}
-
-TEST_CASE("mix already swizzled — no double swizzle") {
-    std::string in = "albedo.rgb = mix(albedo.rgb, hsv2rgb(colors), mask);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
-    CHECK(result.find("albedo.rgb.rgb") == std::string::npos);
-}
-
-TEST_CASE("mix different var on LHS — unchanged") {
-    std::string in = "result.rgb = mix(albedo, hsv2rgb(colors), mask);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("mix(albedo,") != std::string::npos);
-}
-
-// --- Pattern: const qualifier on function return type ---
-
-TEST_CASE("const on function return type stripped") {
-    // Note: fract is also a GLSL builtin, so the builtin-shadowing rename
-    // pass also kicks in and renames to _w_fract.
-    std::string in = "const float fract(float x) {\n return x - floor(x);\n}";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("float _w_fract(float x)") != std::string::npos);
-    CHECK(result.find("const float") == std::string::npos);
-}
-
-TEST_CASE("const on non-shadowing function return type stripped (no rename)") {
-    std::string in = "const vec3 myHelper(vec3 a) { return a; }";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec3 myHelper(vec3 a)") != std::string::npos);
-    CHECK(result.find("const vec3") == std::string::npos);
-}
-
-TEST_CASE("const on vec3 function return stripped") {
-    std::string in = "const vec3 mymix(vec3 a, vec3 b) { return a * b; }";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("vec3 mymix(") != std::string::npos);
-    CHECK(result.find("const vec3 mymix(") == std::string::npos);
-}
-
-TEST_CASE("const variable decl NOT touched") {
-    std::string in = "const float PI = 3.14159;";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-TEST_CASE("const vec3 variable decl NOT touched") {
-    std::string in = "const vec3 LumCoeff = vec3(0.2125, 0.7154, 0.0721);";
-    CHECK_EQ(FixImplicitConversions(in), in);
-}
-
-// --- Pattern: user function with vecN param called with wider varying ---
-
-TEST_CASE("shimmer regression: rotateVec2(v_TexCoord) gets .xy") {
-    std::string in =
-        "in vec4 v_TexCoord;\n"
-        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
-        "void main() {\n"
-        "  vec2 c = rotateVec2(v_TexCoord, 1.57);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
-}
-
-TEST_CASE("user function vec3 param called with vec4 varying gets .xyz") {
-    std::string in =
-        "in vec4 v_Color;\n"
-        "vec3 desaturate(vec3 c, float s) { return c; }\n"
-        "void main() {\n"
-        "  vec3 d = desaturate(v_Color, 0.5);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("desaturate(v_Color.xyz,") != std::string::npos);
-}
-
-TEST_CASE("matching-width varying call NOT touched") {
-    std::string in =
-        "in vec2 v_UV;\n"
-        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
-        "void main() {\n"
-        "  vec2 c = rotateVec2(v_UV, 1.57);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("rotateVec2(v_UV,") != std::string::npos);
-    CHECK(result.find("v_UV.xy") == std::string::npos);
-}
-
-TEST_CASE("already-swizzled varying arg NOT double-swizzled") {
-    std::string in =
-        "in vec4 v_TexCoord;\n"
-        "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
-        "void main() {\n"
-        "  vec2 c = rotateVec2(v_TexCoord.xy, 1.57);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    // Should not insert another .xy after the existing one
-    CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
-    CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
-}
-
-TEST_CASE("unknown function (builtin) call NOT touched") {
-    std::string in =
-        "in vec4 v_TexCoord;\n"
-        "void main() {\n"
-        "  vec4 c = texture(g_Texture0, v_TexCoord);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    // texture() is handled by the dedicated earlier pass; our new pass doesn't
-    // know texture's signature because it's not declared in the shader body.
-    // (The earlier pass already produces v_TexCoord.xy.)
-    CHECK(result.find("texture(g_Texture0, v_TexCoord.xy)") != std::string::npos);
-}
-
-// --- Pattern: user function shadowing a GLSL builtin gets renamed ---
-
-TEST_CASE("user-defined fract renamed to _w_fract at def + calls") {
-    std::string in =
-        "float fract(float x) {\n"
-        "  return x - floor(x);\n"
-        "}\n"
-        "void main() {\n"
-        "  float a = fract(1.5);\n"
-        "}\n";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("float _w_fract(float x)") != std::string::npos);
-    CHECK(result.find("_w_fract(1.5)") != std::string::npos);
-    // Original bare fract at call site should be gone
-    CHECK(result.find(" fract(") == std::string::npos);
-}
-
-TEST_CASE("no user fract definition → builtin calls unchanged") {
-    std::string in = "void main() {\n  float a = fract(1.5);\n}";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("fract(1.5)") != std::string::npos);
-    CHECK(result.find("_w_fract") == std::string::npos);
-}
-
-// --- Pattern: vec3 VAR = texture(...) gets .xyz ---
-
-TEST_CASE("vec3 assigned texture() gets .xyz") {
-    std::string in = "vec3 col = texture(g_Tex, uv);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("texture(g_Tex, uv).xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec3 assigned texture() with nested call gets .xyz") {
-    std::string in = "vec3 col = texture(g_Tex, fract(uv));";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("texture(g_Tex, fract(uv)).xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec3 assigned textureLod also handled") {
-    std::string in = "vec3 col = textureLod(g_Tex, uv, 0.0);";
-    auto result = FixImplicitConversions(in);
-    CHECK(result.find("textureLod(g_Tex, uv, 0.0).xyz;") != std::string::npos);
-}
-
-TEST_CASE("vec4 VAR = texture() NOT touched (no truncation needed)") {
-    std::string in = "vec4 col = texture(g_Tex, uv);";
-    auto result = FixImplicitConversions(in);
-    // Must not get .xyz
-    CHECK(result.find(".xyz") == std::string::npos);
-}
+    // --- Pattern 1: float VAR = int(...) → int VAR ---
+
+    TEST_CASE("float var assigned int constructor becomes int var") {
+        std::string in  = "float x = int(foo);";
+        std::string out = "int x = int(foo);";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("float var with float assignment unchanged") {
+        std::string in = "float x = 3.14;";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    // --- Pattern 2: uint modulo — 3 sub-patterns ---
+
+    TEST_CASE("uint = (word + lit) % N") {
+        std::string in  = "uint b = (a + 1) % 32;";
+        std::string out = "uint b = uint((int(a) + 1) % 32);";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("uint = (word - lit) % N") {
+        std::string in  = "uint b = (a - 3) % 16;";
+        std::string out = "uint b = uint((int(a) - 3) % 16);";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("uint = word % N") {
+        std::string in  = "uint idx = val % 8;";
+        std::string out = "uint idx = uint(int(val) % 8);";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("general word % N") {
+        std::string in  = "x = foo % 10;";
+        std::string out = "x = int(foo) % 10;";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    // --- Pattern 3: vec2→vec4 upgrade for out-of-range swizzle ---
+
+    TEST_CASE("vec2 upgraded to vec4 when .z accessed") {
+        std::string in     = "vec2 tc;\nfloat z = tc.z;";
+        auto        result = FixImplicitConversions(in);
+        // Declaration should become vec4
+        CHECK(result.find("vec4 tc;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 upgraded to vec4 when .w accessed") {
+        std::string in     = "vec2 uv;\nfloat w = uv.w;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec4 uv;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 with only .xy access NOT upgraded") {
+        std::string in     = "vec2 tc;\nfloat x = tc.x;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec2 tc;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 upgraded to vec4 when .w accessed") {
+        std::string in     = "vec3 pos;\nfloat w = pos.w;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec4 pos;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 with only .xyz access NOT upgraded") {
+        std::string in     = "vec3 pos;\nfloat z = pos.z;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec3 pos;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 upgraded to vec4 with texture coord fixup") {
+        std::string in     = "vec2 tc;\nfloat z = tc.z;\nvec4 s = texture(g_Tex, tc);";
+        auto        result = FixImplicitConversions(in);
+        // After upgrade, texture() call should get .xy swizzle
+        CHECK(result.find("texture(g_Tex, tc.xy)") != std::string::npos);
+    }
+
+    // --- Pattern 4: vec4→vec2, vec4→vec3, vec3→vec2 direct truncation ---
+
+    TEST_CASE("vec2 = vec4 gets .xy swizzle") {
+        std::string in     = "vec2 a;\nvec4 b;\na = b;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a = b.xy;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 = vec4 gets .xyz swizzle") {
+        std::string in     = "vec3 a;\nvec4 b;\na = b;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a = b.xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 = vec3 gets .xy swizzle") {
+        std::string in     = "vec2 a;\nvec3 b;\na = b;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a = b.xy;") != std::string::npos);
+    }
+
+    TEST_CASE("same-type assignment unchanged") {
+        std::string in     = "vec4 a;\nvec4 b;\na = b;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a = b;") != std::string::npos);
+    }
+
+    // --- Pattern 5: Arithmetic swizzle truncation ---
+
+    TEST_CASE("vec2 var + expr.xyzw → truncate to .xy") {
+        std::string in     = "vec2 a = vec2(0);\nvec4 b;\na + b.xyzw;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xy") != std::string::npos);
+    }
+
+    TEST_CASE("expr.xyz + vec2 var → truncate to .xy") {
+        std::string in     = "vec2 a = vec2(0);\nvec3 b;\nb.xyz + a;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("b.xy + a") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 var + expr.xyz → truncate 3 to 2") {
+        std::string in     = "vec2 a = vec2(0);\nvec3 b;\na + b.xyz;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xy") != std::string::npos);
+        CHECK(result.find("a + b.xyz") == std::string::npos);
+    }
+
+    TEST_CASE("truncation preserves surrounding code") {
+        std::string in =
+            "float z = 1.0;\nvec2 uv = vec2(0);\nvec4 c;\nfloat w = uv + c.xyzw;\nfloat q = 2.0;";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("uv + c.xy") != std::string::npos);
+        CHECK(result.find("float z = 1.0") != std::string::npos);
+        CHECK(result.find("float q = 2.0") != std::string::npos);
+    }
+
+    TEST_CASE("multiple truncations in same shader") {
+        std::string in     = "vec2 a = vec2(0);\nvec4 b;\na + b.xyzw;\na - b.xyzw;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xy") != std::string::npos);
+        CHECK(result.find("a - b.xy") != std::string::npos);
+    }
+
+    TEST_CASE("multiple truncations preserve inter-match text exactly") {
+        // Tests that position arithmetic (position()-lastPos, position()+length())
+        // correctly preserves text between matches. If mutated, second match
+        // would corrupt the inter-match text.
+        std::string in =
+            "vec2 a = vec2(0);\nvec4 b;\nint x = 42; a + b.xyzw; int y = 99; a * b.xyz; int z = 7;";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("int x = 42; a + b.xy; int y = 99; a * b.xy; int z = 7;") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("reverse truncation preserves surrounding code") {
+        std::string in     = "vec2 uv = vec2(0);\nvec4 c;\nfloat w = c.xyzw + uv;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("c.xy + uv") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 with matching 2-component swizzle NOT truncated") {
+        // sw > target_width loop: for vec2 (target=2), sw goes 4,3 — NOT 2
+        // If mutated to >=, sw would also be 2, and .xy would be "truncated" to .xy (no change,
+        // but the regex replacement would fire and potentially mangle the code)
+        std::string in     = "vec2 a = vec2(0);\nvec4 b;\na + b.xy;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xy") != std::string::npos);
+        // Must NOT have been further truncated to .x
+        CHECK(result.find("a + b.x;") == std::string::npos);
+    }
+
+    TEST_CASE("vec3 with matching 3-component swizzle NOT truncated") {
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\na + b.xyz;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xyz") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 with 3-component swizzle truncated to 2") {
+        std::string in     = "vec2 a = vec2(0);\nvec4 b;\na + b.xyz;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a + b.xy") != std::string::npos);
+    }
+
+    // --- Pattern 6: Arithmetic swizzle expansion ---
+
+    TEST_CASE("vec3 var - expr.xx → expand to .xxx") {
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\na - b.xx;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a - b.xxx") != std::string::npos);
+    }
+
+    TEST_CASE("expr.xy * vec4 var → expand to .xyyy") {
+        std::string in     = "vec4 a = vec4(0);\nvec3 b;\nb.xy * a;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("b.xyyy * a") != std::string::npos);
+    }
+
+    TEST_CASE("expansion skipped when variable has swizzle suffix") {
+        // If the vec3 var itself already has a swizzle (.xy), don't expand the RHS
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx;";
+        auto        result = FixImplicitConversions(in);
+        // Should NOT expand to .xxx since a.xy makes it a vec2 operation
+        CHECK(result.find("b.xxx") == std::string::npos);
+    }
+
+    TEST_CASE("reverse expansion: expr.xx * vec3 → expr.xxx") {
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("b.xxx * a") != std::string::npos);
+    }
+
+    TEST_CASE("expansion repeats last char correctly") {
+        // vec4 var - expr.st → expand to .sttt (last char 't' repeated twice)
+        std::string in     = "vec4 a = vec4(0);\nvec2 b;\na - b.st;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("a - b.sttt") != std::string::npos);
+    }
+
+    TEST_CASE("expansion preserves surrounding text exactly") {
+        // This test checks substring extraction is exact — mutating position arithmetic corrupts
+        // output
+        std::string in =
+            "vec3 myVar = vec3(1);\nvec4 other;\nfloat f = 1.0; myVar * other.xy; float g = 2.0;";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("myVar * other.xyy") != std::string::npos);
+        CHECK(result.find("float f = 1.0") != std::string::npos);
+        CHECK(result.find("float g = 2.0") != std::string::npos);
+    }
+
+    TEST_CASE("multiple expansions preserve inter-match text exactly") {
+        std::string in =
+            "vec3 a = vec3(0);\nvec4 b;\nint x = 1; a - b.xx; int y = 2; a + b.xy; int z = 3;";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("int x = 1; a - b.xxx; int y = 2; a + b.xyy; int z = 3;") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("expansion skip with swizzle then expand without — exact output") {
+        // a.xy is a vec3 with existing swizzle → skip (no expansion)
+        // a without swizzle → expand b.xx to b.xxx
+        // Tests the vEnd position arithmetic: position() + m[1].length() for swizzle detection
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\na.xy - b.xx; a + b.xx;";
+        auto        result = FixImplicitConversions(in);
+        // a.xy expression should NOT have b expanded (a.xy makes it vec2 context)
+        CHECK(result.find("a.xy - b.xx") != std::string::npos);
+        // bare a should have b expanded to .xxx
+        CHECK(result.find("a + b.xxx") != std::string::npos);
+    }
+
+    TEST_CASE("expansion reverse skip: swizzled var then bare var exact output") {
+        // Reverse direction: b.xx OP a.xy → skip (a has swizzle)
+        //                    b.xx OP a    → expand to b.xxx OP a
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\nb.xx * a.xy; b.xx + a;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("b.xx * a.xy") != std::string::npos); // skip
+        CHECK(result.find("b.xxx + a") != std::string::npos);   // expand
+    }
+
+    TEST_CASE("expansion reverse: expr.xx OP vec3 exact output") {
+        std::string in     = "vec3 a = vec3(0);\nvec4 b;\nb.xx + a;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("b.xxx + a") != std::string::npos);
+        // Must NOT corrupt surrounding code
+        CHECK(result.find("vec3 a = vec3(0)") != std::string::npos);
+    }
+
+    // --- Pattern 7: vec3 = mat * vec4() → .xyz ---
+
+    TEST_CASE("vec3 = mat*vec4 gets .xyz truncation") {
+        std::string in     = "vec3 pos = (g_ModelMatrix) * (vec4(v, 1.0)) ;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find(".xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 = mat*vec4 unchanged") {
+        std::string in     = "vec4 pos = (g_ModelMatrix) * (vec4(v, 1.0)) ;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find(".xyz") == std::string::npos);
+    }
+
+    // --- Pattern 8: pow in vecN constructor → pow(vecN, vecN) ---
+
+    TEST_CASE("vec3(pow(x, y)) → pow(vec3(x), vec3(y))") {
+        std::string in  = "vec3(pow(a, b))";
+        std::string out = "pow(vec3(a), vec3(b))";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("vec2(pow(x, y)) → pow(vec2(x), vec2(y))") {
+        std::string in  = "vec2(pow(a, b))";
+        std::string out = "pow(vec2(a), vec2(b))";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("pow without vec wrapper unchanged") {
+        std::string in = "pow(a, b)";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    // --- Pattern 9: float = texture() → .x ---
+
+    TEST_CASE("float var = texture() gets .x swizzle") {
+        std::string in  = "float val = texture(g_Texture0, uv);";
+        std::string out = "float val = texture(g_Texture0, uv).x;";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("vec4 = texture() unchanged") {
+        std::string in = "vec4 val = texture(g_Texture0, uv);";
+        CHECK(FixImplicitConversions(in).find(".x;") == std::string::npos);
+    }
+
+    // --- Pattern 10: vec4 texture var * float uniform → .x at use sites ---
+
+    TEST_CASE("vec4 texture var in float arithmetic gets .x") {
+        std::string in = "uniform float u_Scale;\nvec4 timer = texture(g_Texture0, uv);\nfloat off "
+                         "= u_Scale * timer;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("u_Scale * timer.x") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 texture var with existing swizzle unchanged") {
+        std::string in = "uniform float u_Scale;\nvec4 timer = texture(g_Texture0, uv);\nfloat off "
+                         "= u_Scale * timer.r;";
+        auto        result = FixImplicitConversions(in);
+        // Should not double-swizzle
+        CHECK(result.find("timer.r") != std::string::npos);
+    }
+
+    // --- Pattern 11: integer literal in ternary → bool() ---
+
+    TEST_CASE("integer ternary condition gets bool() wrap") {
+        std::string in  = "float x = 1 ? a : b;";
+        std::string out = "float x = bool(1) ? a : b;";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("integer in ternary after ( gets bool() wrap") {
+        std::string in     = "float x = (0 ? a : b);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("bool(0)") != std::string::npos);
+    }
+
+    TEST_CASE("non-integer ternary condition unchanged") {
+        std::string in     = "float x = cond ? a : b;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("bool(") == std::string::npos);
+    }
+
+    // --- Pattern 12: comparison in arithmetic → float() ---
+
+    TEST_CASE("parenthesized comparison in arithmetic gets float() wrap") {
+        std::string in  = "float x = (a > b) * c;";
+        std::string out = "float x = float(a > b) * c;";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("comparison with <= gets float() wrap") {
+        std::string in     = "float x = (a <= b) + d;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("float(a <= b)") != std::string::npos);
+    }
+
+    TEST_CASE("comparison without arithmetic unchanged") {
+        std::string in     = "bool x = (a > b);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("float(a > b)") == std::string::npos);
+    }
+
+    // --- Pattern 13: bool var in compound assignment → float() ---
+
+    TEST_CASE("bool var after *= gets float() wrap") {
+        std::string in     = "bool flag = true;\nfloat x = 1.0;\nx *= flag;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("*= float(flag)") != std::string::npos);
+    }
+
+    TEST_CASE("bool var after * gets float() wrap") {
+        std::string in     = "bool flag = true;\nfloat x = 1.0 * flag;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("* float(flag)") != std::string::npos);
+    }
+
+    TEST_CASE("non-bool var in compound assignment unchanged") {
+        std::string in     = "float flag = 1.0;\nfloat x = 1.0;\nx *= flag;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("float(flag)") == std::string::npos);
+    }
+
+    // --- Pattern 14: int = step() → float ---
+
+    TEST_CASE("int var assigned step() becomes float") {
+        std::string in  = "int bar = step(0.5, x);";
+        std::string out = "float bar = step(0.5, x);";
+        CHECK_EQ(FixImplicitConversions(in), out);
+    }
+
+    TEST_CASE("int var with non-step assignment unchanged") {
+        std::string in = "int bar = 42;";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    // --- Pattern 15: texture(sampler, vec4_varying) → .xy ---
+
+    TEST_CASE("texture with vec4 varying gets .xy") {
+        std::string in     = "in vec4 v_TexCoord;\nvec4 s = texture(g_Tex, v_TexCoord);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_Tex, v_TexCoord.xy)") != std::string::npos);
+    }
+
+    TEST_CASE("texture with vec3 varying gets .xy") {
+        std::string in     = "in vec3 v_UV;\nvec4 s = texture(g_Tex, v_UV);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_Tex, v_UV.xy)") != std::string::npos);
+    }
+
+    TEST_CASE("texture with vec2 varying unchanged") {
+        std::string in     = "in vec2 v_UV;\nvec4 s = texture(g_Tex, v_UV);";
+        auto        result = FixImplicitConversions(in);
+        // vec2 is correct size — the "in vec[34]" regex doesn't match vec2
+        CHECK(result.find("texture(g_Tex, v_UV)") != std::string::npos);
+    }
+
+    // --- Pattern 16: const TYPE = texture() → remove const ---
+
+    TEST_CASE("const vec4 = texture() removes const") {
+        std::string in     = "const vec4 col = texture(g_Tex, uv);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("const") == std::string::npos);
+        CHECK(result.find("vec4 col = texture(g_Tex, uv)") != std::string::npos);
+    }
+
+    TEST_CASE("const float = texture() removes const") {
+        std::string in     = "const float val = texture(g_Tex, uv);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("const") == std::string::npos);
+    }
+
+    TEST_CASE("const with non-texture unchanged") {
+        std::string in = "const vec4 col = vec4(1.0);";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    // --- Pattern 17: in-varying mutation → mutable copy ---
+
+    TEST_CASE("in varying with compound assignment gets mutable copy") {
+        std::string in     = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord += offset;\n}";
+        auto        result = FixImplicitConversions(in);
+        // Should still have the 'in' declaration
+        CHECK(result.find("in vec2 v_TexCoord;") != std::string::npos);
+        // Should have a mutable copy
+        CHECK(result.find("_m_v_TexCoord") != std::string::npos);
+        CHECK(result.find("_m_v_TexCoord = v_TexCoord") != std::string::npos);
+    }
+
+    TEST_CASE("in varying without mutation unchanged") {
+        std::string in =
+            "in vec2 v_TexCoord;\nvoid main() {\nvec4 s = texture(g_Tex, v_TexCoord);\n}";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("_m_v_TexCoord") == std::string::npos);
+    }
+
+    TEST_CASE("in varying with plain assignment gets mutable copy") {
+        std::string in     = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord = v_TexCoord.yx;\n}";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("in vec2 v_TexCoord;") != std::string::npos);
+        CHECK(result.find("_m_v_TexCoord") != std::string::npos);
+        CHECK(result.find("_m_v_TexCoord = v_TexCoord") != std::string::npos);
+    }
+
+    TEST_CASE("in varying with component assignment gets mutable copy") {
+        std::string in     = "in vec2 v_TexCoord;\nvoid main() {\nv_TexCoord.y = 1.0;\n}";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("_m_v_TexCoord") != std::string::npos);
+    }
+
+    TEST_CASE("in varying shadowed by local declaration not renamed") {
+        // Regression: wallpaper 2866203962 chromatic_aberration had
+        //   in vec4 rValue;
+        //   void main() { vec4 rValue = texture(g_Tex, ...); }
+        // Earlier we mistook the local declaration for an assignment-to-varying,
+        // renamed all rValue → _m_rValue AND inserted a top-of-main mutable copy.
+        // Result: two `vec4 _m_rValue` decls -> redefinition compile error.
+        std::string in     = "in vec4 rValue;\n"
+                             "void main() {\n"
+                             "vec4 rValue = texture(g_Tex, v_TexCoord);\n"
+                             "color = rValue;\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("_m_rValue") == std::string::npos);
+        CHECK(result.find("in vec4 rValue;") != std::string::npos);
+    }
+
+    TEST_CASE("in varying with local shadow AND true assignment still not renamed") {
+        // Local shadow takes precedence — we can't safely rename because the user
+        // already chose to introduce their own local.  Accept the shadow.
+        std::string in     = "in float threshold;\n"
+                             "void main() {\n"
+                             "float threshold = 0.5;\n"
+                             "threshold += 0.1;\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("_m_threshold") == std::string::npos);
+    }
+
+    // --- Pattern 18: vec3 = vec4() → .xyz ---
+
+    TEST_CASE("vec3 = vec4 constructor gets .xyz") {
+        std::string in     = "vec3 pos = vec4(1.0, 2.0, 3.0, 4.0);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find(".xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 = vec4 constructor unchanged") {
+        std::string in     = "vec4 pos = vec4(1.0, 2.0, 3.0, 4.0);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find(".xyz") == std::string::npos);
+    }
+
+    // --- Pattern 19: float = vec_uniform * expr → .x ---
+
+    TEST_CASE("float = vec_uniform * expr gets .x") {
+        std::string in     = "uniform vec3 u_Color;\nfloat x = u_Color * 2.0;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("u_Color.x") != std::string::npos);
+    }
+
+    TEST_CASE("float = expr * vec_uniform gets .x") {
+        std::string in     = "uniform vec4 u_Offset;\nfloat y = 3.0 * u_Offset;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("u_Offset.x;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 assignment with trailing vec uniform NOT wrongly .x'd") {
+        // Regression: re2 used to match any "OP VEC_NAME;" regardless of LHS type,
+        // incorrectly appending .x to a vec2 uniform in a vec2-typed statement
+        // (breaks wallpaper 3276911872 clipping_mask effect).
+        std::string in     = "uniform vec2 u_textureOffset;\nvec2 uvTex = foo - u_textureOffset;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("u_textureOffset.x;") == std::string::npos);
+        CHECK(result.find("u_textureOffset;") != std::string::npos);
+    }
+
+    // --- Pattern 19b: wider varying truncated in narrower assignment ---
+
+    TEST_CASE("vec4 varying truncated to .xy in vec2 assignment arithmetic") {
+        std::string in     = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
+                             "vec2 uv = v_TexCoord * 2.0 - u_c;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 varying NOT truncated inside vec4 assignment") {
+        std::string in     = "in vec4 v_TexCoord;\nvec4 r = v_TexCoord * 2.0;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy") == std::string::npos);
+    }
+
+    TEST_CASE("vec4 varying NOT truncated when passed bare to function") {
+        // v_TexCoord is a bare arg to someFunc — must not add .xy (callee may want vec4).
+        std::string in     = "in vec4 v_TexCoord;\nvec2 r = someFunc(v_TexCoord);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("someFunc(v_TexCoord)") != std::string::npos);
+        CHECK(result.find("v_TexCoord.xy") == std::string::npos);
+    }
+
+    TEST_CASE("vec4 varying truncated when preceded by arithmetic op in vec2 assign") {
+        std::string in     = "in vec4 v_TexCoord;\nvec2 uv = 1.0 - v_TexCoord;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("- v_TexCoord.xy") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 varying + vec2 varying inside texture() gets .xy") {
+        // Regression: clipping_mask.frag line 470 —
+        //   texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth)
+        // v_TexCoord (vec4) adjacent to v_ParallaxOffset (vec2) must truncate.
+        std::string in =
+            "in vec4 v_TexCoord;\n"
+            "in vec2 v_ParallaxOffset;\n"
+            "uniform vec2 u_textureDepth;\n"
+            "vec4 clip = texture(g_Texture1, v_TexCoord + v_ParallaxOffset * u_textureDepth);";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy + v_ParallaxOffset") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 var + vec4 varying symmetry — varying gets .xy") {
+        std::string in     = "in vec4 v_TexCoord;\nuniform vec2 u_c;\n"
+                             "vec2 r = u_c + v_TexCoord;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("u_c + v_TexCoord.xy") != std::string::npos);
+    }
+
+    // --- Pattern 20: for-loop float-to-int ---
+
+    TEST_CASE("for loop int var from float expr gets int() cast") {
+        std::string in     = "for (int i = -u_Count * 2; i <= u_Count * 2; i++)";
+        auto        result = FixImplicitConversions(in);
+        bool        found  = result.find("int(-u_Count * 2)") != std::string::npos ||
+                     result.find("int(- u_Count * 2)") != std::string::npos;
+        CHECK(found);
+    }
+
+    TEST_CASE("for loop condition gets int() cast") {
+        std::string in     = "i <= u_Count * 2;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("int(u_Count * 2)") != std::string::npos);
+    }
+
+    // --- Pattern 21: scalar assigned to glOutColor → vec4() ---
+
+    TEST_CASE("scalar expression assigned to glOutColor gets vec4() wrap") {
+        std::string in     = "glOutColor = sample.x * mask;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("glOutColor = vec4(sample.x * mask)") != std::string::npos);
+    }
+
+    TEST_CASE("vec4() already on glOutColor unchanged") {
+        std::string in = "glOutColor = vec4(1.0, 0.0, 0.0, 1.0);";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    TEST_CASE("glOutColor component write not wrapped") {
+        std::string in     = "glOutColor.a *= mask;";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec4(") == std::string::npos);
+    }
+
+    TEST_CASE("mix vec4 arg truncated to .rgb when LHS is .rgb") {
+        std::string in     = "albedo.rgb = mix(albedo, hsv2rgb(colors), mask);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
+    }
+
+    TEST_CASE("mix vec4 arg truncated to .xyz when LHS is .xyz") {
+        std::string in     = "color.xyz = mix(color, other_vec3, t);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("mix(color.xyz,") != std::string::npos);
+    }
+
+    TEST_CASE("mix already swizzled — no double swizzle") {
+        std::string in     = "albedo.rgb = mix(albedo.rgb, hsv2rgb(colors), mask);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("mix(albedo.rgb,") != std::string::npos);
+        CHECK(result.find("albedo.rgb.rgb") == std::string::npos);
+    }
+
+    TEST_CASE("mix different var on LHS — unchanged") {
+        std::string in     = "result.rgb = mix(albedo, hsv2rgb(colors), mask);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("mix(albedo,") != std::string::npos);
+    }
+
+    // --- Pattern: const qualifier on function return type ---
+
+    TEST_CASE("const on function return type stripped") {
+        // Note: fract is also a GLSL builtin, so the builtin-shadowing rename
+        // pass also kicks in and renames to _w_fract.
+        std::string in     = "const float fract(float x) {\n return x - floor(x);\n}";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("float _w_fract(float x)") != std::string::npos);
+        CHECK(result.find("const float") == std::string::npos);
+    }
+
+    TEST_CASE("const on non-shadowing function return type stripped (no rename)") {
+        std::string in     = "const vec3 myHelper(vec3 a) { return a; }";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec3 myHelper(vec3 a)") != std::string::npos);
+        CHECK(result.find("const vec3") == std::string::npos);
+    }
+
+    TEST_CASE("const on vec3 function return stripped") {
+        std::string in     = "const vec3 mymix(vec3 a, vec3 b) { return a * b; }";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("vec3 mymix(") != std::string::npos);
+        CHECK(result.find("const vec3 mymix(") == std::string::npos);
+    }
+
+    TEST_CASE("const variable decl NOT touched") {
+        std::string in = "const float PI = 3.14159;";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    TEST_CASE("const vec3 variable decl NOT touched") {
+        std::string in = "const vec3 LumCoeff = vec3(0.2125, 0.7154, 0.0721);";
+        CHECK_EQ(FixImplicitConversions(in), in);
+    }
+
+    // --- Pattern: user function with vecN param called with wider varying ---
+
+    TEST_CASE("shimmer regression: rotateVec2(v_TexCoord) gets .xy") {
+        std::string in     = "in vec4 v_TexCoord;\n"
+                             "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+                             "void main() {\n"
+                             "  vec2 c = rotateVec2(v_TexCoord, 1.57);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
+    }
+
+    TEST_CASE("user function vec3 param called with vec4 varying gets .xyz") {
+        std::string in     = "in vec4 v_Color;\n"
+                             "vec3 desaturate(vec3 c, float s) { return c; }\n"
+                             "void main() {\n"
+                             "  vec3 d = desaturate(v_Color, 0.5);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("desaturate(v_Color.xyz,") != std::string::npos);
+    }
+
+    TEST_CASE("matching-width varying call NOT touched") {
+        std::string in     = "in vec2 v_UV;\n"
+                             "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+                             "void main() {\n"
+                             "  vec2 c = rotateVec2(v_UV, 1.57);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("rotateVec2(v_UV,") != std::string::npos);
+        CHECK(result.find("v_UV.xy") == std::string::npos);
+    }
+
+    TEST_CASE("already-swizzled varying arg NOT double-swizzled") {
+        std::string in     = "in vec4 v_TexCoord;\n"
+                             "vec2 rotateVec2(vec2 v, float r) { return v; }\n"
+                             "void main() {\n"
+                             "  vec2 c = rotateVec2(v_TexCoord.xy, 1.57);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        // Should not insert another .xy after the existing one
+        CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
+        CHECK(result.find("rotateVec2(v_TexCoord.xy,") != std::string::npos);
+    }
+
+    TEST_CASE("unknown function (builtin) call NOT touched") {
+        std::string in     = "in vec4 v_TexCoord;\n"
+                             "void main() {\n"
+                             "  vec4 c = texture(g_Texture0, v_TexCoord);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        // texture() is handled by the dedicated earlier pass; our new pass doesn't
+        // know texture's signature because it's not declared in the shader body.
+        // (The earlier pass already produces v_TexCoord.xy.)
+        CHECK(result.find("texture(g_Texture0, v_TexCoord.xy)") != std::string::npos);
+    }
+
+    // --- Pattern: user function shadowing a GLSL builtin gets renamed ---
+
+    TEST_CASE("user-defined fract renamed to _w_fract at def + calls") {
+        std::string in     = "float fract(float x) {\n"
+                             "  return x - floor(x);\n"
+                             "}\n"
+                             "void main() {\n"
+                             "  float a = fract(1.5);\n"
+                             "}\n";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("float _w_fract(float x)") != std::string::npos);
+        CHECK(result.find("_w_fract(1.5)") != std::string::npos);
+        // Original bare fract at call site should be gone
+        CHECK(result.find(" fract(") == std::string::npos);
+    }
+
+    TEST_CASE("no user fract definition → builtin calls unchanged") {
+        std::string in     = "void main() {\n  float a = fract(1.5);\n}";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("fract(1.5)") != std::string::npos);
+        CHECK(result.find("_w_fract") == std::string::npos);
+    }
+
+    // --- Pattern: vec3 VAR = texture(...) gets .xyz ---
+
+    TEST_CASE("vec3 assigned texture() gets .xyz") {
+        std::string in     = "vec3 col = texture(g_Tex, uv);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_Tex, uv).xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 assigned texture() with nested call gets .xyz") {
+        std::string in     = "vec3 col = texture(g_Tex, fract(uv));";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_Tex, fract(uv)).xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 assigned textureLod also handled") {
+        std::string in     = "vec3 col = textureLod(g_Tex, uv, 0.0);";
+        auto        result = FixImplicitConversions(in);
+        CHECK(result.find("textureLod(g_Tex, uv, 0.0).xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec4 VAR = texture() NOT touched (no truncation needed)") {
+        std::string in     = "vec4 col = texture(g_Tex, uv);";
+        auto        result = FixImplicitConversions(in);
+        // Must not get .xyz
+        CHECK(result.find(".xyz") == std::string::npos);
+    }
 
 } // TEST_SUITE("FixImplicitConversions")
 
@@ -1053,52 +1045,52 @@ TEST_CASE("vec4 VAR = texture() NOT touched (no truncation needed)") {
 // ===========================================================================
 
 TEST_SUITE("FixEffectAlpha") {
+    TEST_CASE("full assignment → unchanged") {
+        std::string in = "void main() {\nglOutColor = vec4(1.0);\n}";
+        CHECK_EQ(FixEffectAlpha(in), in);
+    }
 
-TEST_CASE("full assignment → unchanged") {
-    std::string in = "void main() {\nglOutColor = vec4(1.0);\n}";
-    CHECK_EQ(FixEffectAlpha(in), in);
-}
+    TEST_CASE("no glOutColor at all → unchanged") {
+        std::string in = "void main() {\nvec4 col = texture(g_Tex, uv);\n}";
+        CHECK_EQ(FixEffectAlpha(in), in);
+    }
 
-TEST_CASE("no glOutColor at all → unchanged") {
-    std::string in = "void main() {\nvec4 col = texture(g_Tex, uv);\n}";
-    CHECK_EQ(FixEffectAlpha(in), in);
-}
+    TEST_CASE("explicit alpha write (.a) → unchanged") {
+        std::string in = "void main() {\nglOutColor.rgb = vec3(1.0);\nglOutColor.a = 1.0;\n}";
+        CHECK_EQ(FixEffectAlpha(in), in);
+    }
 
-TEST_CASE("explicit alpha write (.a) → unchanged") {
-    std::string in = "void main() {\nglOutColor.rgb = vec3(1.0);\nglOutColor.a = 1.0;\n}";
-    CHECK_EQ(FixEffectAlpha(in), in);
-}
+    TEST_CASE("explicit alpha write (.rgba) → unchanged") {
+        std::string in = "void main() {\nglOutColor.rgba = vec4(1.0);\n}";
+        CHECK_EQ(FixEffectAlpha(in), in);
+    }
 
-TEST_CASE("explicit alpha write (.rgba) → unchanged") {
-    std::string in = "void main() {\nglOutColor.rgba = vec4(1.0);\n}";
-    CHECK_EQ(FixEffectAlpha(in), in);
-}
+    TEST_CASE("explicit alpha write (.xyzw) → unchanged") {
+        std::string in = "void main() {\nglOutColor.xyzw = vec4(1.0);\n}";
+        CHECK_EQ(FixEffectAlpha(in), in);
+    }
 
-TEST_CASE("explicit alpha write (.xyzw) → unchanged") {
-    std::string in = "void main() {\nglOutColor.xyzw = vec4(1.0);\n}";
-    CHECK_EQ(FixEffectAlpha(in), in);
-}
+    TEST_CASE("component write without alpha → injects alpha preservation") {
+        std::string in     = "void main() {\nglOutColor.rgb = vec3(1.0);\n}";
+        auto        result = FixEffectAlpha(in);
+        CHECK(result.find("glOutColor.a = texSample2D(g_Texture0, v_TexCoord.xy).a;") !=
+              std::string::npos);
+    }
 
-TEST_CASE("component write without alpha → injects alpha preservation") {
-    std::string in = "void main() {\nglOutColor.rgb = vec3(1.0);\n}";
-    auto result = FixEffectAlpha(in);
-    CHECK(result.find("glOutColor.a = texSample2D(g_Texture0, v_TexCoord.xy).a;") != std::string::npos);
-}
+    TEST_CASE("component .r write without alpha → injects alpha") {
+        std::string in     = "void main() {\nglOutColor.r = 0.5;\n}";
+        auto        result = FixEffectAlpha(in);
+        CHECK(result.find("glOutColor.a = texSample2D") != std::string::npos);
+    }
 
-TEST_CASE("component .r write without alpha → injects alpha") {
-    std::string in = "void main() {\nglOutColor.r = 0.5;\n}";
-    auto result = FixEffectAlpha(in);
-    CHECK(result.find("glOutColor.a = texSample2D") != std::string::npos);
-}
-
-TEST_CASE("injection placed before closing brace") {
-    std::string in = "void main() {\nglOutColor.rgb = vec3(1.0);\n}";
-    auto result = FixEffectAlpha(in);
-    auto alpha_pos = result.find("glOutColor.a = texSample2D");
-    auto brace_pos = result.rfind('}');
-    CHECK(alpha_pos != std::string::npos);
-    CHECK(alpha_pos < brace_pos);
-}
+    TEST_CASE("injection placed before closing brace") {
+        std::string in        = "void main() {\nglOutColor.rgb = vec3(1.0);\n}";
+        auto        result    = FixEffectAlpha(in);
+        auto        alpha_pos = result.find("glOutColor.a = texSample2D");
+        auto        brace_pos = result.rfind('}');
+        CHECK(alpha_pos != std::string::npos);
+        CHECK(alpha_pos < brace_pos);
+    }
 
 } // TEST_SUITE("FixEffectAlpha")
 
@@ -1107,53 +1099,52 @@ TEST_CASE("injection placed before closing brace") {
 // ===========================================================================
 
 TEST_SUITE("FixCombineAlpha") {
+    TEST_CASE("shine_combine pattern removed (macro-expanded saturate)") {
+        // After macro expansion: saturate(x) → (clamp(x, 0.0, 1.0))
+        std::string in     = "void main() {\n"
+                             " albedo.a = (clamp(albedo.a + rays.a, 0.0, 1.0));\n"
+                             " glOutColor = albedo;\n"
+                             "}";
+        auto        result = FixCombineAlpha(in);
+        CHECK(result.find("// albedo.a") != std::string::npos);
+        CHECK(result.find("glOutColor = albedo;") != std::string::npos);
+    }
 
-TEST_CASE("shine_combine pattern removed (macro-expanded saturate)") {
-    // After macro expansion: saturate(x) → (clamp(x, 0.0, 1.0))
-    std::string in = "void main() {\n"
-                     " albedo.a = (clamp(albedo.a + rays.a, 0.0, 1.0));\n"
-                     " glOutColor = albedo;\n"
-                     "}";
-    auto result = FixCombineAlpha(in);
-    CHECK(result.find("// albedo.a") != std::string::npos);
-    CHECK(result.find("glOutColor = albedo;") != std::string::npos);
-}
+    TEST_CASE("godrays_combine with extra whitespace") {
+        std::string in     = "void main() {\n"
+                             " albedo.a = (clamp( albedo.a + rays.a , 0.0 , 1.0 )) ;\n"
+                             " glOutColor = albedo;\n"
+                             "}";
+        auto        result = FixCombineAlpha(in);
+        CHECK(result.find("// albedo.a") != std::string::npos);
+    }
 
-TEST_CASE("godrays_combine with extra whitespace") {
-    std::string in = "void main() {\n"
-                     " albedo.a = (clamp( albedo.a + rays.a , 0.0 , 1.0 )) ;\n"
-                     " glOutColor = albedo;\n"
-                     "}";
-    auto result = FixCombineAlpha(in);
-    CHECK(result.find("// albedo.a") != std::string::npos);
-}
+    TEST_CASE("fluidsimulation_combine NOT matched (different LHS/operand)") {
+        std::string in     = "void main() {\n"
+                             " albedo.a = (clamp(prev.a + albedo.a, 0.0, 1.0));\n"
+                             " glOutColor = albedo;\n"
+                             "}";
+        auto        result = FixCombineAlpha(in);
+        // Should be unchanged — prev != albedo on LHS
+        CHECK_EQ(result, in);
+    }
 
-TEST_CASE("fluidsimulation_combine NOT matched (different LHS/operand)") {
-    std::string in = "void main() {\n"
-                     " albedo.a = (clamp(prev.a + albedo.a, 0.0, 1.0));\n"
-                     " glOutColor = albedo;\n"
-                     "}";
-    auto result = FixCombineAlpha(in);
-    // Should be unchanged — prev != albedo on LHS
-    CHECK_EQ(result, in);
-}
+    TEST_CASE("no matching pattern → unchanged") {
+        std::string in = "void main() {\n"
+                         "  albedo.a = 1.0;\n"
+                         "  glOutColor = albedo;\n"
+                         "}";
+        CHECK_EQ(FixCombineAlpha(in), in);
+    }
 
-TEST_CASE("no matching pattern → unchanged") {
-    std::string in = "void main() {\n"
-                     "  albedo.a = 1.0;\n"
-                     "  glOutColor = albedo;\n"
-                     "}";
-    CHECK_EQ(FixCombineAlpha(in), in);
-}
-
-TEST_CASE("different variable names work") {
-    std::string in = "void main() {\n"
-                     " color.a = (clamp(color.a + bloom.a, 0.0, 1.0));\n"
-                     " glOutColor = color;\n"
-                     "}";
-    auto result = FixCombineAlpha(in);
-    CHECK(result.find("// color.a") != std::string::npos);
-}
+    TEST_CASE("different variable names work") {
+        std::string in     = "void main() {\n"
+                             " color.a = (clamp(color.a + bloom.a, 0.0, 1.0));\n"
+                             " glOutColor = color;\n"
+                             "}";
+        auto        result = FixCombineAlpha(in);
+        CHECK(result.find("// color.a") != std::string::npos);
+    }
 
 } // TEST_SUITE("FixCombineAlpha")
 
@@ -1162,416 +1153,422 @@ TEST_CASE("different variable names work") {
 // ===========================================================================
 
 TEST_SUITE("TranslateGeometryShader") {
+    // --- Pattern 1: [maxvertexcount(N)] → #define + removal ---
 
-// --- Pattern 1: [maxvertexcount(N)] → #define + removal ---
-
-TEST_CASE("maxvertexcount extracted to #define") {
-    std::string in  = "[maxvertexcount(6)]\nvoid main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("#define WE_GS_MAX_VERTICES (6)") != std::string::npos);
-    CHECK(result.find("[maxvertexcount") == std::string::npos);
-}
-
-TEST_CASE("maxvertexcount with expression") {
-    std::string in  = "[maxvertexcount(SEGMENTS*2+2)]\nvoid main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("#define WE_GS_MAX_VERTICES (SEGMENTS*2+2)") != std::string::npos);
-}
-
-TEST_CASE("no maxvertexcount uses fallback 4") {
-    std::string in  = "void main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("#define WE_GS_MAX_VERTICES (4)") != std::string::npos);
-}
-
-// --- Pattern 2: gl_Position declaration removal ---
-
-TEST_CASE("in vec4 gl_Position removed") {
-    std::string in  = "in vec4 gl_Position;\nvoid main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("in vec4 gl_Position;") == std::string::npos);
-    CHECK(result.find("gl_Position input via gl_in") != std::string::npos);
-}
-
-TEST_CASE("out vec4 gl_Position removed") {
-    std::string in  = "out vec4 gl_Position;\nvoid main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("out vec4 gl_Position;") == std::string::npos);
-    CHECK(result.find("gl_Position output is built-in") != std::string::npos);
-}
-
-// --- Pattern 3: in TYPE v_xxx → in TYPE gs_in_v_xxx[] ---
-
-TEST_CASE("input varying renamed to gs_in_ array") {
-    std::string in  = "in vec4 v_Color;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("in vec4 gs_in_v_Color[];") != std::string::npos);
-}
-
-TEST_CASE("input float varying renamed") {
-    std::string in  = "in float v_Alpha;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("in float gs_in_v_Alpha[];") != std::string::npos);
-}
-
-TEST_CASE("output varying NOT renamed") {
-    std::string in  = "out vec4 v_Color;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gs_in_v_Color") == std::string::npos);
-}
-
-// --- Pattern 4: IN[0].gl_Position → gl_in[0].gl_Position ---
-
-TEST_CASE("IN[0].gl_Position → gl_in[0].gl_Position") {
-    std::string in  = "vec4 pos = IN[0].gl_Position;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
-    CHECK(result.find("IN[0].gl_Position") == std::string::npos);
-}
-
-// --- Pattern 5: IN[0].v_xxx → gs_in_v_xxx[0] ---
-
-TEST_CASE("IN[0].v_Color → gs_in_v_Color[0]") {
-    std::string in  = "vec4 c = IN[0].v_Color;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
-    CHECK(result.find("IN[0].v_Color") == std::string::npos);
-}
-
-TEST_CASE("IN[0].v_TexCoord → gs_in_v_TexCoord[0]") {
-    std::string in  = "vec2 uv = IN[0].v_TexCoord.xy;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gs_in_v_TexCoord[0].xy") != std::string::npos);
-}
-
-// --- Pattern 6: PS_INPUT variable declaration removed ---
-
-TEST_CASE("PS_INPUT v; removed") {
-    std::string in  = "PS_INPUT v;\nvoid main() {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("PS_INPUT v;") == std::string::npos);
-}
-
-// --- Pattern 6a: PS_INPUT return type → void ---
-
-TEST_CASE("PS_INPUT as function return type → void") {
-    std::string in  = "PS_INPUT makeVertex() { }";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("void makeVertex()") != std::string::npos);
-}
-
-// --- Pattern 6b: VS_OUTPUT parameter removal ---
-
-TEST_CASE("trailing VS_OUTPUT parameter removed") {
-    std::string in  = "void emit(inout TriangleStream OUT, in VS_OUTPUT IN) {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("VS_OUTPUT") == std::string::npos);
-    CHECK(result.find("inout TriangleStream OUT") != std::string::npos);
-}
-
-TEST_CASE("leading VS_OUTPUT parameter removed") {
-    std::string in  = "void func(in VS_OUTPUT IN, inout TriangleStream OUT) {}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("VS_OUTPUT") == std::string::npos);
-}
-
-// --- Pattern 6c: IN.gl_Position → gl_in[0].gl_Position ---
-
-TEST_CASE("IN.gl_Position → gl_in[0].gl_Position") {
-    std::string in  = "vec4 p = IN.gl_Position;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
-}
-
-// --- Pattern 6d: IN.v_xxx → gs_in_v_xxx[0] ---
-
-TEST_CASE("IN.v_Color → gs_in_v_Color[0]") {
-    std::string in  = "vec4 c = IN.v_Color;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
-}
-
-// --- Pattern 6e: bare IN[0] removal from function args ---
-
-TEST_CASE("trailing IN[0] removed from args") {
-    std::string in  = "func(OUT, IN[0]);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("func(OUT)") != std::string::npos);
-}
-
-TEST_CASE("leading IN[0] removed from args") {
-    std::string in  = "func(IN[0], OUT);";
-    auto result = TranslateGeometryShader(in);
-    bool found = result.find("func( OUT)") != std::string::npos ||
-                 result.find("func(OUT)") != std::string::npos;
-    CHECK(found);
-}
-
-// --- Pattern 6f: return v; → return; ---
-
-TEST_CASE("return v; → return;") {
-    std::string in  = "return v;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("return;") != std::string::npos);
-    CHECK(result.find("return v;") == std::string::npos);
-}
-
-TEST_CASE("return value; not affected") {
-    std::string in  = "return value;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("return value;") != std::string::npos);
-}
-
-// --- Pattern 7: v.gl_Position → gl_Position ---
-
-TEST_CASE("v.gl_Position → gl_Position") {
-    std::string in  = "v.gl_Position = vec4(1.0);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_Position = vec4(1.0)") != std::string::npos);
-    CHECK(result.find("v.gl_Position") == std::string::npos);
-}
-
-// --- Pattern 8: v.v_xxx → v_xxx ---
-
-TEST_CASE("v.v_Color → v_Color") {
-    std::string in  = "v.v_Color = vec4(1.0);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("v_Color = vec4(1.0)") != std::string::npos);
-    CHECK(result.find("v.v_Color") == std::string::npos);
-}
-
-TEST_CASE("v.v_TexCoord.xy preserved swizzle") {
-    std::string in  = "v.v_TexCoord.xy = uv;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("v_TexCoord.xy = uv") != std::string::npos);
-}
-
-// --- Pattern 8.5: vec3 varying = mul() → .xyz ---
-
-TEST_CASE("v_WorldPos = mul() gets .xyz") {
-    std::string in  = "v_WorldPos = mul(pos, mat);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("v_WorldPos = (mul(pos, mat)).xyz;") != std::string::npos);
-}
-
-TEST_CASE("v_ScreenCoord = mul() gets .xyz") {
-    std::string in  = "v_ScreenCoord = mul(pos, mat);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find(".xyz;") != std::string::npos);
-}
-
-TEST_CASE("non-vec3 varying = mul() unchanged") {
-    std::string in  = "v_Other = mul(pos, mat);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find(".xyz") == std::string::npos);
-}
-
-// --- Pattern 9: OUT.Append() ---
-
-TEST_CASE("OUT.Append(v) → EmitVertex()") {
-    std::string in  = "OUT.Append(v);";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("EmitVertex();") != std::string::npos);
-    CHECK(result.find("OUT.Append") == std::string::npos);
-}
-
-TEST_CASE("OUT.Append(FuncCall()) → FuncCall(); EmitVertex()") {
-    std::string in  = "OUT.Append(makeVert(a, b));";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("makeVert(a, b); EmitVertex();") != std::string::npos);
-}
-
-TEST_CASE("OUT.Append with nested parens") {
-    std::string in  = "OUT.Append(func(a, vec2(1.0, 2.0)));";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("EmitVertex()") != std::string::npos);
-    CHECK(result.find("func(a, vec2(1.0, 2.0))") != std::string::npos);
-}
-
-TEST_CASE("OUT.Append with space before semicolon") {
-    std::string in  = "OUT.Append(makeVert()) ;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("makeVert(); EmitVertex();") != std::string::npos);
-    CHECK(result.find("OUT.Append") == std::string::npos);
-}
-
-TEST_CASE("OUT.Append preserves code before and after") {
-    std::string in  = "float x = 1.0;\nOUT.Append(buildVert(a, b));\nfloat y = 2.0;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("float x = 1.0") != std::string::npos);
-    CHECK(result.find("float y = 2.0") != std::string::npos);
-    CHECK(result.find("buildVert(a, b); EmitVertex();") != std::string::npos);
-}
-
-TEST_CASE("multiple OUT.Append in same shader") {
-    std::string in  = "OUT.Append(makeA());\nOUT.Append(makeB());";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("makeA(); EmitVertex();") != std::string::npos);
-    CHECK(result.find("makeB(); EmitVertex();") != std::string::npos);
-}
-
-// --- Pattern 10: OUT.RestartStrip() → EndPrimitive() ---
-
-TEST_CASE("OUT.RestartStrip() → EndPrimitive()") {
-    std::string in  = "OUT.RestartStrip();";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("EndPrimitive();") != std::string::npos);
-    CHECK(result.find("OUT.RestartStrip") == std::string::npos);
-}
-
-// --- Pattern 11: for-loop variable shadowing ---
-
-TEST_CASE("for loop int s shadowing float s renamed") {
-    std::string in  = "for(int s=0;s<N;++s){float s=smoothstep(0.0,1.0,t);}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("_si") != std::string::npos);
-    CHECK(result.find("float s") != std::string::npos);
-}
-
-TEST_CASE("for loop int s without float s unchanged") {
-    std::string in  = "for(int s=0;s<N;++s){float t=1.0;}";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("_si") == std::string::npos);
-}
-
-// --- Pattern 12: gl_in[0].gl_Position vec4→vec3 truncation for function args ---
-
-TEST_CASE("gl_in[0].gl_Position truncated to .xyz for vec3 param") {
-    std::string in  = "vec3 doSomething(vec3 pos) { return pos; }\nvoid main() { doSomething(gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
-}
-
-TEST_CASE("gl_in[0].gl_Position NOT truncated for vec4 param") {
-    std::string in  = "void doSomething(vec4 pos) { }\nvoid main() { doSomething(gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    // Should NOT have .xyz after gl_Position
-    auto pos = result.find("gl_in[0].gl_Position");
-    CHECK(pos != std::string::npos);
-    // Check the char after "gl_in[0].gl_Position" is not '.'
-    size_t after = pos + std::string("gl_in[0].gl_Position").size();
-    if (after < result.size()) {
-        CHECK(result[after] != '.');
+    TEST_CASE("maxvertexcount extracted to #define") {
+        std::string in     = "[maxvertexcount(6)]\nvoid main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("#define WE_GS_MAX_VERTICES (6)") != std::string::npos);
+        CHECK(result.find("[maxvertexcount") == std::string::npos);
     }
-}
 
-TEST_CASE("gl_in[0].gl_Position as second arg gets .xyz") {
-    std::string in = "vec3 doSomething(float f, vec3 pos) { return pos; }\nvoid main() { doSomething(1.0, gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
-}
-
-TEST_CASE("gl_in[0].gl_Position in nested call correctly scanned") {
-    std::string in = "vec3 outer(vec3 p) { return p; }\nvoid main() { outer(gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
-}
-
-TEST_CASE("multiple gl_in[0].gl_Position occurrences all processed") {
-    std::string in = "vec3 f(vec3 p) { return p; }\nvoid main() { f(gl_in[0].gl_Position); f(gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    // Count occurrences of .xyz
-    size_t count = 0;
-    size_t pos = 0;
-    while ((pos = result.find("gl_in[0].gl_Position.xyz", pos)) != std::string::npos) {
-        count++;
-        pos += 24;
+    TEST_CASE("maxvertexcount with expression") {
+        std::string in     = "[maxvertexcount(SEGMENTS*2+2)]\nvoid main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("#define WE_GS_MAX_VERTICES (SEGMENTS*2+2)") != std::string::npos);
     }
-    CHECK(count == 2);
-}
 
-TEST_CASE("gl_in[0].gl_Position with existing swizzle not touched") {
-    std::string in  = "vec3 doSomething(vec3 pos) { return pos; }\nvoid main() { doSomething(gl_in[0].gl_Position.xyz); }";
-    auto result = TranslateGeometryShader(in);
-    // Should not double-swizzle
-    CHECK(result.find("gl_in[0].gl_Position.xyz.xyz") == std::string::npos);
-    CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
-}
+    TEST_CASE("no maxvertexcount uses fallback 4") {
+        std::string in     = "void main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("#define WE_GS_MAX_VERTICES (4)") != std::string::npos);
+    }
 
-// --- Combined test: full geometry shader translation ---
+    // --- Pattern 2: gl_Position declaration removal ---
 
-TEST_CASE("combined geometry shader translation") {
-    std::string in =
-        "[maxvertexcount(4)]\n"
-        "in vec4 gl_Position;\n"
-        "out vec4 gl_Position;\n"
-        "in vec4 v_Color;\n"
-        "in vec2 v_TexCoord;\n"
-        "void main(in VS_OUTPUT IN, inout TriangleStream OUT) {\n"
-        "  PS_INPUT v;\n"
-        "  v.gl_Position = IN[0].gl_Position;\n"
-        "  v.v_Color = IN[0].v_Color;\n"
-        "  OUT.Append(v);\n"
-        "  OUT.RestartStrip();\n"
-        "}\n";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("#define WE_GS_MAX_VERTICES (4)") != std::string::npos);
-    CHECK(result.find("gs_in_v_Color[]") != std::string::npos);
-    CHECK(result.find("gs_in_v_TexCoord[]") != std::string::npos);
-    CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
-    CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
-    CHECK(result.find("EmitVertex()") != std::string::npos);
-    CHECK(result.find("EndPrimitive()") != std::string::npos);
-    CHECK(result.find("PS_INPUT") == std::string::npos);
-    CHECK(result.find("VS_OUTPUT") == std::string::npos);
-}
+    TEST_CASE("in vec4 gl_Position removed") {
+        std::string in     = "in vec4 gl_Position;\nvoid main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("in vec4 gl_Position;") == std::string::npos);
+        CHECK(result.find("gl_Position input via gl_in") != std::string::npos);
+    }
 
-TEST_CASE("multiple OUT.Append preserves inter-call code exactly") {
-    // Two Append calls with code between them. The second call's prefix extraction
-    // depends on pos being updated correctly after the first call.
-    // If start-pos mutated to start+pos, the second call's prefix would be wrong.
-    std::string in  = "int a=1; OUT.Append(f1()); int b=2; OUT.Append(f2()); int c=3;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("int a=1; f1(); EmitVertex(); int b=2; f2(); EmitVertex(); int c=3;") != std::string::npos);
-}
+    TEST_CASE("out vec4 gl_Position removed") {
+        std::string in     = "out vec4 gl_Position;\nvoid main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("out vec4 gl_Position;") == std::string::npos);
+        CHECK(result.find("gl_Position output is built-in") != std::string::npos);
+    }
 
-TEST_CASE("OUT.Append exact extraction: no extra chars leaked") {
-    // Tests that start-pos subtraction and i-1-inner are exact
-    std::string in  = "AAA OUT.Append(compute(x, y)); BBB";
-    auto result = TranslateGeometryShader(in);
-    // Result should be: "AAA compute(x, y); EmitVertex(); BBB"
-    CHECK(result.find("AAA compute(x, y); EmitVertex(); BBB") != std::string::npos);
-}
+    // --- Pattern 3: in TYPE v_xxx → in TYPE gs_in_v_xxx[] ---
 
-TEST_CASE("OUT.Append with deeply nested parens") {
-    std::string in  = "OUT.Append(a(b(c(d))));";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("a(b(c(d))); EmitVertex();") != std::string::npos);
-}
+    TEST_CASE("input varying renamed to gs_in_ array") {
+        std::string in     = "in vec4 v_Color;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("in vec4 gs_in_v_Color[];") != std::string::npos);
+    }
 
-TEST_CASE("OUT.Append without semicolon") {
-    std::string in  = "OUT.Append(makeVert())\nnext line";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("makeVert(); EmitVertex()") != std::string::npos);
-    CHECK(result.find("next line") != std::string::npos);
-}
+    TEST_CASE("input float varying renamed") {
+        std::string in     = "in float v_Alpha;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("in float gs_in_v_Alpha[];") != std::string::npos);
+    }
 
-TEST_CASE("OUT.Append with tab before semicolon") {
-    std::string in  = "OUT.Append(v)\t;";
-    auto result = TranslateGeometryShader(in);
-    CHECK(result.find("EmitVertex();") != std::string::npos);
-}
+    TEST_CASE("output varying NOT renamed") {
+        std::string in     = "out vec4 v_Color;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gs_in_v_Color") == std::string::npos);
+    }
 
-TEST_CASE("gl_in[0].gl_Position with existing swizzle not truncated") {
-    std::string in = "vec3 f(vec3 p) { return p; }\nvoid main() { f(gl_in[0].gl_Position.xyz); }";
-    auto result = TranslateGeometryShader(in);
-    // Should keep .xyz, NOT add another .xyz
-    auto pos = result.find("gl_in[0].gl_Position.xyz");
-    CHECK(pos != std::string::npos);
-    // No double .xyz.xyz
-    CHECK(result.find("gl_in[0].gl_Position.xyz.xyz") == std::string::npos);
-}
+    // --- Pattern 4: IN[0].gl_Position → gl_in[0].gl_Position ---
 
-TEST_CASE("gl_in[0].gl_Position multiple occurrences") {
-    std::string in = "vec3 f(vec3 a, vec3 b) { return a; }\n"
-                     "void main() { f(gl_in[0].gl_Position, gl_in[0].gl_Position); }";
-    auto result = TranslateGeometryShader(in);
-    // Both should get .xyz
-    size_t first  = result.find("gl_in[0].gl_Position.xyz");
-    size_t second = result.find("gl_in[0].gl_Position.xyz", first + 1);
-    CHECK(first  != std::string::npos);
-    CHECK(second != std::string::npos);
-}
+    TEST_CASE("IN[0].gl_Position → gl_in[0].gl_Position") {
+        std::string in     = "vec4 pos = IN[0].gl_Position;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
+        CHECK(result.find("IN[0].gl_Position") == std::string::npos);
+    }
+
+    // --- Pattern 5: IN[0].v_xxx → gs_in_v_xxx[0] ---
+
+    TEST_CASE("IN[0].v_Color → gs_in_v_Color[0]") {
+        std::string in     = "vec4 c = IN[0].v_Color;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
+        CHECK(result.find("IN[0].v_Color") == std::string::npos);
+    }
+
+    TEST_CASE("IN[0].v_TexCoord → gs_in_v_TexCoord[0]") {
+        std::string in     = "vec2 uv = IN[0].v_TexCoord.xy;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gs_in_v_TexCoord[0].xy") != std::string::npos);
+    }
+
+    // --- Pattern 6: PS_INPUT variable declaration removed ---
+
+    TEST_CASE("PS_INPUT v; removed") {
+        std::string in     = "PS_INPUT v;\nvoid main() {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("PS_INPUT v;") == std::string::npos);
+    }
+
+    // --- Pattern 6a: PS_INPUT return type → void ---
+
+    TEST_CASE("PS_INPUT as function return type → void") {
+        std::string in     = "PS_INPUT makeVertex() { }";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("void makeVertex()") != std::string::npos);
+    }
+
+    // --- Pattern 6b: VS_OUTPUT parameter removal ---
+
+    TEST_CASE("trailing VS_OUTPUT parameter removed") {
+        std::string in     = "void emit(inout TriangleStream OUT, in VS_OUTPUT IN) {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("VS_OUTPUT") == std::string::npos);
+        CHECK(result.find("inout TriangleStream OUT") != std::string::npos);
+    }
+
+    TEST_CASE("leading VS_OUTPUT parameter removed") {
+        std::string in     = "void func(in VS_OUTPUT IN, inout TriangleStream OUT) {}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("VS_OUTPUT") == std::string::npos);
+    }
+
+    // --- Pattern 6c: IN.gl_Position → gl_in[0].gl_Position ---
+
+    TEST_CASE("IN.gl_Position → gl_in[0].gl_Position") {
+        std::string in     = "vec4 p = IN.gl_Position;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
+    }
+
+    // --- Pattern 6d: IN.v_xxx → gs_in_v_xxx[0] ---
+
+    TEST_CASE("IN.v_Color → gs_in_v_Color[0]") {
+        std::string in     = "vec4 c = IN.v_Color;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
+    }
+
+    // --- Pattern 6e: bare IN[0] removal from function args ---
+
+    TEST_CASE("trailing IN[0] removed from args") {
+        std::string in     = "func(OUT, IN[0]);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("func(OUT)") != std::string::npos);
+    }
+
+    TEST_CASE("leading IN[0] removed from args") {
+        std::string in     = "func(IN[0], OUT);";
+        auto        result = TranslateGeometryShader(in);
+        bool        found  = result.find("func( OUT)") != std::string::npos ||
+                     result.find("func(OUT)") != std::string::npos;
+        CHECK(found);
+    }
+
+    // --- Pattern 6f: return v; → return; ---
+
+    TEST_CASE("return v; → return;") {
+        std::string in     = "return v;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("return;") != std::string::npos);
+        CHECK(result.find("return v;") == std::string::npos);
+    }
+
+    TEST_CASE("return value; not affected") {
+        std::string in     = "return value;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("return value;") != std::string::npos);
+    }
+
+    // --- Pattern 7: v.gl_Position → gl_Position ---
+
+    TEST_CASE("v.gl_Position → gl_Position") {
+        std::string in     = "v.gl_Position = vec4(1.0);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_Position = vec4(1.0)") != std::string::npos);
+        CHECK(result.find("v.gl_Position") == std::string::npos);
+    }
+
+    // --- Pattern 8: v.v_xxx → v_xxx ---
+
+    TEST_CASE("v.v_Color → v_Color") {
+        std::string in     = "v.v_Color = vec4(1.0);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("v_Color = vec4(1.0)") != std::string::npos);
+        CHECK(result.find("v.v_Color") == std::string::npos);
+    }
+
+    TEST_CASE("v.v_TexCoord.xy preserved swizzle") {
+        std::string in     = "v.v_TexCoord.xy = uv;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("v_TexCoord.xy = uv") != std::string::npos);
+    }
+
+    // --- Pattern 8.5: vec3 varying = mul() → .xyz ---
+
+    TEST_CASE("v_WorldPos = mul() gets .xyz") {
+        std::string in     = "v_WorldPos = mul(pos, mat);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("v_WorldPos = (mul(pos, mat)).xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("v_ScreenCoord = mul() gets .xyz") {
+        std::string in     = "v_ScreenCoord = mul(pos, mat);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find(".xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("non-vec3 varying = mul() unchanged") {
+        std::string in     = "v_Other = mul(pos, mat);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find(".xyz") == std::string::npos);
+    }
+
+    // --- Pattern 9: OUT.Append() ---
+
+    TEST_CASE("OUT.Append(v) → EmitVertex()") {
+        std::string in     = "OUT.Append(v);";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("EmitVertex();") != std::string::npos);
+        CHECK(result.find("OUT.Append") == std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append(FuncCall()) → FuncCall(); EmitVertex()") {
+        std::string in     = "OUT.Append(makeVert(a, b));";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("makeVert(a, b); EmitVertex();") != std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append with nested parens") {
+        std::string in     = "OUT.Append(func(a, vec2(1.0, 2.0)));";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("EmitVertex()") != std::string::npos);
+        CHECK(result.find("func(a, vec2(1.0, 2.0))") != std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append with space before semicolon") {
+        std::string in     = "OUT.Append(makeVert()) ;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("makeVert(); EmitVertex();") != std::string::npos);
+        CHECK(result.find("OUT.Append") == std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append preserves code before and after") {
+        std::string in     = "float x = 1.0;\nOUT.Append(buildVert(a, b));\nfloat y = 2.0;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("float x = 1.0") != std::string::npos);
+        CHECK(result.find("float y = 2.0") != std::string::npos);
+        CHECK(result.find("buildVert(a, b); EmitVertex();") != std::string::npos);
+    }
+
+    TEST_CASE("multiple OUT.Append in same shader") {
+        std::string in     = "OUT.Append(makeA());\nOUT.Append(makeB());";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("makeA(); EmitVertex();") != std::string::npos);
+        CHECK(result.find("makeB(); EmitVertex();") != std::string::npos);
+    }
+
+    // --- Pattern 10: OUT.RestartStrip() → EndPrimitive() ---
+
+    TEST_CASE("OUT.RestartStrip() → EndPrimitive()") {
+        std::string in     = "OUT.RestartStrip();";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("EndPrimitive();") != std::string::npos);
+        CHECK(result.find("OUT.RestartStrip") == std::string::npos);
+    }
+
+    // --- Pattern 11: for-loop variable shadowing ---
+
+    TEST_CASE("for loop int s shadowing float s renamed") {
+        std::string in     = "for(int s=0;s<N;++s){float s=smoothstep(0.0,1.0,t);}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("_si") != std::string::npos);
+        CHECK(result.find("float s") != std::string::npos);
+    }
+
+    TEST_CASE("for loop int s without float s unchanged") {
+        std::string in     = "for(int s=0;s<N;++s){float t=1.0;}";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("_si") == std::string::npos);
+    }
+
+    // --- Pattern 12: gl_in[0].gl_Position vec4→vec3 truncation for function args ---
+
+    TEST_CASE("gl_in[0].gl_Position truncated to .xyz for vec3 param") {
+        std::string in     = "vec3 doSomething(vec3 pos) { return pos; }\nvoid main() { "
+                             "doSomething(gl_in[0].gl_Position); }";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+    }
+
+    TEST_CASE("gl_in[0].gl_Position NOT truncated for vec4 param") {
+        std::string in =
+            "void doSomething(vec4 pos) { }\nvoid main() { doSomething(gl_in[0].gl_Position); }";
+        auto result = TranslateGeometryShader(in);
+        // Should NOT have .xyz after gl_Position
+        auto pos = result.find("gl_in[0].gl_Position");
+        CHECK(pos != std::string::npos);
+        // Check the char after "gl_in[0].gl_Position" is not '.'
+        size_t after = pos + std::string("gl_in[0].gl_Position").size();
+        if (after < result.size()) {
+            CHECK(result[after] != '.');
+        }
+    }
+
+    TEST_CASE("gl_in[0].gl_Position as second arg gets .xyz") {
+        std::string in     = "vec3 doSomething(float f, vec3 pos) { return pos; }\nvoid main() { "
+                             "doSomething(1.0, gl_in[0].gl_Position); }";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+    }
+
+    TEST_CASE("gl_in[0].gl_Position in nested call correctly scanned") {
+        std::string in =
+            "vec3 outer(vec3 p) { return p; }\nvoid main() { outer(gl_in[0].gl_Position); }";
+        auto result = TranslateGeometryShader(in);
+        CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+    }
+
+    TEST_CASE("multiple gl_in[0].gl_Position occurrences all processed") {
+        std::string in     = "vec3 f(vec3 p) { return p; }\nvoid main() { f(gl_in[0].gl_Position); "
+                             "f(gl_in[0].gl_Position); }";
+        auto        result = TranslateGeometryShader(in);
+        // Count occurrences of .xyz
+        size_t count = 0;
+        size_t pos   = 0;
+        while ((pos = result.find("gl_in[0].gl_Position.xyz", pos)) != std::string::npos) {
+            count++;
+            pos += 24;
+        }
+        CHECK(count == 2);
+    }
+
+    TEST_CASE("gl_in[0].gl_Position with existing swizzle not touched") {
+        std::string in     = "vec3 doSomething(vec3 pos) { return pos; }\nvoid main() { "
+                             "doSomething(gl_in[0].gl_Position.xyz); }";
+        auto        result = TranslateGeometryShader(in);
+        // Should not double-swizzle
+        CHECK(result.find("gl_in[0].gl_Position.xyz.xyz") == std::string::npos);
+        CHECK(result.find("gl_in[0].gl_Position.xyz") != std::string::npos);
+    }
+
+    // --- Combined test: full geometry shader translation ---
+
+    TEST_CASE("combined geometry shader translation") {
+        std::string in     = "[maxvertexcount(4)]\n"
+                             "in vec4 gl_Position;\n"
+                             "out vec4 gl_Position;\n"
+                             "in vec4 v_Color;\n"
+                             "in vec2 v_TexCoord;\n"
+                             "void main(in VS_OUTPUT IN, inout TriangleStream OUT) {\n"
+                             "  PS_INPUT v;\n"
+                             "  v.gl_Position = IN[0].gl_Position;\n"
+                             "  v.v_Color = IN[0].v_Color;\n"
+                             "  OUT.Append(v);\n"
+                             "  OUT.RestartStrip();\n"
+                             "}\n";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("#define WE_GS_MAX_VERTICES (4)") != std::string::npos);
+        CHECK(result.find("gs_in_v_Color[]") != std::string::npos);
+        CHECK(result.find("gs_in_v_TexCoord[]") != std::string::npos);
+        CHECK(result.find("gl_in[0].gl_Position") != std::string::npos);
+        CHECK(result.find("gs_in_v_Color[0]") != std::string::npos);
+        CHECK(result.find("EmitVertex()") != std::string::npos);
+        CHECK(result.find("EndPrimitive()") != std::string::npos);
+        CHECK(result.find("PS_INPUT") == std::string::npos);
+        CHECK(result.find("VS_OUTPUT") == std::string::npos);
+    }
+
+    TEST_CASE("multiple OUT.Append preserves inter-call code exactly") {
+        // Two Append calls with code between them. The second call's prefix extraction
+        // depends on pos being updated correctly after the first call.
+        // If start-pos mutated to start+pos, the second call's prefix would be wrong.
+        std::string in     = "int a=1; OUT.Append(f1()); int b=2; OUT.Append(f2()); int c=3;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("int a=1; f1(); EmitVertex(); int b=2; f2(); EmitVertex(); int c=3;") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append exact extraction: no extra chars leaked") {
+        // Tests that start-pos subtraction and i-1-inner are exact
+        std::string in     = "AAA OUT.Append(compute(x, y)); BBB";
+        auto        result = TranslateGeometryShader(in);
+        // Result should be: "AAA compute(x, y); EmitVertex(); BBB"
+        CHECK(result.find("AAA compute(x, y); EmitVertex(); BBB") != std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append with deeply nested parens") {
+        std::string in     = "OUT.Append(a(b(c(d))));";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("a(b(c(d))); EmitVertex();") != std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append without semicolon") {
+        std::string in     = "OUT.Append(makeVert())\nnext line";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("makeVert(); EmitVertex()") != std::string::npos);
+        CHECK(result.find("next line") != std::string::npos);
+    }
+
+    TEST_CASE("OUT.Append with tab before semicolon") {
+        std::string in     = "OUT.Append(v)\t;";
+        auto        result = TranslateGeometryShader(in);
+        CHECK(result.find("EmitVertex();") != std::string::npos);
+    }
+
+    TEST_CASE("gl_in[0].gl_Position with existing swizzle not truncated") {
+        std::string in =
+            "vec3 f(vec3 p) { return p; }\nvoid main() { f(gl_in[0].gl_Position.xyz); }";
+        auto result = TranslateGeometryShader(in);
+        // Should keep .xyz, NOT add another .xyz
+        auto pos = result.find("gl_in[0].gl_Position.xyz");
+        CHECK(pos != std::string::npos);
+        // No double .xyz.xyz
+        CHECK(result.find("gl_in[0].gl_Position.xyz.xyz") == std::string::npos);
+    }
+
+    TEST_CASE("gl_in[0].gl_Position multiple occurrences") {
+        std::string in     = "vec3 f(vec3 a, vec3 b) { return a; }\n"
+                             "void main() { f(gl_in[0].gl_Position, gl_in[0].gl_Position); }";
+        auto        result = TranslateGeometryShader(in);
+        // Both should get .xyz
+        size_t first  = result.find("gl_in[0].gl_Position.xyz");
+        size_t second = result.find("gl_in[0].gl_Position.xyz", first + 1);
+        CHECK(first != std::string::npos);
+        CHECK(second != std::string::npos);
+    }
 
 } // TEST_SUITE("TranslateGeometryShader")
 
@@ -1580,154 +1577,154 @@ TEST_CASE("gl_in[0].gl_Position multiple occurrences") {
 // ===========================================================================
 
 TEST_SUITE("FixFragmentGlPosition") {
+    TEST_CASE("gl_Position in fragment shader → gl_FragCoord") {
+        std::string in  = "float rnd = noise(gl_Position.xy);";
+        std::string out = "float rnd = noise(gl_FragCoord.xy);";
+        CHECK_EQ(FixFragmentGlPosition(in), out);
+    }
 
-TEST_CASE("gl_Position in fragment shader → gl_FragCoord") {
-    std::string in  = "float rnd = noise(gl_Position.xy);";
-    std::string out = "float rnd = noise(gl_FragCoord.xy);";
-    CHECK_EQ(FixFragmentGlPosition(in), out);
-}
+    TEST_CASE("multiple gl_Position references all replaced") {
+        std::string in  = "vec2 a = gl_Position.xy; float b = gl_Position.z;";
+        std::string out = "vec2 a = gl_FragCoord.xy; float b = gl_FragCoord.z;";
+        CHECK_EQ(FixFragmentGlPosition(in), out);
+    }
 
-TEST_CASE("multiple gl_Position references all replaced") {
-    std::string in  = "vec2 a = gl_Position.xy; float b = gl_Position.z;";
-    std::string out = "vec2 a = gl_FragCoord.xy; float b = gl_FragCoord.z;";
-    CHECK_EQ(FixFragmentGlPosition(in), out);
-}
+    TEST_CASE("no gl_Position → unchanged") {
+        std::string in = "vec4 color = texture(tex, uv);";
+        CHECK_EQ(FixFragmentGlPosition(in), in);
+    }
 
-TEST_CASE("no gl_Position → unchanged") {
-    std::string in = "vec4 color = texture(tex, uv);";
-    CHECK_EQ(FixFragmentGlPosition(in), in);
-}
+    TEST_CASE("identifier containing gl_Position not touched") {
+        std::string in = "float mygl_PositionHack = 1.0;";
+        CHECK_EQ(FixFragmentGlPosition(in), in);
+    }
 
-TEST_CASE("identifier containing gl_Position not touched") {
-    std::string in = "float mygl_PositionHack = 1.0;";
-    CHECK_EQ(FixFragmentGlPosition(in), in);
-}
-
-TEST_CASE("gl_PositionIn not touched (different identifier)") {
-    std::string in = "vec4 a = gl_PositionIn[0];";
-    CHECK_EQ(FixFragmentGlPosition(in), in);
-}
+    TEST_CASE("gl_PositionIn not touched (different identifier)") {
+        std::string in = "vec4 a = gl_PositionIn[0];";
+        CHECK_EQ(FixFragmentGlPosition(in), in);
+    }
 
 } // TEST_SUITE("FixFragmentGlPosition")
 
 TEST_SUITE("StripStrayEndifs") {
+    TEST_CASE("no preprocessor directives — unchanged") {
+        std::string in = "void main() {\n  gl_Position = vec4(0);\n}\n";
+        CHECK_EQ(StripStrayEndifs(in), in);
+    }
 
-TEST_CASE("no preprocessor directives — unchanged") {
-    std::string in = "void main() {\n  gl_Position = vec4(0);\n}\n";
-    CHECK_EQ(StripStrayEndifs(in), in);
-}
+    TEST_CASE("balanced #if/#endif — unchanged") {
+        std::string in = "#if FOO\nint x = 1;\n#endif\nvoid main() {}\n";
+        CHECK_EQ(StripStrayEndifs(in), in);
+    }
 
-TEST_CASE("balanced #if/#endif — unchanged") {
-    std::string in = "#if FOO\nint x = 1;\n#endif\nvoid main() {}\n";
-    CHECK_EQ(StripStrayEndifs(in), in);
-}
+    TEST_CASE("stray #endif removed") {
+        std::string in  = "#if FOO\nint x;\n#endif\n#endif\nvoid main() {}\n";
+        std::string out = "#if FOO\nint x;\n#endif\nvoid main() {}\n";
+        CHECK_EQ(StripStrayEndifs(in), out);
+    }
 
-TEST_CASE("stray #endif removed") {
-    std::string in = "#if FOO\nint x;\n#endif\n#endif\nvoid main() {}\n";
-    std::string out = "#if FOO\nint x;\n#endif\nvoid main() {}\n";
-    CHECK_EQ(StripStrayEndifs(in), out);
-}
+    TEST_CASE("multiple stray #endifs removed") {
+        std::string in  = "#endif\n#if A\n#endif\n#endif\n#endif\ncode;\n";
+        std::string out = "#if A\n#endif\ncode;\n";
+        CHECK_EQ(StripStrayEndifs(in), out);
+    }
 
-TEST_CASE("multiple stray #endifs removed") {
-    std::string in = "#endif\n#if A\n#endif\n#endif\n#endif\ncode;\n";
-    std::string out = "#if A\n#endif\ncode;\n";
-    CHECK_EQ(StripStrayEndifs(in), out);
-}
+    TEST_CASE("stray #else removed — code between kept") {
+        std::string in     = "#if X\nfoo;\n#endif\n#else\nbar;\n#endif\n";
+        auto        result = StripStrayEndifs(in);
+        // Stray #else and #endif stripped, but bar; (regular code) survives
+        CHECK(result.find("#else") == std::string::npos);
+        CHECK(result.find("bar;") != std::string::npos);
+        CHECK(result.find("foo;") != std::string::npos);
+    }
 
-TEST_CASE("stray #else removed — code between kept") {
-    std::string in = "#if X\nfoo;\n#endif\n#else\nbar;\n#endif\n";
-    auto result = StripStrayEndifs(in);
-    // Stray #else and #endif stripped, but bar; (regular code) survives
-    CHECK(result.find("#else") == std::string::npos);
-    CHECK(result.find("bar;") != std::string::npos);
-    CHECK(result.find("foo;") != std::string::npos);
-}
+    TEST_CASE("nested #if/#else/#endif preserved") {
+        std::string in = "#if A\n#if B\nx;\n#else\ny;\n#endif\n#endif\n";
+        CHECK_EQ(StripStrayEndifs(in), in);
+    }
 
-TEST_CASE("nested #if/#else/#endif preserved") {
-    std::string in = "#if A\n#if B\nx;\n#else\ny;\n#endif\n#endif\n";
-    CHECK_EQ(StripStrayEndifs(in), in);
-}
+    TEST_CASE("indented directives handled") {
+        std::string in  = "  #if FOO\n  code;\n  #endif\n  #endif\n";
+        std::string out = "  #if FOO\n  code;\n  #endif\n";
+        CHECK_EQ(StripStrayEndifs(in), out);
+    }
 
-TEST_CASE("indented directives handled") {
-    std::string in = "  #if FOO\n  code;\n  #endif\n  #endif\n";
-    std::string out = "  #if FOO\n  code;\n  #endif\n";
-    CHECK_EQ(StripStrayEndifs(in), out);
-}
-
-TEST_CASE("Simple_Audio_Bars pattern — stray #endif mid-main") {
-    std::string in =
-        "void main() {\n"
-        "#if BAR_STYLE == 1\n"
-        "  setup();\n"
-        "#endif\n"
-        "#if DEFORMITY == 3\n"
-        "  deform();\n"
-        "#endif\n"
-        "#endif\n"  // stray
-        "#if TRANSFORM\n"
-        "  transform();\n"
-        "#endif\n"
-        "  gl_Position = pos;\n"
-        "}\n";
-    auto result = StripStrayEndifs(in);
-    CHECK(result.find("gl_Position") != std::string::npos);
-    CHECK(result.find("}\n") != std::string::npos);
-    // The stray #endif should be gone, but the rest preserved
-    // Count #if and #endif — should be balanced
-    int ifs = 0, endifs = 0;
-    std::size_t p = 0;
-    while ((p = result.find("#if", p)) != std::string::npos) { ++ifs; p += 3; }
-    p = 0;
-    while ((p = result.find("#endif", p)) != std::string::npos) { ++endifs; p += 6; }
-    CHECK_EQ(ifs, endifs);
-}
+    TEST_CASE("Simple_Audio_Bars pattern — stray #endif mid-main") {
+        std::string in = "void main() {\n"
+                         "#if BAR_STYLE == 1\n"
+                         "  setup();\n"
+                         "#endif\n"
+                         "#if DEFORMITY == 3\n"
+                         "  deform();\n"
+                         "#endif\n"
+                         "#endif\n" // stray
+                         "#if TRANSFORM\n"
+                         "  transform();\n"
+                         "#endif\n"
+                         "  gl_Position = pos;\n"
+                         "}\n";
+        auto result = StripStrayEndifs(in);
+        CHECK(result.find("gl_Position") != std::string::npos);
+        CHECK(result.find("}\n") != std::string::npos);
+        // The stray #endif should be gone, but the rest preserved
+        // Count #if and #endif — should be balanced
+        int         ifs = 0, endifs = 0;
+        std::size_t p = 0;
+        while ((p = result.find("#if", p)) != std::string::npos) {
+            ++ifs;
+            p += 3;
+        }
+        p = 0;
+        while ((p = result.find("#endif", p)) != std::string::npos) {
+            ++endifs;
+            p += 6;
+        }
+        CHECK_EQ(ifs, endifs);
+    }
 
 } // TEST_SUITE("StripStrayEndifs")
 
 // --- ClampAudioReactiveShift ---
 
 TEST_SUITE("ClampAudioReactiveShift") {
+    TEST_CASE("clamps u_rOffset * v_AudioShift inside texture sample") {
+        std::string in =
+            "vec4 rValue = texture(g_Texture0, v_TexCoord.xy - (u_rOffset * v_AudioShift));";
+        auto result = ClampAudioReactiveShift(in);
+        CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+        CHECK(result.find("u_rOffset * v_AudioShift)") == std::string::npos);
+    }
 
-TEST_CASE("clamps u_rOffset * v_AudioShift inside texture sample") {
-    std::string in =
-        "vec4 rValue = texture(g_Texture0, v_TexCoord.xy - (u_rOffset * v_AudioShift));";
-    auto result = ClampAudioReactiveShift(in);
-    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-    CHECK(result.find("u_rOffset * v_AudioShift)") == std::string::npos);
-}
+    TEST_CASE("clamps all three u_rOffset/u_gOffset/u_bOffset occurrences") {
+        std::string in     = "r = tex(t, c - (u_rOffset * v_AudioShift));\n"
+                             "g = tex(t, c - (u_gOffset * v_AudioShift));\n"
+                             "b = tex(t, c - (u_bOffset * v_AudioShift));\n";
+        auto        result = ClampAudioReactiveShift(in);
+        CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+        CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+        CHECK(result.find("u_bOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    }
 
-TEST_CASE("clamps all three u_rOffset/u_gOffset/u_bOffset occurrences") {
-    std::string in =
-        "r = tex(t, c - (u_rOffset * v_AudioShift));\n"
-        "g = tex(t, c - (u_gOffset * v_AudioShift));\n"
-        "b = tex(t, c - (u_bOffset * v_AudioShift));\n";
-    auto result = ClampAudioReactiveShift(in);
-    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-    CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-    CHECK(result.find("u_bOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-}
+    TEST_CASE("shader without v_AudioShift unchanged") {
+        std::string in     = "vec4 c = texture(g_Tex, v_TexCoord);\n";
+        auto        result = ClampAudioReactiveShift(in);
+        CHECK_EQ(result, in);
+    }
 
-TEST_CASE("shader without v_AudioShift unchanged") {
-    std::string in = "vec4 c = texture(g_Tex, v_TexCoord);\n";
-    auto result = ClampAudioReactiveShift(in);
-    CHECK_EQ(result, in);
-}
+    TEST_CASE("v_AudioShift without u_*Offset multiplier unchanged") {
+        // Other uses of v_AudioShift (e.g. as a scale parameter) are not
+        // touched — the clamp is scoped specifically to UV sampling offsets.
+        std::string in     = "float scale = 1.0 + v_AudioShift * 0.2;\n";
+        auto        result = ClampAudioReactiveShift(in);
+        CHECK_EQ(result, in);
+    }
 
-TEST_CASE("v_AudioShift without u_*Offset multiplier unchanged") {
-    // Other uses of v_AudioShift (e.g. as a scale parameter) are not
-    // touched — the clamp is scoped specifically to UV sampling offsets.
-    std::string in = "float scale = 1.0 + v_AudioShift * 0.2;\n";
-    auto result = ClampAudioReactiveShift(in);
-    CHECK_EQ(result, in);
-}
-
-TEST_CASE("whitespace variations") {
-    std::string in =
-        "r = tex(t, c - (u_rOffset*v_AudioShift));\n"     // no spaces
-        "g = tex(t, c - (u_gOffset  *  v_AudioShift));";   // extra spaces
-    auto result = ClampAudioReactiveShift(in);
-    CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-    CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
-}
+    TEST_CASE("whitespace variations") {
+        std::string in = "r = tex(t, c - (u_rOffset*v_AudioShift));\n"    // no spaces
+                         "g = tex(t, c - (u_gOffset  *  v_AudioShift));"; // extra spaces
+        auto result = ClampAudioReactiveShift(in);
+        CHECK(result.find("u_rOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+        CHECK(result.find("u_gOffset * min(v_AudioShift, 1.0)") != std::string::npos);
+    }
 
 } // TEST_SUITE("ClampAudioReactiveShift")

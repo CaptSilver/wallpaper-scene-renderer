@@ -23,14 +23,14 @@ public:
                 const auto& props = json["general"]["properties"];
                 for (auto it = props.begin(); it != props.end(); ++it) {
                     const std::string& name = it.key();
-                    const auto& prop = it.value();
+                    const auto&        prop = it.value();
                     if (prop.contains("value")) {
                         m_properties[name] = prop["value"];
                         m_defaults[name]   = prop["value"];
                         if (prop.contains("type") && prop["type"].is_string())
                             m_types[name] = prop["type"].get<std::string>();
-                        LOG_INFO("User property: %s = %s", name.c_str(),
-                                 prop["value"].dump().c_str());
+                        LOG_INFO(
+                            "User property: %s = %s", name.c_str(), prop["value"].dump().c_str());
                     }
                 }
                 return true;
@@ -42,9 +42,7 @@ public:
     }
 
     // Check if a property exists
-    bool HasProperty(const std::string& name) const {
-        return m_properties.count(name) > 0;
-    }
+    bool HasProperty(const std::string& name) const { return m_properties.count(name) > 0; }
 
     // Get property value as JSON (returns nullopt if not found)
     std::optional<nlohmann::json> GetProperty(const std::string& name) const {
@@ -77,11 +75,11 @@ public:
     // Handles: {"user": "propname", "value": default}
     // Also handles: {"user": {"condition": "x", "name": "propname"}, "value": default}
     nlohmann::json ResolveValue(const nlohmann::json& json) const {
-        if (!json.is_object()) {
+        if (! json.is_object()) {
             return json;
         }
 
-        if (!json.contains("user")) {
+        if (! json.contains("user")) {
             return json;
         }
 
@@ -108,7 +106,7 @@ public:
 
         // Get the user property value
         auto propValue = GetProperty(propName);
-        if (!propValue.has_value()) {
+        if (! propValue.has_value()) {
             // Property not found, use default value
             if (json.contains("value")) {
                 return json["value"];
@@ -120,27 +118,26 @@ public:
         // If binding expects bool but property is non-bool (combo returning "6"),
         // use default-flip: visible = (current==default) ? visDefault : !visDefault
         if (condition.empty()) {
-            if (json.contains("value") && json["value"].is_boolean() && !propValue->is_boolean()) {
+            if (json.contains("value") && json["value"].is_boolean() && ! propValue->is_boolean()) {
                 bool visDefault = json["value"].get<bool>();
                 auto defaultVal = GetDefault(propName);
                 if (defaultVal.has_value()) {
                     std::string currentStr =
                         propValue->is_string() ? propValue->get<std::string>() : propValue->dump();
-                    std::string defaultStr =
-                        defaultVal->is_string() ? defaultVal->get<std::string>()
-                                                : defaultVal->dump();
-                    return nlohmann::json((currentStr == defaultStr) ? visDefault : !visDefault);
+                    std::string defaultStr = defaultVal->is_string()
+                                                 ? defaultVal->get<std::string>()
+                                                 : defaultVal->dump();
+                    return nlohmann::json((currentStr == defaultStr) ? visDefault : ! visDefault);
                 }
                 return json["value"]; // no default available, use binding default
             }
         }
 
         // Handle condition checking for visibility
-        if (!condition.empty()) {
+        if (! condition.empty()) {
             // For combo properties, check if value matches condition
-            std::string propStr = propValue->is_string()
-                ? propValue->get<std::string>()
-                : propValue->dump();
+            std::string propStr =
+                propValue->is_string() ? propValue->get<std::string>() : propValue->dump();
 
             bool matches = (propStr == condition);
 
@@ -155,8 +152,7 @@ public:
 
     // Insert all property names into a set (for activeBindings)
     void InsertAllNames(std::set<std::string>& out) const {
-        for (const auto& [name, _] : m_properties)
-            out.insert(name);
+        for (const auto& [name, _] : m_properties) out.insert(name);
     }
 
     // Check if empty
@@ -165,8 +161,7 @@ public:
     // Serialize all properties to JSON string: {"name": value, ...}
     std::string ToJson() const {
         nlohmann::json j;
-        for (const auto& [name, value] : m_properties)
-            j[name] = value;
+        for (const auto& [name, value] : m_properties) j[name] = value;
         return j.dump();
     }
 
@@ -181,7 +176,7 @@ public:
         if (jsonStr.empty()) return true;
         try {
             auto json = nlohmann::json::parse(jsonStr);
-            if (!json.is_object()) {
+            if (! json.is_object()) {
                 LOG_ERROR("User properties override is not an object");
                 return false;
             }
@@ -211,9 +206,8 @@ public:
         : m_previous(g_currentUserProperties) {
         g_currentUserProperties = props;
     }
-    ~UserPropertiesScope() {
-        g_currentUserProperties = m_previous;
-    }
+    ~UserPropertiesScope() { g_currentUserProperties = m_previous; }
+
 private:
     const WPUserProperties* m_previous;
 };
