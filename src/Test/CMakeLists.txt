@@ -30,6 +30,7 @@ add_executable(backend_scene_tests
     test_SceneVertexArray.cpp
     test_WPJson.cpp
     test_WPSoundHelpers.cpp
+    test_SceneTickHelpers.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
     test_BinaryStream.cpp

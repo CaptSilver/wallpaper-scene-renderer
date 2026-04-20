@@ -1,6 +1,7 @@
 #include "SceneBackend.hpp"
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
+#include "SceneTickHelpers.h"
 #include "SceneTimerBridge.h"
 
 #include <QJSValueIterator>
@@ -3342,10 +3343,14 @@ void SceneObject::evaluateTextScripts() {
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
 
-    // Update engine globals
-    double   runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    // Update engine globals (text timer fires every 500ms).
+    qint64   nowMs       = m_runtimeTimer.elapsed();
+    double   runtimeSecs = nowMs / 1000.0;
+    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.500, 2000);
+    m_lastTextTickMs     = nowMs;
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
+    engineObj.setProperty("frametime", frametime);
     // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
@@ -3425,11 +3430,15 @@ void SceneObject::evaluateColorScripts() {
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
 
-    // Update engine globals
-    double   runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    // Update engine globals (color timer is 33ms but report real dt so the
+    // value stays correct if the tick rate is ever changed).
+    qint64   nowMs       = m_runtimeTimer.elapsed();
+    double   runtimeSecs = nowMs / 1000.0;
+    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastColorTickMs, 0.033, 500);
+    m_lastColorTickMs    = nowMs;
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
-    engineObj.setProperty("frametime", 0.033); // ~30Hz timer interval
+    engineObj.setProperty("frametime", frametime);
 
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
@@ -3582,11 +3591,19 @@ void SceneObject::evaluatePropertyScripts() {
         m_pendingJsEval.clear();
     }
 
-    // Update engine globals
-    double   runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
+    // Update engine globals.  frametime is the WALL-CLOCK dt since the
+    // previous property tick (property timer fires every 8ms).  Scripts
+    // that integrate motion as `x += v * engine.frametime` must see real
+    // elapsed time — hardcoding a fixed value makes animation speed track
+    // the timer rate, not real time, and caused a 4× speed regression in
+    // dino_run-style wallpapers when the property timer was raised to 120Hz.
+    qint64   nowMs       = m_runtimeTimer.elapsed();
+    double   runtimeSecs = nowMs / 1000.0;
+    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastPropertyTickMs, 0.008, 250);
+    m_lastPropertyTickMs = nowMs;
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
-    engineObj.setProperty("frametime", 0.033); // ~30Hz
+    engineObj.setProperty("frametime", frametime);
 
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;

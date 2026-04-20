@@ -249,6 +249,9 @@ private:
     QTimer*                                  m_colorTimer { nullptr };
     QTimer*                                  m_propertyTimer { nullptr };
     QElapsedTimer                            m_runtimeTimer;
+    qint64                                   m_lastPropertyTickMs { -1 };
+    qint64                                   m_lastColorTickMs { -1 };
+    qint64                                   m_lastTextTickMs { -1 };
     std::vector<TextScriptState>             m_textScriptStates;
     std::vector<ColorScriptState>            m_colorScriptStates;
     std::vector<PropertyScriptState>         m_propertyScriptStates;
