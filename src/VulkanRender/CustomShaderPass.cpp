@@ -37,6 +37,12 @@ std::unordered_set<VkImage> g_depth_inited_frame;
 // MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
 // (only needs to happen once per image lifetime, not per frame)
 std::unordered_set<VkImage> g_msaa_color_inited;
+// Cacheable-pass skip counters (reset each frame).  g_cache_hits counts
+// passes whose execute() returned early because the RT was already up to
+// date; g_cache_misses counts everything else.  Reported in the periodic
+// DIAG log inside drawFrame.
+int g_cache_hits   = 0;
+int g_cache_misses = 0;
 } // namespace wallpaper::vulkan
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
@@ -961,9 +967,19 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
 void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::execute");
-    // NOTE: Pass caching disabled - output textures are not preserved between frames
-    // in current render graph implementation. Would need persistent render targets.
-    // if (isCacheable() && m_cached) { return; }
+    // Pass-output caching: when a pass is static, uses no time/pointer/audio
+    // uniforms, AND is the last writer of its output VkImage (see
+    // canCache() / VulkanRender::compileRenderGraph for the alias check),
+    // its RT contents persist across frames — so a second-and-later frame
+    // can skip the full record+draw and leave the image untouched.
+    // g_cache_hits / g_cache_misses track behaviour for the periodic diag.
+    extern int g_cache_hits;
+    extern int g_cache_misses;
+    if (canCache() && isCached()) {
+        g_cache_hits++;
+        return;
+    }
+    g_cache_misses++;
 
     if (m_desc.update_op) m_desc.update_op();
 
@@ -1285,6 +1301,11 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                            m_desc.output,
                            m_desc.node ? m_desc.node->ID() : -1);
     }
+
+    // First-frame draw complete; the RT contents are now stable for any
+    // later-frame cache skip (safe iff canCache(), which VulkanRender set
+    // based on alias analysis — see compileRenderGraph).
+    if (canCache()) markCached();
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {

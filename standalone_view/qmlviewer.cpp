@@ -9,7 +9,21 @@
 #include <iostream>
 #include <string>
 #include <cstdio>
+#include <csignal>
+#include <atomic>
 #include "arg.hpp"
+
+// Clean-exit signal handler: sets an atomic flag that a QTimer polls from
+// the Qt event loop.  Calling QMetaObject::invokeMethod from inside a
+// signal handler is not async-signal-safe, so we stay minimal here.
+// Hooked for SIGINT + SIGTERM so `timeout --signal=INT` flushes the profile.
+static std::atomic<bool> g_quit_requested { false };
+static void qmlviewer_sigint_handler(int) {
+    if (g_quit_requested.exchange(true)) {
+        // Second signal: force-exit in case the event loop is wedged.
+        std::_Exit(130);
+    }
+}
 
 int main(int argc, char** argv) {
     argparse::ArgumentParser program("scene-viewer");
@@ -19,6 +33,18 @@ int main(int argc, char** argv) {
     QCoreApplication::setAttribute(Qt::AA_DisableHighDpiScaling);
 #endif
     QGuiApplication app(argc, argv);
+
+    std::signal(SIGINT, qmlviewer_sigint_handler);
+    std::signal(SIGTERM, qmlviewer_sigint_handler);
+
+    // Poll the signal-flag every 100ms.  On a first flag flip we call quit();
+    // wallpapers with very busy render threads (e.g. 3body) can otherwise
+    // delay processing of a queued-connection quit past the timeout's grace.
+    auto* quit_poll = new QTimer(&app);
+    QObject::connect(quit_poll, &QTimer::timeout, [&app]() {
+        if (g_quit_requested.load()) app.quit();
+    });
+    quit_poll->start(100);
 
     qmlRegisterType<scenebackend::SceneObject>("scenetest", 1, 0, "SceneViewer");
     QQuickView view;

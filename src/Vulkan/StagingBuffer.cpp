@@ -14,9 +14,19 @@ using namespace wallpaper::vulkan;
         }                                                                    \
     }
 
-StagingBuffer::StagingBuffer(const Device& d, VkDeviceSize size, VkBufferUsageFlags usage)
-    : m_device(d), m_size_step(size), m_usage(usage) {}
+StagingBuffer::StagingBuffer(const Device& d, VkDeviceSize size, VkBufferUsageFlags usage,
+                             size_t slot_count)
+    : m_device(d),
+      m_size_step(size),
+      m_usage(usage),
+      m_slot_count(slot_count == 0 ? 1 : slot_count),
+      m_stage_raws(slot_count == 0 ? 1 : slot_count, nullptr),
+      m_stage_bufs(slot_count == 0 ? 1 : slot_count) {}
 StagingBuffer::~StagingBuffer() {}
+
+void StagingBuffer::setCurrentSlot(size_t slot) {
+    if (slot < m_slot_count) m_current_slot = slot;
+}
 
 namespace
 {
@@ -99,38 +109,52 @@ StagingBuffer::VirtualBlock* StagingBuffer::newVirtualBlock(VkDeviceSize nsize) 
     return &block;
 }
 bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
-    if (m_stage_raw == nullptr) {
-        VVK_CHECK_BOOL_RE(mapStageBuf());
+    // Grow all per-slot staging buffers in lockstep.  The GPU buffer is
+    // shared; dropping m_gpu_buf.handle forces recordUpload to recreate it
+    // at the new size before the next copy.
+    auto old_size = m_stage_bufs[0].req_size;
+    auto newsize  = old_size + nsize;
+
+    for (size_t s = 0; s < m_slot_count; ++s) {
+        if (m_stage_raws[s] == nullptr) {
+            VVK_CHECK_BOOL_RE(mapStageBuf(s));
+        }
+        std::vector<uint8_t> tmp;
+        tmp.resize(newsize);
+        memcpy(tmp.data(), m_stage_raws[s], old_size);
+
+        m_stage_raws[s] = nullptr;
+        m_stage_bufs[s].handle.UnMapMemory();
+        m_stage_bufs[s].handle = nullptr;
+
+        if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, m_stage_bufs[s]))
+            return false;
+        VVK_CHECK_BOOL_RE(mapStageBuf(s));
+        memcpy(m_stage_raws[s], tmp.data(), newsize);
     }
-    auto newsize = m_stage_buf.req_size + nsize;
-    // do double copy
-    std::vector<uint8_t> tmp;
-    tmp.resize(newsize);
-    memcpy(tmp.data(), m_stage_raw, m_stage_buf.req_size);
-
-    m_stage_raw = nullptr;
-    m_stage_buf.handle.UnMapMemory();
-    m_stage_buf.handle = nullptr;
-
-    if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, m_stage_buf)) return false;
-    VVK_CHECK_BOOL_RE(mapStageBuf());
-    memcpy(m_stage_raw, tmp.data(), newsize);
 
     m_gpu_buf.handle = nullptr;
-    LOG_INFO("increase buffer size: %d", nsize);
+    LOG_INFO("increase buffer size: %d (all %zu slots)", nsize, m_slot_count);
     return true;
 }
 
 bool StagingBuffer::allocate() {
-    if (! CreateStagingBuffer(m_device.vma_allocator(), m_size_step, m_stage_buf)) return false;
-    VVK_CHECK_BOOL_RE(m_stage_buf.handle.MapMemory(&m_stage_raw));
+    for (size_t s = 0; s < m_slot_count; ++s) {
+        if (! CreateStagingBuffer(m_device.vma_allocator(), m_size_step, m_stage_bufs[s]))
+            return false;
+        VVK_CHECK_BOOL_RE(m_stage_bufs[s].handle.MapMemory(&m_stage_raws[s]));
+    }
     auto* block = newVirtualBlock(m_size_step);
     return block != nullptr;
 }
 
 void StagingBuffer::destroy() {
-    if (m_stage_raw != nullptr) {
-        m_stage_buf.handle.UnMapMemory();
+    for (size_t s = 0; s < m_slot_count; ++s) {
+        if (m_stage_raws[s] != nullptr) {
+            m_stage_bufs[s].handle.UnMapMemory();
+            m_stage_raws[s] = nullptr;
+        }
+        m_stage_bufs[s] = {};
     }
     for (auto& block : m_virtual_blocks) {
         if (block.enabled) {
@@ -140,8 +164,7 @@ void StagingBuffer::destroy() {
     }
     m_virtual_blocks.clear();
 
-    m_stage_buf = {};
-    m_gpu_buf   = {};
+    m_gpu_buf = {};
 }
 
 bool StagingBuffer::allocateSubRef(VkDeviceSize size, StagingBufferRef& ref,
@@ -206,49 +229,68 @@ void StagingBuffer::unallocateSubRef(const StagingBufferRef& ref) {
     }
 }
 
-VkResult StagingBuffer::mapStageBuf() { return m_stage_buf.handle.MapMemory(&m_stage_raw); }
+VkResult StagingBuffer::mapStageBuf(size_t slot) {
+    return m_stage_bufs[slot].handle.MapMemory(&m_stage_raws[slot]);
+}
 
 bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> data,
                                size_t offset) {
     CHECK_REF(ref, return false);
 
-    if (m_stage_raw == nullptr) {
-        mapStageBuf();
+    if (m_broadcast) {
+        return writeToBufAllSlots(ref, data, offset);
+    }
+    if (m_stage_raws[m_current_slot] == nullptr) {
+        mapStageBuf(m_current_slot);
     }
     VkDeviceSize size = std::min(ref.size - offset, data.size());
-    uint8_t*     raw  = (uint8_t*)m_stage_raw;
+    uint8_t*     raw  = (uint8_t*)m_stage_raws[m_current_slot];
     std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
+    return true;
+}
+
+bool StagingBuffer::writeToBufAllSlots(const StagingBufferRef& ref, std::span<uint8_t> data,
+                                       size_t offset) {
+    CHECK_REF(ref, return false);
+    VkDeviceSize size = std::min(ref.size - offset, data.size());
+    for (size_t s = 0; s < m_slot_count; ++s) {
+        if (m_stage_raws[s] == nullptr) mapStageBuf(s);
+        uint8_t* raw = (uint8_t*)m_stage_raws[s];
+        std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
+    }
     return true;
 }
 
 bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t size, uint8_t c) {
     CHECK_REF(ref, return false);
-
-    if (m_stage_raw == nullptr) {
-        mapStageBuf();
+    // Broadcast: fill is only called during init (prepare) and the value
+    // must be visible no matter which slot is later selected.
+    VkDeviceSize size_ = std::min(ref.size - offset, size);
+    for (size_t s = 0; s < m_slot_count; ++s) {
+        if (m_stage_raws[s] == nullptr) mapStageBuf(s);
+        uint8_t* raw       = (uint8_t*)m_stage_raws[s];
+        uint8_t* raw_begin = raw + ref.offset + offset;
+        std::fill(raw_begin, raw_begin + size_, c);
     }
-    VkDeviceSize size_     = std::min(ref.size - offset, size);
-    uint8_t*     raw       = (uint8_t*)m_stage_raw;
-    uint8_t*     raw_begin = raw + ref.offset + offset;
-    std::fill(raw_begin, raw_begin + size_, c);
     return true;
 }
 
 bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
+    auto& stage = m_stage_bufs[m_current_slot];
     if (! m_gpu_buf.handle) {
-        if (auto opt = CreateGpuBuffer(m_device.vma_allocator(), m_usage, m_stage_buf.req_size);
+        if (auto opt = CreateGpuBuffer(m_device.vma_allocator(), m_usage, stage.req_size);
             opt.has_value()) {
             m_gpu_buf = std::move(opt.value());
         } else
             return false;
     }
-    if (m_stage_raw != nullptr) {
-        m_stage_buf.handle.UnMapMemory();
-        m_stage_raw = nullptr;
+    if (m_stage_raws[m_current_slot] != nullptr) {
+        stage.handle.UnMapMemory();
+        m_stage_raws[m_current_slot] = nullptr;
     }
-    VVK_CHECK_BOOL_RE(vmaFlushAllocation(
-        m_device.vma_allocator(), m_stage_buf.handle.Allocation(), 0, VK_WHOLE_SIZE));
-    RecordCopyBuffer(m_gpu_buf, m_stage_buf, cmd);
+    VVK_CHECK_BOOL_RE(
+        vmaFlushAllocation(m_device.vma_allocator(), stage.handle.Allocation(), 0, VK_WHOLE_SIZE));
+    RecordCopyBuffer(m_gpu_buf, stage, cmd);
     return true;
 }
 

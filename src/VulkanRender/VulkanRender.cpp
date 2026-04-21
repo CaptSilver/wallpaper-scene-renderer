@@ -43,7 +43,15 @@
 using namespace wallpaper::vulkan;
 
 constexpr uint64_t vk_wait_time { 10u * 1000u * 1000000u };
-constexpr uint32_t vk_command_num { 2 };
+// 2 frames in flight: lets CPU record frame N+1 while GPU executes frame N,
+// collapsing drawFrame wallclock from (CPU + GPU) to max(CPU, GPU) at
+// steady state.  Per-slot resources: command buffer, fence, semaphore pair,
+// and a staging slot inside m_dyn_buf (GPU buffer stays shared — intra-
+// queue ordering serialises the copies).
+constexpr uint32_t kFramesInFlight = 2;
+// 1 one-shot upload cmd (vertex_buf seeding at compile) + kFramesInFlight
+// render cmds (one per in-flight slot).
+constexpr uint32_t vk_command_num { 1 + kFramesInFlight };
 
 // Like VVK_CHECK_VOID_RE but also sets m_device_lost on VK_ERROR_DEVICE_LOST
 #define VVK_CHECK_DEVICE_LOST(f)                                  \
@@ -81,7 +89,7 @@ struct VulkanRender::Impl {
 
     void drawFrame(Scene&);
 
-    bool CreateRenderingResource(RenderingResources&);
+    bool CreateRenderingResource(RenderingResources&, vvk::CommandBuffer cmd);
     void DestroyRenderingResource(RenderingResources&);
 
     void clearLastRenderGraph(Scene* scene);
@@ -105,9 +113,9 @@ struct VulkanRender::Impl {
     std::unique_ptr<StagingBuffer> m_vertex_buf { nullptr };
     std::unique_ptr<StagingBuffer> m_dyn_buf { nullptr };
 
-    vvk::CommandBuffers m_cmds;
-    vvk::CommandBuffer  m_upload_cmd;
-    vvk::CommandBuffer  m_render_cmd;
+    vvk::CommandBuffers                                m_cmds;
+    vvk::CommandBuffer                                 m_upload_cmd;
+    std::array<vvk::CommandBuffer, kFramesInFlight>    m_render_cmds;
 
     bool m_with_surface { false };
     bool m_inited { false };
@@ -116,12 +124,13 @@ struct VulkanRender::Impl {
     bool m_hdr_output { false };
     bool m_hdr_content { false };
 
-    std::unique_ptr<VulkanExSwapchain> m_ex_swapchain;
-    RenderingResources                 m_rendering_resources;
+    std::unique_ptr<VulkanExSwapchain>                     m_ex_swapchain;
+    std::array<RenderingResources, kFramesInFlight>        m_rendering_resources;
+    uint64_t                                               m_frame_index { 0 };
 
-    // Swapchain synchronization semaphores
-    vvk::Semaphore m_sem_image_available;
-    vvk::Semaphore m_sem_render_finished;
+    // Swapchain synchronization semaphores — one pair per in-flight slot.
+    std::array<vvk::Semaphore, kFramesInFlight> m_sem_image_available;
+    std::array<vvk::Semaphore, kFramesInFlight> m_sem_render_finished;
 
     std::vector<VulkanPass*> m_passes;
 
@@ -810,16 +819,21 @@ bool VulkanRender::Impl::initRes() {
                                                 2 * 1024 * 1024,
                                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                                     VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+                                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                kFramesInFlight);
     if (! m_vertex_buf->allocate()) return false;
     if (! m_dyn_buf->allocate()) return false;
     {
         auto& pool = m_device->cmd_pool();
         VVK_CHECK_BOOL_RE(pool.Allocate(vk_command_num, VK_COMMAND_BUFFER_LEVEL_PRIMARY, m_cmds));
         m_upload_cmd = vvk::CommandBuffer(m_cmds[0], m_device->handle().Dispatch());
-        m_render_cmd = vvk::CommandBuffer(m_cmds[1], m_device->handle().Dispatch());
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            m_render_cmds[i] = vvk::CommandBuffer(m_cmds[1 + i], m_device->handle().Dispatch());
+        }
     }
-    if (! CreateRenderingResource(m_rendering_resources)) return false;
+    for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        if (! CreateRenderingResource(m_rendering_resources[i], m_render_cmds[i])) return false;
+    }
 
 #if ENABLE_RENDERDOC_API
     load_renderdoc_api();
@@ -836,25 +850,31 @@ void VulkanRender::Impl::destroy() {
     if (m_device && m_device->handle()) {
         VVK_CHECK(m_device->handle().WaitIdle());
 
-        // res
+        // res — destroy uses slot 0's RenderingResources for fixed members
+        // (command ref, staging pointers); per-slot fences/semaphores are
+        // released individually below.
         for (auto& p : m_passes) {
-            p->destory(*m_device, m_rendering_resources);
+            p->destory(*m_device, m_rendering_resources[0]);
         }
         m_vertex_buf->destroy();
         m_dyn_buf->destroy();
 
         // Release sync objects before destroying device
-        m_sem_image_available.reset();
-        m_sem_render_finished.reset();
-        m_rendering_resources.fence_frame.reset();
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            m_sem_image_available[i].reset();
+            m_sem_render_finished[i].reset();
+            m_rendering_resources[i].fence_frame.reset();
+        }
 
         m_device->Destroy();
     }
     m_instance.Destroy();
 }
 
-bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
-    rr.command = m_render_cmd;
+bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr, vvk::CommandBuffer cmd) {
+    rr.command = cmd;
+    // Fences start signaled so the first frame can wait on them with zero
+    // latency (no "first pass" branch in drawFrame).
     VVK_CHECK_BOOL_RE(m_device->handle().CreateFence(
         VkFenceCreateInfo {
             .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
@@ -863,13 +883,17 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr) {
         },
         rr.fence_frame));
 
-    rr.fence_frame.Reset();
-
-    if (m_with_surface) {
+    // Which slot in m_sem_{image_available,render_finished} this RR maps
+    // to — use address arithmetic so the mapping stays correct regardless
+    // of how the array was passed in.
+    const size_t slot = size_t(&rr - &m_rendering_resources[0]);
+    if (m_with_surface && slot < kFramesInFlight) {
         VkSemaphoreCreateInfo sem_ci { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
                                        .pNext = nullptr };
-        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available));
-        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_render_finished));
+        VVK_CHECK_BOOL_RE(
+            m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available[slot]));
+        VVK_CHECK_BOOL_RE(
+            m_device->handle().CreateSemaphore(sem_ci, m_sem_render_finished[slot]));
     }
 
     rr.vertex_buf = m_vertex_buf.get();
@@ -915,13 +939,25 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
             }
             double rss_mb = rss_pages * 4096.0 / (1024.0 * 1024.0);
 
-            LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB",
+            extern int g_cache_hits;
+            extern int g_cache_misses;
+            int        hits   = g_cache_hits;
+            int        misses = g_cache_misses;
+            double     hit_pct =
+                (hits + misses) > 0 ? 100.0 * hits / double(hits + misses) : 0.0;
+            LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB "
+                     "cache=%d/%d (%.0f%% skip)",
                      elapsed_s,
                      s_diag_frame,
                      avg_ms,
                      s_frame_max_ms,
                      vma_mb,
-                     rss_mb);
+                     rss_mb,
+                     hits,
+                     hits + misses,
+                     hit_pct);
+            g_cache_hits   = 0;
+            g_cache_misses = 0;
             s_frame_sum_ms = 0;
             s_frame_max_ms = 0;
             s_frame_count  = 0;
@@ -951,13 +987,26 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 
 void VulkanRender::Impl::drawFrameSwapchain() {
     WEK_PROFILE_SCOPE("VulkanRender::drawFrameSwapchain");
-    RenderingResources& rr = m_rendering_resources;
+    const size_t        slot = m_frame_index % kFramesInFlight;
+    RenderingResources& rr   = m_rendering_resources[slot];
+
+    // Wait for the slot's previous in-flight submission (two frames ago)
+    // to complete.  This is the new "GPU done" barrier — moved from end
+    // of the previous frame so frame N+1's CPU record can overlap with
+    // frame N's GPU execution.
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
+
+    // Point m_dyn_buf's staging writes at this slot before we begin
+    // recording.  update_op lambdas called during execute() will hit the
+    // selected slot; recordUpload / gpuBuf likewise.
+    m_dyn_buf->setCurrentSlot(slot);
 
     uint32_t image_index = 0;
     {
         VVK_CHECK_VOID_RE(m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
                                                                  vk_wait_time,
-                                                                 *m_sem_image_available,
+                                                                 *m_sem_image_available[slot],
                                                                  {},
                                                                  &image_index));
     }
@@ -1006,46 +1055,65 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                 .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
                 .pNext                = nullptr,
                 .waitSemaphoreCount   = 1,
-                .pWaitSemaphores      = m_sem_image_available.address(),
+                .pWaitSemaphores      = m_sem_image_available[slot].address(),
                 .pWaitDstStageMask    = &wait_dst_stage,
                 .commandBufferCount   = 1,
                 .pCommandBuffers      = rr.command.address(),
                 .signalSemaphoreCount = 1,
-                .pSignalSemaphores    = m_sem_render_finished.address(),
+                .pSignalSemaphores    = m_sem_render_finished[slot].address(),
     };
 
-    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, {}));
+    // Submit with this slot's fence — consumed at the start of a future
+    // drawFrame call when the same slot is re-selected.
+    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame));
     VkPresentInfoKHR present_info {
         .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext              = nullptr,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores    = m_sem_render_finished.address(),
+        .pWaitSemaphores    = m_sem_render_finished[slot].address(),
         .swapchainCount     = 1,
         .pSwapchains        = m_device->swapchain().handle().address(),
         .pImageIndices      = &image_index,
     };
     VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Present(present_info));
 
-    // Wait for ALL queue operations (submit + present) to complete.
-    // This ensures semaphores are fully consumed before reuse.
-    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.WaitIdle());
+    // Screenshot/pass-dump readback needs the JUST-SUBMITTED work to have
+    // completed.  No more queue WaitIdle — wait locally on this slot's
+    // fence only when a dump is pending; common-case returns immediately.
+    bool need_readback = false;
+    {
+        std::lock_guard<std::mutex> lock(m_screenshot_mutex);
+        need_readback |= ! m_pending_screenshot_path.empty();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_pass_dump_mutex);
+        need_readback |= ! m_pending_pass_dump_dir.empty();
+    }
+    if (need_readback) {
+        VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+        takeScreenshotIfRequested(image.handle,
+                                  m_device->swapchain().format(),
+                                  m_device->swapchain().extent().width,
+                                  m_device->swapchain().extent().height);
+        dumpPassesIfRequested();
+    }
 
-    // After present + idle, the swapchain image is in PRESENT_SRC_KHR layout
-    // and safe to read back.  If a screenshot has been requested, capture it
-    // now before the next frame overwrites the image.
-    takeScreenshotIfRequested(image.handle,
-                              m_device->swapchain().format(),
-                              m_device->swapchain().extent().width,
-                              m_device->swapchain().extent().height);
-    // Per-pass RT dump — each CustomShaderPass' output image read back
-    // separately.  Only fires when a dir has been requested via
-    // setPassDumpDir; resets itself after one dump.
-    dumpPassesIfRequested();
+    m_frame_index++;
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
     WEK_PROFILE_SCOPE("VulkanRender::drawFrameOffscreen");
-    RenderingResources& rr    = m_rendering_resources;
+    const size_t        slot  = m_frame_index % kFramesInFlight;
+    RenderingResources& rr    = m_rendering_resources[slot];
     ImageParameters     image = m_ex_swapchain->GetInprogressImage();
+
+    // Wait on THIS slot's previous submission (two frames back) — lets
+    // frame N+1 record while frame N's GPU work runs.  At steady state
+    // with GPU-fast scenes the wait is ~0; with GPU-slow scenes it's the
+    // GPU/CPU time delta, still less than the full GPU time.
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
+
+    m_dyn_buf->setCurrentSlot(slot);
 
     m_finpass->setPresent(image);
 
@@ -1096,17 +1164,28 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     };
     VVK_CHECK_DEVICE_LOST(m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame));
 
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
+    // Screenshot/pass-dump readback needs this slot's work to be done
+    // before sampling the output image.  Same per-slot fence wait as the
+    // swapchain path; normal rendering pays nothing because the request
+    // strings are both empty.
+    bool need_readback = false;
+    {
+        std::lock_guard<std::mutex> lock(m_screenshot_mutex);
+        need_readback |= ! m_pending_screenshot_path.empty();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_pass_dump_mutex);
+        need_readback |= ! m_pending_pass_dump_dir.empty();
+    }
+    if (need_readback) {
+        VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+        takeScreenshotIfRequested(
+            image.handle, m_ex_swapchain->format(), image.extent.width, image.extent.height);
+        dumpPassesIfRequested();
+    }
 
-    // Offscreen path (QML viewer) needs the same screenshot readback as the
-    // swapchain path.  The presented image here is the ExSwapchain image we
-    // hand to Qt's scene graph; its format is whatever ExSwapchain was
-    // configured with (RGBA8 for SDR, RGBA16F for HDR).
-    takeScreenshotIfRequested(
-        image.handle, m_ex_swapchain->format(), image.extent.width, image.extent.height);
-    dumpPassesIfRequested();
     m_ex_swapchain->renderFrame();
+    m_frame_index++;
 }
 
 void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) {
@@ -1216,7 +1295,9 @@ void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
         m_device->handle().WaitIdle();
     }
     for (auto& p : m_passes) {
-        p->destory(*m_device, m_rendering_resources);
+        // Passes only reference the fixed members (staging pointers) from
+        // RenderingResources; slot 0 is representative.
+        p->destory(*m_device, m_rendering_resources[0]);
     }
     m_passes.clear();
     m_device->tex_cache().Clear();
@@ -1278,11 +1359,20 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     scene.depthBufferCleared = false;
     scene.clearedRTs.clear();
 
+    // Prepare-time writes to dyn_buf (UBO defaults, fillBuf zero-init)
+    // must land in every slot so that after the first slot switch we
+    // still see the seeded state.  We turn broadcast on for the duration
+    // of pass prepare and off before rendering begins.
+    m_dyn_buf->setBroadcastMode(true);
     for (auto* p : m_passes) {
         if (! p->prepared()) {
-            p->prepare(scene, *m_device, m_rendering_resources);
+            // Slot 0's RenderingResources is handed in (staging pointers
+            // are fixed across slots; per-slot fence/cmd are not used at
+            // prepare time).
+            p->prepare(scene, *m_device, m_rendering_resources[0]);
         }
     }
+    m_dyn_buf->setBroadcastMode(false);
 
     // Diagnostic: log pass prepare results
     {
@@ -1304,6 +1394,39 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                  prepared_count,
                  failed_count,
                  nodes.size());
+    }
+
+    // Pass-output cache gating: a cacheable pass is safe to skip on
+    // later frames ONLY if its output VkImage is not overwritten by any
+    // later pass in the execution order — otherwise the cached bytes are
+    // gone before the next frame reads them.  Walk m_passes once to find
+    // the last writer of each output handle, then tag matching
+    // CustomShaderPasses.
+    {
+        std::unordered_map<VkImage, CustomShaderPass*> last_writer;
+        for (auto* p : m_passes) {
+            auto* csp = dynamic_cast<CustomShaderPass*>(p);
+            if (! csp || ! csp->prepared()) continue;
+            VkImage out = csp->desc().vk_output.handle;
+            if (out == VK_NULL_HANDLE) continue;
+            last_writer[out] = csp;
+        }
+        int cacheable_total = 0;
+        int cache_gated     = 0;
+        for (auto* p : m_passes) {
+            auto* csp = dynamic_cast<CustomShaderPass*>(p);
+            if (! csp || ! csp->prepared()) continue;
+            if (! csp->isCacheable()) continue;
+            cacheable_total++;
+            VkImage out = csp->desc().vk_output.handle;
+            if (out != VK_NULL_HANDLE && last_writer[out] == csp) {
+                csp->setCanCache(true);
+                cache_gated++;
+            }
+        }
+        LOG_INFO("pass cache: %d cacheable, %d last-writer → can skip on re-exec",
+                 cacheable_total,
+                 cache_gated);
     }
 
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {

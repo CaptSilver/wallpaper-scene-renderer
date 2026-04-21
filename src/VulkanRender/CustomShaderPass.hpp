@@ -86,6 +86,14 @@ public:
     // Pass is cacheable if static and doesn't use time-based uniforms
     bool isCacheable() const { return isStatic() && ! m_uses_time_uniforms; }
 
+    // Cache is only safe to skip-on-reexecute when the pass's output image
+    // is not aliased by a later pass in the frame order — otherwise the RT
+    // contents are overwritten before the next frame and downstream passes
+    // would read stale data.  Set by VulkanRender::compileRenderGraph after
+    // all passes are prepared and their output VkImages are resolved.
+    bool canCache() const { return m_can_cache; }
+    void setCanCache(bool v) { m_can_cache = v; }
+
     // Check if output is already cached and valid
     bool isCached() const { return m_cached; }
     void invalidateCache() { m_cached = false; }
@@ -98,6 +106,7 @@ public:
 private:
     Desc m_desc;
     bool m_cached { false };
+    bool m_can_cache { false };
     bool m_uses_time_uniforms { false };
 };
 
