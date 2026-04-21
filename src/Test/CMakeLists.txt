@@ -41,6 +41,7 @@ add_executable(backend_scene_tests
     test_WPMdlParser.cpp
     test_WPMdlParserFormats.cpp
     test_SceneProfiler.cpp
+    test_PassCacheAlias.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
@@ -59,6 +60,7 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/Scene/include
     ${SRC_DIR}/Scene/include/Scene
     ${SRC_DIR}/Particle/include
+    ${SRC_DIR}/VulkanRender/include
     ${DOCTEST_INCLUDE_DIR}
 )
 

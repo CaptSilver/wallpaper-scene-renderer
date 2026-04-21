@@ -10,6 +10,7 @@
 #include "Resource.hpp"
 #include "PassCommon.hpp"
 #include "Interface/IImageParser.h"
+#include "VulkanRender/PassCacheAlias.hpp"
 
 #include "Core/ArrayHelper.hpp"
 
@@ -995,13 +996,10 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // first user of their depth image (to at least keep the depth init
     // chain happy).  A conservative proxy: skip only when hasDepth is
     // false, or the depth image has already been inited this frame.
-    if (m_desc.node != nullptr && ! m_desc.node->IsVisible()) {
-        bool depth_safe = ! m_desc.hasDepth || m_desc.depthImage == VK_NULL_HANDLE ||
-                          g_depth_inited_frame.count(m_desc.depthImage) > 0;
-        if (depth_safe) {
-            g_invisible_skips++;
-            return;
-        }
+    if (m_desc.node != nullptr && ! m_desc.node->IsVisible() &&
+        IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame)) {
+        g_invisible_skips++;
+        return;
     }
 
     if (m_desc.update_op) m_desc.update_op();

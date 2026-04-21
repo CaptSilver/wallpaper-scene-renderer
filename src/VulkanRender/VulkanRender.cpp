@@ -24,6 +24,7 @@
 #include "FinPass.hpp"
 #include "CustomShaderPass.hpp"
 #include "Resource.hpp"
+#include "VulkanRender/PassCacheAlias.hpp"
 
 #include "Core/ArrayHelper.hpp"
 
@@ -1403,27 +1404,28 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     // Pass-output cache gating: a cacheable pass is safe to skip on
     // later frames ONLY if its output VkImage is not overwritten by any
     // later pass in the execution order — otherwise the cached bytes are
-    // gone before the next frame reads them.  Walk m_passes once to find
-    // the last writer of each output handle, then tag matching
-    // CustomShaderPasses.
+    // gone before the next frame reads them.  See ComputeIsLastWriter
+    // (pure, unit-tested in test_PassCacheAlias.cpp) for the analysis.
     {
-        std::unordered_map<VkImage, CustomShaderPass*> last_writer;
+        std::vector<VkImage>             outputs;
+        std::vector<CustomShaderPass*>   csps;
+        outputs.reserve(m_passes.size());
+        csps.reserve(m_passes.size());
         for (auto* p : m_passes) {
             auto* csp = dynamic_cast<CustomShaderPass*>(p);
-            if (! csp || ! csp->prepared()) continue;
-            VkImage out = csp->desc().vk_output.handle;
-            if (out == VK_NULL_HANDLE) continue;
-            last_writer[out] = csp;
+            csps.push_back(csp);
+            outputs.push_back(csp && csp->prepared() ? csp->desc().vk_output.handle
+                                                     : VK_NULL_HANDLE);
         }
+        auto is_last = ComputeIsLastWriter<VkImage>(outputs);
+
         int cacheable_total = 0;
         int cache_gated     = 0;
-        for (auto* p : m_passes) {
-            auto* csp = dynamic_cast<CustomShaderPass*>(p);
-            if (! csp || ! csp->prepared()) continue;
-            if (! csp->isCacheable()) continue;
+        for (std::size_t i = 0; i < m_passes.size(); ++i) {
+            auto* csp = csps[i];
+            if (! csp || ! csp->prepared() || ! csp->isCacheable()) continue;
             cacheable_total++;
-            VkImage out = csp->desc().vk_output.handle;
-            if (out != VK_NULL_HANDLE && last_writer[out] == csp) {
+            if (is_last[i]) {
                 csp->setCanCache(true);
                 cache_gated++;
             }
