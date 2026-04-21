@@ -5,6 +5,7 @@
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 #include "Utils/AutoDeletor.hpp"
 #include "Resource.hpp"
 #include "PassCommon.hpp"
@@ -324,6 +325,7 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 }
 
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
+    WEK_PROFILE_SCOPE("CustomShaderPass::prepare");
     {
         static std::unordered_set<const void*> _csp_logged;
         if (_csp_logged.insert(this).second) {
@@ -958,6 +960,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 }
 
 void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
+    WEK_PROFILE_SCOPE("CustomShaderPass::execute");
     // NOTE: Pass caching disabled - output textures are not preserved between frames
     // in current render graph implementation. Would need persistent render targets.
     // if (isCacheable() && m_cached) { return; }

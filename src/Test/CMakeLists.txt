@@ -40,6 +40,7 @@ add_executable(backend_scene_tests
     test_WPPropertyAnimation.cpp
     test_WPMdlParser.cpp
     test_WPMdlParserFormats.cpp
+    test_SceneProfiler.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp

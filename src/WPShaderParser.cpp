@@ -2,6 +2,7 @@
 
 #include "Fs/IBinaryStream.h"
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 #include "WPJson.hpp"
 
 #include "wpscene/WPUniform.h"
@@ -802,6 +803,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                                   std::vector<ShaderCode>& codes, fs::VFS& vfs,
                                   WPShaderInfo*                    shader_info,
                                   std::span<const WPShaderTexInfo> texs) {
+    WEK_PROFILE_SCOPE("WPShaderParser::CompileToSpv");
     (void)texs;
 
     // Translate WE geometry shader syntax to GLSL before preprocessing.
@@ -882,6 +884,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
 }
 
 void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
+    WEK_PROFILE_SCOPE("WPShaderParser::FlushPendingCompilations");
     std::lock_guard<std::mutex> lock(s_compileMtx);
 
     if (s_pendingOutputs.empty()) return;

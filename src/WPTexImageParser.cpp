@@ -11,6 +11,7 @@
 
 #include "SpriteAnimation.hpp"
 #include "Utils/Algorism.h"
+#include "Utils/SceneProfiler.h"
 #include "Fs/VFS.h"
 #include "Utils/BitFlags.hpp"
 
@@ -139,6 +140,7 @@ void WPTexImageParser::RegisterImage(const std::string& key, std::shared_ptr<Ima
 }
 
 std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
+    WEK_PROFILE_SCOPE("WPTexImageParser::Parse");
     if (auto it = m_registered.find(name); it != m_registered.end()) {
         return it->second;
     }

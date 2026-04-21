@@ -2,6 +2,7 @@
 #include "SceneWallpaperSurface.hpp"
 
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 #include "Looper/Looper.hpp"
 
 #include "Timer/FrameTimer.hpp"
@@ -525,6 +526,7 @@ private:
         }
     }
     MHANDLER_CMD(DRAW) {
+        WEK_PROFILE_SCOPE("RenderHandler::DRAW");
         // If device was lost, attempt recovery
         if (m_render->deviceLost()) {
             recoverFromDeviceLost();
@@ -1348,6 +1350,11 @@ SceneWallpaper::~SceneWallpaper() {
         msg->post();
     }
     */
+#ifdef WEK_PROFILING
+    // Flush accumulated scope samples on shutdown so CI / sceneviewer runs
+    // always leave a trace of where time went, without requiring a key press.
+    ::wallpaper::profiler::DumpToStderr();
+#endif
 }
 
 bool SceneWallpaper::inited() const { return m_main_handler->inited(); }
@@ -1870,6 +1877,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
 }
 
 void MainHandler::loadScene() {
+    WEK_PROFILE_SCOPE("MainHandler::loadScene");
     if (m_source.empty() || m_assets.empty()) return;
 
     LOG_INFO("loading scene: %s", m_source.c_str());

@@ -7,6 +7,7 @@
 #include "SpecTexs.hpp"
 #include "Core/ArrayHelper.hpp"
 #include "Utils/Algorism.h"
+#include "Utils/SceneProfiler.h"
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -20,6 +21,7 @@ using namespace wallpaper;
 using namespace Eigen;
 
 void WPShaderValueUpdater::FrameBegin() {
+    WEK_PROFILE_SCOPE("WPShaderValueUpdater::FrameBegin");
     /*
         using namespace std::chrono;
         auto nowTime = system_clock::to_time_t(system_clock::now());
@@ -135,6 +137,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
                                           const UpdateUniformOp& updateOp,
                                           const std::string&     camera_override) {
+    WEK_PROFILE_SCOPE("WPShaderValueUpdater::UpdateUniforms");
     if (! pNode->Mesh()) return;
 
     pNode->UpdateTrans();

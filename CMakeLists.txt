@@ -16,6 +16,14 @@ option(BUILD_TESTS "Build backend_scene unit tests" OFF)
 option(BUILD_TOOLS "Build pkg inspection / extraction tools (wp-pkg)" OFF)
 option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires Clang)" OFF)
 option(COVERAGE "Enable Clang source-based coverage instrumentation (requires Clang)" OFF)
+option(PROFILING "Enable lightweight scoped-timer profiler (SceneProfiler.h)" OFF)
+
+if(PROFILING)
+    # Applied before add_subdirectory so every backend target compiles the
+    # WEK_PROFILE_SCOPE macros to real timers instead of ((void)0).
+    add_compile_definitions(WEK_PROFILING=1)
+    message(STATUS "Scene profiler: enabled (WEK_PROFILING=1)")
+endif()
 
 if(COVERAGE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")

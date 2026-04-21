@@ -1,5 +1,6 @@
 #include "Audio/AudioAnalyzer.h"
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 
 #include <kiss_fft.h>
 #include <kiss_fftr.h>
@@ -156,6 +157,7 @@ void AudioAnalyzer::FeedPcm(const float* interleavedStereo, uint32_t frameCount,
 }
 
 void AudioAnalyzer::Process() {
+    WEK_PROFILE_SCOPE("AudioAnalyzer::Process");
     auto& d = *m_impl;
 
     // Read latest FFT_SIZE stereo frames from ring buffer

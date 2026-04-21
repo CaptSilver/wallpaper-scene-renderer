@@ -13,6 +13,7 @@
 #include "SceneWallpaperSurface.hpp"
 
 #include "Utils/Platform.hpp"
+#include "Utils/SceneProfiler.h"
 
 using namespace std;
 
@@ -42,6 +43,17 @@ void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) 
         std::string json = "{\"lucyrebecca\":\"" + val + "\"}";
         std::cout << "Runtime user prop change: " << json << std::endl;
         data->psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, json);
+    }
+    // P / Shift+P → dump / reset profiler aggregates.  No-ops unless the
+    // build was configured with -DPROFILING=ON; the symbols still resolve
+    // either way so we don't need to guard the call site.
+    if (key == GLFW_KEY_P) {
+        if (mods & GLFW_MOD_SHIFT) {
+            ::wallpaper::profiler::Reset();
+            std::cout << "[PROFILE] reset" << std::endl;
+        } else {
+            ::wallpaper::profiler::DumpToStderr();
+        }
     }
 }
 

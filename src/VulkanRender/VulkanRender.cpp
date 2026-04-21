@@ -2,6 +2,7 @@
 #include "Image.hpp"
 
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 #include "RenderGraph/RenderGraph.hpp"
 #include "Scene/Scene.h"
 #include "Interface/IShaderValueUpdater.h"
@@ -881,6 +882,7 @@ void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
 // VulkanExSwapchain* VulkanRender::exSwapchain() const { return m_ex_swapchain.get(); }
 
 void VulkanRender::Impl::drawFrame(Scene& scene) {
+    WEK_PROFILE_SCOPE("VulkanRender::drawFrame");
     if (! (m_inited && m_pass_loaded)) return;
 
     // Periodic diagnostics: frame time + VMA usage + process RSS
@@ -948,6 +950,7 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 }
 
 void VulkanRender::Impl::drawFrameSwapchain() {
+    WEK_PROFILE_SCOPE("VulkanRender::drawFrameSwapchain");
     RenderingResources& rr = m_rendering_resources;
 
     uint32_t image_index = 0;
@@ -1040,6 +1043,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     dumpPassesIfRequested();
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
+    WEK_PROFILE_SCOPE("VulkanRender::drawFrameOffscreen");
     RenderingResources& rr    = m_rendering_resources;
     ImageParameters     image = m_ex_swapchain->GetInprogressImage();
 

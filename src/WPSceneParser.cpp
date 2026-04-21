@@ -5,6 +5,7 @@
 #include "Utils/String.h"
 #include "Utils/Logging.h"
 #include "Utils/Algorism.h"
+#include "Utils/SceneProfiler.h"
 #include "Core/Visitors.hpp"
 #include "Core/StringHelper.hpp"
 #include "Core/ArrayHelper.hpp"
@@ -2794,6 +2795,7 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
                                             fs::VFS& vfs, audio::SoundManager& sm,
                                             const WPUserProperties& userProps) {
+    WEK_PROFILE_SCOPE("WPSceneParser::Parse");
     // Set user properties context for the duration of parsing
     UserPropertiesScope propsScope(&userProps);
 

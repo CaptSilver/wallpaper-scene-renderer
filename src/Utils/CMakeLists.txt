@@ -4,9 +4,10 @@ add_library(${LIB_NAME}
 STATIC
 Logging.cpp
 FpsCounter.cpp
-Algorism.cpp	
+Algorism.cpp
 Sha.cpp
 DynamicLibrary.cpp
+SceneProfiler.cpp
 )
 
 target_link_libraries(${LIB_NAME}

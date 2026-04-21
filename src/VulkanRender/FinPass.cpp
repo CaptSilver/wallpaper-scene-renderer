@@ -2,6 +2,7 @@
 #include "Vulkan/Shader.hpp"
 #include "Resource.hpp"
 #include "PassCommon.hpp"
+#include "Utils/SceneProfiler.h"
 
 using namespace wallpaper::vulkan;
 
@@ -113,6 +114,7 @@ void FinPass::setHdrPassthrough(bool hdr) { m_desc.hdr_passthrough = hdr; }
 void FinPass::setHdrContent(bool hdr) { m_desc.hdr_content = hdr; }
 
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
+    WEK_PROFILE_SCOPE("FinPass::prepare");
     {
         auto tex_name = std::string(m_desc.result);
         if (scene.renderTargets.count(tex_name) == 0) return;
@@ -207,6 +209,7 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 }
 
 void FinPass::execute(const Device& device, RenderingResources& rr) {
+    WEK_PROFILE_SCOPE("FinPass::execute");
     // First-frame execution trace
     {
         extern int g_exec_pass_counter;
