@@ -3004,11 +3004,26 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     InitContext(context, vfs, sc);
     ParseCamera(context, sc);
 
-    // Build group node hierarchy: add each group to its parent (or scene root)
+    // Build group node hierarchy: add each group to its parent (or scene root).
+    //
+    // Groups whose parent_id refers to an image/text/particle object are
+    // deferred — those nodes aren't in node_map until after wp_objs parsing
+    // (see ParseImageObj/ParseTextObj).  Without this, e.g. solar system's
+    // info-panel chain `725 → 530 → 1210 → 936 → (image 1166) → (group 1234)
+    // → (image 970) → (group 974) → (text 982)` collapses: groups 1234 and
+    // 974 orphan to scene root, losing the 0.0001× and 10× parent scales.
+    // Text 982 then renders at world scale 0.013 instead of 1.8e-5 — the
+    // "giant 026-0 text filling the viewport" bug.
+    std::vector<GroupInfo> deferred_group_links;
     for (auto& gi : group_infos) {
         auto& node = context.node_map.at(gi.id);
         if (gi.parent_id >= 0 && context.node_map.count(gi.parent_id)) {
             context.node_map.at(gi.parent_id)->AppendChild(node);
+        } else if (gi.parent_id >= 0) {
+            // Parent is a non-group object parsed later.  Temporarily attach
+            // to scene root; re-link after wp_objs parsing below.
+            context.scene->sceneGraph->AppendChild(node);
+            deferred_group_links.push_back(gi);
         } else {
             context.scene->sceneGraph->AppendChild(node);
         }
@@ -3233,6 +3248,83 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 },
             },
             obj);
+    }
+
+    // Fix up deferred group links now that image/text/etc. parents are in
+    // node_map.  Detach from scene root, re-attach under the real parent, and
+    // mark dirty so the next UpdateTrans propagates the full transform chain
+    // to children (text/image nodes already attached to these groups).
+    for (auto& gi : deferred_group_links) {
+        auto pit = context.node_map.find(gi.parent_id);
+        if (pit == context.node_map.end()) continue;
+        auto& group_node  = context.node_map.at(gi.id);
+        auto& parent_node = pit->second;
+
+        // If the new parent is an image with an effect chain, its spImgNode's
+        // local transform was reset to identity (line 1515, so the base pass
+        // renders at origin into the per-image effect ortho camera).  The
+        // authored transform now lives on imgEffectLayer.FinalNode.  Children
+        // parented to spImgNode therefore lose the parent's authored scale/
+        // origin.  Restore it by pre-composing the parent's authored local
+        // into the re-linked group's own local — works for pure
+        // scale+translate chains (solar info-panel case; no rotation).
+        auto eit = context.scene->nodeEffectLayerMap.find(gi.parent_id);
+        if (eit != context.scene->nodeEffectLayerMap.end() && eit->second) {
+            auto&           finalNode = eit->second->FinalNode();
+            Eigen::Vector3f parent_t  = finalNode.Translate();
+            Eigen::Vector3f parent_s  = finalNode.Scale();
+            Eigen::Vector3f parent_r  = finalNode.Rotation();
+            Eigen::Vector3f group_t   = group_node->Translate();
+            Eigen::Vector3f group_s   = group_node->Scale();
+            Eigen::Vector3f group_r   = group_node->Rotation();
+            if (parent_r.squaredNorm() > 1e-6f || group_r.squaredNorm() > 1e-6f) {
+                LOG_ERROR("relink inject: rotation in chain for id=%d unsupported, "
+                          "parent_r=(%.3f,%.3f,%.3f) group_r=(%.3f,%.3f,%.3f)",
+                          gi.id,
+                          parent_r.x(), parent_r.y(), parent_r.z(),
+                          group_r.x(), group_r.y(), group_r.z());
+            }
+            group_node->SetTranslate(
+                Eigen::Vector3f(parent_t.x() + parent_s.x() * group_t.x(),
+                                parent_t.y() + parent_s.y() * group_t.y(),
+                                parent_t.z() + parent_s.z() * group_t.z()));
+            group_node->SetScale(
+                Eigen::Vector3f(parent_s.x() * group_s.x(),
+                                parent_s.y() * group_s.y(),
+                                parent_s.z() * group_s.z()));
+            LOG_INFO("relink inject: id=%d parent=%d effect-reset; composed "
+                     "local=(scale %.4g×%.4g×%.4g, origin %.2f,%.2f,%.2f)",
+                     gi.id, gi.parent_id,
+                     group_node->Scale().x(), group_node->Scale().y(), group_node->Scale().z(),
+                     group_node->Translate().x(), group_node->Translate().y(),
+                     group_node->Translate().z());
+        }
+
+        context.scene->sceneGraph->RemoveChild(group_node.get());
+        // Propagate MarkTransDirty to all descendants BEFORE the SetParent
+        // call marks self dirty — MarkTransDirty short-circuits if already
+        // dirty, so order matters for descendants' cached world matrices.
+        group_node->SetTranslate(group_node->Translate());
+        parent_node->AppendChild(group_node);
+        group_node->SetParent(parent_node.get());
+        LOG_INFO("relinked deferred group id=%d → parent %d (was orphaned at scene root)",
+                 gi.id, gi.parent_id);
+    }
+
+    // Recompute original_world_transforms for groups whose links were deferred.
+    // The initial pass at group-link time used stale parent OWT (the parent
+    // image wasn't parsed yet), so any image child of a deferred group saw
+    // an incomplete parent chain.  Walk the group_infos list in insertion
+    // order; OWT for a parent group always precedes its children.
+    for (auto& gi : group_infos) {
+        auto& node  = context.node_map.at(gi.id);
+        auto  local = node->GetLocalTrans();
+        if (gi.parent_id >= 0 && context.original_world_transforms.count(gi.parent_id)) {
+            context.original_world_transforms[gi.id] =
+                context.original_world_transforms[gi.parent_id] * local;
+        } else {
+            context.original_world_transforms[gi.id] = local;
+        }
     }
 
     // Record user property → visibility bindings by scanning raw JSON

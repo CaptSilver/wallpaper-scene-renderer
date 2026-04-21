@@ -195,6 +195,82 @@ TEST_SUITE("SceneNode.Graph") {
         CHECK(k->ModelTrans()(0, 3) == doctest::Approx(11.0));
     }
 
+    TEST_CASE("RemoveChild detaches a specific child by pointer") {
+        auto p = std::make_shared<SceneNode>();
+        auto a = std::make_shared<SceneNode>();
+        auto b = std::make_shared<SceneNode>();
+        auto c = std::make_shared<SceneNode>();
+        p->AppendChild(a);
+        p->AppendChild(b);
+        p->AppendChild(c);
+        CHECK(p->GetChildren().size() == 3);
+
+        p->RemoveChild(b.get());
+        CHECK(p->GetChildren().size() == 2);
+        // Order preserved: a then c.
+        auto it = p->GetChildren().begin();
+        CHECK((*it).get() == a.get());
+        ++it;
+        CHECK((*it).get() == c.get());
+    }
+
+    TEST_CASE("RemoveChild is idempotent") {
+        auto p = std::make_shared<SceneNode>();
+        auto a = std::make_shared<SceneNode>();
+        p->AppendChild(a);
+        p->RemoveChild(a.get());
+        CHECK(p->GetChildren().empty());
+        // Second call with the same pointer is a no-op, not a crash.
+        p->RemoveChild(a.get());
+        CHECK(p->GetChildren().empty());
+    }
+
+    TEST_CASE("RemoveChild ignores pointers that aren't children") {
+        auto p = std::make_shared<SceneNode>();
+        auto a = std::make_shared<SceneNode>();
+        auto outsider = std::make_shared<SceneNode>();
+        p->AppendChild(a);
+        p->RemoveChild(outsider.get());
+        CHECK(p->GetChildren().size() == 1);
+    }
+
+    TEST_CASE("RemoveChild + AppendChild supports re-parent flow for deferred groups") {
+        // Reproduces the WPSceneParser deferred re-link pattern:
+        //   1. child is temporarily attached to scene root
+        //   2. the intended parent becomes available later
+        //   3. detach from root, re-attach under real parent, mark dirty
+        // Descendants must pick up the new parent's world transform.
+        auto root = std::make_shared<SceneNode>();
+        auto real_parent = std::make_shared<SceneNode>(
+            Vector3f(10.f, 0.f, 0.f), Vector3f(2.f, 1.f, 1.f), Vector3f(0, 0, 0));
+        auto group = std::make_shared<SceneNode>(
+            Vector3f(1.f, 0.f, 0.f), Vector3f(1.f, 1.f, 1.f), Vector3f(0, 0, 0));
+        auto leaf = std::make_shared<SceneNode>(
+            Vector3f(3.f, 0.f, 0.f), Vector3f(1.f, 1.f, 1.f), Vector3f(0, 0, 0));
+        group->AppendChild(leaf);
+
+        // Pass 1: group orphaned to root (intended parent not yet ready).
+        root->AppendChild(group);
+        leaf->UpdateTrans();
+        // Under root (identity): leaf world = group.t + leaf.t = 1 + 3 = 4.
+        CHECK(leaf->ModelTrans()(0, 3) == doctest::Approx(4.0));
+
+        // Pass 2: re-link under real parent.  Order matters: SetTranslate
+        // (propagates MarkTransDirty downward) BEFORE SetParent (marks
+        // self dirty) — MarkTransDirty short-circuits if already dirty, so
+        // reversing the order leaves descendants with stale cached world.
+        root->RemoveChild(group.get());
+        group->SetTranslate(group->Translate()); // propagate dirty downward
+        real_parent->AppendChild(group);
+        group->SetParent(real_parent.get()); // marks group dirty again (no-op)
+
+        leaf->UpdateTrans();
+        // Chain: real_parent.t(10) + real_parent.s_x(2) * (group.t(1) + leaf.t(3)) = 10 + 8 = 18
+        CHECK(leaf->ModelTrans()(0, 3) == doctest::Approx(18.0));
+        CHECK(root->GetChildren().empty());
+        CHECK(real_parent->GetChildren().size() == 1);
+    }
+
 } // Graph
 
 // ===========================================================================

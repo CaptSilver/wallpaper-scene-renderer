@@ -40,6 +40,18 @@ public:
                sub->m_visibility_parent = this;
                m_children.push_back(sub);
     }
+
+    // Remove a child by raw pointer; idempotent if not found.  Used by the
+    // two-pass group hierarchy fix-up: a group whose parent is an image
+    // object gets attached to scene root at group-link time (the image
+    // isn't parsed yet) and must be re-parented after the image appears
+    // in node_map.  Leaves the removed child's m_parent pointer unchanged —
+    // callers are expected to re-attach via AppendChild immediately.
+    void RemoveChild(SceneNode* child) {
+        m_children.remove_if([child](const std::shared_ptr<SceneNode>& sub) {
+            return sub.get() == child;
+        });
+    }
     Eigen::Matrix4d GetLocalTrans() const;
 
     const auto& Translate() const { return m_translate; }
