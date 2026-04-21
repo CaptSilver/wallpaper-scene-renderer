@@ -941,12 +941,14 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
 
             extern int g_cache_hits;
             extern int g_cache_misses;
-            int        hits   = g_cache_hits;
-            int        misses = g_cache_misses;
+            extern int g_invisible_skips;
+            int        hits    = g_cache_hits;
+            int        misses  = g_cache_misses;
+            int        hidden  = g_invisible_skips;
             double     hit_pct =
                 (hits + misses) > 0 ? 100.0 * hits / double(hits + misses) : 0.0;
             LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB "
-                     "cache=%d/%d (%.0f%% skip)",
+                     "cache=%d/%d (%.0f%% skip) hidden=%d",
                      elapsed_s,
                      s_diag_frame,
                      avg_ms,
@@ -955,9 +957,11 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
                      rss_mb,
                      hits,
                      hits + misses,
-                     hit_pct);
-            g_cache_hits   = 0;
-            g_cache_misses = 0;
+                     hit_pct,
+                     hidden);
+            g_cache_hits      = 0;
+            g_cache_misses    = 0;
+            g_invisible_skips = 0;
             s_frame_sum_ms = 0;
             s_frame_max_ms = 0;
             s_frame_count  = 0;

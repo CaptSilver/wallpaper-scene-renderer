@@ -41,8 +41,9 @@ std::unordered_set<VkImage> g_msaa_color_inited;
 // passes whose execute() returned early because the RT was already up to
 // date; g_cache_misses counts everything else.  Reported in the periodic
 // DIAG log inside drawFrame.
-int g_cache_hits   = 0;
-int g_cache_misses = 0;
+int g_cache_hits      = 0;
+int g_cache_misses    = 0;
+int g_invisible_skips = 0;
 } // namespace wallpaper::vulkan
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
@@ -975,11 +976,33 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     // g_cache_hits / g_cache_misses track behaviour for the periodic diag.
     extern int g_cache_hits;
     extern int g_cache_misses;
+    extern int g_invisible_skips;
     if (canCache() && isCached()) {
         g_cache_hits++;
         return;
     }
     g_cache_misses++;
+
+    // Invisible-node fast path: if the owning node has been runtime-hidden
+    // via SceneScript (e.g. 3body's login UI hides most galaxy objects),
+    // the only work the pass would do is begin/end the render pass and
+    // leave the colour buffer unchanged (loadOp=LOAD is the common case
+    // for composite chains).  Skip the whole record.  Depth init for the
+    // depth image is self-healing — a later visible pass sharing that
+    // image will hit g_depth_inited_frame-miss and clear.
+    //
+    // Safety carve-out: preserve the record for passes that might be the
+    // first user of their depth image (to at least keep the depth init
+    // chain happy).  A conservative proxy: skip only when hasDepth is
+    // false, or the depth image has already been inited this frame.
+    if (m_desc.node != nullptr && ! m_desc.node->IsVisible()) {
+        bool depth_safe = ! m_desc.hasDepth || m_desc.depthImage == VK_NULL_HANDLE ||
+                          g_depth_inited_frame.count(m_desc.depthImage) > 0;
+        if (depth_safe) {
+            g_invisible_skips++;
+            return;
+        }
+    }
 
     if (m_desc.update_op) m_desc.update_op();
 
