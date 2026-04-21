@@ -1281,6 +1281,25 @@ static const char* JS_LAYER_INFRA =
     "  return updates;\n"
     "}\n";
 
+// Mirrors the `_overlayScriptProps` helper in SceneBackend.cpp.
+// Returns a thisLayer wrapper that exposes scriptProperties keys as live
+// accessors, falling through to the real layer for everything else.
+static const char* JS_OVERLAY_SCRIPT_PROPS =
+    "function _overlayScriptProps(layer, sp) {\n"
+    "  if (!sp || typeof sp !== 'object') return layer;\n"
+    "  var w = layer ? Object.create(layer) : {};\n"
+    "  for (var k in sp) if (Object.prototype.hasOwnProperty.call(sp, k)) {\n"
+    "    (function(key) {\n"
+    "      Object.defineProperty(w, key, {\n"
+    "        get: function() { return sp[key]; },\n"
+    "        set: function(v) { sp[key] = v; },\n"
+    "        enumerable: true, configurable: true\n"
+    "      });\n"
+    "    })(k);\n"
+    "  }\n"
+    "  return w;\n"
+    "}\n";
+
 static const char* JS_SOUND_INFRA =
     "var _soundLayerStates = {\n"
     "  'music.mp3': { idx: 0, vol: 0.8, silent: false },\n"
@@ -1433,6 +1452,9 @@ struct ScriptEnv {
 
         // createScriptProperties
         engine.evaluate(JS_CREATE_SCRIPT_PROPERTIES);
+
+        // _overlayScriptProps — scriptProperties-on-thisLayer alias helper
+        engine.evaluate(JS_OVERLAY_SCRIPT_PROPS);
 
         // Audio buffers
         engine.evaluate(JS_AUDIO_BUFFERS);
@@ -3890,6 +3912,283 @@ TEST_SUITE("Script Compilation") {
             "  return createScriptProperties().addSlider({name:'foo',value:7}).finish();\n"
             "})();\n");
         CHECK(env.engine.evaluate("result.foo").toInt() == 42);
+    }
+
+    // _overlayScriptProps — scriptProperties aliased onto thisLayer.
+    //
+    // WE SceneScripts commonly read `thisLayer.<propName>` where `propName`
+    // is declared via createScriptProperties().addCheckbox({name:'debug'}),
+    // treating thisLayer as a namespace for the owning script's properties.
+    // Solar system wallpaper's media text script (id=684 in scene 3662790108)
+    // does exactly this to gate console logging behind an opt-in debug
+    // checkbox; before this overlay, `thisLayer.debug` returned undefined
+    // and the diagnostics were unreachable.  The overlay is injected inside
+    // each script's IIFE so it doesn't bleed across scripts.
+    TEST_CASE("overlayScriptProps exposes scriptProperties via thisLayer") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _sp = { debug: true, speed: 99, label: 'hi' };\n"
+            "var _rl = { origin: 'real-origin' };\n"
+            "var tl = _overlayScriptProps(_rl, _sp);\n");
+        CHECK(env.engine.evaluate("tl.debug").toBool() == true);
+        CHECK(env.engine.evaluate("tl.speed").toInt() == 99);
+        CHECK(env.engine.evaluate("tl.label").toString() == "hi");
+        // Non-scriptProperty keys fall through to the real layer via proto chain.
+        CHECK(env.engine.evaluate("tl.origin").toString() == "real-origin");
+    }
+
+    TEST_CASE("overlayScriptProps writes propagate to scriptProperties bag") {
+        // Scripts that set `thisLayer.foo = x` where foo is a scriptProperty
+        // should mutate the scriptProperties bag itself (so the next read of
+        // `scriptProperties.foo` or `thisLayer.foo` reflects the new value).
+        ScriptEnv env;
+        env.engine.evaluate("var sp = { mode: 'idle' };\n"
+                            "var tl = _overlayScriptProps({}, sp);\n"
+                            "tl.mode = 'active';\n");
+        CHECK(env.engine.evaluate("tl.mode").toString() == "active");
+        CHECK(env.engine.evaluate("sp.mode").toString() == "active");
+    }
+
+    TEST_CASE("overlayScriptProps preserves layer-proxy accessor forwarding") {
+        // Writing `thisLayer.origin = Vec3(...)` through the overlay must
+        // reach the real layer's dirty-tracked setter (via the prototype
+        // chain), otherwise every property-script transform update would be
+        // dropped on the floor.  This test stands in for the full layer
+        // proxy — a plain object with an accessor property for `origin` that
+        // records the latest write on a captured closure variable.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var captured = null;\n"
+            "var realLayer = {};\n"
+            "Object.defineProperty(realLayer, 'origin', {\n"
+            "  get: function(){ return captured; },\n"
+            "  set: function(v){ captured = v; }\n"
+            "});\n"
+            "var sp = { debug: false };\n"
+            "var tl = _overlayScriptProps(realLayer, sp);\n"
+            "tl.origin = 'written-through';\n");
+        CHECK(env.engine.evaluate("captured").toString() == "written-through");
+        CHECK(env.engine.evaluate("realLayer.origin").toString() == "written-through");
+        // scriptProperty still overlays
+        CHECK(env.engine.evaluate("tl.debug").toBool() == false);
+    }
+
+    TEST_CASE("overlayScriptProps handles null layer") {
+        // Text/color scripts may run with thisLayer == null (no explicit
+        // binding).  The overlay should still produce a plain object that
+        // exposes scriptProperties — otherwise scripts gated on
+        // `thisLayer.debug` would crash rather than just log nothing.
+        ScriptEnv env;
+        env.engine.evaluate("var sp = { debug: true };\n"
+                            "var tl = _overlayScriptProps(null, sp);\n");
+        CHECK(env.engine.evaluate("tl.debug").toBool() == true);
+        CHECK(env.engine.evaluate("typeof tl").toString() == "object");
+    }
+
+    TEST_CASE("overlayScriptProps passthrough when scriptProperties is falsy") {
+        // Scripts without createScriptProperties() shouldn't pay the overlay
+        // cost — the helper returns the original layer unchanged.
+        ScriptEnv env;
+        env.engine.evaluate("var orig = { mark: 'original' };\n"
+                            "var a = _overlayScriptProps(orig, null);\n"
+                            "var b = _overlayScriptProps(orig, undefined);\n");
+        CHECK(env.engine.evaluate("a === orig").toBool() == true);
+        CHECK(env.engine.evaluate("b === orig").toBool() == true);
+    }
+
+    TEST_CASE("overlayScriptProps IIFE isolation: sibling scripts don't collide") {
+        // Two scripts attached to the same logical layer, each declaring a
+        // scriptProperty named `debug` with different values.  Each IIFE's
+        // thisLayer must see its OWN scriptProperties, not the sibling's —
+        // otherwise shared-layer scenes (many wallpapers put several
+        // property scripts on the same container node) would read garbage.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var realLayer = { name: 'shared' };\n"
+            "var a = (function(_tlo){\n"
+            "  var thisLayer = _tlo;\n"
+            "  var scriptProperties = { debug: 'A' };\n"
+            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+            "  return thisLayer.debug;\n"
+            "})(realLayer);\n"
+            "var b = (function(_tlo){\n"
+            "  var thisLayer = _tlo;\n"
+            "  var scriptProperties = { debug: 'B' };\n"
+            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+            "  return thisLayer.debug;\n"
+            "})(realLayer);\n");
+        CHECK(env.engine.evaluate("a").toString() == "A");
+        CHECK(env.engine.evaluate("b").toString() == "B");
+        // Global thisLayer — and the shared realLayer — must not be polluted
+        // by either IIFE's overlay (they ran in locally-shadowed scope).
+        CHECK(env.engine.evaluate("'debug' in realLayer").toBool() == false);
+    }
+
+    TEST_CASE("overlayScriptProps matches solar 0767 pattern (gated debug)") {
+        // End-to-end shape: a text-script IIFE declares a `debug` checkbox
+        // scriptProperty and then guards a console.log with `thisLayer.debug`.
+        // With overlay enabled, the update function sees the value the user
+        // configured via addCheckbox.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _realLayer = _makeLayerProxy('bg');\n"
+            "var wrapper = (function(_tlo){\n"
+            "  var thisLayer = _tlo;\n"
+            "  var scriptProperties = createScriptProperties()\n"
+            "    .addCheckbox({ name: 'debug', value: true })\n"
+            "    .finish();\n"
+            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+            "  return { gated: function() { return thisLayer.debug ? 'LOG' : ''; },\n"
+            "           layerName: function() { return thisLayer.name; } };\n"
+            "})(_realLayer);\n");
+        CHECK(env.engine.evaluate("wrapper.gated()").toString() == "LOG");
+        CHECK(env.engine.evaluate("wrapper.layerName()").toString() == "bg");
+    }
+
+    // ----- localStorage JS shim -----
+    // The real SceneObject binds __sceneBridge.lsGet/lsSet/lsRemove/lsClear
+    // to C++ slots that persist to disk.  Here we verify the shim's call
+    // translation: default location, key stringification, and that every
+    // shim method actually delegates to the bridge (no silent no-ops).
+    // Persistence is verified via sceneviewer-script — the C++ side is just
+    // JSON file I/O and is covered by Qt's own QJson* tests.
+    TEST_CASE("localStorage shim defaults loc=1 (SCREEN) when omitted") {
+        // Solar system's icon-state save/load flow omits `loc`.  WE treats
+        // that as LOCATION_SCREEN (per-scene) — otherwise two wallpapers
+        // with the same key would collide.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _calls = [];\n"
+            "var __sceneBridge = {\n"
+            "  lsGet: function(loc, key) { _calls.push(['get', loc, key]); return 'v'; },\n"
+            "  lsSet: function(loc, key, v) { _calls.push(['set', loc, key, v]); },\n"
+            "  lsRemove: function(loc, key) { _calls.push(['remove', loc, key]); },\n"
+            "  lsClear: function(loc) { _calls.push(['clear', loc]); }\n"
+            "};\n"
+            "var localStorage = (function() {\n"
+            "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
+            "  return {\n"
+            "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
+            "    get: function(key, loc) { return __sceneBridge.lsGet(_loc(loc), String(key)); },\n"
+            "    set: function(key, v, loc) { __sceneBridge.lsSet(_loc(loc), String(key), v); },\n"
+            "    remove: function(key, loc) { __sceneBridge.lsRemove(_loc(loc), String(key)); },\n"
+            "    clear: function(loc) { __sceneBridge.lsClear(_loc(loc)); }\n"
+            "  };\n"
+            "})();\n"
+            "localStorage.set('k', 'v');\n"
+            "localStorage.get('k');\n"
+            "localStorage.remove('k');\n"
+            "localStorage.clear();\n");
+        CHECK(env.engine.evaluate("_calls[0][1]").toInt() == 1); // set → SCREEN
+        CHECK(env.engine.evaluate("_calls[1][1]").toInt() == 1); // get → SCREEN
+        CHECK(env.engine.evaluate("_calls[2][1]").toInt() == 1); // remove → SCREEN
+        CHECK(env.engine.evaluate("_calls[3][1]").toInt() == 1); // clear → SCREEN
+    }
+
+    TEST_CASE("localStorage shim honors explicit LOCATION_GLOBAL") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _calls = [];\n"
+            "var __sceneBridge = {\n"
+            "  lsGet: function(loc, key) { _calls.push(['get', loc, key]); return null; },\n"
+            "  lsSet: function(loc, key, v) { _calls.push(['set', loc, key, v]); },\n"
+            "  lsRemove: function() {}, lsClear: function() {}\n"
+            "};\n"
+            "var localStorage = (function() {\n"
+            "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
+            "  return {\n"
+            "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
+            "    get: function(key, loc) { return __sceneBridge.lsGet(_loc(loc), String(key)); },\n"
+            "    set: function(key, v, loc) { __sceneBridge.lsSet(_loc(loc), String(key), v); }\n"
+            "  };\n"
+            "})();\n"
+            "localStorage.set('shared', 42, localStorage.LOCATION_GLOBAL);\n"
+            "localStorage.get('shared', localStorage.LOCATION_GLOBAL);\n");
+        CHECK(env.engine.evaluate("_calls[0][1]").toInt() == 0); // GLOBAL
+        CHECK(env.engine.evaluate("_calls[0][2]").toString() == "shared");
+        CHECK(env.engine.evaluate("_calls[0][3]").toInt() == 42);
+        CHECK(env.engine.evaluate("_calls[1][1]").toInt() == 0);
+    }
+
+    TEST_CASE("localStorage shim coerces non-string keys") {
+        // Scripts sometimes pass numeric/bool keys by accident.  The shim
+        // normalizes to String() so the bridge sees a consistent type and
+        // cache key collisions don't happen based on JS toString semantics.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _lastKey = null;\n"
+            "var __sceneBridge = {\n"
+            "  lsGet: function(loc, key) { _lastKey = key; return undefined; },\n"
+            "  lsSet: function() {}, lsRemove: function() {}, lsClear: function() {}\n"
+            "};\n"
+            "var localStorage = {\n"
+            "  LOCATION_SCREEN: 1,\n"
+            "  get: function(key, loc) { return __sceneBridge.lsGet(1, String(key)); }\n"
+            "};\n"
+            "localStorage.get(42);\n");
+        CHECK(env.engine.evaluate("_lastKey").toString() == "42");
+        CHECK(env.engine.evaluate("typeof _lastKey").toString() == "string");
+    }
+
+    // ----- engine.openUserShortcut -----
+    // Production shim delegates to __sceneBridge.openUserShortcut, which
+    // (in the real SceneObject) emits userShortcutRequested for Scene.qml
+    // to route to MPRIS.  The shim itself must: (a) delegate for non-empty
+    // strings, (b) no-op on empty/non-string inputs (solar never fires
+    // those but older wallpapers may bind mis-typed names).
+    TEST_CASE("openUserShortcut shim delegates non-empty names to bridge") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _fired = [];\n"
+            "var __sceneBridge = { openUserShortcut: function(n) { _fired.push(n); } };\n"
+            "engine.openUserShortcut = function(name) {\n"
+            "  if (typeof name !== 'string' || !name) return;\n"
+            "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
+            "    __sceneBridge.openUserShortcut(name);\n"
+            "};\n"
+            "engine.openUserShortcut('b11');\n"
+            "engine.openUserShortcut('bplay');\n");
+        CHECK(env.engine.evaluate("_fired.length").toInt() == 2);
+        CHECK(env.engine.evaluate("_fired[0]").toString() == "b11");
+        CHECK(env.engine.evaluate("_fired[1]").toString() == "bplay");
+    }
+
+    TEST_CASE("openUserShortcut shim ignores empty / non-string inputs") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _count = 0;\n"
+            "var __sceneBridge = { openUserShortcut: function(n) { _count++; } };\n"
+            "engine.openUserShortcut = function(name) {\n"
+            "  if (typeof name !== 'string' || !name) return;\n"
+            "  __sceneBridge.openUserShortcut(name);\n"
+            "};\n"
+            "engine.openUserShortcut();\n"
+            "engine.openUserShortcut('');\n"
+            "engine.openUserShortcut(null);\n"
+            "engine.openUserShortcut(42);\n"
+            "engine.openUserShortcut({name: 'bplay'});\n");
+        CHECK(env.engine.evaluate("_count").toInt() == 0);
+    }
+
+    TEST_CASE("localStorage shim out-of-range loc clamps to SCREEN") {
+        // Defensive: WE docs only define 0 and 1.  Any other integer (or
+        // bogus truthy value from a script bug) must not write to GLOBAL
+        // by accident — treat unknown as SCREEN (per-scene, scoped).
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var _lastLoc = -1;\n"
+            "var __sceneBridge = {\n"
+            "  lsGet: function() { return null; },\n"
+            "  lsSet: function(loc, key, v) { _lastLoc = loc; },\n"
+            "  lsRemove: function() {}, lsClear: function() {}\n"
+            "};\n"
+            "function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
+            "var localStorage = { set: function(k, v, l) { __sceneBridge.lsSet(_loc(l), k, v); } };\n"
+            "localStorage.set('a', 1, 9);\n"
+            "localStorage.set('b', 2, 'GLOBAL');\n"
+            "localStorage.set('c', 3, -1);\n");
+        // All three clamped to SCREEN (1), never leaked to GLOBAL (0)
+        CHECK(env.engine.evaluate("_lastLoc").toInt() == 1);
     }
 
     TEST_CASE("empty script produces null") {

@@ -4,6 +4,7 @@
 #include <QtCore/QLoggingCategory>
 #include <QtCore/QTimer>
 #include <QtCore/QElapsedTimer>
+#include <QtCore/QJsonObject>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QHoverEvent>
 #include <QtQml/QJSEngine>
@@ -127,6 +128,27 @@ public:
     Q_INVOKABLE void   videoSetCurrentTime(const QString& layerName, double t);
     Q_INVOKABLE void   videoSetRate(const QString& layerName, double rate);
 
+    // engine.openUserShortcut(name) — routes a named user-shortcut fired from
+    // SceneScript.  Emits userShortcutRequested() for the main plugin to map
+    // to MPRIS (media-control names like "bplay"/"b11"/"bprev") and fires a
+    // `userShortcut` event on the scene bus so wallpapers can add their own
+    // `scene.on('userShortcut', ...)` handlers.  Unmapped names are logged so
+    // per feedback_no_stubs they surface rather than silently vanishing.
+    Q_INVOKABLE void openUserShortcut(const QString& name);
+
+    // localStorage bridge — backs the JS localStorage shim with disk-backed
+    // stores.  `loc` is 0 (LOCATION_GLOBAL, shared across every wallpaper in
+    // the cache) or 1 (LOCATION_SCREEN, per-scene keyed by the workshop id or
+    // project directory name).  Writes debounce-flush to JSON files under
+    // ~/.cache/wescene-renderer/ so user-configured state (icon visibility
+    // toggles, hit counters etc.) survives across sceneviewer/plasmashell
+    // restarts.  Any other `loc` value is treated as LOCATION_SCREEN since
+    // WE scripts sometimes omit the argument.
+    Q_INVOKABLE QJSValue lsGet(int loc, const QString& key);
+    Q_INVOKABLE void     lsSet(int loc, const QString& key, const QJSValue& value);
+    Q_INVOKABLE void     lsRemove(int loc, const QString& key);
+    Q_INVOKABLE void     lsClear(int loc);
+
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -146,6 +168,11 @@ signals:
     void volumeChanged();
     void userPropertiesChanged();
     void firstFrame();
+    // Emitted when SceneScript calls engine.openUserShortcut(name).  The main
+    // plugin's Scene.qml maps common media-control names to MPRIS actions;
+    // standalone sceneviewer has no listener, so the action surfaces only
+    // through LOG_INFO and the in-scene `userShortcut` event bus.
+    void userShortcutRequested(const QString& name);
 
 private:
     QUrl m_source;
@@ -346,6 +373,23 @@ private:
     };
     CursorParallaxCache m_parallaxCache {};
     void                refreshParallaxCache();
+
+    // localStorage persistence — see Q_INVOKABLE ls* in the public section.
+    // `m_lsSceneId` is resolved from m_source on first scene load; empty
+    // means LOCATION_SCREEN reads/writes stay in-memory only (matches the
+    // old behavior).  The flush timer coalesces rapid writes into one disk
+    // write — solar's media script pokes localStorage 30Hz when debug is on.
+    QJsonObject m_lsGlobal;
+    QJsonObject m_lsScreen;
+    QString     m_lsSceneId;
+    bool        m_lsGlobalDirty { false };
+    bool        m_lsScreenDirty { false };
+    bool        m_lsLoaded { false };
+    QTimer*     m_lsFlushTimer { nullptr };
+    void        ensureLocalStorageLoaded();
+    void        scheduleLocalStorageFlush();
+    void        flushLocalStorage();
+    QString     localStoragePath(bool global) const;
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);

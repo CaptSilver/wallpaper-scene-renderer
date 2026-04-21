@@ -737,7 +737,16 @@ void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
             }
         }
         if (glname.empty()) {
-            LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
+            // Not a renderer error — WE editor often lets authors expose
+            // material settings in the UI that their custom shader never
+            // actually declares as uniforms.  Solar system (3662790108) floods
+            // the journal with ~984 "Color"/"Alpha" misses per load, plus
+            // per-planet "Shadow Strength|阴影强度" etc. from `dqss2` effect,
+            // because none of those uniforms exist in the compiled GLSL.
+            // Keep it at INFO so a future shader-parser gap still surfaces
+            // (searchable via `ShaderValue:`) without drowning real errors.
+            LOG_INFO("ShaderValue: '%s' has no matching GLSL uniform (author default, skipped)",
+                     name.c_str());
         } else {
             material.customShader.constValues[glname] = value;
             if (value.size() <= 4) {
@@ -1216,7 +1225,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
         if (glname.empty()) {
-            LOG_ERROR("ShaderValue: %s not found in glsl", name.c_str());
+            // Not a renderer error — WE editor often lets authors expose
+            // material settings in the UI that their custom shader never
+            // actually declares as uniforms.  Solar system (3662790108) floods
+            // the journal with ~984 "Color"/"Alpha" misses per load, plus
+            // per-planet "Shadow Strength|阴影强度" etc. from `dqss2` effect,
+            // because none of those uniforms exist in the compiled GLSL.
+            // Keep it at INFO so a future shader-parser gap still surfaces
+            // (searchable via `ShaderValue:`) without drowning real errors.
+            LOG_INFO("ShaderValue: '%s' has no matching GLSL uniform (author default, skipped)",
+                     name.c_str());
         } else {
             material.customShader.constValues[glname] = value;
         }

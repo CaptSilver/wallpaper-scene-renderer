@@ -30,6 +30,12 @@
 #include <unordered_set>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTime>
+#include <QtCore/QFile>
+#include <QtCore/QFileInfo>
+#include <QtCore/QJsonDocument>
+#include <QtCore/QJsonObject>
+#include <QtCore/QJsonValue>
+#include <QtCore/QJsonParseError>
 
 #include "glExtra.hpp"
 #include "SceneWallpaper.hpp"
@@ -228,6 +234,9 @@ SceneObject::SceneObject(QQuickItem* parent)
 
 SceneObject::~SceneObject() {
     cleanupTextScripts();
+    // Final flush so the 500ms debounce timer doesn't drop pending writes
+    // (e.g. solar's icon toggle saved right before sceneviewer exits).
+    if (m_lsGlobalDirty || m_lsScreenDirty) flushLocalStorage();
     _Q_INFO("Destroy sceneobject", "");
 }
 
@@ -765,6 +774,158 @@ void SceneObject::videoSetRate(const QString& layerName, double rate) {
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
     m_scene->videoSetRate(it->second, rate);
+}
+
+// -------- engine.openUserShortcut bridge --------
+// Routes a named user-shortcut from SceneScript to (a) the main plugin via
+// the userShortcutRequested signal (mapped to MPRIS by Scene.qml) and
+// (b) the in-scene event bus via scene.on('userShortcut', ...).  Logs at
+// INFO so unmapped names surface in the journal — consistent with
+// feedback_no_stubs ("implement it or surface it loudly").
+void SceneObject::openUserShortcut(const QString& name) {
+    if (name.isEmpty()) return;
+    LOG_INFO("engine.openUserShortcut('%s') dispatched", qPrintable(name));
+    Q_EMIT userShortcutRequested(name);
+    if (m_jsEngine) {
+        QJSValue evt = m_jsEngine->newObject();
+        evt.setProperty("name", name);
+        fireSceneEventListeners("userShortcut", { evt });
+    }
+}
+
+// -------- localStorage bridge --------
+// Disk-backed persistence for the SceneScript `localStorage` API.  Keeps two
+// in-memory QJsonObjects mirrored to files under the cache dir:
+//   - LOCATION_GLOBAL → <cache>/localstorage_global.json
+//   - LOCATION_SCREEN → <cache>/<sceneId>/localstorage.json
+// Writes debounce-coalesce through m_lsFlushTimer; reads always hit the cache.
+// Scene id is derived from the source URL's parent directory name (workshop
+// id like "3662790108" or a defaultproject folder name like "dino_run").
+
+QString SceneObject::localStoragePath(bool global) const {
+    QString base = QString::fromStdString(GetDefaultCachePath());
+    if (global) return base + "/localstorage_global.json";
+    if (m_lsSceneId.isEmpty()) return {};
+    return base + "/" + m_lsSceneId + "/localstorage.json";
+}
+
+void SceneObject::ensureLocalStorageLoaded() {
+    if (m_lsLoaded) return;
+    m_lsLoaded = true;
+
+    // Resolve scene id from source URL.  QUrl's fileName() is the basename;
+    // we want the parent directory name (the workshop id or project folder).
+    if (m_source.isValid()) {
+        QString localPath = m_source.toLocalFile();
+        if (! localPath.isEmpty()) {
+            QFileInfo fi(localPath);
+            m_lsSceneId = fi.dir().dirName();
+        }
+    }
+
+    auto loadFile = [](const QString& path) -> QJsonObject {
+        if (path.isEmpty()) return {};
+        QFile f(path);
+        if (! f.open(QIODevice::ReadOnly)) return {};
+        QJsonParseError err {};
+        QJsonDocument   doc = QJsonDocument::fromJson(f.readAll(), &err);
+        if (err.error != QJsonParseError::NoError || ! doc.isObject()) return {};
+        return doc.object();
+    };
+    m_lsGlobal = loadFile(localStoragePath(true));
+    m_lsScreen = loadFile(localStoragePath(false));
+
+    if (! m_lsFlushTimer) {
+        m_lsFlushTimer = new QTimer(this);
+        m_lsFlushTimer->setSingleShot(true);
+        m_lsFlushTimer->setInterval(500);
+        connect(m_lsFlushTimer, &QTimer::timeout, this, &SceneObject::flushLocalStorage);
+    }
+}
+
+void SceneObject::scheduleLocalStorageFlush() {
+    if (m_lsFlushTimer && ! m_lsFlushTimer->isActive()) m_lsFlushTimer->start();
+}
+
+void SceneObject::flushLocalStorage() {
+    auto writeAtomic = [](const QString& path, const QJsonObject& obj) {
+        if (path.isEmpty()) return;
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QString tmpPath = path + ".tmp";
+        QFile   tmp(tmpPath);
+        if (! tmp.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
+        tmp.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        tmp.close();
+        // Atomic rename: on POSIX rename(2) replaces the target in one step,
+        // so readers never see a partial file.
+        QFile::remove(path);
+        QFile::rename(tmpPath, path);
+    };
+    if (m_lsGlobalDirty) {
+        writeAtomic(localStoragePath(true), m_lsGlobal);
+        m_lsGlobalDirty = false;
+    }
+    if (m_lsScreenDirty) {
+        writeAtomic(localStoragePath(false), m_lsScreen);
+        m_lsScreenDirty = false;
+    }
+}
+
+QJSValue SceneObject::lsGet(int loc, const QString& key) {
+    if (! m_jsEngine) return QJSValue(QJSValue::UndefinedValue);
+    ensureLocalStorageLoaded();
+    const QJsonObject& store = (loc == 0) ? m_lsGlobal : m_lsScreen;
+    if (! store.contains(key)) return QJSValue(QJSValue::UndefinedValue);
+    // Round-trip through QVariant so numbers, strings, arrays, and nested
+    // objects all turn into the matching QJSValue shape.
+    return m_jsEngine->toScriptValue(store.value(key).toVariant());
+}
+
+void SceneObject::lsSet(int loc, const QString& key, const QJSValue& value) {
+    ensureLocalStorageLoaded();
+    QJsonValue jv = QJsonValue::fromVariant(value.toVariant());
+    if (loc == 0) {
+        m_lsGlobal.insert(key, jv);
+        m_lsGlobalDirty = true;
+    } else {
+        m_lsScreen.insert(key, jv);
+        m_lsScreenDirty = true;
+    }
+    scheduleLocalStorageFlush();
+}
+
+void SceneObject::lsRemove(int loc, const QString& key) {
+    ensureLocalStorageLoaded();
+    if (loc == 0) {
+        if (m_lsGlobal.contains(key)) {
+            m_lsGlobal.remove(key);
+            m_lsGlobalDirty = true;
+            scheduleLocalStorageFlush();
+        }
+    } else {
+        if (m_lsScreen.contains(key)) {
+            m_lsScreen.remove(key);
+            m_lsScreenDirty = true;
+            scheduleLocalStorageFlush();
+        }
+    }
+}
+
+void SceneObject::lsClear(int loc) {
+    ensureLocalStorageLoaded();
+    if (loc == 0) {
+        if (! m_lsGlobal.isEmpty()) {
+            m_lsGlobal      = {};
+            m_lsGlobalDirty = true;
+            scheduleLocalStorageFlush();
+        }
+    } else {
+        if (! m_lsScreen.isEmpty()) {
+            m_lsScreen      = {};
+            m_lsScreenDirty = true;
+            scheduleLocalStorageFlush();
+        }
+    }
 }
 
 // Helper: strip ES module syntax that QJSEngine doesn't support
@@ -1395,16 +1556,31 @@ void SceneObject::setupTextScripts() {
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
         "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
+        // localStorage — backed by __sceneBridge for disk persistence.
+        // WE defines two locations: GLOBAL (shared) and SCREEN (per-scene).
+        // Scripts that omit the argument default to SCREEN (the solar system
+        // wallpaper's icon-state save/load flow relies on this — without a
+        // `loc` arg it expects per-scene persistence so switching to another
+        // wallpaper doesn't inherit the last wallpaper's icon state).
         "var localStorage = (function() {\n"
-        "  var _store = {};\n"
+        "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
         "  return {\n"
         "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
-        "    get: function(key, loc) { return _store.hasOwnProperty(key) ? _store[key] : "
-        "undefined; },\n"
-        "    set: function(key, value, loc) { _store[key] = value; },\n"
-        "    remove: function(key, loc) { delete _store[key]; },\n"
-        "    'delete': function(key, loc) { delete _store[key]; },\n"
-        "    clear: function(loc) { _store = {}; }\n"
+        "    get: function(key, loc) {\n"
+        "      return __sceneBridge ? __sceneBridge.lsGet(_loc(loc), String(key)) : undefined;\n"
+        "    },\n"
+        "    set: function(key, value, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsSet(_loc(loc), String(key), value);\n"
+        "    },\n"
+        "    remove: function(key, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
+        "    },\n"
+        "    'delete': function(key, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
+        "    },\n"
+        "    clear: function(loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsClear(_loc(loc));\n"
+        "    }\n"
         "  };\n"
         "})();\n");
 
@@ -1481,8 +1657,15 @@ void SceneObject::setupTextScripts() {
     }
     refreshJsUserProperties();
 
-    // engine.openUserShortcut stub
-    m_jsEngine->evaluate("engine.openUserShortcut = function(name) {};\n");
+    // engine.openUserShortcut(name) — delegates through __sceneBridge to the
+    // C++ slot which emits userShortcutRequested (mapped to MPRIS in the
+    // main plugin) and fires a `userShortcut` event on the scene bus.
+    m_jsEngine->evaluate(
+        "engine.openUserShortcut = function(name) {\n"
+        "  if (typeof name !== 'string' || !name) return;\n"
+        "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
+        "    __sceneBridge.openUserShortcut(name);\n"
+        "};\n");
 
     // engine.registerAsset — describes a dynamic asset; a pool of hidden
     // scene nodes is pre-allocated by WPSceneParser (Scene::assetPools).
@@ -1905,6 +2088,30 @@ void SceneObject::setupTextScripts() {
         "}\n"
         "var scene = thisScene;\n"
         "var thisLayer = null;\n"
+        // _overlayScriptProps(layer, sp): returns a thisLayer wrapper with
+        // `sp` (scriptProperties) overlaid as live accessors, falling through
+        // to the real layer for everything else.  WE scripts commonly write
+        // `if (thisLayer.debug) { ... }` where `debug` is a scriptProperty
+        // declared via createScriptProperties — WE aliases scriptProperties
+        // onto thisLayer inside the owning script's scope.  We mirror that
+        // by inserting this overlay per-IIFE after the script body has run
+        // (so scriptProperties is fully populated).  Uses Object.create so
+        // unaliased reads/writes forward via the prototype chain to the real
+        // layer proxy and its dirty-tracking getters/setters keep working.
+        "function _overlayScriptProps(layer, sp) {\n"
+        "  if (!sp || typeof sp !== 'object') return layer;\n"
+        "  var w = layer ? Object.create(layer) : {};\n"
+        "  for (var k in sp) if (Object.prototype.hasOwnProperty.call(sp, k)) {\n"
+        "    (function(key) {\n"
+        "      Object.defineProperty(w, key, {\n"
+        "        get: function() { return sp[key]; },\n"
+        "        set: function(v) { sp[key] = v; },\n"
+        "        enumerable: true, configurable: true\n"
+        "      });\n"
+        "    })(k);\n"
+        "  }\n"
+        "  return w;\n"
+        "}\n"
         // createLayer pops a hidden pool node; destroyLayer returns it.
         // Two calling conventions:
         //   1. engine.registerAsset('path') → { __asset: 'path' }; then
@@ -2691,18 +2898,25 @@ void SceneObject::setupTextScripts() {
                     .arg(jsonStr);
         }
 
-        // Wrap in IIFE
+        // Wrap in IIFE.  `_tlo` carries the current global `thisLayer` into a
+        // local shadow so the scriptProperties overlay below doesn't leak into
+        // the global binding that the next script compile will inherit.
         QString wrapped =
-            QString("(function() {\n"
+            QString("(function(_tlo) {\n"
                     "  'use strict';\n"
                     "  var exports = {};\n"
+                    "  var thisLayer = _tlo;\n"
                     "  %1\n" // scriptProperties override
                     "  %2\n" // script body
+                    // Alias scriptProperties onto thisLayer (WE convention).
+                    // Must run after the body so scriptProperties is populated.
+                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
                     "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
                     "             (typeof update === 'function' ? update : null);\n"
                     "  if (!_upd) return null;\n"
                     "  return { update: _upd };\n"
-                    "})()\n")
+                    "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
@@ -2809,14 +3023,22 @@ void SceneObject::setupTextScripts() {
         // Wrap in IIFE returning {update, init}
         // Scripts that only use thisScene.getLayer() side effects may not have update()
         // Wrap init in try-catch so partial initialization still works (variables
-        // set before the error point remain available to update)
+        // set before the error point remain available to update).
+        // `_tlo` carries the current global `thisLayer` into a local shadow so
+        // the scriptProperties overlay below doesn't contaminate sibling scripts.
         QString wrapped =
             QString(
-                "(function() {\n"
+                "(function(_tlo) {\n"
                 "  'use strict';\n"
                 "  var exports = {};\n"
+                "  var thisLayer = _tlo;\n"
                 "  %1\n"
                 "  %2\n"
+                // Alias scriptProperties onto thisLayer (WE convention) — e.g.
+                // solar system's media script reads `thisLayer.debug` to gate
+                // its logging where `debug` is an addCheckbox scriptProperty.
+                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
                 "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
                 "             (typeof update === 'function' ? update : null);\n"
                 "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
@@ -2889,7 +3111,7 @@ void SceneObject::setupTextScripts() {
                 "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
                 "           mediaStatusChanged: _mstc,\n"
                 "           animationEvent: _animSafe };\n"
-                "})()\n")
+                "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
@@ -3239,11 +3461,15 @@ void SceneObject::setupTextScripts() {
         }
 
         QString wrapped =
-            QString("(function() {\n"
+            QString("(function(_tlo) {\n"
                     "  'use strict';\n"
                     "  var exports = {};\n"
+                    "  var thisLayer = _tlo;\n"
                     "  %1\n"
                     "  %2\n"
+                    // Alias scriptProperties onto thisLayer (WE convention).
+                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
                     "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
                     "             (typeof update === 'function' ? update : null);\n"
                     "  var _init = typeof exports.init === 'function' ? exports.init :\n"
@@ -3259,7 +3485,7 @@ void SceneObject::setupTextScripts() {
                     "_aup(engine.userProperties); }\n"
                     "  catch(e) { console.log('vol applyUserProperties error: ' + e); }\n"
                     "  return { update: _upd, applyUserProperties: _aup };\n"
-                    "})()\n")
+                    "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc)
                 .arg((double)svsi.initialVolume);
 
@@ -3368,20 +3594,26 @@ void SceneObject::setupTextScripts() {
                             .arg(jsonStr);
         }
 
-        // Wrap in IIFE that returns {update, init} functions
+        // Wrap in IIFE that returns {update, init} functions.
+        // `_tlo` carries the current global thisLayer into a local shadow for
+        // the scriptProperties overlay (WE `thisLayer.<propName>` convention —
+        // solar media script reads `thisLayer.debug` to gate logging).
         QString wrapped =
-            QString("(function() {\n"
+            QString("(function(_tlo) {\n"
                     "  'use strict';\n"
                     "  var exports = {};\n"
+                    "  var thisLayer = _tlo;\n"
                     "  %1\n"
                     "  %2\n"
+                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
                     "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
                     "             (typeof update === 'function' ? update : null);\n"
                     "  var _init = typeof exports.init === 'function' ? exports.init :\n"
                     "              (typeof init === 'function' ? init : null);\n"
                     "  if (!_upd) return null;\n"
                     "  return { update: _upd, init: _init };\n"
-                    "})()\n")
+                    "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
@@ -4463,6 +4695,16 @@ void SceneObject::evaluatePropertyScripts() {
 void SceneObject::cleanupTextScripts() {
     // Fire destroy event on all scripts before cleanup
     fireDestroyEvent();
+
+    // Flush any pending localStorage writes AND reset the loaded state so
+    // a subsequent setSource (e.g. switching wallpapers without destroying
+    // this QQuickItem) reloads the correct per-scene store instead of
+    // serving the previous scene's data.
+    if (m_lsGlobalDirty || m_lsScreenDirty) flushLocalStorage();
+    m_lsLoaded = false;
+    m_lsGlobal = {};
+    m_lsScreen = {};
+    m_lsSceneId.clear();
 
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
