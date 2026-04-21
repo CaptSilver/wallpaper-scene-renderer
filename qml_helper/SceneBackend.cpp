@@ -21,6 +21,7 @@
 #endif
 
 #include <clocale>
+#include <cmath>
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -243,9 +244,18 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             return (QSGTexture*)nullptr;
         });
         if (node->initGl()) {
-            node->initVulkan(width() * window()->devicePixelRatio(),
-                             height() * window()->devicePixelRatio(),
-                             m_hdrOutput);
+            // Normally the Vulkan render target matches item-size × dpr so
+            // it fills the backing store 1:1.  Standalone viewers can pin an
+            // exact physical pixel size via the renderPixelWidth/Height
+            // properties — needed because Wayland fractional scaling makes
+            // dpr unstable around window-show time (see qmlviewer.cpp -R).
+            int vk_w = m_renderPixelWidth  > 0
+                           ? m_renderPixelWidth
+                           : (int)std::lround(width() * window()->devicePixelRatio());
+            int vk_h = m_renderPixelHeight > 0
+                           ? m_renderPixelHeight
+                           : (int)std::lround(height() * window()->devicePixelRatio());
+            node->initVulkan(vk_w, vk_h, m_hdrOutput);
 
             connect(
                 node, &TextureNode::redraw, window(), &QQuickWindow::update, Qt::QueuedConnection);

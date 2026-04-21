@@ -35,6 +35,14 @@ class SceneObject : public QQuickItem {
                    userPropertiesChanged)
     Q_PROPERTY(bool hdrOutput READ hdrOutput WRITE setHdrOutput)
     Q_PROPERTY(bool systemAudioCapture READ systemAudioCapture WRITE setSystemAudioCapture)
+    // Standalone viewer override: when non-zero, initVulkan() uses these
+    // values verbatim instead of item-width * devicePixelRatio.  Lets -R
+    // on sceneviewer-script land an exact physical pixel size regardless of
+    // Wayland fractional-scaling / HiDPI quirks that make dpr racy at
+    // window-show time.  The KDE plugin leaves this at 0 and uses the
+    // regular dpr path.
+    Q_PROPERTY(int renderPixelWidth MEMBER m_renderPixelWidth)
+    Q_PROPERTY(int renderPixelHeight MEMBER m_renderPixelHeight)
 public:
     constexpr static std::string_view CACHE_DIR { "wescene-renderer" };
     static std::string                GetDefaultCachePath();
@@ -151,6 +159,8 @@ private:
     bool    m_hdrOutput { false };
     bool    m_systemAudioCapture { false };
     QString m_userProperties;
+    int     m_renderPixelWidth { 0 };
+    int     m_renderPixelHeight { 0 };
 
 public:
     static void on_update(void* ctx);

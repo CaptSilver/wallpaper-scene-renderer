@@ -64,6 +64,14 @@ int main(int argc, char** argv) {
     sv->setProperty("source", QUrl::fromLocalFile(program.get<std::string>(ARG_SCENE).c_str()));
     sv->setProperty("fps", program.get<int32_t>(OPT_FPS));
     sv->setProperty("hdrOutput", program.get<bool>(OPT_HDR));
+    // Pin the Vulkan render target to the exact -R physical pixel size.
+    // Set before the first updatePaintNode (show() below triggers it) so
+    // initVulkan picks these up instead of the racy item-size × dpr path.
+    {
+        auto [rw, rh] = program.get<Resolution>(OPT_RESOLUTION);
+        sv->setProperty("renderPixelWidth", (int)rw);
+        sv->setProperty("renderPixelHeight", (int)rh);
+    }
 
     // --user-props + --set key=value overrides, applied before scripts start.
     std::string user_props = BuildUserPropsJson(program);

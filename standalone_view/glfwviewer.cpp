@@ -151,8 +151,57 @@ int main(int argc, char** argv) {
     // Screenshot capture mode: render N frames, request screenshot, wait for
     // it to be written, then exit.  Keeps iteration fast when iterating on
     // rendering bugs — no window interaction needed.
+    //
+    // Two sub-modes, mirroring qmlviewer:
+    //   --screenshot PATH                         → single shot, then quit
+    //   --screenshot PATH --screenshot-interval S → time-lapse; one file every
+    //                                               S seconds, up to
+    //                                               --screenshot-max-time.
+    //                                               Files are <base>_<ms>.ppm
+    //                                               so `ls` sorts chronologically.
     std::string screenshot_path = program.get<std::string>(OPT_SCREENSHOT);
-    if (! screenshot_path.empty()) {
+    double      interval_s      = program.get<double>(OPT_SCREENSHOT_INTERVAL);
+    double      max_time_s      = program.get<double>(OPT_SCREENSHOT_MAX_TIME);
+
+    if (! screenshot_path.empty() && interval_s > 0.0) {
+        if (max_time_s <= 0.0) max_time_s = interval_s * 10.0;
+
+        // Strip any trailing .ppm so suffixed filenames still end with .ppm.
+        std::string base = screenshot_path;
+        std::string ext  = ".ppm";
+        if (base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0) {
+            base = base.substr(0, base.size() - 4);
+        }
+
+        std::thread([psw, base, ext, interval_s, max_time_s]() {
+            // Give the first frame time to land.
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            auto start   = std::chrono::steady_clock::now();
+            auto next_at = start;
+            while (true) {
+                double elapsed_ms =
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - start)
+                        .count();
+                char name_buf[32];
+                std::snprintf(name_buf, sizeof(name_buf), "_%06d", (int)elapsed_ms);
+                std::string path = base + name_buf + ext;
+                std::cout << "interval screenshot @ " << (elapsed_ms / 1000.0) << "s -> " << path
+                          << std::endl;
+                psw->requestScreenshot(path);
+                // Wait for the backend to write it out before scheduling the
+                // next one, so two requests never collide.
+                for (int i = 0; i < 500 && ! psw->screenshotDone(); i++) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                if (elapsed_ms / 1000.0 >= max_time_s) break;
+                next_at += std::chrono::milliseconds((int64_t)(interval_s * 1000.0));
+                std::this_thread::sleep_until(next_at);
+            }
+            if (g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+            glfwPostEmptyEvent();
+        }).detach();
+    } else if (! screenshot_path.empty()) {
         std::thread([psw, screenshot_path, &program]() {
             int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
             if (frames_to_wait < 1) frames_to_wait = 30;
