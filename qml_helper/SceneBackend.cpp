@@ -21,6 +21,7 @@
 #endif
 
 #include <clocale>
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <functional>
@@ -1534,6 +1535,11 @@ void SceneObject::setupTextScripts() {
     // Layer proxies use Object.defineProperty for dirty tracking
     m_jsEngine->evaluate(
         "var _layerCache = {};\n"
+        // Dense array parallel to _layerCache so _collectDirtyLayers can iterate
+        // by index instead of `for (var name in _layerCache)`.  V8-style `for..in`
+        // walks hash buckets and is ~5-10× slower than an indexed array loop; on
+        // 3body with 1200 pool slots that saved ~0.5ms/tick of dirtyCollect.
+        "var _layerList = [];\n"
         // Pool-layer fast path: for slots whose name starts with __pool_,
         // skip the defineProperty-based proxy entirely and return a plain
         // object.  Scripts mutate origin/scale/angles/alpha/visible directly
@@ -1853,8 +1859,10 @@ void SceneObject::setupTextScripts() {
         "  getLayer: function(name) {\n"
         "    if (_layerCache[name]) return _layerCache[name];\n"
         "    if (!_layerInitStates[name]) return null;\n"
-        "    _layerCache[name] = _makeLayerProxy(name);\n"
-        "    return _layerCache[name];\n"
+        "    var layer = _makeLayerProxy(name);\n"
+        "    _layerCache[name] = layer;\n"
+        "    _layerList.push(layer);\n"
+        "    return layer;\n"
         "  }\n"
         "};\n"
         "var _sceneListeners = {};\n"
@@ -1993,8 +2001,10 @@ void SceneObject::setupTextScripts() {
         "    F_TEXT=32, F_PSIZE=64, F_CMDS=128, F_EFX=256;\n"
         "function _collectDirtyLayers() {\n"
         "  var out = [];\n"
-        "  for (var name in _layerCache) {\n"
-        "    var layer = _layerCache[name];\n"
+        "  var list = _layerList;\n"
+        "  for (var li = 0, ln = list.length; li < ln; li++) {\n"
+        "    var layer = list[li];\n"
+        "    var name = layer.name;\n"
         "    if (layer._pool) {\n"
         // Pool fast path: plain properties, snapshot-compare for dirty.
         "      var prev = layer._prev;\n"
@@ -2048,6 +2058,99 @@ void SceneObject::setupTextScripts() {
         "    s._dirty = {};\n"
         "    if (flags & F_CMDS) s._cmds = [];\n"
         "    if (flags & F_EFX)  s._efxDirty = [];\n"
+        "  }\n"
+        "  return out;\n"
+        "}\n");
+
+    // Batched property-script dispatch: `_runAllPropertyScripts` replaces
+    // the per-script C++->JS .call boundary (670 calls/tick on solar system)
+    // with ONE call.  Entries live in `_allPropertyScripts` as plain objects
+    // with kind/fn/proxy/current-value fields; the loop sets `thisLayer`,
+    // wraps each fn in try/catch, and applies the same change-threshold
+    // compares that C++ used to do — only scripts whose output actually
+    // changed contribute to the returned flat array (stride 4: idx, v1, v2, v3).
+    //
+    // Kind values match PropertyScriptState::Kind: 0=Visible, 1=Vec3, 2=Alpha.
+    m_jsEngine->evaluate(
+        "var _allPropertyScripts = [];\n"
+        "var _scriptErrors = [];\n"
+        // Reusing a single output buffer across ticks avoids reallocating a
+        // fresh Array every call.  `.length = 0` retains the backing store so
+        // `push` into it skips the V8 grow-and-copy path on steady-state
+        // workloads (most ticks produce roughly the same number of entries).
+        "var _scriptOut = [];\n"
+        // Partition boundaries into `_allPropertyScripts`: entries 0..visEnd
+        // are Kind::Visible, visEnd..vec3End are Kind::Vec3, vec3End..total
+        // are Kind::Alpha.  Set in C++ after populating the array.
+        // Pre-partitioning means each per-kind loop body has no branch on
+        // kind and V8 can keep a single hidden-class shape per loop.
+        "var _scriptPartVisEnd = 0;\n"
+        "var _scriptPartVec3End = 0;\n"
+        "function _runAllPropertyScripts() {\n"
+        "  var out = _scriptOut;\n"
+        "  out.length = 0;\n"
+        "  _scriptErrors.length = 0;\n"
+        "  var scripts = _allPropertyScripts;\n"
+        "  var N = scripts.length;\n"
+        "  var ve = _scriptPartVisEnd;\n"
+        "  var xe = _scriptPartVec3End;\n"
+        "  var i, s, r;\n"
+        // The `var fn = s.fn; fn(arg)` dance is deliberate: calling `s.fn(arg)`
+        // directly would bind `this = s` inside the fn, but the original C++
+        // `updateFn.call({arg})` path bound `this = undefined`.  Extracting
+        // the function into a local first matches that semantics, and avoids
+        // polluting our entry objects if scripts do `this.foo = bar` on the
+        // side.
+        "  var fn;\n"
+        "  for (i = 0; i < ve; i++) {\n"
+        "    s = scripts[i];\n"
+        "    if (!s.valid) continue;\n"
+        "    if (s.hasLayer) thisLayer = s.proxy;\n"
+        "    fn = s.fn;\n"
+        "    try { r = fn(s.cb); }\n"
+        "    catch (e) {\n"
+        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
+        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
+        "      continue;\n"
+        "    }\n"
+        "    if (r === undefined || r === null || typeof r !== 'boolean') continue;\n"
+        "    if (r === s.cb) continue;\n"
+        "    s.cb = r;\n"
+        "    out.push(i, r ? 1 : 0, 0, 0);\n"
+        "  }\n"
+        "  for (i = ve; i < xe; i++) {\n"
+        "    s = scripts[i];\n"
+        "    if (!s.valid) continue;\n"
+        "    if (s.hasLayer) thisLayer = s.proxy;\n"
+        "    fn = s.fn;\n"
+        "    try { r = fn(Vec3(s.cx, s.cy, s.cz)); }\n"
+        "    catch (e) {\n"
+        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
+        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
+        "      continue;\n"
+        "    }\n"
+        "    if (r === undefined || r === null || !r || typeof r.x !== 'number') continue;\n"
+        "    if (Math.abs(r.x - s.cx) < 0.0001 &&\n"
+        "        Math.abs(r.y - s.cy) < 0.0001 &&\n"
+        "        Math.abs(r.z - s.cz) < 0.0001) continue;\n"
+        "    s.cx = r.x; s.cy = r.y; s.cz = r.z;\n"
+        "    out.push(i, r.x, r.y, r.z);\n"
+        "  }\n"
+        "  for (i = xe; i < N; i++) {\n"
+        "    s = scripts[i];\n"
+        "    if (!s.valid) continue;\n"
+        "    if (s.hasLayer) thisLayer = s.proxy;\n"
+        "    fn = s.fn;\n"
+        "    try { r = fn(s.cf); }\n"
+        "    catch (e) {\n"
+        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
+        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
+        "      continue;\n"
+        "    }\n"
+        "    if (r === undefined || r === null || typeof r !== 'number') continue;\n"
+        "    if (Math.abs(r - s.cf) < 0.001) continue;\n"
+        "    s.cf = r;\n"
+        "    out.push(i, r, 0, 0);\n"
         "  }\n"
         "  return out;\n"
         "}\n");
@@ -2837,6 +2940,11 @@ void SceneObject::setupTextScripts() {
         state.id                       = psi.id;
         state.property                 = psi.property;
         state.layerName                = psi.layerName;
+        state.kind                     = (psi.property == "visible")
+                                             ? PropertyScriptState::Kind::Visible
+                                         : (psi.property == "alpha")
+                                             ? PropertyScriptState::Kind::Alpha
+                                             : PropertyScriptState::Kind::Vec3;
         state.updateFn                 = updateFn;
         state.initFn                   = initFn;
         state.cursorClickFn            = cursorClickFn;
@@ -2913,6 +3021,55 @@ void SceneObject::setupTextScripts() {
             }
         }
     }
+
+    // Partition the script vector by Kind so a single-pass iteration in
+    // `evaluatePropertyScripts` yields (visible, vec3, alpha) order without the
+    // old 3-pass string-compare loop.  stable_sort keeps relative order of
+    // scripts within the same kind.  `Kind` is a uint8_t ordered
+    // Visible=0, Vec3=1, Alpha=2.
+    std::stable_sort(
+        m_propertyScriptStates.begin(), m_propertyScriptStates.end(),
+        [](const PropertyScriptState& a, const PropertyScriptState& b) {
+            return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
+        });
+
+    // Populate the JS-side `_allPropertyScripts` array.  Entries are indexed
+    // 1:1 with `m_propertyScriptStates`, so results returned from
+    // `_runAllPropertyScripts()` can be dispatched by looking up the state at
+    // the same index.  Initial current values come from the init/psi.initial*
+    // fields already copied onto state; JS owns the current value from this
+    // point forward (C++ still mirrors it on state.current* after applying
+    // each change).
+    {
+        QJSValue scriptsArr = m_jsEngine->globalObject().property("_allPropertyScripts");
+        // Reset to empty in case of re-load / re-parse.
+        m_jsEngine->evaluate("_allPropertyScripts.length = 0;");
+        int visEnd  = 0;
+        int vec3End = 0;
+        for (auto& state : m_propertyScriptStates) {
+            QJSValue entry = m_jsEngine->newObject();
+            entry.setProperty("kind", QJSValue((int)state.kind));
+            entry.setProperty("fn", state.updateFn);
+            entry.setProperty("proxy", state.thisLayerProxy);
+            entry.setProperty("hasLayer", QJSValue(! state.layerName.empty()));
+            entry.setProperty("valid", QJSValue(state.updateFn.isCallable()));
+            entry.setProperty("cb", QJSValue(state.currentVisible));
+            entry.setProperty("cf", QJSValue((double)state.currentFloat));
+            entry.setProperty("cx", QJSValue((double)state.currentVec3[0]));
+            entry.setProperty("cy", QJSValue((double)state.currentVec3[1]));
+            entry.setProperty("cz", QJSValue((double)state.currentVec3[2]));
+            scriptsArr.setProperty((quint32)scriptsArr.property("length").toUInt(), entry);
+            if (state.kind == PropertyScriptState::Kind::Visible) {
+                visEnd++;
+                vec3End++;
+            } else if (state.kind == PropertyScriptState::Kind::Vec3) {
+                vec3End++;
+            }
+        }
+        m_jsEngine->globalObject().setProperty("_scriptPartVisEnd", QJSValue(visEnd));
+        m_jsEngine->globalObject().setProperty("_scriptPartVec3End", QJSValue(vec3End));
+    }
+    m_runAllPropertyScriptsFn = m_jsEngine->globalObject().property("_runAllPropertyScripts");
 
     if (! m_propertyScriptStates.empty()) {
         qCInfo(wekdeScene, "Compiled %zu property scripts", (size_t)m_propertyScriptStates.size());
@@ -3720,94 +3877,79 @@ void SceneObject::evaluatePropertyScripts() {
 
     probeMark(s_t_prelude);
 
-    // Evaluate in order: visible first (computes shared.*), then vec3 props, then alpha
-    for (int pass = 0; pass < 3; pass++) {
-        for (auto& state : m_propertyScriptStates) {
-            bool isVisible = (state.property == "visible");
-            bool isAlpha   = (state.property == "alpha");
-            bool isVec3    = ! isVisible && ! isAlpha;
-
-            if (pass == 0 && ! isVisible) continue;
-            if (pass == 1 && ! isVec3) continue;
-            if (pass == 2 && ! isAlpha) continue;
-
-            // Set thisLayer for this script's context (cached proxy)
-            if (! state.layerName.empty()) {
-                m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+    // Batched property-script dispatch.  ONE C++->JS call replaces the old
+    // per-script loop: `_runAllPropertyScripts()` sets `thisLayer`, runs each
+    // update fn with try/catch, compares the result against the stored
+    // current value (threshold-gated), and packs ONLY the changed entries
+    // into a flat stride-4 array [idx, v1, v2, v3, ...].  Errors are pushed
+    // to `_scriptErrors` (stride 4: idx, message, line, stack) and drained
+    // below.  Kind for each idx is known from `m_propertyScriptStates[idx].kind`.
+    if (m_runAllPropertyScriptsFn.isCallable()) {
+        using Kind       = PropertyScriptState::Kind;
+        QJSValue out     = m_runAllPropertyScriptsFn.call();
+        int      total   = out.property("length").toInt();
+        for (int i = 0; i < total; i += 4) {
+            int idx = out.property(i).toInt();
+            if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;
+            auto& state = m_propertyScriptStates[idx];
+            switch (state.kind) {
+            case Kind::Visible: {
+                bool v               = out.property(i + 1).toInt() != 0;
+                state.currentVisible = v;
+                m_scene->updateNodeVisible(state.id, v);
+                if (s_scriptDiag) s_updatesVisible++;
+                break;
             }
-
-            if (! state.updateFn.isCallable()) continue;
-
-            QJSValue arg;
-            if (isVisible) {
-                arg = QJSValue(state.currentVisible);
-            } else if (isAlpha) {
-                arg = QJSValue((double)state.currentFloat);
-            } else {
-                // Call Vec3() function directly (cheaper than evaluate)
-                arg = vec3Fn.call({ QJSValue((double)state.currentVec3[0]),
-                                    QJSValue((double)state.currentVec3[1]),
-                                    QJSValue((double)state.currentVec3[2]) });
+            case Kind::Alpha: {
+                float v            = (float)out.property(i + 1).toNumber();
+                state.currentFloat = v;
+                m_scene->updateNodeAlpha(state.id, v);
+                if (s_scriptDiag) s_updatesAlpha++;
+                break;
             }
-
-            QJSValue result = state.updateFn.call({ arg });
-            if (result.isError()) {
-                if (s_scriptDiag) s_errorsThisWin++;
-                static std::unordered_set<int> erroredIds;
-                if (erroredIds.find(state.id * 100 + pass) == erroredIds.end()) {
-                    erroredIds.insert(state.id * 100 + pass);
-                    static int s_rt_err = 0;
-                    if (++s_rt_err <= 10) {
-                        QString stack = result.property("stack").toString();
-                        int     line  = result.property("lineNumber").toInt();
-                        LOG_INFO(
-                            "Property script RUNTIME ERROR id=%d prop=%s: %s (line %d)\nSTACK: %s",
-                            state.id,
-                            state.property.c_str(),
-                            qPrintable(result.toString()),
-                            line,
-                            qPrintable(stack));
-                    }
-                    qCWarning(wekdeScene,
-                              "Property script error id=%d prop=%s: %s",
-                              state.id,
-                              state.property.c_str(),
-                              qPrintable(result.toString()));
-                }
-                continue;
+            case Kind::Vec3: {
+                float x           = (float)out.property(i + 1).toNumber();
+                float y           = (float)out.property(i + 2).toNumber();
+                float z           = (float)out.property(i + 3).toNumber();
+                state.currentVec3 = { x, y, z };
+                m_scene->updateNodeTransform(state.id, state.property, x, y, z);
+                if (s_scriptDiag) s_updatesVec3++;
+                break;
             }
-
-            // Process return values (some scripts return values directly)
-            if (isVisible) {
-                if (result.isBool()) {
-                    bool newVal = result.toBool();
-                    if (newVal != state.currentVisible) {
-                        state.currentVisible = newVal;
-                        m_scene->updateNodeVisible(state.id, newVal);
-                        if (s_scriptDiag) s_updatesVisible++;
-                    }
-                }
-            } else if (isAlpha) {
-                if (result.isNumber()) {
-                    float newVal = (float)result.toNumber();
-                    if (std::abs(newVal - state.currentFloat) > 0.001f) {
-                        state.currentFloat = newVal;
-                        m_scene->updateNodeAlpha(state.id, newVal);
-                        if (s_scriptDiag) s_updatesAlpha++;
-                    }
-                }
-            } else if (result.isObject() && result.hasProperty("x")) {
-                float x = (float)result.property("x").toNumber();
-                float y = (float)result.property("y").toNumber();
-                float z = (float)result.property("z").toNumber();
-                if (std::abs(x - state.currentVec3[0]) > 0.0001f ||
-                    std::abs(y - state.currentVec3[1]) > 0.0001f ||
-                    std::abs(z - state.currentVec3[2]) > 0.0001f) {
-                    state.currentVec3 = { x, y, z };
-                    m_scene->updateNodeTransform(state.id, state.property, x, y, z);
-                    if (s_scriptDiag) s_updatesVec3++;
-                }
             }
+        }
+
+        // Drain _scriptErrors (stride 4: idx, message, line, stack).  Same
+        // dedup behavior as before: first 10 errors get full STACK logged,
+        // subsequent runtime errors for the same id+kind are suppressed.
+        QJSValue errors   = m_jsEngine->globalObject().property("_scriptErrors");
+        int      errTotal = errors.property("length").toInt();
+        for (int i = 0; i < errTotal; i += 4) {
+            int idx = errors.property(i).toInt();
+            if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;
+            auto& state = m_propertyScriptStates[idx];
+            if (s_scriptDiag) s_errorsThisWin++;
+            static std::unordered_set<int> erroredIds;
+            int                            tag = state.id * 10 + (int)state.kind;
+            if (erroredIds.find(tag) != erroredIds.end()) continue;
+            erroredIds.insert(tag);
+            static int s_rt_err = 0;
+            QString    msg      = errors.property(i + 1).toString();
+            int        line     = errors.property(i + 2).toInt();
+            QString    stack    = errors.property(i + 3).toString();
+            if (++s_rt_err <= 10) {
+                LOG_INFO("Property script RUNTIME ERROR id=%d prop=%s: %s (line %d)\nSTACK: %s",
+                         state.id,
+                         state.property.c_str(),
+                         qPrintable(msg),
+                         line,
+                         qPrintable(stack));
+            }
+            qCWarning(wekdeScene,
+                      "Property script error id=%d prop=%s: %s",
+                      state.id,
+                      state.property.c_str(),
+                      qPrintable(msg));
         }
     }
 
@@ -4317,9 +4459,16 @@ void SceneObject::cleanupTextScripts() {
     m_propertyScriptStates.clear();
     m_soundVolumeScriptStates.clear();
     m_nodeNameToId.clear();
-    m_collectDirtyLayersFn = QJSValue();
-    m_fireSceneEventFn     = QJSValue();
-    m_hasSceneListenersFn  = QJSValue();
+    m_collectDirtyLayersFn    = QJSValue();
+    m_fireSceneEventFn        = QJSValue();
+    m_hasSceneListenersFn     = QJSValue();
+    m_runAllPropertyScriptsFn = QJSValue();
+    // Drain the JS-side script array so a reload starts fresh.  The engine
+    // itself stays alive; just its cached references need to clear.
+    if (m_jsEngine) {
+        m_jsEngine->evaluate("if (typeof _allPropertyScripts !== 'undefined') "
+                             "_allPropertyScripts.length = 0;");
+    }
     m_soundLayerStates.clear();
     m_soundLayerNameToIndex.clear();
     m_collectDirtySoundLayersFn = QJSValue();

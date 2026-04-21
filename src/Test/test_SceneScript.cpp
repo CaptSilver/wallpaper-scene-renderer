@@ -1051,6 +1051,10 @@ static const char* JS_AUDIO_BUFFERS =
 
 static const char* JS_LAYER_INFRA =
     "var _layerCache = {};\n"
+    // Dense list mirroring _layerCache so _collectDirtyLayers can iterate by
+    // index (production uses the same pattern — `for..in` on _layerCache was
+    // the dirtyCollect hot spot for 1200-slot pool scenes).
+    "var _layerList = [];\n"
     "function _makeLayerProxy(name) {\n"
     "  var init = _layerInitStates[name];\n"
     "  var _s = init ? {\n"
@@ -1224,8 +1228,10 @@ static const char* JS_LAYER_INFRA =
     "  getLayer: function(name) {\n"
     "    if (_layerCache[name]) return _layerCache[name];\n"
     "    if (!_layerInitStates[name]) return null;\n"
-    "    _layerCache[name] = _makeLayerProxy(name);\n"
-    "    return _layerCache[name];\n"
+    "    var layer = _makeLayerProxy(name);\n"
+    "    _layerCache[name] = layer;\n"
+    "    _layerList.push(layer);\n"
+    "    return layer;\n"
     "  }\n"
     "};\n"
     "var _sceneListeners = {};\n"
@@ -1260,12 +1266,14 @@ static const char* JS_LAYER_INFRA =
     "var thisLayer = null;\n"
     "function _collectDirtyLayers() {\n"
     "  var updates = [];\n"
-    "  for (var name in _layerCache) {\n"
-    "    var s = _layerCache[name]._state;\n"
+    "  var list = _layerList;\n"
+    "  for (var li = 0, ln = list.length; li < ln; li++) {\n"
+    "    var layer = list[li];\n"
+    "    var s = layer._state;\n"
     "    var d = s._dirty;\n"
     "    var keys = Object.keys(d);\n"
     "    if (keys.length === 0) continue;\n"
-    "    updates.push({ name: name, dirty: d,\n"
+    "    updates.push({ name: layer.name, dirty: d,\n"
     "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
     "      visible: s.visible, alpha: s.alpha, text: s.text });\n"
     "    s._dirty = {};\n"
@@ -3327,6 +3335,44 @@ TEST_SUITE("Dirty Layer Collection") {
                             "thisScene.getLayer('fg').visible = true;\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
         CHECK(r.property("length").toInt() == 2);
+    }
+
+    TEST_CASE("_layerList grows as layers are materialized via getLayer") {
+        // Production _collectDirtyLayers iterates `_layerList` by index
+        // instead of walking `_layerCache` via `for..in` (V8-style hash
+        // iteration is slow for 1000+ entries).  The invariant: every entry
+        // added to _layerCache must also appear in _layerList, in insertion
+        // order, with no duplicates when getLayer() is re-called.
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("_layerList.length").toInt() == 0);
+        env.engine.evaluate("thisScene.getLayer('bg');");
+        CHECK(env.engine.evaluate("_layerList.length").toInt() == 1);
+        CHECK(env.engine.evaluate("_layerList[0].name").toString() == "bg");
+
+        env.engine.evaluate("thisScene.getLayer('fg');");
+        CHECK(env.engine.evaluate("_layerList.length").toInt() == 2);
+        CHECK(env.engine.evaluate("_layerList[1].name").toString() == "fg");
+
+        // Re-materialization must hit the cache — no second push.
+        env.engine.evaluate("thisScene.getLayer('bg');");
+        CHECK(env.engine.evaluate("_layerList.length").toInt() == 2);
+
+        // Unknown layer returns null and does NOT grow the list.
+        env.engine.evaluate("thisScene.getLayer('no-such-layer');");
+        CHECK(env.engine.evaluate("_layerList.length").toInt() == 2);
+    }
+
+    TEST_CASE("_collectDirtyLayers walks _layerList in insertion order") {
+        // Two dirty layers — verify the collector returns them in the same
+        // order they were materialized (i.e., iteration-order semantics of
+        // _layerList, not _layerCache hash order).
+        ScriptEnv env;
+        env.engine.evaluate("thisScene.getLayer('fg').visible = false;\n"
+                            "thisScene.getLayer('bg').origin = {x:1,y:2,z:3};\n");
+        QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(r.property("length").toInt() == 2);
+        CHECK(r.property(0).property("name").toString() == "fg");
+        CHECK(r.property(1).property("name").toString() == "bg");
     }
 
 } // TEST_SUITE Dirty Layer Collection

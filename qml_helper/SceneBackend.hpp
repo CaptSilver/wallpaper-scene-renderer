@@ -189,9 +189,17 @@ private:
     };
     // Property script evaluation
     struct PropertyScriptState {
+        // kind is computed once from `property` at load-time so the hot tick
+        // loop can dispatch via a single integer compare instead of two
+        // `property == "visible"` / `property == "alpha"` std::string checks.
+        // Values are ordered so a stable partition by kind yields the
+        // (visible, vec3, alpha) execution order that dependent scripts rely
+        // on (visibles compute shared.* that vec3/alpha scripts then read).
+        enum class Kind : uint8_t { Visible = 0, Vec3 = 1, Alpha = 2 };
         int32_t              id;
         std::string          property;
         std::string          layerName;
+        Kind                 kind { Kind::Vec3 };
         QJSValue             updateFn;
         QJSValue             initFn;
         QJSValue             cursorClickFn; // optional cursorClick handler from IIFE
@@ -261,6 +269,9 @@ private:
     QJSValue                                 m_collectDirtySceneFn;
     QJSValue                                 m_fireSceneEventFn;
     QJSValue                                 m_hasSceneListenersFn;
+    // Batched property-script dispatch — see `_runAllPropertyScripts` in
+    // SceneBackend.cpp.  One C++->JS call per tick instead of N.
+    QJSValue                                 m_runAllPropertyScriptsFn;
     void fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API
