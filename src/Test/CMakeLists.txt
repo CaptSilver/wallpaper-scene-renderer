@@ -86,6 +86,16 @@ endif()
 
 add_test(NAME backend_scene_tests COMMAND backend_scene_tests)
 
+# Expose wp-pkg binary path to tests when BUILD_TOOLS is on.  The wp-pkg pack
+# format suite shells out to the real binary; when the tool isn't built (the
+# default, including CI) the suite skips at runtime instead of hardcoding a
+# user-specific absolute path.
+if(BUILD_TOOLS AND TARGET wp-pkg)
+    target_compile_definitions(backend_scene_tests PRIVATE
+        WP_PKG_TOOL_PATH="$<TARGET_FILE:wp-pkg>")
+    add_dependencies(backend_scene_tests wp-pkg)
+endif()
+
 # Qt-dependent tests (SceneScript timers, device detection)
 find_package(Qt6 COMPONENTS Core Qml QUIET)
 if(Qt6_FOUND)

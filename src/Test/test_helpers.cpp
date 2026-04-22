@@ -831,12 +831,26 @@ static bool load(const std::string& path, Pkg& p) {
 }
 } // namespace wp_pkg_fmt
 
+// Resolve wp-pkg at runtime.  Populated by CMake via -DWP_PKG_TOOL_PATH when
+// BUILD_TOOLS=ON; otherwise empty so the pack-format suite skips cleanly.
+#ifndef WP_PKG_TOOL_PATH
+#    define WP_PKG_TOOL_PATH ""
+#endif
+static bool wp_pkg_tool_available() {
+    constexpr std::string_view kPath = WP_PKG_TOOL_PATH;
+    return ! kPath.empty() && std::filesystem::exists(kPath);
+}
+
 TEST_SUITE("wp-pkg pack format") {
     // Pack invariants: header size matches computed offset, offsets monotonic,
     // payload concatenated contiguously.  Doesn't exercise the pack() code path
     // itself (that's in a standalone main), but catches regressions where the
     // format drifts from load_pkg expectations.
     TEST_CASE("Packed pkg parses with load() invariants") {
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
         // Build a tiny pkg with known entries under a temp dir, run wp-pkg pack,
         // load it back via load(), check byte-level correctness.
         const std::string dir = "/tmp/wp_pkg_pack_test_fixture";
@@ -854,8 +868,7 @@ TEST_SUITE("wp-pkg pack format") {
             f << "xyz";
         }
 
-        const std::string tool = "/var/home/bazzite/build/wallpaper-engine-kde-plugin"
-                                 "/src/backend_scene/build-tools/tools/wp-pkg";
+        const std::string tool = WP_PKG_TOOL_PATH;
         std::string       cmd  = tool + " pack " + dir + " " + pkg + " > /dev/null 2>&1";
         int               rc   = std::system(cmd.c_str());
         REQUIRE(rc == 0);
@@ -889,8 +902,11 @@ TEST_SUITE("wp-pkg pack format") {
     }
 
     TEST_CASE("Pack rejects missing directory") {
-        const std::string tool = "/var/home/bazzite/build/wallpaper-engine-kde-plugin"
-                                 "/src/backend_scene/build-tools/tools/wp-pkg";
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
+        const std::string tool = WP_PKG_TOOL_PATH;
         // Non-existent dir should exit non-zero without creating output.
         std::filesystem::remove("/tmp/wp_pkg_nope_out.pkg");
         std::string cmd = tool + " pack /tmp/__not_a_real_dir_for_wp_pkg "
@@ -901,6 +917,10 @@ TEST_SUITE("wp-pkg pack format") {
     }
 
     TEST_CASE("Pack skips .info.txt sidecars extract --raw=off writes") {
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
         // Extract writes <file>.info.txt next to each .tex for human-readable
         // header summaries.  Repacking should NOT include those synthetic files.
         const std::string dir = "/tmp/wp_pkg_pack_skip_test";
@@ -925,8 +945,7 @@ TEST_SUITE("wp-pkg pack format") {
             f << "{}";
         }
 
-        const std::string tool = "/var/home/bazzite/build/wallpaper-engine-kde-plugin"
-                                 "/src/backend_scene/build-tools/tools/wp-pkg";
+        const std::string tool = WP_PKG_TOOL_PATH;
         std::string       cmd  = tool + " pack " + dir + " " + pkg + " > /dev/null 2>&1";
         REQUIRE(std::system(cmd.c_str()) == 0);
 
