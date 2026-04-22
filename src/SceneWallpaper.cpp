@@ -950,12 +950,32 @@ private:
                 m_pending_light_positions.clear();
             }
 
+            // Advance scene clock and animation tracks by the true
+            // wall-clock delta since the last DRAW, clamped to [0, 100 ms].
+            // Using FrameTimer::IdeaTime() here double-counted time when
+            // DRAWs queued up (scene load, busy queue draining) — each
+            // catch-up DRAW ran in milliseconds but advanced sim time by a
+            // full ideatime, making animations race ahead on startup and
+            // any time the render loop fell behind.  Wall-clock delta is
+            // perception-correct; the upper clamp keeps a long pause
+            // (suspend/resume, long scene reload) from jumping the scene
+            // clock by many seconds in one frame.
+            auto   now     = std::chrono::steady_clock::now();
+            double dt_wall = m_last_draw_wall_time
+                                 ? std::chrono::duration<double>(
+                                       now - *m_last_draw_wall_time).count()
+                                 : frame_timer.IdeaTime();
+            m_last_draw_wall_time = now;
+            if (dt_wall < 0.0) dt_wall = 0.0;
+            if (dt_wall > 0.1) dt_wall = 0.1;
+            double dt_scene = dt_wall * m_speed;
+
             // Tick property animations (alpha.animation keyframe tracks).
             // Advances time on playing tracks, evaluates, writes resulting
             // value into the target node's material const (g_UserAlpha for
             // "alpha").  Driven by render-thread frame time so it stays in
             // lockstep with visuals.
-            tickPropertyAnimations(frame_timer.IdeaTime() * m_speed);
+            tickPropertyAnimations(dt_scene);
 
             m_render->drawFrame(*m_scene);
 
@@ -967,8 +987,28 @@ private:
                 return;
             }
 
-            m_scene->PassFrameTime(frame_timer.IdeaTime() * m_speed);
+            m_scene->PassFrameTime(dt_scene);
             m_scene_time.store(m_scene->elapsingTime, std::memory_order_relaxed);
+
+            // DIAG: log elapsingTime vs wall clock drift
+            if (std::getenv("WEKDE_TIME_DIAG")) {
+                static auto s_wall_start = std::chrono::steady_clock::now();
+                static double s_last_scene = 0.0;
+                static int s_tick_count = 0;
+                s_tick_count++;
+                if (s_tick_count % 30 == 0) {
+                    double wall = std::chrono::duration<double>(
+                                      std::chrono::steady_clock::now() - s_wall_start).count();
+                    double delta_scene = m_scene->elapsingTime - s_last_scene;
+                    s_last_scene = m_scene->elapsingTime;
+                    LOG_INFO("TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
+                             "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f dt_wall=%.4f",
+                             s_tick_count, wall, m_scene->elapsingTime,
+                             wall > 0.01 ? m_scene->elapsingTime / wall : 0.0,
+                             frame_timer.FrameTime(), frame_timer.IdeaTime(),
+                             frame_timer.RequiredFps(), delta_scene, dt_wall);
+                }
+            }
 
             m_scene->shaderValueUpdater->FrameEnd();
             // fps_counter.RegisterFrame();
@@ -992,7 +1032,9 @@ private:
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
-            m_drawDiagReset = true; // force DRAW diagnostic on next frame
+            m_drawDiagReset       = true; // force DRAW diagnostic on next frame
+            m_last_draw_wall_time.reset(); // first DRAW uses ideatime, not the
+                                           // wall-clock gap across scene load
 
             // HDR takes effect only when the renderer pipeline supports it AND the
             // scene's project.json declared hdr:true.  Scenes that set hdr:false
@@ -1241,6 +1283,12 @@ private:
     // Published scene clock (m_scene->elapsingTime) — read cross-thread from QML.
     // Writers: this render thread after each PassFrameTime(). Readers: SceneBackend.
     std::atomic<double> m_scene_time { 0.0 };
+
+    // Wall-clock timestamp of the previous DRAW that advanced scene time.
+    // Used to drive PassFrameTime() off real elapsed time rather than the
+    // FrameTimer ideatime — when DRAWs queue up at startup, the timer-driven
+    // ideatime double-counts sim time and makes animations race ahead.
+    std::optional<std::chrono::steady_clock::time_point> m_last_draw_wall_time;
 
 public:
     double getSceneTime() const { return m_scene_time.load(std::memory_order_relaxed); }

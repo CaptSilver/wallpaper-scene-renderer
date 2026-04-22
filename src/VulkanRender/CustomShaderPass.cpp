@@ -350,6 +350,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto& tex_name = m_desc.textures[i];
         if (tex_name.empty()) continue;
 
+        // Text layer textures (key "_text_<id>") are re-uploaded each time the
+        // script produces new text (clock tick, track title, etc.).  Like
+        // video textures, the write reuses the same VkImage handle — invisible
+        // to the render graph — so any pass that samples one must re-execute
+        // each frame or the text freezes on the first raster.  Matches the
+        // ParseTextObj key convention in WPSceneParser.cpp.
+        if (tex_name.rfind("_text_", 0) == 0) {
+            m_samples_mutable_texture = true;
+        }
+
         ImageSlotsRef img_slots;
         if (IsSpecTex(tex_name)) {
             if (scene.renderTargets.count(tex_name) == 0) continue;

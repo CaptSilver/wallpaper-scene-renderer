@@ -62,16 +62,28 @@ static constexpr const char* pre_shader_code = R"(#version 330
 // HLSL built-ins broadcast scalar to vector; GLSL requires matching genType.
 // Overloads must be defined BEFORE the #define so their bodies call the
 // real built-in, while all subsequent shader code gets redirected.
-vec2 _wep(vec2 x, float y) { return pow(x, vec2(y)); }
-vec3 _wep(vec3 x, float y) { return pow(x, vec3(y)); }
-vec4 _wep(vec4 x, float y) { return pow(x, vec4(y)); }
-vec2 _wep(float x, vec2 y) { return pow(vec2(x), y); }
-vec3 _wep(float x, vec3 y) { return pow(vec3(x), y); }
-vec4 _wep(float x, vec4 y) { return pow(vec4(x), y); }
-float _wep(float x, float y) { return pow(x, y); }
-vec2 _wep(vec2 x, vec2 y) { return pow(x, y); }
-vec3 _wep(vec3 x, vec3 y) { return pow(x, y); }
-vec4 _wep(vec4 x, vec4 y) { return pow(x, y); }
+//
+// Additionally: GLSL says pow(x, y) is UNDEFINED for x < 0 (spec §8.2).
+// HLSL's pow(x, 2) with negative x just does x*x and returns a positive
+// result, so wallpapers routinely write `sign(x) * pow(x, 2.0)` meaning
+// "signed square".  Under RADV (and other GLSL drivers) the undefined
+// branch can return large or NaN values that then multiply into g_Time
+// in motion shaders (scroll, cloudmotion) — clouds visibly blur / alias /
+// "disappear" after minutes as v_Scroll drifts far out of [0,1].
+// Wrap x with abs() so negative inputs take the positive-definite path;
+// for the even-exponent case (the common `pow(x, 2.0)`) this yields the
+// same magnitude HLSL does, and callers who need the sign keep their
+// own `sign(x) *` prefix intact.
+float _wep(float x, float y) { return pow(abs(x), y); }
+vec2 _wep(vec2 x, float y) { return pow(abs(x), vec2(y)); }
+vec3 _wep(vec3 x, float y) { return pow(abs(x), vec3(y)); }
+vec4 _wep(vec4 x, float y) { return pow(abs(x), vec4(y)); }
+vec2 _wep(float x, vec2 y) { return pow(vec2(abs(x)), y); }
+vec3 _wep(float x, vec3 y) { return pow(vec3(abs(x)), y); }
+vec4 _wep(float x, vec4 y) { return pow(vec4(abs(x)), y); }
+vec2 _wep(vec2 x, vec2 y) { return pow(abs(x), y); }
+vec3 _wep(vec3 x, vec3 y) { return pow(abs(x), y); }
+vec4 _wep(vec4 x, vec4 y) { return pow(abs(x), y); }
 #define pow _wep
 vec2 _wemx(float x, vec2 y) { return max(vec2(x), y); }
 vec3 _wemx(float x, vec3 y) { return max(vec3(x), y); }

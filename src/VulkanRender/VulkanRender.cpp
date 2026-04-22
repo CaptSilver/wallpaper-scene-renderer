@@ -23,6 +23,7 @@
 #include "PrePass.hpp"
 #include "FinPass.hpp"
 #include "CustomShaderPass.hpp"
+#include "CopyPass.hpp"
 #include "Resource.hpp"
 #include "VulkanRender/PassCacheAlias.hpp"
 
@@ -1444,6 +1445,20 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                 }
                 inputs.push_back(std::move(in_handles));
                 cacheable.push_back(csp->isCacheable());
+            } else if (auto* cp = dynamic_cast<CopyPass*>(p); cp && cp->prepared()) {
+                // CopyPass writes to `_rt_link_<id>`, which the RT allocator
+                // frequently aliases to the same VkImage as an upstream
+                // pingpong — if we don't account for it, the sole-writer
+                // check lies and caches an upstream base pass whose output
+                // the copy then overwrites every frame (Lucy cloud scroll
+                // feedback loop).  Treat the copy as an unconditional
+                // non-cacheable writer of dst so alias analysis sees two
+                // writers and refuses to cache either.
+                outputs.push_back(cp->desc().vk_dst.handle);
+                std::vector<VkImage> in_handles;
+                in_handles.push_back(cp->desc().vk_src.handle);
+                inputs.push_back(std::move(in_handles));
+                cacheable.push_back(false);
             } else {
                 outputs.push_back(VK_NULL_HANDLE);
                 inputs.emplace_back();
@@ -1461,6 +1476,15 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             if (safe[i]) {
                 csp->setCanCache(true);
                 cache_gated++;
+                auto&             d    = csp->desc();
+                const std::string shad = d.node && d.node->Mesh() && d.node->Mesh()->Material()
+                                             ? d.node->Mesh()->Material()->customShader.shader->name
+                                             : "?";
+                LOG_INFO("  cached pass#%zu shader='%s' out='%s' node_id=%d",
+                         i,
+                         shad.c_str(),
+                         d.output.c_str(),
+                         d.node ? d.node->ID() : -1);
             }
         }
         LOG_INFO("pass cache: %d cacheable, %d safe-to-skip → can skip on re-exec",

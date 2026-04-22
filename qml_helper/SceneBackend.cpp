@@ -3687,9 +3687,13 @@ void SceneObject::setupTextScripts() {
         m_textTimer->setInterval(500); // evaluate twice per second
         connect(m_textTimer, &QTimer::timeout, this, &SceneObject::evaluateTextScripts);
         m_textTimer->start();
+        LOG_INFO("TextTimer started: %zu text scripts, interval=500ms",
+                 m_textScriptStates.size());
 
         // Run once immediately
         evaluateTextScripts();
+    } else {
+        LOG_INFO("TextTimer NOT started: no text scripts");
     }
 
     if (! m_colorScriptStates.empty()) {
@@ -3769,6 +3773,8 @@ void SceneObject::evaluateTextScripts() {
     }();
 
     int updated = 0, errors = 0;
+    static int s_textDebugCount = 0;
+    s_textDebugCount++;
     for (auto& state : m_textScriptStates) {
         QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
         if (result.isError()) {
@@ -3793,6 +3799,21 @@ void SceneObject::evaluateTextScripts() {
             continue;
         }
         QString newText = result.toString();
+        // Always log first 5 evals so we can tell from plasma's journal whether
+        // the text script is firing at all, and whether it produces the same
+        // string each call (showing as "no update" with no re-raster).
+        if (s_textDebugCount <= 5) {
+            QString a = newText;
+            a.replace('\n', '\\');
+            QString b = state.currentText;
+            b.replace('\n', '\\');
+            LOG_INFO("TextEval[%d] id=%d new=\"%s\" cur=\"%s\" changed=%d",
+                     s_textDebugCount,
+                     state.id,
+                     qPrintable(a.left(80)),
+                     qPrintable(b.left(80)),
+                     (int)(newText != state.currentText));
+        }
         if (newText != state.currentText) {
             if (s_textDiag) {
                 // Log the new value (truncated) — essential for blank-HUD
