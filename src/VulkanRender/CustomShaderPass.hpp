@@ -83,8 +83,16 @@ public:
     // Returns true if shader uses time-based uniforms (g_Time, g_PointerPosition, etc.)
     bool usesTimeUniforms() const { return m_uses_time_uniforms; }
 
-    // Pass is cacheable if static and doesn't use time-based uniforms
-    bool isCacheable() const { return isStatic() && ! m_uses_time_uniforms; }
+    // Returns true if any sampled texture is externally mutated out-of-band
+    // (video frames uploaded via TextureCache::ReuploadTex reuse the same
+    //  VkImage handle every frame — the render graph can't see the writes).
+    bool samplesMutableTexture() const { return m_samples_mutable_texture; }
+
+    // Pass is cacheable if static, doesn't use time-based uniforms, and
+    // doesn't sample a texture that is re-uploaded out-of-band (video tex).
+    bool isCacheable() const {
+        return isStatic() && ! m_uses_time_uniforms && ! m_samples_mutable_texture;
+    }
 
     // Cache is only safe to skip-on-reexecute when the pass's output image
     // is not aliased by a later pass in the frame order — otherwise the RT
@@ -108,6 +116,7 @@ private:
     bool m_cached { false };
     bool m_can_cache { false };
     bool m_uses_time_uniforms { false };
+    bool m_samples_mutable_texture { false };
 };
 
 } // namespace vulkan

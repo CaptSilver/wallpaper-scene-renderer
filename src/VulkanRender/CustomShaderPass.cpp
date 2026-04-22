@@ -366,6 +366,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 // sharing the character video).  Append every owner so the
                 // decoder runs as long as ANY sampler is visible.
                 if (image->header.isVideoTexture && ! image->header.videoFilePath.empty()) {
+                    // Video textures are re-uploaded every frame into the
+                    // same VkImage via TextureCache::ReuploadTex — that
+                    // write is invisible to the render graph's safety
+                    // analysis, so any pass that samples this texture must
+                    // re-execute each frame (can't be cached).
+                    m_samples_mutable_texture = true;
                     VideoTextureInfo* existing = nullptr;
                     for (auto& vt : scene.videoTextures)
                         if (vt.textureKey == tex_name) {
@@ -978,6 +984,14 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     extern int g_cache_hits;
     extern int g_cache_misses;
     extern int g_invisible_skips;
+    // SceneScripts / user-prop changes / scene-property setters mark
+    // constValuesDirty on the material; we must re-execute so the new
+    // uniform values reach the UBO (otherwise the cached draw freezes
+    // the old values).  The flag is cleared inside the draw lambda.
+    if (canCache() && isCached() && m_desc.node && m_desc.node->Mesh()) {
+        auto* mat = m_desc.node->Mesh()->Material();
+        if (mat && mat->customShader.constValuesDirty) invalidateCache();
+    }
     if (canCache() && isCached()) {
         g_cache_hits++;
         return;

@@ -1401,23 +1401,56 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                  nodes.size());
     }
 
-    // Pass-output cache gating: a cacheable pass is safe to skip on
-    // later frames ONLY if its output VkImage is not overwritten by any
-    // later pass in the execution order — otherwise the cached bytes are
-    // gone before the next frame reads them.  See ComputeIsLastWriter
-    // (pure, unit-tested in test_PassCacheAlias.cpp) for the analysis.
+    // Pass-output cache gating: skip-on-reexec is safe ONLY when the
+    // pass's cached output bytes remain valid at the moment downstream
+    // passes next read them, AND the cached value is still the correct
+    // result.  Both conditions must hold:
+    //   (1) sole writer of output VkImage — any aliased write (earlier
+    //       OR later) would overwrite the cached bytes on the next frame;
+    //   (2) every RT-input is either static (not written by any pass) or
+    //       produced by another safe-to-skip pass — else the inputs
+    //       drift frame-to-frame while the cached output stays fixed,
+    //       producing stale composites (regression reproducer:
+    //       wallpaper 3018516781 — 2B composite pass reads dynamic
+    //       shake/waterwaves pingpong, character vanished after frame 0).
+    //
+    // See ComputeIsSafeToSkip (pure, unit-tested in test_PassCacheAlias.cpp).
     {
-        std::vector<VkImage>             outputs;
-        std::vector<CustomShaderPass*>   csps;
+        std::vector<VkImage>              outputs;
+        std::vector<std::vector<VkImage>> inputs;
+        std::vector<bool>                 cacheable;
+        std::vector<CustomShaderPass*>    csps;
         outputs.reserve(m_passes.size());
+        inputs.reserve(m_passes.size());
+        cacheable.reserve(m_passes.size());
         csps.reserve(m_passes.size());
         for (auto* p : m_passes) {
             auto* csp = dynamic_cast<CustomShaderPass*>(p);
             csps.push_back(csp);
-            outputs.push_back(csp && csp->prepared() ? csp->desc().vk_output.handle
-                                                     : VK_NULL_HANDLE);
+            if (csp && csp->prepared()) {
+                outputs.push_back(csp->desc().vk_output.handle);
+                std::vector<VkImage> in_handles;
+                in_handles.reserve(csp->desc().vk_textures.size());
+                for (auto const& slots : csp->desc().vk_textures) {
+                    // Unbound slot (pass binds a nullable/empty texture to
+                    // this binding) — treat as VK_NULL_HANDLE so the safety
+                    // analysis ignores it rather than indexing an empty
+                    // std::vector in getActive().
+                    if (slots.slots.empty()) {
+                        in_handles.push_back(VK_NULL_HANDLE);
+                    } else {
+                        in_handles.push_back(slots.getActive().handle);
+                    }
+                }
+                inputs.push_back(std::move(in_handles));
+                cacheable.push_back(csp->isCacheable());
+            } else {
+                outputs.push_back(VK_NULL_HANDLE);
+                inputs.emplace_back();
+                cacheable.push_back(false);
+            }
         }
-        auto is_last = ComputeIsLastWriter<VkImage>(outputs);
+        auto safe = ComputeIsSafeToSkip<VkImage>(outputs, inputs, cacheable);
 
         int cacheable_total = 0;
         int cache_gated     = 0;
@@ -1425,12 +1458,12 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             auto* csp = csps[i];
             if (! csp || ! csp->prepared() || ! csp->isCacheable()) continue;
             cacheable_total++;
-            if (is_last[i]) {
+            if (safe[i]) {
                 csp->setCanCache(true);
                 cache_gated++;
             }
         }
-        LOG_INFO("pass cache: %d cacheable, %d last-writer → can skip on re-exec",
+        LOG_INFO("pass cache: %d cacheable, %d safe-to-skip → can skip on re-exec",
                  cacheable_total,
                  cache_gated);
     }
