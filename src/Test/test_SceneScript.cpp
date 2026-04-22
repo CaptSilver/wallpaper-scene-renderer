@@ -6003,3 +6003,172 @@ TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
         CHECK(rN == doctest::Approx(0.1).epsilon(0.01));
     }
 } // TEST_SUITE instanceoverride.rate scalar
+
+// ----------------------------------------------------------------------
+// SceneScript built-in shims (WEColor, engine.registerAudioBuffers).
+// These are the JS sources SceneBackend.cpp evaluates into the QJSEngine;
+// kept as constants in SceneScriptShimsJs.hpp so production and tests
+// share a single source of truth.  The Purple Void / "blackhole" wallpaper
+// (2852314079) drives these via its audio-reactive Solid color script.
+// ----------------------------------------------------------------------
+
+#include "SceneScriptShimsJs.hpp"
+
+namespace
+{
+// Helper: build a HSV Vec3-like object {x,y,z}.
+QJSValue makeVec3(QJSEngine& e, double x, double y, double z) {
+    QJSValue v = e.newObject();
+    v.setProperty("x", x);
+    v.setProperty("y", y);
+    v.setProperty("z", z);
+    return v;
+}
+
+// Helper: assert WEColor.hsv2rgb(h,s,v) == (r,g,b) within epsilon.
+void checkHsv(QJSEngine& e, double h, double s, double v, double r, double g, double b) {
+    QJSValue fn  = e.evaluate("WEColor.hsv2rgb");
+    QJSValue out = fn.call({ makeVec3(e, h, s, v) });
+    REQUIRE(out.isObject());
+    CHECK(out.property("x").toNumber() == doctest::Approx(r).epsilon(1e-6));
+    CHECK(out.property("y").toNumber() == doctest::Approx(g).epsilon(1e-6));
+    CHECK(out.property("z").toNumber() == doctest::Approx(b).epsilon(1e-6));
+}
+} // namespace
+
+TEST_SUITE("WEColor shim") {
+    TEST_CASE("hsv2rgb covers all six hue sextants") {
+        QJSEngine e;
+        e.evaluate(wek::qml_helper::kWEColorJs);
+
+        // Saturation/value pinned at 1.0; canonical HSV→RGB primaries +
+        // secondaries: red, yellow, green, cyan, blue, magenta.
+        checkHsv(e, 0.0 / 6.0, 1, 1, 1, 0, 0); // red
+        checkHsv(e, 1.0 / 6.0, 1, 1, 1, 1, 0); // yellow
+        checkHsv(e, 2.0 / 6.0, 1, 1, 0, 1, 0); // green
+        checkHsv(e, 3.0 / 6.0, 1, 1, 0, 1, 1); // cyan
+        checkHsv(e, 4.0 / 6.0, 1, 1, 0, 0, 1); // blue
+        checkHsv(e, 5.0 / 6.0, 1, 1, 1, 0, 1); // magenta
+    }
+
+    TEST_CASE("hsv2rgb white at saturation=0") {
+        QJSEngine e;
+        e.evaluate(wek::qml_helper::kWEColorJs);
+        // Any hue with s=0 is grey; v controls brightness.
+        checkHsv(e, 0.4, 0, 0.7, 0.7, 0.7, 0.7);
+    }
+
+    TEST_CASE("hsv2rgb black at value=0") {
+        QJSEngine e;
+        e.evaluate(wek::qml_helper::kWEColorJs);
+        checkHsv(e, 0.5, 1, 0, 0, 0, 0);
+    }
+
+    TEST_CASE("rgb2hsv inverts hsv2rgb on a few non-degenerate triples") {
+        QJSEngine e;
+        e.evaluate(wek::qml_helper::kWEColorJs);
+        QJSValue h2r = e.evaluate("WEColor.hsv2rgb");
+        QJSValue r2h = e.evaluate("WEColor.rgb2hsv");
+        struct Hsv { double h, s, v; };
+        for (auto in : { Hsv{ 0.10, 0.6, 0.8 },
+                         Hsv{ 0.50, 0.4, 0.9 },
+                         Hsv{ 0.83, 0.9, 0.5 } }) {
+            QJSValue rgb  = h2r.call({ makeVec3(e, in.h, in.s, in.v) });
+            QJSValue back = r2h.call({ rgb });
+            CHECK(back.property("x").toNumber() == doctest::Approx(in.h).epsilon(1e-4));
+            CHECK(back.property("y").toNumber() == doctest::Approx(in.s).epsilon(1e-4));
+            CHECK(back.property("z").toNumber() == doctest::Approx(in.v).epsilon(1e-4));
+        }
+    }
+
+    TEST_CASE("normalizeColor / expandColor are 255-scale conversions") {
+        QJSEngine e;
+        e.evaluate(wek::qml_helper::kWEColorJs);
+        QJSValue norm = e.evaluate("WEColor.normalizeColor({x:255,y:128,z:0})");
+        CHECK(norm.property("x").toNumber() == doctest::Approx(1.0));
+        CHECK(norm.property("y").toNumber() == doctest::Approx(128.0 / 255.0));
+        CHECK(norm.property("z").toNumber() == doctest::Approx(0.0));
+
+        QJSValue exp = e.evaluate("WEColor.expandColor({x:1.0,y:0.5,z:0.0})");
+        CHECK(exp.property("x").toNumber() == doctest::Approx(255.0));
+        CHECK(exp.property("y").toNumber() == doctest::Approx(127.5));
+        CHECK(exp.property("z").toNumber() == doctest::Approx(0.0));
+    }
+} // TEST_SUITE WEColor shim
+
+TEST_SUITE("engine.registerAudioBuffers shim") {
+    // Helper: install the JS shim onto a fresh engine with an `engine` global.
+    static QJSValue installRegisterFn(QJSEngine& e) {
+        e.evaluate("var engine = {};");
+        QJSValue regFn = e.evaluate(wek::qml_helper::kRegisterAudioBuffersJs);
+        e.globalObject().property("engine").setProperty("registerAudioBuffers", regFn);
+        return regFn;
+    }
+
+    TEST_CASE("returns buffer with left/right/average arrays sized to resolution") {
+        for (int n : { 16, 32, 64 }) {
+            QJSEngine e;
+            installRegisterFn(e);
+            QJSValue buf =
+                e.evaluate(QString("engine.registerAudioBuffers(%1)").arg(n));
+            REQUIRE(buf.isObject());
+            CHECK(buf.property("resolution").toInt() == n);
+            CHECK(buf.property("left").property("length").toInt() == n);
+            CHECK(buf.property("right").property("length").toInt() == n);
+            CHECK(buf.property("average").property("length").toInt() == n);
+            // All arrays seeded to 0 so scripts can read [i] before the C++
+            // refresh has run (first frame pre-analyzer).
+            for (int i = 0; i < n; i++) {
+                CHECK(buf.property("average").property(i).toNumber() == 0.0);
+            }
+        }
+    }
+
+    TEST_CASE("rounds out-of-band resolution to nearest valid size") {
+        QJSEngine e;
+        installRegisterFn(e);
+        // <=24 → 16; <=48 → 32; otherwise → 64.  Above-64 also clamps to 64.
+        struct Case { int in, out; };
+        for (auto c : { Case{ 8, 16 },
+                        Case{ 16, 16 },
+                        Case{ 24, 16 },
+                        Case{ 25, 32 },
+                        Case{ 48, 32 },
+                        Case{ 49, 64 },
+                        Case{ 64, 64 },
+                        Case{ 100, 64 } }) {
+            QJSValue buf =
+                e.evaluate(QString("engine.registerAudioBuffers(%1)").arg(c.in));
+            CHECK_MESSAGE(buf.property("resolution").toInt() == c.out,
+                          "input ",
+                          c.in,
+                          " expected ",
+                          c.out);
+        }
+    }
+
+    TEST_CASE("each call appends to engine._audioRegs with a unique _regIdx") {
+        QJSEngine e;
+        installRegisterFn(e);
+        QJSValue a = e.evaluate("engine.registerAudioBuffers(16)");
+        QJSValue b = e.evaluate("engine.registerAudioBuffers(32)");
+        QJSValue c = e.evaluate("engine.registerAudioBuffers(64)");
+        CHECK(a.property("_regIdx").toInt() == 0);
+        CHECK(b.property("_regIdx").toInt() == 1);
+        CHECK(c.property("_regIdx").toInt() == 2);
+        CHECK(e.evaluate("engine._audioRegs.length").toInt() == 3);
+        // Regs preserve resolution per entry — refreshAudioBuffers() reads
+        // resolution off the entry to pick the right analyzer pad size.
+        CHECK(e.evaluate("engine._audioRegs[0].resolution").toInt() == 16);
+        CHECK(e.evaluate("engine._audioRegs[1].resolution").toInt() == 32);
+        CHECK(e.evaluate("engine._audioRegs[2].resolution").toInt() == 64);
+    }
+
+    TEST_CASE("default (no arg) yields 64-bin buffer") {
+        QJSEngine e;
+        installRegisterFn(e);
+        QJSValue buf = e.evaluate("engine.registerAudioBuffers()");
+        CHECK(buf.property("resolution").toInt() == 64);
+        CHECK(buf.property("average").property("length").toInt() == 64);
+    }
+} // TEST_SUITE engine.registerAudioBuffers shim

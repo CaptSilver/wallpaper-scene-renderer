@@ -3386,28 +3386,21 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 propName = userField.at("name").get<std::string>();
             }
             if (! propName.empty()) {
-                // Extract condition value from visible.value
-                // For boolean: "value": true/false → conditionValue "1"/"0"
-                // For combo:   "value": "6" or "value": 6 → conditionValue "6"
+                // conditionValue is the scene.json comparison target (used
+                // for combo bindings that do string equality against the
+                // user prop).  Keep this as the authored literal.
                 std::string conditionValue;
-                bool        defaultVis = true;
                 if (obj.at("visible").contains("value")) {
                     const auto& visValue = obj.at("visible").at("value");
                     if (visValue.is_boolean()) {
-                        bool bv        = visValue.get<bool>();
-                        conditionValue = bv ? "1" : "0";
-                        defaultVis     = bv;
+                        conditionValue = visValue.get<bool>() ? "1" : "0";
                     } else if (visValue.is_number_integer()) {
-                        int iv         = visValue.get<int>();
-                        conditionValue = std::to_string(iv);
-                        defaultVis     = (iv != 0);
+                        conditionValue = std::to_string(visValue.get<int>());
                     } else if (visValue.is_string()) {
                         conditionValue = visValue.get<std::string>();
-                        defaultVis     = ! conditionValue.empty() && conditionValue != "0";
                     }
                 }
-                // Also check "user" object for condition value (alternative format)
-                // Format: "user": {"name": "propname", "value": 6}
+                // Alternative format: "user": {"name": "propname", "value": 6}
                 if (conditionValue.empty() && userField.is_object() &&
                     userField.contains("value")) {
                     const auto& cv = userField.at("value");
@@ -3415,6 +3408,37 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                         conditionValue = std::to_string(cv.get<int>());
                     } else if (cv.is_string()) {
                         conditionValue = cv.get<std::string>();
+                    }
+                }
+
+                // defaultVis must reflect the CURRENT user-property value
+                // (override if any, else project.json default), not the
+                // scene.json literal.  Otherwise persisted/--set overrides
+                // of visibility-bound props don't take effect until the
+                // next runtime applyUserPropsRuntime() — which never fires
+                // for the INITIAL value at load.  Same resolver the runtime
+                // path at SceneWallpaper::applyUserPropsRuntime uses.
+                bool defaultVis = true;
+                if (g_currentUserProperties) {
+                    nlohmann::json resolved =
+                        g_currentUserProperties->ResolveValue(obj.at("visible"));
+                    if (resolved.is_boolean()) {
+                        defaultVis = resolved.get<bool>();
+                    } else if (resolved.is_number()) {
+                        defaultVis = resolved.get<double>() != 0.0;
+                    } else if (resolved.is_string()) {
+                        auto s     = resolved.get<std::string>();
+                        defaultVis = ! s.empty() && s != "0" && s != "false";
+                    }
+                } else if (obj.at("visible").contains("value")) {
+                    const auto& visValue = obj.at("visible").at("value");
+                    if (visValue.is_boolean())
+                        defaultVis = visValue.get<bool>();
+                    else if (visValue.is_number_integer())
+                        defaultVis = visValue.get<int>() != 0;
+                    else if (visValue.is_string()) {
+                        auto s     = visValue.get<std::string>();
+                        defaultVis = ! s.empty() && s != "0";
                     }
                 }
                 // Store raw visible JSON for runtime re-resolution

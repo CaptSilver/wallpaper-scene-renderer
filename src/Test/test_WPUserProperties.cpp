@@ -236,6 +236,26 @@ TEST_SUITE("WPUserProperties::ResolveValue") {
         CHECK(props.ResolveValue(ref) == false);
     }
 
+    // Regression: WPSceneParser computes userPropVisBindings.defaultVisible
+    // from ResolveValue(visibleJson).  For a bool prop bound to a bool
+    // visibility, the resolver must return the CURRENT prop value (post
+    // override), not the scene.json `value` literal.  Previously the parser
+    // read the literal directly and visibility-bound props ignored
+    // --set / persisted overrides at load time (Purple Void / blackhole
+    // wallpaper: --set clock=true left clock layer hidden).
+    TEST_CASE("bool prop bound to bool visibility — returns current value not literal") {
+        WPUserProperties props;
+        props.LoadFromProjectJson(R"({
+        "general": { "properties": { "clock": { "type": "bool", "value": false } } }
+    })");
+        // scene.json shape: {"user":"clock","value":false}
+        auto ref = nlohmann::json { { "user", "clock" }, { "value", false } };
+        CHECK(props.ResolveValue(ref) == false); // matches default
+
+        props.SetProperty("clock", true);
+        CHECK(props.ResolveValue(ref) == true); // override wins over literal
+    }
+
     TEST_CASE("bool default flip — current equals default → visDefault") {
         WPUserProperties props;
         props.LoadFromProjectJson(R"({

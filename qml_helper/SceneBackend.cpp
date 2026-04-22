@@ -2,6 +2,7 @@
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
 #include "PropertyScriptDispatchJs.hpp"
+#include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneTimerBridge.h"
 
@@ -2814,27 +2815,11 @@ void SceneObject::setupTextScripts() {
     m_jsEngine->evaluate("var MediaPlaybackEvent = { CYCLIC: -1, PLAYBACK_STOPPED: 0, "
                          "PLAYBACK_PLAYING: 1, PLAYBACK_PAUSED: 2 };\n");
 
-    // engine.registerAudioBuffers(resolution) — implemented as native C++ callback
+    // engine.registerAudioBuffers(resolution) — JS shim shared with tests
+    // (see SceneScriptShimsJs.hpp).  Returns a buffer object the script
+    // retains; refreshAudioBuffers() fills it from the analyzer each tick.
     {
-        // Store 'this' pointer for the closure; safe because cleanupTextScripts() removes timer
-        auto*    self  = this;
-        QJSValue regFn = m_jsEngine->evaluate(
-            "(function(resolution) {\n"
-            "  resolution = resolution || 64;\n"
-            "  var n = Math.min(Math.max(resolution, 16), 64);\n"
-            "  // Round to nearest valid: 16, 32, or 64\n"
-            "  if (n <= 24) n = 16;\n"
-            "  else if (n <= 48) n = 32;\n"
-            "  else n = 64;\n"
-            "  var buf = { left: [], right: [], average: [], resolution: n };\n"
-            "  for (var i = 0; i < n; i++) { buf.left.push(0); buf.right.push(0); "
-            "buf.average.push(0); }\n"
-            "  // Store registration ID for C++ side to find\n"
-            "  if (!engine._audioRegs) engine._audioRegs = [];\n"
-            "  buf._regIdx = engine._audioRegs.length;\n"
-            "  engine._audioRegs.push(buf);\n"
-            "  return buf;\n"
-            "})\n");
+        QJSValue regFn = m_jsEngine->evaluate(wek::qml_helper::kRegisterAudioBuffersJs);
         engineObj.setProperty("registerAudioBuffers", regFn);
     }
 
@@ -2870,49 +2855,8 @@ void SceneObject::setupTextScripts() {
         "  return builder;\n"
         "}\n");
 
-    // WEColor module: hsv2rgb, rgb2hsv for color scripts
-    m_jsEngine->evaluate(
-        "var WEColor = (function() {\n"
-        "  function hsv2rgb(hsv) {\n"
-        "    var h = hsv.x, s = hsv.y, v = hsv.z;\n"
-        "    var i = Math.floor(h * 6);\n"
-        "    var f = h * 6 - i;\n"
-        "    var p = v * (1 - s);\n"
-        "    var q = v * (1 - f * s);\n"
-        "    var t = v * (1 - (1 - f) * s);\n"
-        "    var r, g, b;\n"
-        "    switch (i % 6) {\n"
-        "      case 0: r = v; g = t; b = p; break;\n"
-        "      case 1: r = q; g = v; b = p; break;\n"
-        "      case 2: r = p; g = v; b = t; break;\n"
-        "      case 3: r = p; g = q; b = v; break;\n"
-        "      case 4: r = t; g = p; b = v; break;\n"
-        "      case 5: r = v; g = p; b = q; break;\n"
-        "    }\n"
-        "    return { x: r, y: g, z: b };\n"
-        "  }\n"
-        "  function rgb2hsv(rgb) {\n"
-        "    var r = rgb.x, g = rgb.y, b = rgb.z;\n"
-        "    var max = Math.max(r, g, b), min = Math.min(r, g, b);\n"
-        "    var h, s, v = max;\n"
-        "    var d = max - min;\n"
-        "    s = max === 0 ? 0 : d / max;\n"
-        "    if (max === min) { h = 0; }\n"
-        "    else {\n"
-        "      switch (max) {\n"
-        "        case r: h = (g - b) / d + (g < b ? 6 : 0); break;\n"
-        "        case g: h = (b - r) / d + 2; break;\n"
-        "        case b: h = (r - g) / d + 4; break;\n"
-        "      }\n"
-        "      h /= 6;\n"
-        "    }\n"
-        "    return { x: h, y: s, z: v };\n"
-        "  }\n"
-        "  function normalizeColor(rgb) { return { x: rgb.x/255, y: rgb.y/255, z: rgb.z/255 }; }\n"
-        "  function expandColor(rgb) { return { x: rgb.x*255, y: rgb.y*255, z: rgb.z*255 }; }\n"
-        "  return { hsv2rgb: hsv2rgb, rgb2hsv: rgb2hsv,\n"
-        "           normalizeColor: normalizeColor, expandColor: expandColor };\n"
-        "})();\n");
+    // WEColor module — shared with tests via SceneScriptShimsJs.hpp.
+    m_jsEngine->evaluate(wek::qml_helper::kWEColorJs);
 
     // Load color scripts
     for (const auto& csi : colorScripts) {
