@@ -73,14 +73,26 @@ struct VideoTextureInfo {
 };
 
 struct ScenePropertyScript {
+    // Where the script is attached on the object.  Object-attached scripts
+    // (the common case) bind thisObject == thisLayer.  AnimationLayer
+    // scripts — used by puppet wallpapers like Lucy (3521337568) to offset
+    // their rigged animation layers at init — must bind thisObject to the
+    // specific animation-layer proxy so setFrame/play land on it.
+    enum class Attachment : uint8_t {
+        Object          = 0,
+        AnimationLayer  = 1,
+    };
+
     i32                  id;
     std::string          property; // "visible", "origin", "scale", "angles", "alpha"
     std::string          script;
     std::string          scriptProperties; // JSON string
-    std::string          layerName;        // name of the object for thisLayer.name
+    std::string          layerName;        // name of the parent object for thisLayer.name
     bool                 initialVisible { true };
     std::array<float, 3> initialVec3 { 0, 0, 0 };
     float                initialFloat { 1.0f };
+    Attachment           attachment { Attachment::Object };
+    i32                  animationLayerIndex { -1 }; // Attachment::AnimationLayer → 0-based idx
 };
 class Scene : NoCopy, NoMove {
 public:

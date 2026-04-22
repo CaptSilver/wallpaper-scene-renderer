@@ -887,6 +887,68 @@ static const char* JS_VEC3_AND_UTILS =
     "};\n"
     "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, "
     "a.z+(b.z-a.z)*t); };\n"
+    // Vec4 — mirrors Vec3 surface plus w/a aliases.  Must match SceneBackend.cpp.
+    "function Vec4(x, y, z, w) {\n"
+    "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/);\n"
+    "    x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; z=parseFloat(p[2])||0;\n"
+    "    w=parseFloat(p[3])||0; }\n"
+    "  else if (x && typeof x === 'object') {\n"
+    "    w=x.w||0; z=x.z||0; y=x.y||0; x=x.x||0; }\n"
+    "  var v = { x: x||0, y: y||0, z: z||0, w: w||0 };\n"
+    "  v.multiply = function(s) { return typeof s==='object'\n"
+    "     ? Vec4(v.x*s.x, v.y*s.y, v.z*s.z, v.w*s.w)\n"
+    "     : Vec4(v.x*s, v.y*s, v.z*s, v.w*s); };\n"
+    "  v.add      = function(o) { return Vec4(v.x+o.x, v.y+o.y, v.z+o.z, v.w+o.w); };\n"
+    "  v.subtract = function(o) { return Vec4(v.x-o.x, v.y-o.y, v.z-o.z, v.w-o.w); };\n"
+    "  v.divide   = function(s) { return typeof s==='object'\n"
+    "     ? Vec4(v.x/s.x, v.y/s.y, v.z/s.z, v.w/s.w)\n"
+    "     : Vec4(v.x/s, v.y/s, v.z/s, v.w/s); };\n"
+    "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w); };\n"
+    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w; };\n"
+    "  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); };\n"
+    "  v.copy     = function() { return Vec4(v.x, v.y, v.z, v.w); };\n"
+    "  v.dot      = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z+v.w*o.w; };\n"
+    "  v.negate   = function() { return Vec4(-v.x,-v.y,-v.z,-v.w); };\n"
+    "  v.lerp     = function(o, t) { return Vec4(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t,\n"
+    "                                            v.z+(o.z-v.z)*t, v.w+(o.w-v.w)*t); };\n"
+    "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z,dw=v.w-o.w;\n"
+    "                             return Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw); };\n"
+    "  v.mix      = function(o, t) { return v.lerp(o, t); };\n"
+    "  v.equals   = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z && v.w===o.w; };\n"
+    "  v.toString = function() { return v.x+' '+v.y+' '+v.z+' '+v.w; };\n"
+    "  v.min = function(o) { return Vec4(Math.min(v.x,o.x),Math.min(v.y,o.y),\n"
+    "                                    Math.min(v.z,o.z),Math.min(v.w,o.w)); };\n"
+    "  v.max = function(o) { return Vec4(Math.max(v.x,o.x),Math.max(v.y,o.y),\n"
+    "                                    Math.max(v.z,o.z),Math.max(v.w,o.w)); };\n"
+    "  v.abs = function() { return Vec4(Math.abs(v.x),Math.abs(v.y),\n"
+    "                                   Math.abs(v.z),Math.abs(v.w)); };\n"
+    "  v.sign = function() { return Vec4(Math.sign(v.x),Math.sign(v.y),\n"
+    "                                    Math.sign(v.z),Math.sign(v.w)); };\n"
+    "  v.round = function() { return Vec4(Math.round(v.x),Math.round(v.y),\n"
+    "                                     Math.round(v.z),Math.round(v.w)); };\n"
+    "  v.floor = function() { return Vec4(Math.floor(v.x),Math.floor(v.y),\n"
+    "                                     Math.floor(v.z),Math.floor(v.w)); };\n"
+    "  v.ceil = function() { return Vec4(Math.ceil(v.x),Math.ceil(v.y),\n"
+    "                                    Math.ceil(v.z),Math.ceil(v.w)); };\n"
+    "  Object.defineProperty(v,'r',{get:function(){return v.x;},\n"
+    "                               set:function(val){v.x=val;},enumerable:true});\n"
+    "  Object.defineProperty(v,'g',{get:function(){return v.y;},\n"
+    "                               set:function(val){v.y=val;},enumerable:true});\n"
+    "  Object.defineProperty(v,'b',{get:function(){return v.z;},\n"
+    "                               set:function(val){v.z=val;},enumerable:true});\n"
+    "  Object.defineProperty(v,'a',{get:function(){return v.w;},\n"
+    "                               set:function(val){v.w=val;},enumerable:true});\n"
+    "  return v;\n"
+    "}\n"
+    "Vec4.fromString = function(s) {\n"
+    "  var p = String(s).trim().split(/\\s+/);\n"
+    "  return Vec4(parseFloat(p[0])||0, parseFloat(p[1])||0,\n"
+    "              parseFloat(p[2])||0, parseFloat(p[3])||0);\n"
+    "};\n"
+    "Vec4.lerp = function(a, b, t) {\n"
+    "  return Vec4(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t,\n"
+    "              a.z+(b.z-a.z)*t, a.w+(b.w-a.w)*t);\n"
+    "};\n"
     "var _origMatch = String.prototype.match;\n"
     "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
     "var localStorage = (function() {\n"
@@ -1002,32 +1064,56 @@ static const char* JS_CONSOLE =
     "  error: function() { console.log.apply(console, arguments); }\n"
     "};\n";
 
+// Mirrors SceneBackend.cpp's production createScriptProperties.  Uses
+// getter/setter pairs so assignments fire the optional `onChange`
+// callback defined in each addX({name, value, onChange}) block.
+// Matching prod shape keeps drift-risk between test and production low.
 static const char* JS_CREATE_SCRIPT_PROPERTIES =
-    "function createScriptProperties(defs) {\n"
-    "  var _props = {};\n"
-    "  if (defs && typeof defs === 'object') {\n"
-    "    for (var k in defs) {\n"
-    "      if (defs.hasOwnProperty(k))\n"
-    "        _props[k] = defs[k].value !== undefined ? defs[k].value : null;\n"
+    "function createScriptProperties() {\n"
+    "  var _values = {};\n"
+    "  var _onChange = {};\n"
+    "  var builder = {};\n"
+    "  function addProp(def) {\n"
+    "    if (!def) return builder;\n"
+    "    var n = def.name || def.n;\n"
+    "    if (!n) return builder;\n"
+    "    var fallback = (typeof def.value !== 'undefined') ? def.value\n"
+    "                     : (def.options && def.options.length > 0\n"
+    "                          ? def.options[0].value : null);\n"
+    "    _values[n] = fallback;\n"
+    "    if (def.onChange && typeof def.onChange === 'function') {\n"
+    "      _onChange[n] = def.onChange;\n"
     "    }\n"
+    "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
+    "      Object.defineProperty(builder, n, {\n"
+    "        get: function() { return _values[n]; },\n"
+    "        set: function(v) {\n"
+    "          if (_values[n] === v) return;\n"
+    "          _values[n] = v;\n"
+    "          var h = _onChange[n];\n"
+    "          if (h) {\n"
+    "            try { h.call(builder, v); }\n"
+    "            catch (e) {\n"
+    "              if (typeof console !== 'undefined' && console.log)\n"
+    "                console.log('scriptProperty onChange error on ' + n\n"
+    "                            + ': ' + (e && e.message));\n"
+    "            }\n"
+    "          }\n"
+    "        },\n"
+    "        enumerable: true, configurable: true\n"
+    "      });\n"
+    "    }\n"
+    "    return builder;\n"
     "  }\n"
-    "  var builder = {\n"
-    "    addSlider: function(o) { _props[o.name] = o.value !== undefined ? o.value : 0; return "
-    "builder; },\n"
-    "    addCheckbox: function(o) { _props[o.name] = o.value !== undefined ? o.value : false; "
-    "return builder; },\n"
-    "    addCombo: function(o) { _props[o.name] = o.value !== undefined ? o.value : (o.options && "
-    "o.options.length > 0 ? o.options[0].value : 0); return builder; },\n"
-    "    addTextInput: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return "
-    "builder; },\n"
-    "    addText: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return "
-    "builder; },\n"
-    "    addColor: function(o) { _props[o.name] = o.value !== undefined ? o.value : '0 0 0'; "
-    "return builder; },\n"
-    "    addFile: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return "
-    "builder; },\n"
-    "    finish: function() { return _props; }\n"
-    "  };\n"
+    "  builder.addCheckbox = addProp;\n"
+    "  builder.addSlider = addProp;\n"
+    "  builder.addCombo = addProp;\n"
+    "  builder.addText = addProp;\n"
+    "  builder.addTextInput = addProp;\n"
+    "  builder.addColor = addProp;\n"
+    "  builder.addFile = addProp;\n"
+    "  builder.addDirectory = addProp;\n"
+    "  builder.finish = function() { return builder; };\n"
     "  return builder;\n"
     "}\n";
 
@@ -1083,6 +1169,19 @@ static const char* JS_LAYER_INFRA =
     "      });\n"
     "    })(vec3Props[i]);\n"
     "  }\n"
+    // Read-only parse-time snapshots (mirrors production _makeLayerProxy).
+    "  var _origO = init ? {x:init.o[0], y:init.o[1], z:init.o[2]} : {x:0,y:0,z:0};\n"
+    "  var _origS = init ? {x:init.s[0], y:init.s[1], z:init.s[2]} : {x:1,y:1,z:1};\n"
+    "  var _origA = init ? {x:init.a[0], y:init.a[1], z:init.a[2]} : {x:0,y:0,z:0};\n"
+    "  Object.defineProperty(p, 'originalOrigin', {\n"
+    "    get: function(){ return Vec3(_origO.x, _origO.y, _origO.z); },\n"
+    "    set: function(){}, enumerable: true });\n"
+    "  Object.defineProperty(p, 'originalScale', {\n"
+    "    get: function(){ return Vec3(_origS.x, _origS.y, _origS.z); },\n"
+    "    set: function(){}, enumerable: true });\n"
+    "  Object.defineProperty(p, 'originalAngles', {\n"
+    "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
+    "    set: function(){}, enumerable: true });\n"
     "  var scalarProps = ['visible','alpha'];\n"
     "  for (var j=0; j<scalarProps.length; j++) {\n"
     "    (function(prop){\n"
@@ -2439,10 +2538,13 @@ TEST_SUITE("createScriptProperties") {
                   .toString() == "1 0 0");
     }
 
-    TEST_CASE("addColor default is 0 0 0") {
+    TEST_CASE("addColor without value resolves to undefined/null") {
+        // Matches production: no hardcoded "0 0 0" default — scripts are
+        // expected to supply their own starting colour.
         ScriptEnv env;
-        CHECK(env.engine.evaluate("createScriptProperties().addColor({name:'cl'}).finish().cl")
-                  .toString() == "0 0 0");
+        QJSValue v =
+            env.engine.evaluate("createScriptProperties().addColor({name:'cl'}).finish().cl");
+        CHECK((v.isUndefined() || v.isNull()));
     }
 
     TEST_CASE("chaining multiple methods") {
@@ -2453,14 +2555,6 @@ TEST_SUITE("createScriptProperties") {
                             ".finish();");
         CHECK(env.engine.evaluate("props.speed").toInt() == 3);
         CHECK(env.engine.evaluate("props.enabled").toBool());
-    }
-
-    TEST_CASE("legacy object-arg form") {
-        ScriptEnv env;
-        env.engine.evaluate(
-            "var props = createScriptProperties({speed:{value:3},mode:{value:1}}).finish();");
-        CHECK(env.engine.evaluate("props.speed").toInt() == 3);
-        CHECK(env.engine.evaluate("props.mode").toInt() == 1);
     }
 
     TEST_CASE("per-IIFE override with stored props") {
@@ -2495,6 +2589,121 @@ TEST_SUITE("createScriptProperties") {
         CHECK(env.engine.evaluate("result.x").toInt() == 99); // overridden
         CHECK(env.engine.evaluate("result.y").toInt() == 10); // default
         CHECK(env.engine.evaluate("result.z").toInt() == 42); // bare value (not {value:})
+    }
+
+    // ---- onChange wiring ---------------------------------------------
+    //
+    // WE scripts (Lucy Clock, many workshop configs) attach `onChange`
+    // callbacks to checkboxes so toggling one mutually-excludes its
+    // siblings.  The builder must store the callback and invoke it on
+    // assignment, with `this` bound to the builder, and must NOT invoke
+    // it on the initial default or on same-value writes (the latter
+    // would cause infinite recursion in mutual-exclusion patterns).
+
+    TEST_CASE("onChange does NOT fire on initial default") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var calls = 0;\n"
+            "var p = createScriptProperties()\n"
+            "  .addCheckbox({name:'a', value:true,  onChange:function(){ calls++; }})\n"
+            "  .addCheckbox({name:'b', value:false, onChange:function(){ calls++; }})\n"
+            "  .finish();\n");
+        CHECK(env.engine.evaluate("calls").toInt() == 0);
+        CHECK(env.engine.evaluate("p.a").toBool() == true);
+        CHECK(env.engine.evaluate("p.b").toBool() == false);
+    }
+
+    TEST_CASE("onChange fires on value change with new value") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var lastVal = null;\n"
+            "var p = createScriptProperties()\n"
+            "  .addCheckbox({name:'a', value:false,\n"
+            "                onChange:function(v){ lastVal = v; }})\n"
+            "  .finish();\n"
+            "p.a = true;\n");
+        CHECK(env.engine.evaluate("lastVal").toBool() == true);
+        CHECK(env.engine.evaluate("p.a").toBool() == true);
+    }
+
+    TEST_CASE("onChange `this` binds to the builder") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var sameObj = null;\n"
+            "var p = createScriptProperties()\n"
+            "  .addSlider({name:'x', value:1,\n"
+            "              onChange:function(){ sameObj = (this === p); }})\n"
+            "  .finish();\n"
+            "p.x = 2;\n");
+        CHECK(env.engine.evaluate("sameObj").toBool());
+    }
+
+    TEST_CASE("same-value write does NOT fire onChange (prevents infinite recursion)") {
+        // Lucy Clock's toggleDateFormat writes `false` to sibling checkboxes
+        // that are already false.  If onChange fires on same-value writes,
+        // those siblings recurse back into toggleDateFormat → stack overflow.
+        ScriptEnv env;
+        env.engine.evaluate("var calls = 0;\n"
+                            "var p = createScriptProperties()\n"
+                            "  .addCheckbox({name:'a', value:false,\n"
+                            "                onChange:function(){ calls++; }})\n"
+                            "  .finish();\n"
+                            "p.a = false;\n"       // same value — suppressed
+                            "p.a = false;\n");      // same value — suppressed
+        CHECK(env.engine.evaluate("calls").toInt() == 0);
+    }
+
+    TEST_CASE("Lucy Clock-style mutual exclusion does not recurse") {
+        // Reproduces the Clock date-format pattern:
+        //   setting useMMDDYYYY=true must unset the other two, and their
+        //   onChanges must NOT bounce back to re-set useMMDDYYYY=false.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var p = createScriptProperties()\n"
+            "  .addCheckbox({name:'useMMDDYYYY', value:false,\n"
+            "                onChange:function(){ toggleDateFormat('useMMDDYYYY'); }})\n"
+            "  .addCheckbox({name:'useDDMMYYYY', value:false,\n"
+            "                onChange:function(){ toggleDateFormat('useDDMMYYYY'); }})\n"
+            "  .addCheckbox({name:'useYYYYMMDD', value:true,\n"
+            "                onChange:function(){ toggleDateFormat('useYYYYMMDD'); }})\n"
+            "  .finish();\n"
+            "function toggleDateFormat(selected) {\n"
+            "  if (p[selected]) {\n"
+            "    ['useMMDDYYYY','useDDMMYYYY','useYYYYMMDD'].forEach(function(f){\n"
+            "      if (f !== selected) p[f] = false;\n"
+            "    });\n"
+            "  }\n"
+            "}\n"
+            "p.useMMDDYYYY = true;\n");
+        CHECK(env.engine.evaluate("p.useMMDDYYYY").toBool() == true);
+        CHECK(env.engine.evaluate("p.useDDMMYYYY").toBool() == false);
+        CHECK(env.engine.evaluate("p.useYYYYMMDD").toBool() == false);
+    }
+
+    TEST_CASE("onChange exception doesn't break the setter") {
+        // An onChange that throws must NOT prevent the stored value from
+        // being updated — scripts should be able to recover on the next
+        // assignment.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var p = createScriptProperties()\n"
+            "  .addSlider({name:'x', value:0,\n"
+            "              onChange:function(){ throw new Error('boom'); }})\n"
+            "  .finish();\n"
+            "p.x = 5;\n");
+        CHECK(env.engine.evaluate("p.x").toNumber() == 5);
+    }
+
+    TEST_CASE("property without onChange has no callback machinery") {
+        // Regression: the getter/setter path must still work for props
+        // that don't supply onChange.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var p = createScriptProperties()\n"
+            "  .addSlider({name:'q', value:3})\n"
+            "  .finish();\n"
+            "p.q = 10;\n");
+        CHECK(env.engine.evaluate("p.q").toNumber() == 10);
     }
 
 } // TEST_SUITE createScriptProperties
@@ -2593,6 +2802,65 @@ TEST_SUITE("Layer Proxy") {
                             "var o = l.origin; o.x = 42; l.origin = o;\n");
         CHECK(env.engine.evaluate("thisScene.getLayer('bg').origin.x").toNumber() ==
               doctest::Approx(42));
+    }
+
+    TEST_CASE("originalOrigin reflects parse-time value") {
+        // Drag-reset scripts (Lucy Clock, Cyberpunk Lucy media player) do
+        // `thisLayer.origin = thisLayer.originalOrigin` to snap back to
+        // the author-placed coordinate.  Must mirror the init state exactly.
+        ScriptEnv env;
+        QJSValue  v = env.engine.evaluate("thisScene.getLayer('bg').originalOrigin");
+        checkVec3(v, 100, 200, 0);
+    }
+
+    TEST_CASE("originalScale reflects parse-time value") {
+        ScriptEnv env;
+        QJSValue  v = env.engine.evaluate("thisScene.getLayer('fg').originalScale");
+        checkVec3(v, 2, 2, 2);
+    }
+
+    TEST_CASE("originalAngles reflects parse-time value") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalAngles.z").toNumber()
+              == doctest::Approx(45));
+    }
+
+    TEST_CASE("originalOrigin is frozen when origin is mutated") {
+        // Core invariant — otherwise reset-to-default collapses to reset-to-current.
+        ScriptEnv env;
+        env.engine.evaluate("var l = thisScene.getLayer('bg');\n"
+                            "l.origin = Vec3(0,0,0);\n");
+        QJSValue v = env.engine.evaluate("thisScene.getLayer('bg').originalOrigin");
+        checkVec3(v, 100, 200, 0);
+    }
+
+    TEST_CASE("originalOrigin returns independent copies each get") {
+        // Matches the defensive-copy semantic of `origin`.  Without fresh
+        // copies per read, scripts that mutate the returned Vec3 would
+        // silently stomp the frozen snapshot.
+        ScriptEnv env;
+        env.engine.evaluate("var a = thisScene.getLayer('bg').originalOrigin;\n"
+                            "a.x = -999;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalOrigin.x").toNumber()
+              == doctest::Approx(100));
+    }
+
+    TEST_CASE("originalOrigin setter is a no-op (read-only)") {
+        ScriptEnv env;
+        env.engine.evaluate("thisScene.getLayer('bg').originalOrigin = Vec3(1,2,3);");
+        QJSValue v = env.engine.evaluate("thisScene.getLayer('bg').originalOrigin");
+        checkVec3(v, 100, 200, 0);
+    }
+
+    TEST_CASE("Lucy drag-reset end-to-end: origin → originalOrigin snaps back") {
+        // Reproduces cad28c04.js resetPosition():
+        //   thisLayer.origin = thisLayer.originalOrigin;
+        ScriptEnv env;
+        env.engine.evaluate("var l = thisScene.getLayer('bg');\n"
+                            "l.origin = Vec3(555, 666, 7);\n"       // user dragged
+                            "l.origin = l.originalOrigin;\n");       // reset
+        QJSValue v = env.engine.evaluate("thisScene.getLayer('bg').origin");
+        checkVec3(v, 100, 200, 0);
     }
 
     TEST_CASE("setting visible marks dirty") {
@@ -5253,3 +5521,379 @@ TEST_SUITE("Hover-leave debounce") {
     }
 
 } // TEST_SUITE Hover-leave debounce
+
+// ------------------------------------------------------------------
+// Property-script batched dispatch: scalar broadcast for Vec3 kind.
+// Uses the exact same JS source as production (shared header) so any
+// drift between prod and test causes these to fail.
+// ------------------------------------------------------------------
+#include "PropertyScriptDispatchJs.hpp"
+
+namespace {
+// Bootstraps the minimal JS globals needed to evaluate the dispatch loop:
+// a Vec3 factory and the tables/partition markers the loop consults.
+static void setupDispatchEngine(QJSEngine& engine) {
+    engine.evaluate(JS_VEC3_AND_UTILS);
+    engine.evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
+    engine.evaluate("var thisLayer = null;");
+}
+
+// Pushes a single Vec3-kind script entry (index 0) whose update fn evaluates
+// the given JS expression string.  `initial` is the starting (cx,cy,cz).
+// The entry has valid=true, hasLayer=false so thisLayer is untouched.
+static QJSValue pushVec3Script(QJSEngine&  engine,
+                               const char* fnBody,
+                               double cx = 0, double cy = 0, double cz = 0) {
+    QJSValue entry = engine.newObject();
+    entry.setProperty("kind", 1);
+    entry.setProperty("fn", engine.evaluate(QString("(function(v) { %1 })").arg(fnBody)));
+    entry.setProperty("proxy", QJSValue(QJSValue::NullValue));
+    entry.setProperty("hasLayer", false);
+    entry.setProperty("valid", true);
+    entry.setProperty("cb", false);
+    entry.setProperty("cf", 0.0);
+    entry.setProperty("cx", cx);
+    entry.setProperty("cy", cy);
+    entry.setProperty("cz", cz);
+    QJSValue arr = engine.globalObject().property("_allPropertyScripts");
+    arr.setProperty(0, entry);
+    engine.globalObject().setProperty("_scriptPartVisEnd", 0);
+    engine.globalObject().setProperty("_scriptPartVec3End", 1);
+    return entry;
+}
+} // namespace
+
+TEST_SUITE("PropertyScriptDispatch — Vec3 scalar broadcast") {
+    TEST_CASE("scalar return broadcasts to x,y,z") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        pushVec3Script(engine, "return v.x + 0.5;", /*cx=*/1, /*cy=*/1, /*cz=*/1);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        REQUIRE(out.isArray());
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(0).toInt() == 0);                      // script idx
+        CHECK(out.property(1).toNumber() == doctest::Approx(1.5)); // x
+        CHECK(out.property(2).toNumber() == doctest::Approx(1.5)); // y (broadcast)
+        CHECK(out.property(3).toNumber() == doctest::Approx(1.5)); // z (broadcast)
+    }
+
+    TEST_CASE("Vec3 return takes per-component values") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        pushVec3Script(engine, "return Vec3(0.1, 0.2, 0.3);");
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(1).toNumber() == doctest::Approx(0.1));
+        CHECK(out.property(2).toNumber() == doctest::Approx(0.2));
+        CHECK(out.property(3).toNumber() == doctest::Approx(0.3));
+    }
+
+    TEST_CASE("scalar equal to current values is suppressed") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        // Current is (0.75,0.75,0.75); update returns exactly 0.75 → no push.
+        pushVec3Script(engine, "return 0.75;", 0.75, 0.75, 0.75);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 0);
+    }
+
+    TEST_CASE("scalar NOT equal on any axis pushes an update") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        // cz differs from scalar return → must push.
+        pushVec3Script(engine, "return 1.0;", 1.0, 1.0, 0.5);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(1).toNumber() == doctest::Approx(1.0));
+        CHECK(out.property(2).toNumber() == doctest::Approx(1.0));
+        CHECK(out.property(3).toNumber() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("undefined/null return drops silently") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        pushVec3Script(engine, "return undefined;", 1, 1, 1);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 0);
+
+        pushVec3Script(engine, "return null;", 1, 1, 1);
+        out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 0);
+    }
+
+    TEST_CASE("non-numeric return (e.g. string) drops silently") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        pushVec3Script(engine, "return 'bad';");
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 0);
+    }
+
+    TEST_CASE("hover-zoom end-to-end: converges toward targetScale") {
+        // Reproduces Lucy Clock hover-zoom shape: script returns
+        // value.x + (targetScale - value.x) * speed * frametime.
+        // After one tick from rest at 1.0 with targetScale=1.1, speed=20,
+        // frametime=0.016 → 1.0 + (0.1)*20*0.016 = 1.032 on all axes.
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        engine.evaluate("var targetScale = 1.1; var speed = 20; var frametime = 0.016;");
+        pushVec3Script(engine,
+                       "return v.x + (targetScale - v.x) * speed * frametime;",
+                       1.0, 1.0, 1.0);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(1).toNumber() == doctest::Approx(1.032));
+        CHECK(out.property(2).toNumber() == doctest::Approx(1.032));
+        CHECK(out.property(3).toNumber() == doctest::Approx(1.032));
+    }
+} // TEST_SUITE PropertyScriptDispatch — Vec3 scalar broadcast
+
+// ------------------------------------------------------------------
+// Per-attachment thisObject binding: animationlayer-attached scripts
+// must see thisObject === the animation-layer proxy, not thisLayer.
+// Exercised by Lucy (3521337568) where the offsetedStartAni init
+// script calls thisObject.setFrame on the specific rig track.
+// ------------------------------------------------------------------
+TEST_SUITE("PropertyScriptDispatch — thisObject rebind") {
+    TEST_CASE("Object-attached script sees thisObject === thisLayer") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        engine.evaluate("var _seenLayer = null, _seenObject = null;\n"
+                        "var _fakeLayer = { _kind: 'layer' };\n");
+        // Entry with obj === proxy (same ref): Object-attached semantics.
+        QJSValue entry = engine.newObject();
+        entry.setProperty("kind", 1);
+        entry.setProperty("fn",
+                          engine.evaluate("(function(v) {\n"
+                                          "  _seenLayer = thisLayer;\n"
+                                          "  _seenObject = thisObject;\n"
+                                          "  return v;\n"
+                                          "})"));
+        QJSValue proxy = engine.evaluate("_fakeLayer");
+        entry.setProperty("proxy", proxy);
+        entry.setProperty("obj", proxy); // same reference
+        entry.setProperty("hasLayer", true);
+        entry.setProperty("valid", true);
+        entry.setProperty("cb", false);
+        entry.setProperty("cf", 0.0);
+        entry.setProperty("cx", 1.0);
+        entry.setProperty("cy", 1.0);
+        entry.setProperty("cz", 1.0);
+        engine.globalObject().property("_allPropertyScripts").setProperty(0, entry);
+        engine.globalObject().setProperty("_scriptPartVisEnd", 0);
+        engine.globalObject().setProperty("_scriptPartVec3End", 1);
+
+        engine.evaluate("_runAllPropertyScripts();");
+        CHECK(engine.evaluate("_seenLayer === _seenObject").toBool());
+        CHECK(engine.evaluate("_seenLayer === _fakeLayer").toBool());
+    }
+
+    TEST_CASE("AnimationLayer-attached script sees thisObject === rig proxy") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        engine.evaluate("var _seenLayer = null, _seenObject = null;\n"
+                        "var _fakeLayer = { _kind: 'layer' };\n"
+                        "var _fakeRig   = { _kind: 'rig',\n"
+                        "  frameCount: 60, _frame: 0,\n"
+                        "  setFrame: function(f){ this._frame = f; },\n"
+                        "  play: function(){} };\n");
+        QJSValue entry = engine.newObject();
+        entry.setProperty("kind", 1);
+        entry.setProperty(
+            "fn",
+            engine.evaluate("(function(v) {\n"
+                            "  _seenLayer = thisLayer;\n"
+                            "  _seenObject = thisObject;\n"
+                            "  // NSL-style: offsetedStartAni(thisObject.getAnimation() || thisObject,...)\n"
+                            "  thisObject.setFrame(thisObject.frameCount * 0.5);\n"
+                            "  return v;\n"
+                            "})"));
+        entry.setProperty("proxy", engine.evaluate("_fakeLayer"));
+        entry.setProperty("obj", engine.evaluate("_fakeRig"));
+        entry.setProperty("hasLayer", true);
+        entry.setProperty("valid", true);
+        entry.setProperty("cb", false);
+        entry.setProperty("cf", 0.0);
+        entry.setProperty("cx", 1.0);
+        entry.setProperty("cy", 1.0);
+        entry.setProperty("cz", 1.0);
+        engine.globalObject().property("_allPropertyScripts").setProperty(0, entry);
+        engine.globalObject().setProperty("_scriptPartVisEnd", 0);
+        engine.globalObject().setProperty("_scriptPartVec3End", 1);
+
+        engine.evaluate("_runAllPropertyScripts();");
+        CHECK(engine.evaluate("_seenLayer === _fakeLayer").toBool());
+        CHECK(engine.evaluate("_seenObject === _fakeRig").toBool());
+        // Rig's setFrame landed on rig, not on layer
+        CHECK(engine.evaluate("_fakeRig._frame").toNumber() == 30);
+    }
+
+    TEST_CASE("Lucy offsetedStartAni: setFrame reaches rig layer") {
+        // Reproduces 8c39a2fb.js + NSL's offsetedStartAni(ani, percentage):
+        //   ani.play(); ani.setFrame(ani.frameCount * percentage);
+        // With the correct thisObject binding, percentage=0.25 on a 60-frame
+        // rig lands _frame = 15 on the rig, not the layer.
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        engine.evaluate(
+            "var _fakeLayer = { _kind: 'layer' };\n"
+            "var _fakeRig   = { frameCount: 60, _frame: 0, _playing: false,\n"
+            "  play: function(){ this._playing = true; },\n"
+            "  setFrame: function(f){ this._frame = f; } };\n"
+            "function offsetedStartAni(ani, pct) {\n"
+            "  ani.play();\n"
+            "  ani.setFrame(ani.frameCount * pct);\n"
+            "}\n");
+        QJSValue entry = engine.newObject();
+        entry.setProperty("kind", 1);
+        entry.setProperty("fn",
+                          engine.evaluate("(function(v) {\n"
+                                          "  offsetedStartAni(thisObject, 0.25);\n"
+                                          "  return v;\n"
+                                          "})"));
+        entry.setProperty("proxy", engine.evaluate("_fakeLayer"));
+        entry.setProperty("obj", engine.evaluate("_fakeRig"));
+        entry.setProperty("hasLayer", true);
+        entry.setProperty("valid", true);
+        entry.setProperty("cb", false);
+        entry.setProperty("cf", 0.0);
+        entry.setProperty("cx", 1.0);
+        entry.setProperty("cy", 1.0);
+        entry.setProperty("cz", 1.0);
+        engine.globalObject().property("_allPropertyScripts").setProperty(0, entry);
+        engine.globalObject().setProperty("_scriptPartVisEnd", 0);
+        engine.globalObject().setProperty("_scriptPartVec3End", 1);
+
+        engine.evaluate("_runAllPropertyScripts();");
+        CHECK(engine.evaluate("_fakeRig._playing").toBool());
+        CHECK(engine.evaluate("_fakeRig._frame").toNumber() == 15);
+    }
+} // TEST_SUITE PropertyScriptDispatch — thisObject rebind
+
+// ------------------------------------------------------------------
+// Vec4: 4-component vector with method surface matching Vec3.
+// Referenced by NSL vectorEquality() and anything tweening RGBA.
+// ------------------------------------------------------------------
+TEST_SUITE("Vec4") {
+    TEST_CASE("constructor with four numbers") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        QJSValue v = engine.evaluate("Vec4(1,2,3,4)");
+        CHECK(v.property("x").toNumber() == 1);
+        CHECK(v.property("y").toNumber() == 2);
+        CHECK(v.property("z").toNumber() == 3);
+        CHECK(v.property("w").toNumber() == 4);
+    }
+
+    TEST_CASE("constructor with object copy") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        QJSValue v = engine.evaluate("Vec4({x:1,y:2,z:3,w:4})");
+        CHECK(v.property("x").toNumber() == 1);
+        CHECK(v.property("w").toNumber() == 4);
+    }
+
+    TEST_CASE("fromString parses space-separated") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        QJSValue v = engine.evaluate("Vec4.fromString('0.1 0.2 0.3 0.4')");
+        CHECK(v.property("x").toNumber() == doctest::Approx(0.1));
+        CHECK(v.property("y").toNumber() == doctest::Approx(0.2));
+        CHECK(v.property("z").toNumber() == doctest::Approx(0.3));
+        CHECK(v.property("w").toNumber() == doctest::Approx(0.4));
+    }
+
+    TEST_CASE("add / subtract / multiply / divide") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(1,2,3,4).add(Vec4(1,1,1,1)).toString()").toString() == "2 3 4 5");
+        CHECK(engine.evaluate("Vec4(5,5,5,5).subtract(Vec4(1,2,3,4)).toString()").toString()
+              == "4 3 2 1");
+        CHECK(engine.evaluate("Vec4(1,2,3,4).multiply(2).toString()").toString() == "2 4 6 8");
+        CHECK(engine.evaluate("Vec4(2,4,6,8).divide(2).toString()").toString() == "1 2 3 4");
+    }
+
+    TEST_CASE("length / lengthSqr / normalize") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(1,0,0,0).length()").toNumber() == 1);
+        CHECK(engine.evaluate("Vec4(2,0,0,0).lengthSqr()").toNumber() == 4);
+        QJSValue n = engine.evaluate("Vec4(3,0,0,0).normalize()");
+        CHECK(n.property("x").toNumber() == 1);
+        CHECK(n.property("y").toNumber() == 0);
+    }
+
+    TEST_CASE("dot") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(1,2,3,4).dot(Vec4(1,1,1,1))").toNumber() == 10);
+    }
+
+    TEST_CASE("lerp / mix") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(0,0,0,0).lerp(Vec4(10,20,30,40), 0.5).toString()").toString()
+              == "5 10 15 20");
+        CHECK(engine.evaluate("Vec4.lerp(Vec4(0,0,0,0), Vec4(10,10,10,10), 0.25).toString()").toString()
+              == "2.5 2.5 2.5 2.5");
+    }
+
+    TEST_CASE("equals") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(1,2,3,4).equals(Vec4(1,2,3,4))").toBool());
+        CHECK(! engine.evaluate("Vec4(1,2,3,4).equals(Vec4(1,2,3,5))").toBool());
+    }
+
+    TEST_CASE("RGBA aliases: v.r/g/b/a reflect x/y/z/w") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        QJSValue v = engine.evaluate("var q = Vec4(0.1, 0.2, 0.3, 0.4); q;");
+        CHECK(v.property("r").toNumber() == doctest::Approx(0.1));
+        CHECK(v.property("g").toNumber() == doctest::Approx(0.2));
+        CHECK(v.property("b").toNumber() == doctest::Approx(0.3));
+        CHECK(v.property("a").toNumber() == doctest::Approx(0.4));
+        // set via alias, read via canonical
+        engine.evaluate("q.a = 1.0;");
+        CHECK(engine.evaluate("q.w").toNumber() == 1.0);
+    }
+
+    TEST_CASE("distance between two Vec4") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(0,0,0,0).distance(Vec4(0,3,4,0))").toNumber() == 5);
+    }
+
+    TEST_CASE("negate / abs / sign") {
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        CHECK(engine.evaluate("Vec4(1,-2,3,-4).negate().toString()").toString() == "-1 2 -3 4");
+        CHECK(engine.evaluate("Vec4(-1,-2,3,-4).abs().toString()").toString() == "1 2 3 4");
+        CHECK(engine.evaluate("Vec4(-5,0,7,-3).sign().toString()").toString() == "-1 0 1 -1");
+    }
+
+    TEST_CASE("NSL switch-case pattern: case Vec4 no longer throws") {
+        // vectorEquality in the Noeru Script Library references Vec4 in a
+        // switch case.  Before this fix, the whole library raised
+        // ReferenceError on first evaluation.
+        QJSEngine engine;
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        QJSValue r = engine.evaluate(
+            "(function() { var a = Vec4(1,0,0,0), b = Vec4(1,0,0,0);\n"
+            "  switch (a.constructor) { case Vec4: return 'matched'; default: return 'no'; }\n"
+            "})()");
+        // Both constructor pointers refer to the same function object; the
+        // switch-equality test should succeed.  Even if a particular JS
+        // engine can't match constructors this way, the key promise is
+        // that it does NOT throw — the NSL library load completes.
+        CHECK(! r.isError());
+    }
+} // TEST_SUITE Vec4
+

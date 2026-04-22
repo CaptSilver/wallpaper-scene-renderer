@@ -1,6 +1,7 @@
 #include "SceneBackend.hpp"
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
+#include "PropertyScriptDispatchJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneTimerBridge.h"
 
@@ -423,6 +424,7 @@ void SceneObject::fireApplyUserProperties() {
 
         if (! state.layerName.empty()) {
             m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = state.applyUserPropertiesFn.call({ propsArg });
@@ -440,6 +442,7 @@ void SceneObject::fireApplyUserProperties() {
 
         if (! svState.layerName.empty()) {
             m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", svState.thisLayerProxy);
         }
 
         QJSValue result = svState.applyUserPropertiesFn.call({ propsArg });
@@ -461,6 +464,7 @@ void SceneObject::fireDestroyEvent() {
 
         if (! state.layerName.empty()) {
             m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = state.destroyFn.call({});
@@ -491,6 +495,7 @@ void SceneObject::fireResizeScreen(int width, int height) {
 
         if (! state.layerName.empty()) {
             m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = state.resizeScreenFn.call({ QJSValue(width), QJSValue(height) });
@@ -514,6 +519,7 @@ void SceneObject::mediaPlaybackChanged(int state) {
         if (! s.mediaPlaybackChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaPlaybackChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaPlaybackChanged", { event });
@@ -534,6 +540,7 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
         if (! s.mediaPropertiesChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaPropertiesChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaPropertiesChanged", { event });
@@ -560,6 +567,7 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
         if (! s.mediaThumbnailChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaThumbnailChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaThumbnailChanged", { event });
@@ -574,6 +582,7 @@ void SceneObject::mediaTimelineChanged(double position, double duration) {
         if (! s.mediaTimelineChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaTimelineChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaTimelineChanged", { event });
@@ -587,6 +596,7 @@ void SceneObject::mediaStatusChanged(bool enabled) {
         if (! s.mediaStatusChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaStatusChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaStatusChanged", { event });
@@ -1064,6 +1074,7 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     if (downIdx >= 0) {
         auto& target = m_cursorTargets[downIdx];
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
         QJSValue r = target.downFn.call({ ev });
         downFired  = 1;
         if (r.isError())
@@ -1079,6 +1090,8 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
         for (auto& target : m_cursorTargets) {
             if (! target.downFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.downFn.call({ ev });
             downFired++;
             if (r.isError())
@@ -1091,6 +1104,7 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     if (clickIdx >= 0) {
         auto& target = m_cursorTargets[clickIdx];
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
         QJSValue r = target.clickFn.call({ ev });
         LOG_INFO(
             "cursorClick fired on '%s'%s", target.layerName.c_str(), r.isError() ? " ERROR" : "");
@@ -1142,6 +1156,8 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
             if (target.layerName != m_dragTarget) continue;
             if (! target.upFn.isCallable()) break;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.upFn.call({ ev });
             upFired    = 1;
             if (r.isError())
@@ -1154,6 +1170,8 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
         for (auto& target : m_cursorTargets) {
             if (! target.upFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.upFn.call({ ev });
             upFired++;
             if (r.isError())
@@ -1195,6 +1213,8 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
         for (auto& target : m_cursorTargets) {
             if (target.layerName != m_dragTarget || ! target.moveFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
             QJSValue r  = target.moveFn.call({ ev });
             // Throttle per-frame to avoid flooding when a real user drags.
@@ -1286,6 +1306,8 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             if (target.layerName != name || ! target.enterFn.isCallable()) continue;
             LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)", name.c_str(), sceneX, sceneY);
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
             QJSValue r  = target.enterFn.call({ ev });
             if (r.isError()) LOG_INFO("cursorEnter ERROR: %s", r.toString().toStdString().c_str());
@@ -1324,6 +1346,9 @@ void SceneObject::flushPendingLeaves() {
             if (target.leaveFn.isCallable()) {
                 LOG_INFO("cursorLeave: layer '%s' (after grace)", target.layerName.c_str());
                 m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 QJSValue ev = makeCursorEvent(m_jsEngine, m_cursorSceneX, m_cursorSceneY);
                 target.leaveFn.call({ ev });
             }
@@ -1553,6 +1578,76 @@ void SceneObject::setupTextScripts() {
         // Vec3.lerp(a, b, t): static linear interpolation between two Vec3 values
         "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, "
         "a.z+(b.z-a.z)*t); };\n"
+        // Vec4 — mirrors Vec3's method surface.  Used by libraries that tween
+        // 4-component values (RGBA colours, tangents, generalised vectors).
+        // NSL's vectorEquality() references Vec4 in its switch-case; without
+        // this definition, any VecTransitionAnimation carrying a Vec4 throws
+        // ReferenceError on first tick.
+        "function Vec4(x, y, z, w) {\n"
+        "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/);\n"
+        "    x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; z=parseFloat(p[2])||0;\n"
+        "    w=parseFloat(p[3])||0; }\n"
+        "  else if (x && typeof x === 'object') {\n"
+        "    w=x.w||0; z=x.z||0; y=x.y||0; x=x.x||0; }\n"
+        "  var v = { x: x||0, y: y||0, z: z||0, w: w||0 };\n"
+        "  v.multiply = function(s) { return typeof s==='object'\n"
+        "     ? Vec4(v.x*s.x, v.y*s.y, v.z*s.z, v.w*s.w)\n"
+        "     : Vec4(v.x*s, v.y*s, v.z*s, v.w*s); };\n"
+        "  v.add      = function(o) { return Vec4(v.x+o.x, v.y+o.y, v.z+o.z, v.w+o.w); };\n"
+        "  v.subtract = function(o) { return Vec4(v.x-o.x, v.y-o.y, v.z-o.z, v.w-o.w); };\n"
+        "  v.divide   = function(s) { return typeof s==='object'\n"
+        "     ? Vec4(v.x/s.x, v.y/s.y, v.z/s.z, v.w/s.w)\n"
+        "     : Vec4(v.x/s, v.y/s, v.z/s, v.w/s); };\n"
+        "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w); };\n"
+        "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w; };\n"
+        "  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); };\n"
+        "  v.copy     = function() { return Vec4(v.x, v.y, v.z, v.w); };\n"
+        "  v.dot      = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z+v.w*o.w; };\n"
+        "  v.negate   = function() { return Vec4(-v.x,-v.y,-v.z,-v.w); };\n"
+        "  v.lerp     = function(o, t) {\n"
+        "    return Vec4(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t,\n"
+        "                v.z+(o.z-v.z)*t, v.w+(o.w-v.w)*t); };\n"
+        "  v.distance = function(o) {\n"
+        "    var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z,dw=v.w-o.w;\n"
+        "    return Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw); };\n"
+        "  v.mix      = function(o, t) { return v.lerp(o, t); };\n"
+        "  v.equals   = function(o) {\n"
+        "    return v.x===o.x && v.y===o.y && v.z===o.z && v.w===o.w; };\n"
+        "  v.toString = function() { return v.x+' '+v.y+' '+v.z+' '+v.w; };\n"
+        "  v.min = function(o) { return Vec4(Math.min(v.x,o.x),Math.min(v.y,o.y),\n"
+        "                                    Math.min(v.z,o.z),Math.min(v.w,o.w)); };\n"
+        "  v.max = function(o) { return Vec4(Math.max(v.x,o.x),Math.max(v.y,o.y),\n"
+        "                                    Math.max(v.z,o.z),Math.max(v.w,o.w)); };\n"
+        "  v.abs = function() { return Vec4(Math.abs(v.x),Math.abs(v.y),\n"
+        "                                   Math.abs(v.z),Math.abs(v.w)); };\n"
+        "  v.sign = function() { return Vec4(Math.sign(v.x),Math.sign(v.y),\n"
+        "                                    Math.sign(v.z),Math.sign(v.w)); };\n"
+        "  v.round = function() { return Vec4(Math.round(v.x),Math.round(v.y),\n"
+        "                                     Math.round(v.z),Math.round(v.w)); };\n"
+        "  v.floor = function() { return Vec4(Math.floor(v.x),Math.floor(v.y),\n"
+        "                                     Math.floor(v.z),Math.floor(v.w)); };\n"
+        "  v.ceil = function() { return Vec4(Math.ceil(v.x),Math.ceil(v.y),\n"
+        "                                    Math.ceil(v.z),Math.ceil(v.w)); };\n"
+        // RGBA aliases for colour-vector use cases.
+        "  Object.defineProperty(v,'r',{get:function(){return v.x;},\n"
+        "                               set:function(val){v.x=val;},enumerable:true});\n"
+        "  Object.defineProperty(v,'g',{get:function(){return v.y;},\n"
+        "                               set:function(val){v.y=val;},enumerable:true});\n"
+        "  Object.defineProperty(v,'b',{get:function(){return v.z;},\n"
+        "                               set:function(val){v.z=val;},enumerable:true});\n"
+        "  Object.defineProperty(v,'a',{get:function(){return v.w;},\n"
+        "                               set:function(val){v.w=val;},enumerable:true});\n"
+        "  return v;\n"
+        "}\n"
+        "Vec4.fromString = function(s) {\n"
+        "  var p = String(s).trim().split(/\\s+/);\n"
+        "  return Vec4(parseFloat(p[0])||0, parseFloat(p[1])||0,\n"
+        "              parseFloat(p[2])||0, parseFloat(p[3])||0);\n"
+        "};\n"
+        "Vec4.lerp = function(a, b, t) {\n"
+        "  return Vec4(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t,\n"
+        "              a.z+(b.z-a.z)*t, a.w+(b.w-a.w)*t);\n"
+        "};\n"
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
         "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
@@ -1679,23 +1774,59 @@ void SceneObject::setupTextScripts() {
     // Returns a chainable builder:
     // createScriptProperties().addSlider({name,value,...}).addCheckbox(...) After chaining, the
     // result object has properties accessible by name (e.g. scriptProperties.mode)
-    m_jsEngine->evaluate("function createScriptProperties() {\n"
-                         "  var builder = {};\n"
-                         "  function addProp(def) {\n"
-                         "    var n = def.name || def.n;\n"
-                         "    if (n) builder[n] = def.value;\n"
-                         "    return builder;\n"
-                         "  }\n"
-                         "  builder.addCheckbox = addProp;\n"
-                         "  builder.addSlider = addProp;\n"
-                         "  builder.addCombo = addProp;\n"
-                         "  builder.addText = addProp;\n"
-                         "  builder.addColor = addProp;\n"
-                         "  builder.addFile = addProp;\n"
-                         "  builder.addDirectory = addProp;\n"
-                         "  builder.finish = function() { return builder; };\n"
-                         "  return builder;\n"
-                         "}\n");
+    // createScriptProperties: chainable builder that exposes each defined
+    // property via a getter/setter pair.  Writes fire the optional
+    // `onChange` callback with the new value (and `this` bound to the
+    // builder).  Same-value writes are suppressed — essential because
+    // WE wallpapers use mutual-exclusion patterns where one checkbox's
+    // onChange writes `false` to its siblings; without the suppression
+    // the siblings re-fire their own onChange and infinite-recurse.
+    // Lucy Clock's date-format checkboxes rely on this.
+    m_jsEngine->evaluate(
+        "function createScriptProperties() {\n"
+        "  var _values = {};\n"
+        "  var _onChange = {};\n"
+        "  var builder = {};\n"
+        "  function addProp(def) {\n"
+        "    if (!def) return builder;\n"
+        "    var n = def.name || def.n;\n"
+        "    if (!n) return builder;\n"
+        "    _values[n] = def.value;\n"
+        "    if (def.onChange && typeof def.onChange === 'function') {\n"
+        "      _onChange[n] = def.onChange;\n"
+        "    }\n"
+        "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
+        "      Object.defineProperty(builder, n, {\n"
+        "        get: function() { return _values[n]; },\n"
+        "        set: function(v) {\n"
+        "          if (_values[n] === v) return;\n"
+        "          _values[n] = v;\n"
+        "          var h = _onChange[n];\n"
+        "          if (h) {\n"
+        "            try { h.call(builder, v); }\n"
+        "            catch (e) {\n"
+        "              if (typeof console !== 'undefined' && console.log)\n"
+        "                console.log('scriptProperty onChange error on ' + n\n"
+        "                            + ': ' + (e && e.message));\n"
+        "            }\n"
+        "          }\n"
+        "        },\n"
+        "        enumerable: true, configurable: true\n"
+        "      });\n"
+        "    }\n"
+        "    return builder;\n"
+        "  }\n"
+        "  builder.addCheckbox = addProp;\n"
+        "  builder.addSlider = addProp;\n"
+        "  builder.addCombo = addProp;\n"
+        "  builder.addText = addProp;\n"
+        "  builder.addTextInput = addProp;\n"
+        "  builder.addColor = addProp;\n"
+        "  builder.addFile = addProp;\n"
+        "  builder.addDirectory = addProp;\n"
+        "  builder.finish = function() { return builder; };\n"
+        "  return builder;\n"
+        "}\n");
 
     // Inject layer initial states from scene parsing
     {
@@ -1814,6 +1945,28 @@ void SceneObject::setupTextScripts() {
         "      });\n"
         "    })(vec3Props[i]);\n"
         "  }\n"
+        // Read-only parse-time snapshots.  Scripts that let the user drag a
+        // layer around (Lucy Clock, Cyberpunk Lucy media player) expose a
+        // "reset to default" exit — `thisLayer.origin = thisLayer.originalOrigin`.
+        // Frozen at proxy construction: a later `thisLayer.origin = foo` does
+        // NOT change originalOrigin.  Returns fresh Vec3 copies to prevent
+        // aliasing shenanigans.  Setter is a no-op rather than throwing —
+        // matches our overall tolerant-JS posture.
+        "  var _origO = init ? {x:init.o[0], y:init.o[1], z:init.o[2]} : {x:0,y:0,z:0};\n"
+        "  var _origS = init ? {x:init.s[0], y:init.s[1], z:init.s[2]} : {x:1,y:1,z:1};\n"
+        "  var _origA = init ? {x:init.a[0], y:init.a[1], z:init.a[2]} : {x:0,y:0,z:0};\n"
+        "  Object.defineProperty(p, 'originalOrigin', {\n"
+        "    get: function(){ return Vec3(_origO.x, _origO.y, _origO.z); },\n"
+        "    set: function(){},\n"
+        "    enumerable: true });\n"
+        "  Object.defineProperty(p, 'originalScale', {\n"
+        "    get: function(){ return Vec3(_origS.x, _origS.y, _origS.z); },\n"
+        "    set: function(){},\n"
+        "    enumerable: true });\n"
+        "  Object.defineProperty(p, 'originalAngles', {\n"
+        "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
+        "    set: function(){},\n"
+        "    enumerable: true });\n"
         "  var scalarProps = ['visible','alpha'];\n"
         "  for (var j=0; j<scalarProps.length; j++) {\n"
         "    (function(prop){\n"
@@ -2287,90 +2440,10 @@ void SceneObject::setupTextScripts() {
     // compares that C++ used to do — only scripts whose output actually
     // changed contribute to the returned flat array (stride 4: idx, v1, v2, v3).
     //
+    // Source lives in PropertyScriptDispatchJs.hpp so scenescript_tests can
+    // evaluate the exact same JS against its own QJSEngine without drift.
     // Kind values match PropertyScriptState::Kind: 0=Visible, 1=Vec3, 2=Alpha.
-    m_jsEngine->evaluate(
-        "var _allPropertyScripts = [];\n"
-        "var _scriptErrors = [];\n"
-        // Reusing a single output buffer across ticks avoids reallocating a
-        // fresh Array every call.  `.length = 0` retains the backing store so
-        // `push` into it skips the V8 grow-and-copy path on steady-state
-        // workloads (most ticks produce roughly the same number of entries).
-        "var _scriptOut = [];\n"
-        // Partition boundaries into `_allPropertyScripts`: entries 0..visEnd
-        // are Kind::Visible, visEnd..vec3End are Kind::Vec3, vec3End..total
-        // are Kind::Alpha.  Set in C++ after populating the array.
-        // Pre-partitioning means each per-kind loop body has no branch on
-        // kind and V8 can keep a single hidden-class shape per loop.
-        "var _scriptPartVisEnd = 0;\n"
-        "var _scriptPartVec3End = 0;\n"
-        "function _runAllPropertyScripts() {\n"
-        "  var out = _scriptOut;\n"
-        "  out.length = 0;\n"
-        "  _scriptErrors.length = 0;\n"
-        "  var scripts = _allPropertyScripts;\n"
-        "  var N = scripts.length;\n"
-        "  var ve = _scriptPartVisEnd;\n"
-        "  var xe = _scriptPartVec3End;\n"
-        "  var i, s, r;\n"
-        // The `var fn = s.fn; fn(arg)` dance is deliberate: calling `s.fn(arg)`
-        // directly would bind `this = s` inside the fn, but the original C++
-        // `updateFn.call({arg})` path bound `this = undefined`.  Extracting
-        // the function into a local first matches that semantics, and avoids
-        // polluting our entry objects if scripts do `this.foo = bar` on the
-        // side.
-        "  var fn;\n"
-        "  for (i = 0; i < ve; i++) {\n"
-        "    s = scripts[i];\n"
-        "    if (!s.valid) continue;\n"
-        "    if (s.hasLayer) thisLayer = s.proxy;\n"
-        "    fn = s.fn;\n"
-        "    try { r = fn(s.cb); }\n"
-        "    catch (e) {\n"
-        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
-        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
-        "      continue;\n"
-        "    }\n"
-        "    if (r === undefined || r === null || typeof r !== 'boolean') continue;\n"
-        "    if (r === s.cb) continue;\n"
-        "    s.cb = r;\n"
-        "    out.push(i, r ? 1 : 0, 0, 0);\n"
-        "  }\n"
-        "  for (i = ve; i < xe; i++) {\n"
-        "    s = scripts[i];\n"
-        "    if (!s.valid) continue;\n"
-        "    if (s.hasLayer) thisLayer = s.proxy;\n"
-        "    fn = s.fn;\n"
-        "    try { r = fn(Vec3(s.cx, s.cy, s.cz)); }\n"
-        "    catch (e) {\n"
-        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
-        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
-        "      continue;\n"
-        "    }\n"
-        "    if (r === undefined || r === null || !r || typeof r.x !== 'number') continue;\n"
-        "    if (Math.abs(r.x - s.cx) < 0.0001 &&\n"
-        "        Math.abs(r.y - s.cy) < 0.0001 &&\n"
-        "        Math.abs(r.z - s.cz) < 0.0001) continue;\n"
-        "    s.cx = r.x; s.cy = r.y; s.cz = r.z;\n"
-        "    out.push(i, r.x, r.y, r.z);\n"
-        "  }\n"
-        "  for (i = xe; i < N; i++) {\n"
-        "    s = scripts[i];\n"
-        "    if (!s.valid) continue;\n"
-        "    if (s.hasLayer) thisLayer = s.proxy;\n"
-        "    fn = s.fn;\n"
-        "    try { r = fn(s.cf); }\n"
-        "    catch (e) {\n"
-        "      _scriptErrors.push(i, String((e && e.message) || e),\n"
-        "        (e && e.lineNumber) || 0, String((e && e.stack) || ''));\n"
-        "      continue;\n"
-        "    }\n"
-        "    if (r === undefined || r === null || typeof r !== 'number') continue;\n"
-        "    if (Math.abs(r - s.cf) < 0.001) continue;\n"
-        "    s.cf = r;\n"
-        "    out.push(i, r, 0, 0);\n"
-        "  }\n"
-        "  return out;\n"
-        "}\n");
+    m_jsEngine->evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
 
     // Store references to JS dispatch functions for C++ calls
     m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
@@ -2857,45 +2930,7 @@ void SceneObject::setupTextScripts() {
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
             propsInit =
-                QString(
-                    "var _storedProps = JSON.parse('%1');\n"
-                    "function createScriptProperties() {\n"
-                    "  var b = {};\n"
-                    "  function ap(def) {\n"
-                    "    var n = def.name || def.n;\n"
-                    "    if (n) {\n"
-                    "      if (n in _storedProps) {\n"
-                    "        var sp = _storedProps[n];\n"
-                    "        // WE scene.json lets a scriptProperty bind to a\n"
-                    "        // user property via `user: '<name>'`.  Resolve from\n"
-                    "        // engine.userProperties first, fall back to the\n"
-                    "        // stored `value`, then the script's own default.\n"
-                    "        // Wallpaper 2866203962's Player Options binds\n"
-                    "        // `enableplayer` to user prop `ui` with fallback\n"
-                    "        // `false`; without the user-resolve step the UI\n"
-                    "        // always faded because shared.enablePlayer=false.\n"
-                    "        if (typeof sp === 'object' && sp !== null) {\n"
-                    "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
-                    "              engine.userProperties && sp.user in engine.userProperties) {\n"
-                    "            b[n] = engine.userProperties[sp.user];\n"
-                    "          } else if ('value' in sp) {\n"
-                    "            b[n] = sp.value;\n"
-                    "          } else {\n"
-                    "            b[n] = def.value;\n"
-                    "          }\n"
-                    "        } else {\n"
-                    "          b[n] = sp;\n"
-                    "        }\n"
-                    "      } else { b[n] = def.value; }\n"
-                    "    }\n"
-                    "    return b;\n"
-                    "  }\n"
-                    "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
-                    "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
-                    "  b.finish=function(){return b;};\n"
-                    "  return b;\n"
-                    "}\n")
-                    .arg(jsonStr);
+                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Wrap in IIFE.  `_tlo` carries the current global `thisLayer` into a
@@ -2971,45 +3006,7 @@ void SceneObject::setupTextScripts() {
             jsonStr.replace("'", "\\'");
             // Shadow global createScriptProperties with one that uses stored property values
             propsInit =
-                QString(
-                    "var _storedProps = JSON.parse('%1');\n"
-                    "function createScriptProperties() {\n"
-                    "  var b = {};\n"
-                    "  function ap(def) {\n"
-                    "    var n = def.name || def.n;\n"
-                    "    if (n) {\n"
-                    "      if (n in _storedProps) {\n"
-                    "        var sp = _storedProps[n];\n"
-                    "        // WE scene.json lets a scriptProperty bind to a\n"
-                    "        // user property via `user: '<name>'`.  Resolve from\n"
-                    "        // engine.userProperties first, fall back to the\n"
-                    "        // stored `value`, then the script's own default.\n"
-                    "        // Wallpaper 2866203962's Player Options binds\n"
-                    "        // `enableplayer` to user prop `ui` with fallback\n"
-                    "        // `false`; without the user-resolve step the UI\n"
-                    "        // always faded because shared.enablePlayer=false.\n"
-                    "        if (typeof sp === 'object' && sp !== null) {\n"
-                    "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
-                    "              engine.userProperties && sp.user in engine.userProperties) {\n"
-                    "            b[n] = engine.userProperties[sp.user];\n"
-                    "          } else if ('value' in sp) {\n"
-                    "            b[n] = sp.value;\n"
-                    "          } else {\n"
-                    "            b[n] = def.value;\n"
-                    "          }\n"
-                    "        } else {\n"
-                    "          b[n] = sp;\n"
-                    "        }\n"
-                    "      } else { b[n] = def.value; }\n"
-                    "    }\n"
-                    "    return b;\n"
-                    "  }\n"
-                    "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
-                    "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
-                    "  b.finish=function(){return b;};\n"
-                    "  return b;\n"
-                    "}\n")
-                    .arg(jsonStr);
+                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Set thisLayer before compilation so closures can capture it
@@ -3194,6 +3191,10 @@ void SceneObject::setupTextScripts() {
         state.mediaTimelineChangedFn   = mediaTimelineChangedFn;
         state.mediaStatusChangedFn     = mediaStatusChangedFn;
         state.animationEventFn         = animationEventFn;
+        state.animationLayerIndex      = (psi.attachment ==
+                                             wallpaper::PropertyScriptInfo::Attachment::AnimationLayer)
+                                             ? psi.animationLayerIndex
+                                             : -1;
         state.currentVisible           = psi.initialVisible;
         state.currentVec3              = psi.initialVec3;
         state.currentFloat             = psi.initialFloat;
@@ -3204,11 +3205,29 @@ void SceneObject::setupTextScripts() {
                 QString("thisScene.getLayer('%1')").arg(QString::fromStdString(psi.layerName)));
         }
 
+        // Resolve thisObject.  For Object-attached scripts this equals
+        // thisLayer; for AnimationLayer-attached scripts (Lucy's puppet
+        // animation offsets) it's the specific animation-layer proxy so
+        // thisObject.setFrame / play / frameCount land on the rig layer.
+        if (state.animationLayerIndex >= 0 && state.thisLayerProxy.isObject()) {
+            QJSValue getAL = state.thisLayerProxy.property("getAnimationLayer");
+            if (getAL.isCallable()) {
+                state.thisObjectProxy =
+                    getAL.callWithInstance(state.thisLayerProxy,
+                                           { QJSValue(state.animationLayerIndex) });
+            } else {
+                state.thisObjectProxy = state.thisLayerProxy;
+            }
+        } else {
+            state.thisObjectProxy = state.thisLayerProxy;
+        }
+
         // Call init(value) if available
         if (initFn.isCallable()) {
-            // Set thisLayer for init call
+            // Set thisLayer + thisObject for init call
             if (! psi.layerName.empty()) {
                 m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+                m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
             }
             QJSValue initVal;
             if (psi.property == "visible") {
@@ -3283,6 +3302,7 @@ void SceneObject::setupTextScripts() {
             entry.setProperty("kind", QJSValue((int)state.kind));
             entry.setProperty("fn", state.updateFn);
             entry.setProperty("proxy", state.thisLayerProxy);
+            entry.setProperty("obj", state.thisObjectProxy);
             entry.setProperty("hasLayer", QJSValue(! state.layerName.empty()));
             entry.setProperty("valid", QJSValue(state.updateFn.isCallable()));
             entry.setProperty("cb", QJSValue(state.currentVisible));
@@ -3330,9 +3350,10 @@ void SceneObject::setupTextScripts() {
             if (it == targetIndex.end()) {
                 targetIndex[state.layerName] = m_cursorTargets.size();
                 m_cursorTargets.push_back({});
-                tgt                 = &m_cursorTargets.back();
-                tgt->layerName      = state.layerName;
-                tgt->thisLayerProxy = state.thisLayerProxy;
+                tgt                  = &m_cursorTargets.back();
+                tgt->layerName       = state.layerName;
+                tgt->thisLayerProxy  = state.thisLayerProxy;
+                tgt->thisObjectProxy = state.thisObjectProxy;
             } else {
                 tgt = &m_cursorTargets[it->second];
             }
@@ -3419,45 +3440,7 @@ void SceneObject::setupTextScripts() {
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
             propsInit =
-                QString(
-                    "var _storedProps = JSON.parse('%1');\n"
-                    "function createScriptProperties() {\n"
-                    "  var b = {};\n"
-                    "  function ap(def) {\n"
-                    "    var n = def.name || def.n;\n"
-                    "    if (n) {\n"
-                    "      if (n in _storedProps) {\n"
-                    "        var sp = _storedProps[n];\n"
-                    "        // WE scene.json lets a scriptProperty bind to a\n"
-                    "        // user property via `user: '<name>'`.  Resolve from\n"
-                    "        // engine.userProperties first, fall back to the\n"
-                    "        // stored `value`, then the script's own default.\n"
-                    "        // Wallpaper 2866203962's Player Options binds\n"
-                    "        // `enableplayer` to user prop `ui` with fallback\n"
-                    "        // `false`; without the user-resolve step the UI\n"
-                    "        // always faded because shared.enablePlayer=false.\n"
-                    "        if (typeof sp === 'object' && sp !== null) {\n"
-                    "          if ('user' in sp && typeof engine !== 'undefined' &&\n"
-                    "              engine.userProperties && sp.user in engine.userProperties) {\n"
-                    "            b[n] = engine.userProperties[sp.user];\n"
-                    "          } else if ('value' in sp) {\n"
-                    "            b[n] = sp.value;\n"
-                    "          } else {\n"
-                    "            b[n] = def.value;\n"
-                    "          }\n"
-                    "        } else {\n"
-                    "          b[n] = sp;\n"
-                    "        }\n"
-                    "      } else { b[n] = def.value; }\n"
-                    "    }\n"
-                    "    return b;\n"
-                    "  }\n"
-                    "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
-                    "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
-                    "  b.finish=function(){return b;};\n"
-                    "  return b;\n"
-                    "}\n")
-                    .arg(jsonStr);
+                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         QString wrapped =
@@ -3571,27 +3554,8 @@ void SceneObject::setupTextScripts() {
             QString jsonStr = QString::fromStdString(tsi.scriptProperties);
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
-            propsInit = QString("var _storedProps = JSON.parse('%1');\n"
-                                "function createScriptProperties() {\n"
-                                "  var b = {};\n"
-                                "  function ap(def) {\n"
-                                "    var n = def.name || def.n;\n"
-                                "    if (n) {\n"
-                                "      if (n in _storedProps) {\n"
-                                "        var sp = _storedProps[n];\n"
-                                "        b[n] = (typeof sp === 'object' && sp !== null && 'value' "
-                                "in sp) ? sp.value : sp;\n"
-                                "      } else { b[n] = def.value; }\n"
-                                "    }\n"
-                                "    return b;\n"
-                                "  }\n"
-                                "  b.addCheckbox=ap; b.addSlider=ap; b.addCombo=ap;\n"
-                                "  b.addText=ap; b.addColor=ap; b.addFile=ap; b.addDirectory=ap;\n"
-                                "  b.addTextInput=ap;\n"
-                                "  b.finish=function(){return b;};\n"
-                                "  return b;\n"
-                                "}\n")
-                            .arg(jsonStr);
+            propsInit =
+                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Wrap in IIFE that returns {update, init} functions.
@@ -4103,6 +4067,8 @@ void SceneObject::evaluatePropertyScripts() {
 
                     if (! state.layerName.empty()) {
                         m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
+                        m_jsEngine->globalObject().setProperty("thisObject",
+                                                               state.thisObjectProxy);
                     }
                     QJSValue eventObj = m_jsEngine->newObject();
                     eventObj.setProperty("name", QString::fromStdString(evt.name));
@@ -4524,6 +4490,7 @@ void SceneObject::evaluatePropertyScripts() {
         // Set thisLayer for this volume script (same as property scripts)
         if (! svState.layerName.empty()) {
             m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", svState.thisLayerProxy);
         }
 
         // Advance volume animation and use animated value as base.

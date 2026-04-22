@@ -1,5 +1,6 @@
 #include "WPSceneParser.hpp"
 #include "WPJson.hpp"
+#include "WPPropertyScriptExtract.hpp"
 #include "WPUserProperties.hpp"
 
 #include "Utils/String.h"
@@ -3469,57 +3470,46 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         }
     }
 
-    // Extract property scripts from raw JSON (visible, origin, scale, angles, alpha)
+    // Extract property scripts from raw JSON.  Two attachment shapes:
+    //   - objects[N].<prop>                     → attachment=Object
+    //   - objects[N].animationlayers[M].<prop>  → attachment=AnimationLayer, idx=M
+    // The actual extraction lives in WPPropertyScriptExtract.hpp so tests
+    // can exercise both shapes without the full parser.
     for (auto& obj : json.at("objects")) {
         if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
-        i32 id = obj.at("id").get<i32>();
+        i32         id = obj.at("id").get<i32>();
+        std::string layerName;
+        if (obj.contains("name") && obj.at("name").is_string())
+            layerName = obj.at("name").get<std::string>();
 
-        for (const char* prop : { "visible", "origin", "scale", "angles", "alpha" }) {
-            if (! obj.contains(prop)) continue;
-            auto& val = obj.at(prop);
-            if (! val.is_object() || ! val.contains("script")) continue;
+        wek::extractPropertyScriptsFromHost(
+            id, layerName, obj,
+            ScenePropertyScript::Attachment::Object, -1,
+            context.scene->propertyScripts);
 
-            ScenePropertyScript sps;
-            sps.id       = id;
-            sps.property = prop;
-            sps.script   = val.at("script").get<std::string>();
-            if (obj.contains("name") && obj.at("name").is_string())
-                sps.layerName = obj.at("name").get<std::string>();
+        // Per-animation-layer scripts (puppet rigs).  Used by Lucy
+        // (3521337568) to offset start frames per rigged animation track.
+        wek::extractAnimationLayerScripts(
+            id, layerName, obj, context.scene->propertyScripts);
+    }
 
-            // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
-            // its alpha script preserves "exception"-named layers (track title, etc.)
-            // while a song plays, so the track title hovers on screen long after the
-            // player fades.  Strip the exception gate so *all* player layers fade together.
-            {
-                const std::string needle =
-                    "playerExceptions.indexOf(element)==-1 || !shared.songplays";
-                auto pos = sps.script.find(needle);
-                if (pos != std::string::npos) {
-                    sps.script.replace(pos, needle.size(), "true");
-                    LOG_INFO("Patched player-fader alpha script: dropped exception gate "
-                             "(layer id=%d name='%s')",
-                             id,
-                             sps.layerName.c_str());
-                }
-            }
-            if (val.contains("scriptproperties"))
-                sps.scriptProperties = val.at("scriptproperties").dump();
-
-            // Parse initial value
-            if (std::string(prop) == "visible") {
-                sps.initialVisible = val.value("value", true);
-            } else if (std::string(prop) == "alpha") {
-                sps.initialFloat = val.value("value", 1.0f);
-            } else {
-                // origin/scale/angles: "x y z" space-separated string
-                if (val.contains("value") && val.at("value").is_string()) {
-                    std::istringstream iss(val.at("value").get<std::string>());
-                    iss >> sps.initialVec3[0] >> sps.initialVec3[1] >> sps.initialVec3[2];
-                }
-            }
-            context.scene->propertyScripts.push_back(std::move(sps));
+    // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
+    // its alpha script preserves "exception"-named layers while a song
+    // plays, so the track title hovers on screen long after the player
+    // fades.  Strip the exception gate so all player layers fade together.
+    for (auto& sps : context.scene->propertyScripts) {
+        const std::string needle =
+            "playerExceptions.indexOf(element)==-1 || !shared.songplays";
+        auto pos = sps.script.find(needle);
+        if (pos != std::string::npos) {
+            sps.script.replace(pos, needle.size(), "true");
+            LOG_INFO("Patched player-fader alpha script: dropped exception gate "
+                     "(layer id=%d name='%s')",
+                     sps.id,
+                     sps.layerName.c_str());
         }
     }
+
     if (! context.scene->propertyScripts.empty()) {
         LOG_INFO("Extracted %zu property scripts", context.scene->propertyScripts.size());
     }

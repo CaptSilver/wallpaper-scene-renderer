@@ -34,14 +34,24 @@ struct ColorScriptInfo {
 };
 
 struct PropertyScriptInfo {
+    // Where the script is attached.  Object-attached scripts bind thisObject
+    // to thisLayer; AnimationLayer-attached scripts bind thisObject to the
+    // specific rig layer (Lucy puppet offset scripts rely on this).
+    enum class Attachment : uint8_t {
+        Object         = 0,
+        AnimationLayer = 1,
+    };
+
     int32_t              id;
     std::string          property; // "visible", "origin", "scale", "angles", "alpha"
     std::string          script;
     std::string          scriptProperties; // JSON string
-    std::string          layerName;        // name of the object for thisLayer.name
+    std::string          layerName;        // name of the parent object for thisLayer.name
     bool                 initialVisible { true };
     std::array<float, 3> initialVec3 { 0, 0, 0 };
     float                initialFloat { 1.0f };
+    Attachment           attachment { Attachment::Object };
+    int32_t              animationLayerIndex { -1 };
 };
 
 struct VolumeAnimInfo {

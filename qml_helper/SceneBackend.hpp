@@ -255,6 +255,14 @@ private:
         QJSValue             mediaStatusChangedFn;
         QJSValue             animationEventFn; // optional animationEvent(event,value) handler
         QJSValue             thisLayerProxy;   // cached layer proxy (avoids evaluate per frame)
+        // Per-call thisObject proxy.  For Object-attached scripts this is
+        // equivalent to thisLayerProxy; for AnimationLayer-attached scripts
+        // (e.g. Lucy's per-rig offset scripts on /objects[N]/animationlayers[M])
+        // this resolves to thisLayer.getAnimationLayer(animationLayerIndex),
+        // so scripts can call thisObject.setFrame / play / frameCount on the
+        // specific rig layer rather than the parent image.
+        QJSValue             thisObjectProxy;
+        int32_t              animationLayerIndex { -1 };
         bool                 currentVisible { true };
         std::array<float, 3> currentVec3 { 0, 0, 0 };
         float                currentFloat { 1.0f };
@@ -340,6 +348,7 @@ private:
         QJSValue    upFn;
         QJSValue    moveFn;
         QJSValue    thisLayerProxy;
+        QJSValue    thisObjectProxy; // == thisLayerProxy for Object-attached; rig layer otherwise
     };
     std::vector<CursorTarget>       m_cursorTargets;
     std::unordered_set<std::string> m_hoveredLayers; // layers cursor is over

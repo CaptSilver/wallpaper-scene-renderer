@@ -2116,14 +2116,19 @@ void MainHandler::loadScene() {
         m_property_scripts.clear();
         for (const auto& ps : scene->propertyScripts) {
             PropertyScriptInfo psi;
-            psi.id               = ps.id;
-            psi.property         = ps.property;
-            psi.script           = ps.script;
-            psi.scriptProperties = ps.scriptProperties;
-            psi.layerName        = ps.layerName;
-            psi.initialVisible   = ps.initialVisible;
-            psi.initialVec3      = ps.initialVec3;
-            psi.initialFloat     = ps.initialFloat;
+            psi.id                  = ps.id;
+            psi.property            = ps.property;
+            psi.script              = ps.script;
+            psi.scriptProperties    = ps.scriptProperties;
+            psi.layerName           = ps.layerName;
+            psi.initialVisible      = ps.initialVisible;
+            psi.initialVec3         = ps.initialVec3;
+            psi.initialFloat        = ps.initialFloat;
+            psi.attachment          = (ps.attachment ==
+                                          wallpaper::ScenePropertyScript::Attachment::AnimationLayer)
+                                          ? PropertyScriptInfo::Attachment::AnimationLayer
+                                          : PropertyScriptInfo::Attachment::Object;
+            psi.animationLayerIndex = ps.animationLayerIndex;
             m_property_scripts.push_back(std::move(psi));
         }
         if (! m_property_scripts.empty()) {
