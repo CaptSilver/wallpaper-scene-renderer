@@ -259,7 +259,7 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             // exact physical pixel size via the renderPixelWidth/Height
             // properties — needed because Wayland fractional scaling makes
             // dpr unstable around window-show time (see qmlviewer.cpp -R).
-            int vk_w = m_renderPixelWidth  > 0
+            int vk_w = m_renderPixelWidth > 0
                            ? m_renderPixelWidth
                            : (int)std::lround(width() * window()->devicePixelRatio());
             int vk_h = m_renderPixelHeight > 0
@@ -519,7 +519,7 @@ void SceneObject::mediaPlaybackChanged(int state) {
         if (! s.mediaPlaybackChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaPlaybackChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaPlaybackChanged", { event });
@@ -540,7 +540,7 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
         if (! s.mediaPropertiesChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaPropertiesChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaPropertiesChanged", { event });
@@ -567,7 +567,7 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
         if (! s.mediaThumbnailChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaThumbnailChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaThumbnailChanged", { event });
@@ -582,7 +582,7 @@ void SceneObject::mediaTimelineChanged(double position, double duration) {
         if (! s.mediaTimelineChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaTimelineChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaTimelineChanged", { event });
@@ -596,7 +596,7 @@ void SceneObject::mediaStatusChanged(bool enabled) {
         if (! s.mediaStatusChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
         s.mediaStatusChangedFn.call({ event });
     }
     fireSceneEventListeners("mediaStatusChanged", { event });
@@ -1091,7 +1091,7 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             if (! target.downFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.downFn.call({ ev });
             downFired++;
             if (r.isError())
@@ -1157,7 +1157,7 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
             if (! target.upFn.isCallable()) break;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.upFn.call({ ev });
             upFired    = 1;
             if (r.isError())
@@ -1171,7 +1171,7 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
             if (! target.upFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = target.upFn.call({ ev });
             upFired++;
             if (r.isError())
@@ -1214,7 +1214,7 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
             if (target.layerName != m_dragTarget || ! target.moveFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
             QJSValue r  = target.moveFn.call({ ev });
             // Throttle per-frame to avoid flooding when a real user drags.
@@ -1307,7 +1307,7 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)", name.c_str(), sceneX, sceneY);
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
             QJSValue r  = target.enterFn.call({ ev });
             if (r.isError()) LOG_INFO("cursorEnter ERROR: %s", r.toString().toStdString().c_str());
@@ -1347,8 +1347,8 @@ void SceneObject::flushPendingLeaves() {
                 LOG_INFO("cursorLeave: layer '%s' (after grace)", target.layerName.c_str());
                 m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 QJSValue ev = makeCursorEvent(m_jsEngine, m_cursorSceneX, m_cursorSceneY);
                 target.leaveFn.call({ ev });
             }
@@ -1600,7 +1600,8 @@ void SceneObject::setupTextScripts() {
         "     : Vec4(v.x/s, v.y/s, v.z/s, v.w/s); };\n"
         "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w); };\n"
         "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w; };\n"
-        "  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); };\n"
+        "  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); "
+        "};\n"
         "  v.copy     = function() { return Vec4(v.x, v.y, v.z, v.w); };\n"
         "  v.dot      = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z+v.w*o.w; };\n"
         "  v.negate   = function() { return Vec4(-v.x,-v.y,-v.z,-v.w); };\n"
@@ -1755,12 +1756,11 @@ void SceneObject::setupTextScripts() {
     // engine.openUserShortcut(name) — delegates through __sceneBridge to the
     // C++ slot which emits userShortcutRequested (mapped to MPRIS in the
     // main plugin) and fires a `userShortcut` event on the scene bus.
-    m_jsEngine->evaluate(
-        "engine.openUserShortcut = function(name) {\n"
-        "  if (typeof name !== 'string' || !name) return;\n"
-        "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
-        "    __sceneBridge.openUserShortcut(name);\n"
-        "};\n");
+    m_jsEngine->evaluate("engine.openUserShortcut = function(name) {\n"
+                         "  if (typeof name !== 'string' || !name) return;\n"
+                         "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
+                         "    __sceneBridge.openUserShortcut(name);\n"
+                         "};\n");
 
     // engine.registerAsset — describes a dynamic asset; a pool of hidden
     // scene nodes is pre-allocated by WPSceneParser (Scene::assetPools).
@@ -1782,51 +1782,50 @@ void SceneObject::setupTextScripts() {
     // onChange writes `false` to its siblings; without the suppression
     // the siblings re-fire their own onChange and infinite-recurse.
     // Lucy Clock's date-format checkboxes rely on this.
-    m_jsEngine->evaluate(
-        "function createScriptProperties() {\n"
-        "  var _values = {};\n"
-        "  var _onChange = {};\n"
-        "  var builder = {};\n"
-        "  function addProp(def) {\n"
-        "    if (!def) return builder;\n"
-        "    var n = def.name || def.n;\n"
-        "    if (!n) return builder;\n"
-        "    _values[n] = def.value;\n"
-        "    if (def.onChange && typeof def.onChange === 'function') {\n"
-        "      _onChange[n] = def.onChange;\n"
-        "    }\n"
-        "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
-        "      Object.defineProperty(builder, n, {\n"
-        "        get: function() { return _values[n]; },\n"
-        "        set: function(v) {\n"
-        "          if (_values[n] === v) return;\n"
-        "          _values[n] = v;\n"
-        "          var h = _onChange[n];\n"
-        "          if (h) {\n"
-        "            try { h.call(builder, v); }\n"
-        "            catch (e) {\n"
-        "              if (typeof console !== 'undefined' && console.log)\n"
-        "                console.log('scriptProperty onChange error on ' + n\n"
-        "                            + ': ' + (e && e.message));\n"
-        "            }\n"
-        "          }\n"
-        "        },\n"
-        "        enumerable: true, configurable: true\n"
-        "      });\n"
-        "    }\n"
-        "    return builder;\n"
-        "  }\n"
-        "  builder.addCheckbox = addProp;\n"
-        "  builder.addSlider = addProp;\n"
-        "  builder.addCombo = addProp;\n"
-        "  builder.addText = addProp;\n"
-        "  builder.addTextInput = addProp;\n"
-        "  builder.addColor = addProp;\n"
-        "  builder.addFile = addProp;\n"
-        "  builder.addDirectory = addProp;\n"
-        "  builder.finish = function() { return builder; };\n"
-        "  return builder;\n"
-        "}\n");
+    m_jsEngine->evaluate("function createScriptProperties() {\n"
+                         "  var _values = {};\n"
+                         "  var _onChange = {};\n"
+                         "  var builder = {};\n"
+                         "  function addProp(def) {\n"
+                         "    if (!def) return builder;\n"
+                         "    var n = def.name || def.n;\n"
+                         "    if (!n) return builder;\n"
+                         "    _values[n] = def.value;\n"
+                         "    if (def.onChange && typeof def.onChange === 'function') {\n"
+                         "      _onChange[n] = def.onChange;\n"
+                         "    }\n"
+                         "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
+                         "      Object.defineProperty(builder, n, {\n"
+                         "        get: function() { return _values[n]; },\n"
+                         "        set: function(v) {\n"
+                         "          if (_values[n] === v) return;\n"
+                         "          _values[n] = v;\n"
+                         "          var h = _onChange[n];\n"
+                         "          if (h) {\n"
+                         "            try { h.call(builder, v); }\n"
+                         "            catch (e) {\n"
+                         "              if (typeof console !== 'undefined' && console.log)\n"
+                         "                console.log('scriptProperty onChange error on ' + n\n"
+                         "                            + ': ' + (e && e.message));\n"
+                         "            }\n"
+                         "          }\n"
+                         "        },\n"
+                         "        enumerable: true, configurable: true\n"
+                         "      });\n"
+                         "    }\n"
+                         "    return builder;\n"
+                         "  }\n"
+                         "  builder.addCheckbox = addProp;\n"
+                         "  builder.addSlider = addProp;\n"
+                         "  builder.addCombo = addProp;\n"
+                         "  builder.addText = addProp;\n"
+                         "  builder.addTextInput = addProp;\n"
+                         "  builder.addColor = addProp;\n"
+                         "  builder.addFile = addProp;\n"
+                         "  builder.addDirectory = addProp;\n"
+                         "  builder.finish = function() { return builder; };\n"
+                         "  return builder;\n"
+                         "}\n");
 
     // Inject layer initial states from scene parsing
     {
@@ -2929,8 +2928,7 @@ void SceneObject::setupTextScripts() {
             QString jsonStr = QString::fromStdString(csi.scriptProperties);
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
-            propsInit =
-                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
+            propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Wrap in IIFE.  `_tlo` carries the current global `thisLayer` into a
@@ -3005,8 +3003,7 @@ void SceneObject::setupTextScripts() {
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
             // Shadow global createScriptProperties with one that uses stored property values
-            propsInit =
-                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
+            propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Set thisLayer before compilation so closures can capture it
@@ -3166,24 +3163,22 @@ void SceneObject::setupTextScripts() {
         }
 
         PropertyScriptState state;
-        state.id                       = psi.id;
-        state.property                 = psi.property;
-        state.layerName                = psi.layerName;
-        state.kind                     = (psi.property == "visible")
-                                             ? PropertyScriptState::Kind::Visible
-                                         : (psi.property == "alpha")
-                                             ? PropertyScriptState::Kind::Alpha
-                                         : (psi.property.rfind("instanceoverride.", 0) == 0)
-                                             ? PropertyScriptState::Kind::ParticleRate
-                                             : PropertyScriptState::Kind::Vec3;
-        state.updateFn                 = updateFn;
-        state.initFn                   = initFn;
-        state.cursorClickFn            = cursorClickFn;
-        state.cursorEnterFn            = cursorEnterFn;
-        state.cursorLeaveFn            = cursorLeaveFn;
-        state.cursorDownFn             = cursorDownFn;
-        state.cursorUpFn               = cursorUpFn;
-        state.cursorMoveFn             = cursorMoveFn;
+        state.id            = psi.id;
+        state.property      = psi.property;
+        state.layerName     = psi.layerName;
+        state.kind          = (psi.property == "visible") ? PropertyScriptState::Kind::Visible
+                              : (psi.property == "alpha") ? PropertyScriptState::Kind::Alpha
+                              : (psi.property.rfind("instanceoverride.", 0) == 0)
+                                  ? PropertyScriptState::Kind::ParticleRate
+                                  : PropertyScriptState::Kind::Vec3;
+        state.updateFn      = updateFn;
+        state.initFn        = initFn;
+        state.cursorClickFn = cursorClickFn;
+        state.cursorEnterFn = cursorEnterFn;
+        state.cursorLeaveFn = cursorLeaveFn;
+        state.cursorDownFn  = cursorDownFn;
+        state.cursorUpFn    = cursorUpFn;
+        state.cursorMoveFn  = cursorMoveFn;
         state.applyUserPropertiesFn    = applyUserPropertiesFn;
         state.destroyFn                = destroyFn;
         state.resizeScreenFn           = resizeScreenFn;
@@ -3193,13 +3188,13 @@ void SceneObject::setupTextScripts() {
         state.mediaTimelineChangedFn   = mediaTimelineChangedFn;
         state.mediaStatusChangedFn     = mediaStatusChangedFn;
         state.animationEventFn         = animationEventFn;
-        state.animationLayerIndex      = (psi.attachment ==
-                                             wallpaper::PropertyScriptInfo::Attachment::AnimationLayer)
-                                             ? psi.animationLayerIndex
-                                             : -1;
-        state.currentVisible           = psi.initialVisible;
-        state.currentVec3              = psi.initialVec3;
-        state.currentFloat             = psi.initialFloat;
+        state.animationLayerIndex =
+            (psi.attachment == wallpaper::PropertyScriptInfo::Attachment::AnimationLayer)
+                ? psi.animationLayerIndex
+                : -1;
+        state.currentVisible = psi.initialVisible;
+        state.currentVec3    = psi.initialVec3;
+        state.currentFloat   = psi.initialFloat;
 
         // Cache layer proxy for thisLayer (avoids evaluate per frame)
         if (! psi.layerName.empty()) {
@@ -3214,9 +3209,8 @@ void SceneObject::setupTextScripts() {
         if (state.animationLayerIndex >= 0 && state.thisLayerProxy.isObject()) {
             QJSValue getAL = state.thisLayerProxy.property("getAnimationLayer");
             if (getAL.isCallable()) {
-                state.thisObjectProxy =
-                    getAL.callWithInstance(state.thisLayerProxy,
-                                           { QJSValue(state.animationLayerIndex) });
+                state.thisObjectProxy = getAL.callWithInstance(
+                    state.thisLayerProxy, { QJSValue(state.animationLayerIndex) });
             } else {
                 state.thisObjectProxy = state.thisLayerProxy;
             }
@@ -3234,8 +3228,7 @@ void SceneObject::setupTextScripts() {
             QJSValue initVal;
             if (psi.property == "visible") {
                 initVal = QJSValue(psi.initialVisible);
-            } else if (psi.property == "alpha" ||
-                       psi.property.rfind("instanceoverride.", 0) == 0) {
+            } else if (psi.property == "alpha" || psi.property.rfind("instanceoverride.", 0) == 0) {
                 // instanceoverride.* scripts take the static `value` field as
                 // the init seed — NieR 2B captures it as `initialValue` and
                 // multiplies later by the audio envelope.
@@ -3284,11 +3277,11 @@ void SceneObject::setupTextScripts() {
     // old 3-pass string-compare loop.  stable_sort keeps relative order of
     // scripts within the same kind.  `Kind` is a uint8_t ordered
     // Visible=0, Vec3=1, Alpha=2.
-    std::stable_sort(
-        m_propertyScriptStates.begin(), m_propertyScriptStates.end(),
-        [](const PropertyScriptState& a, const PropertyScriptState& b) {
-            return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
-        });
+    std::stable_sort(m_propertyScriptStates.begin(),
+                     m_propertyScriptStates.end(),
+                     [](const PropertyScriptState& a, const PropertyScriptState& b) {
+                         return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
+                     });
 
     // Populate the JS-side `_allPropertyScripts` array.  Entries are indexed
     // 1:1 with `m_propertyScriptStates`, so results returned from
@@ -3445,8 +3438,7 @@ void SceneObject::setupTextScripts() {
             QString jsonStr = QString::fromStdString(svsi.scriptProperties);
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
-            propsInit =
-                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
+            propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         QString wrapped =
@@ -3560,8 +3552,7 @@ void SceneObject::setupTextScripts() {
             QString jsonStr = QString::fromStdString(tsi.scriptProperties);
             jsonStr.replace("\\", "\\\\");
             jsonStr.replace("'", "\\'");
-            propsInit =
-                QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
+            propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Wrap in IIFE that returns {update, init} functions.
@@ -3657,8 +3648,7 @@ void SceneObject::setupTextScripts() {
         m_textTimer->setInterval(500); // evaluate twice per second
         connect(m_textTimer, &QTimer::timeout, this, &SceneObject::evaluateTextScripts);
         m_textTimer->start();
-        LOG_INFO("TextTimer started: %zu text scripts, interval=500ms",
-                 m_textScriptStates.size());
+        LOG_INFO("TextTimer started: %zu text scripts, interval=500ms", m_textScriptStates.size());
 
         // Run once immediately
         evaluateTextScripts();
@@ -3717,11 +3707,11 @@ void SceneObject::evaluateTextScripts() {
     refreshAudioBuffers();
 
     // Update engine globals (text timer fires every 500ms).
-    qint64   nowMs       = m_runtimeTimer.elapsed();
-    double   runtimeSecs = nowMs / 1000.0;
-    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.500, 2000);
-    m_lastTextTickMs     = nowMs;
-    QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
+    qint64 nowMs       = m_runtimeTimer.elapsed();
+    double runtimeSecs = nowMs / 1000.0;
+    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.500, 2000);
+    m_lastTextTickMs   = nowMs;
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
     // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight
@@ -3742,7 +3732,7 @@ void SceneObject::evaluateTextScripts() {
         return v && v[0] && v[0] != '0';
     }();
 
-    int updated = 0, errors = 0;
+    int        updated = 0, errors = 0;
     static int s_textDebugCount = 0;
     s_textDebugCount++;
     for (auto& state : m_textScriptStates) {
@@ -3822,11 +3812,11 @@ void SceneObject::evaluateColorScripts() {
 
     // Update engine globals (color timer is 33ms but report real dt so the
     // value stays correct if the tick rate is ever changed).
-    qint64   nowMs       = m_runtimeTimer.elapsed();
-    double   runtimeSecs = nowMs / 1000.0;
-    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastColorTickMs, 0.033, 500);
-    m_lastColorTickMs    = nowMs;
-    QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
+    qint64 nowMs       = m_runtimeTimer.elapsed();
+    double runtimeSecs = nowMs / 1000.0;
+    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastColorTickMs, 0.033, 500);
+    m_lastColorTickMs  = nowMs;
+    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
 
@@ -3987,9 +3977,9 @@ void SceneObject::evaluatePropertyScripts() {
     // elapsed time — hardcoding a fixed value makes animation speed track
     // the timer rate, not real time, and caused a 4× speed regression in
     // dino_run-style wallpapers when the property timer was raised to 120Hz.
-    qint64   nowMs       = m_runtimeTimer.elapsed();
-    double   runtimeSecs = nowMs / 1000.0;
-    double   frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastPropertyTickMs, 0.008, 250);
+    qint64 nowMs         = m_runtimeTimer.elapsed();
+    double runtimeSecs   = nowMs / 1000.0;
+    double frametime     = wallpaper::ComputeTickFrametime(nowMs, m_lastPropertyTickMs, 0.008, 250);
     m_lastPropertyTickMs = nowMs;
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
@@ -4076,8 +4066,7 @@ void SceneObject::evaluatePropertyScripts() {
 
                     if (! state.layerName.empty()) {
                         m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-                        m_jsEngine->globalObject().setProperty("thisObject",
-                                                               state.thisObjectProxy);
+                        m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
                     }
                     QJSValue eventObj = m_jsEngine->newObject();
                     eventObj.setProperty("name", QString::fromStdString(evt.name));
@@ -4123,9 +4112,9 @@ void SceneObject::evaluatePropertyScripts() {
     // to `_scriptErrors` (stride 4: idx, message, line, stack) and drained
     // below.  Kind for each idx is known from `m_propertyScriptStates[idx].kind`.
     if (m_runAllPropertyScriptsFn.isCallable()) {
-        using Kind       = PropertyScriptState::Kind;
-        QJSValue out     = m_runAllPropertyScriptsFn.call();
-        int      total   = out.property("length").toInt();
+        using Kind     = PropertyScriptState::Kind;
+        QJSValue out   = m_runAllPropertyScriptsFn.call();
+        int      total = out.property("length").toInt();
         for (int i = 0; i < total; i += 4) {
             int idx = out.property(i).toInt();
             if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;

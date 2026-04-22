@@ -83,8 +83,7 @@ std::string Format(const std::vector<Snapshot>& snaps);
 // Convenience: Collect() + Format() + write to stderr with a [PROFILE] prefix.
 void DumpToStderr();
 
-class ScopedTimer
-{
+class ScopedTimer {
 public:
     explicit ScopedTimer(Entry* entry) noexcept
         : m_entry(entry), m_start(std::chrono::steady_clock::now()) {}
@@ -101,8 +100,8 @@ public:
     ScopedTimer& operator=(const ScopedTimer&) = delete;
 
 private:
-    Entry*                                         m_entry;
-    std::chrono::steady_clock::time_point          m_start;
+    Entry*                                m_entry;
+    std::chrono::steady_clock::time_point m_start;
 };
 
 } // namespace wallpaper::profiler
@@ -118,13 +117,11 @@ private:
 // Cache the Entry* in a function-local static so only the first call through
 // any given scope touches the registry mutex.  C++11 guarantees thread-safe
 // init of function-local statics.
-#    define WEK_PROFILE_SCOPE(name_literal)                                             \
-        static ::wallpaper::profiler::Entry* WEK_PROFILE_CONCAT(_wek_prof_entry_,       \
-                                                                __LINE__) =             \
-            ::wallpaper::profiler::GetEntry(name_literal);                              \
-        ::wallpaper::profiler::ScopedTimer WEK_PROFILE_CONCAT(_wek_prof_scope_,         \
-                                                              __LINE__) {               \
-            WEK_PROFILE_CONCAT(_wek_prof_entry_, __LINE__)                              \
+#    define WEK_PROFILE_SCOPE(name_literal)                                                   \
+        static ::wallpaper::profiler::Entry* WEK_PROFILE_CONCAT(_wek_prof_entry_, __LINE__) = \
+            ::wallpaper::profiler::GetEntry(name_literal);                                    \
+        ::wallpaper::profiler::ScopedTimer WEK_PROFILE_CONCAT(_wek_prof_scope_, __LINE__) {   \
+            WEK_PROFILE_CONCAT(_wek_prof_entry_, __LINE__)                                    \
         }
 
 #    define WEK_PROFILE_FUNCTION() WEK_PROFILE_SCOPE(__func__)

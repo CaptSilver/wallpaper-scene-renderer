@@ -115,9 +115,9 @@ struct VulkanRender::Impl {
     std::unique_ptr<StagingBuffer> m_vertex_buf { nullptr };
     std::unique_ptr<StagingBuffer> m_dyn_buf { nullptr };
 
-    vvk::CommandBuffers                                m_cmds;
-    vvk::CommandBuffer                                 m_upload_cmd;
-    std::array<vvk::CommandBuffer, kFramesInFlight>    m_render_cmds;
+    vvk::CommandBuffers                             m_cmds;
+    vvk::CommandBuffer                              m_upload_cmd;
+    std::array<vvk::CommandBuffer, kFramesInFlight> m_render_cmds;
 
     bool m_with_surface { false };
     bool m_inited { false };
@@ -126,9 +126,9 @@ struct VulkanRender::Impl {
     bool m_hdr_output { false };
     bool m_hdr_content { false };
 
-    std::unique_ptr<VulkanExSwapchain>                     m_ex_swapchain;
-    std::array<RenderingResources, kFramesInFlight>        m_rendering_resources;
-    uint64_t                                               m_frame_index { 0 };
+    std::unique_ptr<VulkanExSwapchain>              m_ex_swapchain;
+    std::array<RenderingResources, kFramesInFlight> m_rendering_resources;
+    uint64_t                                        m_frame_index { 0 };
 
     // Swapchain synchronization semaphores — one pair per in-flight slot.
     std::array<vvk::Semaphore, kFramesInFlight> m_sem_image_available;
@@ -892,10 +892,8 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr, vvk::Co
     if (m_with_surface && slot < kFramesInFlight) {
         VkSemaphoreCreateInfo sem_ci { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
                                        .pNext = nullptr };
-        VVK_CHECK_BOOL_RE(
-            m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available[slot]));
-        VVK_CHECK_BOOL_RE(
-            m_device->handle().CreateSemaphore(sem_ci, m_sem_render_finished[slot]));
+        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available[slot]));
+        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(sem_ci, m_sem_render_finished[slot]));
     }
 
     rr.vertex_buf = m_vertex_buf.get();
@@ -947,8 +945,7 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
             int        hits    = g_cache_hits;
             int        misses  = g_cache_misses;
             int        hidden  = g_invisible_skips;
-            double     hit_pct =
-                (hits + misses) > 0 ? 100.0 * hits / double(hits + misses) : 0.0;
+            double     hit_pct = (hits + misses) > 0 ? 100.0 * hits / double(hits + misses) : 0.0;
             LOG_INFO("DIAG t=%.0fs frame=%d avg=%.1fms max=%.1fms VMA=%.1fMB RSS=%.1fMB "
                      "cache=%d/%d (%.0f%% skip) hidden=%d",
                      elapsed_s,
@@ -964,9 +961,9 @@ void VulkanRender::Impl::drawFrame(Scene& scene) {
             g_cache_hits      = 0;
             g_cache_misses    = 0;
             g_invisible_skips = 0;
-            s_frame_sum_ms = 0;
-            s_frame_max_ms = 0;
-            s_frame_count  = 0;
+            s_frame_sum_ms    = 0;
+            s_frame_max_ms    = 0;
+            s_frame_count     = 0;
         }
     }
 

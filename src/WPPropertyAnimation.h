@@ -78,9 +78,7 @@ inline float EvaluatePropertyAnimation(const PropertyAnimation& anim, double tim
         t = (u <= period) ? u : (T - u);
         break;
     }
-    case PropertyAnimMode::Single:
-        t = std::clamp(time, 0.0, period);
-        break;
+    case PropertyAnimMode::Single: t = std::clamp(time, 0.0, period); break;
     }
 
     float frame = (float)(t * (double)anim.fps);

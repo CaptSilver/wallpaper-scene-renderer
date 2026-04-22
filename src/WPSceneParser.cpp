@@ -3282,22 +3282,28 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 LOG_ERROR("relink inject: rotation in chain for id=%d unsupported, "
                           "parent_r=(%.3f,%.3f,%.3f) group_r=(%.3f,%.3f,%.3f)",
                           gi.id,
-                          parent_r.x(), parent_r.y(), parent_r.z(),
-                          group_r.x(), group_r.y(), group_r.z());
+                          parent_r.x(),
+                          parent_r.y(),
+                          parent_r.z(),
+                          group_r.x(),
+                          group_r.y(),
+                          group_r.z());
             }
-            group_node->SetTranslate(
-                Eigen::Vector3f(parent_t.x() + parent_s.x() * group_t.x(),
-                                parent_t.y() + parent_s.y() * group_t.y(),
-                                parent_t.z() + parent_s.z() * group_t.z()));
-            group_node->SetScale(
-                Eigen::Vector3f(parent_s.x() * group_s.x(),
-                                parent_s.y() * group_s.y(),
-                                parent_s.z() * group_s.z()));
+            group_node->SetTranslate(Eigen::Vector3f(parent_t.x() + parent_s.x() * group_t.x(),
+                                                     parent_t.y() + parent_s.y() * group_t.y(),
+                                                     parent_t.z() + parent_s.z() * group_t.z()));
+            group_node->SetScale(Eigen::Vector3f(parent_s.x() * group_s.x(),
+                                                 parent_s.y() * group_s.y(),
+                                                 parent_s.z() * group_s.z()));
             LOG_INFO("relink inject: id=%d parent=%d effect-reset; composed "
                      "local=(scale %.4g×%.4g×%.4g, origin %.2f,%.2f,%.2f)",
-                     gi.id, gi.parent_id,
-                     group_node->Scale().x(), group_node->Scale().y(), group_node->Scale().z(),
-                     group_node->Translate().x(), group_node->Translate().y(),
+                     gi.id,
+                     gi.parent_id,
+                     group_node->Scale().x(),
+                     group_node->Scale().y(),
+                     group_node->Scale().z(),
+                     group_node->Translate().x(),
+                     group_node->Translate().y(),
                      group_node->Translate().z());
         }
 
@@ -3309,7 +3315,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         parent_node->AppendChild(group_node);
         group_node->SetParent(parent_node.get());
         LOG_INFO("relinked deferred group id=%d → parent %d (was orphaned at scene root)",
-                 gi.id, gi.parent_id);
+                 gi.id,
+                 gi.parent_id);
     }
 
     // Recompute original_world_transforms for groups whose links were deferred.
@@ -3482,22 +3489,25 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         if (obj.contains("name") && obj.at("name").is_string())
             layerName = obj.at("name").get<std::string>();
 
-        wek::extractPropertyScriptsFromHost(
-            id, layerName, obj,
-            ScenePropertyScript::Attachment::Object, -1,
-            context.scene->propertyScripts);
+        wek::extractPropertyScriptsFromHost(id,
+                                            layerName,
+                                            obj,
+                                            ScenePropertyScript::Attachment::Object,
+                                            -1,
+                                            context.scene->propertyScripts);
 
         // Particle instance-override scripts (e.g. NieR:Automata's audio-
         // reactive emission-rate modulation on the starfield particles).
-        wek::extractParticleInstanceOverrideScripts(
-            id, layerName, obj,
-            ScenePropertyScript::Attachment::Object, -1,
-            context.scene->propertyScripts);
+        wek::extractParticleInstanceOverrideScripts(id,
+                                                    layerName,
+                                                    obj,
+                                                    ScenePropertyScript::Attachment::Object,
+                                                    -1,
+                                                    context.scene->propertyScripts);
 
         // Per-animation-layer scripts (puppet rigs).  Used by Lucy
         // (3521337568) to offset start frames per rigged animation track.
-        wek::extractAnimationLayerScripts(
-            id, layerName, obj, context.scene->propertyScripts);
+        wek::extractAnimationLayerScripts(id, layerName, obj, context.scene->propertyScripts);
     }
 
     // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
@@ -3505,9 +3515,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // plays, so the track title hovers on screen long after the player
     // fades.  Strip the exception gate so all player layers fade together.
     for (auto& sps : context.scene->propertyScripts) {
-        const std::string needle =
-            "playerExceptions.indexOf(element)==-1 || !shared.songplays";
-        auto pos = sps.script.find(needle);
+        const std::string needle = "playerExceptions.indexOf(element)==-1 || !shared.songplays";
+        auto              pos    = sps.script.find(needle);
         if (pos != std::string::npos) {
             sps.script.replace(pos, needle.size(), "true");
             LOG_INFO("Patched player-fader alpha script: dropped exception gate "

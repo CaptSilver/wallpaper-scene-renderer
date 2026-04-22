@@ -237,29 +237,35 @@ private:
         // the same [xe, N) scalar code path — we only need a distinct Kind
         // so the C++ switch routes the value to updateParticleRate instead
         // of updateNodeAlpha.
-        enum class Kind : uint8_t { Visible = 0, Vec3 = 1, Alpha = 2, ParticleRate = 3 };
-        int32_t              id;
-        std::string          property;
-        std::string          layerName;
-        Kind                 kind { Kind::Vec3 };
-        QJSValue             updateFn;
-        QJSValue             initFn;
-        QJSValue             cursorClickFn; // optional cursorClick handler from IIFE
-        QJSValue             cursorEnterFn;
-        QJSValue             cursorLeaveFn;
-        QJSValue             cursorDownFn;
-        QJSValue             cursorUpFn;
-        QJSValue             cursorMoveFn;
-        QJSValue             applyUserPropertiesFn; // optional applyUserProperties handler
-        QJSValue             destroyFn;             // optional destroy handler
-        QJSValue             resizeScreenFn;        // optional resizeScreen handler
-        QJSValue             mediaPlaybackChangedFn;
-        QJSValue             mediaPropertiesChangedFn;
-        QJSValue             mediaThumbnailChangedFn;
-        QJSValue             mediaTimelineChangedFn;
-        QJSValue             mediaStatusChangedFn;
-        QJSValue             animationEventFn; // optional animationEvent(event,value) handler
-        QJSValue             thisLayerProxy;   // cached layer proxy (avoids evaluate per frame)
+        enum class Kind : uint8_t
+        {
+            Visible      = 0,
+            Vec3         = 1,
+            Alpha        = 2,
+            ParticleRate = 3
+        };
+        int32_t     id;
+        std::string property;
+        std::string layerName;
+        Kind        kind { Kind::Vec3 };
+        QJSValue    updateFn;
+        QJSValue    initFn;
+        QJSValue    cursorClickFn; // optional cursorClick handler from IIFE
+        QJSValue    cursorEnterFn;
+        QJSValue    cursorLeaveFn;
+        QJSValue    cursorDownFn;
+        QJSValue    cursorUpFn;
+        QJSValue    cursorMoveFn;
+        QJSValue    applyUserPropertiesFn; // optional applyUserProperties handler
+        QJSValue    destroyFn;             // optional destroy handler
+        QJSValue    resizeScreenFn;        // optional resizeScreen handler
+        QJSValue    mediaPlaybackChangedFn;
+        QJSValue    mediaPropertiesChangedFn;
+        QJSValue    mediaThumbnailChangedFn;
+        QJSValue    mediaTimelineChangedFn;
+        QJSValue    mediaStatusChangedFn;
+        QJSValue    animationEventFn; // optional animationEvent(event,value) handler
+        QJSValue    thisLayerProxy;   // cached layer proxy (avoids evaluate per frame)
         // Per-call thisObject proxy.  For Object-attached scripts this is
         // equivalent to thisLayerProxy; for AnimationLayer-attached scripts
         // (e.g. Lucy's per-rig offset scripts on /objects[N]/animationlayers[M])
@@ -321,8 +327,8 @@ private:
     QJSValue                                 m_hasSceneListenersFn;
     // Batched property-script dispatch — see `_runAllPropertyScripts` in
     // SceneBackend.cpp.  One C++->JS call per tick instead of N.
-    QJSValue                                 m_runAllPropertyScriptsFn;
-    void fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
+    QJSValue m_runAllPropertyScriptsFn;
+    void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {

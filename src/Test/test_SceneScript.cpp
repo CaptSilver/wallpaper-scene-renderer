@@ -2542,7 +2542,7 @@ TEST_SUITE("createScriptProperties") {
         // Matches production: no hardcoded "0 0 0" default — scripts are
         // expected to supply their own starting colour.
         ScriptEnv env;
-        QJSValue v =
+        QJSValue  v =
             env.engine.evaluate("createScriptProperties().addColor({name:'cl'}).finish().cl");
         CHECK((v.isUndefined() || v.isNull()));
     }
@@ -2615,26 +2615,24 @@ TEST_SUITE("createScriptProperties") {
 
     TEST_CASE("onChange fires on value change with new value") {
         ScriptEnv env;
-        env.engine.evaluate(
-            "var lastVal = null;\n"
-            "var p = createScriptProperties()\n"
-            "  .addCheckbox({name:'a', value:false,\n"
-            "                onChange:function(v){ lastVal = v; }})\n"
-            "  .finish();\n"
-            "p.a = true;\n");
+        env.engine.evaluate("var lastVal = null;\n"
+                            "var p = createScriptProperties()\n"
+                            "  .addCheckbox({name:'a', value:false,\n"
+                            "                onChange:function(v){ lastVal = v; }})\n"
+                            "  .finish();\n"
+                            "p.a = true;\n");
         CHECK(env.engine.evaluate("lastVal").toBool() == true);
         CHECK(env.engine.evaluate("p.a").toBool() == true);
     }
 
     TEST_CASE("onChange `this` binds to the builder") {
         ScriptEnv env;
-        env.engine.evaluate(
-            "var sameObj = null;\n"
-            "var p = createScriptProperties()\n"
-            "  .addSlider({name:'x', value:1,\n"
-            "              onChange:function(){ sameObj = (this === p); }})\n"
-            "  .finish();\n"
-            "p.x = 2;\n");
+        env.engine.evaluate("var sameObj = null;\n"
+                            "var p = createScriptProperties()\n"
+                            "  .addSlider({name:'x', value:1,\n"
+                            "              onChange:function(){ sameObj = (this === p); }})\n"
+                            "  .finish();\n"
+                            "p.x = 2;\n");
         CHECK(env.engine.evaluate("sameObj").toBool());
     }
 
@@ -2648,8 +2646,8 @@ TEST_SUITE("createScriptProperties") {
                             "  .addCheckbox({name:'a', value:false,\n"
                             "                onChange:function(){ calls++; }})\n"
                             "  .finish();\n"
-                            "p.a = false;\n"       // same value — suppressed
-                            "p.a = false;\n");      // same value — suppressed
+                            "p.a = false;\n"   // same value — suppressed
+                            "p.a = false;\n"); // same value — suppressed
         CHECK(env.engine.evaluate("calls").toInt() == 0);
     }
 
@@ -2685,12 +2683,11 @@ TEST_SUITE("createScriptProperties") {
         // being updated — scripts should be able to recover on the next
         // assignment.
         ScriptEnv env;
-        env.engine.evaluate(
-            "var p = createScriptProperties()\n"
-            "  .addSlider({name:'x', value:0,\n"
-            "              onChange:function(){ throw new Error('boom'); }})\n"
-            "  .finish();\n"
-            "p.x = 5;\n");
+        env.engine.evaluate("var p = createScriptProperties()\n"
+                            "  .addSlider({name:'x', value:0,\n"
+                            "              onChange:function(){ throw new Error('boom'); }})\n"
+                            "  .finish();\n"
+                            "p.x = 5;\n");
         CHECK(env.engine.evaluate("p.x").toNumber() == 5);
     }
 
@@ -2698,11 +2695,10 @@ TEST_SUITE("createScriptProperties") {
         // Regression: the getter/setter path must still work for props
         // that don't supply onChange.
         ScriptEnv env;
-        env.engine.evaluate(
-            "var p = createScriptProperties()\n"
-            "  .addSlider({name:'q', value:3})\n"
-            "  .finish();\n"
-            "p.q = 10;\n");
+        env.engine.evaluate("var p = createScriptProperties()\n"
+                            "  .addSlider({name:'q', value:3})\n"
+                            "  .finish();\n"
+                            "p.q = 10;\n");
         CHECK(env.engine.evaluate("p.q").toNumber() == 10);
     }
 
@@ -2821,8 +2817,8 @@ TEST_SUITE("Layer Proxy") {
 
     TEST_CASE("originalAngles reflects parse-time value") {
         ScriptEnv env;
-        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalAngles.z").toNumber()
-              == doctest::Approx(45));
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalAngles.z").toNumber() ==
+              doctest::Approx(45));
     }
 
     TEST_CASE("originalOrigin is frozen when origin is mutated") {
@@ -2841,8 +2837,8 @@ TEST_SUITE("Layer Proxy") {
         ScriptEnv env;
         env.engine.evaluate("var a = thisScene.getLayer('bg').originalOrigin;\n"
                             "a.x = -999;\n");
-        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalOrigin.x").toNumber()
-              == doctest::Approx(100));
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').originalOrigin.x").toNumber() ==
+              doctest::Approx(100));
     }
 
     TEST_CASE("originalOrigin setter is a no-op (read-only)") {
@@ -2857,8 +2853,8 @@ TEST_SUITE("Layer Proxy") {
         //   thisLayer.origin = thisLayer.originalOrigin;
         ScriptEnv env;
         env.engine.evaluate("var l = thisScene.getLayer('bg');\n"
-                            "l.origin = Vec3(555, 666, 7);\n"       // user dragged
-                            "l.origin = l.originalOrigin;\n");       // reset
+                            "l.origin = Vec3(555, 666, 7);\n"  // user dragged
+                            "l.origin = l.originalOrigin;\n"); // reset
         QJSValue v = env.engine.evaluate("thisScene.getLayer('bg').origin");
         checkVec3(v, 100, 200, 0);
     }
@@ -4194,10 +4190,9 @@ TEST_SUITE("Script Compilation") {
     // each script's IIFE so it doesn't bleed across scripts.
     TEST_CASE("overlayScriptProps exposes scriptProperties via thisLayer") {
         ScriptEnv env;
-        env.engine.evaluate(
-            "var _sp = { debug: true, speed: 99, label: 'hi' };\n"
-            "var _rl = { origin: 'real-origin' };\n"
-            "var tl = _overlayScriptProps(_rl, _sp);\n");
+        env.engine.evaluate("var _sp = { debug: true, speed: 99, label: 'hi' };\n"
+                            "var _rl = { origin: 'real-origin' };\n"
+                            "var tl = _overlayScriptProps(_rl, _sp);\n");
         CHECK(env.engine.evaluate("tl.debug").toBool() == true);
         CHECK(env.engine.evaluate("tl.speed").toInt() == 99);
         CHECK(env.engine.evaluate("tl.label").toString() == "hi");
@@ -4225,16 +4220,15 @@ TEST_SUITE("Script Compilation") {
         // proxy — a plain object with an accessor property for `origin` that
         // records the latest write on a captured closure variable.
         ScriptEnv env;
-        env.engine.evaluate(
-            "var captured = null;\n"
-            "var realLayer = {};\n"
-            "Object.defineProperty(realLayer, 'origin', {\n"
-            "  get: function(){ return captured; },\n"
-            "  set: function(v){ captured = v; }\n"
-            "});\n"
-            "var sp = { debug: false };\n"
-            "var tl = _overlayScriptProps(realLayer, sp);\n"
-            "tl.origin = 'written-through';\n");
+        env.engine.evaluate("var captured = null;\n"
+                            "var realLayer = {};\n"
+                            "Object.defineProperty(realLayer, 'origin', {\n"
+                            "  get: function(){ return captured; },\n"
+                            "  set: function(v){ captured = v; }\n"
+                            "});\n"
+                            "var sp = { debug: false };\n"
+                            "var tl = _overlayScriptProps(realLayer, sp);\n"
+                            "tl.origin = 'written-through';\n");
         CHECK(env.engine.evaluate("captured").toString() == "written-through");
         CHECK(env.engine.evaluate("realLayer.origin").toString() == "written-through");
         // scriptProperty still overlays
@@ -4271,20 +4265,19 @@ TEST_SUITE("Script Compilation") {
         // otherwise shared-layer scenes (many wallpapers put several
         // property scripts on the same container node) would read garbage.
         ScriptEnv env;
-        env.engine.evaluate(
-            "var realLayer = { name: 'shared' };\n"
-            "var a = (function(_tlo){\n"
-            "  var thisLayer = _tlo;\n"
-            "  var scriptProperties = { debug: 'A' };\n"
-            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-            "  return thisLayer.debug;\n"
-            "})(realLayer);\n"
-            "var b = (function(_tlo){\n"
-            "  var thisLayer = _tlo;\n"
-            "  var scriptProperties = { debug: 'B' };\n"
-            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-            "  return thisLayer.debug;\n"
-            "})(realLayer);\n");
+        env.engine.evaluate("var realLayer = { name: 'shared' };\n"
+                            "var a = (function(_tlo){\n"
+                            "  var thisLayer = _tlo;\n"
+                            "  var scriptProperties = { debug: 'A' };\n"
+                            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                            "  return thisLayer.debug;\n"
+                            "})(realLayer);\n"
+                            "var b = (function(_tlo){\n"
+                            "  var thisLayer = _tlo;\n"
+                            "  var scriptProperties = { debug: 'B' };\n"
+                            "  thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                            "  return thisLayer.debug;\n"
+                            "})(realLayer);\n");
         CHECK(env.engine.evaluate("a").toString() == "A");
         CHECK(env.engine.evaluate("b").toString() == "B");
         // Global thisLayer — and the shared realLayer — must not be polluted
@@ -4423,18 +4416,17 @@ TEST_SUITE("Script Compilation") {
 
     TEST_CASE("openUserShortcut shim ignores empty / non-string inputs") {
         ScriptEnv env;
-        env.engine.evaluate(
-            "var _count = 0;\n"
-            "var __sceneBridge = { openUserShortcut: function(n) { _count++; } };\n"
-            "engine.openUserShortcut = function(name) {\n"
-            "  if (typeof name !== 'string' || !name) return;\n"
-            "  __sceneBridge.openUserShortcut(name);\n"
-            "};\n"
-            "engine.openUserShortcut();\n"
-            "engine.openUserShortcut('');\n"
-            "engine.openUserShortcut(null);\n"
-            "engine.openUserShortcut(42);\n"
-            "engine.openUserShortcut({name: 'bplay'});\n");
+        env.engine.evaluate("var _count = 0;\n"
+                            "var __sceneBridge = { openUserShortcut: function(n) { _count++; } };\n"
+                            "engine.openUserShortcut = function(name) {\n"
+                            "  if (typeof name !== 'string' || !name) return;\n"
+                            "  __sceneBridge.openUserShortcut(name);\n"
+                            "};\n"
+                            "engine.openUserShortcut();\n"
+                            "engine.openUserShortcut('');\n"
+                            "engine.openUserShortcut(null);\n"
+                            "engine.openUserShortcut(42);\n"
+                            "engine.openUserShortcut({name: 'bplay'});\n");
         CHECK(env.engine.evaluate("_count").toInt() == 0);
     }
 
@@ -4443,18 +4435,18 @@ TEST_SUITE("Script Compilation") {
         // bogus truthy value from a script bug) must not write to GLOBAL
         // by accident — treat unknown as SCREEN (per-scene, scoped).
         ScriptEnv env;
-        env.engine.evaluate(
-            "var _lastLoc = -1;\n"
-            "var __sceneBridge = {\n"
-            "  lsGet: function() { return null; },\n"
-            "  lsSet: function(loc, key, v) { _lastLoc = loc; },\n"
-            "  lsRemove: function() {}, lsClear: function() {}\n"
-            "};\n"
-            "function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
-            "var localStorage = { set: function(k, v, l) { __sceneBridge.lsSet(_loc(l), k, v); } };\n"
-            "localStorage.set('a', 1, 9);\n"
-            "localStorage.set('b', 2, 'GLOBAL');\n"
-            "localStorage.set('c', 3, -1);\n");
+        env.engine.evaluate("var _lastLoc = -1;\n"
+                            "var __sceneBridge = {\n"
+                            "  lsGet: function() { return null; },\n"
+                            "  lsSet: function(loc, key, v) { _lastLoc = loc; },\n"
+                            "  lsRemove: function() {}, lsClear: function() {}\n"
+                            "};\n"
+                            "function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
+                            "var localStorage = { set: function(k, v, l) { "
+                            "__sceneBridge.lsSet(_loc(l), k, v); } };\n"
+                            "localStorage.set('a', 1, 9);\n"
+                            "localStorage.set('b', 2, 'GLOBAL');\n"
+                            "localStorage.set('c', 3, -1);\n");
         // All three clamped to SCREEN (1), never leaked to GLOBAL (0)
         CHECK(env.engine.evaluate("_lastLoc").toInt() == 1);
     }
@@ -5529,7 +5521,8 @@ TEST_SUITE("Hover-leave debounce") {
 // ------------------------------------------------------------------
 #include "PropertyScriptDispatchJs.hpp"
 
-namespace {
+namespace
+{
 // Bootstraps the minimal JS globals needed to evaluate the dispatch loop:
 // a Vec3 factory and the tables/partition markers the loop consults.
 static void setupDispatchEngine(QJSEngine& engine) {
@@ -5541,9 +5534,8 @@ static void setupDispatchEngine(QJSEngine& engine) {
 // Pushes a single Vec3-kind script entry (index 0) whose update fn evaluates
 // the given JS expression string.  `initial` is the starting (cx,cy,cz).
 // The entry has valid=true, hasLayer=false so thisLayer is untouched.
-static QJSValue pushVec3Script(QJSEngine&  engine,
-                               const char* fnBody,
-                               double cx = 0, double cy = 0, double cz = 0) {
+static QJSValue pushVec3Script(QJSEngine& engine, const char* fnBody, double cx = 0, double cy = 0,
+                               double cz = 0) {
     QJSValue entry = engine.newObject();
     entry.setProperty("kind", 1);
     entry.setProperty("fn", engine.evaluate(QString("(function(v) { %1 })").arg(fnBody)));
@@ -5572,7 +5564,7 @@ TEST_SUITE("PropertyScriptDispatch — Vec3 scalar broadcast") {
         QJSValue out = engine.evaluate("_runAllPropertyScripts()");
         REQUIRE(out.isArray());
         CHECK(out.property("length").toInt() == 4);
-        CHECK(out.property(0).toInt() == 0);                      // script idx
+        CHECK(out.property(0).toInt() == 0);                       // script idx
         CHECK(out.property(1).toNumber() == doctest::Approx(1.5)); // x
         CHECK(out.property(2).toNumber() == doctest::Approx(1.5)); // y (broadcast)
         CHECK(out.property(3).toNumber() == doctest::Approx(1.5)); // z (broadcast)
@@ -5643,9 +5635,8 @@ TEST_SUITE("PropertyScriptDispatch — Vec3 scalar broadcast") {
         QJSEngine engine;
         setupDispatchEngine(engine);
         engine.evaluate("var targetScale = 1.1; var speed = 20; var frametime = 0.016;");
-        pushVec3Script(engine,
-                       "return v.x + (targetScale - v.x) * speed * frametime;",
-                       1.0, 1.0, 1.0);
+        pushVec3Script(
+            engine, "return v.x + (targetScale - v.x) * speed * frametime;", 1.0, 1.0, 1.0);
 
         QJSValue out = engine.evaluate("_runAllPropertyScripts()");
         CHECK(out.property("length").toInt() == 4);
@@ -5708,13 +5699,14 @@ TEST_SUITE("PropertyScriptDispatch — thisObject rebind") {
         entry.setProperty("kind", 1);
         entry.setProperty(
             "fn",
-            engine.evaluate("(function(v) {\n"
-                            "  _seenLayer = thisLayer;\n"
-                            "  _seenObject = thisObject;\n"
-                            "  // NSL-style: offsetedStartAni(thisObject.getAnimation() || thisObject,...)\n"
-                            "  thisObject.setFrame(thisObject.frameCount * 0.5);\n"
-                            "  return v;\n"
-                            "})"));
+            engine.evaluate(
+                "(function(v) {\n"
+                "  _seenLayer = thisLayer;\n"
+                "  _seenObject = thisObject;\n"
+                "  // NSL-style: offsetedStartAni(thisObject.getAnimation() || thisObject,...)\n"
+                "  thisObject.setFrame(thisObject.frameCount * 0.5);\n"
+                "  return v;\n"
+                "})"));
         entry.setProperty("proxy", engine.evaluate("_fakeLayer"));
         entry.setProperty("obj", engine.evaluate("_fakeRig"));
         entry.setProperty("hasLayer", true);
@@ -5742,15 +5734,14 @@ TEST_SUITE("PropertyScriptDispatch — thisObject rebind") {
         // rig lands _frame = 15 on the rig, not the layer.
         QJSEngine engine;
         setupDispatchEngine(engine);
-        engine.evaluate(
-            "var _fakeLayer = { _kind: 'layer' };\n"
-            "var _fakeRig   = { frameCount: 60, _frame: 0, _playing: false,\n"
-            "  play: function(){ this._playing = true; },\n"
-            "  setFrame: function(f){ this._frame = f; } };\n"
-            "function offsetedStartAni(ani, pct) {\n"
-            "  ani.play();\n"
-            "  ani.setFrame(ani.frameCount * pct);\n"
-            "}\n");
+        engine.evaluate("var _fakeLayer = { _kind: 'layer' };\n"
+                        "var _fakeRig   = { frameCount: 60, _frame: 0, _playing: false,\n"
+                        "  play: function(){ this._playing = true; },\n"
+                        "  setFrame: function(f){ this._frame = f; } };\n"
+                        "function offsetedStartAni(ani, pct) {\n"
+                        "  ani.play();\n"
+                        "  ani.setFrame(ani.frameCount * pct);\n"
+                        "}\n");
         QJSValue entry = engine.newObject();
         entry.setProperty("kind", 1);
         entry.setProperty("fn",
@@ -5813,9 +5804,10 @@ TEST_SUITE("Vec4") {
     TEST_CASE("add / subtract / multiply / divide") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
-        CHECK(engine.evaluate("Vec4(1,2,3,4).add(Vec4(1,1,1,1)).toString()").toString() == "2 3 4 5");
-        CHECK(engine.evaluate("Vec4(5,5,5,5).subtract(Vec4(1,2,3,4)).toString()").toString()
-              == "4 3 2 1");
+        CHECK(engine.evaluate("Vec4(1,2,3,4).add(Vec4(1,1,1,1)).toString()").toString() ==
+              "2 3 4 5");
+        CHECK(engine.evaluate("Vec4(5,5,5,5).subtract(Vec4(1,2,3,4)).toString()").toString() ==
+              "4 3 2 1");
         CHECK(engine.evaluate("Vec4(1,2,3,4).multiply(2).toString()").toString() == "2 4 6 8");
         CHECK(engine.evaluate("Vec4(2,4,6,8).divide(2).toString()").toString() == "1 2 3 4");
     }
@@ -5839,10 +5831,10 @@ TEST_SUITE("Vec4") {
     TEST_CASE("lerp / mix") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
-        CHECK(engine.evaluate("Vec4(0,0,0,0).lerp(Vec4(10,20,30,40), 0.5).toString()").toString()
-              == "5 10 15 20");
-        CHECK(engine.evaluate("Vec4.lerp(Vec4(0,0,0,0), Vec4(10,10,10,10), 0.25).toString()").toString()
-              == "2.5 2.5 2.5 2.5");
+        CHECK(engine.evaluate("Vec4(0,0,0,0).lerp(Vec4(10,20,30,40), 0.5).toString()").toString() ==
+              "5 10 15 20");
+        CHECK(engine.evaluate("Vec4.lerp(Vec4(0,0,0,0), Vec4(10,10,10,10), 0.25).toString()")
+                  .toString() == "2.5 2.5 2.5 2.5");
     }
 
     TEST_CASE("equals") {
@@ -5918,8 +5910,7 @@ TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
         // derived from external state (here just a global).  Using the
         // global lets us verify that per-tick changes propagate.
         engine.evaluate("var _audioEnv = 0.1;");
-        entry.setProperty("fn",
-                          engine.evaluate("(function(v) { return _audioEnv; })"));
+        entry.setProperty("fn", engine.evaluate("(function(v) { return _audioEnv; })"));
         entry.setProperty("proxy", QJSValue(QJSValue::NullValue));
         entry.setProperty("hasLayer", false);
         entry.setProperty("valid", true);
@@ -5960,13 +5951,12 @@ TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
         // the test can drive the audio side deterministically.
         QJSEngine engine;
         setupDispatchEngine(engine);
-        engine.evaluate(
-            "var _buf = { average: [0] };\n"
-            "var engine = {\n"
-            "  registerAudioBuffers: function(n) { return _buf; },\n"
-            "  frametime: 0.016\n"
-            "};\n"
-            "function Math_min(a,b){return a<b?a:b;}\n");
+        engine.evaluate("var _buf = { average: [0] };\n"
+                        "var engine = {\n"
+                        "  registerAudioBuffers: function(n) { return _buf; },\n"
+                        "  frametime: 0.016\n"
+                        "};\n"
+                        "function Math_min(a,b){return a<b?a:b;}\n");
         // The stock template with `export` stripped.  Wrapped in an IIFE
         // that returns {init, update}, mimicking the production shim.
         QJSValue mod = engine.evaluate(
@@ -6013,4 +6003,3 @@ TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
         CHECK(rN == doctest::Approx(0.1).epsilon(0.01));
     }
 } // TEST_SUITE instanceoverride.rate scalar
-

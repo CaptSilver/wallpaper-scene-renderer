@@ -381,7 +381,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     // write is invisible to the render graph's safety
                     // analysis, so any pass that samples this texture must
                     // re-execute each frame (can't be cached).
-                    m_samples_mutable_texture = true;
+                    m_samples_mutable_texture  = true;
                     VideoTextureInfo* existing = nullptr;
                     for (auto& vt : scene.videoTextures)
                         if (vt.textureKey == tex_name) {

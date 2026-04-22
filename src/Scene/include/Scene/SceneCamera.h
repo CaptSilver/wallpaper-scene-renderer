@@ -87,9 +87,9 @@ public:
         m_perspective = cam.m_perspective;
     }
 
-    void LoadPaths(std::vector<CameraPath> paths);
-    void AdvanceTime(double dt);
-    bool HasPaths() const { return !m_paths.empty(); }
+    void                           LoadPaths(std::vector<CameraPath> paths);
+    void                           AdvanceTime(double dt);
+    bool                           HasPaths() const { return ! m_paths.empty(); }
     const std::vector<CameraPath>& GetPaths() const { return m_paths; }
 
     // Camera fade: crossfade between consecutive camera paths

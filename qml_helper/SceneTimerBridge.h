@@ -8,7 +8,8 @@
 #include <functional>
 #include <unordered_map>
 
-namespace scenebackend {
+namespace scenebackend
+{
 
 /// Provides setTimeout/setInterval/clearTimeout/clearInterval to QJSEngine.
 /// Each timer is backed by a real QTimer for accurate wall-clock timing.
@@ -26,21 +27,21 @@ public:
     ~SceneTimerBridge() override { clearAll(); }
 
     Q_INVOKABLE int createTimer(QJSValue callback, int delay, bool repeat) {
-        int id = m_nextId++;
+        int   id    = m_nextId++;
         auto* timer = new QTimer(this);
-        timer->setSingleShot(!repeat);
+        timer->setSingleShot(! repeat);
         timer->setInterval(std::max(delay, 1));
         m_timers[id] = { timer, std::move(callback) };
 
         connect(timer, &QTimer::timeout, this, [this, id]() {
             auto it = m_timers.find(id);
             if (it == m_timers.end()) return;
-            bool error = false;
+            bool    error = false;
             QString errorMsg;
             if (it->second.callback.isCallable()) {
                 QJSValue r = it->second.callback.call();
                 if (r.isError()) {
-                    error = true;
+                    error    = true;
                     errorMsg = r.toString();
                 }
             }

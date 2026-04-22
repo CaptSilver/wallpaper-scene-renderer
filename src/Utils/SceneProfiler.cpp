@@ -14,12 +14,12 @@ namespace
 {
 
 struct Registry {
-    std::mutex                                  mutex;
-    std::unordered_map<const char*, Entry*>     by_ptr;
+    std::mutex                              mutex;
+    std::unordered_map<const char*, Entry*> by_ptr;
     // Stable storage — Entry addresses are stable across rehashes because we
     // heap-allocate and the map only holds pointers.  We keep a vector of
     // owned entries so Dump can iterate without re-reading the map.
-    std::vector<std::unique_ptr<Entry>>         owned;
+    std::vector<std::unique_ptr<Entry>> owned;
 };
 
 Registry& registry() {
@@ -38,9 +38,9 @@ Entry* GetEntry(const char* name) {
     auto                        it = r.by_ptr.find(name);
     if (it != r.by_ptr.end()) return it->second;
 
-    auto   owned_entry = std::make_unique<Entry>();
-    owned_entry->name  = name;
-    Entry* raw         = owned_entry.get();
+    auto owned_entry  = std::make_unique<Entry>();
+    owned_entry->name = name;
+    Entry* raw        = owned_entry.get();
     r.owned.push_back(std::move(owned_entry));
     r.by_ptr.emplace(name, raw);
     return raw;

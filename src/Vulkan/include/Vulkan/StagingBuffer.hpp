@@ -34,8 +34,7 @@ public:
     // picks which staging writeToBuf / recordUpload operate on.  init-only
     // writes (prepare-time defaults + zero-fill) must go to writeToBufAllSlots
     // / fillBuf so they survive slot switches.
-    StagingBuffer(const Device&, VkDeviceSize size, VkBufferUsageFlags,
-                  size_t slot_count = 1);
+    StagingBuffer(const Device&, VkDeviceSize size, VkBufferUsageFlags, size_t slot_count = 1);
     ~StagingBuffer();
 
     bool allocate();

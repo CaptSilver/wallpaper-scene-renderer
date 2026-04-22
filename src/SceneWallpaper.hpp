@@ -37,7 +37,8 @@ struct PropertyScriptInfo {
     // Where the script is attached.  Object-attached scripts bind thisObject
     // to thisLayer; AnimationLayer-attached scripts bind thisObject to the
     // specific rig layer (Lucy puppet offset scripts rely on this).
-    enum class Attachment : uint8_t {
+    enum class Attachment : uint8_t
+    {
         Object         = 0,
         AnimationLayer = 1,
     };

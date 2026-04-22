@@ -127,8 +127,7 @@ bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
         m_stage_bufs[s].handle.UnMapMemory();
         m_stage_bufs[s].handle = nullptr;
 
-        if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, m_stage_bufs[s]))
-            return false;
+        if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, m_stage_bufs[s])) return false;
         VVK_CHECK_BOOL_RE(mapStageBuf(s));
         memcpy(m_stage_raws[s], tmp.data(), newsize);
     }

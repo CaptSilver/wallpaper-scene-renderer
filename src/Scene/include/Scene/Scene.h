@@ -78,9 +78,10 @@ struct ScenePropertyScript {
     // scripts — used by puppet wallpapers like Lucy (3521337568) to offset
     // their rigged animation layers at init — must bind thisObject to the
     // specific animation-layer proxy so setFrame/play land on it.
-    enum class Attachment : uint8_t {
-        Object          = 0,
-        AnimationLayer  = 1,
+    enum class Attachment : uint8_t
+    {
+        Object         = 0,
+        AnimationLayer = 1,
     };
 
     i32                  id;
@@ -242,12 +243,12 @@ public:
         std::vector<VolumeKeyframe> keyframes;
     };
     struct SoundVolumeScript {
-        std::string        script;
-        std::string        scriptProperties;
-        std::string        layerName;              // sound layer name for thisLayer binding
-        float              initialVolume { 1.0f };
-        void*              streamPtr { nullptr }; // WPSoundStream* (type-erased)
-        bool               hasAnimation { false };
+        std::string         script;
+        std::string         scriptProperties;
+        std::string         layerName; // sound layer name for thisLayer binding
+        float               initialVolume { 1.0f };
+        void*               streamPtr { nullptr }; // WPSoundStream* (type-erased)
+        bool                hasAnimation { false };
         VolumeAnimationData animation;
     };
     std::vector<SoundVolumeScript> soundVolumeScripts;

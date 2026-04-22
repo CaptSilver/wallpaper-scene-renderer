@@ -42,18 +42,18 @@ public:
 
     BoundedData& GetBoundedData();
 
-    void                                 InitTrails(u32 trail_capacity, float trail_max_age = 0.0f);
-    std::vector<ParticleTrailHistory>&   TrailHistories();
-    u32                                  TrailCapacity() const;
+    void                               InitTrails(u32 trail_capacity, float trail_max_age = 0.0f);
+    std::vector<ParticleTrailHistory>& TrailHistories();
+    u32                                TrailCapacity() const;
 
 private:
-    bool                               m_is_death { false };
-    bool                               m_no_live_particle { false };
-    std::vector<Particle>              m_particles;
-    BoundedData                        m_bounded_data;
-    std::vector<ParticleTrailHistory>  m_trail_histories;
-    u32                                m_trail_capacity { 0 };
-    float                              m_trail_max_age { 0.0f };
+    bool                              m_is_death { false };
+    bool                              m_no_live_particle { false };
+    std::vector<Particle>             m_particles;
+    BoundedData                       m_bounded_data;
+    std::vector<ParticleTrailHistory> m_trail_histories;
+    u32                               m_trail_capacity { 0 };
+    float                             m_trail_max_age { 0.0f };
 };
 
 class ParticleSubSystem : NoCopy, NoMove {
@@ -94,7 +94,7 @@ public:
     // Emitt() on the render thread reads it.  Defaults to 1.0 → no effect
     // when no script is driving it.  Atomic because render and script
     // threads are separate.
-    void SetDynamicRateMultiplier(double m) { m_dynamic_rate_multiplier.store(m); }
+    void   SetDynamicRateMultiplier(double m) { m_dynamic_rate_multiplier.store(m); }
     double DynamicRateMultiplier() const { return m_dynamic_rate_multiplier.load(); }
 
     ParticleInstance* QueryNewInstance();
@@ -148,8 +148,8 @@ private:
     // Tracks burst-FX completion for the dynamic-asset pool.  Set true by
     // Emitt() when the subsystem has had at least one live particle since
     // the last Reset() but currently has none.
-    bool  m_burst_done { false };
-    bool  m_any_alive_since_reset { false };
+    bool m_burst_done { false };
+    bool m_any_alive_since_reset { false };
 
     // Scripted rate override — see SetDynamicRateMultiplier.
     std::atomic<double> m_dynamic_rate_multiplier { 1.0 };

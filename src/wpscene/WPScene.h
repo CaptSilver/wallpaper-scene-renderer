@@ -22,11 +22,11 @@ public:
 
 class WPSceneCamera {
 public:
-    bool                          FromJson(const nlohmann::json&);
-    std::array<float, 3>          center { 0.0f, 0.0f, 0.0f };
-    std::array<float, 3>          eye { 0.0f, 0.0f, 1.0f };
-    std::array<float, 3>          up { 0.0f, 1.0f, 0.0f };
-    std::vector<std::string>      paths;
+    bool                     FromJson(const nlohmann::json&);
+    std::array<float, 3>     center { 0.0f, 0.0f, 0.0f };
+    std::array<float, 3>     eye { 0.0f, 0.0f, 1.0f };
+    std::array<float, 3>     up { 0.0f, 1.0f, 0.0f };
+    std::vector<std::string> paths;
 };
 
 class WPSceneGeneral {

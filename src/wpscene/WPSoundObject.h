@@ -21,11 +21,11 @@ struct VolumeKeyframe {
 };
 
 struct VolumeAnimation {
-    std::string                  name;
-    std::string                  mode { "loop" };
-    float                        fps { 30.0f };
-    float                        length { 0 };
-    std::vector<VolumeKeyframe>  keyframes;
+    std::string                 name;
+    std::string                 mode { "loop" };
+    float                       fps { 30.0f };
+    float                       length { 0 };
+    std::vector<VolumeKeyframe> keyframes;
 };
 
 struct WPSoundObject {
@@ -53,7 +53,7 @@ struct WPSoundObject {
                 volume = vol.value("value", 1.0f);
                 if (vol.contains("script")) {
                     hasVolumeScript = true;
-                    volumeScript = vol.at("script").get<std::string>();
+                    volumeScript    = vol.at("script").get<std::string>();
                     if (vol.contains("scriptproperties"))
                         volumeScriptProperties = vol.at("scriptproperties").dump();
                 }
@@ -68,7 +68,7 @@ struct WPSoundObject {
                             volumeAnimation.keyframes.push_back(vk);
                         }
                         if (anim.contains("options")) {
-                            auto& opts = anim.at("options");
+                            auto& opts             = anim.at("options");
                             volumeAnimation.fps    = opts.value("fps", 30.0f);
                             volumeAnimation.length = opts.value("length", 0.0f);
                             volumeAnimation.mode   = opts.value("mode", "loop");

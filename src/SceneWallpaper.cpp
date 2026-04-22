@@ -435,8 +435,8 @@ public:
 
     void setParticleRate(i32 id, float rate) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_particle_rate[id] = rate;
-        static int s_rate_log       = 0;
+        m_pending_particle_rate[id]                      = rate;
+        static int                            s_rate_log = 0;
         static std::unordered_map<i32, float> s_last_logged_rate;
         auto                                  prev = s_last_logged_rate.find(id);
         // Log the first few writes + any subsequent >30% swing so NieR 2B's
@@ -445,7 +445,10 @@ public:
         bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
         if (++s_rate_log <= 5 || jumped) {
             LOG_INFO("setParticleRate[%d]: id=%d rate=%.4f%s",
-                     s_rate_log, id, rate, jumped ? " [jump]" : "");
+                     s_rate_log,
+                     id,
+                     rate,
+                     jumped ? " [jump]" : "");
             s_last_logged_rate[id] = rate;
         }
     }
@@ -990,11 +993,11 @@ private:
             // perception-correct; the upper clamp keeps a long pause
             // (suspend/resume, long scene reload) from jumping the scene
             // clock by many seconds in one frame.
-            auto   now     = std::chrono::steady_clock::now();
-            double dt_wall = m_last_draw_wall_time
-                                 ? std::chrono::duration<double>(
-                                       now - *m_last_draw_wall_time).count()
-                                 : frame_timer.IdeaTime();
+            auto   now = std::chrono::steady_clock::now();
+            double dt_wall =
+                m_last_draw_wall_time
+                    ? std::chrono::duration<double>(now - *m_last_draw_wall_time).count()
+                    : frame_timer.IdeaTime();
             m_last_draw_wall_time = now;
             if (dt_wall < 0.0) dt_wall = 0.0;
             if (dt_wall > 0.1) dt_wall = 0.1;
@@ -1022,21 +1025,28 @@ private:
 
             // DIAG: log elapsingTime vs wall clock drift
             if (std::getenv("WEKDE_TIME_DIAG")) {
-                static auto s_wall_start = std::chrono::steady_clock::now();
+                static auto   s_wall_start = std::chrono::steady_clock::now();
                 static double s_last_scene = 0.0;
-                static int s_tick_count = 0;
+                static int    s_tick_count = 0;
                 s_tick_count++;
                 if (s_tick_count % 30 == 0) {
-                    double wall = std::chrono::duration<double>(
-                                      std::chrono::steady_clock::now() - s_wall_start).count();
+                    double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                                s_wall_start)
+                                      .count();
                     double delta_scene = m_scene->elapsingTime - s_last_scene;
-                    s_last_scene = m_scene->elapsingTime;
-                    LOG_INFO("TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
-                             "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f dt_wall=%.4f",
-                             s_tick_count, wall, m_scene->elapsingTime,
-                             wall > 0.01 ? m_scene->elapsingTime / wall : 0.0,
-                             frame_timer.FrameTime(), frame_timer.IdeaTime(),
-                             frame_timer.RequiredFps(), delta_scene, dt_wall);
+                    s_last_scene       = m_scene->elapsingTime;
+                    LOG_INFO(
+                        "TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
+                        "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f dt_wall=%.4f",
+                        s_tick_count,
+                        wall,
+                        m_scene->elapsingTime,
+                        wall > 0.01 ? m_scene->elapsingTime / wall : 0.0,
+                        frame_timer.FrameTime(),
+                        frame_timer.IdeaTime(),
+                        frame_timer.RequiredFps(),
+                        delta_scene,
+                        dt_wall);
                 }
             }
 
@@ -1062,7 +1072,7 @@ private:
     MHANDLER_CMD(SET_SCENE) {
         if (msg->findObject("scene", &m_scene)) {
             if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
-            m_drawDiagReset       = true; // force DRAW diagnostic on next frame
+            m_drawDiagReset = true;        // force DRAW diagnostic on next frame
             m_last_draw_wall_time.reset(); // first DRAW uses ideatime, not the
                                            // wall-clock gap across scene load
 
@@ -1338,7 +1348,7 @@ private:
     // Scripted particle instance-override rate (NieR:Automata starfields).
     // Merged per-id so the latest value wins within a single tick — there is
     // no reason to replay intermediate values the renderer never sampled.
-    std::unordered_map<i32, float>                              m_pending_particle_rate;
+    std::unordered_map<i32, float> m_pending_particle_rate;
     std::vector<std::tuple<i32, i32, bool>>
         m_pending_effect_visible; // (nodeId, effectIdx, visible)
 
@@ -2154,18 +2164,18 @@ void MainHandler::loadScene() {
         m_property_scripts.clear();
         for (const auto& ps : scene->propertyScripts) {
             PropertyScriptInfo psi;
-            psi.id                  = ps.id;
-            psi.property            = ps.property;
-            psi.script              = ps.script;
-            psi.scriptProperties    = ps.scriptProperties;
-            psi.layerName           = ps.layerName;
-            psi.initialVisible      = ps.initialVisible;
-            psi.initialVec3         = ps.initialVec3;
-            psi.initialFloat        = ps.initialFloat;
-            psi.attachment          = (ps.attachment ==
-                                          wallpaper::ScenePropertyScript::Attachment::AnimationLayer)
-                                          ? PropertyScriptInfo::Attachment::AnimationLayer
-                                          : PropertyScriptInfo::Attachment::Object;
+            psi.id               = ps.id;
+            psi.property         = ps.property;
+            psi.script           = ps.script;
+            psi.scriptProperties = ps.scriptProperties;
+            psi.layerName        = ps.layerName;
+            psi.initialVisible   = ps.initialVisible;
+            psi.initialVec3      = ps.initialVec3;
+            psi.initialFloat     = ps.initialFloat;
+            psi.attachment =
+                (ps.attachment == wallpaper::ScenePropertyScript::Attachment::AnimationLayer)
+                    ? PropertyScriptInfo::Attachment::AnimationLayer
+                    : PropertyScriptInfo::Attachment::Object;
             psi.animationLayerIndex = ps.animationLayerIndex;
             m_property_scripts.push_back(std::move(psi));
         }

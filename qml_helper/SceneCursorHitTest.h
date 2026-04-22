@@ -43,8 +43,7 @@ struct CursorParallax {
 // the hit-test centre is shifted by the same amount the shader MVP shifts the
 // rendered quad, so a mouse-driven parallax offset doesn't take cursor clicks
 // out from under the layer they're supposed to hit.
-inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy,
-                              float sceneX, float sceneY,
+inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy, float sceneX, float sceneY,
                               const CursorParallax& para = {}) {
     if (! thisLayerProxy.isObject()) return false;
     QJSValue state = thisLayerProxy.property("_state");
@@ -74,13 +73,13 @@ inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy,
     // Mirrors WPShaderValueUpdater.cpp's MVP branch.
     if (para.enable) {
         QJSValue pd = state.property("parallaxDepth");
-        float dx = (float)pd.property("x").toNumber();
-        float dy = (float)pd.property("y").toNumber();
+        float    dx = (float)pd.property("x").toNumber();
+        float    dy = (float)pd.property("y").toNumber();
         if (dx != 0.0f || dy != 0.0f) {
             float mouseVx = (0.5f - para.mouseNx) * para.orthoW * para.mouseInfluence;
             float mouseVy = (para.mouseNy - 0.5f) * para.orthoH * para.mouseInfluence;
-            float paraX = (ox - para.camX + mouseVx) * dx * para.amount;
-            float paraY = (oy - para.camY + mouseVy) * dy * para.amount;
+            float paraX   = (ox - para.camX + mouseVx) * dx * para.amount;
+            float paraY   = (oy - para.camY + mouseVy) * dy * para.amount;
             ox += paraX;
             oy += paraY;
         }

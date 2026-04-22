@@ -148,7 +148,9 @@ inline void InitColor(Particle& p, double r, double g, double b) {
 }
 
 inline void InitVelocity(Particle& p, const Eigen::Vector3d& v) { p.velocity = v.cast<float>(); }
-inline void InitPos(Particle& p, double x, double y, double z) { p.position = Eigen::Vector3f(x, y, z); }
+inline void InitPos(Particle& p, double x, double y, double z) {
+    p.position = Eigen::Vector3f(x, y, z);
+}
 inline void InitVelocity(Particle& p, double x, double y, double z) {
     InitVelocity(p, { x, y, z });
 }

@@ -36,12 +36,11 @@ struct HoverFrameResult {
 };
 
 // Process one hover frame.  `pendingLeaves` is updated in place.
-inline HoverFrameResult processHoverFrame(
-    const std::unordered_set<std::string>&          prevHovered,
-    const std::unordered_set<std::string>&          currentHit,
-    std::unordered_map<std::string, PendingLeave>&  pendingLeaves,
-    int64_t                                         nowMs,
-    int64_t                                         graceMs) {
+inline HoverFrameResult
+processHoverFrame(const std::unordered_set<std::string>&         prevHovered,
+                  const std::unordered_set<std::string>&         currentHit,
+                  std::unordered_map<std::string, PendingLeave>& pendingLeaves, int64_t nowMs,
+                  int64_t graceMs) {
     HoverFrameResult r;
 
     // Layers under the cursor this frame: cancel any pending leave, fire
@@ -70,9 +69,8 @@ inline HoverFrameResult processHoverFrame(
 
 // Return the names whose pending-leave deadline has elapsed.  Caller
 // should fire cursorLeave on each and remove them from m_hoveredLayers.
-inline std::vector<std::string> drainExpiredLeaves(
-    std::unordered_map<std::string, PendingLeave>& pendingLeaves,
-    int64_t                                        nowMs) {
+inline std::vector<std::string>
+drainExpiredLeaves(std::unordered_map<std::string, PendingLeave>& pendingLeaves, int64_t nowMs) {
     std::vector<std::string> expired;
     for (auto it = pendingLeaves.begin(); it != pendingLeaves.end();) {
         if (nowMs >= it->second.deadlineMs) {
@@ -87,8 +85,8 @@ inline std::vector<std::string> drainExpiredLeaves(
 
 // Earliest deadline still pending, or 0 if none — useful for arming the
 // QTimer to fire exactly when the next leave becomes due.
-inline int64_t nextLeaveDeadlineMs(
-    const std::unordered_map<std::string, PendingLeave>& pendingLeaves) {
+inline int64_t
+nextLeaveDeadlineMs(const std::unordered_map<std::string, PendingLeave>& pendingLeaves) {
     int64_t next = 0;
     for (const auto& kv : pendingLeaves) {
         if (next == 0 || kv.second.deadlineMs < next) next = kv.second.deadlineMs;

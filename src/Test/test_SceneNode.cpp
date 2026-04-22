@@ -226,8 +226,8 @@ TEST_SUITE("SceneNode.Graph") {
     }
 
     TEST_CASE("RemoveChild ignores pointers that aren't children") {
-        auto p = std::make_shared<SceneNode>();
-        auto a = std::make_shared<SceneNode>();
+        auto p        = std::make_shared<SceneNode>();
+        auto a        = std::make_shared<SceneNode>();
         auto outsider = std::make_shared<SceneNode>();
         p->AppendChild(a);
         p->RemoveChild(outsider.get());
@@ -240,7 +240,7 @@ TEST_SUITE("SceneNode.Graph") {
         //   2. the intended parent becomes available later
         //   3. detach from root, re-attach under real parent, mark dirty
         // Descendants must pick up the new parent's world transform.
-        auto root = std::make_shared<SceneNode>();
+        auto root        = std::make_shared<SceneNode>();
         auto real_parent = std::make_shared<SceneNode>(
             Vector3f(10.f, 0.f, 0.f), Vector3f(2.f, 1.f, 1.f), Vector3f(0, 0, 0));
         auto group = std::make_shared<SceneNode>(

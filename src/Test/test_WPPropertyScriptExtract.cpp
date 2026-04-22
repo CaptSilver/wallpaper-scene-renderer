@@ -4,23 +4,25 @@
 
 #include <nlohmann/json.hpp>
 
-using njson      = nlohmann::json;
-using i32        = wallpaper::i32;
+using njson               = nlohmann::json;
+using i32                 = wallpaper::i32;
 using ScenePropertyScript = wallpaper::ScenePropertyScript;
-using Attachment = ScenePropertyScript::Attachment;
+using Attachment          = ScenePropertyScript::Attachment;
 
 // Minimal scene.json object harness for the extraction helpers.  Keeps the
 // test fixtures easy to eyeball against the real WE format.
-namespace {
+namespace
+{
 
 njson objectWithVisibleScript(i32 id, const char* script) {
     return njson {
         { "id", id },
         { "name", "bg" },
-        { "visible", njson {
-            { "value", true },
-            { "script", script },
-        }},
+        { "visible",
+          njson {
+              { "value", true },
+              { "script", script },
+          } },
     };
 }
 
@@ -33,10 +35,11 @@ njson objectWithAnimationLayers(i32 id, const char* layerName,
     njson alayers = njson::array();
     for (const auto* scriptBody : perLayerScripts) {
         alayers.push_back(njson {
-            { "visible", njson {
-                { "value", true },
-                { "script", scriptBody },
-            }},
+            { "visible",
+              njson {
+                  { "value", true },
+                  { "script", scriptBody },
+              } },
         });
     }
     obj["animationlayers"] = std::move(alayers);
@@ -48,9 +51,8 @@ njson objectWithAnimationLayers(i32 id, const char* layerName,
 TEST_SUITE("WPPropertyScriptExtract") {
     TEST_CASE("top-level visible script → Attachment::Object, idx -1") {
         std::vector<ScenePropertyScript> out;
-        njson obj = objectWithVisibleScript(42, "return true;");
-        wek::extractPropertyScriptsFromHost(
-            42, "bg", obj, Attachment::Object, -1, out);
+        njson                            obj = objectWithVisibleScript(42, "return true;");
+        wek::extractPropertyScriptsFromHost(42, "bg", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].id == 42);
         CHECK(out[0].property == "visible");
@@ -63,15 +65,15 @@ TEST_SUITE("WPPropertyScriptExtract") {
 
     TEST_CASE("origin script parses space-separated initial Vec3") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 7 },
-            { "origin", njson {
-                { "value", "100 200 50" },
-                { "script", "return value;" },
-            }},
+        njson                            obj = njson {
+                                       { "id", 7 },
+                                       { "origin",
+                                         njson {
+                                             { "value", "100 200 50" },
+                                             { "script", "return value;" },
+              } },
         };
-        wek::extractPropertyScriptsFromHost(
-            7, "layer", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(7, "layer", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].initialVec3[0] == 100);
         CHECK(out[0].initialVec3[1] == 200);
@@ -80,51 +82,51 @@ TEST_SUITE("WPPropertyScriptExtract") {
 
     TEST_CASE("alpha script stores initial float default 1.0") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 5 },
-            { "alpha", njson {
-                { "script", "return value;" },
-            }},
+        njson                            obj = njson {
+                                       { "id", 5 },
+                                       { "alpha",
+                                         njson {
+                                             { "script", "return value;" },
+              } },
         };
-        wek::extractPropertyScriptsFromHost(
-            5, "layer", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(5, "layer", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].initialFloat == doctest::Approx(1.0));
     }
 
     TEST_CASE("host without any scripts yields no output") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 99 },
-            { "visible", true },  // plain bool, not a {script:} object
+        njson                            obj = njson {
+                                       { "id", 99 },
+                                       { "visible", true }, // plain bool, not a {script:} object
         };
-        wek::extractPropertyScriptsFromHost(
-            99, "x", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(99, "x", obj, Attachment::Object, -1, out);
         CHECK(out.empty());
     }
 
     TEST_CASE("all 5 property kinds extracted together") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "visible", njson {{ "script", "return true;" }} },
-            { "origin",  njson {{ "script", "return value;" }} },
-            { "scale",   njson {{ "script", "return value;" }} },
-            { "angles",  njson {{ "script", "return value;" }} },
-            { "alpha",   njson {{ "script", "return 1.0;" }} },
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "visible", njson { { "script", "return true;" } } },
+                                       { "origin", njson { { "script", "return value;" } } },
+                                       { "scale", njson { { "script", "return value;" } } },
+                                       { "angles", njson { { "script", "return value;" } } },
+                                       { "alpha", njson { { "script", "return 1.0;" } } },
         };
-        wek::extractPropertyScriptsFromHost(
-            1, "l", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(1, "l", obj, Attachment::Object, -1, out);
         CHECK(out.size() == 5);
     }
 
     TEST_CASE("animationlayers[M] extraction stamps AnimationLayer + index") {
         std::vector<ScenePropertyScript> out;
-        njson obj = objectWithAnimationLayers(20, "Lucy", {
-            "return v;",   // layer 0
-            "return v;",   // layer 1
-            "return v;",   // layer 2
-        });
+        njson                            obj = objectWithAnimationLayers(20,
+                                              "Lucy",
+                                                                         {
+                                                  "return v;", // layer 0
+                                                  "return v;", // layer 1
+                                                  "return v;", // layer 2
+                                              });
         wek::extractAnimationLayerScripts(20, "Lucy", obj, out);
         REQUIRE(out.size() == 3);
         for (size_t i = 0; i < out.size(); i++) {
@@ -137,16 +139,16 @@ TEST_SUITE("WPPropertyScriptExtract") {
 
     TEST_CASE("object without animationlayers is skipped silently") {
         std::vector<ScenePropertyScript> out;
-        njson obj = objectWithVisibleScript(1, "return true;");
+        njson                            obj = objectWithVisibleScript(1, "return true;");
         wek::extractAnimationLayerScripts(1, "bg", obj, out);
         CHECK(out.empty());
     }
 
     TEST_CASE("non-array animationlayers is skipped (malformed input)") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "animationlayers", "not an array" },
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "animationlayers", "not an array" },
         };
         wek::extractAnimationLayerScripts(1, "bg", obj, out);
         CHECK(out.empty());
@@ -157,27 +159,28 @@ TEST_SUITE("WPPropertyScriptExtract") {
         // layer, three rigged animation layers each carrying an NSL init
         // script.  Caller extracts both shapes; attachments differ.
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 20 },
-            { "name", "Lucy" },
-            { "visible", njson {
-                { "value", true },
-                { "script", "return true;" },   // top-level
-            }},
+        njson                            obj = njson {
+                                       { "id", 20 },
+                                       { "name", "Lucy" },
+                                       { "visible",
+                                         njson {
+                                             { "value", true },
+                                             { "script", "return true;" }, // top-level
+              } },
         };
         njson alayers = njson::array();
         for (int i = 0; i < 3; i++) {
             alayers.push_back(njson {
-                { "visible", njson {
-                    { "value", true },
-                    { "script", "return true;" },
-                }},
+                { "visible",
+                  njson {
+                      { "value", true },
+                      { "script", "return true;" },
+                  } },
             });
         }
         obj["animationlayers"] = std::move(alayers);
 
-        wek::extractPropertyScriptsFromHost(
-            20, "Lucy", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(20, "Lucy", obj, Attachment::Object, -1, out);
         wek::extractAnimationLayerScripts(20, "Lucy", obj, out);
 
         REQUIRE(out.size() == 4);
@@ -194,19 +197,20 @@ TEST_SUITE("WPPropertyScriptExtract") {
         // { "instanceoverride": { "rate": { "value": 1.0, "script": "..." }}}.
         // Before this extractor path, the script was silently dropped.
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 299 },
-            { "name", "Particles - Perspective" },
-            { "instanceoverride", njson {
-                { "rate", njson {
-                    { "value", 1.0 },
-                    { "script", "export function update() { return 0.5; }" },
-                }},
-            }},
+        njson                            obj = njson {
+                                       { "id", 299 },
+                                       { "name", "Particles - Perspective" },
+                                       { "instanceoverride",
+                                         njson {
+                                             { "rate",
+                                               njson {
+                                                   { "value", 1.0 },
+                                                   { "script", "export function update() { return 0.5; }" },
+                    } },
+              } },
         };
         wek::extractParticleInstanceOverrideScripts(
-            299, "Particles - Perspective", obj,
-            Attachment::Object, -1, out);
+            299, "Particles - Perspective", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].id == 299);
         CHECK(out[0].property == "instanceoverride.rate");
@@ -221,37 +225,37 @@ TEST_SUITE("WPPropertyScriptExtract") {
         // script entry — otherwise the dispatcher would compile an empty
         // function and drive the rate to undefined every tick.
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "instanceoverride", njson {
-                { "rate", 2.5 }, // plain scalar, as some workshops write it
-            }},
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "instanceoverride",
+                                         njson {
+                                             { "rate", 2.5 }, // plain scalar, as some workshops write it
+              } },
         };
-        wek::extractParticleInstanceOverrideScripts(
-            1, "p", obj, Attachment::Object, -1, out);
+        wek::extractParticleInstanceOverrideScripts(1, "p", obj, Attachment::Object, -1, out);
         CHECK(out.empty());
     }
 
     TEST_CASE("instanceoverride missing → no output, no throw") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson { { "id", 7 } };
-        wek::extractParticleInstanceOverrideScripts(
-            7, "n", obj, Attachment::Object, -1, out);
+        njson                            obj = njson { { "id", 7 } };
+        wek::extractParticleInstanceOverrideScripts(7, "n", obj, Attachment::Object, -1, out);
         CHECK(out.empty());
     }
 
     TEST_CASE("instanceoverride.rate defaults initialFloat to 1.0 when value missing") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "instanceoverride", njson {
-                { "rate", njson {
-                    { "script", "return 1.0;" },
-                }},
-            }},
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "instanceoverride",
+                                         njson {
+                                             { "rate",
+                                               njson {
+                                                   { "script", "return 1.0;" },
+                    } },
+              } },
         };
-        wek::extractParticleInstanceOverrideScripts(
-            1, "p", obj, Attachment::Object, -1, out);
+        wek::extractParticleInstanceOverrideScripts(1, "p", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].initialFloat == doctest::Approx(1.0));
     }
@@ -263,32 +267,33 @@ TEST_SUITE("WPPropertyScriptExtract") {
         // wallpapers, which the project explicitly rejects
         // (feedback_no_stubs.md).
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "instanceoverride", njson {
-                { "alpha", njson {{ "script", "return 1.0;" }} },
-                { "size",  njson {{ "script", "return 1.0;" }} },
-                { "count", njson {{ "script", "return 1.0;" }} },
-            }},
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "instanceoverride",
+                                         njson {
+                                             { "alpha", njson { { "script", "return 1.0;" } } },
+                                             { "size", njson { { "script", "return 1.0;" } } },
+                                             { "count", njson { { "script", "return 1.0;" } } },
+              } },
         };
-        wek::extractParticleInstanceOverrideScripts(
-            1, "p", obj, Attachment::Object, -1, out);
+        wek::extractParticleInstanceOverrideScripts(1, "p", obj, Attachment::Object, -1, out);
         CHECK(out.empty());
     }
 
     TEST_CASE("scriptproperties stored as JSON string") {
         std::vector<ScenePropertyScript> out;
-        njson obj = njson {
-            { "id", 1 },
-            { "visible", njson {
-                { "script", "return true;" },
-                { "scriptproperties", njson {
-                    { "percentage", njson {{ "value", 0.5 }} },
-                }},
-            }},
+        njson                            obj = njson {
+                                       { "id", 1 },
+                                       { "visible",
+                                         njson {
+                                             { "script", "return true;" },
+                                             { "scriptproperties",
+                                               njson {
+                                                   { "percentage", njson { { "value", 0.5 } } },
+                    } },
+              } },
         };
-        wek::extractPropertyScriptsFromHost(
-            1, "l", obj, Attachment::Object, -1, out);
+        wek::extractPropertyScriptsFromHost(1, "l", obj, Attachment::Object, -1, out);
         REQUIRE(out.size() == 1);
         CHECK(out[0].scriptProperties.find("\"percentage\"") != std::string::npos);
         CHECK(out[0].scriptProperties.find("0.5") != std::string::npos);

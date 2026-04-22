@@ -16,7 +16,8 @@
 // and every other "return modified single-axis value" script, silently
 // did nothing.
 
-namespace wek::qml_helper {
+namespace wek::qml_helper
+{
 
 inline constexpr const char* kPropertyScriptDispatchJs =
     "var _allPropertyScripts = [];\n"

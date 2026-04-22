@@ -14,11 +14,8 @@ struct VolumeAnimKeyframe {
 
 // Evaluate a keyframed volume animation curve at a given time.
 // Returns the interpolated volume value.
-inline float EvaluateVolumeAnimation(
-    const std::vector<VolumeAnimKeyframe>& keyframes,
-    float fps, float length, const std::string& mode,
-    double time)
-{
+inline float EvaluateVolumeAnimation(const std::vector<VolumeAnimKeyframe>& keyframes, float fps,
+                                     float length, const std::string& mode, double time) {
     if (keyframes.empty()) return 0.0f;
     if (keyframes.size() == 1) return keyframes[0].value;
 
@@ -34,7 +31,7 @@ inline float EvaluateVolumeAnimation(
     float frame = (float)(t * fps);
 
     if (frame <= keyframes.front().frame) return keyframes.front().value;
-    if (frame >= keyframes.back().frame)  return keyframes.back().value;
+    if (frame >= keyframes.back().frame) return keyframes.back().value;
 
     for (size_t i = 0; i + 1 < keyframes.size(); i++) {
         if (frame >= keyframes[i].frame && frame <= keyframes[i + 1].frame) {

@@ -40,7 +40,8 @@ public:
 class WPImageEffect {
 private:
     static const std::unordered_set<std::string> BLACKLISTED_WORKSHOP_EFFECTS;
-    bool IsEffectBlacklisted(const std::string& filePath);
+    bool                                         IsEffectBlacklisted(const std::string& filePath);
+
 public:
     bool                         FromJson(const nlohmann::json&, fs::VFS& vfs);
     bool                         FromFileJson(const nlohmann::json&, fs::VFS& vfs);
@@ -59,28 +60,28 @@ public:
     struct Config {
         bool passthrough { false };
     };
-    bool                       FromJson(const nlohmann::json&, fs::VFS&);
-    int32_t                    id { 0 };
-    int32_t                    parent_id { -1 };
-    std::string                name;
-    std::array<float, 3>       origin { 0.0f, 0.0f, 0.0f };
-    std::array<float, 3>       scale { 1.0f, 1.0f, 1.0f };
-    std::array<float, 3>       angles { 0.0f, 0.0f, 0.0f };
-    std::array<float, 2>       size { 2.0f, 2.0f };
-    std::array<float, 2>       parallaxDepth { 0.0f, 0.0f };
-    std::array<float, 3>       color { 1.0f, 1.0f, 1.0f };
-    int32_t                    colorBlendMode { 0 };
-    float                      alpha { 1.0f };
-    float                      brightness { 1.0f };
-    bool                       fullscreen { false };
-    bool                       nopadding { false };
+    bool                 FromJson(const nlohmann::json&, fs::VFS&);
+    int32_t              id { 0 };
+    int32_t              parent_id { -1 };
+    std::string          name;
+    std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
+    std::array<float, 3> scale { 1.0f, 1.0f, 1.0f };
+    std::array<float, 3> angles { 0.0f, 0.0f, 0.0f };
+    std::array<float, 2> size { 2.0f, 2.0f };
+    std::array<float, 2> parallaxDepth { 0.0f, 0.0f };
+    std::array<float, 3> color { 1.0f, 1.0f, 1.0f };
+    int32_t              colorBlendMode { 0 };
+    float                alpha { 1.0f };
+    float                brightness { 1.0f };
+    bool                 fullscreen { false };
+    bool                 nopadding { false };
     // Set when the image-model JSON declares "autosize": true.  Resolved in
     // ParseImageObj by reading the first texture's sprite-frame dimensions
     // (or mapWidth × mapHeight for non-sprite textures).
-    bool                       autosize { false };
-    bool                       visible { true };
-    bool                       visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
-    bool                       perspective { false }; // Use perspective camera (default: flat/ortho)
+    bool autosize { false };
+    bool visible { true };
+    bool visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
+    bool perspective { false };            // Use perspective camera (default: flat/ortho)
     std::string                image;
     std::string                alignment { "center" };
     WPMaterial                 material;
@@ -95,7 +96,7 @@ public:
     // named MDAT attachment in the parent puppet's skeleton instead of the
     // parent mesh center.  e.g. hair pieces with attachment="head" end up
     // at the head anchor in asuna body's skeleton.
-    std::string                                attachment;
+    std::string attachment;
 
     // Keyframe animations parsed out of <prop>.animation blocks.
     // Each entry targets a specific scalar property on this object (e.g. alpha).

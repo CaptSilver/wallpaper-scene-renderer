@@ -19,7 +19,8 @@
 #include <string>
 #include <vector>
 
-namespace wek {
+namespace wek
+{
 
 using wallpaper::i32;
 using wallpaper::ScenePropertyScript;
@@ -32,13 +33,11 @@ using wallpaper::ScenePropertyScript;
 // Does NOT recurse into host.animationlayers — caller walks that array
 // and invokes this function per element.  Keeping the walk outside the
 // function makes the two attachment shapes testable independently.
-inline void
-extractPropertyScriptsFromHost(i32                                   id,
-                               const std::string&                    layerName,
-                               const nlohmann::json&                 host,
-                               ScenePropertyScript::Attachment       attachment,
-                               i32                                   animationLayerIndex,
-                               std::vector<ScenePropertyScript>&     out) {
+inline void extractPropertyScriptsFromHost(i32 id, const std::string& layerName,
+                                           const nlohmann::json&             host,
+                                           ScenePropertyScript::Attachment   attachment,
+                                           i32                               animationLayerIndex,
+                                           std::vector<ScenePropertyScript>& out) {
     for (const char* prop : { "visible", "origin", "scale", "angles", "alpha" }) {
         if (! host.contains(prop)) continue;
         auto& val = host.at(prop);
@@ -83,13 +82,11 @@ extractPropertyScriptsFromHost(i32                                   id,
 // runtime-update path, and silently extracting them would put the engine
 // back in stub territory.  Adding a new field here means wiring a Scene
 // update API for it at the same time.
-inline void
-extractParticleInstanceOverrideScripts(i32                                   id,
-                                       const std::string&                    layerName,
-                                       const nlohmann::json&                 host,
-                                       ScenePropertyScript::Attachment       attachment,
-                                       i32                                   animationLayerIndex,
-                                       std::vector<ScenePropertyScript>&     out) {
+inline void extractParticleInstanceOverrideScripts(i32 id, const std::string& layerName,
+                                                   const nlohmann::json&           host,
+                                                   ScenePropertyScript::Attachment attachment,
+                                                   i32 animationLayerIndex,
+                                                   std::vector<ScenePropertyScript>& out) {
     if (! host.contains("instanceoverride")) return;
     const auto& io = host.at("instanceoverride");
     if (! io.is_object()) return;
@@ -123,21 +120,21 @@ extractParticleInstanceOverrideScripts(i32                                   id,
 // Walk objects[N].animationlayers[M] if present, extracting per-rig-layer
 // scripts.  Called after `extractPropertyScriptsFromHost(... , Object, -1)`
 // has handled the top-level scripts on the same object.
-inline void
-extractAnimationLayerScripts(i32                               id,
-                             const std::string&                layerName,
-                             const nlohmann::json&             obj,
-                             std::vector<ScenePropertyScript>& out) {
+inline void extractAnimationLayerScripts(i32 id, const std::string& layerName,
+                                         const nlohmann::json&             obj,
+                                         std::vector<ScenePropertyScript>& out) {
     if (! obj.contains("animationlayers")) return;
     auto& alayers = obj.at("animationlayers");
     if (! alayers.is_array()) return;
     for (size_t alIdx = 0; alIdx < alayers.size(); alIdx++) {
         auto& al = alayers[alIdx];
         if (! al.is_object()) continue;
-        extractPropertyScriptsFromHost(
-            id, layerName, al,
-            ScenePropertyScript::Attachment::AnimationLayer,
-            static_cast<i32>(alIdx), out);
+        extractPropertyScriptsFromHost(id,
+                                       layerName,
+                                       al,
+                                       ScenePropertyScript::Attachment::AnimationLayer,
+                                       static_cast<i32>(alIdx),
+                                       out);
     }
 }
 

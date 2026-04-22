@@ -18,7 +18,7 @@
 // signal handler is not async-signal-safe, so we stay minimal here.
 // Hooked for SIGINT + SIGTERM so `timeout --signal=INT` flushes the profile.
 static std::atomic<bool> g_quit_requested { false };
-static void qmlviewer_sigint_handler(int) {
+static void              qmlviewer_sigint_handler(int) {
     if (g_quit_requested.exchange(true)) {
         // Second signal: force-exit in case the event loop is wedged.
         std::_Exit(130);

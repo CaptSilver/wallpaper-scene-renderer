@@ -71,10 +71,10 @@ private:
     Map<std::string, bool> m_options;
 
     std::unique_ptr<float[]> m_pData;
-    usize  m_oneSize { 0 };
-    usize  m_size { 0 };
-    usize  m_capacity { 0 };
-    usize  m_render_vertex_count { 0 };
+    usize                    m_oneSize { 0 };
+    usize                    m_size { 0 };
+    usize                    m_capacity { 0 };
+    usize                    m_render_vertex_count { 0 };
 
     uint32_t m_id;
 };

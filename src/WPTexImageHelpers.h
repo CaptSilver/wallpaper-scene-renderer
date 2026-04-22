@@ -49,8 +49,7 @@ inline bool IsAliasTexture(const std::string& name) {
 }
 
 inline void SetHeaderPow2(ImageHeader& header, i32 mip_0_w, i32 mip_0_h) {
-    header.mipmap_pow2 =
-        algorism::IsPowOfTwo((u32)mip_0_w) || algorism::IsPowOfTwo((u32)mip_0_h);
+    header.mipmap_pow2   = algorism::IsPowOfTwo((u32)mip_0_w) || algorism::IsPowOfTwo((u32)mip_0_h);
     header.mipmap_larger = mip_0_w * mip_0_h > header.mapWidth * header.mapHeight;
 }
 

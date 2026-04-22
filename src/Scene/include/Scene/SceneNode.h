@@ -32,13 +32,13 @@ public:
     void        SetCamera(const std::string& name) { m_cameraName = name; }
     void        AddMesh(std::shared_ptr<SceneMesh> mesh) { m_mesh = mesh; }
     void        AppendChild(std::shared_ptr<SceneNode> sub) {
-               sub->m_parent = this;
-               // Track the scene-graph parent separately from the transform
-               // parent so visibility inheritance survives a later
-               // InheritParent(empty) call that disconnects transform chaining
-               // for per-image effect RTs (see WPSceneParser non-compose path).
-               sub->m_visibility_parent = this;
-               m_children.push_back(sub);
+        sub->m_parent = this;
+        // Track the scene-graph parent separately from the transform
+        // parent so visibility inheritance survives a later
+        // InheritParent(empty) call that disconnects transform chaining
+        // for per-image effect RTs (see WPSceneParser non-compose path).
+        sub->m_visibility_parent = this;
+        m_children.push_back(sub);
     }
 
     // Remove a child by raw pointer; idempotent if not found.  Used by the
@@ -57,9 +57,18 @@ public:
     const auto& Translate() const { return m_translate; }
     const auto& Scale() const { return m_scale; }
     const auto& Rotation() const { return m_rotation; }
-    void        SetTranslate(Eigen::Vector3f v) { m_translate = v; MarkTransDirty(); }
-    void        SetScale(Eigen::Vector3f v) { m_scale = v; MarkTransDirty(); }
-    void        SetRotation(Eigen::Vector3f v) { m_rotation = v; MarkTransDirty(); }
+    void        SetTranslate(Eigen::Vector3f v) {
+        m_translate = v;
+        MarkTransDirty();
+    }
+    void SetScale(Eigen::Vector3f v) {
+        m_scale = v;
+        MarkTransDirty();
+    }
+    void SetRotation(Eigen::Vector3f v) {
+        m_rotation = v;
+        MarkTransDirty();
+    }
 
     void CopyTrans(const SceneNode& node) {
         m_translate = node.m_translate;

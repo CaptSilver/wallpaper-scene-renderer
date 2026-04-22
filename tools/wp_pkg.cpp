@@ -443,11 +443,8 @@ struct ScriptHit {
     std::string path;
     std::string body;
 };
-static void walkForScripts(const nlohmann::json& node,
-                           const std::string&    path,
-                           int32_t               curId,
-                           const std::string&    curName,
-                           std::vector<ScriptHit>& out) {
+static void walkForScripts(const nlohmann::json& node, const std::string& path, int32_t curId,
+                           const std::string& curName, std::vector<ScriptHit>& out) {
     if (node.is_object()) {
         int32_t     nextId   = curId;
         std::string nextName = curName;
@@ -471,7 +468,8 @@ static void walkForScripts(const nlohmann::json& node,
                     ScriptHit hit;
                     hit.id   = nextId;
                     hit.name = nextName;
-                    hit.path = path; // path to the containing object (e.g. ".instanceoverride.rate")
+                    hit.path =
+                        path; // path to the containing object (e.g. ".instanceoverride.rate")
                     hit.body = std::move(body);
                     out.push_back(std::move(hit));
                     continue; // don't recurse into a script string
@@ -495,8 +493,8 @@ static std::string sanitizeForFilename(const std::string& in) {
     std::string out;
     out.reserve(in.size());
     for (char c : in) {
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '<' ||
-            c == '>' || c == '|' || c == '"' || (unsigned char)c < 0x20) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '<' || c == '>' ||
+            c == '|' || c == '"' || (unsigned char)c < 0x20) {
             out.push_back('_');
         } else if (c == ' ') {
             out.push_back('-');
@@ -526,7 +524,7 @@ static bool readSceneJson(const fs::path& src, std::string& out, std::string& er
             out = ss.str();
             return true;
         }
-        fs::path pj = src / "project.json";
+        fs::path      pj = src / "project.json";
         std::ifstream pf(pj, std::ios::binary);
         if (pf) {
             std::ostringstream ss;
@@ -534,7 +532,7 @@ static bool readSceneJson(const fs::path& src, std::string& out, std::string& er
             try {
                 auto proj = nlohmann::json::parse(ss.str(), nullptr, true, true);
                 if (proj.contains("file") && proj.at("file").is_string()) {
-                    fs::path fallback = src / proj.at("file").get<std::string>();
+                    fs::path      fallback = src / proj.at("file").get<std::string>();
                     std::ifstream ff(fallback, std::ios::binary);
                     if (ff) {
                         std::ostringstream ss2;
@@ -543,7 +541,8 @@ static bool readSceneJson(const fs::path& src, std::string& out, std::string& er
                         return true;
                     }
                 }
-            } catch (...) { /* fall through to error */ }
+            } catch (...) { /* fall through to error */
+            }
         }
         err = "no scene.json (or project.json `file` reference) under " + src.string();
         return false;
@@ -552,14 +551,26 @@ static bool readSceneJson(const fs::path& src, std::string& out, std::string& er
     if (! load_pkg(src, pkg, err)) return false;
     const PkgEntry* scene = nullptr;
     for (const auto& e : pkg.entries) {
-        if (e.path == "/scene.json") { scene = &e; break; }
+        if (e.path == "/scene.json") {
+            scene = &e;
+            break;
+        }
     }
-    if (! scene) { err = "scene.json not found inside " + src.string(); return false; }
+    if (! scene) {
+        err = "scene.json not found inside " + src.string();
+        return false;
+    }
     std::ifstream f(src, std::ios::binary);
-    if (! f) { err = "cannot reopen pkg for data read"; return false; }
+    if (! f) {
+        err = "cannot reopen pkg for data read";
+        return false;
+    }
     out.resize(scene->length);
     f.seekg(scene->offset);
-    if (! f.read(out.data(), scene->length)) { err = "scene.json read failed"; return false; }
+    if (! f.read(out.data(), scene->length)) {
+        err = "scene.json read failed";
+        return false;
+    }
     return true;
 }
 
@@ -609,7 +620,8 @@ int cmd_scripts(int argc, char** argv) {
         // WE scene.json occasionally contains // comments (defaultprojects/
         // fantasticcar has them in submesh blocks).  Enable comment-tolerant
         // parsing here to match the production loader.
-        scene = nlohmann::json::parse(sceneBytes, /*cb=*/nullptr,
+        scene = nlohmann::json::parse(sceneBytes,
+                                      /*cb=*/nullptr,
                                       /*allow_exceptions=*/true,
                                       /*ignore_comments=*/true);
     } catch (const std::exception& ex) {
@@ -644,9 +656,12 @@ int cmd_scripts(int argc, char** argv) {
         std::string pathKey = h.path;
         if (! pathKey.empty() && pathKey.front() == '.') pathKey.erase(0, 1);
         for (auto& c : pathKey) {
-            if (c == '.') c = '_';
-            else if (c == '[') c = '_';
-            else if (c == ']') c = '\0';
+            if (c == '.')
+                c = '_';
+            else if (c == '[')
+                c = '_';
+            else if (c == ']')
+                c = '\0';
         }
         pathKey.erase(std::remove(pathKey.begin(), pathKey.end(), '\0'), pathKey.end());
 

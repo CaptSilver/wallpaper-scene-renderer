@@ -1035,7 +1035,7 @@ TEST_SUITE("wp-pkg scripts") {
         CHECK(files[1].find("rate") != std::string::npos);
 
         // Content sanity: each file holds the full body verbatim.
-        std::ifstream f2(out + "/scripts/" + files[1], std::ios::binary);
+        std::ifstream      f2(out + "/scripts/" + files[1], std::ios::binary);
         std::ostringstream body;
         body << f2.rdbuf();
         CHECK(body.str().find("return 0.5") != std::string::npos);

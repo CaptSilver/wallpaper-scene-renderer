@@ -19,7 +19,7 @@ inline uint32_t NextSoundIndex(uint32_t curIndex, uint32_t trackCount, bool rand
     if (random) {
         // Pick a random track different from the current one
         std::uniform_int_distribution<uint32_t> dist(0, trackCount - 2);
-        uint32_t pick = dist(rng);
+        uint32_t                                pick = dist(rng);
         if (pick >= curIndex) pick++;
         return pick;
     }
@@ -36,10 +36,10 @@ inline uint32_t NextSoundIndex(uint32_t curIndex, uint32_t trackCount, bool rand
 /// @return number of silence frames to insert
 inline uint64_t RandomDelaySamples(float mintime, float maxtime, uint32_t sampleRate,
                                    std::mt19937& rng) {
-    float lo = std::max(0.0f, mintime);
-    float hi = std::max(lo, maxtime);
+    float                                 lo = std::max(0.0f, mintime);
+    float                                 hi = std::max(lo, maxtime);
     std::uniform_real_distribution<float> dist(lo, hi);
-    float delaySec = dist(rng);
+    float                                 delaySec = dist(rng);
     return (uint64_t)(delaySec * (float)sampleRate);
 }
 

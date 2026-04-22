@@ -1,6 +1,7 @@
 #pragma once
 // Pure string→string shader transform functions extracted from WPShaderParser.cpp.
-// Header-only; depends only on the C++ standard library (+Logging.h for FixEffectAlpha diagnostics).
+// Header-only; depends only on the C++ standard library (+Logging.h for FixEffectAlpha
+// diagnostics).
 
 #include <atomic>
 #include <fstream>
@@ -22,8 +23,8 @@ inline int regexTransformAll(std::string& text, const std::regex& re, ReplacerFn
     std::string tmp;
     size_t      lastPos = 0;
     int         count   = 0;
-    for (auto it = std::sregex_iterator(text.begin(), text.end(), re);
-         it != std::sregex_iterator(); ++it) {
+    for (auto it = std::sregex_iterator(text.begin(), text.end(), re); it != std::sregex_iterator();
+         ++it) {
         tmp.append(text, lastPos, (size_t)(*it).position() - lastPos);
         tmp += replacer(*it);
         lastPos = (size_t)(*it).position() + (*it).length();
@@ -44,8 +45,10 @@ inline size_t findMatchingParen(const std::string& text, size_t openPos) {
     int    depth = 1;
     size_t i     = openPos + 1;
     for (; i < text.size() && depth > 0; ++i) {
-        if (text[i] == '(') ++depth;
-        else if (text[i] == ')') --depth;
+        if (text[i] == '(')
+            ++depth;
+        else if (text[i] == ')')
+            --depth;
     }
     return (depth == 0) ? i : std::string::npos;
 }
@@ -73,15 +76,19 @@ inline CallInfo findEnclosingCallInfo(const std::string& text, size_t innerPos) 
     int    depth = 0;
     while (scan > 0) {
         --scan;
-        if (text[scan] == ')') ++depth;
+        if (text[scan] == ')')
+            ++depth;
         else if (text[scan] == '(') {
             if (depth == 0) {
                 // Count commas between '(' and innerPos at depth 0
                 int argIdx = 0, cd = 0;
                 for (size_t j = scan + 1; j < innerPos; ++j) {
-                    if (text[j] == '(') ++cd;
-                    else if (text[j] == ')') --cd;
-                    else if (text[j] == ',' && cd == 0) ++argIdx;
+                    if (text[j] == '(')
+                        ++cd;
+                    else if (text[j] == ')')
+                        --cd;
+                    else if (text[j] == ',' && cd == 0)
+                        ++argIdx;
                 }
                 // Extract function name before '('
                 size_t ne = scan;
@@ -229,7 +236,8 @@ inline std::string TranslateGeometryShader(const std::string& src) {
     {
         // Handle v_WorldPos, v_WorldRight, v_ScreenCoord (all vec3)
         // Ensure we don't match if it already has .xyz
-        std::regex re(R"(\b(v_WorldPos|v_WorldRight|v_ScreenCoord)\s*=\s*(mul\s*\([^;]+?\))\s*;(?!\s*\.xyz))");
+        std::regex re(
+            R"(\b(v_WorldPos|v_WorldRight|v_ScreenCoord)\s*=\s*(mul\s*\([^;]+?\))\s*;(?!\s*\.xyz))");
         result = std::regex_replace(result, re, "$1 = ($2).xyz;");
     }
 
@@ -238,8 +246,8 @@ inline std::string TranslateGeometryShader(const std::string& src) {
     //    Uses balanced-paren matching for nested calls.
     {
         const std::string marker = "OUT.Append(";
-        std::string replaced;
-        size_t pos = 0;
+        std::string       replaced;
+        size_t            pos = 0;
         while (true) {
             size_t start = result.find(marker, pos);
             if (start == std::string::npos) {
@@ -248,7 +256,7 @@ inline std::string TranslateGeometryShader(const std::string& src) {
             }
             replaced.append(result, pos, start - pos);
             // inner starts after "OUT.Append(" — the opening paren is at start+marker.size()-1
-            size_t openParen = start + marker.size() - 1;
+            size_t openParen  = start + marker.size() - 1;
             size_t afterClose = findMatchingParen(result, openParen);
             if (afterClose == std::string::npos) {
                 // Unmatched paren — keep original text
@@ -256,9 +264,9 @@ inline std::string TranslateGeometryShader(const std::string& src) {
                 pos = start + marker.size();
                 continue;
             }
-            size_t inner     = openParen + 1;
-            size_t innerEnd  = afterClose - 1; // position of ')'
-            size_t after     = skipWhitespaceAndSemicolon(result, afterClose);
+            size_t inner    = openParen + 1;
+            size_t innerEnd = afterClose - 1; // position of ')'
+            size_t after    = skipWhitespaceAndSemicolon(result, afterClose);
 
             std::string innerExpr = result.substr(inner, innerEnd - inner);
             // If inner expr is just a bare identifier (the old PS_INPUT var),
@@ -297,22 +305,25 @@ inline std::string TranslateGeometryShader(const std::string& src) {
         // Collect function declarations: funcName → [paramType0, paramType1, ...]
         std::map<std::string, std::vector<std::string>> funcSigs;
         {
-            std::regex re(R"(\b(?:void|float|vec[234]|int|uint|bool|mat[234])\s+(\w+)\s*\(([^)]*)\))");
+            std::regex re(
+                R"(\b(?:void|float|vec[234]|int|uint|bool|mat[234])\s+(\w+)\s*\(([^)]*)\))");
             std::regex paramRe(R"((?:in\s+|out\s+|inout\s+|const\s+)*(\w+)\s+\w+)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
-                 it != std::sregex_iterator(); ++it) {
-                std::string paramStr = (*it)[2].str();
+                 it != std::sregex_iterator();
+                 ++it) {
+                std::string              paramStr = (*it)[2].str();
                 std::vector<std::string> types;
                 for (auto pit = std::sregex_iterator(paramStr.begin(), paramStr.end(), paramRe);
-                     pit != std::sregex_iterator(); ++pit)
+                     pit != std::sregex_iterator();
+                     ++pit)
                     types.push_back((*pit)[1].str());
                 funcSigs[(*it)[1].str()] = types;
             }
         }
 
         const std::string gl_pos = "gl_in[0].gl_Position";
-        std::string out;
-        size_t pos = 0;
+        std::string       out;
+        size_t            pos = 0;
         while (pos < result.size()) {
             size_t found = result.find(gl_pos, pos);
             if (found == std::string::npos) {
@@ -330,8 +341,8 @@ inline std::string TranslateGeometryShader(const std::string& src) {
 
             // Find enclosing function call and check if parameter is vec3
             bool needsTrunc = false;
-            auto callInfo = findEnclosingCallInfo(result, found);
-            if (!callInfo.funcName.empty() && funcSigs.count(callInfo.funcName)) {
+            auto callInfo   = findEnclosingCallInfo(result, found);
+            if (! callInfo.funcName.empty() && funcSigs.count(callInfo.funcName)) {
                 auto& p = funcSigs[callInfo.funcName];
                 if (callInfo.argIndex < (int)p.size() && p[callInfo.argIndex] == "vec3")
                     needsTrunc = true;
@@ -470,13 +481,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // dimensions.  When a known vecN variable is in arithmetic with a swizzle
         // of more than N components, truncate the swizzle to N.
         auto fixArithSwizzleTrunc = [&result](const std::set<std::string>& small_vars,
-                                              int target_width) {
+                                              int                          target_width) {
             std::string swiz_chars = "xyzwrgbastpq";
             for (const auto& v : small_vars) {
                 for (int sw = 4; sw > target_width; --sw) {
                     // VAR OP WORD.XXXX  where XXXX has more than target_width components
-                    std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
-                                  swiz_chars + "]{" + std::to_string(sw) + "})\\b");
+                    std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" + swiz_chars +
+                                  "]{" + std::to_string(sw) + "})\\b");
                     regexTransformAll(result, re, [&](const std::smatch& m) {
                         return m[1].str() + m[2].str() + m[3].str() + "." +
                                m[4].str().substr(0, target_width);
@@ -486,8 +497,8 @@ inline std::string FixImplicitConversions(const std::string& src) {
                     std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(sw) +
                                    "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
                     regexTransformAll(result, re2, [&](const std::smatch& m) {
-                        return m[1].str() + "." + m[2].str().substr(0, target_width) +
-                               m[3].str() + m[4].str();
+                        return m[1].str() + "." + m[2].str().substr(0, target_width) + m[3].str() +
+                               m[4].str();
                     });
                 }
             }
@@ -514,19 +525,20 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // expand the swizzle to match the variable width by repeating its last char.
         // E.g. vec3_var - expr.xx → vec3_var - expr.xxx
         auto fixArithSwizzleExpand = [&result](const std::set<std::string>& large_vars,
-                                               int var_width, int swizzle_width) {
+                                               int                          var_width,
+                                               int                          swizzle_width) {
             std::string swiz_chars = "xyzwrgbastpq";
             int         pad_count  = var_width - swizzle_width;
-            auto padSwizzle = [&](const std::string& swiz) {
-                std::string out = swiz;
-                char last = out.back();
+            auto        padSwizzle = [&](const std::string& swiz) {
+                std::string out  = swiz;
+                char        last = out.back();
                 for (int j = 0; j < pad_count; j++) out += last;
                 return out;
             };
             for (const auto& v : large_vars) {
                 // VAR OP WORD.XX  (swizzle_width components, smaller than var_width)
-                std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" +
-                              swiz_chars + "]{" + std::to_string(swizzle_width) + "})\\b");
+                std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" + swiz_chars + "]{" +
+                              std::to_string(swizzle_width) + "})\\b");
                 // Need to capture `result` ref for the swizzle-skip check
                 const std::string& textRef = result;
                 regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
@@ -537,14 +549,12 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 });
 
                 // Reverse: WORD.XX OP VAR
-                std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" +
-                               std::to_string(swizzle_width) + "})(\\s*[+\\-*/]\\s*)\\b(" +
-                               v + ")\\b");
+                std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(swizzle_width) +
+                               "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
                 regexTransformAll(result, re2, [&](const std::smatch& m) -> std::string {
                     size_t vStart = (size_t)m.position(4);
                     size_t vEnd   = vStart + m[4].length();
-                    if (vEnd < textRef.size() && textRef[vEnd] == '.')
-                        return m[0].str(); // skip
+                    if (vEnd < textRef.size() && textRef[vEnd] == '.') return m[0].str(); // skip
                     return m[1].str() + "." + padSwizzle(m[2].str()) + m[3].str() + m[4].str();
                 });
             }
@@ -594,14 +604,14 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         // Collect vec4 vars assigned from texture()
         std::set<std::string> tex_vec4_vars;
-        std::regex re_decl(R"(\bvec4\s+(\w+)\s*=\s*texture\w*\s*\()");
+        std::regex            re_decl(R"(\bvec4\s+(\w+)\s*=\s*texture\w*\s*\()");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
              it != std::sregex_iterator();
              ++it)
             tex_vec4_vars.insert((*it)[1].str());
         // Collect known float uniforms
         std::set<std::string> float_vars;
-        std::regex re_float(R"(\buniform\s+float\s+(\w+)\s*;)");
+        std::regex            re_float(R"(\buniform\s+float\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
              it != std::sregex_iterator();
              ++it)
@@ -630,13 +640,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 // But preserve declarations: "vec4 tvar = texture" and "in vec4 tvar;"
                 std::string mark = "__DECL_MARK_" + tvar;
                 // Mark local declaration
-                result = std::regex_replace(
-                    result, std::regex(R"(\bvec4\s+)" + tvar + R"(\s*=\s*texture)"),
-                    "vec4 " + mark + " = texture");
+                result = std::regex_replace(result,
+                                            std::regex(R"(\bvec4\s+)" + tvar + R"(\s*=\s*texture)"),
+                                            "vec4 " + mark + " = texture");
                 // Mark 'in' declaration
-                result = std::regex_replace(
-                    result, std::regex(R"(\bin\s+vec4\s+)" + tvar + R"(\s*;)"),
-                    "in vec4 " + mark + ";");
+                result = std::regex_replace(result,
+                                            std::regex(R"(\bin\s+vec4\s+)" + tvar + R"(\s*;)"),
+                                            "in vec4 " + mark + ";");
                 // Replace bare uses with .x
                 std::regex re_bare("\\b" + tvar + "(?!\\s*[.\\[\\w])");
                 result = std::regex_replace(result, re_bare, tvar + ".x");
@@ -737,17 +747,16 @@ inline std::string FixImplicitConversions(const std::string& src) {
             // uniform/out/attribute/varying qualifiers.  C++ regex has no
             // variable-length lookbehind, so we inspect preceding context
             // per match.
-            bool shadowed = false;
-            std::regex re_decl(
-                R"(\b(?:vec[234]|float|int|uint|bool|mat[234](?:x[234])?)\s+)"
-                + name + R"(\s*(?:=|;|,|\)))");
+            bool       shadowed = false;
+            std::regex re_decl(R"(\b(?:vec[234]|float|int|uint|bool|mat[234](?:x[234])?)\s+)" +
+                               name + R"(\s*(?:=|;|,|\)))");
             for (auto dit = std::sregex_iterator(result.begin(), result.end(), re_decl);
                  dit != std::sregex_iterator();
                  ++dit) {
                 auto pos = (size_t)dit->position();
                 // Look back ~20 chars for a qualifier keyword.
-                size_t start = pos > 20 ? pos - 20 : 0;
-                std::string ctx = result.substr(start, pos - start);
+                size_t                  start = pos > 20 ? pos - 20 : 0;
+                std::string             ctx   = result.substr(start, pos - start);
                 static const std::regex re_qual(
                     R"(\b(?:in|uniform|out|attribute|varying|flat\s+in|centroid\s+in|smooth\s+in|noperspective\s+in)\s+$)");
                 if (! std::regex_search(ctx, re_qual)) {
@@ -759,20 +768,20 @@ inline std::string FixImplicitConversions(const std::string& src) {
 
             // Detect plain assignment (NAME = ...), component (NAME.x = ...) or
             // compound (NAME +=/-=/*=//=), but not == (comparison).
-            std::regex  re_assign("\\b" + name + R"((\.\w+)?\s*[\+\-\*\/]?=(?!=))");
+            std::regex re_assign("\\b" + name + R"((\.\w+)?\s*[\+\-\*\/]?=(?!=))");
             if (! std::regex_search(result, re_assign)) continue;
 
             // Rename all body uses: NAME → _m_NAME, then fix the 'in' declaration back
             std::string mut = "_m_" + name;
-            result = std::regex_replace(result, std::regex("\\b" + name + "\\b"), mut);
+            result          = std::regex_replace(result, std::regex("\\b" + name + "\\b"), mut);
             // Restore the 'in' declaration
-            result = std::regex_replace(
-                result, std::regex("\\bin\\s+" + type + "\\s+" + mut + "\\s*;"),
-                "in " + type + " " + name + ";");
+            result = std::regex_replace(result,
+                                        std::regex("\\bin\\s+" + type + "\\s+" + mut + "\\s*;"),
+                                        "in " + type + " " + name + ";");
             // Add mutable copy at start of main()
-            result = std::regex_replace(
-                result, std::regex(R"(void\s+main\s*\(\s*\)\s*\{)"),
-                "void main() {\n " + type + " " + mut + " = " + name + ";");
+            result = std::regex_replace(result,
+                                        std::regex(R"(void\s+main\s*\(\s*\)\s*\{)"),
+                                        "void main() {\n " + type + " " + mut + " = " + name + ";");
             break; // handle one at a time to avoid iterator invalidation
         }
     }
@@ -790,7 +799,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Detect known vec2/vec3/vec4 variables used in a float assignment.
     {
         std::set<std::string> vec_vars;
-        std::regex re_vec(R"(\b(?:uniform|in)\s+vec[234]\s+(\w+)\s*;)");
+        std::regex            re_vec(R"(\b(?:uniform|in)\s+vec[234]\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vec);
              it != std::sregex_iterator();
              ++it)
@@ -803,8 +812,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
             // Must scope to float-assignment context — otherwise this wrongly appends .x
             // to vec uniforms at the tail of any statement (e.g. "vec2 x = a - u_Offset;"
             // became "vec2 x = a - u_Offset.x;", introducing a type mismatch).
-            std::regex re2(
-                R"((\bfloat\s+\w+\s*=\s*[^;]*[*+\-/]\s*))" + name + R"((\s*;))");
+            std::regex re2(R"((\bfloat\s+\w+\s*=\s*[^;]*[*+\-/]\s*))" + name + R"((\s*;))");
             result = std::regex_replace(result, re2, "$1" + name + ".x$2");
         }
     }
@@ -824,9 +832,8 @@ inline std::string FixImplicitConversions(const std::string& src) {
         }
         auto collectByWidth = [&](int width) {
             std::set<std::string> names;
-            std::regex re(std::string(R"(\b(?:uniform|in|varying)\s+vec)") +
-                          std::to_string(width) + R"(\s+(\w+)\s*;|\bvec)" +
-                          std::to_string(width) + R"(\s+(\w+)\s*[;=])");
+            std::regex re(std::string(R"(\b(?:uniform|in|varying)\s+vec)") + std::to_string(width) +
+                          R"(\s+(\w+)\s*;|\bvec)" + std::to_string(width) + R"(\s+(\w+)\s*[;=])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
                  it != std::sregex_iterator();
                  ++it) {
@@ -847,13 +854,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 // W OP N (bare both sides)
                 std::regex re_a(R"(\b)" + wname + R"(\b(?![.\[(\w])(\s*[+\-*/]\s*))" + nn +
                                 R"(\b(?![.\[(\w]))");
-                result = std::regex_replace(result, re_a,
-                                             wname + "." + swizzle + "$1" + nn);
+                result = std::regex_replace(result, re_a, wname + "." + swizzle + "$1" + nn);
                 // N OP W
                 std::regex re_b(R"(\b)" + nn + R"(\b(?![.\[(\w])(\s*[+\-*/]\s*))" + wname +
                                 R"(\b(?![.\[(\w]))");
-                result = std::regex_replace(result, re_b,
-                                             nn + "$1" + wname + "." + swizzle);
+                result = std::regex_replace(result, re_b, nn + "$1" + wname + "." + swizzle);
             }
         };
         for (const auto& [wname, wwidth] : wider_varyings) {
@@ -878,30 +883,28 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 varying_widths[(*it)[2].str()] = std::stoi((*it)[1].str());
         }
 
-        auto processAssign = [&](const char* targetType, int targetWidth,
-                                 const char* targetSwizzle) {
-            std::regex re_stmt(std::string(R"(\b)") + targetType + R"(\s+\w+\s*=\s*[^;]*;)");
-            regexTransformAll(result, re_stmt, [&](const std::smatch& m) -> std::string {
-                std::string stmt = m[0].str();
-                size_t eq_pos = stmt.find('=');
-                if (eq_pos == std::string::npos) return stmt;
-                std::string lhs = stmt.substr(0, eq_pos + 1);
-                std::string rhs = stmt.substr(eq_pos + 1);
-                for (const auto& [vname, vwidth] : varying_widths) {
-                    if (vwidth <= targetWidth) continue;
-                    std::string rep = vname + "." + targetSwizzle;
-                    // VARYING followed by arithmetic op (bare — not already swizzled).
-                    std::regex re_after(
-                        R"(\b)" + vname + R"(\b(?![.\[(\w])(?=\s*[*+\-/]))");
-                    rhs = std::regex_replace(rhs, re_after, rep);
-                    // Arithmetic op followed by VARYING (bare).
-                    std::regex re_before(
-                        R"(([*+\-/]\s*))" + vname + R"(\b(?![.\[(\w]))");
-                    rhs = std::regex_replace(rhs, re_before, "$1" + rep);
-                }
-                return lhs + rhs;
-            });
-        };
+        auto processAssign =
+            [&](const char* targetType, int targetWidth, const char* targetSwizzle) {
+                std::regex re_stmt(std::string(R"(\b)") + targetType + R"(\s+\w+\s*=\s*[^;]*;)");
+                regexTransformAll(result, re_stmt, [&](const std::smatch& m) -> std::string {
+                    std::string stmt   = m[0].str();
+                    size_t      eq_pos = stmt.find('=');
+                    if (eq_pos == std::string::npos) return stmt;
+                    std::string lhs = stmt.substr(0, eq_pos + 1);
+                    std::string rhs = stmt.substr(eq_pos + 1);
+                    for (const auto& [vname, vwidth] : varying_widths) {
+                        if (vwidth <= targetWidth) continue;
+                        std::string rep = vname + "." + targetSwizzle;
+                        // VARYING followed by arithmetic op (bare — not already swizzled).
+                        std::regex re_after(R"(\b)" + vname + R"(\b(?![.\[(\w])(?=\s*[*+\-/]))");
+                        rhs = std::regex_replace(rhs, re_after, rep);
+                        // Arithmetic op followed by VARYING (bare).
+                        std::regex re_before(R"(([*+\-/]\s*))" + vname + R"(\b(?![.\[(\w]))");
+                        rhs = std::regex_replace(rhs, re_before, "$1" + rep);
+                    }
+                    return lhs + rhs;
+                });
+            };
         processAssign("vec2", 2, "xy");
         processAssign("vec3", 3, "xyz");
     }
@@ -980,9 +983,9 @@ inline std::string FixImplicitConversions(const std::string& src) {
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_func);
                  it != std::sregex_iterator();
                  ++it) {
-                std::string name = (*it)[1].str();
-                std::string type = (*it)[2].str();
-                int         dim  = type == "vec2" ? 2 : type == "vec3" ? 3 : 4;
+                std::string name           = (*it)[1].str();
+                std::string type           = (*it)[2].str();
+                int         dim            = type == "vec2" ? 2 : type == "vec3" ? 3 : 4;
                 func_first_param_dim[name] = dim;
             }
         }
@@ -1002,8 +1005,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 // Match FNAME( VNAME [,)]) where VNAME is not already swizzled.
                 std::regex re(std::string(R"(\b)") + fname + R"(\s*\(\s*)" + vname +
                               R"(\s*([,\)]))");
-                result =
-                    std::regex_replace(result, re, fname + "(" + vname + "." + swiz + "$1");
+                result = std::regex_replace(result, re, fname + "(" + vname + "." + swiz + "$1");
             }
         }
     }
@@ -1110,13 +1112,15 @@ inline std::string FixEffectAlpha(const std::string& src) {
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
     // Dump the fixed shader for diagnostics
     static std::atomic<int> dump_idx { 0 };
-    int idx = dump_idx.fetch_add(1);
+    int                     idx = dump_idx.fetch_add(1);
     if (idx < 10) {
-        std::string path = "/tmp/alpha_fix_dump_" + std::to_string(idx) + ".glsl";
+        std::string   path = "/tmp/alpha_fix_dump_" + std::to_string(idx) + ".glsl";
         std::ofstream f(path);
         if (f) f << result;
         LOG_INFO("FixEffectAlpha[%d]: injected alpha preservation → %s (%zu bytes)",
-                 idx, path.c_str(), result.size());
+                 idx,
+                 path.c_str(),
+                 result.size());
     }
 #endif
 
@@ -1166,8 +1170,7 @@ inline std::string ClampAudioReactiveShift(const std::string& src) {
     // Pattern: (u_<WORD>Offset * v_AudioShift) — also tolerate whitespace
     // and optional parentheses.  Capture the offset uniform so we emit the
     // minimum rewrite.
-    static const std::regex re(
-        R"(\b(u_\w*[Oo]ffset)\s*\*\s*v_AudioShift\b)");
+    static const std::regex re(R"(\b(u_\w*[Oo]ffset)\s*\*\s*v_AudioShift\b)");
     if (! std::regex_search(src, re)) return src;
 
     // Cap at 1.0 — not a real clamp (softSat in AudioAnalyzer already peaks
@@ -1177,8 +1180,7 @@ inline std::string ClampAudioReactiveShift(const std::string& src) {
     // appeared.  The AUDIOPROCESSING=0 text-shift bug it was originally
     // guarding against is now addressed upstream in WPSceneParser (combo
     // override for chromatic_aberration).
-    std::string result = std::regex_replace(
-        src, re, "$1 * min(v_AudioShift, 1.0)");
+    std::string result = std::regex_replace(src, re, "$1 * min(v_AudioShift, 1.0)");
 
     // Log only the first time in the process — diagnostic so we can see
     // this fire on new wallpapers without flooding the journal.
@@ -1198,8 +1200,8 @@ inline std::string FixCombineAlpha(const std::string& src) {
         R"((\w+)\.a\s*=\s*\(clamp\(\s*\1\.a\s*\+\s*\w+\.a\s*,\s*0\.0\s*,\s*1\.0\s*\)\)\s*;)");
     if (! std::regex_search(src, re)) return src;
 
-    std::string result = std::regex_replace(src, re,
-        "// $& // removed: bloom alpha must not extend object boundary");
+    std::string result = std::regex_replace(
+        src, re, "// $& // removed: bloom alpha must not extend object boundary");
 
     LOG_INFO("FixCombineAlpha: removed additive alpha in combine shader");
     return result;

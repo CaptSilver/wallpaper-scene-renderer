@@ -30,7 +30,7 @@ struct SceneImageEffect {
         std::string src;
         i32         afterpos { 0 }; // start at 1, 0 for begin at all
     };
-    std::string                     name;    // effect name from scene.json
+    std::string                     name;             // effect name from scene.json
     bool                            visible { true }; // runtime visibility toggle
     std::vector<Command>            commands;
     std::list<SceneImageEffectNode> nodes;
@@ -50,8 +50,8 @@ public:
     void        SetFinalBlend(BlendMode m) { m_final_blend = m; }
     // When true, ResolveEffect writes the final output to a per-node offscreen RT instead of
     // SpecTex_Default, so invisible dependency nodes don't composite into the main scene.
-    void        SetOffscreen(bool v) { m_is_offscreen = v; }
-    bool        IsOffscreen() const { return m_is_offscreen; }
+    void SetOffscreen(bool v) { m_is_offscreen = v; }
+    bool IsOffscreen() const { return m_is_offscreen; }
 
     // When true, the last effect node inherits the parent pointer from the
     // world node so its world transform includes the parent-group transform.
@@ -63,9 +63,7 @@ public:
     // to identity for effect-chain rendering, children that inherit_parent
     // can no longer chain through the (now-identity) parent world node.
     // The proxy preserves the correct parent transform.
-    void SetParentProxy(std::shared_ptr<SceneNode> proxy) {
-        m_parent_proxy = std::move(proxy);
-    }
+    void SetParentProxy(std::shared_ptr<SceneNode> proxy) { m_parent_proxy = std::move(proxy); }
 
     // When true (compose layer with config.passthrough), the effect chain
     // starts from the current scene output (_rt_default) instead of the
@@ -92,11 +90,11 @@ private:
     std::string m_pingpong_a;
     std::string m_pingpong_b;
 
-    bool fullscreen { false };
-    bool m_is_offscreen { false };
-    bool m_inherit_parent { false };
-    bool m_passthrough { false };
-    std::string m_final_camera; // Camera for final composite (empty → activeCamera)
+    bool                       fullscreen { false };
+    bool                       m_is_offscreen { false };
+    bool                       m_inherit_parent { false };
+    bool                       m_passthrough { false };
+    std::string                m_final_camera; // Camera for final composite (empty → activeCamera)
     std::unique_ptr<SceneMesh> m_final_mesh;
     std::unique_ptr<SceneNode> m_final_node;
     BlendMode                  m_final_blend;

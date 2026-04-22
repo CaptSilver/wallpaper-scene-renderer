@@ -15,7 +15,7 @@ namespace wallpaper::vulkan
 // order), returns a parallel vector: result[i] is true iff handle[i] is
 // the LAST occurrence in the sequence (no later pass writes the same
 // handle).  Entries where handle == H{} always get false.
-template <typename H>
+template<typename H>
 std::vector<bool> ComputeIsLastWriter(std::span<const H> outputs) {
     std::unordered_map<H, std::size_t> last_index;
     last_index.reserve(outputs.size());
@@ -39,7 +39,7 @@ std::vector<bool> ComputeIsLastWriter(std::span<const H> outputs) {
 // accumulating into _rt_default), that earlier pass will overwrite the
 // cached bytes on the NEXT frame before the skipped pass's consumer reads
 // them.  Only sole-writer passes can safely skip on re-execute.
-template <typename H>
+template<typename H>
 std::vector<bool> ComputeIsSoleWriter(std::span<const H> outputs) {
     std::unordered_map<H, std::size_t> count;
     count.reserve(outputs.size());
@@ -67,7 +67,7 @@ std::vector<bool> ComputeIsSoleWriter(std::span<const H> outputs) {
 // Computed by fixpoint: initial candidates = (a) ∧ (b); peel off any
 // candidate that violates (c); repeat until stable.  Guaranteed to
 // terminate because each iteration strictly shrinks the candidate set.
-template <typename H>
+template<typename H>
 std::vector<bool> ComputeIsSafeToSkip(std::span<const H>              outputs,
                                       std::span<const std::vector<H>> inputs,
                                       const std::vector<bool>&        is_cacheable) {
@@ -117,7 +117,7 @@ std::vector<bool> ComputeIsSafeToSkip(std::span<const H>              outputs,
 // VK_IMAGE_LAYOUT_UNDEFINED — either the pass has no depth, or the
 // depth image is absent, or some earlier visible pass this frame has
 // already initialised it.
-template <typename DepthHandle, typename InitedSet>
+template<typename DepthHandle, typename InitedSet>
 bool IsDepthSafeToSkip(bool has_depth, DepthHandle depth_image,
                        const InitedSet& already_inited_this_frame) {
     if (! has_depth) return true;

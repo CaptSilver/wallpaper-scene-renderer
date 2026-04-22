@@ -179,10 +179,9 @@ int main(int argc, char** argv) {
             auto start   = std::chrono::steady_clock::now();
             auto next_at = start;
             while (true) {
-                double elapsed_ms =
-                    std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - start)
-                        .count();
+                double elapsed_ms = std::chrono::duration<double, std::milli>(
+                                        std::chrono::steady_clock::now() - start)
+                                        .count();
                 char name_buf[32];
                 std::snprintf(name_buf, sizeof(name_buf), "_%06d", (int)elapsed_ms);
                 std::string path = base + name_buf + ext;
