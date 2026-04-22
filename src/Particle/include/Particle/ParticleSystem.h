@@ -5,6 +5,7 @@
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 
+#include <atomic>
 #include <memory>
 
 namespace wallpaper
@@ -87,6 +88,15 @@ public:
     bool IsBurstDone() const { return m_burst_done; }
     void ClearBurstDone() { m_burst_done = false; }
 
+    // Runtime multiplier applied on top of the static `m_rate` factor.
+    // Scripted instanceoverride.rate (NieR:Automata audio-reactive emission)
+    // writes here once per property tick from the QML/scene-script thread;
+    // Emitt() on the render thread reads it.  Defaults to 1.0 → no effect
+    // when no script is driving it.  Atomic because render and script
+    // threads are separate.
+    void SetDynamicRateMultiplier(double m) { m_dynamic_rate_multiplier.store(m); }
+    double DynamicRateMultiplier() const { return m_dynamic_rate_multiplier.load(); }
+
     ParticleInstance* QueryNewInstance();
 
     void AddEmitter(ParticleEmittOp&&);
@@ -140,6 +150,9 @@ private:
     // the last Reset() but currently has none.
     bool  m_burst_done { false };
     bool  m_any_alive_since_reset { false };
+
+    // Scripted rate override — see SetDynamicRateMultiplier.
+    std::atomic<double> m_dynamic_rate_multiplier { 1.0 };
 };
 
 class Scene;

@@ -3487,6 +3487,13 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             ScenePropertyScript::Attachment::Object, -1,
             context.scene->propertyScripts);
 
+        // Particle instance-override scripts (e.g. NieR:Automata's audio-
+        // reactive emission-rate modulation on the starfield particles).
+        wek::extractParticleInstanceOverrideScripts(
+            id, layerName, obj,
+            ScenePropertyScript::Attachment::Object, -1,
+            context.scene->propertyScripts);
+
         // Per-animation-layer scripts (puppet rigs).  Used by Lucy
         // (3521337568) to offset start frames per rigged animation track.
         wek::extractAnimationLayerScripts(

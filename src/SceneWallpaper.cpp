@@ -433,6 +433,23 @@ public:
         }
     }
 
+    void setParticleRate(i32 id, float rate) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_particle_rate[id] = rate;
+        static int s_rate_log       = 0;
+        static std::unordered_map<i32, float> s_last_logged_rate;
+        auto                                  prev = s_last_logged_rate.find(id);
+        // Log the first few writes + any subsequent >30% swing so NieR 2B's
+        // bass-driven 0.1..1.0 oscillation is visible without flooding the
+        // journal at every tick.
+        bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
+        if (++s_rate_log <= 5 || jumped) {
+            LOG_INFO("setParticleRate[%d]: id=%d rate=%.4f%s",
+                     s_rate_log, id, rate, jumped ? " [jump]" : "");
+            s_last_logged_rate[id] = rate;
+        }
+    }
+
     // Scene-level property setters
     void setClearColor(float r, float g, float b) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
@@ -824,6 +841,19 @@ private:
                         mat->customShader.constValuesDirty           = true;
                     }
                 }
+                // Scripted particle instance-override rate — write through
+                // to the corresponding ParticleSubSystem's dynamic multiplier.
+                // Misses (id that isn't a particle layer) are silently skipped
+                // instead of warned: the extractor only emits this channel
+                // for particle hosts, so a miss means the node was never
+                // created (effect redirect, pool carve-out) and the script
+                // just had nothing to drive.
+                for (auto& [id, rate] : m_pending_particle_rate) {
+                    auto sit = m_scene->particleSubByNodeId.find(id);
+                    if (sit == m_scene->particleSubByNodeId.end() || ! sit->second) continue;
+                    sit->second->SetDynamicRateMultiplier((double)rate);
+                }
+                m_pending_particle_rate.clear();
                 // Apply effect visibility changes
                 for (auto& [nodeId, effIdx, vis] : m_pending_effect_visible) {
                     auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
@@ -1305,6 +1335,10 @@ private:
     std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
     std::unordered_map<i32, bool>                               m_pending_visible_updates;
     std::unordered_map<i32, float>                              m_pending_alpha_updates;
+    // Scripted particle instance-override rate (NieR:Automata starfields).
+    // Merged per-id so the latest value wins within a single tick — there is
+    // no reason to replay intermediate values the renderer never sampled.
+    std::unordered_map<i32, float>                              m_pending_particle_rate;
     std::vector<std::tuple<i32, i32, bool>>
         m_pending_effect_visible; // (nodeId, effectIdx, visible)
 
@@ -1491,6 +1525,10 @@ void SceneWallpaper::updateNodeVisible(int32_t id, bool visible) {
 
 void SceneWallpaper::updateNodeAlpha(int32_t id, float alpha) {
     m_main_handler->renderHandler()->setNodeAlpha(id, alpha);
+}
+
+void SceneWallpaper::updateParticleRate(int32_t id, float rate) {
+    m_main_handler->renderHandler()->setParticleRate(id, rate);
 }
 
 void SceneWallpaper::updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible) {

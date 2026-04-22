@@ -69,6 +69,57 @@ extractPropertyScriptsFromHost(i32                                   id,
     }
 }
 
+// Extract scripted particle instance-override fields on `host` — the
+// `instanceoverride.{rate,...}` keys each carry a `{value, script}` object in
+// the same shape as top-level property scripts.  Stored with
+// `property = "instanceoverride.<field>"` so the dispatcher can branch on
+// the prefix.  NieR:Automata (3633635618) is the current consumer, driving
+// particle emission rate from audio bass via the stock workshop 2097947622
+// template.
+//
+// Kept in a separate helper so tests can exercise the shape independently.
+// Only `rate` is extracted for now — other instanceoverride fields
+// (alpha/size/count/speed/brightness/color) are not yet routed to any
+// runtime-update path, and silently extracting them would put the engine
+// back in stub territory.  Adding a new field here means wiring a Scene
+// update API for it at the same time.
+inline void
+extractParticleInstanceOverrideScripts(i32                                   id,
+                                       const std::string&                    layerName,
+                                       const nlohmann::json&                 host,
+                                       ScenePropertyScript::Attachment       attachment,
+                                       i32                                   animationLayerIndex,
+                                       std::vector<ScenePropertyScript>&     out) {
+    if (! host.contains("instanceoverride")) return;
+    const auto& io = host.at("instanceoverride");
+    if (! io.is_object()) return;
+
+    for (const char* sub : { "rate" }) {
+        if (! io.contains(sub)) continue;
+        const auto& val = io.at(sub);
+        if (! val.is_object() || ! val.contains("script")) continue;
+
+        ScenePropertyScript sps;
+        sps.id                  = id;
+        sps.property            = std::string("instanceoverride.") + sub;
+        sps.script              = val.at("script").get<std::string>();
+        sps.layerName           = layerName;
+        sps.attachment          = attachment;
+        sps.animationLayerIndex = animationLayerIndex;
+
+        if (val.contains("scriptproperties"))
+            sps.scriptProperties = val.at("scriptproperties").dump();
+
+        // instanceoverride scalars carry their default in `value`.  The
+        // script's init(value) receives this, so NieR 2B's `initialValue = 1.0`
+        // matches the JSON's `"value": 1.0` and the audio-reactive scaling
+        // stays centered on the baseline rate.
+        sps.initialFloat = val.value("value", 1.0f);
+
+        out.push_back(std::move(sps));
+    }
+}
+
 // Walk objects[N].animationlayers[M] if present, extracting per-rig-layer
 // scripts.  Called after `extractPropertyScriptsFromHost(... , Object, -1)`
 // has handled the top-level scripts on the same object.

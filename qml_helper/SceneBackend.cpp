@@ -3173,6 +3173,8 @@ void SceneObject::setupTextScripts() {
                                              ? PropertyScriptState::Kind::Visible
                                          : (psi.property == "alpha")
                                              ? PropertyScriptState::Kind::Alpha
+                                         : (psi.property.rfind("instanceoverride.", 0) == 0)
+                                             ? PropertyScriptState::Kind::ParticleRate
                                              : PropertyScriptState::Kind::Vec3;
         state.updateFn                 = updateFn;
         state.initFn                   = initFn;
@@ -3232,7 +3234,11 @@ void SceneObject::setupTextScripts() {
             QJSValue initVal;
             if (psi.property == "visible") {
                 initVal = QJSValue(psi.initialVisible);
-            } else if (psi.property == "alpha") {
+            } else if (psi.property == "alpha" ||
+                       psi.property.rfind("instanceoverride.", 0) == 0) {
+                // instanceoverride.* scripts take the static `value` field as
+                // the init seed — NieR 2B captures it as `initialValue` and
+                // multiplies later by the audio envelope.
                 initVal = QJSValue((double)psi.initialFloat);
             } else {
                 initVal = m_jsEngine->evaluate(QString("Vec3(%1,%2,%3)")
@@ -4054,7 +4060,10 @@ void SceneObject::evaluatePropertyScripts() {
         if (! events.empty()) {
             auto buildValue = [&](const PropertyScriptState& state) {
                 if (state.property == "visible") return QJSValue(state.currentVisible);
-                if (state.property == "alpha") return QJSValue((double)state.currentFloat);
+                if (state.property == "alpha" ||
+                    state.property.rfind("instanceoverride.", 0) == 0) {
+                    return QJSValue((double)state.currentFloat);
+                }
                 return vec3Fn.call({ QJSValue((double)state.currentVec3[0]),
                                      QJSValue((double)state.currentVec3[1]),
                                      QJSValue((double)state.currentVec3[2]) });
@@ -4133,6 +4142,16 @@ void SceneObject::evaluatePropertyScripts() {
                 float v            = (float)out.property(i + 1).toNumber();
                 state.currentFloat = v;
                 m_scene->updateNodeAlpha(state.id, v);
+                if (s_scriptDiag) s_updatesAlpha++;
+                break;
+            }
+            case Kind::ParticleRate: {
+                // Same wire shape as Alpha (single float), routed to the
+                // particle subsystem's dynamic rate multiplier instead of
+                // the g_UserAlpha uniform.
+                float v            = (float)out.property(i + 1).toNumber();
+                state.currentFloat = v;
+                m_scene->updateParticleRate(state.id, v);
                 if (s_scriptDiag) s_updatesAlpha++;
                 break;
             }

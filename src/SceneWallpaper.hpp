@@ -149,6 +149,12 @@ public:
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
 
+    // Scripted particle instance-override dispatch.  Currently only `rate` is
+    // implemented; the script returns a multiplier that scales emission speed
+    // on top of the static instanceoverride.rate value captured at parse time.
+    // No-op on IDs that don't own a particle subsystem.
+    void updateParticleRate(int32_t id, float rate);
+
     // Batched per-tick layer update — one lock for the entire dispatch pass.
     // Flags: 1=origin 2=scale 4=angles 8=visible 16=alpha (matches JS
     // DIRTY_STRIDE F_* constants).  Unset fields are ignored.

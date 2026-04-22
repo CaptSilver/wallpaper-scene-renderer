@@ -232,7 +232,12 @@ private:
         // Values are ordered so a stable partition by kind yields the
         // (visible, vec3, alpha) execution order that dependent scripts rely
         // on (visibles compute shared.* that vec3/alpha scripts then read).
-        enum class Kind : uint8_t { Visible = 0, Vec3 = 1, Alpha = 2 };
+        // ParticleRate (NieR:Automata audio-reactive starfields) returns a
+        // scalar just like Alpha, so the JS dispatch loop handles it with
+        // the same [xe, N) scalar code path — we only need a distinct Kind
+        // so the C++ switch routes the value to updateParticleRate instead
+        // of updateNodeAlpha.
+        enum class Kind : uint8_t { Visible = 0, Vec3 = 1, Alpha = 2, ParticleRate = 3 };
         int32_t              id;
         std::string          property;
         std::string          layerName;

@@ -128,7 +128,11 @@ void ParticleSubSystem::Emitt() {
     // at most two render ticks at 60fps target.
     constexpr double kMaxParticleFrameTime = 0.032;
     double           frameTime             = std::min(m_sys.scene.frameTime, kMaxParticleFrameTime);
-    double           particleTime          = frameTime * m_rate;
+    // Dynamic multiplier is 1.0 when no script is driving this subsystem.
+    // NieR:Automata's audio-reactive starfield writes 0.1..1.0 here each
+    // property tick based on bass amplitude.
+    double           rate_eff              = m_rate * m_dynamic_rate_multiplier.load();
+    double           particleTime          = frameTime * rate_eff;
     m_time += particleTime;
 
     if (m_spawn_type == SpawnType::STATIC) {

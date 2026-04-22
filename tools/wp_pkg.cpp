@@ -3,6 +3,7 @@
 // Subcommands:
 //   list    <pkg>                          Print header + entries.
 //   extract <pkg> <outdir> [--flat] [--dry-run] [--raw]
+//   scripts <pkg|dir> [<outdir>] [--dry-run]
 //
 // By default, `extract` preserves the internal folder structure (so a
 // scene's /scene.json, /shaders/*.frag, /models/*.mdl, /materials/*.json,
@@ -17,8 +18,16 @@
 // --raw disables the tex quick-summary sidecar (default: .tex files get a
 // .info.txt next to them describing format / dimensions / sprite flag).
 //
-// Self-contained: does NOT link the renderer. The .pkg format is tiny
-// enough that re-implementing it here is cheaper than pulling in
+// `scripts` walks scene.json and dumps every inlined SceneScript body
+// (escaped as a JSON string) to its own file plus a one-line manifest.
+// Replaces the recurring one-off Python walkers we used to audit which
+// objects carry which scripts — especially useful when investigating
+// wallpapers that don't ship any .js files, only inlined scripts in
+// property/instanceoverride bindings (e.g. NieR:Automata).
+//
+// Self-contained: does NOT link the renderer, only nlohmann/json
+// (header-only, already a submodule).  The .pkg format is tiny enough
+// that re-implementing it here is cheaper than pulling in
 // wescene-renderer + lz4 + mpv + freetype.
 
 #include <algorithm>
@@ -28,9 +37,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
 
@@ -393,6 +405,281 @@ int cmd_extract(int argc, char** argv) {
     return fail == 0 ? 0 : 1;
 }
 
+// ─── scripts subcommand ───────────────────────────────────────────────────
+//
+// Walk scene.json and dump every inlined script body to its own file, one
+// per occurrence.  Matches the shape WE uses today:
+//   objects[N].{visible,origin,scale,angles,alpha}.script       (top-level)
+//   objects[N].animationlayers[M].{visible,...}.script          (per-rig)
+//   objects[N].instanceoverride.<field>.script                  (particle)
+// plus any future scripted property — the walker is generic, it just
+// looks for `.script` string values that smell like JS.
+
+// `isJsLike`: permissive sniffer — anything that contains common JS
+// keywords or the WE boilerplate counts.  The WE format always has the
+// `'use strict'` prelude on inlined scripts, which by itself is enough.
+static bool isJsLike(const std::string& s) {
+    if (s.empty()) return false;
+    if (s.find("'use strict'") != std::string::npos) return true;
+    if (s.find("\"use strict\"") != std::string::npos) return true;
+    if (s.find("export function") != std::string::npos) return true;
+    if (s.find("function ") != std::string::npos) return true;
+    if (s.find("return ") != std::string::npos && s.find("{") != std::string::npos) return true;
+    return false;
+}
+
+// Join a JSON path pointer like ".instanceoverride.rate.script".
+static std::string pathJoin(const std::string& base, const std::string& leaf) {
+    if (base.empty()) return leaf;
+    return base + "." + leaf;
+}
+
+// Walk the tree, collecting (id, name, bindingPath, scriptBody) for every
+// `.script` leaf that looks like JS.  Object id/name come from the nearest
+// enclosing object that has them (scene.json top-level "objects" entries).
+struct ScriptHit {
+    int32_t     id { -1 };
+    std::string name;
+    std::string path;
+    std::string body;
+};
+static void walkForScripts(const nlohmann::json& node,
+                           const std::string&    path,
+                           int32_t               curId,
+                           const std::string&    curName,
+                           std::vector<ScriptHit>& out) {
+    if (node.is_object()) {
+        int32_t     nextId   = curId;
+        std::string nextName = curName;
+        // Only capture the OUTERMOST object's id/name — nested bindings like
+        // instanceoverride sometimes carry their own `id` field (the target
+        // instance id to override on), which would otherwise shadow the
+        // enclosing scene object's identity.  NieR:Automata obj 299 has
+        // instanceoverride.id=301; we want the script to be tagged with 299.
+        if (curId < 0 && node.contains("id") && node.at("id").is_number_integer()) {
+            nextId = node.at("id").get<int32_t>();
+        }
+        if (curName.empty() && node.contains("name") && node.at("name").is_string()) {
+            nextName = node.at("name").get<std::string>();
+        }
+        for (auto it = node.begin(); it != node.end(); ++it) {
+            const std::string& key = it.key();
+            const auto&        v   = it.value();
+            if (key == "script" && v.is_string()) {
+                std::string body = v.get<std::string>();
+                if (isJsLike(body)) {
+                    ScriptHit hit;
+                    hit.id   = nextId;
+                    hit.name = nextName;
+                    hit.path = path; // path to the containing object (e.g. ".instanceoverride.rate")
+                    hit.body = std::move(body);
+                    out.push_back(std::move(hit));
+                    continue; // don't recurse into a script string
+                }
+            }
+            walkForScripts(v, pathJoin(path, key), nextId, nextName, out);
+        }
+    } else if (node.is_array()) {
+        for (size_t i = 0; i < node.size(); i++) {
+            std::ostringstream ss;
+            ss << path << "[" << i << "]";
+            walkForScripts(node[i], ss.str(), curId, curName, out);
+        }
+    }
+}
+
+// Sanitize object name for use as a filename component.  Strip slashes,
+// collapse whitespace, cap length.  Keeps the output readable without
+// breaking on exotic characters (Chinese wallpaper names, etc).
+static std::string sanitizeForFilename(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '<' ||
+            c == '>' || c == '|' || c == '"' || (unsigned char)c < 0x20) {
+            out.push_back('_');
+        } else if (c == ' ') {
+            out.push_back('-');
+        } else {
+            out.push_back(c);
+        }
+    }
+    if (out.size() > 40) out.resize(40);
+    return out;
+}
+
+// Look up the scene.json bytes.  If `src` is a directory, read
+// `<src>/scene.json` directly.  If it's a .pkg file, read it via load_pkg +
+// in-memory copy of the entry.  Falls through with err set on failure.
+static bool readSceneJson(const fs::path& src, std::string& out, std::string& err) {
+    std::error_code ec;
+    if (fs::is_directory(src, ec)) {
+        // Prefer scene.json; fall back to project.json's `file` field for
+        // defaultprojects like ricepod (ricepod.json) or fantasticcar
+        // (fantasticcar.json) where the scene file has a non-standard name.
+        fs::path candidates[] = { src / "scene.json" };
+        for (const auto& sj : candidates) {
+            std::ifstream f(sj, std::ios::binary);
+            if (! f) continue;
+            std::ostringstream ss;
+            ss << f.rdbuf();
+            out = ss.str();
+            return true;
+        }
+        fs::path pj = src / "project.json";
+        std::ifstream pf(pj, std::ios::binary);
+        if (pf) {
+            std::ostringstream ss;
+            ss << pf.rdbuf();
+            try {
+                auto proj = nlohmann::json::parse(ss.str(), nullptr, true, true);
+                if (proj.contains("file") && proj.at("file").is_string()) {
+                    fs::path fallback = src / proj.at("file").get<std::string>();
+                    std::ifstream ff(fallback, std::ios::binary);
+                    if (ff) {
+                        std::ostringstream ss2;
+                        ss2 << ff.rdbuf();
+                        out = ss2.str();
+                        return true;
+                    }
+                }
+            } catch (...) { /* fall through to error */ }
+        }
+        err = "no scene.json (or project.json `file` reference) under " + src.string();
+        return false;
+    }
+    Pkg pkg;
+    if (! load_pkg(src, pkg, err)) return false;
+    const PkgEntry* scene = nullptr;
+    for (const auto& e : pkg.entries) {
+        if (e.path == "/scene.json") { scene = &e; break; }
+    }
+    if (! scene) { err = "scene.json not found inside " + src.string(); return false; }
+    std::ifstream f(src, std::ios::binary);
+    if (! f) { err = "cannot reopen pkg for data read"; return false; }
+    out.resize(scene->length);
+    f.seekg(scene->offset);
+    if (! f.read(out.data(), scene->length)) { err = "scene.json read failed"; return false; }
+    return true;
+}
+
+int cmd_scripts(int argc, char** argv) {
+    if (argc < 3) {
+        std::fprintf(stderr,
+                     "usage: wp-pkg scripts <pkg|dir> [<outdir>] [--dry-run]\n"
+                     "\n"
+                     "  Walks scene.json and dumps every inlined SceneScript body to\n"
+                     "  <outdir>/scripts/s<NN>_obj<id>_<path>.js, with an index on stdout.\n"
+                     "  <outdir> defaults to `./scripts_<stem>`.  Omit <outdir> to only\n"
+                     "  print the manifest (set --dry-run to skip writes too).\n");
+        return 2;
+    }
+
+    const char* src_arg = argv[2];
+    fs::path    src(src_arg);
+    bool        dry_run = false;
+    fs::path    outdir;
+    bool        outdir_set = false;
+    for (int i = 3; i < argc; i++) {
+        std::string_view a = argv[i];
+        if (a == "--dry-run") {
+            dry_run = true;
+        } else if (! outdir_set) {
+            outdir     = a;
+            outdir_set = true;
+        } else {
+            std::fprintf(stderr, "unknown arg: %.*s\n", int(a.size()), a.data());
+            return 2;
+        }
+    }
+    if (! outdir_set) {
+        std::string stem = src.stem().string();
+        if (stem.empty()) stem = "out";
+        outdir = fs::path("scripts_" + stem);
+    }
+
+    std::string sceneBytes, err;
+    if (! readSceneJson(src, sceneBytes, err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
+
+    nlohmann::json scene;
+    try {
+        // WE scene.json occasionally contains // comments (defaultprojects/
+        // fantasticcar has them in submesh blocks).  Enable comment-tolerant
+        // parsing here to match the production loader.
+        scene = nlohmann::json::parse(sceneBytes, /*cb=*/nullptr,
+                                      /*allow_exceptions=*/true,
+                                      /*ignore_comments=*/true);
+    } catch (const std::exception& ex) {
+        std::fprintf(stderr, "scene.json parse error: %s\n", ex.what());
+        return 1;
+    }
+
+    std::vector<ScriptHit> hits;
+    walkForScripts(scene, "", -1, "", hits);
+
+    if (hits.empty()) {
+        std::printf("no inlined scripts in scene.json (%s)\n", src.string().c_str());
+        return 0;
+    }
+
+    if (! dry_run) {
+        std::error_code ec;
+        fs::create_directories(outdir / "scripts", ec);
+        if (ec) {
+            std::fprintf(stderr,
+                         "mkdir %s: %s\n",
+                         (outdir / "scripts").string().c_str(),
+                         ec.message().c_str());
+            return 1;
+        }
+    }
+
+    size_t idx = 0;
+    for (const auto& h : hits) {
+        // Path in scene.json starts with "." from pathJoin's initial call;
+        // strip it and simplify for the filename.
+        std::string pathKey = h.path;
+        if (! pathKey.empty() && pathKey.front() == '.') pathKey.erase(0, 1);
+        for (auto& c : pathKey) {
+            if (c == '.') c = '_';
+            else if (c == '[') c = '_';
+            else if (c == ']') c = '\0';
+        }
+        pathKey.erase(std::remove(pathKey.begin(), pathKey.end(), '\0'), pathKey.end());
+
+        char idxBuf[16];
+        std::snprintf(idxBuf, sizeof(idxBuf), "s%02zu_obj%d", idx, h.id);
+        std::string name = idxBuf;
+        if (! h.name.empty()) name += "_" + sanitizeForFilename(h.name);
+        if (! pathKey.empty()) name += "__" + pathKey;
+        name += ".js";
+
+        fs::path dest = outdir / "scripts" / name;
+        std::printf("%s  obj=%d name=\"%s\" path=%s len=%zu -> %s\n",
+                    dry_run ? "DRY " : "WROTE",
+                    h.id,
+                    h.name.c_str(),
+                    h.path.empty() ? "." : h.path.c_str(),
+                    h.body.size(),
+                    dest.string().c_str());
+        if (! dry_run) {
+            std::ofstream out(dest, std::ios::binary);
+            if (! out) {
+                std::fprintf(stderr, "write failed: %s\n", dest.string().c_str());
+                return 1;
+            }
+            out.write(h.body.data(), h.body.size());
+        }
+        idx++;
+    }
+
+    std::printf("%zu inlined scripts\n", hits.size());
+    return 0;
+}
+
 // Write N bytes little-endian.  Wraps ofstream put() for readability.
 void write_u32_le(std::ofstream& f, uint32_t v) {
     uint8_t b[4] = { uint8_t(v & 0xff),
@@ -564,6 +851,7 @@ void print_usage() {
                  "  wp-pkg list    <pkg>\n"
                  "  wp-pkg extract <pkg> <outdir> [--flat] [--dry-run] [--raw]\n"
                  "  wp-pkg pack    <indir> <outpkg> [--version=PKGV0023]\n"
+                 "  wp-pkg scripts <pkg|dir> [<outdir>] [--dry-run]\n"
                  "\n"
                  "  --flat    group output by category (scripts/shaders/textures/...)\n"
                  "  --raw     skip .tex header sidecar\n"
@@ -571,7 +859,11 @@ void print_usage() {
                  "\n"
                  "  pack recursively walks <indir>, sorts paths for\n"
                  "  deterministic output, and writes a .pkg whose load_pkg\n"
-                 "  structure roundtrips with extract (non-flat mode).\n");
+                 "  structure roundtrips with extract (non-flat mode).\n"
+                 "\n"
+                 "  scripts walks scene.json (either inside a .pkg or loose\n"
+                 "  under <dir>) and dumps every inlined SceneScript to its own\n"
+                 "  file with a one-line manifest on stdout.\n");
 }
 
 } // namespace
@@ -585,6 +877,7 @@ int main(int argc, char** argv) {
     if (sub == "list") return cmd_list(argc, argv);
     if (sub == "extract") return cmd_extract(argc, argv);
     if (sub == "pack") return cmd_pack(argc, argv);
+    if (sub == "scripts") return cmd_scripts(argc, argv);
     if (sub == "-h" || sub == "--help" || sub == "help") {
         print_usage();
         return 0;

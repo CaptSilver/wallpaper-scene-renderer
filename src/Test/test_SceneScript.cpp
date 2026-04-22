@@ -5897,3 +5897,120 @@ TEST_SUITE("Vec4") {
     }
 } // TEST_SUITE Vec4
 
+// ------------------------------------------------------------------
+// Scripted particle instance-override dispatch (NieR:Automata).
+// The scalar partition [vec3End, N) in _runAllPropertyScripts handles
+// both Alpha (kind=2) and ParticleRate (kind=3) identically on the JS
+// side; the C++ dispatcher branches on kind to route the value.  These
+// tests pin the JS half: kind=3 entries behave exactly like kind=2
+// entries w.r.t. input (s.cf) and output shape (push i,r,0,0).
+// ------------------------------------------------------------------
+TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
+    TEST_CASE("kind=ParticleRate entry forwards cf to fn and pushes [i,r,0,0]") {
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        // ParticleRate is kind=3.  Scripts live in the same partition as
+        // Alpha (after vec3End), so the entry index is 0 and BOTH
+        // partition markers point to 0 (no Visible, no Vec3).
+        QJSValue entry = engine.newObject();
+        entry.setProperty("kind", 3);
+        // Script mirrors NieR 2B shape: ignores the arg, returns a value
+        // derived from external state (here just a global).  Using the
+        // global lets us verify that per-tick changes propagate.
+        engine.evaluate("var _audioEnv = 0.1;");
+        entry.setProperty("fn",
+                          engine.evaluate("(function(v) { return _audioEnv; })"));
+        entry.setProperty("proxy", QJSValue(QJSValue::NullValue));
+        entry.setProperty("hasLayer", false);
+        entry.setProperty("valid", true);
+        entry.setProperty("cb", false);
+        entry.setProperty("cf", 1.0); // init seed
+        entry.setProperty("cx", 0.0);
+        entry.setProperty("cy", 0.0);
+        entry.setProperty("cz", 0.0);
+        engine.globalObject().property("_allPropertyScripts").setProperty(0, entry);
+        engine.globalObject().setProperty("_scriptPartVisEnd", 0);
+        engine.globalObject().setProperty("_scriptPartVec3End", 0);
+
+        QJSValue out = engine.evaluate("_runAllPropertyScripts()");
+        REQUIRE(out.isArray());
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(0).toInt() == 0);
+        CHECK(out.property(1).toNumber() == doctest::Approx(0.1));
+        CHECK(out.property(2).toNumber() == doctest::Approx(0.0));
+        CHECK(out.property(3).toNumber() == doctest::Approx(0.0));
+
+        // Second tick: env changes, new value flows through.
+        engine.evaluate("_audioEnv = 0.97;");
+        out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 4);
+        CHECK(out.property(1).toNumber() == doctest::Approx(0.97));
+
+        // Third tick: env unchanged.  The 0.001 threshold should suppress
+        // the push — particles don't need redundant reprogramming and
+        // the render thread sees fewer wakeups.
+        out = engine.evaluate("_runAllPropertyScripts()");
+        CHECK(out.property("length").toInt() == 0);
+    }
+
+    TEST_CASE("NieR 2B script body: audio envelope drives returned rate") {
+        // Exact body from scene.json (obj 299/304) with the module wrapper
+        // stripped as stripESModuleSyntax would.  We mock
+        // engine.registerAudioBuffers to hand out a controllable buffer so
+        // the test can drive the audio side deterministically.
+        QJSEngine engine;
+        setupDispatchEngine(engine);
+        engine.evaluate(
+            "var _buf = { average: [0] };\n"
+            "var engine = {\n"
+            "  registerAudioBuffers: function(n) { return _buf; },\n"
+            "  frametime: 0.016\n"
+            "};\n"
+            "function Math_min(a,b){return a<b?a:b;}\n");
+        // The stock template with `export` stripped.  Wrapped in an IIFE
+        // that returns {init, update}, mimicking the production shim.
+        QJSValue mod = engine.evaluate(
+            "(function() {\n"
+            "  var frequencyResolution = 16;\n"
+            "  var sourceFrequency = 0;\n"
+            "  var smoothingRate = 16;\n"
+            "  var minimumValue = 0.1;\n"
+            "  var maximumValue = 1.0;\n"
+            "  var audioBuffer = engine.registerAudioBuffers(frequencyResolution);\n"
+            "  var smoothValue = 0;\n"
+            "  var initialValue;\n"
+            "  var valueDelta = maximumValue - minimumValue;\n"
+            "  function update() {\n"
+            "    var audioDelta = audioBuffer.average[sourceFrequency] - smoothValue;\n"
+            "    smoothValue += audioDelta * engine.frametime * smoothingRate;\n"
+            "    smoothValue = Math.min(1.0, smoothValue);\n"
+            "    return initialValue * (smoothValue * valueDelta + minimumValue);\n"
+            "  }\n"
+            "  function init(value) { initialValue = value; }\n"
+            "  return {init: init, update: update};\n"
+            "})()");
+        REQUIRE(! mod.isError());
+        // Seed init with 1.0 (the value from scene.json).
+        mod.property("init").call({ QJSValue(1.0) });
+
+        QJSValue upd = mod.property("update");
+        // Silence: smoothValue stays at 0, update returns initialValue * 0.1.
+        engine.evaluate("_buf.average[0] = 0.0;");
+        QJSValue r0 = upd.call();
+        CHECK(r0.toNumber() == doctest::Approx(0.1));
+
+        // Pin bass at 1.0 for many frames — smoothValue should converge to
+        // 1.0 and the return value should saturate at initialValue * 1.0.
+        engine.evaluate("_buf.average[0] = 1.0;");
+        double rN = 0.0;
+        for (int i = 0; i < 300; i++) rN = upd.call().toNumber();
+        CHECK(rN == doctest::Approx(1.0).epsilon(0.001));
+
+        // Drop bass to 0 — smoothing integrates down; after enough frames,
+        // output drops back toward minimumValue (0.1).
+        engine.evaluate("_buf.average[0] = 0.0;");
+        for (int i = 0; i < 300; i++) rN = upd.call().toNumber();
+        CHECK(rN == doctest::Approx(0.1).epsilon(0.01));
+    }
+} // TEST_SUITE instanceoverride.rate scalar
+

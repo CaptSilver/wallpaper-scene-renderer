@@ -189,6 +189,93 @@ TEST_SUITE("WPPropertyScriptExtract") {
         }
     }
 
+    TEST_CASE("instanceoverride.rate script → property='instanceoverride.rate'") {
+        // NieR:Automata (3633635618) shape: the starfield particles have
+        // { "instanceoverride": { "rate": { "value": 1.0, "script": "..." }}}.
+        // Before this extractor path, the script was silently dropped.
+        std::vector<ScenePropertyScript> out;
+        njson obj = njson {
+            { "id", 299 },
+            { "name", "Particles - Perspective" },
+            { "instanceoverride", njson {
+                { "rate", njson {
+                    { "value", 1.0 },
+                    { "script", "export function update() { return 0.5; }" },
+                }},
+            }},
+        };
+        wek::extractParticleInstanceOverrideScripts(
+            299, "Particles - Perspective", obj,
+            Attachment::Object, -1, out);
+        REQUIRE(out.size() == 1);
+        CHECK(out[0].id == 299);
+        CHECK(out[0].property == "instanceoverride.rate");
+        CHECK(out[0].layerName == "Particles - Perspective");
+        CHECK(out[0].attachment == Attachment::Object);
+        CHECK(out[0].initialFloat == doctest::Approx(1.0));
+        CHECK(out[0].script.find("update") != std::string::npos);
+    }
+
+    TEST_CASE("instanceoverride.rate with no script → skipped") {
+        // Pure-static rate (no script child) must NOT produce a property
+        // script entry — otherwise the dispatcher would compile an empty
+        // function and drive the rate to undefined every tick.
+        std::vector<ScenePropertyScript> out;
+        njson obj = njson {
+            { "id", 1 },
+            { "instanceoverride", njson {
+                { "rate", 2.5 }, // plain scalar, as some workshops write it
+            }},
+        };
+        wek::extractParticleInstanceOverrideScripts(
+            1, "p", obj, Attachment::Object, -1, out);
+        CHECK(out.empty());
+    }
+
+    TEST_CASE("instanceoverride missing → no output, no throw") {
+        std::vector<ScenePropertyScript> out;
+        njson obj = njson { { "id", 7 } };
+        wek::extractParticleInstanceOverrideScripts(
+            7, "n", obj, Attachment::Object, -1, out);
+        CHECK(out.empty());
+    }
+
+    TEST_CASE("instanceoverride.rate defaults initialFloat to 1.0 when value missing") {
+        std::vector<ScenePropertyScript> out;
+        njson obj = njson {
+            { "id", 1 },
+            { "instanceoverride", njson {
+                { "rate", njson {
+                    { "script", "return 1.0;" },
+                }},
+            }},
+        };
+        wek::extractParticleInstanceOverrideScripts(
+            1, "p", obj, Attachment::Object, -1, out);
+        REQUIRE(out.size() == 1);
+        CHECK(out[0].initialFloat == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("instanceoverride unsupported fields silently ignored") {
+        // Only `rate` is routed today.  Other fields (alpha/size/count/...)
+        // should not surface as property scripts until their runtime paths
+        // land — silently extracting them would produce broken-but-quiet
+        // wallpapers, which the project explicitly rejects
+        // (feedback_no_stubs.md).
+        std::vector<ScenePropertyScript> out;
+        njson obj = njson {
+            { "id", 1 },
+            { "instanceoverride", njson {
+                { "alpha", njson {{ "script", "return 1.0;" }} },
+                { "size",  njson {{ "script", "return 1.0;" }} },
+                { "count", njson {{ "script", "return 1.0;" }} },
+            }},
+        };
+        wek::extractParticleInstanceOverrideScripts(
+            1, "p", obj, Attachment::Object, -1, out);
+        CHECK(out.empty());
+    }
+
     TEST_CASE("scriptproperties stored as JSON string") {
         std::vector<ScenePropertyScript> out;
         njson obj = njson {

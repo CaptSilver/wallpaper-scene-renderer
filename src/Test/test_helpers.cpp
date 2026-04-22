@@ -966,3 +966,149 @@ TEST_SUITE("wp-pkg pack format") {
     }
 
 } // TEST_SUITE wp-pkg pack format
+
+TEST_SUITE("wp-pkg scripts") {
+    // `wp-pkg scripts <dir>` walks scene.json and dumps every inlined
+    // SceneScript body to its own file.  Core invariants to pin:
+    //   - top-level property scripts (visible/origin/etc.) are found
+    //   - instanceoverride.<field>.script is found (NieR:Automata shape)
+    //   - the outermost object's id/name is attached to the script, NOT
+    //     the inner instanceoverride.id (which targets a different node)
+    //   - the no-scripts case exits cleanly with zero files written
+    TEST_CASE("scripts subcommand extracts both top-level and instanceoverride") {
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
+        const std::string dir = "/tmp/wp_pkg_scripts_fixture";
+        const std::string out = "/tmp/wp_pkg_scripts_out";
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+        std::filesystem::create_directories(dir);
+
+        // Fixture: two objects — one with a top-level visible script, one
+        // with an instanceoverride.rate script whose inner `id` differs
+        // from the outer object id (this is the NieR 2B shape and pinned
+        // the walker bug where inner id shadowed the outer one).
+        {
+            std::ofstream f(dir + "/scene.json", std::ios::binary);
+            f << R"({
+                "objects": [
+                    { "id": 10, "name": "bg",
+                      "visible": { "value": true,
+                        "script": "'use strict'; export function update() { return true; }"
+                      }
+                    },
+                    { "id": 299, "name": "stars",
+                      "instanceoverride": {
+                        "id": 301,
+                        "rate": { "value": 1.0,
+                          "script": "'use strict'; export function update() { return 0.5; }"
+                        }
+                      }
+                    }
+                ]
+            })";
+        }
+
+        const std::string tool = WP_PKG_TOOL_PATH;
+        std::string       cmd  = tool + " scripts " + dir + " " + out + " > /dev/null 2>&1";
+        int               rc   = std::system(cmd.c_str());
+        REQUIRE(rc == 0);
+
+        // Two files expected.
+        std::vector<std::string> files;
+        for (auto& entry : std::filesystem::directory_iterator(out + "/scripts")) {
+            files.push_back(entry.path().filename().string());
+        }
+        std::sort(files.begin(), files.end());
+        REQUIRE(files.size() == 2);
+
+        // First script: obj 10 visible (top-level).  Name should contain
+        // "obj10" and the binding path fragment.
+        CHECK(files[0].find("obj10") != std::string::npos);
+        CHECK(files[0].find("visible") != std::string::npos);
+
+        // Second script: obj 299 (NOT 301!) instanceoverride.rate.
+        CHECK(files[1].find("obj299") != std::string::npos);
+        CHECK(files[1].find("instanceoverride") != std::string::npos);
+        CHECK(files[1].find("rate") != std::string::npos);
+
+        // Content sanity: each file holds the full body verbatim.
+        std::ifstream f2(out + "/scripts/" + files[1], std::ios::binary);
+        std::ostringstream body;
+        body << f2.rdbuf();
+        CHECK(body.str().find("return 0.5") != std::string::npos);
+
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+    }
+
+    TEST_CASE("scripts subcommand on scene with no scripts prints empty and exits 0") {
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
+        const std::string dir = "/tmp/wp_pkg_scripts_empty_fixture";
+        const std::string out = "/tmp/wp_pkg_scripts_empty_out";
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+        std::filesystem::create_directories(dir);
+        {
+            std::ofstream f(dir + "/scene.json", std::ios::binary);
+            f << R"({ "objects": [ { "id": 1, "name": "bg" } ] })";
+        }
+        const std::string tool = WP_PKG_TOOL_PATH;
+        std::string       cmd  = tool + " scripts " + dir + " " + out + " > /dev/null 2>&1";
+        int               rc   = std::system(cmd.c_str());
+        CHECK(rc == 0);
+        // No scripts → no output directory should have been created.
+        CHECK_FALSE(std::filesystem::exists(out + "/scripts"));
+
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+    }
+
+    TEST_CASE("scripts subcommand falls back to project.json's `file` field") {
+        // Default projects like ricepod have scene file "ricepod.json", not
+        // "scene.json".  project.json's `file` key names the entry point.
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
+        const std::string dir = "/tmp/wp_pkg_scripts_pj_fixture";
+        const std::string out = "/tmp/wp_pkg_scripts_pj_out";
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+        std::filesystem::create_directories(dir);
+        {
+            std::ofstream f(dir + "/project.json", std::ios::binary);
+            f << R"({ "file": "custom.json", "title": "x" })";
+        }
+        {
+            std::ofstream f(dir + "/custom.json", std::ios::binary);
+            f << R"({
+                "objects": [
+                    { "id": 5, "name": "n",
+                      "alpha": { "value": 1.0,
+                        "script": "'use strict'; export function update() { return 0.5; }"
+                      }
+                    }
+                ]
+            })";
+        }
+        const std::string tool = WP_PKG_TOOL_PATH;
+        std::string       cmd  = tool + " scripts " + dir + " " + out + " > /dev/null 2>&1";
+        int               rc   = std::system(cmd.c_str());
+        REQUIRE(rc == 0);
+
+        int count = 0;
+        for (auto& e : std::filesystem::directory_iterator(out + "/scripts")) {
+            (void)e;
+            count++;
+        }
+        CHECK(count == 1);
+        std::filesystem::remove_all(dir);
+        std::filesystem::remove_all(out);
+    }
+} // TEST_SUITE wp-pkg scripts
