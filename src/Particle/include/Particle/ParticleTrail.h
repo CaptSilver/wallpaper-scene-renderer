@@ -44,14 +44,19 @@ public:
 
     // Number of trail points within max_age of the newest point.
     // Falls back to Count() when max_age is not set.
-    // Always returns at least min(2, count) so low fps never kills all segments.
+    // Always returns at least 2 so low fps never kills all segments — the
+    // caller draws line segments and needs ≥2 points to render anything.
+    //
+    // Because timestamps are monotonic (Push is chronological, At(0) is the
+    // newest), staleness is monotonic: if point i is stale, so is i+1.  We
+    // therefore scan from i=2 — the first stale index we find is already the
+    // answer, no separate `min(2, i)` clamp required.
     u32 ActiveCount() const {
-        if (m_max_age <= 0.0f || m_count < 2) return m_count;
+        if (m_max_age <= 0.0f) return m_count;
+        if (m_count < 2) return m_count;
         float newest_time = At(0).timestamp;
-        u32   min_active  = m_count < 2 ? m_count : 2;
-        for (u32 i = 1; i < m_count; i++) {
-            if (newest_time - At(i).timestamp > m_max_age)
-                return std::max(min_active, i);
+        for (u32 i = 2; i < m_count; i++) {
+            if (newest_time - At(i).timestamp > m_max_age) return i;
         }
         return m_count;
     }

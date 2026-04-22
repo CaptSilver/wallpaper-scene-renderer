@@ -72,6 +72,22 @@ struct WPMdl {
 
 class SceneMesh;
 
+// Compute the u32 buffer slots needed to hold `triangle_count` triangles worth
+// of packed u16 indices.  Each triangle is 3 u16 indices; two u16s fit in one
+// u32.  The `+ 1` handles the odd u16 from odd triangle counts (plus keeps
+// the buffer a full slot when triangle_count==0).  Pure arithmetic, exposed
+// for unit testing so `*`/`/` mutants on the expression can be pinned down.
+inline std::size_t U32SlotsForU16Triangles(std::size_t triangle_count) noexcept {
+    std::size_t u16_count = triangle_count * 3;
+    return u16_count / 2 + 1;
+}
+
+// Number of bytes memcpy'd when packing `triangle_count` triangles of u16
+// indices into the u32 buffer produced by U32SlotsForU16Triangles().
+inline std::size_t U16BytesForTriangles(std::size_t triangle_count) noexcept {
+    return triangle_count * 3 * sizeof(uint16_t);
+}
+
 class WPMdlParser {
 public:
     static bool Parse(std::string_view path, fs::VFS&, WPMdl&);

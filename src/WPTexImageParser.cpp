@@ -229,9 +229,7 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 std::filesystem::create_directories(videoDir);
                 // Sanitize name for filename
                 std::string safeName = name;
-                for (char& c : safeName) {
-                    if (c == '/' || c == '\\' || c == ':') c = '_';
-                }
+                for (char& c : safeName) c = SanitizePathSeparatorChar(c);
                 std::string videoPath = videoDir + "/" + safeName + ".mp4";
                 {
                     std::ofstream f(videoPath, std::ios::binary);
@@ -252,7 +250,7 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 img.header.videoFilePath  = videoPath;
 
                 // Use black placeholder for initial texture upload
-                i32  raw_size = mipmap.width * mipmap.height * 4;
+                i32  raw_size = Rgba8ByteSize(mipmap.width, mipmap.height);
                 auto buf      = std::make_unique<uint8_t[]>((usize)raw_size);
                 std::memset(buf.get(), 0, (usize)raw_size);
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {

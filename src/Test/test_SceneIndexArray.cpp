@@ -134,4 +134,48 @@ TEST_SUITE("SceneIndexArray") {
         for (std::size_t i = 0; i < src.size(); ++i) CHECK(b.Data()[i] == src[i]);
     }
 
+    TEST_CASE("count ctor capacity multiplier pins * 3 (not / 3 or + 3)") {
+        // With indexCount=7, only `* 3` yields 21.  `indexCount / 3 = 2`,
+        // `indexCount + 3 = 10` both wrong.  Varied sizes distinguish every
+        // arithmetic mutation on the multiplier expression.
+        SceneIndexArray arr1(1);
+        SceneIndexArray arr2(7);
+        SceneIndexArray arr3(13);
+        CHECK(arr1.CapacityCount() == 3u);
+        CHECK(arr2.CapacityCount() == 21u);
+        CHECK(arr3.CapacityCount() == 39u);
+    }
+
+    TEST_CASE("AssignHalf with non-aligned byte length rounds UP via +1 carry") {
+        // 7 uint16 halves = 14 bytes.  m_size = 14/4 + (14%4 != 0 ? 1 : 0)
+        // = 3 + 1 = 4 uint32 units.  Without the `+1` (mutation `+ → -`),
+        // m_size would be 3-1=2, and DataCount would misreport.
+        SceneIndexArray         arr(2); // capacity 6 uint32_t = 24 bytes = enough for 14
+        std::array<uint16_t, 7> odd { 1, 2, 3, 4, 5, 6, 7 };
+        arr.AssignHalf(0, std::span<const uint16_t>(odd.data(), odd.size()));
+        // 7 * 2 = 14 bytes → 4 uint32 units (round up from 3.5).
+        CHECK(arr.DataCount() == 4u);
+        CHECK(arr.DataSizeOf() == 4u * sizeof(uint32_t));
+    }
+
+    TEST_CASE("AssignHalf with exactly 4-byte-aligned length does NOT carry") {
+        // 8 halves = 16 bytes → exactly 4 uint32 units; the `(nsize%4 == 0 ? 0 : 1)`
+        // branch must select 0.  Mutation `== → !=` flips the carry and yields 5.
+        SceneIndexArray         arr(2); // capacity 6 uint32_t = 24 bytes
+        std::array<uint16_t, 8> aligned { 1, 2, 3, 4, 5, 6, 7, 8 };
+        arr.AssignHalf(0, std::span<const uint16_t>(aligned.data(), aligned.size()));
+        CHECK(arr.DataCount() == 4u);
+    }
+
+    TEST_CASE("Assign exactly at capacity still writes (boundary on > vs >=)") {
+        // nsize == CapacitySizeof() must NOT be rejected: `>` not `>=`.
+        // 3 uint32 = 12 bytes = exactly capacity of SceneIndexArray(1) (=3*4).
+        SceneIndexArray         arr(1);
+        std::array<uint32_t, 3> full { 100, 200, 300 };
+        arr.Assign(0, std::span<const uint32_t>(full.data(), full.size()));
+        CHECK(arr.DataCount() == 3u);
+        CHECK(arr.Data()[0] == 100u);
+        CHECK(arr.Data()[2] == 300u);
+    }
+
 } // SceneIndexArray

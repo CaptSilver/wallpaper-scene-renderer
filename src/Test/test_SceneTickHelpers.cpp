@@ -40,4 +40,12 @@ TEST_SUITE("ComputeTickFrametime") {
         CHECK(dt == doctest::Approx(0.008));
         CHECK(dt < 0.033);
     }
+
+    TEST_CASE("lastMs==0 is a valid prior tick, not the no-previous sentinel") {
+        // Boundary: `lastMs < 0` → `<=` would misclassify the lastMs==0 case
+        // as "no previous tick" and return fallback, skewing the first real
+        // delta after a scene init that picked 0 as the starting timer value.
+        CHECK(ComputeTickFrametime(100, 0, 0.008, 250) == doctest::Approx(0.100));
+        CHECK(ComputeTickFrametime(50, 0, 0.033, 500) == doctest::Approx(0.050));
+    }
 }

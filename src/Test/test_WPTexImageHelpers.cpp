@@ -116,3 +116,60 @@ TEST_SUITE("SetHeaderPow2") {
     }
 
 } // TEST_SUITE
+
+TEST_SUITE("SanitizePathSeparatorChar") {
+    TEST_CASE("forward slash becomes underscore") {
+        CHECK(SanitizePathSeparatorChar('/') == '_');
+    }
+    TEST_CASE("backslash becomes underscore") {
+        CHECK(SanitizePathSeparatorChar('\\') == '_');
+    }
+    TEST_CASE("colon becomes underscore") {
+        CHECK(SanitizePathSeparatorChar(':') == '_');
+    }
+    TEST_CASE("alphanumeric passes through unchanged") {
+        CHECK(SanitizePathSeparatorChar('a') == 'a');
+        CHECK(SanitizePathSeparatorChar('Z') == 'Z');
+        CHECK(SanitizePathSeparatorChar('0') == '0');
+        CHECK(SanitizePathSeparatorChar('9') == '9');
+    }
+    TEST_CASE("adjacent ascii chars pass through") {
+        // Boundary neighbors — ensure we aren't over-matching via a flipped
+        // comparison (e.g. '.'=46 vs '/'=47; ';'=59 vs ':'=58).
+        CHECK(SanitizePathSeparatorChar('.') == '.');
+        CHECK(SanitizePathSeparatorChar('0') == '0');
+        CHECK(SanitizePathSeparatorChar(';') == ';');
+        CHECK(SanitizePathSeparatorChar('9') == '9');
+        CHECK(SanitizePathSeparatorChar('[') == '[');
+        CHECK(SanitizePathSeparatorChar(']') == ']');
+    }
+    TEST_CASE("whole-string loop replaces all separators") {
+        std::string s = "a/b\\c:d";
+        for (char& c : s) c = SanitizePathSeparatorChar(c);
+        CHECK(s == "a_b_c_d");
+    }
+}
+
+TEST_SUITE("Rgba8ByteSize") {
+    TEST_CASE("zero dimensions yield zero bytes") {
+        CHECK(Rgba8ByteSize(0, 0) == 0);
+        CHECK(Rgba8ByteSize(0, 16) == 0);
+        CHECK(Rgba8ByteSize(16, 0) == 0);
+    }
+    TEST_CASE("1x1 RGBA8 is 4 bytes") {
+        CHECK(Rgba8ByteSize(1, 1) == 4);
+    }
+    TEST_CASE("8x8 RGBA8 is 256 bytes") {
+        // Distinguishes w*h*4 from w/h*4 (=4) and w*h/4 (=16).
+        CHECK(Rgba8ByteSize(8, 8) == 256);
+    }
+    TEST_CASE("rectangular dimensions multiply") {
+        CHECK(Rgba8ByteSize(4, 2) == 32);
+        CHECK(Rgba8ByteSize(2, 4) == 32);
+        CHECK(Rgba8ByteSize(3, 5) == 60);
+    }
+    TEST_CASE("power-of-two dims match simd-aligned layout") {
+        CHECK(Rgba8ByteSize(1024, 1024) == 4'194'304);
+        CHECK(Rgba8ByteSize(256, 256) == 262'144);
+    }
+}

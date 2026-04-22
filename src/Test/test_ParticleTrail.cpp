@@ -93,10 +93,11 @@ TEST_SUITE("ParticleTrailHistory") {
         CHECK(h.ActiveCount() == 2u);
     }
 
-    TEST_CASE("ActiveCount enforces at least 2 active when count allows") {
-        // Guard "Always returns at least min(2, count)" — with big max_age gap
-        // all but one point fall outside the window, but the minimum bounds the
-        // result to 2 so the renderer always has a segment to draw.
+    TEST_CASE("ActiveCount enforces exactly 2 active when all older points stale") {
+        // Only the newest point is within max_age.  ActiveCount still returns
+        // 2 so the renderer always has a segment to draw — pinpoint the exact
+        // value (not `>= 2`) to kill `i < m_count` boundary mutants in the
+        // scan loop.
         ParticleTrailHistory h;
         h.Init(5, 0.01f);
         for (int i = 0; i < 5; i++) {
@@ -104,7 +105,63 @@ TEST_SUITE("ParticleTrailHistory") {
             p.timestamp = (float)i;
             h.Push(p);
         }
-        CHECK(h.ActiveCount() >= 2u);
+        CHECK(h.ActiveCount() == 2u);
+    }
+
+    TEST_CASE("ActiveCount at count==2 returns 2 (no scan)") {
+        // Two points, both within max_age — the scan loop starts at i=2 and
+        // immediately falls out; still returns m_count=2.
+        ParticleTrailHistory h;
+        h.Init(4, 10.0f);
+        ParticleTrailPoint p0 {}, p1 {};
+        p0.timestamp = 0.0f;
+        p1.timestamp = 1.0f;
+        h.Push(p0);
+        h.Push(p1);
+        CHECK(h.ActiveCount() == 2u);
+    }
+
+    TEST_CASE("ActiveCount: all points fresh returns m_count") {
+        // 3 points, all within max_age — loop exits naturally returning
+        // m_count.  Kills `i < m_count` → `i <= m_count` (would assert At(3)).
+        ParticleTrailHistory h;
+        h.Init(4, 100.0f);
+        for (int i = 0; i < 3; i++) {
+            ParticleTrailPoint p {};
+            p.timestamp = (float)i;
+            h.Push(p);
+        }
+        CHECK(h.ActiveCount() == 3u);
+    }
+
+    TEST_CASE("ActiveCount: subtraction not addition in age check") {
+        // newest=5, point i=2 timestamp=3. Original diff = 5-3 = 2, not > max_age=3.
+        // Mutated to `newest + At(i).timestamp` = 5+3 = 8, which IS > 3, would
+        // return i=2 early.  Original correctly keeps all points and returns m_count.
+        ParticleTrailHistory h;
+        h.Init(4, 3.0f);
+        for (int i = 0; i < 4; i++) {
+            ParticleTrailPoint p {};
+            p.timestamp = (float)(i + 2); // 2, 3, 4, 5 — newest=5, all within 3s
+            h.Push(p);
+        }
+        CHECK(h.ActiveCount() == 4u);
+    }
+
+    TEST_CASE("ActiveCount: exact boundary timestamp does NOT exclude (strict >)") {
+        // newest=4, oldest=2.  newest - oldest = 2.0 exactly.  With max_age=2.0
+        // and a strict `> max_age`, oldest is kept (not stale).  Mutated to
+        // `>=` would classify it as stale and return 2 instead of 3.
+        ParticleTrailHistory h;
+        h.Init(3, 2.0f);
+        ParticleTrailPoint a {}, b {}, c {};
+        a.timestamp = 2.0f;
+        b.timestamp = 3.0f;
+        c.timestamp = 4.0f;
+        h.Push(a);
+        h.Push(b);
+        h.Push(c);
+        CHECK(h.ActiveCount() == 3u);
     }
 
 } // ParticleTrailHistory

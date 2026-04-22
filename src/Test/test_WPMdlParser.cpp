@@ -139,3 +139,44 @@ TEST_SUITE("WPMdlParser_EOF_safety") {
     }
 
 } // TEST_SUITE
+
+TEST_SUITE("WPMdl_IndexPacking") {
+    // U32SlotsForU16Triangles(N) = (N*3)/2 + 1
+    // Tests lock in the `* 3` and `/ 2 + 1` arithmetic so cxx_mul_to_div and
+    // cxx_div_to_mul mutants on `indices.resize(u16_count / 2 + 1)` produce
+    // observable errors.
+    TEST_CASE("zero triangles still yields one slot (for memcpy safety)") {
+        CHECK(U32SlotsForU16Triangles(0) == 1);
+    }
+    TEST_CASE("one triangle needs two slots (3 u16s → 1 full u32 + 1 half)") {
+        CHECK(U32SlotsForU16Triangles(1) == 2);
+    }
+    TEST_CASE("two triangles need four slots (6 u16s → 3 full u32 + 1 half)") {
+        CHECK(U32SlotsForU16Triangles(2) == 4);
+    }
+    TEST_CASE("three triangles need five slots (9 u16s → 4 u32 + 1 half)") {
+        // Distinguishes (N*3)/2+1 from (N/3)*2+1 or (N+3)/2+1.
+        CHECK(U32SlotsForU16Triangles(3) == 5);
+    }
+    TEST_CASE("ten triangles need sixteen slots (30 u16s → 15 full + 1)") {
+        CHECK(U32SlotsForU16Triangles(10) == 16);
+    }
+    TEST_CASE("hundred triangles need 151 slots (300 u16s → 150 full + 1)") {
+        CHECK(U32SlotsForU16Triangles(100) == 151);
+    }
+    TEST_CASE("U16BytesForTriangles: zero triangles = zero bytes") {
+        CHECK(U16BytesForTriangles(0) == 0);
+    }
+    TEST_CASE("U16BytesForTriangles: one triangle = 6 bytes (3 × u16)") {
+        CHECK(U16BytesForTriangles(1) == 6);
+    }
+    TEST_CASE("U16BytesForTriangles: 100 triangles = 600 bytes") {
+        // Kills `* 3 → / 3` and `* sizeof(u16) → / sizeof(u16)` mutants.
+        CHECK(U16BytesForTriangles(100) == 600);
+    }
+    TEST_CASE("U16BytesForTriangles: triangle count scales linearly") {
+        CHECK(U16BytesForTriangles(5) == 30);
+        CHECK(U16BytesForTriangles(10) == 60);
+        CHECK(U16BytesForTriangles(20) == 120);
+    }
+}

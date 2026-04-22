@@ -131,6 +131,24 @@ TEST_SUITE("findMatchingParen") {
 
     TEST_CASE("empty parens") { CHECK(findMatchingParen("()", 0) == 2); }
 
+    TEST_CASE("stops scanning after depth reaches 0 even if extra ')' follows") {
+        // "())" — the match closes at index 2 (position after the first ')').
+        // Mutation `depth > 0` → `depth >= 0` would let the loop consume the
+        // second ')', taking depth negative and returning npos.  This test
+        // pins the original semantics: stop scanning as soon as we're matched.
+        CHECK(findMatchingParen("())", 0) == 2);
+        CHECK(findMatchingParen("(xyz)abc)def", 0) == 5);
+    }
+
+    TEST_CASE("match at the very end of the string") {
+        // The closing ')' is the last character; the return position equals
+        // text.size(), so the outer `i < text.size()` guard must exit exactly
+        // at size.  Mutation `i < size` → `i <= size` would read past the
+        // terminator and misreport the match position.
+        std::string s = "(abc)";
+        CHECK(findMatchingParen(s, 0) == s.size());
+    }
+
 } // TEST_SUITE findMatchingParen
 
 // ===========================================================================

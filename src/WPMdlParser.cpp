@@ -631,9 +631,8 @@ void WPMdlParser::GenPuppetMesh(SceneMesh& mesh, const WPMdl& mdl) {
         vertex.SetVertexs(i, one_vert);
     }
     std::vector<uint32_t> indices;
-    size_t                u16_count = mdl.indices.size() * 3;
-    indices.resize(u16_count / 2 + 1);
-    memcpy(indices.data(), mdl.indices.data(), u16_count * sizeof(uint16_t));
+    indices.resize(U32SlotsForU16Triangles(mdl.indices.size()));
+    memcpy(indices.data(), mdl.indices.data(), U16BytesForTriangles(mdl.indices.size()));
 
     mesh.AddVertexArray(std::move(vertex));
     mesh.AddIndexArray(SceneIndexArray(indices));
@@ -735,9 +734,8 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
     }
 
     std::vector<uint32_t> indices;
-    size_t                u16_count = sub.indices.size() * 3;
-    indices.resize(u16_count / 2 + 1);
-    memcpy(indices.data(), sub.indices.data(), u16_count * sizeof(uint16_t));
+    indices.resize(U32SlotsForU16Triangles(sub.indices.size()));
+    memcpy(indices.data(), sub.indices.data(), U16BytesForTriangles(sub.indices.size()));
 
     mesh.AddIndexArray(SceneIndexArray(indices));
 }
