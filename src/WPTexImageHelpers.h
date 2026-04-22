@@ -67,9 +67,7 @@ inline char SanitizePathSeparatorChar(char c) {
 // pixels.  Pulled out so a direct unit test can pin down the arithmetic
 // (`w * h * 4`) and kill `*`→`/` mutants that otherwise survive in the
 // inline MP4-fallback path.
-inline i32 Rgba8ByteSize(i32 w, i32 h) {
-    return w * h * 4;
-}
+inline i32 Rgba8ByteSize(i32 w, i32 h) { return w * h * 4; }
 
 } // namespace teximage_helpers
 } // namespace wallpaper

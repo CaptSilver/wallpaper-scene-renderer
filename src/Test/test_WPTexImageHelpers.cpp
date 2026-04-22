@@ -118,15 +118,9 @@ TEST_SUITE("SetHeaderPow2") {
 } // TEST_SUITE
 
 TEST_SUITE("SanitizePathSeparatorChar") {
-    TEST_CASE("forward slash becomes underscore") {
-        CHECK(SanitizePathSeparatorChar('/') == '_');
-    }
-    TEST_CASE("backslash becomes underscore") {
-        CHECK(SanitizePathSeparatorChar('\\') == '_');
-    }
-    TEST_CASE("colon becomes underscore") {
-        CHECK(SanitizePathSeparatorChar(':') == '_');
-    }
+    TEST_CASE("forward slash becomes underscore") { CHECK(SanitizePathSeparatorChar('/') == '_'); }
+    TEST_CASE("backslash becomes underscore") { CHECK(SanitizePathSeparatorChar('\\') == '_'); }
+    TEST_CASE("colon becomes underscore") { CHECK(SanitizePathSeparatorChar(':') == '_'); }
     TEST_CASE("alphanumeric passes through unchanged") {
         CHECK(SanitizePathSeparatorChar('a') == 'a');
         CHECK(SanitizePathSeparatorChar('Z') == 'Z');
@@ -156,9 +150,7 @@ TEST_SUITE("Rgba8ByteSize") {
         CHECK(Rgba8ByteSize(0, 16) == 0);
         CHECK(Rgba8ByteSize(16, 0) == 0);
     }
-    TEST_CASE("1x1 RGBA8 is 4 bytes") {
-        CHECK(Rgba8ByteSize(1, 1) == 4);
-    }
+    TEST_CASE("1x1 RGBA8 is 4 bytes") { CHECK(Rgba8ByteSize(1, 1) == 4); }
     TEST_CASE("8x8 RGBA8 is 256 bytes") {
         // Distinguishes w*h*4 from w/h*4 (=4) and w*h/4 (=16).
         CHECK(Rgba8ByteSize(8, 8) == 256);
