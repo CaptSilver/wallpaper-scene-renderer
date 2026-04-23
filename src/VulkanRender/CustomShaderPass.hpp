@@ -44,6 +44,7 @@ public:
         std::vector<ImageSlotsRef> vk_textures;
         std::vector<i32>           vk_tex_binding;
         ImageParameters            vk_output;
+        VkFormat                   vk_output_format { VK_FORMAT_UNDEFINED }; // for pass-dump
         ImageParameters            vk_fallback_tex; // 1x1 dummy for unbound slots
 
         // bufs

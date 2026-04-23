@@ -159,6 +159,14 @@ inline void MutiplyInitLifeTime(Particle& p, double m) {
     p.lifetime *= m;
     p.init.lifetime = p.lifetime;
 }
+// Set the particle's lifetime to an absolute number of seconds and snapshot the
+// init value so per-particle progress math (`p.lifetime / p.init.lifetime`) remains
+// consistent.  Used by instanceoverride.lifetime, which WE treats as absolute
+// seconds (not a multiplier on the preset's random range).
+inline void SetInitLifeTime(Particle& p, double sec) {
+    p.lifetime      = (float)sec;
+    p.init.lifetime = p.lifetime;
+}
 inline void MutiplyInitAlpha(Particle& p, double m) {
     p.alpha *= m;
     p.init.alpha = p.alpha;

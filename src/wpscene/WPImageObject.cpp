@@ -240,6 +240,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
         GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        GET_JSON_NAME_VALUE_NOWARN(json, "disablepropagation", disablepropagation);
         // Combo condition-based visibility: {"user": {"condition": "X", "name": "prop"}}
         // These are mutually exclusive character selectors that must stay in the
         // main render graph (not offscreen) so they can be toggled at runtime.
@@ -284,6 +285,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 
     GET_JSON_NAME_VALUE(json, "image", image);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    GET_JSON_NAME_VALUE_NOWARN(json, "disablepropagation", disablepropagation);
     if (json.contains("visible") && json.at("visible").is_object() &&
         json.at("visible").contains("user") && json.at("visible").at("user").is_object() &&
         json.at("visible").at("user").contains("condition"))

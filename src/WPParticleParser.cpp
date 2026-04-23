@@ -2,6 +2,7 @@
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
+#include <chrono>
 #include <random>
 #include <memory>
 #include <algorithm>
@@ -232,7 +233,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 // Project out the along-line component so offset is perpendicular
                 // to the control point line — produces clean zigzag for rope particles
                 if (cp_size >= 2) {
-                    Vector3d line = cp_data[1].offset - cp_data[0].offset;
+                    Vector3d line = cp_data[1].resolved - cp_data[0].resolved;
                     double   len2 = line.squaredNorm();
                     if (len2 > 1e-10) {
                         Vector3d dir = line / std::sqrt(len2);
@@ -282,7 +283,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 double val = 0;
                 if (input == "distancetocontrolpoint") {
                     if ((usize)inputCP < cp_size) {
-                        val = (PM::GetPos(p).cast<double>() - cp_data[inputCP].offset).norm();
+                        val = (PM::GetPos(p).cast<double>() - cp_data[inputCP].resolved).norm();
                     }
                 }
                 // Map val from [inMin, inMax] to [outMin, outMax]
@@ -317,6 +318,21 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             usize                       cp_size = controlpoints.size();
 
             auto seq_ptr = std::make_shared<u32>(0);
+            // Wall-clock gap detection for periodic emitters.  When the parent subsystem has
+            // `maxperiodicdelay > 0` (bursty emission with pauses, e.g. NieR 2B thunderbolt
+            // at 1s-on/1s-off), the continuous seq counter doesn't reset between bursts.
+            // With mirror=true and count=32, period=62, and batch=32/burst: after the first
+            // burst (seq 0..31), the next burst re-enters at seq=32, which maps to idx=30
+            // (mid-bolt).  The bolt then appears to "start in the middle".  Detecting a gap
+            // in spawn times and resetting seq to 0 makes every burst draw a fresh bolt from
+            // CP0 to CP1.
+            //
+            // Threshold 0.25s is comfortably above the per-particle interval for any rope
+            // rate we've seen in the wild (rate=100 → 10ms, rate=10 → 100ms) and below the
+            // shortest periodic delay observed (NieR: 1s).
+            auto last_spawn_ptr = std::make_shared<std::chrono::steady_clock::time_point>();
+            auto has_spawned_ptr = std::make_shared<bool>(false);
+            constexpr double kGapResetSec = 0.25;
             // Noise phases for smooth curves — regenerated each emission cycle
             float phase0 = 0, phase1 = 0, phase2 = 0;
             return [=](Particle& p, double) mutable {
@@ -325,6 +341,18 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                     seq++;
                     return;
                 }
+                // Detect burst-boundary gap and reset seq.  First spawn just records the
+                // timestamp without resetting (seq is already 0).
+                auto now = std::chrono::steady_clock::now();
+                if (*has_spawned_ptr) {
+                    double delta =
+                        std::chrono::duration<double>(now - *last_spawn_ptr).count();
+                    if (delta > kGapResetSec) {
+                        seq = 0;
+                    }
+                }
+                *last_spawn_ptr   = now;
+                *has_spawned_ptr  = true;
                 u32 idx;
                 if (mirror && count > 1) {
                     u32 period = 2 * (count - 1);
@@ -340,8 +368,8 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                     phase2 = Random::get(0.0f, (float)(2.0 * M_PI));
                 }
                 float    t       = (float)idx / (float)(count - 1);
-                Vector3f cp0     = cp_data[cpStart].offset.cast<float>();
-                Vector3f cp1     = cp_data[cpStart + 1].offset.cast<float>();
+                Vector3f cp0     = cp_data[cpStart].resolved.cast<float>();
+                Vector3f cp1     = cp_data[cpStart + 1].resolved.cast<float>();
                 Vector3f line    = cp1 - cp0;
                 float    lineLen = line.norm();
                 Vector3f pathpos = cp0 + t * line;
@@ -402,7 +430,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
 
                 Vector3f cp_offset(0, 0, 0);
                 if ((usize)cp_id < cp_size) {
-                    cp_offset = cp_data[cp_id].offset.cast<float>();
+                    cp_offset = cp_data[cp_id].resolved.cast<float>();
                 }
 
                 Vector3f pos = cp_offset +
@@ -421,7 +449,16 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
 
 ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over) {
     return [=](Particle& p, double) {
-        PM::MutiplyInitLifeTime(p, over.lifetime);
+        // WE's instanceoverride.lifetime is an absolute duration in seconds, not
+        // a multiplier on the preset's lifetimerandom range.  NieR 2B halo
+        // (magic_vortex_1) ships lifetime=0.9 intending "0.9-second trails",
+        // but the preset's lifetimerandom min=0.4/max=0.7 multiplied by 0.9
+        // gives 0.36-0.63s — halved trail history, near-invisible ring.
+        // Applied only when the override block was present (over.enabled),
+        // otherwise the preset's random lifetime stands.
+        if (over.enabled && over.lifetime > 0.0f) {
+            PM::SetInitLifeTime(p, over.lifetime);
+        }
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);
         PM::MutiplyVelocity(p, over.speed);
@@ -431,9 +468,21 @@ ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstan
         } else if (over.overColorn) {
             PM::MutiplyInitColor(p, over.colorn[0], over.colorn[1], over.colorn[2]);
         }
-        // Brightness multiplies particle color (e.g. 5.0 for lightning glow)
+        // Brightness multiplies particle color (e.g. 5.0 for lightning glow).  For additive
+        // blending with many overlapping sprites the raw `color * brightness` accumulates
+        // aggressively in the HDR buffer — stacking 10 sprites with brightness=5 peaks at
+        // ~5.0, which the FinPass tonemap `1 - exp(-hdr)` rounds to ~0.993 (near-white, hue
+        // lost).  Compensate by reducing alpha by sqrt(brightness) so per-sprite
+        // contribution scales with sqrt instead of linearly.  Preserves the artist's "this
+        // should be brighter" intent (still boosts into HDR) but prevents the additive
+        // stacking from saturating to white, retaining the blue tinge the colorn was
+        // meant to convey.  Fixes NieR 2B thunderbolt_glow appearing as white blobs piled
+        // at control points.
         if (over.brightness != 1.0f) {
             PM::MutiplyInitColor(p, over.brightness, over.brightness, over.brightness);
+            if (over.brightness > 1.0f) {
+                PM::MutiplyInitAlpha(p, 1.0f / std::sqrt(over.brightness));
+            }
         }
     };
 }
@@ -693,11 +742,10 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 }
             };
         } else if (name == "sizechange") {
-            auto vc        = ValueChange::ReadFromJson(wpj);
-            auto size_over = over.size;
-            return [vc, size_over](const ParticleInfo& info) {
+            auto vc = ValueChange::ReadFromJson(wpj);
+            return [vc](const ParticleInfo& info) {
                 for (auto& p : info.particles)
-                    PM::MutiplySize(p, size_over * FadeValueChange(PM::LifetimePos(p), vc));
+                    PM::MutiplySize(p, FadeValueChange(PM::LifetimePos(p), vc));
             };
 
         } else if (name == "alphafade") {
@@ -831,7 +879,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
         } else if (name == "vortex") {
             Vortex v = Vortex::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
-                Vector3d offset = info.controlpoints[v.controlpoint].offset +
+                Vector3d offset = info.controlpoints[v.controlpoint].resolved +
                                   (Vector3f { v.offset.data() }).cast<double>();
                 Vector3d axis    = (Vector3f { v.axis.data() }).cast<double>();
                 double   dis_mid = v.distanceouter - v.distanceinner + 0.1f;
@@ -871,7 +919,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                      ringradius,
                      (int)use_rotation);
             return [=](const ParticleInfo& info) {
-                Vector3d offset = info.controlpoints[v.controlpoint].offset +
+                Vector3d offset = info.controlpoints[v.controlpoint].resolved +
                                   (Vector3f { v.offset.data() }).cast<double>();
                 Vector3d axis    = (Vector3f { v.axis.data() }).cast<double>().normalized();
                 double   dis_mid = v.distanceouter - v.distanceinner + 0.1f;
@@ -930,8 +978,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             // is fully preserved; only the along-line component is clamped.
             return [=](const ParticleInfo& info) {
                 if (info.controlpoints.size() < 2) return;
-                Vector3d cp0  = info.controlpoints[0].offset;
-                Vector3d cp1  = info.controlpoints[1].offset;
+                Vector3d cp0  = info.controlpoints[0].resolved;
+                Vector3d cp1  = info.controlpoints[1].resolved;
                 Vector3d line = cp1 - cp0;
                 double   len2 = line.squaredNorm();
                 if (len2 < 1e-10) return;
@@ -961,7 +1009,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
 
             return [=](const ParticleInfo& info) {
                 if ((usize)controlpoint >= info.controlpoints.size()) return;
-                Vector3d cpPos = info.controlpoints[controlpoint].offset;
+                Vector3d cpPos = info.controlpoints[controlpoint].resolved;
 
                 for (auto& p : info.particles) {
                     if (! PM::LifetimeOk(p)) continue;
@@ -1041,7 +1089,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
         } else if (name == "controlpointattract") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
-                Vector3d offset = info.controlpoints[c.controlpoint].offset +
+                Vector3d offset = info.controlpoints[c.controlpoint].resolved +
                                   Vector3f { c.origin.data() }.cast<double>();
                 for (auto& p : info.particles) {
                     Vector3d diff     = offset - PM::GetPos(p).cast<double>();
@@ -1054,7 +1102,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
         } else if (name == "controlpointforce") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
-                Vector3d offset = info.controlpoints[c.controlpoint].offset +
+                Vector3d offset = info.controlpoints[c.controlpoint].resolved +
                                   Vector3f { c.origin.data() }.cast<double>();
                 for (auto& p : info.particles) {
                     Vector3d diff     = PM::GetPos(p).cast<double>() - offset;

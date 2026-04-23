@@ -221,12 +221,10 @@ void SetRopeParticleMeshGS(SceneMesh& mesh, const wpscene::Particle& particle, u
         { WE_IN_TEXCOORDVEC4.data(), VertexType::FLOAT4 },
         { WE_IN_TEXCOORDVEC4C1.data(), VertexType::FLOAT4 },
     };
-    if (thick_format) {
-        attrs.push_back({ WE_IN_TEXCOORDVEC4C2.data(), VertexType::FLOAT4 });
-        attrs.push_back({ WE_IN_TEXCOORDVEC4C3.data(), VertexType::FLOAT4 });
-    } else {
-        attrs.push_back({ WE_IN_TEXCOORDVEC3C2.data(), VertexType::FLOAT4 });
-    }
+    // The genericropeparticle shader ALWAYS expects these exact attributes
+    // regardless of whether the material defines "thick" ropes.
+    attrs.push_back({ WE_IN_TEXCOORDVEC4C2.data(), VertexType::FLOAT4 });
+    attrs.push_back({ WE_IN_TEXCOORDVEC4C3.data(), VertexType::FLOAT4 });
     attrs.push_back({ WE_IN_COLOR.data(), VertexType::FLOAT4 });
     // 1 vertex per segment, no index buffer (POINT_LIST topology)
     mesh.AddVertexArray(SceneVertexArray(attrs, count));
@@ -293,7 +291,7 @@ ParticleAnimationMode ToAnimMode(const std::string& str) {
 
 void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                       const wpscene::ParticleInstanceoverride& over,
-                      const std::array<float, 3>&              object_origin) {
+                      const std::array<float, 3>& object_origin, int32_t cp_start_shift = 0) {
     std::span<ParticleControlpoint> pcs = pSys.Controlpoints();
     Eigen::Vector3d                 origin_vec { array_cast<double>(object_origin).data() };
     usize                           s = std::min(pcs.size(), wp.controlpoints.size());
@@ -303,12 +301,31 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::link_mouse];
         pcs[i].worldspace =
             wp.controlpoints[i].flags[wpscene::ParticleControlpoint::FlagEnum::worldspace];
+        pcs[i].follow_parent_particle =
+            wp.controlpoints[i]
+                .flags[wpscene::ParticleControlpoint::FlagEnum::follow_parent_particle];
+        pcs[i].parent_cp_index = wp.controlpoints[i].parentcontrolpoint;
+        pcs[i].is_null_offset  = wp.controlpoints[i].offset_is_null;
     }
-    // Apply instance override control points
+    // controlpointstartindex on a ParticleChild means "this child's CP[i] is parent's CP[i+N]"
+    // unless the child already declared an explicit parentcontrolpoint.  This is the auto-chain
+    // path needed for NieR 2B thunderbolt_beam_child, whose CPs all have offset=(0,0,0) and
+    // parentcontrolpoint=0 but rely on the shift to pick up spawner CP1's dynamic follow.
+    if (cp_start_shift > 0) {
+        for (usize i = 0; i < pcs.size(); i++) {
+            if (pcs[i].parent_cp_index == 0) {
+                pcs[i].parent_cp_index = static_cast<int32_t>(i) + cp_start_shift;
+            }
+        }
+    }
+    // Apply instance override control points.  An explicit override revives a null-offset
+    // slot: the author has set a real position, so the runtime should no longer treat this
+    // CP as "unassigned" and must not substitute the bounded particle position.
     for (int i = 0; i < 8; i++) {
         if (over.controlpointOverrides[i].active) {
             pcs[i].offset =
                 Eigen::Vector3d { array_cast<double>(over.controlpointOverrides[i].offset).data() };
+            pcs[i].is_null_offset = false;
         }
     }
     // Convert worldspace control points to local space
@@ -317,20 +334,27 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
             pcs[i].offset -= origin_vec;
         }
     }
+    // Seed resolved = offset so operators that read `resolved` without a parent chain see the
+    // static value immediately (matches legacy behavior for the 99.7% of CPs that never chain).
+    // Per-frame resolution happens in ParticleSubSystem::ResolveControlpointsForInstance.
+    for (auto& pc : pcs) {
+        pc.resolved = pc.offset;
+    }
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                      const wpscene::ParticleInstanceoverride& over, u32 rope_count = 0,
-                     int cp_start = 0) {
+                     int /*cp_start*/ = 0) {
+    // cp_start is intentionally unused here.  The child-config-level controlpointstartindex is
+    // now consumed by LoadControlPoint to set parent_cp_index on the child's CPs (see
+    // memory/cp-parent-chain.md), so the per-initializer controlpointstartindex (which reads an
+    // index into *this* subsystem's CPs) would double-shift if we injected it again.  Per-op
+    // controlpointstartindex in the initializer JSON itself (separate field) still works.
     for (const auto& ini : wp.initializers) {
         nlohmann::json iniCopy = ini;
         // Inject/override count for mapsequencebetweencontrolpoints
         if (rope_count > 0 && iniCopy.contains("name") &&
             iniCopy["name"] == "mapsequencebetweencontrolpoints") {
             iniCopy["count"] = rope_count;
-        }
-        // Inject controlpointstartindex
-        if (cp_start > 0) {
-            iniCopy["controlpointstartindex"] = cp_start;
         }
         pSys.AddInitializer(WPParticleParser::genParticleInitOp(iniCopy, pSys.Controlpoints()));
     }
@@ -1833,11 +1857,25 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                                              Vector3f(wppartobj.scale.data()),
                                              Vector3f(wppartobj.angles.data()));
         spNode->ID()   = wppartobj.id;
-        // Apply visible field to the scene node so pool particle layers (which
-        // declare visible=false at load) start hidden and only render when
-        // SceneScript's createLayer pops them.  Existing wallpapers that don't
-        // set visible default to true (WPParticleObject::visible = true).
-        spNode->SetVisible(wppartobj.visible);
+        // Visibility policy mirrors the image-object logic: only honor
+        // JSON `visible: false` when the object is a *managed* layer —
+        //   (a) a SceneScript-referenced name (getLayer(name)), or
+        //   (b) a pool layer (registered via registerAsset + createLayer).
+        // Both cases are tracked in context.script_referenced_layers
+        // (populated at scan time in the SceneScript literal pass and at
+        // pool-synthesis time).
+        //
+        // For ambient particle objects with no script reference — e.g. the
+        // NieR:Automata 2B halo cluster (Вихрь 2 + 3× Искра at her head, all
+        // hardcoded `"visible": false` with no script to enable them) — WE's
+        // runtime apparently treats `visible: false` as an editor-time-only
+        // hint and renders them anyway.  Match that: start them visible.
+        bool isScriptedParticle = ! wppartobj.name.empty() &&
+                                  context.script_referenced_layers.count(wppartobj.name) > 0;
+        if (isScriptedParticle) {
+            spNode->SetVisible(wppartobj.visible);
+        }
+        // Ambient particles: leave m_visible at the ctor default (true).
     }
 
     wpscene::ParticleInstanceoverride override = wppartobj.instanceoverride;
@@ -1877,12 +1915,46 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             },
             particle_obj.starttime);
 
-        LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);
+        // Debug name: basename of the particle preset.  Used for per-subsystem logs in
+        // ParticleSystem.cpp (particle-clear / particle-state lines).
+        {
+            std::string dn = is_child ? child_ptr.child->name : wppartobj.name;
+            auto slash = dn.find_last_of('/');
+            if (slash != std::string::npos) dn = dn.substr(slash + 1);
+            auto dot = dn.find_last_of('.');
+            if (dot != std::string::npos) dn = dn.substr(0, dot);
+            particleSub->SetDebugName(std::move(dn));
+        }
+
+        LoadControlPoint(*particleSub,
+                         particle_obj,
+                         override,
+                         wppartobj.origin,
+                         child_data.controlpointstartindex);
         LoadEmitter(*particleSub, particle_obj, override.count, override.rate, false, 1);
         LoadInitializer(*particleSub, particle_obj, override, 0, child_data.controlpointstartindex);
         LoadOperator(*particleSub, particle_obj, override);
 
         for (auto& child : particle_obj.children) {
+            if (const char* skip_list = std::getenv("WEKDE_SKIP_PARTICLE_CHILD_SUBSTR")) {
+                bool        matched = false;
+                std::string list(skip_list);
+                size_t      start = 0;
+                while (start < list.size()) {
+                    size_t comma = list.find(',', start);
+                    if (comma == std::string::npos) comma = list.size();
+                    std::string tok = list.substr(start, comma - start);
+                    if (! tok.empty() && child.name.find(tok) != std::string::npos) {
+                        matched = true;
+                        LOG_INFO("WEKDE_SKIP_PARTICLE_CHILD_SUBSTR: skipping child '%s' (match '%s')",
+                                 child.name.c_str(),
+                                 tok.c_str());
+                        break;
+                    }
+                    start = comma + 1;
+                }
+                if (matched) continue;
+            }
             ParseParticleObj(context,
                              wppartobj,
                              { .child             = &child,
@@ -2061,7 +2133,17 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         particleSub->SetSpriteTrail(trail_segments, wppartRenderer.length);
     }
 
-    LoadControlPoint(*particleSub, particle_obj, override, wppartobj.origin);
+    {
+        std::string dn = is_child ? child_ptr.child->name : wppartobj.name;
+        auto slash = dn.find_last_of('/');
+        if (slash != std::string::npos) dn = dn.substr(slash + 1);
+        auto dot = dn.find_last_of('.');
+        if (dot != std::string::npos) dn = dn.substr(0, dot);
+        particleSub->SetDebugName(std::move(dn));
+    }
+
+    LoadControlPoint(
+        *particleSub, particle_obj, override, wppartobj.origin, child_data.controlpointstartindex);
 
     // Detect batch size for rope particles with mapsequencebetweencontrolpoints
     u32 rope_batch_size = 1;
@@ -2126,6 +2208,30 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     context.shader_updater->SetNodeData(spNode.get(), svData);
 
     for (auto& child : particle_obj.children) {
+        // Debug knob: WEKDE_SKIP_PARTICLE_CHILD_SUBSTR=foo,bar skips any child
+        // whose preset name contains one of the comma-separated substrings.
+        // Useful for isolating visual contributions of nested particle sets
+        // (e.g. WEKDE_SKIP_PARTICLE_CHILD_SUBSTR=beam_child to turn off the
+        // NieR 2B thunderbolt sub-beams without touching the workshop asset).
+        if (const char* skip_list = std::getenv("WEKDE_SKIP_PARTICLE_CHILD_SUBSTR")) {
+            bool        matched = false;
+            std::string list(skip_list);
+            size_t      start = 0;
+            while (start < list.size()) {
+                size_t comma = list.find(',', start);
+                if (comma == std::string::npos) comma = list.size();
+                std::string tok = list.substr(start, comma - start);
+                if (! tok.empty() && child.name.find(tok) != std::string::npos) {
+                    matched = true;
+                    LOG_INFO("WEKDE_SKIP_PARTICLE_CHILD_SUBSTR: skipping child '%s' (match '%s')",
+                             child.name.c_str(),
+                             tok.c_str());
+                    break;
+                }
+                start = comma + 1;
+            }
+            if (matched) continue;
+        }
         ParseParticleObj(context,
                          wppartobj,
                          {
@@ -3574,23 +3680,54 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // Record scene's HDR intent so SceneWallpaper can decide whether to upgrade
     // render targets.  If the scene declares hdr:false, we should stay in SDR to
     // avoid over-brightness from overbright materials + additive blending.
-    context.scene->hdrContent = sc.general.hdr;
+    //
+    // Exception: scenes that declare hdr:false but contain instance-overrides
+    // with brightness > 1 (e.g. NieR:Automata 3633635618's "Молния" thunderbolts
+    // with brightness=5.0) push particle color channels past 1.0 at spawn; in
+    // SDR the fragment clamps per-channel, then additive blending piles the
+    // clamped output into pure white — the blue tinge the artist intended is
+    // gone.  Force HDR for these scenes so the RGBA16F RTs preserve the channel
+    // ratios and FinPass's exposure tonemap compresses back to [0,1] without
+    // losing hue.
+    bool force_hdr_for_brightness = false;
+    const char* env_no_hdr = std::getenv("WEKDE_DISABLE_OVERBRIGHT_HDR");
+    const bool  skip_auto_hdr = env_no_hdr && env_no_hdr[0] != '\0' && env_no_hdr[0] != '0';
+    if (! skip_auto_hdr && ! sc.general.hdr && json.contains("objects") && json.at("objects").is_array()) {
+        for (const auto& obj : json.at("objects")) {
+            if (! obj.is_object()) continue;
+            if (! obj.contains("instanceoverride")) continue;
+            const auto& ov = obj.at("instanceoverride");
+            if (! ov.is_object() || ! ov.contains("brightness")) continue;
+            const auto& b = ov.at("brightness");
+            if (b.is_number() && b.get<float>() > 1.0f) {
+                force_hdr_for_brightness = true;
+                break;
+            }
+        }
+    }
+    if (force_hdr_for_brightness) {
+        LOG_INFO("HDR auto-enabled: scene declared hdr:false but has instance-override "
+                 "brightness>1; forcing RGBA16F+tonemap to preserve overbright hue");
+    }
+    const bool effective_hdr   = sc.general.hdr || force_hdr_for_brightness;
+    context.scene->hdrContent  = effective_hdr;
 
-    // Pick the bloom parameter variant matching scene's HDR intent.  WE scenes
-    // carry both SDR (bloomstrength/bloomthreshold) and HDR
+    // Pick the bloom parameter variant matching scene's effective HDR mode.  WE
+    // scenes carry both SDR (bloomstrength/bloomthreshold) and HDR
     // (bloomhdrstrength/bloomhdrthreshold) values; the SDR threshold is tuned
     // for 0..1 framebuffers while the HDR threshold expects 0..∞ accumulation.
     const float scene_bloom_strength =
-        sc.general.hdr ? sc.general.bloomhdrstrength : sc.general.bloomstrength;
+        effective_hdr ? sc.general.bloomhdrstrength : sc.general.bloomstrength;
     const float scene_bloom_threshold =
-        sc.general.hdr ? sc.general.bloomhdrthreshold : sc.general.bloomthreshold;
+        effective_hdr ? sc.general.bloomhdrthreshold : sc.general.bloomthreshold;
 
     // Create bloom post-processing passes if enabled
     if (sc.general.bloom) {
-        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d)",
+        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d effective_hdr=%d)",
                  scene_bloom_strength,
                  scene_bloom_threshold,
-                 (int)sc.general.hdr);
+                 (int)sc.general.hdr,
+                 (int)effective_hdr);
 
         auto& scene = *context.scene;
         auto& vfs   = *context.vfs;

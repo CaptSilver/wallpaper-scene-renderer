@@ -36,7 +36,13 @@ bool ParticleControlpoint::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE_NOWARN(json, "flags", _raw_flags);
     flags = EFlags(_raw_flags);
 
+    // Distinguish `offset: null` (unassigned CP slot) from `offset: "0 0 0"` (explicit
+    // origin).  The WE editor emits null for CPs the author never touched; downstream
+    // CP resolution needs the distinction to know whether to substitute a bounded
+    // parent-particle position.
+    offset_is_null = json.contains("offset") && json.at("offset").is_null();
     GET_JSON_NAME_VALUE_NOWARN(json, "offset", offset);
+    GET_JSON_NAME_VALUE_NOWARN(json, "parentcontrolpoint", parentcontrolpoint);
     return true;
 };
 
@@ -205,6 +211,7 @@ bool WPParticleObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE(json, "angles", angles);
     GET_JSON_NAME_VALUE(json, "scale", scale);
     GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
+    GET_JSON_NAME_VALUE_NOWARN(json, "disablepropagation", disablepropagation);
 
     if (json.contains("instanceoverride") && ! json.at("instanceoverride").is_null()) {
         instanceoverride.FromJosn(json.at("instanceoverride"));

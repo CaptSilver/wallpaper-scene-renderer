@@ -81,6 +81,11 @@ public:
     bool autosize { false };
     bool visible { true };
     bool visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
+    // WE editor flag: when true, this object doesn't inherit transform /
+    // visibility / alpha / tint from parent groups or nodes.  Parsed for
+    // completeness; currently no group hierarchy exists in the scenes we
+    // handle, so nothing to propagate.
+    bool disablepropagation { false };
     bool perspective { false };            // Use perspective camera (default: flat/ortho)
     std::string                image;
     std::string                alignment { "center" };

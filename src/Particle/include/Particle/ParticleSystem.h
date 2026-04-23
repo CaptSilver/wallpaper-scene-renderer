@@ -40,7 +40,8 @@ public:
     std::span<const Particle> Particles() const;
     std::vector<Particle>&    ParticlesVec();
 
-    BoundedData& GetBoundedData();
+    BoundedData&       GetBoundedData();
+    const BoundedData& GetBoundedData() const { return m_bounded_data; }
 
     void                               InitTrails(u32 trail_capacity, float trail_max_age = 0.0f);
     std::vector<ParticleTrailHistory>& TrailHistories();
@@ -105,8 +106,21 @@ public:
 
     void AddChild(std::unique_ptr<ParticleSubSystem>&&);
 
+    ParticleSubSystem*       ParentSubsystem() { return m_parent_subsystem; }
+    const ParticleSubSystem* ParentSubsystem() const { return m_parent_subsystem; }
+
     std::span<const ParticleControlpoint> Controlpoints() const;
     std::span<ParticleControlpoint>       Controlpoints();
+
+    // Resolve per-frame controlpoint offsets by walking the parent chain.  For CPs with
+    // follow_parent_particle + an EVENT_FOLLOW/EVENT_SPAWN instance bound to a live parent
+    // particle, the resolved offset = that particle's position.  For CPs with
+    // parent_cp_index > 0, the resolved offset = parent subsystem's CP[parent_cp_index].resolved
+    // (parent has already been resolved this frame because Emitt runs top-down).  Otherwise the
+    // resolved offset falls back to the static local `offset`.
+    //
+    // `inst` may be null for subsystems without bounded instances (STATIC top-level).
+    void ResolveControlpointsForInstance(const ParticleInstance* inst);
 
     // Update control points with link_mouse flag to follow mouse position
     void UpdateMouseControlPoints(double sceneX, double sceneY);
@@ -115,6 +129,12 @@ public:
     u32       MaxInstanceCount() const;
 
     void SetSpriteTrail(u32 trail_capacity, float trail_length = 0.0f);
+
+    // Debug label (particle preset basename, e.g. "thunderbolt_glow") plumbed from the
+    // parser.  Used only for rate-limited LOG_INFO diagnostics when investigating
+    // stickiness / clear events.  Empty string = unnamed (top-level from scene.json).
+    void               SetDebugName(std::string name) { m_debug_name = std::move(name); }
+    const std::string& DebugName() const { return m_debug_name; }
 
 private:
     ParticleSystem&            m_sys;
@@ -135,6 +155,7 @@ private:
     double               m_time;
 
     std::vector<std::unique_ptr<ParticleSubSystem>> m_children;
+    ParticleSubSystem* m_parent_subsystem { nullptr };  // set in parent's AddChild()
     std::vector<std::unique_ptr<ParticleInstance>>  m_instances;
 
     u32       m_maxcount_instance { 1 };
@@ -153,6 +174,8 @@ private:
 
     // Scripted rate override — see SetDynamicRateMultiplier.
     std::atomic<double> m_dynamic_rate_multiplier { 1.0 };
+
+    std::string m_debug_name;
 };
 
 class Scene;

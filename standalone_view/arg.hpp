@@ -45,7 +45,7 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
 
     arg.add_argument("-f", OPT_FPS)
         .help("fps")
-        .default_value<int32_t>(15)
+        .default_value<int32_t>(60)
         .nargs(1)
         .scan<'i', int32_t>();
 

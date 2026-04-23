@@ -78,7 +78,55 @@ void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity, float trail_length) {
 }
 
 void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
+    child->m_parent_subsystem = this;
     m_children.emplace_back(std::move(child));
+}
+
+void ParticleSubSystem::ResolveControlpointsForInstance(const ParticleInstance* inst) {
+    // Order of precedence:
+    //   1. follow_parent_particle  → live bound particle position (requires inst with parent)
+    //   2. parent_cp_index > 0     → parent subsystem's already-resolved CP (top-down update
+    //                                guarantees parent is resolved first)
+    //   3. static local offset
+    //
+    // When follow_parent_particle is set but no parent particle is bound (STATIC root, or the
+    // instance is a fresh STATIC default), we fall through to the chain branch so the author's
+    // intended fallback still applies (NieR thunderbolt_child_spawner CP1 has both).
+    //
+    // Null-offset substitution: if a CP's resolved value ultimately comes from a JSON
+    // `offset: null` slot (explicitly unassigned by the author in the WE editor), and this
+    // instance has a bounded parent particle, substitute the bounded particle position.
+    // Fixes NieR 2B thunderbolt_beam_child: beam_child's CP1 chains via controlpointstartindex=1
+    // to spawner CP2 (offset:null in preset).  Without substitution the rope draws from the
+    // bolt particle back to subsystem origin ("goes back to hit that").  With substitution,
+    // CP1 resolves to beam_child's bounded spawner particle, so sub-bolts branch from bolt
+    // particle to spawner spark.
+    const bool has_bound_particle = (inst != nullptr && inst->GetBoundedData().parent != nullptr &&
+                                     inst->GetBoundedData().particle_idx >= 0);
+    Eigen::Vector3d bound_pos = Eigen::Vector3d::Zero();
+    if (has_bound_particle) bound_pos = inst->GetBoundedData().pos.cast<double>();
+    for (auto& cp : m_controlpoints) {
+        bool resolved_is_null = false;
+        if (cp.follow_parent_particle && has_bound_particle) {
+            cp.resolved     = bound_pos;
+        } else if (cp.parent_cp_index > 0 && m_parent_subsystem != nullptr) {
+            auto parent_cps = m_parent_subsystem->Controlpoints();
+            // parent_cp_index is a direct (0-based) index into the parent's CPs per the WE
+            // asset convention we validated in memory/cp-parent-chain.md.  Clamp defensively.
+            auto idx = static_cast<size_t>(
+                std::clamp(cp.parent_cp_index, 0, (int32_t)parent_cps.size() - 1));
+            cp.resolved     = parent_cps[idx].resolved;
+            resolved_is_null =
+                parent_cps[idx].is_null_offset || parent_cps[idx].is_null_resolved;
+        } else {
+            cp.resolved     = cp.offset;
+            resolved_is_null = cp.is_null_offset;
+        }
+        if (resolved_is_null && has_bound_particle) {
+            cp.resolved = bound_pos;
+        }
+        cp.is_null_resolved = resolved_is_null;
+    }
 }
 
 void ParticleSubSystem::Reset() {
@@ -135,7 +183,19 @@ void ParticleSubSystem::Emitt() {
     double particleTime = frameTime * rate_eff;
     m_time += particleTime;
 
-    if (m_spawn_type == SpawnType::STATIC) {
+    // STATIC subsystems auto-create one unbounded instance UNLESS they're nested under
+    // an EVENT_FOLLOW parent.  In that special case (NieR thunderbolt_beam_child under
+    // thunderbolt_child_spawner), the parent's spawn_inst loop hands out one instance
+    // per parent particle so each sub-beam tracks its own spark via bounded_data.pos.
+    //
+    // A STATIC child nested under a STATIC parent (NieR thunderbolt_glow under
+    // thunderbolt) is NOT per-parent-particle — the author intended a single
+    // instantaneous-burst subsystem that fires once in parent's coord space.  See
+    // memory/cp-parent-chain.md for the audit.
+    const bool parent_is_event_follow =
+        (m_parent_subsystem != nullptr &&
+         m_parent_subsystem->Type() == SpawnType::EVENT_FOLLOW);
+    if (m_spawn_type == SpawnType::STATIC && ! parent_is_event_follow) {
         if (m_instances.empty()) {
             auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
             if (m_is_spritetrail) {
@@ -159,8 +219,18 @@ void ParticleSubSystem::Emitt() {
 
         auto& bounded_data = inst->GetBoundedData();
 
+        // Nested STATIC under EVENT_FOLLOW (NieR thunderbolt_beam_child under
+        // thunderbolt_child_spawner) gets per-parent-particle instancing via the parent's
+        // spawn_inst loop, so it needs parent-particle-lifetime death semantics too —
+        // otherwise only the first `maxcount_instance` parent particles ever get an instance
+        // and subsequent ones are silently dropped.
+        //
+        // A STATIC child under a STATIC parent (NieR thunderbolt_glow under thunderbolt)
+        // is a single auto-created instance and does NOT bind to a parent particle — its
+        // lifetime is the scene's, not the parent particle's.
         bool type_has_death =
-            m_spawn_type == SpawnType::EVENT_SPAWN || m_spawn_type == SpawnType::EVENT_FOLLOW;
+            m_spawn_type == SpawnType::EVENT_SPAWN || m_spawn_type == SpawnType::EVENT_FOLLOW ||
+            (m_spawn_type == SpawnType::STATIC && parent_is_event_follow);
 
         // bouded data and death
         if (bounded_data.parent != nullptr) {
@@ -185,10 +255,27 @@ void ParticleSubSystem::Emitt() {
             }
         }
 
-        // clear when death if follow
+        // Clear on death is ONLY safe for EVENT_FOLLOW — those children conceptually
+        // vanish with their parent (trails, attached particles, etc.).  For nested
+        // STATIC children (thunderbolt_glow sprites, thunderbolt_beam_child sub-bolts
+        // under child_spawner), clearing mid-animation cuts particles off at whatever
+        // alpha they were at and produces a visible "pop" on every parent-particle
+        // death.  Instead, setting m_is_death is enough: the subsequent
+        // `if (! inst->IsDeath())` gate (a few lines down) blocks new emissions, and
+        // existing particles age out naturally through their alphafade/alphachange
+        // operators.  Once all live particles die off, the instance becomes
+        // NoLiveParticle + IsDeath and QueryNewInstance recycles it for the next
+        // parent particle's binding.
         if (inst->IsDeath() && m_spawn_type == SpawnType::EVENT_FOLLOW) {
             inst->ParticlesVec().clear();
         }
+
+        // Resolve CP offsets now — bounded_data.pos is fresh for this instance, and the
+        // resolver needs to run BEFORE emitters (which execute initializers like
+        // mapsequencebetweencontrolpoints that read CPs) AND before operators (line
+        // ~290 below).  Parent subsystem's Emitt has already run (top-down recursion in
+        // ParticleSystem::Emitt), so parent CPs are already resolved this frame.
+        ResolveControlpointsForInstance(inst.get());
 
         if (! inst->IsDeath()) {
             for (auto& emittOp : m_emiters) {
@@ -223,10 +310,22 @@ void ParticleSubSystem::Emitt() {
                 if (m_is_spritetrail && i < (isize)inst->TrailHistories().size()) {
                     inst->TrailHistories()[i].Clear();
                 }
-                // new spawn
+                // new spawn — extend to STATIC children ONLY when we are EVENT_FOLLOW,
+                // so sub-particles nested under an event_follow parent (NieR
+                // thunderbolt_beam_child under thunderbolt_child_spawner) get an
+                // instance per parent particle, bounded to it for CP resolution.
+                //
+                // STATIC children of a non-event parent (NieR thunderbolt_glow under
+                // thunderbolt) must NOT be per-parent-particle — they are a single
+                // shared instance auto-created above.  Spawning one per bolt particle
+                // stacks 64×4 glow bursts at origin, overpowering the intended
+                // "subtle flash when bolt starts" effect.
                 for (auto& child : m_children) {
-                    if (child->Type() == SpawnType::EVENT_FOLLOW ||
-                        child->Type() == SpawnType::EVENT_SPAWN)
+                    auto ct = child->Type();
+                    if (ct == SpawnType::EVENT_FOLLOW || ct == SpawnType::EVENT_SPAWN)
+                        spawn_inst(*inst, *child, i);
+                    else if (ct == SpawnType::STATIC &&
+                             m_spawn_type == SpawnType::EVENT_FOLLOW)
                         spawn_inst(*inst, *child, i);
                 }
             }
@@ -315,6 +414,50 @@ void ParticleSubSystem::Emitt() {
     if (m_mesh->VertexCount() > 0) {
         m_mesh->SetDirty();
         m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
+    }
+
+    // Rate-limited snapshot: live instances, live particle total, and the bounded
+    // parent pos of up to 3 instances — lets us see at a glance whether a "sticky"
+    // subsystem's instances are actually pinned at a position or cycling.  Logs
+    // every ~120 frames per subsystem (≈2s at 60fps) only for named subsystems.
+    // Gated on WEKDE_DEBUG_PARTICLE env var so production journal stays quiet.
+    static const bool particle_debug_enabled = [] {
+        const char* v = std::getenv("WEKDE_DEBUG_PARTICLE");
+        return v && v[0] != '\0' && v[0] != '0';
+    }();
+    if (particle_debug_enabled && ! m_debug_name.empty()) {
+        static thread_local std::map<std::string, u32, std::less<>> frame_counts;
+        u32& fc = frame_counts[m_debug_name];
+        if ((fc++ % 120) == 0) {
+            usize live_inst = 0, live_p = 0;
+            std::array<Eigen::Vector3f, 3> live_samples { Eigen::Vector3f::Zero(),
+                                                          Eigen::Vector3f::Zero(),
+                                                          Eigen::Vector3f::Zero() };
+            usize sample_n = 0;
+            for (auto& inst : m_instances) {
+                if (! inst) continue;
+                bool any_live = false;
+                for (auto& p : inst->ParticlesVec()) {
+                    if (ParticleModify::LifetimeOk(p)) {
+                        live_p++;
+                        any_live = true;
+                    }
+                }
+                if (any_live) {
+                    if (sample_n < 3) live_samples[sample_n++] = inst->GetBoundedData().pos;
+                    live_inst++;
+                }
+            }
+            LOG_INFO("particle-state: '%s' inst=%zu/%zu liveP=%zu "
+                     "livePos[0]=(%.1f,%.1f) livePos[1]=(%.1f,%.1f) livePos[2]=(%.1f,%.1f)",
+                     m_debug_name.c_str(),
+                     live_inst,
+                     m_instances.size(),
+                     live_p,
+                     live_samples[0].x(), live_samples[0].y(),
+                     live_samples[1].x(), live_samples[1].y(),
+                     live_samples[2].x(), live_samples[2].y());
+        }
     }
 
     for (auto& child : m_children) {

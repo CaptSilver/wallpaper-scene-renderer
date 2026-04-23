@@ -59,6 +59,17 @@ public:
     float camerashakeroughness { 0.5f };
 
     bool camerafade { false };
+
+    // Scene-global environmental vectors (parsed but not currently wired into
+    // operators — particle `movement` operators carry their own per-preset
+    // `gravity` field).  Retained so future global-force features can consume
+    // them without another parse pass.  NieR 2B ships `gravitydirection:
+    // "0 -1 0"` (Y-down gravity for Y-up scene) and `windenabled: false`.
+    std::array<float, 3> gravitydirection { 0.0f, -1.0f, 0.0f };
+    float                gravitystrength { 1.0f };
+    std::array<float, 3> winddirection { 0.707f, 0.707f, 0.0f };
+    bool                 windenabled { false };
+    float                windstrength { 1.0f };
 };
 
 class WPScene {

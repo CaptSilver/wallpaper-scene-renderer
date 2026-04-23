@@ -11,7 +11,23 @@
 #include <cstdio>
 #include <csignal>
 #include <atomic>
+#include <filesystem>
+#include <cstdlib>
+#include <sys/statfs.h>
+#include <linux/magic.h>
 #include "arg.hpp"
+
+// Returns true iff `p` is on a RAM-backed filesystem (tmpfs / ramfs).  Pass
+// dumps default to /tmp on many systems, which IS tmpfs on Bazzite — 128 HDR
+// RTs × 29 MB each is 3.7 GB of staging *plus* the PPM output, all competing
+// for the same RAM pool.  Warning the user here lets them redirect to a
+// disk-backed dir before we OOM.
+static bool path_is_ramfs(const std::string& p) {
+    struct statfs sfs;
+    if (statfs(p.c_str(), &sfs) != 0) return false;
+    // linux/magic.h: TMPFS_MAGIC=0x01021994, RAMFS_MAGIC=0x858458f6
+    return sfs.f_type == TMPFS_MAGIC || sfs.f_type == RAMFS_MAGIC;
+}
 
 // Clean-exit signal handler: sets an atomic flag that a QTimer polls from
 // the Qt event loop.  Calling QMetaObject::invokeMethod from inside a
@@ -86,10 +102,58 @@ int main(int argc, char** argv) {
     // --dump-passes-dir: schedule a one-shot per-pass RT dump N seconds
     // after startup.  Used to pinpoint where text / colour corruption
     // first enters the effect chain on wallpapers like 2866203962.
+    //
+    // Default path when the flag is absent but --dump-passes-delay was set:
+    // $HOME/.cache/wekde/pass-dump.  Disk-backed on typical distros (avoids
+    // tmpfs RAM competition with the VMA staging pool).  We erase the dir
+    // contents before arming so consecutive runs don't pile up stale PPMs.
     {
         std::string dump_dir = program.get<std::string>(OPT_DUMP_PASSES_DIR);
+
+        // Infer whether the user asked for a dump even without naming a dir —
+        // i.e., they passed a non-default --dump-passes-delay.  argparse has
+        // no is_used() here, so we treat a non-default delay as intent.
+        const double delay_raw = program.get<double>(OPT_DUMP_PASSES_DELAY);
+        const bool   delay_set = delay_raw != 2.0; // 2.0 is the argparse default
+
+        if (dump_dir.empty() && delay_set) {
+            const char* home = std::getenv("HOME");
+            if (home && home[0]) {
+                dump_dir = std::string(home) + "/.cache/wekde/pass-dump";
+                std::cout << "dump-passes: no --dump-passes-dir set, using default " << dump_dir
+                          << std::endl;
+            }
+        }
+
         if (! dump_dir.empty()) {
-            double delay_s = program.get<double>(OPT_DUMP_PASSES_DELAY);
+            std::error_code ec;
+            // Create parent directory.  If the dir exists, erase stale files
+            // first so /tmp doesn't keep growing across consecutive invocations.
+            std::filesystem::create_directories(dump_dir, ec);
+            if (std::filesystem::exists(dump_dir)) {
+                size_t erased = 0;
+                for (auto& ent : std::filesystem::directory_iterator(dump_dir, ec)) {
+                    if (ent.is_regular_file()) {
+                        std::filesystem::remove(ent.path(), ec);
+                        if (! ec) erased++;
+                    }
+                }
+                if (erased > 0) {
+                    std::cout << "dump-passes: erased " << erased
+                              << " stale file(s) from " << dump_dir << std::endl;
+                }
+            }
+
+            // tmpfs warning — pass dumping can be several GB of RAM between
+            // staging buffers and PPM output, which will OOM on tmpfs.
+            if (path_is_ramfs(dump_dir)) {
+                std::cerr << "dump-passes: WARNING " << dump_dir
+                          << " is on a RAM-backed filesystem (tmpfs/ramfs). "
+                          << "Several GB of PPMs will compete with VMA staging for RAM; "
+                          << "redirect to a disk-backed path if the dump OOMs." << std::endl;
+            }
+
+            double delay_s = delay_raw;
             if (delay_s < 0.0) delay_s = 2.0;
             QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, dump_dir]() {
                 std::cout << "dump-passes: requesting dump to " << dump_dir << std::endl;

@@ -13,6 +13,9 @@
 #include <unordered_set>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
+#include <cmath>
 
 #include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
@@ -454,20 +457,117 @@ struct PassDumpEntry {
     VmaBufferParameters staging;
     uint32_t            width;
     uint32_t            height;
+    VkFormat            format;
     std::string         shader;
     std::string         output;
     int32_t             node_id;
     size_t              pass_index;
 };
+
+// Bytes per pixel for the formats our render graph emits.  Returns 0 for
+// formats we don't know how to dump — those get skipped rather than writing
+// garbage.  RGBA8/BGRA8 = 4bpp; RGBA16F (HDR scenes) = 8bpp.
+inline uint32_t BytesPerPixelFor(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+    case VK_FORMAT_B8G8R8A8_UNORM:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+        return 4;
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+        return 8;
+    default:
+        return 0;
+    }
+}
+
+// Half-to-float decode for RGBA16F dump conversion.  Standard IEEE 754-2008
+// binary16 layout; handles normals, subnormals, and inf/NaN.
+inline float Half2Float(uint16_t h) {
+    uint32_t sign = (h >> 15) & 0x1u;
+    uint32_t exp  = (h >> 10) & 0x1fu;
+    uint32_t mant = h & 0x3ffu;
+    uint32_t f;
+    if (exp == 0) {
+        if (mant == 0) {
+            f = sign << 31;
+        } else {
+            while ((mant & 0x400u) == 0) { mant <<= 1; exp--; }
+            exp++;
+            mant &= 0x3ffu;
+            f = (sign << 31) | ((exp + (127 - 15)) << 23) | (mant << 13);
+        }
+    } else if (exp == 31) {
+        f = (sign << 31) | 0x7f800000u | (mant << 13);
+    } else {
+        f = (sign << 31) | ((exp + (127 - 15)) << 23) | (mant << 13);
+    }
+    float out;
+    std::memcpy(&out, &f, 4);
+    return out;
+}
 bool                        g_pass_dump_active  = false;
 std::vector<PassDumpEntry>* g_pass_dump_entries = nullptr;
 Device const*               g_pass_dump_device  = nullptr;
 static size_t               g_pass_dump_counter = 0;
 
-void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, uint32_t w, uint32_t h,
-                        const std::string& shader, const std::string& output, int32_t node_id) {
+// Cumulative staging buffer allocation across the current dump's record phase.
+// Reset by dumpPassesIfRequested() when phase transitions 0→1 (arm).
+static uint64_t g_pass_dump_total_bytes = 0;
+
+void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, VkFormat format,
+                        uint32_t w, uint32_t h, const std::string& shader,
+                        const std::string& output, int32_t node_id) {
     if (! g_pass_dump_active || ! g_pass_dump_entries || ! g_pass_dump_device) return;
     if (image == VK_NULL_HANDLE || w == 0 || h == 0) return;
+
+    // Reject formats we don't know how to convert to PPM — writing with a
+    // wrong bytes-per-pixel produced garbage/empty PPMs on HDR scenes
+    // (RGBA16F = 8bpp, previously hardcoded to 4bpp).
+    const uint32_t bpp = BytesPerPixelFor(format);
+    if (bpp == 0) {
+        static int s_unknown_fmt = 0;
+        if (++s_unknown_fmt <= 5) {
+            LOG_INFO("pass dump: skip idx=%zu id=%d %s -> %s (unknown VkFormat=%d)",
+                     g_pass_dump_counter,
+                     node_id,
+                     shader.c_str(),
+                     output.c_str(),
+                     (int)format);
+        }
+        g_pass_dump_counter++;
+        return;
+    }
+
+    // Cap total staging across the entire dump.  VMA CPU_ONLY + tmpfs PPM
+    // output share the same RAM pool on Bazzite (/tmp is tmpfs), so the
+    // dump competes with its own output for memory.  8 GiB default covers
+    // NieR-scale scenes end-to-end — 128 passes × ~30 MB base + a handful of
+    // 3840×2160 effect RTs at 66 MB each.  Override via WEKDE_PASS_DUMP_MEM_MB.
+    static const uint64_t s_mem_budget = [] {
+        const char* v = std::getenv("WEKDE_PASS_DUMP_MEM_MB");
+        uint64_t    mb = 8192;
+        if (v && v[0]) {
+            char*    end = nullptr;
+            uint64_t n   = std::strtoull(v, &end, 10);
+            if (n > 0 && n < 65536) mb = n;
+        }
+        return mb * 1024ull * 1024ull;
+    }();
+    const uint64_t this_entry_bytes = (uint64_t)w * h * bpp;
+    if (g_pass_dump_total_bytes + this_entry_bytes > s_mem_budget) {
+        static int s_budget_skips = 0;
+        if (++s_budget_skips <= 5) {
+            LOG_INFO("pass dump: budget exhausted at idx=%zu (%.1f MB would exceed %.1f MB cap), "
+                     "skipping this + subsequent passes — raise WEKDE_PASS_DUMP_MEM_MB if needed",
+                     g_pass_dump_counter,
+                     (double)(g_pass_dump_total_bytes + this_entry_bytes) / (1024.0 * 1024.0),
+                     (double)s_mem_budget / (1024.0 * 1024.0));
+        }
+        g_pass_dump_counter++;
+        return;
+    }
+
     // Skip enormous RTs — dumping a scene's full 4K background uses ~66MB
     // per pass, and cumulatively the ~200 passes exhaust VMA host memory so
     // MapMemory hangs mid-loop.  8 MP covers character layers up to 2252x2306
@@ -487,18 +587,21 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, uint32_t w
         g_pass_dump_counter++;
         return;
     }
-    LOG_INFO("pass dump: record idx=%zu id=%d %s -> %s (%ux%u)",
+    LOG_INFO("pass dump: record idx=%zu id=%d %s -> %s (%ux%u fmt=%d bpp=%u)",
              g_pass_dump_counter,
              node_id,
              shader.c_str(),
              output.c_str(),
              w,
-             h);
+             h,
+             (int)format,
+             bpp);
 
-    const VkDeviceSize bufferSize = (VkDeviceSize)w * h * 4;
+    const VkDeviceSize bufferSize = (VkDeviceSize)w * h * bpp;
     PassDumpEntry      entry {};
     entry.width            = w;
     entry.height           = h;
+    entry.format           = format;
     entry.shader           = shader;
     entry.output           = output;
     entry.node_id          = node_id;
@@ -564,6 +667,7 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, uint32_t w
     cmd.PipelineBarrier(
         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, toBack);
 
+    g_pass_dump_total_bytes += this_entry_bytes;
     g_pass_dump_entries->push_back(std::move(entry));
 }
 } // namespace vulkan
@@ -591,11 +695,12 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
     if (s_phase == 0 && ! dir.empty()) {
         s_dump_dir = dir;
         s_entries.clear();
-        wallpaper::vulkan::g_pass_dump_counter = 0;
-        wallpaper::vulkan::g_pass_dump_entries = &s_entries;
-        wallpaper::vulkan::g_pass_dump_device  = m_device.get();
-        wallpaper::vulkan::g_pass_dump_active  = true;
-        s_phase                                = 1;
+        wallpaper::vulkan::g_pass_dump_counter     = 0;
+        wallpaper::vulkan::g_pass_dump_total_bytes = 0;
+        wallpaper::vulkan::g_pass_dump_entries     = &s_entries;
+        wallpaper::vulkan::g_pass_dump_device      = m_device.get();
+        wallpaper::vulkan::g_pass_dump_active      = true;
+        s_phase                                    = 1;
         LOG_INFO("pass dump: armed for next frame (dir=%s)", s_dump_dir.c_str());
         return;
     }
@@ -614,10 +719,27 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
             return s;
         };
 
+        // Pre-write: tally total staging memory so the log tells us whether we're
+        // about to OOM.  HDR scenes (RGBA16F = 8bpp) use 2x the staging of SDR —
+        // 128 passes × 2560×1440 × 8 = 3.7GB — which used to hang the render
+        // thread on VMA MapMemory while the entries were iterated.  We now free
+        // each staging immediately after its PPM write so only one is resident.
+        {
+            uint64_t total_bytes = 0;
+            for (auto& e : s_entries) total_bytes += e.staging.req_size;
+            LOG_INFO("pass dump: %zu entries queued, total staging %.1f MB",
+                     s_entries.size(),
+                     (double)total_bytes / (1024.0 * 1024.0));
+        }
+
         size_t written = 0;
         for (auto& entry : s_entries) {
             void* mapped = nullptr;
-            if (entry.staging.handle.MapMemory(&mapped) != VK_SUCCESS) continue;
+            if (entry.staging.handle.MapMemory(&mapped) != VK_SUCCESS) {
+                // Free anyway so subsequent iterations can allocate.
+                entry.staging = wallpaper::vulkan::VmaBufferParameters {};
+                continue;
+            }
 
             char name_buf[64];
             std::snprintf(
@@ -628,14 +750,43 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
             FILE* f = std::fopen(path.c_str(), "wb");
             if (f) {
                 std::fprintf(f, "P6\n%u %u\n255\n", entry.width, entry.height);
-                const auto*          px = static_cast<const uint8_t*>(mapped);
                 std::vector<uint8_t> row((size_t)entry.width * 3);
+                const bool           is_bgra = (entry.format == VK_FORMAT_B8G8R8A8_UNORM ||
+                                      entry.format == VK_FORMAT_B8G8R8A8_SRGB);
+                const bool           is_8bpc = (BytesPerPixelFor(entry.format) == 4);
+
                 for (uint32_t y = 0; y < entry.height; y++) {
-                    const uint8_t* src = px + (size_t)y * entry.width * 4;
-                    for (uint32_t x = 0; x < entry.width; x++) {
-                        row[x * 3 + 0] = src[x * 4 + 0];
-                        row[x * 3 + 1] = src[x * 4 + 1];
-                        row[x * 3 + 2] = src[x * 4 + 2];
+                    if (is_8bpc) {
+                        // RGBA8/BGRA8: direct byte copy with optional channel swizzle.
+                        const uint8_t* src =
+                            static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 4;
+                        for (uint32_t x = 0; x < entry.width; x++) {
+                            row[x * 3 + 0] = src[x * 4 + (is_bgra ? 2 : 0)];
+                            row[x * 3 + 1] = src[x * 4 + 1];
+                            row[x * 3 + 2] = src[x * 4 + (is_bgra ? 0 : 2)];
+                        }
+                    } else {
+                        // RGBA16F: decode 16-bit half-floats, apply the same exposure
+                        // tonemap FinPass uses (`1 - exp(-hdr)`) to land in [0,1],
+                        // then quantize to u8.  Without this, HDR scenes dumped
+                        // before FinPass would emit garbage / appear white-clipped.
+                        const uint8_t* src =
+                            static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 8;
+                        for (uint32_t x = 0; x < entry.width; x++) {
+                            uint16_t hr, hg, hb;
+                            std::memcpy(&hr, src + x * 8 + 0, 2);
+                            std::memcpy(&hg, src + x * 8 + 2, 2);
+                            std::memcpy(&hb, src + x * 8 + 4, 2);
+                            float r = std::max(0.0f, Half2Float(hr));
+                            float g = std::max(0.0f, Half2Float(hg));
+                            float b = std::max(0.0f, Half2Float(hb));
+                            r       = 1.0f - std::exp(-r);
+                            g       = 1.0f - std::exp(-g);
+                            b       = 1.0f - std::exp(-b);
+                            row[x * 3 + 0] = (uint8_t)std::clamp(r * 255.0f, 0.0f, 255.0f);
+                            row[x * 3 + 1] = (uint8_t)std::clamp(g * 255.0f, 0.0f, 255.0f);
+                            row[x * 3 + 2] = (uint8_t)std::clamp(b * 255.0f, 0.0f, 255.0f);
+                        }
                     }
                     std::fwrite(row.data(), 1, row.size(), f);
                 }
@@ -643,6 +794,13 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                 written++;
             }
             entry.staging.handle.UnMapMemory();
+            // Free this entry's staging NOW so VMA can reuse the pages for the
+            // next iteration.  Without this, all 128 staging buffers stay
+            // resident until the for-loop ends (then s_entries.clear() drops
+            // them) — at 30MB each that's 3.7GB peak on HDR scenes, enough to
+            // hang MapMemory mid-loop on the render thread and block the
+            // --screenshot-frames exit path.
+            entry.staging = wallpaper::vulkan::VmaBufferParameters {};
         }
         LOG_INFO("pass dump: wrote %zu PPMs -> %s", written, s_dump_dir.c_str());
         s_entries.clear();

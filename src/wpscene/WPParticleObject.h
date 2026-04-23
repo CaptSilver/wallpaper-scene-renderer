@@ -25,6 +25,12 @@ public:
         worldspace = 1, // 2
         // the control point will always be at the same position in the world, independent from the
         // position of the particle system.
+        follow_parent_particle = 2, // 4
+        // (empirical — see memory/cp-parent-chain.md for the audit) this CP tracks the
+        // spawner-parent's *live* particle position each frame.  Observed in NieR 2B
+        // thunderbolt_child_spawner and dripping_water_droplets; always co-occurs with
+        // parentcontrolpoint!=0, which provides the static fallback when no parent particle
+        // is bound.
     };
     using EFlags = BitFlags<FlagEnum>;
 
@@ -33,6 +39,15 @@ public:
     i32                  id { -1 };
     std::array<float, 3> offset { 0, 0, 0 };
     // a static offset relative to the position of the particle system.
+    bool offset_is_null { false };
+    // True when JSON had `offset: null` (WE editor emits this for unassigned CP slots).
+    // Distinct from an explicit `offset: "0 0 0"`.  Consumed by LoadControlPoint →
+    // runtime `ParticleControlpoint::is_null_offset` for the bounded-pos fallback.
+    i32 parentcontrolpoint { 0 };
+    // Chain index into the parent subsystem's controlpoints array.  0 = no link (self); >0
+    // pulls the resolved offset from parent->controlpoints[N] each frame.  Validated by
+    // dripping_water_refract/splash (flags=0 chaining), droplets (flags=4 chaining), and
+    // NieR 2B thunderbolt_child_spawner (flags=4 + chain fallback).
 };
 
 class ParticleRender {
@@ -174,6 +189,11 @@ public:
     std::array<float, 3>     angles { 0.0f, 0.0f, 0.0f };
     std::array<float, 2>     parallaxDepth { 0.0f, 0.0f };
     bool                     visible { true };
+    // When true, the object does NOT inherit transform/visibility/alpha/tint
+    // from parent groups or nodes.  WE editor flag; no groups exist in the
+    // scenes we've encountered so the effect is currently nil, but the field
+    // is parsed for completeness and future hierarchy support.
+    bool                     disablepropagation { false };
     std::string              particle;
     Particle                 particleObj;
     ParticleInstanceoverride instanceoverride;

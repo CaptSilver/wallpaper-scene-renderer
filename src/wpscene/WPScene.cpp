@@ -48,6 +48,11 @@ bool WPSceneGeneral::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE_NOWARN(json, "camerashakespeed", camerashakespeed);
     GET_JSON_NAME_VALUE_NOWARN(json, "camerashakeroughness", camerashakeroughness);
     GET_JSON_NAME_VALUE_NOWARN(json, "camerafade", camerafade);
+    GET_JSON_NAME_VALUE_NOWARN(json, "gravitydirection", gravitydirection);
+    GET_JSON_NAME_VALUE_NOWARN(json, "gravitystrength", gravitystrength);
+    GET_JSON_NAME_VALUE_NOWARN(json, "winddirection", winddirection);
+    GET_JSON_NAME_VALUE_NOWARN(json, "windenabled", windenabled);
+    GET_JSON_NAME_VALUE_NOWARN(json, "windstrength", windstrength);
     if (json.contains("orthogonalprojection")) {
         const auto& ortho = json.at("orthogonalprojection");
         if (ortho.is_null())

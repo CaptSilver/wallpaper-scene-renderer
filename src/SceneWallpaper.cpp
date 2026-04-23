@@ -1076,13 +1076,17 @@ private:
             m_last_draw_wall_time.reset(); // first DRAW uses ideatime, not the
                                            // wall-clock gap across scene load
 
-            // HDR takes effect only when the renderer pipeline supports it AND the
-            // scene's project.json declared hdr:true.  Scenes that set hdr:false
-            // expect SDR accumulation (values clamp at 1.0); forcing RGBA16F on
-            // those makes overbright materials + additive blending blow out and
-            // trip bloom thresholds too aggressively.
+            // HDR mode is driven by the scene's intent (project.json hdr:true, or
+            // the parser's auto-detection of overbright content such as
+            // instanceoverride.brightness>1).  We enable internal RGBA16F RTs +
+            // tonemap FinPass regardless of the host's HDR *output* preference:
+            //   - host HDR output + scene HDR → RGBA16F RTs, FinPass passthrough (HDR→HDR)
+            //   - host SDR output + scene HDR → RGBA16F RTs, FinPass exposure tonemap
+            //   - host any           + scene SDR → RGBA8 RTs,   FinPass passthrough
+            // Without the tonemap path, overbright scenes (NieR 3633635618 thunderbolts,
+            // etc.) additively pile their clamped-to-1.0 channels into pure white.
             const bool scene_wants_hdr = m_scene->hdrContent;
-            const bool effective_hdr   = m_render->hdrContent() && scene_wants_hdr;
+            const bool effective_hdr   = scene_wants_hdr;
             if (effective_hdr) {
                 int upgraded = 0;
                 for (auto& [name, rt] : m_scene->renderTargets) {
@@ -1091,9 +1095,11 @@ private:
                         upgraded++;
                     }
                 }
-                LOG_INFO("HDR content: upgraded %d render targets to RGBA16F", upgraded);
+                LOG_INFO("HDR content: upgraded %d render targets to RGBA16F (host_hdr=%d)",
+                         upgraded,
+                         (int)m_render->hdrContent());
             } else {
-                LOG_INFO("HDR content: disabled (scene_hdr=%d, render_hdr=%d)",
+                LOG_INFO("HDR content: disabled (scene_hdr=%d, host_hdr=%d)",
                          (int)scene_wants_hdr,
                          (int)m_render->hdrContent());
             }

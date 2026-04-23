@@ -392,3 +392,126 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
     }
 
 } // ParticleSubSystem.Emitt
+
+// ===========================================================================
+// Nested-STATIC parent-type differentiation
+//
+// WE's `type: static` child has two canonical meanings depending on its
+// parent subsystem's type.  The NieR:Automata 2B thunderbolt scene
+// exercises both in the same tree:
+//
+//   thunderbolt (STATIC root)
+//     ├── thunderbolt_child_spawner (EVENT_FOLLOW)
+//     │     └── thunderbolt_beam_child  (STATIC — one per parent particle)
+//     └── thunderbolt_glow              (STATIC — a single instance)
+//
+// A nested STATIC under an EVENT_FOLLOW parent must get one instance per
+// parent particle so each sub-bolt tracks its own spark via bounded_data.
+// A nested STATIC under a STATIC parent (or any non-event parent) is the
+// author's "single instantaneous-burst subsystem that fires at T=0" case:
+// one auto-created instance, never bound to a parent particle.
+//
+// These tests pin that differentiation so we don't regress the thunderbolt
+// glow-vs-beam distinction again.  We use QueryNewInstance(maxcount=1) as
+// the observable: if auto-create ran, the pool is full; if it didn't, the
+// pool is still empty.
+// ===========================================================================
+
+TEST_SUITE("ParticleSubSystem.NestedStatic") {
+    TEST_CASE("STATIC child under STATIC parent auto-creates its own instance") {
+        ParticleFixture fx;
+        // Parent is STATIC root → auto-instance on Emitt.
+        auto parent = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        // Child is STATIC under STATIC — author's "single burst" case.
+        // maxcount_instance=1 so if auto-create runs, the pool is full.
+        auto  child     = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        fx.scene.PassFrameTime(0.016);
+        parent->Emitt(); // cascades into child->Emitt() at end
+
+        // Child auto-created its single instance → pool of 1 is full.
+        CHECK(child_raw->QueryNewInstance() == nullptr);
+    }
+
+    TEST_CASE("STATIC child under EVENT_FOLLOW parent does NOT auto-create") {
+        ParticleFixture fx;
+        // Parent is EVENT_FOLLOW with no real parent particle to bind to —
+        // no live instances, but its own Emitt still cascades to children.
+        auto parent = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        // Child is STATIC under EVENT_FOLLOW — author's "per-parent-particle" case.
+        auto  child     = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        fx.scene.PassFrameTime(0.016);
+        parent->Emitt();
+
+        // Child did NOT auto-create (parent is EVENT_FOLLOW) → pool still empty,
+        // QueryNewInstance can freely mint a new slot.
+        CHECK(child_raw->QueryNewInstance() != nullptr);
+    }
+
+    TEST_CASE("STATIC child under EVENT_SPAWN parent does auto-create (not event_follow)") {
+        ParticleFixture fx;
+        // EVENT_SPAWN parent: rule targets ONLY EVENT_FOLLOW for the per-particle
+        // carve-out.  Other event types fall back to the single-instance default.
+        auto parent = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_SPAWN);
+        auto child  = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        fx.scene.PassFrameTime(0.016);
+        parent->Emitt();
+
+        // Child auto-created → pool full.
+        CHECK(child_raw->QueryNewInstance() == nullptr);
+    }
+
+    TEST_CASE("Top-level STATIC auto-creates (parent is nullptr)") {
+        ParticleFixture fx;
+        // The pre-existing behavior: top-level STATIC with no parent always
+        // auto-creates one instance on first Emitt.
+        auto  sub     = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* sub_raw = sub.get();
+
+        // Before Emitt, pool is empty.
+        auto* first = sub_raw->QueryNewInstance();
+        CHECK(first != nullptr);
+        // Kill so we can see the auto-create path independently.
+        first->SetDeath(true);
+        first->SetNoLiveParticle(true);
+        // Refresh() via QueryNewInstance would reuse — skip by driving Emitt directly
+        // on a fresh subsystem.
+        auto  sub2     = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* sub2_raw = sub2.get();
+        fx.scene.PassFrameTime(0.016);
+        sub2_raw->Emitt();
+        CHECK(sub2_raw->QueryNewInstance() == nullptr); // auto-created, pool full
+    }
+
+    TEST_CASE("EVENT_FOLLOW parent does not spawn a STATIC child instance on its "
+              "own (needs parent particle)") {
+        // This mirrors the NieR hierarchy: a top-level STATIC that contains an
+        // EVENT_FOLLOW whose STATIC grandchild is per-particle.  With no real
+        // grandparent particle, the event_follow pool stays empty and the
+        // STATIC grandchild's per-particle spawn path is never hit.
+        ParticleFixture fx;
+        auto root = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto mid  = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto leaf = fx.makeSub(5, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        auto* leaf_raw = leaf.get();
+        mid->AddChild(std::move(leaf));
+        root->AddChild(std::move(mid));
+
+        fx.scene.PassFrameTime(0.016);
+        root->Emitt();
+
+        // Leaf stays empty: parent is EVENT_FOLLOW (no auto-create) AND no
+        // parent particle fired the per-particle spawn_inst path (EVENT_FOLLOW
+        // parent has no auto-instance of its own either).
+        CHECK(leaf_raw->QueryNewInstance() != nullptr);
+    }
+
+} // ParticleSubSystem.NestedStatic

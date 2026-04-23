@@ -428,6 +428,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         assert(scene.renderTargets.count(tex_name) > 0);
         auto& rt         = scene.renderTargets.at(tex_name);
         output_vk_format = ToVkType(rt.format);
+        m_desc.vk_output_format = output_vk_format;
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {
             m_desc.vk_output = opt.value();
@@ -1330,6 +1331,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
         // owns the staging buffer lifetime + PPM write.
         extern void g_pass_dump_record(const vvk::CommandBuffer& cmd,
                                        VkImage                   image,
+                                       VkFormat                  format,
                                        uint32_t                  w,
                                        uint32_t                  h,
                                        const std::string&        shader,
@@ -1340,6 +1342,7 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
                               : std::string("noshader");
         g_pass_dump_record(cmd,
                            m_desc.vk_output.handle,
+                           m_desc.vk_output_format,
                            m_desc.vk_output.extent.width,
                            m_desc.vk_output.extent.height,
                            shaderName,
