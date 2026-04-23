@@ -1923,7 +1923,12 @@ void SceneObject::setupTextScripts() {
         "    angles: init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0),\n"
         "    alpha: 1.0, visible: init ? init.v : true,\n"
         "    color: Vec3(1,1,1), text: '', pointsize: 0,\n"
-        "    __asset: null\n"
+        "    __asset: null,\n"
+        // Proxy validity flag: flipped to true by thisScene.destroyLayer so
+        // async callbacks (timers, media events) that fire after the slot
+        // has been recycled can bail out via `if (!layer.isObjectValid())`.
+        "    _destroyed: false,\n"
+        "    isObjectValid: function() { return !this._destroyed; }\n"
         "  };\n"
         // Snapshot used by _collectDirtyLayers to detect changes.
         "  p._prev = { ox: p.origin.x, oy: p.origin.y, oz: p.origin.z,\n"
@@ -2159,6 +2164,11 @@ void SceneObject::setupTextScripts() {
         "  p.getEffectCount = function() {\n"
         "    return (init && init.efx) ? init.efx.length : 0;\n"
         "  };\n"
+        // Proxy validity flag: flipped to true by thisScene.destroyLayer so
+        // async callbacks (timers, media events) that fire after the layer
+        // has been torn down can bail via `if (!layer.isObjectValid())`.
+        "  p._destroyed = false;\n"
+        "  p.isObjectValid = function() { return !this._destroyed; };\n"
         "  p._state = _s;\n"
         "  return p;\n"
         "}\n"
@@ -2241,6 +2251,8 @@ void SceneObject::setupTextScripts() {
         "  };\n"
         "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
         "  p.getEffectCount = function() { return 0; };\n"
+        // Null proxy is always valid (it's shared, never destroyed).
+        "  p.isObjectValid = function() { return true; };\n"
         "  p._state = _s;\n"
         "  return p;\n"
         "})();\n"
@@ -2353,6 +2365,9 @@ void SceneObject::setupTextScripts() {
         "  if (name) {\n"
         "    var layer = thisScene.getLayer(name);\n"
         "    if (layer && layer !== _nullProxy) {\n"
+        // Revive the proxy if this slot was previously destroyed — the
+        // cached proxy object is reused across create/destroy cycles.
+        "      layer._destroyed = false;\n"
         "      layer.__asset = path;\n"
         "      _applyLayerLiteral(layer, asset);\n"
         "      live.push(name);\n"
@@ -2370,6 +2385,8 @@ void SceneObject::setupTextScripts() {
         "  return { __stub: true, __asset: path,\n"
         "    origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
         "    alpha: 1.0, visible: true, text: '',\n"
+        // Stubs are never bound to a real node, so isObjectValid is false.
+        "    isObjectValid: function() { return false; },\n"
         "    getAnimation: function(n) {\n"
         "      return { play:function(){}, stop:function(){}, pause:function(){},\n"
         "               isPlaying:function(){ return false; } }; } };\n"
@@ -2377,6 +2394,9 @@ void SceneObject::setupTextScripts() {
         "thisScene.destroyLayer = function(layer) {\n"
         "  if (!layer || layer.__stub) return;\n"
         "  layer.visible = false;\n"
+        // Flip the validity flag BEFORE recycling.  Async callbacks that
+        // captured this proxy can now bail via isObjectValid().
+        "  layer._destroyed = true;\n"
         "  var path = layer.__asset;\n"
         "  if (!path) return;\n"
         "  var live = engine._assetLive[path];\n"

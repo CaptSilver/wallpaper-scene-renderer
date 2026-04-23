@@ -1291,6 +1291,9 @@ static const char* JS_LAYER_INFRA =
     "  p.getEffectCount = function() {\n"
     "    return (init && init.efx) ? init.efx.length : 0;\n"
     "  };\n"
+    // Validity flag: production flips _destroyed in thisScene.destroyLayer.
+    "  p._destroyed = false;\n"
+    "  p.isObjectValid = function() { return !this._destroyed; };\n"
     "  p._state = _s;\n"
     "  return p;\n"
     "}\n"
@@ -3752,6 +3755,42 @@ TEST_SUITE("Layer Proxy") {
         CHECK(env.engine.evaluate(
                      "thisScene.getLayerIndex(thisScene.getLayerByID(7).name) === 7")
                   .toBool());
+    }
+
+    // ---- isObjectValid guard --------------------------------------------
+    // Scripts that stash a layer reference in a timer/event callback can
+    // get a stale proxy after thisScene.destroyLayer recycles the slot.
+    // `layer.isObjectValid()` lets them bail out.
+
+    TEST_CASE("fresh layer proxy reports valid") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').isObjectValid()").toBool());
+    }
+
+    TEST_CASE("flipping _destroyed invalidates the proxy") {
+        ScriptEnv env;
+        env.engine.evaluate("var L = thisScene.getLayer('bg'); L._destroyed = true;");
+        CHECK_FALSE(env.engine.evaluate("L.isObjectValid()").toBool());
+    }
+
+    TEST_CASE("isObjectValid survives re-validation (create/destroy cycle)") {
+        // Production createLayer resets _destroyed on pool re-use.  Simulate.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var L = thisScene.getLayer('bg');\n"
+            "L._destroyed = true;\n"
+            "var stale = L.isObjectValid();\n"
+            "L._destroyed = false;\n"
+            "var revived = L.isObjectValid();");
+        CHECK_FALSE(env.engine.evaluate("stale").toBool());
+        CHECK(env.engine.evaluate("revived").toBool());
+    }
+
+    TEST_CASE("isObjectValid is a function (callable shape)") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("typeof thisScene.getLayer('bg').isObjectValid")
+                  .toString()
+              == QString("function"));
     }
 
 } // TEST_SUITE Layer Proxy
