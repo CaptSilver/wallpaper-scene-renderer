@@ -32,6 +32,8 @@
 #include <unordered_set>
 #include <QtCore/QRegularExpression>
 #include <QtCore/QTime>
+#include <QtCore/QDateTime>
+#include <QtCore/QTimeZone>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QJsonDocument>
@@ -1399,6 +1401,22 @@ void SceneObject::setupTextScripts() {
     engineObj.setProperty("frametime", 0.5); // ~500ms timer
     engineObj.setProperty("runtime", 0.0);
     engineObj.setProperty("timeOfDay", 0.0);
+    // Monotonic tick counter (incremented by evaluatePropertyScripts — see
+    // m_propFrameCount).  Lets scripts branch on "first tick", count
+    // intervals without accumulating runtime drift, etc.
+    engineObj.setProperty("frameCount", 0.0);
+    // Timezone info.  `timeZone` is UTC offset in minutes (positive east of
+    // UTC); `timeZoneName` is the IANA zone id when available, falling back
+    // to the abbreviation.  Lets clock/date wallpapers render in the user's
+    // locale without the script doing its own IANA lookup.
+    {
+        QTimeZone tz        = QTimeZone::systemTimeZone();
+        int       offsetMin = tz.offsetFromUtc(QDateTime::currentDateTime()) / 60;
+        QString   id        = tz.id().isEmpty() ? tz.abbreviation(QDateTime::currentDateTime())
+                                                : QString::fromUtf8(tz.id());
+        engineObj.setProperty("timeZone", (double)offsetMin);
+        engineObj.setProperty("timeZoneName", id);
+    }
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
     m_jsEngine->globalObject().setProperty("engine", engineObj);
 
@@ -3953,6 +3971,7 @@ void SceneObject::evaluatePropertyScripts() {
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
+    engineObj.setProperty("frameCount", (double)++m_propFrameCount);
 
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;

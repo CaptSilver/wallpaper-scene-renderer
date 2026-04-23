@@ -316,6 +316,10 @@ private:
     qint64                                   m_lastPropertyTickMs { -1 };
     qint64                                   m_lastColorTickMs { -1 };
     qint64                                   m_lastTextTickMs { -1 };
+    // Monotonic frame counter exposed to scripts as `engine.frameCount`.
+    // Ticked once per property-script evaluation (the 120Hz/8ms pulse,
+    // not the render FIF).
+    qint64                                   m_propFrameCount { 0 };
     std::vector<TextScriptState>             m_textScriptStates;
     std::vector<ColorScriptState>            m_colorScriptStates;
     std::vector<PropertyScriptState>         m_propertyScriptStates;

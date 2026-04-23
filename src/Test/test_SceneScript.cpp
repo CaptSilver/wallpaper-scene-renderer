@@ -1541,6 +1541,9 @@ struct ScriptEnv {
         engineObj.setProperty("frametime", 0.033);
         engineObj.setProperty("runtime", 0.0);
         engineObj.setProperty("timeOfDay", 0.0);
+        engineObj.setProperty("frameCount", 0.0);
+        engineObj.setProperty("timeZone", 0.0); // UTC for deterministic tests
+        engineObj.setProperty("timeZoneName", "UTC");
         engineObj.setProperty("userProperties", engine.newObject());
         engine.globalObject().setProperty("engine", engineObj);
 
@@ -2691,6 +2694,49 @@ TEST_SUITE("SceneScript Globals") {
         ScriptEnv env;
         QJSValue  r = env.engine.evaluate("engine.openUserShortcut('test')");
         CHECK_FALSE(r.isError());
+    }
+
+    // ---- Time/frame globals ----------------------------------------------
+    // Production sets frameCount from a monotonic counter in
+    // evaluatePropertyScripts; timeZone/timeZoneName are populated once at
+    // SceneBackend init.  The ScriptEnv fixture seeds plausible defaults so
+    // scripts can read these without a live tick loop.
+
+    TEST_CASE("engine.frameCount is readable as a number") {
+        ScriptEnv env;
+        QJSValue  r = env.engine.evaluate("typeof engine.frameCount");
+        CHECK(r.toString() == QString("number"));
+    }
+
+    TEST_CASE("engine.frameCount reads back the value written") {
+        ScriptEnv env;
+        env.engine.evaluate("engine.frameCount = 42");
+        CHECK(env.engine.evaluate("engine.frameCount").toInt() == 42);
+    }
+
+    TEST_CASE("engine.timeZone is a numeric UTC-offset minutes value") {
+        ScriptEnv env;
+        QJSValue  r = env.engine.evaluate("typeof engine.timeZone");
+        CHECK(r.toString() == QString("number"));
+        // Fixture seeds this to 0 (UTC) for determinism.
+        CHECK(env.engine.evaluate("engine.timeZone").toInt() == 0);
+    }
+
+    TEST_CASE("engine.timeZoneName is a non-empty string") {
+        ScriptEnv env;
+        QJSValue  r = env.engine.evaluate("typeof engine.timeZoneName");
+        CHECK(r.toString() == QString("string"));
+        CHECK(env.engine.evaluate("engine.timeZoneName.length > 0").toBool());
+    }
+
+    TEST_CASE("time globals compose in arithmetic expressions") {
+        // Scripts do things like `engine.frameCount % 60` or
+        // `engine.timeOfDay < 0.5` — make sure those don't throw.
+        ScriptEnv env;
+        env.engine.evaluate("engine.frameCount = 125");
+        CHECK(env.engine.evaluate("engine.frameCount % 60").toInt() == 5);
+        CHECK(env.engine.evaluate("engine.timeOfDay < 1.0 && engine.timeOfDay >= 0.0")
+                  .toBool());
     }
 
 } // TEST_SUITE SceneScript Globals
