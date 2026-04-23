@@ -1203,6 +1203,19 @@ static const char* JS_LAYER_INFRA =
     "  Object.defineProperty(p, 'originalAngles', {\n"
     "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
     "    set: function(){}, enumerable: true });\n"
+    // getInitialLayerConfig: pre-script snapshot bundle.
+    "  p.getInitialLayerConfig = function() {\n"
+    "    return {\n"
+    "      origin:  Vec3(_origO.x, _origO.y, _origO.z),\n"
+    "      scale:   Vec3(_origS.x, _origS.y, _origS.z),\n"
+    "      angles:  Vec3(_origA.x, _origA.y, _origA.z),\n"
+    "      alpha:   1.0,\n"
+    "      visible: init ? init.v : true,\n"
+    "      color:   Vec3(1, 1, 1),\n"
+    "      size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
+    "                                : {x: 0, y: 0}\n"
+    "    };\n"
+    "  };\n"
     "  var scalarProps = ['visible','alpha'];\n"
     "  for (var j=0; j<scalarProps.length; j++) {\n"
     "    (function(prop){\n"
@@ -3791,6 +3804,54 @@ TEST_SUITE("Layer Proxy") {
         CHECK(env.engine.evaluate("typeof thisScene.getLayer('bg').isObjectValid")
                   .toString()
               == QString("function"));
+    }
+
+    // ---- getInitialLayerConfig ------------------------------------------
+    // Returns a snapshot of the pre-script layer state so scripts can
+    // implement "reset" buttons or interpolate between original and
+    // modified values.
+
+    TEST_CASE("getInitialLayerConfig returns origin/scale/angles from init") {
+        ScriptEnv env;
+        // fixture's bg has o=[100,200,0], s=[1,1,1], a=[0,0,45]
+        QJSValue  c = env.engine.evaluate("thisScene.getLayer('bg').getInitialLayerConfig()");
+        CHECK(c.property("origin").property("x").toNumber() == doctest::Approx(100));
+        CHECK(c.property("origin").property("y").toNumber() == doctest::Approx(200));
+        CHECK(c.property("angles").property("z").toNumber() == doctest::Approx(45));
+        CHECK(c.property("visible").toBool() == true);
+    }
+
+    TEST_CASE("getInitialLayerConfig fixed defaults for alpha/color") {
+        ScriptEnv env;
+        QJSValue  c = env.engine.evaluate("thisScene.getLayer('fg').getInitialLayerConfig()");
+        CHECK(c.property("alpha").toNumber() == doctest::Approx(1.0));
+        CHECK(c.property("color").property("x").toNumber() == doctest::Approx(1.0));
+        CHECK(c.property("color").property("y").toNumber() == doctest::Approx(1.0));
+        CHECK(c.property("color").property("z").toNumber() == doctest::Approx(1.0));
+        // fg had v: false in the fixture
+        CHECK(c.property("visible").toBool() == false);
+    }
+
+    TEST_CASE("getInitialLayerConfig is a fresh snapshot, not aliased") {
+        // Mutating the proxy should NOT affect a previously-captured snapshot
+        // (origin/scale/angles are fresh Vec3s; the snapshot object itself
+        // is a new object every call).
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var L = thisScene.getLayer('bg');\n"
+            "var snap = L.getInitialLayerConfig();\n"
+            "L.origin = Vec3(999, 999, 999);");
+        QJSValue v = env.engine.evaluate("snap.origin.x");
+        // The snapshot's origin was 100 (from fixture), mutating layer.origin
+        // must not retroactively change snap.origin.
+        CHECK(v.toNumber() == doctest::Approx(100));
+    }
+
+    TEST_CASE("getInitialLayerConfig reports size for layers with sz") {
+        ScriptEnv env;
+        QJSValue  c = env.engine.evaluate("thisScene.getLayer('bg').getInitialLayerConfig()");
+        CHECK(c.property("size").property("x").toNumber() == doctest::Approx(1920));
+        CHECK(c.property("size").property("y").toNumber() == doctest::Approx(1080));
     }
 
 } // TEST_SUITE Layer Proxy

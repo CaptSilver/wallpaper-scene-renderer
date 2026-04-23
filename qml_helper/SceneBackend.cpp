@@ -1928,7 +1928,21 @@ void SceneObject::setupTextScripts() {
         // async callbacks (timers, media events) that fire after the slot
         // has been recycled can bail out via `if (!layer.isObjectValid())`.
         "    _destroyed: false,\n"
-        "    isObjectValid: function() { return !this._destroyed; }\n"
+        "    isObjectValid: function() { return !this._destroyed; },\n"
+        // Snapshot of pre-script state.  Pool slots use `init` directly
+        // since there are no separate _origO/_origS/_origA closures.
+        "    getInitialLayerConfig: function() {\n"
+        "      return {\n"
+        "        origin:  init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0),\n"
+        "        scale:   init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1),\n"
+        "        angles:  init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0),\n"
+        "        alpha:   1.0,\n"
+        "        visible: init ? init.v : true,\n"
+        "        color:   Vec3(1, 1, 1),\n"
+        "        size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
+        "                                  : {x: 0, y: 0}\n"
+        "      };\n"
+        "    }\n"
         "  };\n"
         // Snapshot used by _collectDirtyLayers to detect changes.
         "  p._prev = { ox: p.origin.x, oy: p.origin.y, oz: p.origin.z,\n"
@@ -2015,6 +2029,21 @@ void SceneObject::setupTextScripts() {
         "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
         "    set: function(){},\n"
         "    enumerable: true });\n"
+        // getInitialLayerConfig: snapshot of pre-script layer state for
+        // reset/interp.  Returns fresh Vec3 instances + a size object so
+        // callers can mutate without affecting the snapshot.
+        "  p.getInitialLayerConfig = function() {\n"
+        "    return {\n"
+        "      origin:  Vec3(_origO.x, _origO.y, _origO.z),\n"
+        "      scale:   Vec3(_origS.x, _origS.y, _origS.z),\n"
+        "      angles:  Vec3(_origA.x, _origA.y, _origA.z),\n"
+        "      alpha:   1.0,\n"
+        "      visible: init ? init.v : true,\n"
+        "      color:   Vec3(1, 1, 1),\n"
+        "      size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
+        "                                : {x: 0, y: 0}\n"
+        "    };\n"
+        "  };\n"
         "  var scalarProps = ['visible','alpha'];\n"
         "  for (var j=0; j<scalarProps.length; j++) {\n"
         "    (function(prop){\n"
