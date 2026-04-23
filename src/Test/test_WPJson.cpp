@@ -49,10 +49,10 @@ TEST_SUITE("WPJson.ParseJson") {
     }
 
     // ---- Trailing-comma tolerance ----------------------------------------
-    // WE's own JSON loader accepts trailing commas; at least one shipped asset
-    // (assets/effects/fluidsimulation/effect.json) has `,\n\t\t\t]`.  nlohmann
-    // 3.12 has `ignore_comments` but not trailing-commas, so StripTrailingCommas
-    // pre-processes the source inside ParseJson.
+    // Some wallpaper effect JSONs contain trailing commas before a closing
+    // bracket (e.g. `,\n\t\t\t]`).  nlohmann 3.12 has `ignore_comments` but
+    // not trailing-commas, so StripTrailingCommas pre-processes the source
+    // inside ParseJson.
 
     TEST_CASE("trailing comma before ] is tolerated") {
         njson out;

@@ -81,17 +81,16 @@ inline constexpr const char* kRegisterAudioBuffersJs =
     "  return buf;\n"
     "})\n";
 
-// Mat3 / Mat4 JS classes — transforms that wallpapers can read/write.
-// WE ships these in assets/scripts/jsclasses/baseclasses.js; without them
-// any `new Mat4()` call in a SceneScript ReferenceError's silently.
+// Mat3 / Mat4 JS classes — transforms that SceneScripts can read/write.
+// Without these, any `new Mat4()` call in a script ReferenceError's silently.
 //
-// Mat4 is column-major 4x4; m[12..14] is translation.  `translation(v)` is
-// overloaded: call with a Vec3/Vec2 to set (returns this for chaining), call
-// with no args to read it back as a Vec3.  right/up/forward return the basis
-// vectors from the rotation block.
+// Mat4 is a 4x4 with m[12..14] carrying the translation column.
+// `translation(v)` is overloaded: call with a Vec3/Vec2 to set (returns this
+// for chaining), call with no args to read it back as a Vec3.  right/up/
+// forward return the basis vectors from the rotation block.
 //
-// Mat3 is column-major 3x3; m[6..7] is 2D translation.  `angle()` returns
-// degrees via atan2 on the first column, matching WE's baseclasses.js:453.
+// Mat3 is 3x3 with m[6..7] carrying a 2D translation.  `angle()` returns
+// degrees via atan2(m[0], -m[1]) on the first column.
 //
 // Requires Vec2 and Vec3 to already exist on the global object.
 inline constexpr const char* kMatricesJs =

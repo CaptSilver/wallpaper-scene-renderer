@@ -1953,11 +1953,11 @@ TEST_SUITE("Vec3") {
 // ------------------------------------------------------------------
 // Vec2 / Vec3 polymorphic arithmetic
 //
-// Tier-1 RE of WE's baseclasses.js showed that WE's Vec2/Vec3 accept
-// scalar / Vec2 / Vec3 operands on add/subtract/multiply/divide.  Ours
-// used to take Vec3 only — scripts like `pos.add(3)` or
-// `pos.add(new Vec2(x,y))` silently broke.  These tests lock in the
-// three branches (scalar / Vec2 / Vec3) so regressions surface.
+// Scripts expect Vec2/Vec3 to accept scalar / Vec2 / Vec3 operands on
+// add/subtract/multiply/divide.  Ours used to take Vec3 only — scripts
+// like `pos.add(3)` or `pos.add(new Vec2(x,y))` silently broke.  These
+// tests lock in the three branches (scalar / Vec2 / Vec3) so regressions
+// surface.
 // ------------------------------------------------------------------
 TEST_SUITE("Vec3 polymorphic arithmetic") {
     TEST_CASE("add scalar broadcasts to all components") {
@@ -2026,9 +2026,8 @@ TEST_SUITE("Vec2 polymorphic arithmetic") {
 // ------------------------------------------------------------------
 // Mat3 / Mat4 — SceneScriptShimsJs.hpp::kMatricesJs
 //
-// WE ships these in assets/scripts/jsclasses/baseclasses.js; wallpapers
-// using `new Mat4()` used to ReferenceError silently.  Tests cover the
-// identity ctor, translation get/set overloads, and Mat3.angle().
+// Wallpapers using `new Mat4()` used to ReferenceError silently.  Tests
+// cover the identity ctor, translation get/set overloads, and Mat3.angle().
 // ------------------------------------------------------------------
 TEST_SUITE("Mat4") {
     TEST_CASE("default ctor is identity") {

@@ -1521,10 +1521,10 @@ void SceneObject::setupTextScripts() {
         "  }\n"
         "}\n"
         // Arithmetic overloads: scalar, Vec2 (preserves our .z), or Vec3.
-        // WE's baseclasses.js:199-282 accepts all three — scripts like
-        // `pos.add(3)` or `pos.add(new Vec2(x, y))` silently broke before
-        // because we required a Vec3.  `instanceof Vec3` works since Vec3 is
-        // prototype-based; anything else object-shaped is treated as Vec2.
+        // Scripts like `pos.add(3)` or `pos.add(new Vec2(x, y))` silently
+        // broke before because we required a Vec3.  `instanceof Vec3` works
+        // since Vec3 is prototype-based; anything else object-shaped is
+        // treated as Vec2.
         "Vec3.prototype.multiply  = function(f) {\n"
         "  if (typeof f === 'number') return Vec3(this.x*f, this.y*f, this.z*f);\n"
         "  if (f instanceof Vec3)     return Vec3(this.x*f.x, this.y*f.y, this.z*f.z);\n"
