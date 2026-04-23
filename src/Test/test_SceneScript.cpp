@@ -5,6 +5,7 @@
 #include <QJSValue>
 #include "SceneTimerBridge.h"
 #include "SceneCursorHitTest.h"
+#include "SceneScriptShimsJs.hpp"
 
 #include "HoverLeaveDebounce.h"
 
@@ -817,8 +818,10 @@ static const char* JS_VEC3_AND_UTILS =
     "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };\n"
     "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };\n"
     "  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };\n"
-    "  v.add = function(o) { return Vec2(v.x+o.x, v.y+o.y); };\n"
-    "  v.subtract = function(o) { return Vec2(v.x-o.x, v.y-o.y); };\n"
+    "  v.add = function(o) { return typeof o==='number'? Vec2(v.x+o,v.y+o): "
+    "Vec2(v.x+o.x, v.y+o.y); };\n"
+    "  v.subtract = function(o) { return typeof o==='number'? Vec2(v.x-o,v.y-o): "
+    "Vec2(v.x-o.x, v.y-o.y); };\n"
     "  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): "
     "Vec2(v.x*s,v.y*s); };\n"
     "  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): "
@@ -844,16 +847,34 @@ static const char* JS_VEC3_AND_UTILS =
     // Vec3
     "function Vec3(x, y, z) {\n"
     "  var v = { x: x||0, y: y||0, z: z||0 };\n"
-    "  v.multiply = function(s) { return Vec3(v.x*s, v.y*s, v.z*s); };\n"
-    "  v.add = function(o) { return Vec3(v.x+o.x, v.y+o.y, v.z+o.z); };\n"
-    "  v.subtract = function(o) { return Vec3(v.x-o.x, v.y-o.y, v.z-o.z); };\n"
+    // Polymorphic arithmetic: scalar, Vec2 (preserves .z), or Vec3.
+    // Mirrors the production Vec3.prototype.* in SceneBackend.cpp.
+    "  v.multiply = function(f) {\n"
+    "    if (typeof f === 'number') return Vec3(v.x*f, v.y*f, v.z*f);\n"
+    "    if (f.z === undefined)     return Vec3(v.x*(f.x||0), v.y*(f.y||0), v.z);\n"
+    "    return Vec3(v.x*f.x, v.y*f.y, v.z*f.z);\n"
+    "  };\n"
+    "  v.add = function(f) {\n"
+    "    if (typeof f === 'number') return Vec3(v.x+f, v.y+f, v.z+f);\n"
+    "    if (f.z === undefined)     return Vec3(v.x+(f.x||0), v.y+(f.y||0), v.z);\n"
+    "    return Vec3(v.x+f.x, v.y+f.y, v.z+f.z);\n"
+    "  };\n"
+    "  v.subtract = function(f) {\n"
+    "    if (typeof f === 'number') return Vec3(v.x-f, v.y-f, v.z-f);\n"
+    "    if (f.z === undefined)     return Vec3(v.x-(f.x||0), v.y-(f.y||0), v.z);\n"
+    "    return Vec3(v.x-f.x, v.y-f.y, v.z-f.z);\n"
+    "  };\n"
     "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z); };\n"
     "  v.normalize = function() { var l=v.length()||1; return Vec3(v.x/l,v.y/l,v.z/l); };\n"
     "  v.copy = function() { return Vec3(v.x, v.y, v.z); };\n"
     "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
     "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
     "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
-    "  v.divide = function(s) { return Vec3(v.x/s, v.y/s, v.z/s); };\n"
+    "  v.divide = function(f) {\n"
+    "    if (typeof f === 'number') return Vec3(v.x/f, v.y/f, v.z/f);\n"
+    "    if (f.z === undefined)     return Vec3(v.x/(f.x||1), v.y/(f.y||1), v.z);\n"
+    "    return Vec3(v.x/f.x, v.y/f.y, v.z/f.z);\n"
+    "  };\n"
     "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); "
     "};\n"
     "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return "
@@ -1505,6 +1526,7 @@ struct MathEnv {
     QJSEngine engine;
     MathEnv() {
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kMatricesJs);
         engine.evaluate(JS_WEMATH);
         engine.evaluate(JS_WECOLOR);
     }
@@ -1531,6 +1553,9 @@ struct ScriptEnv {
 
         // Vec3, String.match, localStorage
         engine.evaluate(JS_VEC3_AND_UTILS);
+
+        // Mat3/Mat4 — shared with production via SceneScriptShimsJs.hpp.
+        engine.evaluate(wek::qml_helper::kMatricesJs);
 
         // WEMath, WEColor
         engine.evaluate(JS_WEMATH);
@@ -1924,6 +1949,189 @@ TEST_SUITE("Vec3") {
     }
 
 } // TEST_SUITE Vec3
+
+// ------------------------------------------------------------------
+// Vec2 / Vec3 polymorphic arithmetic
+//
+// Tier-1 RE of WE's baseclasses.js showed that WE's Vec2/Vec3 accept
+// scalar / Vec2 / Vec3 operands on add/subtract/multiply/divide.  Ours
+// used to take Vec3 only — scripts like `pos.add(3)` or
+// `pos.add(new Vec2(x,y))` silently broke.  These tests lock in the
+// three branches (scalar / Vec2 / Vec3) so regressions surface.
+// ------------------------------------------------------------------
+TEST_SUITE("Vec3 polymorphic arithmetic") {
+    TEST_CASE("add scalar broadcasts to all components") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(1,2,3).add(10)");
+        checkVec3(v, 11, 12, 13);
+    }
+    TEST_CASE("subtract scalar broadcasts to all components") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(10,20,30).subtract(5)");
+        checkVec3(v, 5, 15, 25);
+    }
+    TEST_CASE("multiply Vec3 is componentwise") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(2,3,4).multiply(Vec3(10,20,30))");
+        checkVec3(v, 20, 60, 120);
+    }
+    TEST_CASE("add Vec2 preserves our z") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(1,2,99).add(Vec2(10,20))");
+        checkVec3(v, 11, 22, 99);
+    }
+    TEST_CASE("subtract Vec2 preserves our z") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(5,6,7).subtract(Vec2(1,2))");
+        checkVec3(v, 4, 4, 7);
+    }
+    TEST_CASE("multiply Vec2 preserves our z untouched") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(2,3,4).multiply(Vec2(5,10))");
+        checkVec3(v, 10, 30, 4);
+    }
+    TEST_CASE("divide scalar") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(10,20,30).divide(2)");
+        checkVec3(v, 5, 10, 15);
+    }
+    TEST_CASE("divide Vec3 componentwise") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec3(10,20,30).divide(Vec3(2,4,5))");
+        checkVec3(v, 5, 5, 6);
+    }
+}
+
+TEST_SUITE("Vec2 polymorphic arithmetic") {
+    TEST_CASE("add scalar broadcasts") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec2(1,2).add(10)");
+        CHECK(v.property("x").toNumber() == doctest::Approx(11));
+        CHECK(v.property("y").toNumber() == doctest::Approx(12));
+    }
+    TEST_CASE("subtract scalar broadcasts") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec2(10,20).subtract(5)");
+        CHECK(v.property("x").toNumber() == doctest::Approx(5));
+        CHECK(v.property("y").toNumber() == doctest::Approx(15));
+    }
+    TEST_CASE("multiply Vec2 componentwise") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("Vec2(2,3).multiply(Vec2(10,20))");
+        CHECK(v.property("x").toNumber() == doctest::Approx(20));
+        CHECK(v.property("y").toNumber() == doctest::Approx(60));
+    }
+}
+
+// ------------------------------------------------------------------
+// Mat3 / Mat4 — SceneScriptShimsJs.hpp::kMatricesJs
+//
+// WE ships these in assets/scripts/jsclasses/baseclasses.js; wallpapers
+// using `new Mat4()` used to ReferenceError silently.  Tests cover the
+// identity ctor, translation get/set overloads, and Mat3.angle().
+// ------------------------------------------------------------------
+TEST_SUITE("Mat4") {
+    TEST_CASE("default ctor is identity") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("new Mat4().m");
+        // m[0]=m[5]=m[10]=m[15]=1, rest 0
+        CHECK(v.property(0).toNumber() == doctest::Approx(1));
+        CHECK(v.property(5).toNumber() == doctest::Approx(1));
+        CHECK(v.property(10).toNumber() == doctest::Approx(1));
+        CHECK(v.property(15).toNumber() == doctest::Approx(1));
+        CHECK(v.property(1).toNumber() == doctest::Approx(0));
+        CHECK(v.property(12).toNumber() == doctest::Approx(0));
+    }
+    TEST_CASE("translation(Vec3) sets m[12..14] and returns this for chaining") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat4(); var r = m.translation(Vec3(7, 8, 9));\n"
+            "[r === m, m.m[12], m.m[13], m.m[14]]");
+        REQUIRE(v.isArray());
+        CHECK(v.property(0).toBool() == true);
+        CHECK(v.property(1).toNumber() == doctest::Approx(7));
+        CHECK(v.property(2).toNumber() == doctest::Approx(8));
+        CHECK(v.property(3).toNumber() == doctest::Approx(9));
+    }
+    TEST_CASE("translation(Vec2) sets xy, zeroes z") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat4(); m.translation(Vec2(3, 4));\n"
+            "[m.m[12], m.m[13], m.m[14]]");
+        CHECK(v.property(0).toNumber() == doctest::Approx(3));
+        CHECK(v.property(1).toNumber() == doctest::Approx(4));
+        CHECK(v.property(2).toNumber() == doctest::Approx(0));
+    }
+    TEST_CASE("translation() with no arg returns a Vec3 reading back m[12..14]") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat4(); m.m[12] = 5; m.m[13] = 6; m.m[14] = 7; m.translation();");
+        checkVec3(v, 5, 6, 7);
+    }
+    TEST_CASE("right/up/forward return basis vectors from the rotation block") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat4();\n"
+            "m.m[0]=1; m.m[1]=2; m.m[2]=3;   // right\n"
+            "m.m[4]=4; m.m[5]=5; m.m[6]=6;   // up\n"
+            "m.m[8]=7; m.m[9]=8; m.m[10]=9;  // forward\n"
+            "[m.right().x, m.right().y, m.right().z,\n"
+            " m.up().x,    m.up().y,    m.up().z,\n"
+            " m.forward().x, m.forward().y, m.forward().z]");
+        CHECK(v.property(0).toNumber() == 1);
+        CHECK(v.property(1).toNumber() == 2);
+        CHECK(v.property(2).toNumber() == 3);
+        CHECK(v.property(3).toNumber() == 4);
+        CHECK(v.property(4).toNumber() == 5);
+        CHECK(v.property(5).toNumber() == 6);
+        CHECK(v.property(6).toNumber() == 7);
+        CHECK(v.property(7).toNumber() == 8);
+        CHECK(v.property(8).toNumber() == 9);
+    }
+}
+
+TEST_SUITE("Mat3") {
+    TEST_CASE("default ctor is identity") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("new Mat3().m");
+        CHECK(v.property(0).toNumber() == doctest::Approx(1));
+        CHECK(v.property(4).toNumber() == doctest::Approx(1));
+        CHECK(v.property(8).toNumber() == doctest::Approx(1));
+        CHECK(v.property(1).toNumber() == doctest::Approx(0));
+    }
+    TEST_CASE("translation(Vec2) sets m[6..7] and chains") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat3(); var r = m.translation(Vec2(11, 12));\n"
+            "[r === m, m.m[6], m.m[7]]");
+        CHECK(v.property(0).toBool() == true);
+        CHECK(v.property(1).toNumber() == doctest::Approx(11));
+        CHECK(v.property(2).toNumber() == doctest::Approx(12));
+    }
+    TEST_CASE("translation() no-arg returns Vec2 from m[6..7]") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate(
+            "var m = new Mat3(); m.m[6]=3; m.m[7]=4; m.translation()");
+        CHECK(v.property("x").toNumber() == doctest::Approx(3));
+        CHECK(v.property("y").toNumber() == doctest::Approx(4));
+    }
+    TEST_CASE("angle() on identity is 90 degrees (atan2(1,0))") {
+        MathEnv  env;
+        // atan2(m[0], -m[1]) = atan2(1, 0) = PI/2 → 90 deg
+        double deg = env.engine.evaluate("new Mat3().angle()").toNumber();
+        CHECK(deg == doctest::Approx(90.0));
+    }
+    TEST_CASE("angle() rotated 45 degrees") {
+        MathEnv  env;
+        // For rotation R(45deg) with first col (cos, -sin), atan2(cos, sin) = 45deg
+        double deg = env.engine.evaluate(
+            "var m = new Mat3();\n"
+            "var c = Math.cos(Math.PI/4), s = Math.sin(Math.PI/4);\n"
+            "m.m[0] = c; m.m[1] = -s;\n"
+            "m.angle()").toNumber();
+        CHECK(deg == doctest::Approx(45.0).epsilon(1e-6));
+    }
+}
 
 // ------------------------------------------------------------------
 // WEMath
@@ -6011,8 +6219,6 @@ TEST_SUITE("PropertyScriptDispatch — instanceoverride.rate scalar") {
 // share a single source of truth.  The Purple Void / "blackhole" wallpaper
 // (2852314079) drives these via its audio-reactive Solid color script.
 // ----------------------------------------------------------------------
-
-#include "SceneScriptShimsJs.hpp"
 
 namespace
 {

@@ -1472,8 +1472,10 @@ void SceneObject::setupTextScripts() {
         "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };\n"
         "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };\n"
         "  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };\n"
-        "  v.add = function(o) { return Vec2(v.x+o.x, v.y+o.y); };\n"
-        "  v.subtract = function(o) { return Vec2(v.x-o.x, v.y-o.y); };\n"
+        "  v.add = function(o) { return typeof o==='number'? Vec2(v.x+o,v.y+o): "
+        "Vec2(v.x+o.x, v.y+o.y); };\n"
+        "  v.subtract = function(o) { return typeof o==='number'? Vec2(v.x-o,v.y-o): "
+        "Vec2(v.x-o.x, v.y-o.y); };\n"
         "  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): "
         "Vec2(v.x*s,v.y*s); };\n"
         "  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): "
@@ -1518,10 +1520,25 @@ void SceneObject::setupTextScripts() {
         "    this.x = x||0; this.y = y||0; this.z = z||0;\n"
         "  }\n"
         "}\n"
-        "Vec3.prototype.multiply  = function(s) { return Vec3(this.x*s, this.y*s, this.z*s); };\n"
-        "Vec3.prototype.add       = function(o) { return Vec3(this.x+o.x, this.y+o.y, this.z+o.z); "
+        // Arithmetic overloads: scalar, Vec2 (preserves our .z), or Vec3.
+        // WE's baseclasses.js:199-282 accepts all three — scripts like
+        // `pos.add(3)` or `pos.add(new Vec2(x, y))` silently broke before
+        // because we required a Vec3.  `instanceof Vec3` works since Vec3 is
+        // prototype-based; anything else object-shaped is treated as Vec2.
+        "Vec3.prototype.multiply  = function(f) {\n"
+        "  if (typeof f === 'number') return Vec3(this.x*f, this.y*f, this.z*f);\n"
+        "  if (f instanceof Vec3)     return Vec3(this.x*f.x, this.y*f.y, this.z*f.z);\n"
+        "  return Vec3(this.x*(f.x||0), this.y*(f.y||0), this.z);\n"
         "};\n"
-        "Vec3.prototype.subtract  = function(o) { return Vec3(this.x-o.x, this.y-o.y, this.z-o.z); "
+        "Vec3.prototype.add = function(f) {\n"
+        "  if (typeof f === 'number') return Vec3(this.x+f, this.y+f, this.z+f);\n"
+        "  if (f instanceof Vec3)     return Vec3(this.x+f.x, this.y+f.y, this.z+f.z);\n"
+        "  return Vec3(this.x+(f.x||0), this.y+(f.y||0), this.z);\n"
+        "};\n"
+        "Vec3.prototype.subtract = function(f) {\n"
+        "  if (typeof f === 'number') return Vec3(this.x-f, this.y-f, this.z-f);\n"
+        "  if (f instanceof Vec3)     return Vec3(this.x-f.x, this.y-f.y, this.z-f.z);\n"
+        "  return Vec3(this.x-(f.x||0), this.y-(f.y||0), this.z);\n"
         "};\n"
         "Vec3.prototype.length    = function() { return "
         "Math.sqrt(this.x*this.x+this.y*this.y+this.z*this.z); };\n"
@@ -1532,7 +1549,11 @@ void SceneObject::setupTextScripts() {
         "Vec3.prototype.cross     = function(o) { return Vec3(this.y*o.z-this.z*o.y, "
         "this.z*o.x-this.x*o.z, this.x*o.y-this.y*o.x); };\n"
         "Vec3.prototype.negate    = function() { return Vec3(-this.x,-this.y,-this.z); };\n"
-        "Vec3.prototype.divide    = function(s) { return Vec3(this.x/s, this.y/s, this.z/s); };\n"
+        "Vec3.prototype.divide = function(f) {\n"
+        "  if (typeof f === 'number') return Vec3(this.x/f, this.y/f, this.z/f);\n"
+        "  if (f instanceof Vec3)     return Vec3(this.x/f.x, this.y/f.y, this.z/f.z);\n"
+        "  return Vec3(this.x/(f.x||1), this.y/(f.y||1), this.z);\n"
+        "};\n"
         "Vec3.prototype.lerp      = function(o, t) { return Vec3(this.x+(o.x-this.x)*t, "
         "this.y+(o.y-this.y)*t, this.z+(o.z-this.z)*t); };\n"
         "Vec3.prototype.distance  = function(o) { var dx=this.x-o.x,dy=this.y-o.y,dz=this.z-o.z; "
@@ -1680,6 +1701,10 @@ void SceneObject::setupTextScripts() {
         "    }\n"
         "  };\n"
         "})();\n");
+
+    // Mat3 / Mat4 — shared with tests via SceneScriptShimsJs.hpp.  Must come
+    // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
+    m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
 
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(

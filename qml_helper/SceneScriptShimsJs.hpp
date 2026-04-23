@@ -81,4 +81,45 @@ inline constexpr const char* kRegisterAudioBuffersJs =
     "  return buf;\n"
     "})\n";
 
+// Mat3 / Mat4 JS classes — transforms that wallpapers can read/write.
+// WE ships these in assets/scripts/jsclasses/baseclasses.js; without them
+// any `new Mat4()` call in a SceneScript ReferenceError's silently.
+//
+// Mat4 is column-major 4x4; m[12..14] is translation.  `translation(v)` is
+// overloaded: call with a Vec3/Vec2 to set (returns this for chaining), call
+// with no args to read it back as a Vec3.  right/up/forward return the basis
+// vectors from the rotation block.
+//
+// Mat3 is column-major 3x3; m[6..7] is 2D translation.  `angle()` returns
+// degrees via atan2 on the first column, matching WE's baseclasses.js:453.
+//
+// Requires Vec2 and Vec3 to already exist on the global object.
+inline constexpr const char* kMatricesJs =
+    "function Mat4() { this.m = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]; }\n"
+    "Mat4.prototype.translation = function(v) {\n"
+    "  if (v && typeof v === 'object' && 'z' in v) {\n"
+    "    this.m[12]=v.x; this.m[13]=v.y; this.m[14]=v.z; return this;\n"
+    "  } else if (v && typeof v === 'object') {\n"
+    "    this.m[12]=v.x; this.m[13]=v.y; this.m[14]=0; return this;\n"
+    "  }\n"
+    "  return Vec3(this.m[12], this.m[13], this.m[14]);\n"
+    "};\n"
+    "Mat4.prototype.right    = function() { return Vec3(this.m[0], this.m[1], this.m[2]); };\n"
+    "Mat4.prototype.up       = function() { return Vec3(this.m[4], this.m[5], this.m[6]); };\n"
+    "Mat4.prototype.forward  = function() { return Vec3(this.m[8], this.m[9], this.m[10]); };\n"
+    "Mat4.prototype.toString = function() { return this.m.join(' '); };\n"
+    "Mat4.prototype.toJSONString = function() { return this.toString(); };\n"
+    "function Mat3() { this.m = [1,0,0, 0,1,0, 0,0,1]; }\n"
+    "Mat3.prototype.translation = function(v) {\n"
+    "  if (v && typeof v === 'object') {\n"
+    "    this.m[6]=v.x; this.m[7]=v.y; return this;\n"
+    "  }\n"
+    "  return Vec2(this.m[6], this.m[7]);\n"
+    "};\n"
+    "Mat3.prototype.angle    = function() {\n"
+    "  return Math.atan2(this.m[0], -this.m[1]) * (180.0 / Math.PI);\n"
+    "};\n"
+    "Mat3.prototype.toString = function() { return this.m.join(' '); };\n"
+    "Mat3.prototype.toJSONString = function() { return this.toString(); };\n";
+
 } // namespace wek::qml_helper
