@@ -2604,6 +2604,42 @@ void SceneObject::setupTextScripts() {
     // Get node name→id map for thisScene.getLayer() dispatch
     m_nodeNameToId = m_scene->getNodeNameToIdMap();
 
+    // Expose node id ↔ name maps to JS so scripts can look layers up by id
+    // (thisScene.getLayerByID) and get a layer's id-index
+    // (thisScene.getLayerIndex).  Also provides thisScene.getLayerCount.
+    {
+        QString idToName   = "var _layerIdToName = {";
+        QString nameToId   = "var _layerNameToId = {";
+        bool    first      = true;
+        for (const auto& [name, id] : m_nodeNameToId) {
+            QString nameEsc = QString::fromStdString(name);
+            nameEsc.replace("'", "\\'");
+            if (! first) {
+                idToName += ",";
+                nameToId += ",";
+            }
+            idToName += QString("'%1':'%2'").arg(id).arg(nameEsc);
+            nameToId += QString("'%1':%2").arg(nameEsc).arg(id);
+            first     = false;
+        }
+        idToName += "};\n";
+        nameToId += "};\n";
+        m_jsEngine->evaluate(idToName + nameToId
+                             + "thisScene.getLayerByID = function(id) {\n"
+                               "  var name = _layerIdToName[id];\n"
+                               "  return name ? thisScene.getLayer(name) : null;\n"
+                               "};\n"
+                               "thisScene.getLayerCount = function() {\n"
+                               "  return Object.keys(_layerInitStates).length;\n"
+                               "};\n"
+                               // Override the earlier stub (which read a
+                               // never-set _index) with a real id lookup.
+                               "thisScene.getLayerIndex = function(name) {\n"
+                               "  var id = _layerNameToId[name];\n"
+                               "  return (typeof id === 'number') ? id : -1;\n"
+                               "};\n");
+    }
+
     // Sound layer control infrastructure for SceneScript play/stop/pause API
     {
         auto soundLayers = m_scene->getSoundLayerControls();

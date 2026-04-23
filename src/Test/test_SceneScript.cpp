@@ -1593,13 +1593,34 @@ struct ScriptEnv {
             "          efx: ['Blur', 'Shake_Glitch_3', 'ChromAb'] },\n"
             "  'fg': { o: [0, 0, 0], s: [2, 2, 2], a: [0, 0, 0], sz: [800, 600], v: false }\n"
             "};\n"
-            "var _sceneOrtho = [1920, 1080];\n");
+            "var _sceneOrtho = [1920, 1080];\n"
+            // id↔name maps mirror SceneBackend::m_nodeNameToId injection.
+            // IDs here are arbitrary but stable for deterministic tests.
+            "var _layerIdToName = { '7': 'bg', '11': 'fg' };\n"
+            "var _layerNameToId = { 'bg': 7, 'fg': 11 };\n");
 
         // Layer infrastructure
         engine.evaluate(JS_LAYER_INFRA);
 
         // Sound layer infrastructure
         engine.evaluate(JS_SOUND_INFRA);
+
+        // Indexed-access methods layered on top of JS_LAYER_INFRA (which
+        // defines thisScene.getLayer / enumerateLayers / etc.).  These
+        // match the definitions injected by SceneBackend right after
+        // m_nodeNameToId is built, using the same maps.
+        engine.evaluate(
+            "thisScene.getLayerByID = function(id) {\n"
+            "  var name = _layerIdToName[id];\n"
+            "  return name ? thisScene.getLayer(name) : null;\n"
+            "};\n"
+            "thisScene.getLayerCount = function() {\n"
+            "  return Object.keys(_layerInitStates).length;\n"
+            "};\n"
+            "thisScene.getLayerIndex = function(name) {\n"
+            "  var id = _layerNameToId[name];\n"
+            "  return (typeof id === 'number') ? id : -1;\n"
+            "};\n");
     }
 };
 
@@ -3683,6 +3704,54 @@ TEST_SUITE("Layer Proxy") {
         ScriptEnv env;
         CHECK(env.engine.evaluate("scene === thisScene").toBool());
         CHECK(env.engine.evaluate("typeof scene.getLayer").toString() == "function");
+    }
+
+    // ---- Indexed-access API ---------------------------------------------
+    // thisScene.getLayer(name) / getLayerByID(id) / getLayerCount() /
+    // getLayerIndex(name).  Production builds the id↔name maps from
+    // SceneBackend::m_nodeNameToId; ScriptEnv seeds the same shape with
+    // bg=7, fg=11.
+
+    TEST_CASE("getLayerCount returns the number of declared layers") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayerCount()").toInt() == 2);
+    }
+
+    TEST_CASE("getLayerByID returns a layer proxy for a known id") {
+        ScriptEnv env;
+        QJSValue  v = env.engine.evaluate("thisScene.getLayerByID(7).name");
+        CHECK(v.toString() == QString("bg"));
+    }
+
+    TEST_CASE("getLayerByID returns null for unknown id") {
+        ScriptEnv env;
+        QJSValue  v = env.engine.evaluate("thisScene.getLayerByID(9999) === null");
+        CHECK(v.toBool());
+    }
+
+    TEST_CASE("getLayerByID returns same proxy as getLayer(name) (cached)") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate(
+                     "thisScene.getLayerByID(11) === thisScene.getLayer('fg')")
+                  .toBool());
+    }
+
+    TEST_CASE("getLayerIndex returns the declared id for a known name") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayerIndex('bg')").toInt() == 7);
+        CHECK(env.engine.evaluate("thisScene.getLayerIndex('fg')").toInt() == 11);
+    }
+
+    TEST_CASE("getLayerIndex returns -1 for unknown name") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayerIndex('nope')").toInt() == -1);
+    }
+
+    TEST_CASE("getLayerByID then getLayerIndex round-trips") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate(
+                     "thisScene.getLayerIndex(thisScene.getLayerByID(7).name) === 7")
+                  .toBool());
     }
 
 } // TEST_SUITE Layer Proxy
