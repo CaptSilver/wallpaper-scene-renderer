@@ -41,6 +41,11 @@ struct ParticleControlpoint {
     // Propagated through chain resolution: true when this CP's resolved value came from a
     // chain that ultimately terminated in a null-offset CP (or is itself null-offset).
     // Lets ancestors still see the "null" flag after a multi-hop chain.
+    Eigen::Vector3d angles { 0, 0, 0 };
+    // Per-CP orientation (radians, XYZ Euler).  Populated from
+    // `instanceoverride.controlpointangle[N]` at scene-load time.  Currently written but
+    // not read by any runtime operator — see WPSceneParser::LoadControlPoint and
+    // memory/nier-2b-wallpaper.md for the "plumb through, log loudly" rationale.
 };
 
 struct ParticleInfo {

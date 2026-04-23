@@ -174,6 +174,15 @@ public:
     struct ControlPointOverride {
         bool                 active { false };
         std::array<float, 3> offset { 0, 0, 0 };
+        // Per-CP orientation override (radians, XYZ).  WE's editor exposes "Lock control
+        // point angles" (see wpdoc/ui_en-us.json), so CPs are a frame (position + rotation)
+        // at the authoring level even though the runtime CP struct has historically tracked
+        // only position.  NieR 2B's lightning/discharge (obj 113, 716, 722) sets
+        // `controlpointangle1` on CP[1]; no operator we've implemented currently consumes
+        // the angle, but we plumb it through so a consumer can read it without a parse-layer
+        // change, and so the data isn't silently dropped.
+        std::array<float, 3> angles { 0, 0, 0 };
+        bool                 anglesActive { false };
     };
     std::array<ControlPointOverride, 8> controlpointOverrides;
 };

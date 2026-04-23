@@ -43,12 +43,15 @@ add_executable(backend_scene_tests
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
     test_WPPropertyScriptExtract.cpp
+    test_WPParticleInstanceoverride.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp
     ${SRC_DIR}/WPMdlParser.cpp
     ${SRC_DIR}/WPJson.cpp
+    ${SRC_DIR}/wpscene/WPParticleObject.cpp
+    ${SRC_DIR}/wpscene/WPMaterial.cpp
     ${SRC_DIR}/Scene/SceneCamera.cpp
     ${SRC_DIR}/Scene/SceneNode.cpp
     ${SRC_DIR}/Scene/SceneIndexArray.cpp

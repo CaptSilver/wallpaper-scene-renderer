@@ -117,12 +117,21 @@ bool ParticleInstanceoverride::FromJosn(const nlohmann::json& json) {
         GET_JSON_NAME_VALUE(json, "colorn", colorn);
         overColorn = true;
     }
-    // Parse controlpoint overrides (controlpoint0 through controlpoint7)
+    // Parse controlpoint overrides (controlpoint0 through controlpoint7) and their
+    // companion angle overrides (controlpointangle0 through controlpointangle7).  The
+    // angle component is independent of the offset: a CP may have its orientation
+    // overridden without moving its position (NieR 2B's obj 716/722 set cp1 + angle1;
+    // obj 113 does the same).
     for (int i = 0; i < 8; i++) {
-        std::string key = "controlpoint" + std::to_string(i);
-        if (json.contains(key)) {
-            GET_JSON_NAME_VALUE(json, key.c_str(), controlpointOverrides[i].offset);
+        std::string offsetKey = "controlpoint" + std::to_string(i);
+        if (json.contains(offsetKey)) {
+            GET_JSON_NAME_VALUE(json, offsetKey.c_str(), controlpointOverrides[i].offset);
             controlpointOverrides[i].active = true;
+        }
+        std::string angleKey = "controlpointangle" + std::to_string(i);
+        if (json.contains(angleKey)) {
+            GET_JSON_NAME_VALUE(json, angleKey.c_str(), controlpointOverrides[i].angles);
+            controlpointOverrides[i].anglesActive = true;
         }
     }
     return true;

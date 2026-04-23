@@ -327,6 +327,20 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                 Eigen::Vector3d { array_cast<double>(over.controlpointOverrides[i].offset).data() };
             pcs[i].is_null_offset = false;
         }
+        if (over.controlpointOverrides[i].anglesActive) {
+            pcs[i].angles = Eigen::Vector3d {
+                array_cast<double>(over.controlpointOverrides[i].angles).data()
+            };
+            // No runtime operator consumes CP angles yet; report the capture so a future
+            // consumer (or debug session) can see the data reached the CP struct.  Per
+            // feedback_no_stubs.md: "Implement the API or report the gap loudly."
+            LOG_INFO("instanceoverride.controlpointangle%d captured: (%.5f, %.5f, %.5f) rad "
+                     "— no runtime operator consumes CP angles yet",
+                     i,
+                     pcs[i].angles.x(),
+                     pcs[i].angles.y(),
+                     pcs[i].angles.z());
+        }
     }
     // Convert worldspace control points to local space
     for (usize i = 0; i < pcs.size(); i++) {
