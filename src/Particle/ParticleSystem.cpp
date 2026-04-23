@@ -477,6 +477,71 @@ void ParticleSystem::Emitt() {
     }
 }
 
+// Recursive walk to find the largest starttime across the entire subsystem
+// tree.  Top-level subsystems live in `subsystems`; each may have children
+// with their own starttime.
+static double MaxStartTimeRec(const ParticleSubSystem& s) {
+    double m = (double)s.StartTime();
+    for (const auto& c : s.Children()) {
+        if (c) m = std::max(m, MaxStartTimeRec(*c));
+    }
+    return m;
+}
+
+double ParticleSystem::MaxStartTime() const {
+    double m = 0.0;
+    for (const auto& s : subsystems) {
+        if (s) m = std::max(m, MaxStartTimeRec(*s));
+    }
+    return m;
+}
+
+static void ClearStartTimeRec(ParticleSubSystem& s) {
+    s.ClearStartTime();
+    for (const auto& c : s.Children()) {
+        if (c) ClearStartTimeRec(*c);
+    }
+}
+
+void ParticleSystem::PreSimulate(double dt) {
+    double target = MaxStartTime();
+    if (target <= 0.0 || dt <= 0.0) return;
+
+    // Save and restore the scene clock — callers set this up just once at
+    // scene load; we don't want to leak pre-sim time into the first real
+    // frame's shader `g_Time` uniform or animation timers.
+    double saved_elapsed    = scene.elapsingTime;
+    double saved_frameTime  = scene.frameTime;
+
+    scene.elapsingTime = 0.0;
+    scene.frameTime    = dt;
+
+    // Each subsystem's own `m_starttime` gate inside Emitt() naturally
+    // staggers emission: if maxT=200 and a subsystem's starttime=50, the
+    // first 50s of ticks no-op, then it emits for 150s.  That matches WE's
+    // "N seconds of simulation before the first frame" semantic.
+    int tick_count = 0;
+    while (scene.elapsingTime < target) {
+        Emitt();
+        scene.elapsingTime += dt;
+        ++tick_count;
+    }
+
+    LOG_INFO("ParticleSystem::PreSimulate: advanced %d ticks (%.1fs) at dt=%.4fs",
+             tick_count,
+             target,
+             dt);
+
+    // Now every subsystem has been run forward; clear their starttime
+    // gates so real rendering doesn't re-block emission from scratch.
+    for (auto& s : subsystems) {
+        if (s) ClearStartTimeRec(*s);
+    }
+
+    scene.elapsingTime = saved_elapsed;
+    scene.frameTime    = saved_frameTime;
+}
+
 void ParticleSubSystem::UpdateMouseControlPoints(double sceneX, double sceneY) {
     for (auto& cp : m_controlpoints) {
         if (cp.link_mouse) {

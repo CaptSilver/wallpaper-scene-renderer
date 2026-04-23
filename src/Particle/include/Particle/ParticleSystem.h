@@ -136,6 +136,17 @@ public:
     void               SetDebugName(std::string name) { m_debug_name = std::move(name); }
     const std::string& DebugName() const { return m_debug_name; }
 
+    // WE semantics: `starttime` is the number of seconds of simulation the
+    // particle system is advanced BEFORE the first rendered frame, so
+    // particles are already at steady-state distribution on frame 1.  Used
+    // by ParticleSystem::PreSimulate().
+    u32  StartTime() const { return m_starttime; }
+    void ClearStartTime() { m_starttime = 0; }
+
+    const std::vector<std::unique_ptr<ParticleSubSystem>>& Children() const {
+        return m_children;
+    }
+
 private:
     ParticleSystem&            m_sys;
     std::shared_ptr<SceneMesh> m_mesh;
@@ -190,6 +201,30 @@ public:
     // mousePos: normalized mouse position (0-1), orthoSize: scene dimensions
     void UpdateMouseControlPoints(const std::array<float, 2>& mousePos,
                                   const std::array<int, 2>&   orthoSize);
+
+    // Max `starttime` across every subsystem in this scene (recursive into
+    // children).  0 for particle-less scenes and for scenes whose authors
+    // didn't set starttime.  Drives PreSimulate()'s iteration budget.
+    double MaxStartTime() const;
+
+    // Run the scene's particle systems forward by MaxStartTime() seconds so
+    // each subsystem is at steady-state distribution before the first
+    // rendered frame.  Required for WE "starttime" semantics — e.g. the
+    // shipped shimmering_particles default needs 50s (dustmotes) / 200s
+    // (small_motes) of pre-sim, otherwise the user sees a black screen
+    // waiting for particle emission to ramp up.
+    //
+    // Uses the scene's own clock (`scene.elapsingTime` / `scene.frameTime`)
+    // so per-subsystem `m_starttime` gates stagger correctly during the
+    // pre-sim.  Afterwards, each subsystem's `m_starttime` is cleared and
+    // the scene clock is rewound so rendering sees t=0 with particles
+    // already distributed.
+    //
+    // `dt` is the pre-sim step in seconds; defaults to the 32ms per-frame
+    // cap Emitt() already enforces, so this is "run the same tick the
+    // renderer would have run, minus the draw".  No-op when MaxStartTime
+    // is 0 (the overwhelming majority of wallpapers).
+    void PreSimulate(double dt = 0.032);
 
     Scene& scene;
 

@@ -35,6 +35,7 @@
 #include "WPTextRenderer.hpp"
 
 #include "WPUserProperties.hpp"
+#include "WPSceneFileResolver.hpp"
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <atomic>
@@ -1115,6 +1116,14 @@ private:
             m_render->compileRenderGraph(*m_scene, *m_rg);
             m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
 
+            // Pre-simulate particle systems so scenes that author a non-zero
+            // `starttime` (WE semantic: "seconds of sim before frame 1", e.g.
+            // shimmering_particles' 50s dustmotes / 200s small_motes) show a
+            // populated scene on load instead of a black screen ramping up.
+            if (m_scene->paritileSys) {
+                m_scene->paritileSys->PreSimulate();
+            }
+
             // Create video texture decoders for MP4 textures detected during loading
             // Try HW decoder first (EGL + GL + VA-API), fall back to SW
             {
@@ -2019,12 +2028,27 @@ void MainHandler::loadScene() {
             return;
         }
     }
-    std::filesystem::path pkgPath_fs { m_source };
-    pkgPath_fs.replace_extension("pkg");
+    // Accept either a wallpaper *file* (<dir>/scene.pkg, <dir>/scene.json) or
+    // a bare *directory* (as sceneviewer-script sometimes gets handed).  The
+    // two cases yield different pkgDir/pkgPath derivations; keep them
+    // separate instead of relying on replace_extension() to DWIM.
+    std::filesystem::path src_fs { m_source };
+    std::error_code       dir_ec;
+    bool source_is_dir = std::filesystem::is_directory(src_fs, dir_ec);
+
+    std::filesystem::path pkgDir_fs;
+    std::filesystem::path pkgPath_fs;
+    if (source_is_dir) {
+        pkgDir_fs  = src_fs;
+        pkgPath_fs = src_fs / "scene.pkg";
+    } else {
+        pkgDir_fs  = src_fs.parent_path();
+        pkgPath_fs = src_fs;
+        pkgPath_fs.replace_extension("pkg");
+    }
     std::string pkgPath  = pkgPath_fs.native();
-    std::string pkgEntry = pkgPath_fs.filename().replace_extension("json").native();
-    std::string pkgDir   = pkgPath_fs.parent_path().native();
-    std::string scene_id = pkgPath_fs.parent_path().filename().native();
+    std::string pkgDir   = pkgDir_fs.native();
+    std::string scene_id = pkgDir_fs.filename().native();
 
     // load pkgfile
     if (! vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(pkgPath))) {
@@ -2044,34 +2068,58 @@ void MainHandler::loadScene() {
     }
 
     {
-        std::string       scene_src;
-        const std::string base { "/assets/" };
+        // Read project.json once.  It drives BOTH the scene-file resolver
+        // (authoritative "file" entry) and the user-property defaults below.
+        std::string project_json_str;
         {
-            std::string scenePath = base + pkgEntry;
-            if (vfs.Contains(scenePath)) {
-                auto f = vfs.Open(scenePath);
-                if (f) scene_src = f->ReadAllStr();
+            std::filesystem::path projPath = pkgDir_fs / "project.json";
+            if (std::filesystem::exists(projPath)) {
+                std::ifstream ifs(projPath);
+                if (ifs.good()) {
+                    project_json_str.assign(std::istreambuf_iterator<char>(ifs),
+                                            std::istreambuf_iterator<char>());
+                }
             }
         }
+
+        // Try each candidate filename until one opens non-empty.  Order is:
+        //   <source-stem>.json → project.json's `file` → scene.json.
+        auto candidates = wekde::sceneresolver::BuildSceneFileCandidates(
+            m_source, source_is_dir, project_json_str);
+
+        std::string       scene_src;
+        std::string       scene_src_entry;
+        const std::string base { "/assets/" };
+        for (const auto& cand : candidates) {
+            std::string scenePath = base + cand;
+            if (! vfs.Contains(scenePath)) continue;
+            auto f = vfs.Open(scenePath);
+            if (! f) continue;
+            std::string body = f->ReadAllStr();
+            if (body.empty()) continue;
+            scene_src       = std::move(body);
+            scene_src_entry = cand;
+            break;
+        }
+
         if (scene_src.empty()) {
-            LOG_ERROR("Not supported scene type");
+            LOG_ERROR("Not supported scene type (no scene JSON found under %s)", pkgDir.c_str());
+            for (const auto& c : candidates) {
+                LOG_ERROR("  tried /assets/%s", c.c_str());
+            }
             return;
         }
+        LOG_INFO("Loaded scene from /assets/%s", scene_src_entry.c_str());
 
         // Build user properties once: load defaults from project.json (filesystem,
         // since it lives alongside scene.pkg, not inside it) + apply overrides.
         // Used for both parse-time resolution and runtime re-resolution.
         WPUserProperties userProps;
         {
-            std::filesystem::path projPath = std::filesystem::path(pkgDir) / "project.json";
-            if (std::filesystem::exists(projPath)) {
-                std::ifstream ifs(projPath);
-                if (ifs.good()) {
-                    std::string content((std::istreambuf_iterator<char>(ifs)),
-                                        std::istreambuf_iterator<char>());
-                    if (userProps.LoadFromProjectJson(content)) {
-                        LOG_INFO("Loaded user property defaults from %s", projPath.c_str());
-                    }
+            if (! project_json_str.empty()) {
+                if (userProps.LoadFromProjectJson(project_json_str)) {
+                    LOG_INFO("Loaded user property defaults from %s/project.json",
+                             pkgDir.c_str());
                 }
             }
             if (! m_user_props_json.empty()) {

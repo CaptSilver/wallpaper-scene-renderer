@@ -515,3 +515,127 @@ TEST_SUITE("ParticleSubSystem.NestedStatic") {
     }
 
 } // ParticleSubSystem.NestedStatic
+
+// ===========================================================================
+// ParticleSystem::MaxStartTime / PreSimulate — WE `starttime` semantics.
+// shimmering_particles default wallpaper ships dustmotes.starttime=50 and
+// small_motes_copy1.starttime=200.  Interpreted as "delay before emitting",
+// the user sees a black screen for up to 200s.  WE's actual meaning is
+// "pre-simulate N seconds before frame 1", which PreSimulate() implements.
+// ===========================================================================
+
+TEST_SUITE("ParticleSystem.StartTime") {
+    TEST_CASE("MaxStartTime is zero for an empty system") {
+        ParticleFixture fx;
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("MaxStartTime is zero when every subsystem has starttime=0") {
+        ParticleFixture fx;
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 0));
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 0));
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("MaxStartTime picks the largest top-level starttime") {
+        ParticleFixture fx;
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 50));
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 200));
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 5));
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(200.0));
+    }
+
+    TEST_CASE("MaxStartTime walks nested children") {
+        // shimmering_particles is flat, but NieR-style nested particles can
+        // carry starttime on a child subsystem.  Make sure we catch those.
+        ParticleFixture fx;
+        auto child = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW, 75);
+        auto root  = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC, 10);
+        root->AddChild(std::move(child));
+        fx.psys->subsystems.push_back(std::move(root));
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(75.0));
+    }
+
+    TEST_CASE("PreSimulate is a no-op when MaxStartTime is 0") {
+        ParticleFixture fx;
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 0));
+
+        fx.scene.elapsingTime = 123.0;   // sentinel — must be preserved
+        fx.scene.frameTime    = 0.016;
+        fx.psys->PreSimulate();
+        CHECK(fx.scene.elapsingTime == doctest::Approx(123.0));
+        CHECK(fx.scene.frameTime == doctest::Approx(0.016));
+    }
+
+    TEST_CASE("PreSimulate restores the scene clock it found on entry") {
+        ParticleFixture fx;
+        auto* sub_raw = fx.makeSub(10, 1.0, 1, 1.0,
+                                   ParticleSubSystem::SpawnType::STATIC, 5).release();
+        fx.psys->subsystems.emplace_back(sub_raw);
+
+        fx.scene.elapsingTime = 0.0;
+        fx.scene.frameTime    = 0.0;
+        fx.psys->PreSimulate(0.1);
+
+        // After pre-sim the scene clock is back to its saved value,
+        // regardless of how many ticks PreSimulate ran internally.
+        CHECK(fx.scene.elapsingTime == doctest::Approx(0.0));
+        CHECK(fx.scene.frameTime == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("PreSimulate clears every subsystem's m_starttime gate") {
+        ParticleFixture fx;
+        auto child = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW, 30);
+        auto* child_raw = child.get();
+        auto  root      = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC, 15);
+        auto* root_raw  = root.get();
+        root->AddChild(std::move(child));
+        fx.psys->subsystems.push_back(std::move(root));
+
+        REQUIRE(root_raw->StartTime() == 15u);
+        REQUIRE(child_raw->StartTime() == 30u);
+
+        fx.psys->PreSimulate(0.5);
+
+        CHECK(root_raw->StartTime() == 0u);
+        CHECK(child_raw->StartTime() == 0u);
+    }
+
+    TEST_CASE("PreSimulate uses the dt argument (iterates until target reached)") {
+        // With dt=5.0 and starttime=20, we expect exactly 4 Emitt calls.
+        // We can't peek Emitt call count directly, but we can observe that
+        // the scene clock was advanced at least that far internally — all
+        // we need is that m_starttime gets cleared (PreSimulate ran to
+        // completion without infinite-looping).
+        ParticleFixture fx;
+        auto* sub_raw = fx.makeSub(10, 1.0, 1, 1.0,
+                                   ParticleSubSystem::SpawnType::STATIC, 20).release();
+        fx.psys->subsystems.emplace_back(sub_raw);
+        REQUIRE(sub_raw->StartTime() == 20u);
+
+        fx.psys->PreSimulate(5.0);
+        CHECK(sub_raw->StartTime() == 0u);
+    }
+
+    TEST_CASE("PreSimulate guards against non-positive dt (no infinite loop)") {
+        ParticleFixture fx;
+        auto* sub_raw = fx.makeSub(10, 1.0, 1, 1.0,
+                                   ParticleSubSystem::SpawnType::STATIC, 50).release();
+        fx.psys->subsystems.emplace_back(sub_raw);
+
+        // dt=0 would infinite-loop if not guarded; we early-out instead.
+        fx.psys->PreSimulate(0.0);
+        // starttime is unchanged because we never ran the pre-sim loop.
+        CHECK(sub_raw->StartTime() == 50u);
+
+        fx.psys->PreSimulate(-1.0);
+        CHECK(sub_raw->StartTime() == 50u);
+    }
+}
+
