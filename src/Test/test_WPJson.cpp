@@ -48,7 +48,82 @@ TEST_SUITE("WPJson.ParseJson") {
         CHECK_FALSE(PARSE_JSON("", out));
     }
 
+    // ---- Trailing-comma tolerance ----------------------------------------
+    // WE's own JSON loader accepts trailing commas; at least one shipped asset
+    // (assets/effects/fluidsimulation/effect.json) has `,\n\t\t\t]`.  nlohmann
+    // 3.12 has `ignore_comments` but not trailing-commas, so StripTrailingCommas
+    // pre-processes the source inside ParseJson.
+
+    TEST_CASE("trailing comma before ] is tolerated") {
+        njson out;
+        REQUIRE(PARSE_JSON("[1,2,3,]", out));
+        REQUIRE(out.is_array());
+        CHECK(out.size() == 3);
+    }
+
+    TEST_CASE("trailing comma before } is tolerated") {
+        njson out;
+        REQUIRE(PARSE_JSON(R"({"a":1,"b":2,})", out));
+        CHECK(out["a"].get<int>() == 1);
+        CHECK(out["b"].get<int>() == 2);
+    }
+
+    TEST_CASE("trailing comma with whitespace/newlines before ] is tolerated") {
+        njson out;
+        REQUIRE(PARSE_JSON("[\n  \"a\",\n  \"b\" ,\n\t\t\t]", out));
+        REQUIRE(out.is_array());
+        CHECK(out.size() == 2);
+    }
+
+    TEST_CASE("commas inside strings are preserved (not stripped)") {
+        njson out;
+        REQUIRE(PARSE_JSON(R"({"s":"hello, world,","n":1})", out));
+        CHECK(out["s"].get<std::string>() == "hello, world,");
+        CHECK(out["n"].get<int>() == 1);
+    }
+
+    TEST_CASE("escaped quote inside string doesn't break stripping") {
+        njson out;
+        // Source string is literally:  {"s":"a\",","n":1}
+        // — the embedded \"  must not confuse the string-tracking state machine.
+        REQUIRE(PARSE_JSON(R"({"s":"a\",","n":1})", out));
+        CHECK(out["s"].get<std::string>() == "a\",");
+        CHECK(out["n"].get<int>() == 1);
+    }
+
+    TEST_CASE("nested trailing commas tolerated") {
+        njson out;
+        REQUIRE(PARSE_JSON(R"({"a":[1,2,],"b":{"c":3,},})", out));
+        CHECK(out["a"].size() == 2);
+        CHECK(out["b"]["c"].get<int>() == 3);
+    }
+
 } // ParseJson
+
+TEST_SUITE("WPJson.StripTrailingCommas") {
+    TEST_CASE("passes through well-formed JSON unchanged") {
+        CHECK(StripTrailingCommas("[1,2,3]") == "[1,2,3]");
+        CHECK(StripTrailingCommas(R"({"a":1,"b":2})") == R"({"a":1,"b":2})");
+    }
+    TEST_CASE("strips comma before ]") {
+        CHECK(StripTrailingCommas("[1,2,3,]") == "[1,2,3]");
+    }
+    TEST_CASE("strips comma before } with whitespace") {
+        CHECK(StripTrailingCommas(R"({"a":1, })") == R"({"a":1 })");
+    }
+    TEST_CASE("preserves commas inside strings") {
+        const std::string src = R"("a,b,c,")";
+        CHECK(StripTrailingCommas(src) == src);
+    }
+    TEST_CASE("handles backslash escapes inside strings") {
+        // Input: "\\","x" — the first string ends at the unescaped close quote
+        // (the \\ is a literal backslash, then the " closes).  The trailing
+        // comma before ] (not present here) is the only thing that would get
+        // stripped — verify the string boundaries are detected correctly.
+        const std::string src = R"(["\\",])";
+        CHECK(StripTrailingCommas(src) == R"(["\\"])");
+    }
+}
 
 // ===========================================================================
 // GetJsonValue — scalar types, named vs unnamed access, missing/null handling

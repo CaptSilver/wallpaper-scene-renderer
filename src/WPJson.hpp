@@ -39,4 +39,12 @@ GetJsonValue(const char* file, const char* func, int line, const nlohmann::json&
 
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result);
+
+// Strip trailing commas before `]` / `}` while preserving string literals and
+// escape sequences.  nlohmann 3.12 has `ignore_comments` but no
+// `ignore_trailing_commas` — WE's own loader is lax about both, and at least
+// one shipped asset (assets/effects/fluidsimulation/effect.json) has a
+// trailing comma before `]`.  Applied automatically inside ParseJson so every
+// call site benefits; also exposed for direct testing.
+std::string StripTrailingCommas(std::string_view source);
 } // namespace wallpaper

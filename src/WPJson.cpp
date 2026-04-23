@@ -26,10 +26,54 @@ static nlohmann::json ResolveUserProperty(const nlohmann::json& json) {
     return json;
 }
 
+std::string StripTrailingCommas(std::string_view source) {
+    std::string out;
+    out.reserve(source.size());
+    bool in_string = false;
+    bool escape    = false;
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        char c = source[i];
+        if (in_string) {
+            out += c;
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            out += c;
+            continue;
+        }
+        if (c == ',') {
+            // Peek past ASCII whitespace; if the next char is `]` or `}`,
+            // drop the comma.  This misses the (rare) case where a block
+            // comment sits between `,` and the closing bracket, but covers
+            // everything observed in shipped WE assets.
+            std::size_t j = i + 1;
+            while (j < source.size()
+                   && std::isspace(static_cast<unsigned char>(source[j]))) {
+                ++j;
+            }
+            if (j < source.size() && (source[j] == ']' || source[j] == '}')) {
+                continue;
+            }
+        }
+        out += c;
+    }
+    return out;
+}
+
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
     try {
-        result = nlohmann::json::parse(source, nullptr, true, true);
+        // Pre-strip trailing commas; then let nlohmann handle comments.
+        const std::string cleaned = StripTrailingCommas(source);
+        result                    = nlohmann::json::parse(cleaned, nullptr, true, true);
     } catch (nlohmann::json::parse_error& e) {
         WallpaperLog(LOGLEVEL_ERROR, file, line, "parse json(%s), %s", func, e.what());
         return false;
