@@ -1631,8 +1631,14 @@ struct ScriptEnv {
         engineObj.setProperty("frameCount", 0.0);
         engineObj.setProperty("timeZone", 0.0); // UTC for deterministic tests
         engineObj.setProperty("timeZoneName", "UTC");
+        // Script identity: production sets these in setScriptIdentity after
+        // all property scripts are loaded.  The fixture uses a fixed value
+        // so tests can assert against it.
+        engineObj.setProperty("scriptId", 12345);
+        engineObj.setProperty("scriptName", "scene");
         engineObj.setProperty("userProperties", engine.newObject());
         engine.globalObject().setProperty("engine", engineObj);
+        engine.evaluate("engine.getScriptHash = function() { return '3039'; };\n");
 
         // shared
         engine.globalObject().setProperty("shared", engine.newObject());
@@ -2941,6 +2947,48 @@ TEST_SUITE("SceneScript Globals") {
         CHECK(env.engine.evaluate("engine.frameCount % 60").toInt() == 5);
         CHECK(env.engine.evaluate("engine.timeOfDay < 1.0 && engine.timeOfDay >= 0.0")
                   .toBool());
+    }
+
+    // ---- Script identity (scriptId / scriptName / getScriptHash) --------
+    // Production fingerprints the loaded property scripts and writes
+    // engine.scriptId / getScriptHash() so scripts can key persistent state
+    // to the current scene's script layout.  The fixture seeds
+    // deterministic values (12345 / "scene" / "3039").
+
+    TEST_CASE("engine.scriptId is a number") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("typeof engine.scriptId").toString()
+              == QString("number"));
+        CHECK(env.engine.evaluate("engine.scriptId").toInt() == 12345);
+    }
+
+    TEST_CASE("engine.scriptName is a string") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("engine.scriptName").toString()
+              == QString("scene"));
+    }
+
+    TEST_CASE("engine.getScriptHash returns a non-empty string") {
+        ScriptEnv env;
+        QJSValue  h = env.engine.evaluate("engine.getScriptHash()");
+        CHECK(h.isString());
+        CHECK(h.toString().length() > 0);
+    }
+
+    TEST_CASE("getScriptHash is stable across calls within a session") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("engine.getScriptHash() === engine.getScriptHash()")
+                  .toBool());
+    }
+
+    TEST_CASE("script identity can key a localStorage entry") {
+        // Usage pattern: scripts build per-scene keys by appending
+        // getScriptHash() so stale data from a different scene doesn't leak.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var key = 'prefs_' + engine.getScriptHash();\n"
+            "var hashPart = key.substring(6);");
+        CHECK(env.engine.evaluate("hashPart").toString() == QString("3039"));
     }
 
 } // TEST_SUITE SceneScript Globals

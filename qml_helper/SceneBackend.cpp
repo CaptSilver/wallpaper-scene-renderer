@@ -474,6 +474,29 @@ void SceneObject::fireApplyGeneralSettings() {
     fireSceneEventListeners("applyGeneralSettings", { settingsArg });
 }
 
+void SceneObject::setScriptIdentity() {
+    if (! m_jsEngine) return;
+    // Fingerprint: concatenation of (layerName, property) pairs.  Changes
+    // whenever the script set is added/removed/retargeted, stable otherwise.
+    std::string fp;
+    fp.reserve(m_propertyScriptStates.size() * 32);
+    for (const auto& s : m_propertyScriptStates) {
+        fp += s.layerName;
+        fp += ':';
+        fp += s.property;
+        fp += ';';
+    }
+    std::size_t   h       = std::hash<std::string>{}(fp);
+    quint32       idTrunc = static_cast<quint32>(h & 0xFFFFFFFFu);
+    const QString hashHex = QString::number(static_cast<qulonglong>(h), 16);
+    m_jsEngine->evaluate(
+        QString("engine.scriptId = %1;\n"
+                "engine.scriptName = 'scene';\n"
+                "engine.getScriptHash = function() { return '%2'; };\n")
+            .arg(idTrunc)
+            .arg(hashHex));
+}
+
 void SceneObject::fireDestroyEvent() {
     if (! m_jsEngine || m_propertyScriptStates.empty()) return;
 
@@ -1742,6 +1765,14 @@ void SceneObject::setupTextScripts() {
     // `_Internal` helper namespace — updateScriptProperties /
     // convertUserProperties / stringifyConfig.  Requires Vec3.
     m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
+
+    // engine.scriptId / scriptName / getScriptHash() placeholders.  These
+    // are rewritten to stable scene-level values in setScriptIdentity()
+    // AFTER all property scripts have been loaded (see that call site near
+    // the end of setupTextScripts).
+    m_jsEngine->evaluate("engine.scriptId = 0;\n"
+                         "engine.scriptName = 'scene';\n"
+                         "engine.getScriptHash = function() { return '0'; };\n");
 
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(
@@ -3367,6 +3398,12 @@ void SceneObject::setupTextScripts() {
 
         m_propertyScriptStates.push_back(std::move(state));
     }
+
+    // Now that the scripts are loaded, compute the stable scene-level
+    // identity (engine.scriptId / getScriptHash) that overrides the init
+    // stub.  Scripts read these inside applyUserProperties / init handlers.
+    setScriptIdentity();
+
     // Flush console.log buffer from script init
     {
         QJSValue consoleBuf = m_jsEngine->globalObject().property("console").property("_buf");

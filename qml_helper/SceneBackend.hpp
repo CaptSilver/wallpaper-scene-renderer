@@ -205,6 +205,11 @@ private:
     // once during setup so scripts can key off it for init-time app-level
     // state, and is safe to call again later if plugin-wide settings change.
     void fireApplyGeneralSettings();
+    // Populates engine.scriptId / scriptName / getScriptHash() from a
+    // stable fingerprint of the loaded property scripts.  Must be called
+    // AFTER m_propertyScriptStates is populated; the init-time stub writes
+    // zero values that this overrides.
+    void setScriptIdentity();
     void fireDestroyEvent();
     void fireResizeScreen(int width, int height);
     void evaluateTextScripts();
