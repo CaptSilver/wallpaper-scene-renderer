@@ -278,6 +278,13 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             mipmap.size = src_size;
         }
     }
+    // Self-cache the parsed image.  Without this every subsequent Parse(name)
+    // re-opens the .tex file, re-decompresses all mipmaps, and (worst case
+    // for video textures) re-writes the full MP4 payload to /tmp/video_tex/.
+    // On Nightingale 3276911872 the same 19MB MP4 was being dumped 9+ times
+    // during init, blocking the render thread long enough that the compositor
+    // gave up and showed a black desktop.
+    m_registered[name] = img_ptr;
     return img_ptr;
 }
 
