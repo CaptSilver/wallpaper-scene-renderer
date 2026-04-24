@@ -2777,6 +2777,65 @@ void SceneObject::setupTextScripts() {
         }
         idToName += "};\n";
         nameToId += "};\n";
+        // thisScene.getCameraTransforms() builds view + projection Mat4s
+        // from the existing cameraEye/Center/Up/Fov scene properties and
+        // canvasSize aspect ratio.  setCameraTransforms() writes an input
+        // object back onto the scripted camera properties; it prefers
+        // high-level fields (eye / center / up / fov) when present, and
+        // falls back to extracting the eye from a view matrix's translation
+        // column when only `view` is supplied.  Scripts that want full
+        // control still have the per-axis scene properties as the primary
+        // interface — these methods are a convenience wrapper.
+        m_jsEngine->evaluate(
+            "thisScene.getCameraTransforms = function() {\n"
+            "  var eye    = thisScene.cameraEye;\n"
+            "  var center = thisScene.cameraCenter;\n"
+            "  var up     = thisScene.cameraUp;\n"
+            "  var ex = eye.x, ey = eye.y, ez = eye.z;\n"
+            "  var fx = center.x - ex, fy = center.y - ey, fz = center.z - ez;\n"
+            "  var flen = Math.sqrt(fx*fx + fy*fy + fz*fz) || 1;\n"
+            "  fx /= flen; fy /= flen; fz /= flen;\n"
+            "  var rx = fy*up.z - fz*up.y, ry = fz*up.x - fx*up.z, rz = fx*up.y - fy*up.x;\n"
+            "  var rlen = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1;\n"
+            "  rx /= rlen; ry /= rlen; rz /= rlen;\n"
+            "  var ux = ry*fz - rz*fy, uy = rz*fx - rx*fz, uz = rx*fy - ry*fx;\n"
+            "  var view = new Mat4();\n"
+            "  view.m[0]=rx;  view.m[1]=ux;  view.m[2] =-fx; view.m[3] =0;\n"
+            "  view.m[4]=ry;  view.m[5]=uy;  view.m[6] =-fy; view.m[7] =0;\n"
+            "  view.m[8]=rz;  view.m[9]=uz;  view.m[10]=-fz; view.m[11]=0;\n"
+            "  view.m[12]=-(rx*ex+ry*ey+rz*ez);\n"
+            "  view.m[13]=-(ux*ex+uy*ey+uz*ez);\n"
+            "  view.m[14]= (fx*ex+fy*ey+fz*ez);\n"
+            "  view.m[15]=1;\n"
+            "  var proj = new Mat4();\n"
+            "  var fovDeg = thisScene.cameraFov || 60;\n"
+            "  var fRad   = fovDeg * Math.PI / 180;\n"
+            "  var f      = 1.0 / Math.tan(fRad * 0.5);\n"
+            "  var aspect = (engine.canvasSize && engine.canvasSize.x && engine.canvasSize.y)\n"
+            "             ? engine.canvasSize.x / engine.canvasSize.y : 1.0;\n"
+            "  var near = 0.1, far = 10000;\n"
+            "  proj.m[0]=f/aspect; proj.m[5]=f;\n"
+            "  proj.m[10]=(far+near)/(near-far);\n"
+            "  proj.m[11]=-1;\n"
+            "  proj.m[14]=(2*far*near)/(near-far);\n"
+            "  proj.m[15]=0;\n"
+            "  return { view: view, projection: proj };\n"
+            "};\n"
+            "thisScene.setCameraTransforms = function(t) {\n"
+            "  if (!t) return;\n"
+            "  if (t.eye    !== undefined) thisScene.cameraEye    = t.eye;\n"
+            "  if (t.center !== undefined) thisScene.cameraCenter = t.center;\n"
+            "  if (t.up     !== undefined) thisScene.cameraUp     = t.up;\n"
+            "  if (t.fov    !== undefined) thisScene.cameraFov    = t.fov;\n"
+            "  if (t.view   !== undefined && t.view.m && t.eye === undefined) {\n"
+            // Naive inverse: pull eye out of the view matrix's translation.
+            // Full basis decomposition would touch center/up too, but those
+            // are typically set together with eye by scripts that build a
+            // view matrix from scratch.
+            "    thisScene.cameraEye = { x: -t.view.m[12], y: -t.view.m[13], z:  t.view.m[14] };\n"
+            "  }\n"
+            "};\n");
+
         m_jsEngine->evaluate(idToName + nameToId
                              + "thisScene.getLayerByID = function(id) {\n"
                                "  var name = _layerIdToName[id];\n"

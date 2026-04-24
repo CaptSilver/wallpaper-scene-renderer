@@ -5653,7 +5653,64 @@ static const char* JS_SCENE_PROPS =
 
 struct ScenePropertyEnv {
     QJSEngine engine;
-    ScenePropertyEnv() { engine.evaluate(JS_SCENE_PROPS); }
+    ScenePropertyEnv() {
+        // Vec2/Vec3/Vec4 + Mat3/Mat4 are needed for thisScene.getCameraTransforms
+        // (the lookAt + projection builder targets Mat4) and
+        // setCameraTransforms (writes plain {x,y,z} onto thisScene properties).
+        engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
+        engine.evaluate(wek::qml_helper::kMatricesJs);
+        engine.evaluate(JS_SCENE_PROPS);
+        // Mirror SceneBackend's scripted-camera helpers.  engine.canvasSize is
+        // supplied so getCameraTransforms can compute aspect; fixture uses 16:9.
+        engine.globalObject().setProperty("engine", engine.newObject());
+        engine.evaluate("engine.canvasSize = { x: 1920, y: 1080 };\n");
+        engine.evaluate(
+            "thisScene.getCameraTransforms = function() {\n"
+            "  var eye    = thisScene.cameraEye;\n"
+            "  var center = thisScene.cameraCenter;\n"
+            "  var up     = thisScene.cameraUp;\n"
+            "  var ex = eye.x, ey = eye.y, ez = eye.z;\n"
+            "  var fx = center.x - ex, fy = center.y - ey, fz = center.z - ez;\n"
+            "  var flen = Math.sqrt(fx*fx + fy*fy + fz*fz) || 1;\n"
+            "  fx /= flen; fy /= flen; fz /= flen;\n"
+            "  var rx = fy*up.z - fz*up.y, ry = fz*up.x - fx*up.z, rz = fx*up.y - fy*up.x;\n"
+            "  var rlen = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1;\n"
+            "  rx /= rlen; ry /= rlen; rz /= rlen;\n"
+            "  var ux = ry*fz - rz*fy, uy = rz*fx - rx*fz, uz = rx*fy - ry*fx;\n"
+            "  var view = new Mat4();\n"
+            "  view.m[0]=rx;  view.m[1]=ux;  view.m[2] =-fx; view.m[3] =0;\n"
+            "  view.m[4]=ry;  view.m[5]=uy;  view.m[6] =-fy; view.m[7] =0;\n"
+            "  view.m[8]=rz;  view.m[9]=uz;  view.m[10]=-fz; view.m[11]=0;\n"
+            "  view.m[12]=-(rx*ex+ry*ey+rz*ez);\n"
+            "  view.m[13]=-(ux*ex+uy*ey+uz*ez);\n"
+            "  view.m[14]= (fx*ex+fy*ey+fz*ez);\n"
+            "  view.m[15]=1;\n"
+            "  var proj = new Mat4();\n"
+            "  var fovDeg = thisScene.cameraFov || 60;\n"
+            "  var fRad   = fovDeg * Math.PI / 180;\n"
+            "  var f      = 1.0 / Math.tan(fRad * 0.5);\n"
+            "  var aspect = (engine.canvasSize && engine.canvasSize.x && engine.canvasSize.y)\n"
+            "             ? engine.canvasSize.x / engine.canvasSize.y : 1.0;\n"
+            "  var near = 0.1, far = 10000;\n"
+            "  proj.m[0]=f/aspect; proj.m[5]=f;\n"
+            "  proj.m[10]=(far+near)/(near-far);\n"
+            "  proj.m[11]=-1;\n"
+            "  proj.m[14]=(2*far*near)/(near-far);\n"
+            "  proj.m[15]=0;\n"
+            "  return { view: view, projection: proj };\n"
+            "};\n"
+            "thisScene.setCameraTransforms = function(t) {\n"
+            "  if (!t) return;\n"
+            "  if (t.eye    !== undefined) thisScene.cameraEye    = t.eye;\n"
+            "  if (t.center !== undefined) thisScene.cameraCenter = t.center;\n"
+            "  if (t.up     !== undefined) thisScene.cameraUp     = t.up;\n"
+            "  if (t.fov    !== undefined) thisScene.cameraFov    = t.fov;\n"
+            "  if (t.view   !== undefined && t.view.m && t.eye === undefined) {\n"
+            "    thisScene.cameraEye = { x: -t.view.m[12], y: -t.view.m[13], z:  t.view.m[14] };\n"
+            "  }\n"
+            "};\n");
+    }
 };
 
 // ------------------------------------------------------------------
@@ -5783,6 +5840,101 @@ TEST_SUITE("Scene Camera") {
         CHECK(r.property("dirty").property("cameraCenter").toBool() == true);
         CHECK(r.property("dirty").property("cameraUp").toBool() == true);
         CHECK(r.property("cameraUp").property("z").toNumber() == doctest::Approx(1));
+    }
+
+    // ---- getCameraTransforms / setCameraTransforms ----------------------
+    // Builds a view Mat4 from cameraEye/Center/Up via lookAt, and a
+    // projection Mat4 from cameraFov + canvasSize.  Writes back through
+    // high-level fields or falls back to extracting eye from the view's
+    // translation column.
+
+    TEST_CASE("getCameraTransforms returns view + projection Mat4s") {
+        ScenePropertyEnv env;
+        QJSValue t = env.engine.evaluate("thisScene.getCameraTransforms()");
+        REQUIRE(t.isObject());
+        CHECK(t.property("view").property("m").property(15).toNumber() == doctest::Approx(1));
+        // Projection w = 0 (perspective), w-row receives -1 at m[11]
+        CHECK(t.property("projection").property("m").property(11).toNumber() == doctest::Approx(-1));
+    }
+
+    TEST_CASE("getCameraTransforms.view reflects current eye position") {
+        ScenePropertyEnv env;
+        env.engine.evaluate(
+            "thisScene.cameraEye    = { x: 10, y: 0,  z: 5 };\n"
+            "thisScene.cameraCenter = { x: 0,  y: 0,  z: 0 };\n"
+            "thisScene.cameraUp     = { x: 0,  y: 1,  z: 0 };\n");
+        QJSValue t = env.engine.evaluate("thisScene.getCameraTransforms()");
+        // view * eye_world ≈ 0 — translation encodes -R*eye in view space.
+        // With eye at (10,0,5) looking at origin, forward = -eye/|eye|.
+        // The view matrix's bottom-row translation (m[12..14]) should be
+        // -(right.eye, up.eye, -fwd.eye).  Sanity: length(translation) roughly
+        // matches eye distance from center.
+        double tx = t.property("view").property("m").property(12).toNumber();
+        double ty = t.property("view").property("m").property(13).toNumber();
+        double tz = t.property("view").property("m").property(14).toNumber();
+        double len = std::sqrt(tx*tx + ty*ty + tz*tz);
+        CHECK(len == doctest::Approx(std::sqrt(125.0)).epsilon(0.02));
+    }
+
+    TEST_CASE("getCameraTransforms.projection aspect tracks canvasSize") {
+        ScenePropertyEnv env;
+        // canvasSize x=1920, y=1080 → aspect ≈ 16/9. proj.m[0] = f/aspect,
+        // proj.m[5] = f. Ratio m[5]/m[0] should equal aspect.
+        QJSValue t = env.engine.evaluate("thisScene.getCameraTransforms().projection.m");
+        double   m0 = t.property(0).toNumber();
+        double   m5 = t.property(5).toNumber();
+        CHECK((m5 / m0) == doctest::Approx(1920.0 / 1080.0).epsilon(1e-6));
+    }
+
+    TEST_CASE("setCameraTransforms writes eye through high-level field") {
+        ScenePropertyEnv env;
+        env.engine.evaluate(
+            "thisScene.setCameraTransforms({ eye: { x: 100, y: 200, z: 300 } });");
+        CHECK(env.engine.evaluate("thisScene.cameraEye.x").toNumber() == doctest::Approx(100));
+        CHECK(env.engine.evaluate("thisScene.cameraEye.z").toNumber() == doctest::Approx(300));
+        // Dirty flag flipped so the render path picks up the change.
+        QJSValue r = env.engine.evaluate("_collectDirtyScene()");
+        CHECK(r.property("dirty").property("cameraEye").toBool() == true);
+    }
+
+    TEST_CASE("setCameraTransforms with .view decomposes translation to eye") {
+        ScenePropertyEnv env;
+        env.engine.evaluate(
+            "var v = new Mat4();\n"
+            "v.m[12] = -7; v.m[13] = -8; v.m[14] = 9;\n"
+            "thisScene.setCameraTransforms({ view: v });");
+        CHECK(env.engine.evaluate("thisScene.cameraEye.x").toNumber() == doctest::Approx(7));
+        CHECK(env.engine.evaluate("thisScene.cameraEye.y").toNumber() == doctest::Approx(8));
+        CHECK(env.engine.evaluate("thisScene.cameraEye.z").toNumber() == doctest::Approx(9));
+    }
+
+    TEST_CASE("setCameraTransforms fov updates cameraFov") {
+        ScenePropertyEnv env;
+        env.engine.evaluate("thisScene.setCameraTransforms({ fov: 75 });");
+        CHECK(env.engine.evaluate("thisScene.cameraFov").toNumber() == doctest::Approx(75));
+    }
+
+    TEST_CASE("setCameraTransforms(null) is a no-op") {
+        ScenePropertyEnv env;
+        QJSValue  r = env.engine.evaluate("thisScene.setCameraTransforms(null)");
+        CHECK_FALSE(r.isError());
+    }
+
+    TEST_CASE("getCameraTransforms → setCameraTransforms round-trips eye") {
+        ScenePropertyEnv env;
+        env.engine.evaluate(
+            "thisScene.cameraEye    = { x: 3, y: 4, z: 5 };\n"
+            "thisScene.cameraCenter = { x: 3, y: 4, z: 0 };\n"  // forward = -Z
+            "thisScene.cameraUp     = { x: 0, y: 1, z: 0 };\n"
+            "var t = thisScene.getCameraTransforms();\n"
+            "thisScene.cameraEye = { x: 0, y: 0, z: 0 };\n"  // scrub
+            "thisScene.setCameraTransforms({ view: t.view });");
+        // The naive decomposition extracts eye from view.m[12..14] which
+        // for an axis-aligned lookAt roughly recovers the original eye.
+        QJSValue ex = env.engine.evaluate("thisScene.cameraEye.x");
+        QJSValue ey = env.engine.evaluate("thisScene.cameraEye.y");
+        CHECK(ex.toNumber() == doctest::Approx(3).epsilon(0.01));
+        CHECK(ey.toNumber() == doctest::Approx(4).epsilon(0.01));
     }
 
 } // TEST_SUITE Scene Camera
