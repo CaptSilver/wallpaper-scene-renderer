@@ -1717,6 +1717,31 @@ struct ScriptEnv {
             "  var id = _layerNameToId[name];\n"
             "  return (typeof id === 'number') ? id : -1;\n"
             "};\n");
+
+        // Cursor globals on engine: alias the `input` sub-objects and
+        // install cursorHitTest (mirrors SceneBackend after Mat3/Mat4).
+        engine.evaluate(
+            "engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
+            "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
+            "Object.defineProperty(engine, 'cursorLeftDown', {\n"
+            "  get: function() { return input.cursorLeftDown; },\n"
+            "  enumerable: true\n"
+            "});\n"
+            "engine.cursorHitTest = function(x, y) {\n"
+            "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
+            "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
+            "  if (typeof _layerList === 'undefined') return null;\n"
+            "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
+            "    var L = _layerList[i];\n"
+            "    if (!L || !L.visible) continue;\n"
+            "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
+            "    var o = L.origin, s = L.scale;\n"
+            "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
+            "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
+            "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
+            "  }\n"
+            "  return null;\n"
+            "};\n");
     }
 };
 
@@ -2989,6 +3014,82 @@ TEST_SUITE("SceneScript Globals") {
             "var key = 'prefs_' + engine.getScriptHash();\n"
             "var hashPart = key.substring(6);");
         CHECK(env.engine.evaluate("hashPart").toString() == QString("3039"));
+    }
+
+    // ---- Cursor aliases on engine ---------------------------------------
+    // engine.cursorWorldPosition / cursorScreenPosition are shared refs to
+    // the same {x,y} sub-objects on the `input` global; cursorLeftDown is
+    // a getter that reads through.  Lets scripts that live outside a layer
+    // IIFE query cursor state without digging through `input`.
+
+    TEST_CASE("engine.cursorWorldPosition is an alias of input.cursorWorldPosition") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "input.cursorWorldPosition.x = 123;\n"
+            "input.cursorWorldPosition.y = 456;");
+        CHECK(env.engine.evaluate("engine.cursorWorldPosition.x").toNumber()
+              == doctest::Approx(123));
+        CHECK(env.engine.evaluate("engine.cursorWorldPosition.y").toNumber()
+              == doctest::Approx(456));
+    }
+
+    TEST_CASE("engine.cursorScreenPosition is an alias of input.cursorScreenPosition") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "input.cursorScreenPosition.x = 10;\n"
+            "input.cursorScreenPosition.y = 20;");
+        CHECK(env.engine.evaluate("engine.cursorScreenPosition.x").toNumber()
+              == doctest::Approx(10));
+    }
+
+    TEST_CASE("engine.cursorLeftDown reads through to input") {
+        ScriptEnv env;
+        CHECK_FALSE(env.engine.evaluate("engine.cursorLeftDown").toBool());
+        env.engine.evaluate("input.cursorLeftDown = true;");
+        CHECK(env.engine.evaluate("engine.cursorLeftDown").toBool());
+    }
+
+    TEST_CASE("engine.cursorHitTest returns null when no layers overlap") {
+        // fixture bg is at origin (100,200,0) size 1920x1080 — 200 is within.
+        // Place cursor far outside any layer bounds.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "thisScene.getLayer('bg');\n"  // materialise proxy so it enters _layerList
+            "input.cursorWorldPosition.x = 99999;\n"
+            "input.cursorWorldPosition.y = 99999;");
+        CHECK(env.engine.evaluate("engine.cursorHitTest() === null").toBool());
+    }
+
+    TEST_CASE("engine.cursorHitTest returns a layer when cursor is inside") {
+        // bg is centered at (100,200) with size 1920x1080 so a cursor at
+        // (100,200) is dead-center inside the AABB.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "thisScene.getLayer('bg');\n"
+            "input.cursorWorldPosition.x = 100;\n"
+            "input.cursorWorldPosition.y = 200;");
+        QJSValue hit = env.engine.evaluate("engine.cursorHitTest()");
+        REQUIRE(hit.isObject());
+        CHECK(hit.property("name").toString() == QString("bg"));
+    }
+
+    TEST_CASE("engine.cursorHitTest skips invisible layers") {
+        // fg has v:false in the fixture — shouldn't be selected even with
+        // cursor inside its AABB.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "thisScene.getLayer('fg');\n"
+            "input.cursorWorldPosition.x = 0;\n"
+            "input.cursorWorldPosition.y = 0;");
+        CHECK(env.engine.evaluate("engine.cursorHitTest() === null").toBool());
+    }
+
+    TEST_CASE("engine.cursorHitTest accepts explicit coordinates") {
+        ScriptEnv env;
+        env.engine.evaluate("thisScene.getLayer('bg');");
+        QJSValue hit = env.engine.evaluate("engine.cursorHitTest(100, 200)");
+        REQUIRE(hit.isObject());
+        CHECK(hit.property("name").toString() == QString("bg"));
     }
 
 } // TEST_SUITE SceneScript Globals

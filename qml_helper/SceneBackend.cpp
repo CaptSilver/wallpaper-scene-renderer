@@ -1774,6 +1774,42 @@ void SceneObject::setupTextScripts() {
                          "engine.scriptName = 'scene';\n"
                          "engine.getScriptHash = function() { return '0'; };\n");
 
+    // Cursor aliases on `engine`: scripts that live outside a layer IIFE
+    // (init scripts, color scripts, scene.on update handlers) commonly
+    // want `engine.cursorWorldPosition` etc. instead of digging into the
+    // per-IIFE `input` object.  We share the same underlying {x,y}
+    // sub-objects, so a single C++ update refreshes both surfaces.
+    //
+    // cursorLeftDown is a primitive boolean that can't be aliased by
+    // object-reference; expose it as a getter that reads through.
+    //
+    // cursorHitTest(x, y) walks the live layer list in reverse (topmost
+    // first) and returns the first visible AABB-containing proxy, or
+    // null.  Parallax / rotation aren't accounted for — it's a coarse
+    // quick-pick, not a full render-state hit test.
+    m_jsEngine->evaluate(
+        "engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
+        "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
+        "Object.defineProperty(engine, 'cursorLeftDown', {\n"
+        "  get: function() { return input.cursorLeftDown; },\n"
+        "  enumerable: true\n"
+        "});\n"
+        "engine.cursorHitTest = function(x, y) {\n"
+        "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
+        "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
+        "  if (typeof _layerList === 'undefined') return null;\n"
+        "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
+        "    var L = _layerList[i];\n"
+        "    if (!L || !L.visible) continue;\n"
+        "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
+        "    var o = L.origin, s = L.scale;\n"
+        "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
+        "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
+        "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
+        "  }\n"
+        "  return null;\n"
+        "};\n");
+
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(
         "var WEMath = {\n"
