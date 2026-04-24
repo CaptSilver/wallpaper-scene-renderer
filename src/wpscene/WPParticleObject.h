@@ -128,7 +128,7 @@ public:
     std::string animationmode;
     float       sequencemultiplier { 1.0f };
     uint32_t    maxcount { 1 };
-    uint32_t    starttime { 0 };
+    float       starttime { 0.0f };
     EFlags      flags { 0 };
 };
 class ParticleChild {

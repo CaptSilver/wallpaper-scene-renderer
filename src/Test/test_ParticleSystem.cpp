@@ -84,7 +84,7 @@ struct ParticleFixture {
     makeSub(uint32_t maxcount = 10, double rate = 1.0, u32 maxcount_instance = 4,
             double                       probability = 1.0,
             ParticleSubSystem::SpawnType type        = ParticleSubSystem::SpawnType::STATIC,
-            uint32_t                     starttime   = 0) {
+            float                        starttime   = 0.0f) {
         return std::make_unique<ParticleSubSystem>(
             *psys, mesh, maxcount, rate, maxcount_instance, probability, type, nullptr, starttime);
     }
@@ -636,6 +636,35 @@ TEST_SUITE("ParticleSystem.StartTime") {
 
         fx.psys->PreSimulate(-1.0);
         CHECK(sub_raw->StartTime() == 50u);
+    }
+
+    TEST_CASE("Negative starttime is a no-op pre-sim (regression: Nightingale 3276911872)") {
+        // deku_twinkle_shootingstar.json ships "starttime": -2.  Before the
+        // fix, the field was parsed into a uint32_t, wrapping -2 to
+        // 4294967294; MaxStartTime returned ~4.29e9 and PreSimulate looped
+        // for billions of iterations, never returning — Nightingale never
+        // reached its first frame and plasma showed a black desktop.
+        // With float starttime, the sub's m_starttime=-2 is preserved on
+        // StartTime() but MaxStartTime (which starts max at 0.0) clamps to
+        // 0, so PreSimulate early-returns and the clock is untouched.
+        ParticleFixture fx;
+        auto* sub_raw = fx.makeSub(10, 1.0, 1, 1.0,
+                                   ParticleSubSystem::SpawnType::STATIC, -2.0f).release();
+        fx.psys->subsystems.emplace_back(sub_raw);
+        CHECK(sub_raw->StartTime() == doctest::Approx(-2.0f));
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(0.0));
+
+        fx.scene.elapsingTime = 5.0;
+        fx.scene.frameTime    = 0.016;
+        fx.psys->PreSimulate(0.032);
+        CHECK(fx.scene.elapsingTime == doctest::Approx(5.0));
+    }
+
+    TEST_CASE("Fractional starttime is preserved by MaxStartTime") {
+        ParticleFixture fx;
+        fx.psys->subsystems.push_back(fx.makeSub(10, 1.0, 1, 1.0,
+                                                 ParticleSubSystem::SpawnType::STATIC, 0.7f));
+        CHECK(fx.psys->MaxStartTime() == doctest::Approx(0.7));
     }
 }
 

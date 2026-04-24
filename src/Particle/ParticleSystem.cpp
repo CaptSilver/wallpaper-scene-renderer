@@ -42,7 +42,7 @@ ParticleInstance::BoundedData& ParticleInstance::GetBoundedData() { return m_bou
 ParticleSubSystem::ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMesh> sm,
                                      uint32_t maxcount, double rate, u32 maxcount_instance,
                                      double probability, SpawnType type,
-                                     ParticleRawGenSpecOp specOp, uint32_t starttime)
+                                     ParticleRawGenSpecOp specOp, float starttime)
     : m_sys(p),
       m_mesh(sm),
       m_maxcount(maxcount),

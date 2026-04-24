@@ -70,7 +70,7 @@ public:
 public:
     ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMesh> sm, uint32_t maxcount,
                       double rate, u32 maxcount_instance, double probability, SpawnType type,
-                      ParticleRawGenSpecOp specOp, uint32_t starttime = 0);
+                      ParticleRawGenSpecOp specOp, float starttime = 0.0f);
     ~ParticleSubSystem();
 
     void Emitt();
@@ -140,8 +140,8 @@ public:
     // particle system is advanced BEFORE the first rendered frame, so
     // particles are already at steady-state distribution on frame 1.  Used
     // by ParticleSystem::PreSimulate().
-    u32  StartTime() const { return m_starttime; }
-    void ClearStartTime() { m_starttime = 0; }
+    float StartTime() const { return m_starttime; }
+    void  ClearStartTime() { m_starttime = 0.0f; }
 
     const std::vector<std::unique_ptr<ParticleSubSystem>>& Children() const {
         return m_children;
@@ -161,7 +161,7 @@ private:
 
     ParticleRawGenSpecOp m_genSpecOp;
     u32                  m_maxcount;
-    u32                  m_starttime;
+    float                m_starttime;
     double               m_rate;
     double               m_time;
 
