@@ -403,6 +403,13 @@ void SceneObject::refreshJsUserProperties() {
     // Fire applyUserProperties event on all property scripts that define it.
     // WE SceneScript passes an object with {propertyName: {value: newValue}} entries.
     fireApplyUserProperties();
+
+    // Dispatch one applyGeneralSettings now so scripts that hook it can
+    // initialise app-level state (FPS cap, quality, etc.).  Currently the
+    // plugin has no separate "general settings" state to expose, so the
+    // arg is an empty object.  Call this again if/when plugin-wide
+    // settings change at runtime.
+    fireApplyGeneralSettings();
 }
 
 void SceneObject::fireSceneEventListeners(const QString& eventName, const QJSValueList& args) {
@@ -457,6 +464,12 @@ void SceneObject::fireApplyUserProperties() {
     }
 
     fireSceneEventListeners("applyUserProperties", { propsArg });
+}
+
+void SceneObject::fireApplyGeneralSettings() {
+    if (! m_jsEngine) return;
+    QJSValue settingsArg = m_jsEngine->newObject();
+    fireSceneEventListeners("applyGeneralSettings", { settingsArg });
 }
 
 void SceneObject::fireDestroyEvent() {

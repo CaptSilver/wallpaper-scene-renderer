@@ -3994,6 +3994,34 @@ TEST_SUITE("Scene Event Bus") {
         CHECK_FALSE(result.isError());
     }
 
+    // ---- applyGeneralSettings --------------------------------------------
+    // Fires once at SceneBackend init (see fireApplyGeneralSettings), and
+    // is available for scripts that want a hook distinct from
+    // applyUserProperties (wallpaper user props) for app-level settings.
+
+    TEST_CASE("applyGeneralSettings listener fires via _fireSceneEvent") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var fired = 0;"
+            "var gotArg = null;"
+            "scene.on('applyGeneralSettings', function(s) { fired++; gotArg = s; });");
+        env.engine.evaluate("_fireSceneEvent('applyGeneralSettings', { foo: 1 })");
+        CHECK(env.engine.evaluate("fired").toInt() == 1);
+        CHECK(env.engine.evaluate("gotArg.foo").toInt() == 1);
+    }
+
+    TEST_CASE("applyGeneralSettings is independent of applyUserProperties") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var userCalls = 0;"
+            "var genCalls  = 0;"
+            "scene.on('applyUserProperties', function() { userCalls++; });"
+            "scene.on('applyGeneralSettings', function() { genCalls++; });");
+        env.engine.evaluate("_fireSceneEvent('applyGeneralSettings', {})");
+        CHECK(env.engine.evaluate("userCalls").toInt() == 0);
+        CHECK(env.engine.evaluate("genCalls").toInt() == 1);
+    }
+
 } // TEST_SUITE Scene Event Bus
 
 // ------------------------------------------------------------------

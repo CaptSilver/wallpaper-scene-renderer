@@ -200,6 +200,11 @@ private:
     void setupTextScripts();
     void refreshJsUserProperties();
     void fireApplyUserProperties();
+    // Fires the "applyGeneralSettings" scene event (distinct from
+    // applyUserProperties, which is per-wallpaper user config).  Dispatched
+    // once during setup so scripts can key off it for init-time app-level
+    // state, and is safe to call again later if plugin-wide settings change.
+    void fireApplyGeneralSettings();
     void fireDestroyEvent();
     void fireResizeScreen(int width, int height);
     void evaluateTextScripts();
