@@ -390,14 +390,16 @@ void SceneObject::refreshJsUserProperties() {
     if (result.isError()) {
         LOG_INFO("refreshJsUserProperties error: %s", qPrintable(result.toString()));
     }
-    // Derive engine.colorScheme from the schemecolor user property if Vec3 is available.
-    // schemecolor is stored as a space-separated float string e.g. "0.5 0.1 0.9".
-    // Only update if Vec3 exists (may be called before Vec3 is defined on first init).
+    // Derive engine.colorScheme from the schemecolor user property if Vec3
+    // and _buildColorScheme are available.  schemecolor is stored as a
+    // space-separated float string e.g. "0.5 0.1 0.9"; feed it as `primary`
+    // and keep the default text/highContrast/etc. values.
     m_jsEngine->evaluate("(function(){"
                          "if (typeof Vec3 === 'undefined') return;"
+                         "if (typeof _buildColorScheme !== 'function') return;"
                          "var sc = engine.userProperties.schemecolor;"
                          "if (sc !== undefined && sc !== null)"
-                         "  engine.colorScheme = Vec3.fromString(sc);"
+                         "  engine.colorScheme = _buildColorScheme(Vec3.fromString(sc));"
                          "})()");
 
     // Fire applyUserProperties event on all property scripts that define it.
@@ -1791,9 +1793,27 @@ void SceneObject::setupTextScripts() {
         "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x); }\n"
         "};\n");
 
-    // engine.colorScheme: the wallpaper's scheme/accent color as a Vec3 (r/g/b).
-    // Default white (1,1,1); refreshJsUserProperties() overrides it from schemecolor.
-    m_jsEngine->evaluate("engine.colorScheme = Vec3(1,1,1);\n");
+    // engine.colorScheme: a Vec3 (= primary) with four additional Vec3
+    // sub-colors hung off it — `primary`, `secondary`, `tertiary`, `text`,
+    // `highContrast`.  Keeping the top-level a Vec3 preserves back-compat
+    // for scripts that read `engine.colorScheme.x / .y / .z` directly.
+    //
+    // Defaults: all primary/secondary/tertiary = white, text = black (assuming
+    // light background), highContrast = black.  refreshJsUserProperties()
+    // rebuilds the bundle from the schemecolor user property when set;
+    // without richer palette input only `primary` changes — the rest stay
+    // at defaults.
+    m_jsEngine->evaluate(
+        "function _buildColorScheme(primary) {\n"
+        "  var cs = Vec3(primary.x, primary.y, primary.z);\n"
+        "  cs.primary      = Vec3(primary.x, primary.y, primary.z);\n"
+        "  cs.secondary    = Vec3(1, 1, 1);\n"
+        "  cs.tertiary     = Vec3(1, 1, 1);\n"
+        "  cs.text         = Vec3(0, 0, 0);\n"
+        "  cs.highContrast = Vec3(0, 0, 0);\n"
+        "  return cs;\n"
+        "}\n"
+        "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));\n");
 
     // Populate engine.userProperties with defaults from project.json first,
     // then apply QML-side overrides (if any). Must run AFTER Vec3 is defined

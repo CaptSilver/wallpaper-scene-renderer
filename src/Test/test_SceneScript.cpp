@@ -692,8 +692,18 @@ TEST_SUITE("SceneScript engine.colorScheme") {
                 "  var p=String(s).trim().split(/\\s+/);"
                 "  return Vec3(parseFloat(p[0])||0,parseFloat(p[1])||0,parseFloat(p[2])||0);"
                 "};");
-            // Default colorScheme (white)
-            engine.evaluate("engine.colorScheme = Vec3(1,1,1);");
+            // _buildColorScheme + default bundle (mirrors production).
+            engine.evaluate(
+                "function _buildColorScheme(primary) {"
+                "  var cs = Vec3(primary.x, primary.y, primary.z);"
+                "  cs.primary      = Vec3(primary.x, primary.y, primary.z);"
+                "  cs.secondary    = Vec3(1, 1, 1);"
+                "  cs.tertiary     = Vec3(1, 1, 1);"
+                "  cs.text         = Vec3(0, 0, 0);"
+                "  cs.highContrast = Vec3(0, 0, 0);"
+                "  return cs;"
+                "}"
+                "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));");
         }
 
         void refresh(const QString& json) {
@@ -713,9 +723,10 @@ TEST_SUITE("SceneScript engine.colorScheme") {
             // Sync colorScheme from schemecolor (mirrors refreshJsUserProperties)
             engine.evaluate("(function(){"
                             "if(typeof Vec3==='undefined') return;"
+                            "if(typeof _buildColorScheme!=='function') return;"
                             "var sc=engine.userProperties.schemecolor;"
                             "if(sc!==undefined&&sc!==null)"
-                            "  engine.colorScheme=Vec3.fromString(sc);"
+                            "  engine.colorScheme=_buildColorScheme(Vec3.fromString(sc));"
                             "})()");
         }
     };
@@ -794,6 +805,65 @@ TEST_SUITE("SceneScript engine.colorScheme") {
         // Simulate a wallpaper script that reads colorScheme
         double r = env.engine.evaluate("(function(){ return engine.colorScheme.r; })()").toNumber();
         CHECK(r == doctest::Approx(0.3));
+    }
+
+    // ---- 5-color bundle (primary / secondary / tertiary / text / highContrast)
+    // colorScheme is now a Vec3 (= primary) with four extra sub-Vec3
+    // properties.  Back-compat: the bare .x/.y/.z/.r/.g/.b still map to
+    // the primary color; the sub-colors let scripts theme secondary UI
+    // without extra user-properties.
+
+    TEST_CASE("colorScheme.primary defaults to white") {
+        ColorSchemeEnv env;
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.x").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.y").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.z").toNumber() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("colorScheme.secondary / tertiary default to white") {
+        ColorSchemeEnv env;
+        CHECK(env.engine.evaluate("engine.colorScheme.secondary.x").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.tertiary.x").toNumber() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("colorScheme.text defaults to black (light-mode contrast)") {
+        ColorSchemeEnv env;
+        CHECK(env.engine.evaluate("engine.colorScheme.text.x").toNumber() == doctest::Approx(0.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.text.y").toNumber() == doctest::Approx(0.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.text.z").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("colorScheme.highContrast defaults to black") {
+        ColorSchemeEnv env;
+        CHECK(env.engine.evaluate("engine.colorScheme.highContrast.x").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("colorScheme.primary tracks schemecolor user property") {
+        ColorSchemeEnv env;
+        env.refresh(R"({"schemecolor":"0.25 0.5 0.75"})");
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.x").toNumber() == doctest::Approx(0.25));
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.y").toNumber() == doctest::Approx(0.5));
+        CHECK(env.engine.evaluate("engine.colorScheme.primary.z").toNumber() == doctest::Approx(0.75));
+    }
+
+    TEST_CASE("colorScheme top-level Vec3 mirrors primary (back-compat)") {
+        ColorSchemeEnv env;
+        env.refresh(R"({"schemecolor":"0.1 0.2 0.3"})");
+        // The bare Vec3 r/g/b (no sub-property) should equal primary.x/y/z
+        CHECK(env.engine.evaluate("engine.colorScheme.x").toNumber()
+              == env.engine.evaluate("engine.colorScheme.primary.x").toNumber());
+        CHECK(env.engine.evaluate("engine.colorScheme.r").toNumber()
+              == doctest::Approx(0.1));
+    }
+
+    TEST_CASE("colorScheme.secondary / tertiary / text / highContrast survive refresh") {
+        ColorSchemeEnv env;
+        env.refresh(R"({"schemecolor":"0.9 0.1 0.1"})");
+        // Defaults carry through since our current plumbing only touches primary.
+        CHECK(env.engine.evaluate("engine.colorScheme.secondary.x").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.tertiary.x").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.text.x").toNumber() == doctest::Approx(0.0));
+        CHECK(env.engine.evaluate("engine.colorScheme.highContrast.x").toNumber() == doctest::Approx(0.0));
     }
 
 } // TEST_SUITE SceneScript engine.colorScheme
