@@ -186,4 +186,181 @@ inline constexpr const char* kInternalNamespaceJs =
     "  }\n"
     "};\n";
 
+// Vec2 / Vec3 / Vec4 JS classes — the shared source of truth for the three
+// linear-algebra shims SceneScripts use.  Extracted from inline JS strings
+// in SceneBackend.cpp so the class surface lives in one place; tests still
+// ship their own simplified copies under JS_VEC3_AND_UTILS for now (a
+// follow-up migrates the test fixtures to consume this shim).
+//
+// Vec2 is closure-based (fresh methods per instance); Vec3 is prototype-
+// based so the ~24 methods + r/g/b accessors are shared across thousands
+// of per-frame Vec3 allocations in busy scenes.  Vec4 is closure-based
+// (infrequent, simpler).  All three accept "x y z[ w]" strings, another
+// Vec, or numeric args; arithmetic overloads are scalar / Vec2 / Vec3 on
+// Vec3.{add,subtract,multiply,divide}.
+inline constexpr const char* kVecClassesJs = R"JS(
+function Vec2(x, y) {
+  if (typeof x === 'string') { var p=x.trim().split(/\s+/); x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; }
+  else if (x && typeof x === 'object') { y=x.y||0; x=x.x||0; }
+  else if (y === undefined) { y = x||0; x = x||0; }
+  var v = { x: x||0, y: y||0 };
+  v.copy = function() { return Vec2(v.x, v.y); };
+  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };
+  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };
+  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };
+  v.add = function(o) { return typeof o==='number'? Vec2(v.x+o,v.y+o): Vec2(v.x+o.x, v.y+o.y); };
+  v.subtract = function(o) { return typeof o==='number'? Vec2(v.x-o,v.y-o): Vec2(v.x-o.x, v.y-o.y); };
+  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): Vec2(v.x*s,v.y*s); };
+  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): Vec2(v.x/s,v.y/s); };
+  v.dot = function(o) { return v.x*o.x+v.y*o.y; };
+  v.perpendicular = function() { return Vec2(-v.y, v.x); };
+  v.reflect = function(n) { var d=2*v.dot(n); return Vec2(v.x-d*n.x, v.y-d*n.y); };
+  v.mix = function(o,t) { return Vec2(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t); };
+  v.equals = function(o) { return v.x===o.x && v.y===o.y; };
+  v.toString = function() { return v.x+' '+v.y; };
+  v.min = function(o) { return Vec2(Math.min(v.x,o.x),Math.min(v.y,o.y)); };
+  v.max = function(o) { return Vec2(Math.max(v.x,o.x),Math.max(v.y,o.y)); };
+  v.abs = function() { return Vec2(Math.abs(v.x),Math.abs(v.y)); };
+  v.sign = function() { return Vec2(Math.sign(v.x),Math.sign(v.y)); };
+  v.round = function() { return Vec2(Math.round(v.x),Math.round(v.y)); };
+  v.floor = function() { return Vec2(Math.floor(v.x),Math.floor(v.y)); };
+  v.ceil = function() { return Vec2(Math.ceil(v.x),Math.ceil(v.y)); };
+  return v;
+}
+Vec2.fromString = function(s) { var p=String(s).trim().split(/\s+/); return Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };
+Vec2.lerp = function(a,b,t) { return Vec2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t); };
+
+function Vec3(x, y, z) {
+  if (!(this instanceof Vec3)) {
+    var v = Object.create(Vec3.prototype);
+    Vec3.call(v, x, y, z);
+    return v;
+  }
+  if (typeof x === 'string') {
+    var p = x.trim().split(/\s+/);
+    this.x = parseFloat(p[0])||0;
+    this.y = parseFloat(p[1])||0;
+    this.z = parseFloat(p[2])||0;
+  } else if (x && typeof x === 'object') {
+    this.x = x.x||0; this.y = x.y||0; this.z = x.z||0;
+  } else {
+    this.x = x||0; this.y = y||0; this.z = z||0;
+  }
+}
+Vec3.prototype.multiply = function(f) {
+  if (typeof f === 'number') return Vec3(this.x*f, this.y*f, this.z*f);
+  if (f instanceof Vec3)     return Vec3(this.x*f.x, this.y*f.y, this.z*f.z);
+  return Vec3(this.x*(f.x||0), this.y*(f.y||0), this.z);
+};
+Vec3.prototype.add = function(f) {
+  if (typeof f === 'number') return Vec3(this.x+f, this.y+f, this.z+f);
+  if (f instanceof Vec3)     return Vec3(this.x+f.x, this.y+f.y, this.z+f.z);
+  return Vec3(this.x+(f.x||0), this.y+(f.y||0), this.z);
+};
+Vec3.prototype.subtract = function(f) {
+  if (typeof f === 'number') return Vec3(this.x-f, this.y-f, this.z-f);
+  if (f instanceof Vec3)     return Vec3(this.x-f.x, this.y-f.y, this.z-f.z);
+  return Vec3(this.x-(f.x||0), this.y-(f.y||0), this.z);
+};
+Vec3.prototype.length    = function() { return Math.sqrt(this.x*this.x+this.y*this.y+this.z*this.z); };
+Vec3.prototype.normalize = function() { var l=this.length()||1; return Vec3(this.x/l,this.y/l,this.z/l); };
+Vec3.prototype.copy      = function() { return Vec3(this.x, this.y, this.z); };
+Vec3.prototype.dot       = function(o) { return this.x*o.x+this.y*o.y+this.z*o.z; };
+Vec3.prototype.cross     = function(o) { return Vec3(this.y*o.z-this.z*o.y, this.z*o.x-this.x*o.z, this.x*o.y-this.y*o.x); };
+Vec3.prototype.negate    = function() { return Vec3(-this.x,-this.y,-this.z); };
+Vec3.prototype.divide = function(f) {
+  if (typeof f === 'number') return Vec3(this.x/f, this.y/f, this.z/f);
+  if (f instanceof Vec3)     return Vec3(this.x/f.x, this.y/f.y, this.z/f.z);
+  return Vec3(this.x/(f.x||1), this.y/(f.y||1), this.z);
+};
+Vec3.prototype.lerp      = function(o, t) { return Vec3(this.x+(o.x-this.x)*t, this.y+(o.y-this.y)*t, this.z+(o.z-this.z)*t); };
+Vec3.prototype.distance  = function(o) { var dx=this.x-o.x,dy=this.y-o.y,dz=this.z-o.z; return Math.sqrt(dx*dx+dy*dy+dz*dz); };
+Vec3.prototype.lengthSqr = function() { return this.x*this.x+this.y*this.y+this.z*this.z; };
+Vec3.prototype.reflect   = function(n) { var d=2*this.dot(n); return Vec3(this.x-d*n.x, this.y-d*n.y, this.z-d*n.z); };
+Vec3.prototype.mix       = function(o,t) { return Vec3(this.x+(o.x-this.x)*t, this.y+(o.y-this.y)*t, this.z+(o.z-this.z)*t); };
+Vec3.prototype.equals    = function(o) { return this.x===o.x && this.y===o.y && this.z===o.z; };
+Vec3.prototype.toString  = function() { return this.x+' '+this.y+' '+this.z; };
+Vec3.prototype.min       = function(o) { return Vec3(Math.min(this.x,o.x),Math.min(this.y,o.y),Math.min(this.z,o.z)); };
+Vec3.prototype.max       = function(o) { return Vec3(Math.max(this.x,o.x),Math.max(this.y,o.y),Math.max(this.z,o.z)); };
+Vec3.prototype.abs       = function() { return Vec3(Math.abs(this.x),Math.abs(this.y),Math.abs(this.z)); };
+Vec3.prototype.sign      = function() { return Vec3(Math.sign(this.x),Math.sign(this.y),Math.sign(this.z)); };
+Vec3.prototype.round     = function() { return Vec3(Math.round(this.x),Math.round(this.y),Math.round(this.z)); };
+Vec3.prototype.floor     = function() { return Vec3(Math.floor(this.x),Math.floor(this.y),Math.floor(this.z)); };
+Vec3.prototype.ceil      = function() { return Vec3(Math.ceil(this.x),Math.ceil(this.y),Math.ceil(this.z)); };
+Vec3.prototype.set       = function(x, y, z) { this.x=x||0; this.y=y||0; this.z=z||0; return this; };
+Object.defineProperty(Vec3.prototype,'r',{get:function(){return this.x;},set:function(v){this.x=v;},enumerable:true});
+Object.defineProperty(Vec3.prototype,'g',{get:function(){return this.y;},set:function(v){this.y=v;},enumerable:true});
+Object.defineProperty(Vec3.prototype,'b',{get:function(){return this.z;},set:function(v){this.z=v;},enumerable:true});
+Vec3.fromString = function(s) {
+  var p = String(s).trim().split(/\s+/);
+  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);
+};
+Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, a.z+(b.z-a.z)*t); };
+
+function Vec4(x, y, z, w) {
+  if (typeof x === 'string') { var p=x.trim().split(/\s+/);
+    x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; z=parseFloat(p[2])||0;
+    w=parseFloat(p[3])||0; }
+  else if (x && typeof x === 'object') {
+    w=x.w||0; z=x.z||0; y=x.y||0; x=x.x||0; }
+  var v = { x: x||0, y: y||0, z: z||0, w: w||0 };
+  v.multiply = function(s) { return typeof s==='object'
+     ? Vec4(v.x*s.x, v.y*s.y, v.z*s.z, v.w*s.w)
+     : Vec4(v.x*s, v.y*s, v.z*s, v.w*s); };
+  v.add      = function(o) { return Vec4(v.x+o.x, v.y+o.y, v.z+o.z, v.w+o.w); };
+  v.subtract = function(o) { return Vec4(v.x-o.x, v.y-o.y, v.z-o.z, v.w-o.w); };
+  v.divide   = function(s) { return typeof s==='object'
+     ? Vec4(v.x/s.x, v.y/s.y, v.z/s.z, v.w/s.w)
+     : Vec4(v.x/s, v.y/s, v.z/s, v.w/s); };
+  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w); };
+  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w; };
+  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); };
+  v.copy     = function() { return Vec4(v.x, v.y, v.z, v.w); };
+  v.dot      = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z+v.w*o.w; };
+  v.negate   = function() { return Vec4(-v.x,-v.y,-v.z,-v.w); };
+  v.lerp     = function(o, t) {
+    return Vec4(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t,
+                v.z+(o.z-v.z)*t, v.w+(o.w-v.w)*t); };
+  v.distance = function(o) {
+    var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z,dw=v.w-o.w;
+    return Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw); };
+  v.mix      = function(o, t) { return v.lerp(o, t); };
+  v.equals   = function(o) {
+    return v.x===o.x && v.y===o.y && v.z===o.z && v.w===o.w; };
+  v.toString = function() { return v.x+' '+v.y+' '+v.z+' '+v.w; };
+  v.min = function(o) { return Vec4(Math.min(v.x,o.x),Math.min(v.y,o.y),
+                                    Math.min(v.z,o.z),Math.min(v.w,o.w)); };
+  v.max = function(o) { return Vec4(Math.max(v.x,o.x),Math.max(v.y,o.y),
+                                    Math.max(v.z,o.z),Math.max(v.w,o.w)); };
+  v.abs = function() { return Vec4(Math.abs(v.x),Math.abs(v.y),
+                                   Math.abs(v.z),Math.abs(v.w)); };
+  v.sign = function() { return Vec4(Math.sign(v.x),Math.sign(v.y),
+                                    Math.sign(v.z),Math.sign(v.w)); };
+  v.round = function() { return Vec4(Math.round(v.x),Math.round(v.y),
+                                     Math.round(v.z),Math.round(v.w)); };
+  v.floor = function() { return Vec4(Math.floor(v.x),Math.floor(v.y),
+                                     Math.floor(v.z),Math.floor(v.w)); };
+  v.ceil = function() { return Vec4(Math.ceil(v.x),Math.ceil(v.y),
+                                    Math.ceil(v.z),Math.ceil(v.w)); };
+  Object.defineProperty(v,'r',{get:function(){return v.x;},
+                               set:function(val){v.x=val;},enumerable:true});
+  Object.defineProperty(v,'g',{get:function(){return v.y;},
+                               set:function(val){v.y=val;},enumerable:true});
+  Object.defineProperty(v,'b',{get:function(){return v.z;},
+                               set:function(val){v.z=val;},enumerable:true});
+  Object.defineProperty(v,'a',{get:function(){return v.w;},
+                               set:function(val){v.w=val;},enumerable:true});
+  return v;
+}
+Vec4.fromString = function(s) {
+  var p = String(s).trim().split(/\s+/);
+  return Vec4(parseFloat(p[0])||0, parseFloat(p[1])||0,
+              parseFloat(p[2])||0, parseFloat(p[3])||0);
+};
+Vec4.lerp = function(a, b, t) {
+  return Vec4(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t,
+              a.z+(b.z-a.z)*t, a.w+(b.w-a.w)*t);
+};
+)JS";
+
 } // namespace wek::qml_helper

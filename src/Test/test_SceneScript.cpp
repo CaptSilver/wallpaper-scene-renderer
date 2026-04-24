@@ -873,6 +873,13 @@ TEST_SUITE("SceneScript engine.colorScheme") {
 // ===================================================================
 
 // JS string constants copied from SceneBackend.cpp (lines 662-700)
+// NOTE: The Vec2 / Vec3 / Vec4 definitions embedded below are SUPERSEDED at
+// test-setup time by wek::qml_helper::kVecClassesJs (see MathEnv / ScriptEnv
+// ctors), which imports the canonical prototype-based implementation shared
+// with production.  The inline copies here are retained as dead code for one
+// revision so the change set stays minimal; a follow-up strips them and
+// simplifies JS_VEC3_AND_UTILS to just the `input` / String.match / localStorage
+// non-vec pieces.
 static const char* JS_VEC3_AND_UTILS =
     "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
     "  cursorScreenPosition: { x: 0, y: 0 },\n"
@@ -1611,7 +1618,15 @@ static const char* JS_SOUND_INFRA =
 struct MathEnv {
     QJSEngine engine;
     MathEnv() {
+        // Evaluate in two phases: JS_VEC3_AND_UTILS sets up `input` +
+        // String.match patch + localStorage + closure Vec2/3/4, then
+        // kVecClassesJs overrides Vec2/3/4 with the canonical prototype-
+        // based implementations shared with production.  Closures-first
+        // keeps the non-Vec pieces of JS_VEC3_AND_UTILS intact; the later
+        // kVecClassesJs rewrites the Vec symbols so tests exercise the
+        // same class surface production scripts see.
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kMatricesJs);
         engine.evaluate(wek::qml_helper::kInternalNamespaceJs);
         engine.evaluate(JS_WEMATH);
@@ -1647,8 +1662,11 @@ struct ScriptEnv {
         // console
         engine.evaluate(JS_CONSOLE);
 
-        // Vec3, String.match, localStorage
+        // Vec3, String.match, localStorage (closure Vec3/Vec4) — then
+        // kVecClassesJs overrides Vec2/3/4 with the canonical prototype-
+        // based implementations shared with production.
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
 
         // Mat3/Mat4 — shared with production via SceneScriptShimsJs.hpp.
         engine.evaluate(wek::qml_helper::kMatricesJs);
