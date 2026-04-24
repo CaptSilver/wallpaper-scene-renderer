@@ -873,180 +873,15 @@ TEST_SUITE("SceneScript engine.colorScheme") {
 // ===================================================================
 
 // JS string constants copied from SceneBackend.cpp (lines 662-700)
-// NOTE: The Vec2 / Vec3 / Vec4 definitions embedded below are SUPERSEDED at
-// test-setup time by wek::qml_helper::kVecClassesJs (see MathEnv / ScriptEnv
-// ctors), which imports the canonical prototype-based implementation shared
-// with production.  The inline copies here are retained as dead code for one
-// revision so the change set stays minimal; a follow-up strips them and
-// simplifies JS_VEC3_AND_UTILS to just the `input` / String.match / localStorage
-// non-vec pieces.
+// Non-vec test-setup JS: `input` placeholder + String.match null-safety +
+// a minimal localStorage stub.  Vec2 / Vec3 / Vec4 come from
+// wek::qml_helper::kVecClassesJs (evaluated right after this in the
+// MathEnv / ScriptEnv ctors), so the three classes share a single source
+// of truth with production.
 static const char* JS_VEC3_AND_UTILS =
     "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
     "  cursorScreenPosition: { x: 0, y: 0 },\n"
     "  cursorLeftDown: false };\n"
-    // Vec2
-    "function Vec2(x, y) {\n"
-    "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/); x=parseFloat(p[0])||0; "
-    "y=parseFloat(p[1])||0; }\n"
-    "  else if (x && typeof x === 'object') { y=x.y||0; x=x.x||0; }\n"
-    "  else if (y === undefined) { y = x||0; x = x||0; }\n"
-    "  var v = { x: x||0, y: y||0 };\n"
-    "  v.copy = function() { return Vec2(v.x, v.y); };\n"
-    "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y); };\n"
-    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y; };\n"
-    "  v.normalize = function() { var l=v.length()||1; return Vec2(v.x/l,v.y/l); };\n"
-    "  v.add = function(o) { return typeof o==='number'? Vec2(v.x+o,v.y+o): "
-    "Vec2(v.x+o.x, v.y+o.y); };\n"
-    "  v.subtract = function(o) { return typeof o==='number'? Vec2(v.x-o,v.y-o): "
-    "Vec2(v.x-o.x, v.y-o.y); };\n"
-    "  v.multiply = function(s) { return typeof s==='object'? Vec2(v.x*s.x,v.y*s.y): "
-    "Vec2(v.x*s,v.y*s); };\n"
-    "  v.divide = function(s) { return typeof s==='object'? Vec2(v.x/s.x,v.y/s.y): "
-    "Vec2(v.x/s,v.y/s); };\n"
-    "  v.dot = function(o) { return v.x*o.x+v.y*o.y; };\n"
-    "  v.perpendicular = function() { return Vec2(-v.y, v.x); };\n"
-    "  v.reflect = function(n) { var d=2*v.dot(n); return Vec2(v.x-d*n.x, v.y-d*n.y); };\n"
-    "  v.mix = function(o,t) { return Vec2(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t); };\n"
-    "  v.equals = function(o) { return v.x===o.x && v.y===o.y; };\n"
-    "  v.toString = function() { return v.x+' '+v.y; };\n"
-    "  v.min = function(o) { return Vec2(Math.min(v.x,o.x),Math.min(v.y,o.y)); };\n"
-    "  v.max = function(o) { return Vec2(Math.max(v.x,o.x),Math.max(v.y,o.y)); };\n"
-    "  v.abs = function() { return Vec2(Math.abs(v.x),Math.abs(v.y)); };\n"
-    "  v.sign = function() { return Vec2(Math.sign(v.x),Math.sign(v.y)); };\n"
-    "  v.round = function() { return Vec2(Math.round(v.x),Math.round(v.y)); };\n"
-    "  v.floor = function() { return Vec2(Math.floor(v.x),Math.floor(v.y)); };\n"
-    "  v.ceil = function() { return Vec2(Math.ceil(v.x),Math.ceil(v.y)); };\n"
-    "  return v;\n"
-    "}\n"
-    "Vec2.fromString = function(s) { var p=String(s).trim().split(/\\s+/); return "
-    "Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };\n"
-    "Vec2.lerp = function(a,b,t) { return Vec2(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t); };\n"
-    // Vec3
-    "function Vec3(x, y, z) {\n"
-    "  var v = { x: x||0, y: y||0, z: z||0 };\n"
-    // Polymorphic arithmetic: scalar, Vec2 (preserves .z), or Vec3.
-    // Mirrors the production Vec3.prototype.* in SceneBackend.cpp.
-    "  v.multiply = function(f) {\n"
-    "    if (typeof f === 'number') return Vec3(v.x*f, v.y*f, v.z*f);\n"
-    "    if (f.z === undefined)     return Vec3(v.x*(f.x||0), v.y*(f.y||0), v.z);\n"
-    "    return Vec3(v.x*f.x, v.y*f.y, v.z*f.z);\n"
-    "  };\n"
-    "  v.add = function(f) {\n"
-    "    if (typeof f === 'number') return Vec3(v.x+f, v.y+f, v.z+f);\n"
-    "    if (f.z === undefined)     return Vec3(v.x+(f.x||0), v.y+(f.y||0), v.z);\n"
-    "    return Vec3(v.x+f.x, v.y+f.y, v.z+f.z);\n"
-    "  };\n"
-    "  v.subtract = function(f) {\n"
-    "    if (typeof f === 'number') return Vec3(v.x-f, v.y-f, v.z-f);\n"
-    "    if (f.z === undefined)     return Vec3(v.x-(f.x||0), v.y-(f.y||0), v.z);\n"
-    "    return Vec3(v.x-f.x, v.y-f.y, v.z-f.z);\n"
-    "  };\n"
-    "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z); };\n"
-    "  v.normalize = function() { var l=v.length()||1; return Vec3(v.x/l,v.y/l,v.z/l); };\n"
-    "  v.copy = function() { return Vec3(v.x, v.y, v.z); };\n"
-    "  v.dot = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z; };\n"
-    "  v.cross = function(o) { return Vec3(v.y*o.z-v.z*o.y, v.z*o.x-v.x*o.z, v.x*o.y-v.y*o.x); };\n"
-    "  v.negate = function() { return Vec3(-v.x,-v.y,-v.z); };\n"
-    "  v.divide = function(f) {\n"
-    "    if (typeof f === 'number') return Vec3(v.x/f, v.y/f, v.z/f);\n"
-    "    if (f.z === undefined)     return Vec3(v.x/(f.x||1), v.y/(f.y||1), v.z);\n"
-    "    return Vec3(v.x/f.x, v.y/f.y, v.z/f.z);\n"
-    "  };\n"
-    "  v.lerp = function(o, t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); "
-    "};\n"
-    "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z; return "
-    "Math.sqrt(dx*dx+dy*dy+dz*dz); };\n"
-    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z; };\n"
-    "  v.reflect = function(n) { var d=2*v.dot(n); return Vec3(v.x-d*n.x, v.y-d*n.y, v.z-d*n.z); "
-    "};\n"
-    "  v.mix = function(o,t) { return Vec3(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t, v.z+(o.z-v.z)*t); };\n"
-    "  v.equals = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z; };\n"
-    "  v.toString = function() { return v.x+' '+v.y+' '+v.z; };\n"
-    "  v.min = function(o) { return Vec3(Math.min(v.x,o.x),Math.min(v.y,o.y),Math.min(v.z,o.z)); "
-    "};\n"
-    "  v.max = function(o) { return Vec3(Math.max(v.x,o.x),Math.max(v.y,o.y),Math.max(v.z,o.z)); "
-    "};\n"
-    "  v.abs = function() { return Vec3(Math.abs(v.x),Math.abs(v.y),Math.abs(v.z)); };\n"
-    "  v.sign = function() { return Vec3(Math.sign(v.x),Math.sign(v.y),Math.sign(v.z)); };\n"
-    "  v.round = function() { return Vec3(Math.round(v.x),Math.round(v.y),Math.round(v.z)); };\n"
-    "  v.floor = function() { return Vec3(Math.floor(v.x),Math.floor(v.y),Math.floor(v.z)); };\n"
-    "  v.ceil = function() { return Vec3(Math.ceil(v.x),Math.ceil(v.y),Math.ceil(v.z)); };\n"
-    "  Object.defineProperty(v,'r',{get:function(){return "
-    "v.x;},set:function(val){v.x=val;},enumerable:true});\n"
-    "  Object.defineProperty(v,'g',{get:function(){return "
-    "v.y;},set:function(val){v.y=val;},enumerable:true});\n"
-    "  Object.defineProperty(v,'b',{get:function(){return "
-    "v.z;},set:function(val){v.z=val;},enumerable:true});\n"
-    "  return v;\n"
-    "}\n"
-    "Vec3.fromString = function(s) {\n"
-    "  var p = String(s).trim().split(/\\s+/);\n"
-    "  return Vec3(parseFloat(p[0])||0, parseFloat(p[1])||0, parseFloat(p[2])||0);\n"
-    "};\n"
-    "Vec3.lerp = function(a, b, t) { return Vec3(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t, "
-    "a.z+(b.z-a.z)*t); };\n"
-    // Vec4 — mirrors Vec3 surface plus w/a aliases.  Must match SceneBackend.cpp.
-    "function Vec4(x, y, z, w) {\n"
-    "  if (typeof x === 'string') { var p=x.trim().split(/\\s+/);\n"
-    "    x=parseFloat(p[0])||0; y=parseFloat(p[1])||0; z=parseFloat(p[2])||0;\n"
-    "    w=parseFloat(p[3])||0; }\n"
-    "  else if (x && typeof x === 'object') {\n"
-    "    w=x.w||0; z=x.z||0; y=x.y||0; x=x.x||0; }\n"
-    "  var v = { x: x||0, y: y||0, z: z||0, w: w||0 };\n"
-    "  v.multiply = function(s) { return typeof s==='object'\n"
-    "     ? Vec4(v.x*s.x, v.y*s.y, v.z*s.z, v.w*s.w)\n"
-    "     : Vec4(v.x*s, v.y*s, v.z*s, v.w*s); };\n"
-    "  v.add      = function(o) { return Vec4(v.x+o.x, v.y+o.y, v.z+o.z, v.w+o.w); };\n"
-    "  v.subtract = function(o) { return Vec4(v.x-o.x, v.y-o.y, v.z-o.z, v.w-o.w); };\n"
-    "  v.divide   = function(s) { return typeof s==='object'\n"
-    "     ? Vec4(v.x/s.x, v.y/s.y, v.z/s.z, v.w/s.w)\n"
-    "     : Vec4(v.x/s, v.y/s, v.z/s, v.w/s); };\n"
-    "  v.length = function() { return Math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w); };\n"
-    "  v.lengthSqr = function() { return v.x*v.x+v.y*v.y+v.z*v.z+v.w*v.w; };\n"
-    "  v.normalize = function() { var l=v.length()||1; return Vec4(v.x/l,v.y/l,v.z/l,v.w/l); };\n"
-    "  v.copy     = function() { return Vec4(v.x, v.y, v.z, v.w); };\n"
-    "  v.dot      = function(o) { return v.x*o.x+v.y*o.y+v.z*o.z+v.w*o.w; };\n"
-    "  v.negate   = function() { return Vec4(-v.x,-v.y,-v.z,-v.w); };\n"
-    "  v.lerp     = function(o, t) { return Vec4(v.x+(o.x-v.x)*t, v.y+(o.y-v.y)*t,\n"
-    "                                            v.z+(o.z-v.z)*t, v.w+(o.w-v.w)*t); };\n"
-    "  v.distance = function(o) { var dx=v.x-o.x,dy=v.y-o.y,dz=v.z-o.z,dw=v.w-o.w;\n"
-    "                             return Math.sqrt(dx*dx+dy*dy+dz*dz+dw*dw); };\n"
-    "  v.mix      = function(o, t) { return v.lerp(o, t); };\n"
-    "  v.equals   = function(o) { return v.x===o.x && v.y===o.y && v.z===o.z && v.w===o.w; };\n"
-    "  v.toString = function() { return v.x+' '+v.y+' '+v.z+' '+v.w; };\n"
-    "  v.min = function(o) { return Vec4(Math.min(v.x,o.x),Math.min(v.y,o.y),\n"
-    "                                    Math.min(v.z,o.z),Math.min(v.w,o.w)); };\n"
-    "  v.max = function(o) { return Vec4(Math.max(v.x,o.x),Math.max(v.y,o.y),\n"
-    "                                    Math.max(v.z,o.z),Math.max(v.w,o.w)); };\n"
-    "  v.abs = function() { return Vec4(Math.abs(v.x),Math.abs(v.y),\n"
-    "                                   Math.abs(v.z),Math.abs(v.w)); };\n"
-    "  v.sign = function() { return Vec4(Math.sign(v.x),Math.sign(v.y),\n"
-    "                                    Math.sign(v.z),Math.sign(v.w)); };\n"
-    "  v.round = function() { return Vec4(Math.round(v.x),Math.round(v.y),\n"
-    "                                     Math.round(v.z),Math.round(v.w)); };\n"
-    "  v.floor = function() { return Vec4(Math.floor(v.x),Math.floor(v.y),\n"
-    "                                     Math.floor(v.z),Math.floor(v.w)); };\n"
-    "  v.ceil = function() { return Vec4(Math.ceil(v.x),Math.ceil(v.y),\n"
-    "                                    Math.ceil(v.z),Math.ceil(v.w)); };\n"
-    "  Object.defineProperty(v,'r',{get:function(){return v.x;},\n"
-    "                               set:function(val){v.x=val;},enumerable:true});\n"
-    "  Object.defineProperty(v,'g',{get:function(){return v.y;},\n"
-    "                               set:function(val){v.y=val;},enumerable:true});\n"
-    "  Object.defineProperty(v,'b',{get:function(){return v.z;},\n"
-    "                               set:function(val){v.z=val;},enumerable:true});\n"
-    "  Object.defineProperty(v,'a',{get:function(){return v.w;},\n"
-    "                               set:function(val){v.w=val;},enumerable:true});\n"
-    "  return v;\n"
-    "}\n"
-    "Vec4.fromString = function(s) {\n"
-    "  var p = String(s).trim().split(/\\s+/);\n"
-    "  return Vec4(parseFloat(p[0])||0, parseFloat(p[1])||0,\n"
-    "              parseFloat(p[2])||0, parseFloat(p[3])||0);\n"
-    "};\n"
-    "Vec4.lerp = function(a, b, t) {\n"
-    "  return Vec4(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t,\n"
-    "              a.z+(b.z-a.z)*t, a.w+(b.w-a.w)*t);\n"
-    "};\n"
     "var _origMatch = String.prototype.match;\n"
     "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
     "var localStorage = (function() {\n"
@@ -1627,6 +1462,7 @@ struct MathEnv {
         // same class surface production scripts see.
         engine.evaluate(JS_VEC3_AND_UTILS);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kMatricesJs);
         engine.evaluate(wek::qml_helper::kInternalNamespaceJs);
         engine.evaluate(JS_WEMATH);
@@ -1666,6 +1502,7 @@ struct ScriptEnv {
         // kVecClassesJs overrides Vec2/3/4 with the canonical prototype-
         // based implementations shared with production.
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
 
         // Mat3/Mat4 — shared with production via SceneScriptShimsJs.hpp.
@@ -5659,6 +5496,7 @@ struct ScenePropertyEnv {
         // setCameraTransforms (writes plain {x,y,z} onto thisScene properties).
         engine.evaluate(JS_VEC3_AND_UTILS);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kMatricesJs);
         engine.evaluate(JS_SCENE_PROPS);
         // Mirror SceneBackend's scripted-camera helpers.  engine.canvasSize is
@@ -6463,6 +6301,8 @@ namespace
 // a Vec3 factory and the tables/partition markers the loop consults.
 static void setupDispatchEngine(QJSEngine& engine) {
     engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
+    engine.evaluate(wek::qml_helper::kVecClassesJs);
     engine.evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
     engine.evaluate("var thisLayer = null;");
 }
@@ -6712,6 +6552,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("constructor with four numbers") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         QJSValue v = engine.evaluate("Vec4(1,2,3,4)");
         CHECK(v.property("x").toNumber() == 1);
         CHECK(v.property("y").toNumber() == 2);
@@ -6722,6 +6563,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("constructor with object copy") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         QJSValue v = engine.evaluate("Vec4({x:1,y:2,z:3,w:4})");
         CHECK(v.property("x").toNumber() == 1);
         CHECK(v.property("w").toNumber() == 4);
@@ -6730,6 +6572,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("fromString parses space-separated") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         QJSValue v = engine.evaluate("Vec4.fromString('0.1 0.2 0.3 0.4')");
         CHECK(v.property("x").toNumber() == doctest::Approx(0.1));
         CHECK(v.property("y").toNumber() == doctest::Approx(0.2));
@@ -6740,6 +6583,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("add / subtract / multiply / divide") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(1,2,3,4).add(Vec4(1,1,1,1)).toString()").toString() ==
               "2 3 4 5");
         CHECK(engine.evaluate("Vec4(5,5,5,5).subtract(Vec4(1,2,3,4)).toString()").toString() ==
@@ -6751,6 +6595,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("length / lengthSqr / normalize") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(1,0,0,0).length()").toNumber() == 1);
         CHECK(engine.evaluate("Vec4(2,0,0,0).lengthSqr()").toNumber() == 4);
         QJSValue n = engine.evaluate("Vec4(3,0,0,0).normalize()");
@@ -6761,12 +6606,14 @@ TEST_SUITE("Vec4") {
     TEST_CASE("dot") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(1,2,3,4).dot(Vec4(1,1,1,1))").toNumber() == 10);
     }
 
     TEST_CASE("lerp / mix") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(0,0,0,0).lerp(Vec4(10,20,30,40), 0.5).toString()").toString() ==
               "5 10 15 20");
         CHECK(engine.evaluate("Vec4.lerp(Vec4(0,0,0,0), Vec4(10,10,10,10), 0.25).toString()")
@@ -6776,6 +6623,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("equals") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(1,2,3,4).equals(Vec4(1,2,3,4))").toBool());
         CHECK(! engine.evaluate("Vec4(1,2,3,4).equals(Vec4(1,2,3,5))").toBool());
     }
@@ -6783,6 +6631,7 @@ TEST_SUITE("Vec4") {
     TEST_CASE("RGBA aliases: v.r/g/b/a reflect x/y/z/w") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         QJSValue v = engine.evaluate("var q = Vec4(0.1, 0.2, 0.3, 0.4); q;");
         CHECK(v.property("r").toNumber() == doctest::Approx(0.1));
         CHECK(v.property("g").toNumber() == doctest::Approx(0.2));
@@ -6796,12 +6645,14 @@ TEST_SUITE("Vec4") {
     TEST_CASE("distance between two Vec4") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(0,0,0,0).distance(Vec4(0,3,4,0))").toNumber() == 5);
     }
 
     TEST_CASE("negate / abs / sign") {
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         CHECK(engine.evaluate("Vec4(1,-2,3,-4).negate().toString()").toString() == "-1 2 -3 4");
         CHECK(engine.evaluate("Vec4(-1,-2,3,-4).abs().toString()").toString() == "1 2 3 4");
         CHECK(engine.evaluate("Vec4(-5,0,7,-3).sign().toString()").toString() == "-1 0 1 -1");
@@ -6813,6 +6664,7 @@ TEST_SUITE("Vec4") {
         // ReferenceError on first evaluation.
         QJSEngine engine;
         engine.evaluate(JS_VEC3_AND_UTILS);
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
         QJSValue r = engine.evaluate(
             "(function() { var a = Vec4(1,0,0,0), b = Vec4(1,0,0,0);\n"
             "  switch (a.constructor) { case Vec4: return 'matched'; default: return 'no'; }\n"
