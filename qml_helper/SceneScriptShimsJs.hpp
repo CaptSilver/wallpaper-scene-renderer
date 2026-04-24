@@ -121,4 +121,69 @@ inline constexpr const char* kMatricesJs =
     "Mat3.prototype.toString = function() { return this.m.join(' '); };\n"
     "Mat3.prototype.toJSONString = function() { return this.toString(); };\n";
 
+// `_Internal` namespace — a few helpers wallpaper scripts may poke at.
+// These wrap familiar patterns (writing script properties, coercing user-
+// property JSON, stringifying configs with a toJSONString adapter) behind
+// the names scripts expect.  Pure JS, depends on Vec3 being defined.
+inline constexpr const char* kInternalNamespaceJs =
+    // Coerce a Vec3-shaped input (string "x y z", {x,y,z}, or Vec3) to a
+    // fresh Vec3, parsing the string form ourselves so we don't depend on
+    // the hosting Vec3 constructor's string handling.
+    "function _toVec3(v) {\n"
+    "  if (typeof v === 'string') {\n"
+    "    var p = v.split(/\\s+/);\n"
+    "    return new Vec3(parseFloat(p[0])||0,\n"
+    "                    parseFloat(p[1])||0,\n"
+    "                    parseFloat(p[2])||0);\n"
+    "  }\n"
+    "  if (v && typeof v === 'object') {\n"
+    "    return new Vec3(v.x||0, v.y||0, v.z||0);\n"
+    "  }\n"
+    "  return new Vec3(0, 0, 0);\n"
+    "}\n"
+    "function _isVec3Shape(v) {\n"
+    "  return v && typeof v.x === 'number' && typeof v.y === 'number'\n"
+    "           && typeof v.z === 'number';\n"
+    "}\n"
+    "var _Internal = {\n"
+    "  updateScriptProperties: function(script, vars) {\n"
+    "    if (typeof vars === 'string') vars = JSON.parse(vars);\n"
+    "    if (!script || !script.scriptProperties) return;\n"
+    "    var sp = script.scriptProperties;\n"
+    "    for (var key in vars) {\n"
+    "      if (!Object.prototype.hasOwnProperty.call(sp, key)) continue;\n"
+    "      if (_isVec3Shape(sp[key])) {\n"
+    "        sp[key] = _toVec3(vars[key]);\n"
+    "      } else {\n"
+    "        sp[key] = vars[key];\n"
+    "      }\n"
+    "    }\n"
+    "  },\n"
+    "  convertUserProperties: function(p) {\n"
+    "    if (typeof p === 'string') p = JSON.parse(p);\n"
+    "    var r = {};\n"
+    "    for (var k in p) {\n"
+    "      var t = p[k] ? p[k].type : undefined;\n"
+    "      if (t === 'color') {\n"
+    "        r[k] = _toVec3(p[k].value);\n"
+    "      } else if (t === 'usershortcut') {\n"
+    "        r[k] = { isbound: p[k].isbound,\n"
+    "                 commandtype: p[k].commandtype,\n"
+    "                 file: p[k].file };\n"
+    "      } else {\n"
+    "        r[k] = p[k] ? p[k].value : undefined;\n"
+    "      }\n"
+    "    }\n"
+    "    return r;\n"
+    "  },\n"
+    "  stringifyConfig: function(obj) {\n"
+    "    return JSON.stringify(obj, function(key, value) {\n"
+    "      if (value && typeof value.toJSONString === 'function') {\n"
+    "        return value.toJSONString();\n"
+    "      }\n"
+    "      return value;\n"
+    "    });\n"
+    "  }\n"
+    "};\n";
+
 } // namespace wek::qml_helper

@@ -1543,6 +1543,7 @@ struct MathEnv {
     MathEnv() {
         engine.evaluate(JS_VEC3_AND_UTILS);
         engine.evaluate(wek::qml_helper::kMatricesJs);
+        engine.evaluate(wek::qml_helper::kInternalNamespaceJs);
         engine.evaluate(JS_WEMATH);
         engine.evaluate(JS_WECOLOR);
     }
@@ -1575,6 +1576,9 @@ struct ScriptEnv {
 
         // Mat3/Mat4 — shared with production via SceneScriptShimsJs.hpp.
         engine.evaluate(wek::qml_helper::kMatricesJs);
+
+        // _Internal helper namespace (updateScriptProperties / ...).
+        engine.evaluate(wek::qml_helper::kInternalNamespaceJs);
 
         // WEMath, WEColor
         engine.evaluate(JS_WEMATH);
@@ -2571,6 +2575,99 @@ TEST_SUITE("WEVector") {
     }
 
 } // TEST_SUITE WEVector
+
+// ------------------------------------------------------------------
+// _Internal helper namespace (SceneScriptShimsJs::kInternalNamespaceJs)
+// ------------------------------------------------------------------
+TEST_SUITE("_Internal") {
+    TEST_CASE("updateScriptProperties writes from a JSON string") {
+        MathEnv  env;
+        env.engine.evaluate(
+            "var s = { scriptProperties: { brightness: 0.5, tag: 'old' } };\n"
+            "_Internal.updateScriptProperties(s, "
+            "'{\"brightness\":0.9,\"tag\":\"new\"}');\n");
+        CHECK(env.engine.evaluate("s.scriptProperties.brightness").toNumber()
+              == doctest::Approx(0.9));
+        CHECK(env.engine.evaluate("s.scriptProperties.tag").toString()
+              == QString("new"));
+    }
+
+    TEST_CASE("updateScriptProperties accepts a parsed object too") {
+        MathEnv  env;
+        env.engine.evaluate(
+            "var s = { scriptProperties: { n: 1 } };\n"
+            "_Internal.updateScriptProperties(s, { n: 42 });\n");
+        CHECK(env.engine.evaluate("s.scriptProperties.n").toInt() == 42);
+    }
+
+    TEST_CASE("updateScriptProperties rewraps Vec3 fields from string") {
+        MathEnv  env;
+        env.engine.evaluate(
+            "var s = { scriptProperties: { col: Vec3(0,0,0) } };\n"
+            "_Internal.updateScriptProperties(s, '{\"col\":\"0.25 0.5 0.75\"}');\n");
+        // Duck-typed Vec3 check — the test's closure Vec3 and production's
+        // prototype Vec3 both produce {x:,y:,z:} shapes; the point is that
+        // the string got parsed into component floats, not assigned raw.
+        CHECK(env.engine.evaluate("typeof s.scriptProperties.col").toString()
+              == QString("object"));
+        CHECK(env.engine.evaluate("s.scriptProperties.col.x").toNumber()
+              == doctest::Approx(0.25));
+        CHECK(env.engine.evaluate("s.scriptProperties.col.y").toNumber()
+              == doctest::Approx(0.5));
+        CHECK(env.engine.evaluate("s.scriptProperties.col.z").toNumber()
+              == doctest::Approx(0.75));
+    }
+
+    TEST_CASE("updateScriptProperties ignores keys not present on script") {
+        MathEnv  env;
+        env.engine.evaluate(
+            "var s = { scriptProperties: { a: 1 } };\n"
+            "_Internal.updateScriptProperties(s, { a: 2, unknown: 99 });\n");
+        CHECK(env.engine.evaluate("s.scriptProperties.a").toInt() == 2);
+        CHECK(env.engine.evaluate("'unknown' in s.scriptProperties").toBool() == false);
+    }
+
+    TEST_CASE("convertUserProperties unwraps .value for plain types") {
+        MathEnv  env;
+        QJSValue r = env.engine.evaluate(
+            "_Internal.convertUserProperties('"
+            "{\"bright\":{\"type\":\"slider\",\"value\":0.7},"
+            "\"name\":{\"type\":\"text\",\"value\":\"hi\"}}')");
+        CHECK(r.property("bright").toNumber() == doctest::Approx(0.7));
+        CHECK(r.property("name").toString() == QString("hi"));
+    }
+
+    TEST_CASE("convertUserProperties wraps color type as Vec3") {
+        MathEnv  env;
+        QJSValue r = env.engine.evaluate(
+            "_Internal.convertUserProperties('"
+            "{\"tint\":{\"type\":\"color\",\"value\":\"0.1 0.2 0.3\"}}')");
+        CHECK(r.property("tint").property("x").toNumber() == doctest::Approx(0.1));
+        CHECK(r.property("tint").property("y").toNumber() == doctest::Approx(0.2));
+        CHECK(r.property("tint").property("z").toNumber() == doctest::Approx(0.3));
+    }
+
+    TEST_CASE("convertUserProperties preserves usershortcut structure") {
+        MathEnv  env;
+        QJSValue r = env.engine.evaluate(
+            "_Internal.convertUserProperties('"
+            "{\"k\":{\"type\":\"usershortcut\",\"isbound\":true,"
+            "\"commandtype\":\"media\",\"file\":\"x.mp3\"}}')");
+        CHECK(r.property("k").property("isbound").toBool() == true);
+        CHECK(r.property("k").property("commandtype").toString() == QString("media"));
+        CHECK(r.property("k").property("file").toString() == QString("x.mp3"));
+    }
+
+    TEST_CASE("stringifyConfig honours toJSONString adapter") {
+        MathEnv  env;
+        env.engine.evaluate(
+            "var obj = { pos: { toJSONString: function() { return 'PX'; } },\n"
+            "             n:   42 };\n"
+            "var s = _Internal.stringifyConfig(obj);");
+        QJSValue s = env.engine.evaluate("s");
+        CHECK(s.toString() == QString("{\"pos\":\"PX\",\"n\":42}"));
+    }
+} // TEST_SUITE _Internal
 
 // ------------------------------------------------------------------
 // SceneScript Globals

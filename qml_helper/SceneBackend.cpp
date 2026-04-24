@@ -1737,6 +1737,10 @@ void SceneObject::setupTextScripts() {
     // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
     m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
 
+    // `_Internal` helper namespace — updateScriptProperties /
+    // convertUserProperties / stringifyConfig.  Requires Vec3.
+    m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
+
     // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
     m_jsEngine->evaluate(
         "var WEMath = {\n"
