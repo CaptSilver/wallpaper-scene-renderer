@@ -1,6 +1,7 @@
 #include "WPSceneParser.hpp"
 #include "WPJson.hpp"
 #include "WPPropertyScriptExtract.hpp"
+#include "WPRopeCombos.hpp"
 #include "WPUserProperties.hpp"
 
 #include "Utils/String.h"
@@ -2231,9 +2232,17 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             (float)in_SegmentUVTimeOffset,
             (float)in_SegmentMaxCount,
         };
-        shaderInfo.combos["THICKFORMAT"]   = "1";
-        shaderInfo.combos["TRAILRENDERER"] = "1";
-        int subdiv                         = (int)wppartRenderer.subdivision;
+        shaderInfo.combos["THICKFORMAT"] = "1";
+        // TRAILRENDERER selects the trail-history UV math in genericropeparticle.vert.
+        // Plain rope (mapsequencebetweencontrolpoints) is a static ladder between
+        // two CPs, not a history trail — its VS path is the `#else` branch.
+        // Setting TRAILRENDERER for plain rope wedges the first segment to
+        // `uvMinimum=0, uvDelta=0`, which samples the texture's V=0 edge across
+        // the whole quad — a transparent strip on beam textures, killing
+        // visibility.  Policy mirrors WE's binary dispatch — see WPRopeCombos.hpp.
+        if (RendererSetsTrailRendererCombo(wppartRenderer.name))
+            shaderInfo.combos["TRAILRENDERER"] = "1";
+        int subdiv = (int)wppartRenderer.subdivision;
         if (subdiv > 0) {
             shaderInfo.combos["TRAILSUBDIVISION"] = std::to_string(subdiv);
             LOG_INFO("  rope subdivision=%d for '%s'", subdiv, wppartobj.name.c_str());
