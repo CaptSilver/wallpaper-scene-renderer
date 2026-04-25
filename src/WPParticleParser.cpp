@@ -3,11 +3,17 @@
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
+#include "Particle/BlendWindow.h"
+#include "Particle/HsvColor.h"
+#include "Particle/ParticleCollision.h"
 #include <chrono>
 #include <random>
 #include <memory>
 #include <algorithm>
 #include <cmath>
+#include <vector>
+#include <string>
+#include <sstream>
 
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -426,6 +432,106 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 // Explicitly zero velocity — particles are placed, not moving
                 PM::InitVelocity(p, 0.0, 0.0, 0.0);
                 seq++;
+            };
+        } else if (name == "hsvcolorrandom") {
+            // HSV-space random color picker.  Author specifies hue range
+            // (degrees), saturation range, value range; we sample uniformly
+            // in each, optionally quantising hue into N discrete buckets,
+            // then convert to RGB.  Wraps the hue circle when huemax < huemin
+            // (e.g. 350..10 covers 350→0→10 across the 0/360 boundary).
+            float huemin { 0.0f }, huemax { 360.0f };
+            float satmin { 0.0f }, satmax { 1.0f };
+            float valmin { 1.0f }, valmax { 1.0f };
+            int   huesteps { 0 };
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "huemin", huemin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "huemax", huemax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "saturationmin", satmin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "saturationmax", satmax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "valuemin", valmin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "valuemax", valmax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "huesteps", huesteps);
+            float h_range = huemax - huemin;
+            if (h_range < 0.0f) h_range += 360.0f;
+            const float h_quant = (huesteps >= 1) ? (h_range / (float)huesteps) : 0.0f;
+            return [=](Particle& p, double) {
+                float h;
+                if (h_quant > 0.0f) {
+                    int bucket = Random::get(0, std::max(0, huesteps - 1));
+                    h = huemin + bucket * h_quant;
+                } else {
+                    h = huemin + Random::get(0.0f, 1.0f) * h_range;
+                }
+                float s = satmin + Random::get(0.0f, 1.0f) * std::max(0.0f, satmax - satmin);
+                float v = valmin + Random::get(0.0f, 1.0f) * std::max(0.0f, valmax - valmin);
+                auto  rgb = wallpaper::HsvToRgb(h, s, v);
+                PM::InitColor(p, rgb.x(), rgb.y(), rgb.z());
+            };
+        } else if (name == "colorlist") {
+            // Discrete-palette random pick.  `colors` is an array of
+            // "r g b" strings in either 0..1 or 0..255 space (we accept
+            // both — values >1 trigger the divide).  Optional HSV jitter
+            // adds organic variation on top of the picked base color.
+            std::vector<std::array<float, 3>> palette;
+            if (wpj.contains("colors") && wpj.at("colors").is_array()) {
+                for (const auto& c : wpj.at("colors")) {
+                    std::array<float, 3> col { 1.0f, 1.0f, 1.0f };
+                    if (c.is_string()) {
+                        std::string s = c.get<std::string>();
+                        std::replace(s.begin(), s.end(), ',', ' ');
+                        std::istringstream iss(s);
+                        iss >> col[0] >> col[1] >> col[2];
+                    } else if (c.is_array() && c.size() >= 3) {
+                        col[0] = c.at(0).get<float>();
+                        col[1] = c.at(1).get<float>();
+                        col[2] = c.at(2).get<float>();
+                    }
+                    // Some authors write 0..255 colors here; normalize them.
+                    if (col[0] > 1.5f || col[1] > 1.5f || col[2] > 1.5f) {
+                        col[0] /= 255.0f; col[1] /= 255.0f; col[2] /= 255.0f;
+                    }
+                    palette.push_back(col);
+                }
+            }
+            if (palette.empty()) palette.push_back({ 1.0f, 1.0f, 1.0f });
+            float huenoise = 0.0f, satnoise = 0.0f, valnoise = 0.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "huenoise", huenoise);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "saturationnoise", satnoise);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "valuenoise", valnoise);
+            const bool jitter = (huenoise > 1e-6f) || (satnoise > 1e-6f) || (valnoise > 1e-6f);
+            return [palette, huenoise, satnoise, valnoise, jitter](Particle& p, double) {
+                int idx = Random::get(0, (int)palette.size() - 1);
+                auto& base = palette[idx];
+                if (! jitter) {
+                    PM::InitColor(p, base[0], base[1], base[2]);
+                    return;
+                }
+                auto hsv = wallpaper::RgbToHsv(base[0], base[1], base[2]);
+                hsv.x() += Random::get(-1.0f, 1.0f) * huenoise;
+                hsv.y() += Random::get(-1.0f, 1.0f) * satnoise;
+                hsv.z() += Random::get(-1.0f, 1.0f) * valnoise;
+                auto rgb = wallpaper::HsvToRgb(hsv.x(), hsv.y(), hsv.z());
+                PM::InitColor(p, rgb.x(), rgb.y(), rgb.z());
+            };
+        } else if (name == "inheritcontrolpointvelocity") {
+            // Initializer flag: at spawn, add a random fraction of the
+            // controlpoint's per-frame velocity to the new particle's
+            // initial velocity.  Used by trail particles spawned from a
+            // moving CP (mouse-following sparkles inherit mouse motion
+            // direction; emitter rooted on a moving spaceline CP inherits
+            // the line's drift).
+            int   controlpoint = 0;
+            float scale_min = 0.0f, scale_max = 1.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "min", scale_min);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "max", scale_max);
+            controlpoint = ClampCpIndex(controlpoint);
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
+            return [=](Particle& p, double) {
+                if ((usize)controlpoint >= cp_size) return;
+                Vector3d v = cp_data[controlpoint].velocity;
+                float    s = Random::get(scale_min, scale_max);
+                PM::ChangeVelocity(p, v * s);
             };
         } else if (name == "mapsequencearoundcontrolpoint") {
             const auto                  params = ParseAroundParams(wpj);
@@ -1046,61 +1152,356 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 }
             };
         } else if (name == "remapvalue") {
-            std::string input, output, transformfunction;
+            // Universal mapping operator.  Reads a scalar input (system time,
+            // particle lifetime/velocity/size/etc., or a control-point property),
+            // normalises it into [0, 1] via inputrangemin/max, applies a
+            // transform function, scales into outputrangemin/max, and writes
+            // the result onto an output property using set / add / multiply.
+            //
+            // Legacy authoring (input only the per-life "opacity" / "size"
+            // outputs with no input/output range) still works — the missing
+            // ranges default to [0, 1] which is a no-op rescale, and the
+            // simple outputs are still recognised.
+            std::string operation { "multiply" };
+            std::string input, output, transformfunction { "linear" };
+            std::string inputcomponent { "magnitude" };
+            std::string outputcomponent { "magnitude" };
             float       transforminputscale = 1.0f;
-            float       blendinstart = 0.0f, blendinend = 0.0f;
-            float       blendoutstart = 1.0f, blendoutend = 1.0f;
-
+            float       inMin = 0.0f, inMax = 1.0f;
+            float       outMin = 0.0f, outMax = 1.0f;
+            int         inputCP0 = 0, outputCP0 = 0;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "operation", operation);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "output", output);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "transformfunction", transformfunction);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "transforminputscale", transforminputscale);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinstart", blendinstart);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinend", blendinend);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutstart", blendoutstart);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutend", blendoutend);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcomponent", inputcomponent);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputcomponent", outputcomponent);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputrangemin", inMin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputrangemax", inMax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemin", outMin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemax", outMax);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcontrolpoint0", inputCP0);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "outputcontrolpoint0", outputCP0);
+            inputCP0  = ClampCpIndex(inputCP0);
+            outputCP0 = ClampCpIndex(outputCP0);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
+
+            // Reduce a vec3 to a scalar based on the named component.  Names
+            // mirror the WE editor dropdown ("x" / "y" / "z" / "magnitude").
+            auto reduce = [](const Vector3d& v, const std::string& comp) -> double {
+                if (comp == "x") return v.x();
+                if (comp == "y") return v.y();
+                if (comp == "z") return v.z();
+                if (comp == "w") return 0.0;
+                if (comp == "x+y") return v.x() + v.y();
+                return v.norm();
+            };
 
             return [=](const ParticleInfo& info) {
+                const double in_span = (double)(inMax - inMin);
+                const double in_inv  = std::abs(in_span) > 1e-9 ? 1.0 / in_span : 0.0;
+
                 for (auto& p : info.particles) {
                     if (! PM::LifetimeOk(p)) continue;
 
-                    // Get input value
-                    double inputVal = 0.0;
+                    // 1) Read the raw input as a scalar.
+                    double raw = 0.0;
                     if (input == "particlesystemtime") {
-                        inputVal = info.time;
+                        raw = info.time;
                     } else if (input == "particlelifetime") {
-                        inputVal = PM::LifetimePos(p);
+                        raw = PM::LifetimePos(p);
+                    } else if (input == "particlevelocity") {
+                        raw = reduce(p.velocity.cast<double>(), inputcomponent);
+                    } else if (input == "particleposition") {
+                        raw = reduce(p.position.cast<double>(), inputcomponent);
+                    } else if (input == "particlerotation") {
+                        raw = reduce(p.rotation.cast<double>(), inputcomponent);
+                    } else if (input == "particleangularvelocity") {
+                        raw = reduce(p.angularVelocity.cast<double>(), inputcomponent);
+                    } else if (input == "particlecolor") {
+                        raw = reduce(p.color.cast<double>(), inputcomponent);
+                    } else if (input == "particlesize") {
+                        raw = p.size;
+                    } else if (input == "particlealpha") {
+                        raw = p.alpha;
+                    } else if (input == "controlpoint" || input == "controlpointposition") {
+                        if ((usize)inputCP0 < info.controlpoints.size())
+                            raw = reduce(info.controlpoints[inputCP0].resolved, inputcomponent);
+                    } else if (input == "controlpointvelocity") {
+                        if ((usize)inputCP0 < info.controlpoints.size())
+                            raw = reduce(info.controlpoints[inputCP0].velocity, inputcomponent);
+                    } else if (input == "distancetocontrolpoint") {
+                        if ((usize)inputCP0 < info.controlpoints.size())
+                            raw = (p.position.cast<double>() -
+                                   info.controlpoints[inputCP0].resolved)
+                                      .norm();
+                    } else if (input == "random") {
+                        raw = p.RandomFloat();
                     }
 
-                    // Apply transform function
-                    double transformed = inputVal * transforminputscale;
+                    // 2) Normalise to [0, 1] over the author's input range.
+                    double t = (raw - inMin) * in_inv;
+                    if (t < 0.0) t = 0.0;
+                    if (t > 1.0) t = 1.0;
+
+                    // 3) Apply transform.  `transforminputscale` multiplies
+                    //    BEFORE the transform so authors can speed up the sine
+                    //    period (scale=2 = double-frequency oscillation).
+                    double xs = t * transforminputscale;
+                    double tx;
                     if (transformfunction == "sine") {
-                        transformed = (std::sin(transformed) + 1.0) * 0.5;
+                        tx = (std::sin(xs * 2.0 * M_PI) + 1.0) * 0.5;
                     } else if (transformfunction == "cosine") {
-                        transformed = (std::cos(transformed) + 1.0) * 0.5;
-                    }
-                    // else linear: keep as-is
-
-                    // Blend based on particle lifetime position
-                    double life  = PM::LifetimePos(p);
-                    double blend = 1.0;
-                    if (blendinend > blendinstart && life < blendinend) {
-                        blend = std::clamp(
-                            (life - blendinstart) / (blendinend - blendinstart), 0.0, 1.0);
-                    }
-                    if (blendoutend > blendoutstart && life > blendoutstart) {
-                        double bout = std::clamp(
-                            (life - blendoutstart) / (blendoutend - blendoutstart), 0.0, 1.0);
-                        blend *= (1.0 - bout);
+                        tx = (std::cos(xs * 2.0 * M_PI) + 1.0) * 0.5;
+                    } else if (transformfunction == "step") {
+                        tx = std::floor(xs);
+                    } else if (transformfunction == "smoothstep") {
+                        double c = std::clamp(xs, 0.0, 1.0);
+                        tx = c * c * (3.0 - 2.0 * c);
+                    } else {
+                        tx = xs; // linear (default)
                     }
 
-                    double value = algorism::lerp(blend, 1.0, transformed);
+                    // 4) Map into the author's output range.
+                    double mapped = outMin + tx * (outMax - outMin);
 
-                    // Apply to output
-                    if (output == "opacity") {
-                        PM::MutiplyAlpha(p, value);
-                    } else if (output == "size") {
-                        PM::MutiplySize(p, value);
+                    // 5) Apply lifetime blend (degrades the operator's effect
+                    //    toward the identity element of its operation).
+                    double blend = bw.Factor(p);
+
+                    auto apply_scalar = [&](double current, double op_val) -> double {
+                        if (operation == "set") {
+                            return current * (1.0 - blend) + op_val * blend;
+                        }
+                        if (operation == "add") {
+                            return current + op_val * blend;
+                        }
+                        // multiply (default)
+                        return current * (1.0 + (op_val - 1.0) * blend);
+                    };
+
+                    // 6) Write to output.
+                    if (output == "opacity" || output == "particlealpha" ||
+                        output == "alpha") {
+                        p.alpha = (float)apply_scalar(p.alpha, mapped);
+                    } else if (output == "size" || output == "particlesize") {
+                        p.size = (float)apply_scalar(p.size, mapped);
+                    } else if (output == "particlevelocity") {
+                        // Broadcast scalar across xyz unless an outputcomponent is
+                        // selected (then only that axis is written).
+                        Vector3d v = p.velocity.cast<double>();
+                        if (outputcomponent == "x") v.x() = apply_scalar(v.x(), mapped);
+                        else if (outputcomponent == "y") v.y() = apply_scalar(v.y(), mapped);
+                        else if (outputcomponent == "z") v.z() = apply_scalar(v.z(), mapped);
+                        else {
+                            v.x() = apply_scalar(v.x(), mapped);
+                            v.y() = apply_scalar(v.y(), mapped);
+                            v.z() = apply_scalar(v.z(), mapped);
+                        }
+                        p.velocity = v.cast<float>();
+                    } else if (output == "particleangularvelocity") {
+                        Vector3d v = p.angularVelocity.cast<double>();
+                        v.x() = apply_scalar(v.x(), mapped);
+                        v.y() = apply_scalar(v.y(), mapped);
+                        v.z() = apply_scalar(v.z(), mapped);
+                        p.angularVelocity = v.cast<float>();
+                    } else if (output == "particlerotation") {
+                        Vector3d r = p.rotation.cast<double>();
+                        r.x() = apply_scalar(r.x(), mapped);
+                        r.y() = apply_scalar(r.y(), mapped);
+                        r.z() = apply_scalar(r.z(), mapped);
+                        p.rotation = r.cast<float>();
+                    } else if (output == "particlecolor") {
+                        Vector3d c = p.color.cast<double>();
+                        if (outputcomponent == "x") c.x() = apply_scalar(c.x(), mapped);
+                        else if (outputcomponent == "y") c.y() = apply_scalar(c.y(), mapped);
+                        else if (outputcomponent == "z") c.z() = apply_scalar(c.z(), mapped);
+                        else {
+                            c.x() = apply_scalar(c.x(), mapped);
+                            c.y() = apply_scalar(c.y(), mapped);
+                            c.z() = apply_scalar(c.z(), mapped);
+                        }
+                        p.color = c.cast<float>();
+                    }
+                    // Other outputs (controlpoint, position) intentionally
+                    // unhandled — writing back into world space would need a
+                    // pending-CP-update path we don't have; report loudly the
+                    // first time we see one in the wild.
+                }
+            };
+        } else if (name == "capvelocity") {
+            // Trivial velocity-magnitude clamp.  WE pre-computes 1/maxspeed
+            // for SIMD micro-opt; we use one division per particle which is
+            // negligible in practice.  Skip dead particles and zero-speed
+            // particles to avoid divide-by-zero.
+            float maxspeed = 100.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "maxspeed", maxspeed);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
+            return [maxspeed, bw](const ParticleInfo& info) {
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    double speed = p.velocity.cast<double>().norm();
+                    if (speed <= maxspeed || speed < 1e-9) continue;
+                    double factor = maxspeed / speed;
+                    if (bw.Has()) {
+                        // Lerp toward the identity (factor=1) by 1-blend so
+                        // the cap softens out at the edges of the lifetime
+                        // window.
+                        double blend = bw.Factor(p);
+                        factor = 1.0 + (factor - 1.0) * blend;
+                    }
+                    PM::MutiplyVelocity(p, factor);
+                }
+            };
+        } else if (name == "maintaindistancetocontrolpoint") {
+            // Singular form: clamp particles to a sphere of radius `distance`
+            // around one controlpoint.  variablestrength=0 hard-snaps the
+            // particle onto the sphere surface; >0 applies a soft spring
+            // pull that scales with the distance error.  Authors use this
+            // for orbit-style rings around a CP that follows audio amp.
+            int   controlpoint = 0;
+            float distance = 100.0f;
+            float variablestrength = 0.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "distance", distance);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "variablestrength", variablestrength);
+            controlpoint = ClampCpIndex(controlpoint);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                Vector3d cp = info.controlpoints[controlpoint].resolved;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    Vector3d ppos = p.position.cast<double>();
+                    Vector3d d    = ppos - cp;
+                    double   dist = d.norm();
+                    if (dist < 1e-6) continue;
+                    double blend = bw.Factor(p);
+                    if (variablestrength <= 0.0f) {
+                        Vector3d target = cp + (d / dist) * distance;
+                        Vector3d delta  = target - ppos;
+                        PM::Move(p, delta * blend);
+                    } else {
+                        double pull = (distance - dist) * variablestrength * blend;
+                        PM::Accelerate(p, (d / dist) * pull, info.time_pass);
+                    }
+                }
+            };
+        } else if (name == "collisionplane") {
+            // Implicit-plane collision anchored at a CP.  The plane equation
+            // a*x + b*y + c*z + d = 0 is shifted to the CP's frame and the
+            // optional `distance` field offsets it along the plane normal.
+            // Particles below the plane are snapped onto the surface and
+            // their velocity reflected.
+            std::array<float, 4> plane { 0.0f, 1.0f, 0.0f, 0.0f };
+            int   controlpoint = 0;
+            float distance     = 0.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "plane", plane);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "distance", distance);
+            controlpoint = ClampCpIndex(controlpoint);
+            Vector3d normal_raw(plane[0], plane[1], plane[2]);
+            if (normal_raw.norm() < 1e-9) normal_raw = Vector3d(0, 1, 0);
+            const Vector3d normal   = normal_raw.normalized();
+            const double   d_signed = plane[3];
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                const Vector3d cp      = info.controlpoints[controlpoint].resolved;
+                const double   plane_d = d_signed - normal.dot(cp) - distance;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    const Vector3d ppos = p.position.cast<double>();
+                    const double   sd   = normal.dot(ppos) + plane_d;
+                    if (sd >= 0.0) continue;
+                    p.position = (ppos - sd * normal).cast<float>();
+                    ParticleCollision::ReflectVelocity(p, normal);
+                }
+            };
+        } else if (name == "collisionsphere") {
+            // Sphere collision centred at CP+origin.  Particles inside the
+            // radius are pushed back to the surface and reflected.  This is
+            // the from-outside (convex) variant; from-inside concave shells
+            // would invert the test, gated on a flag we haven't observed yet.
+            std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
+            int   controlpoint = 0;
+            float radius       = 100.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "origin", origin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "radius", radius);
+            controlpoint = ClampCpIndex(controlpoint);
+            const Vector3d local_origin(origin[0], origin[1], origin[2]);
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                const Vector3d center = info.controlpoints[controlpoint].resolved + local_origin;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    Vector3d d    = p.position.cast<double>() - center;
+                    double   dist = d.norm();
+                    if (dist >= radius || dist < 1e-9) continue;
+                    Vector3d n = d / dist;
+                    p.position = (center + n * radius).cast<float>();
+                    ParticleCollision::ReflectVelocity(p, n);
+                }
+            };
+        } else if (name == "boids") {
+            // Reynolds 1987 flocking — each particle steers based on its
+            // neighbours within `neighborthreshold`: separation pushes
+            // away from any q closer than `separationthreshold`, alignment
+            // matches average neighbour velocity, cohesion pulls toward
+            // the neighbourhood centroid.  Sum is added to velocity; final
+            // speed is capped to maxspeed.  O(n²) but WE caps subsystems
+            // at a few hundred particles so the cost is manageable.
+            float neighborthreshold   = 1.0f;
+            float separationthreshold = 1.0f;
+            float separationfactor    = 1.0f;
+            float cohesionfactor      = 1.0f;
+            float alignmentfactor     = 1.0f;
+            float maxspeed            = 100.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "neighborthreshold", neighborthreshold);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "separationthreshold", separationthreshold);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "separationfactor", separationfactor);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "cohesionfactor", cohesionfactor);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "alignmentfactor", alignmentfactor);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "maxspeed", maxspeed);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
+            return [=](const ParticleInfo& info) {
+                const double n2 = (double)neighborthreshold * neighborthreshold;
+                const double s2 = (double)separationthreshold * separationthreshold;
+                for (usize i = 0; i < info.particles.size(); i++) {
+                    auto& p = info.particles[i];
+                    if (! PM::LifetimeOk(p)) continue;
+                    Vector3d sumSep(0, 0, 0), sumAli(0, 0, 0), sumCoh(0, 0, 0);
+                    int      nN = 0, nS = 0;
+                    Vector3d ppos = p.position.cast<double>();
+                    Vector3d pvel = p.velocity.cast<double>();
+                    for (usize j = 0; j < info.particles.size(); j++) {
+                        if (i == j) continue;
+                        auto& q = info.particles[j];
+                        if (! PM::LifetimeOk(q)) continue;
+                        Vector3d d  = q.position.cast<double>() - ppos;
+                        double   sd = d.squaredNorm();
+                        if (sd >= n2) continue;
+                        nN++;
+                        sumAli += q.velocity.cast<double>();
+                        sumCoh += q.position.cast<double>();
+                        if (sd < s2 && sd > 1e-12) {
+                            double dist = std::sqrt(sd);
+                            sumSep -= (d / dist) * (separationthreshold - dist);
+                            nS++;
+                        }
+                    }
+                    Vector3d sepF(0, 0, 0), aliF(0, 0, 0), cohF(0, 0, 0);
+                    if (nS > 0) sepF = (sumSep / (double)nS) * separationfactor;
+                    if (nN > 0) {
+                        aliF = (sumAli / (double)nN - pvel) * alignmentfactor;
+                        cohF = (sumCoh / (double)nN - ppos) * cohesionfactor;
+                    }
+                    double blend = bw.Factor(p);
+                    PM::Accelerate(p, (sepF + aliF + cohF) * blend, info.time_pass);
+                    double speed = p.velocity.cast<double>().norm();
+                    if (speed > maxspeed && speed > 1e-9) {
+                        PM::MutiplyVelocity(p, maxspeed / speed);
                     }
                 }
             };

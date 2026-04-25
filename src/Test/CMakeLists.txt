@@ -48,12 +48,14 @@ add_executable(backend_scene_tests
     test_WPSceneFileResolver.cpp
     test_WPMapSequenceParse.cpp
     test_WPRopeCombos.cpp
+    test_WPParticleOperators.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp
     ${SRC_DIR}/WPMdlParser.cpp
     ${SRC_DIR}/WPJson.cpp
+    ${SRC_DIR}/WPParticleParser.cpp
     ${SRC_DIR}/wpscene/WPParticleObject.cpp
     ${SRC_DIR}/wpscene/WPMaterial.cpp
     ${SRC_DIR}/Scene/SceneCamera.cpp

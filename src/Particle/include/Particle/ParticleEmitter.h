@@ -71,6 +71,17 @@ struct ParticleControlpoint {
     // Authored CP `flags` (link_mouse, worldspace, follow_parent_particle) still live in
     // their own bools above — `runtime_flags` is intentionally distinct so the boundary
     // between authored and parser-derived bits stays explicit.
+
+    // Per-frame derived velocity of the resolved CP position.  `prev_resolved` is the
+    // value stored at the END of the previous resolve pass; `velocity` is
+    // `(resolved - prev_resolved) / dt` computed each frame.  Used by the
+    // `inheritcontrolpointvelocity` initializer (children spawn with a velocity
+    // matching their CP's motion) and the universal `remapvalue` operator (input =
+    // controlpointvelocity).  Zero on the first frame after spawn — there is no
+    // history to differentiate.
+    Eigen::Vector3d prev_resolved { 0, 0, 0 };
+    Eigen::Vector3d velocity { 0, 0, 0 };
+    bool            has_prev_resolved { false };
 };
 
 struct ParticleInfo {

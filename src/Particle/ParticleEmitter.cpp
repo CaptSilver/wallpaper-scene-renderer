@@ -71,6 +71,12 @@ inline u32 Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool s
 
 inline Particle Spwan(GenParticleOp gen, std::vector<ParticleInitOp>& inis, double duration) {
     auto particle = gen();
+    // Seed the per-particle stable random.  Operators (most notably remapvalue
+    // with `input: random`) hash this seed into a deterministic [0, 1] float so
+    // a single spawn picks one random alpha/size/etc. and keeps it across the
+    // particle's whole life rather than flickering each frame.  Lower bound 1
+    // keeps the seed non-zero so RandomFloat() never hits its unseeded fallback.
+    particle.random_seed = Random::get<uint32_t>(1u, 0xffffffffu);
     for (auto& el : inis) el(particle, duration);
     return particle;
 }

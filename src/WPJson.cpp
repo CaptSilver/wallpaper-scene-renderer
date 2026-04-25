@@ -214,6 +214,7 @@ template<std::size_t N>
 using farray = std::array<float, N>;
 T_IMPL_GET_JSON(farray<2>);
 T_IMPL_GET_JSON(farray<3>);
+T_IMPL_GET_JSON(farray<4>);
 
 // template bool GetJsonValue();
 } // namespace wallpaper

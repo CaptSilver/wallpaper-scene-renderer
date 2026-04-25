@@ -141,6 +141,18 @@ void ParticleSubSystem::ResolveControlpointsForInstance(const ParticleInstance* 
             cp.resolved = bound_pos;
         }
         cp.is_null_resolved = resolved_is_null;
+
+        // Per-frame velocity = (resolved - prev_resolved) / dt.  Skip the first
+        // frame (no history) and any frame where dt is non-positive — both
+        // cases leave velocity at zero, which is the correct default.
+        const double dt = m_sys.scene.frameTime;
+        if (cp.has_prev_resolved && dt > 1e-9) {
+            cp.velocity = (cp.resolved - cp.prev_resolved) / dt;
+        } else {
+            cp.velocity.setZero();
+        }
+        cp.prev_resolved     = cp.resolved;
+        cp.has_prev_resolved = true;
     }
 }
 
