@@ -866,6 +866,58 @@ TEST_SUITE("ParticleInstance_Refresh") {
         CHECK(p.init.lifetime == doctest::Approx(2.0f));
     }
 
+    TEST_CASE("ApplyColorOverride — colorn replaces the preset color (NieR 2B halo)") {
+        // magic_sparkle preset's colorrandom yields amber (≈0.5, 0.4, 0.1).
+        // NieR 2B's instanceoverride sets colorn=(0,1,1).  Replace semantics
+        // give pure cyan (matching the artist preview); the prior multiply
+        // semantic gave a dim green (preset filtered to its g+b channels).
+        Particle p = makeParticle();
+        ParticleModify::InitColor(p, 0.5f, 0.4f, 0.1f);
+        ParticleModify::ApplyColorOverride(p,
+                                           /*has_color255=*/false, { 0, 0, 0 },
+                                           /*has_colorn=*/true, { 0.0f, 1.0f, 1.0f });
+        CHECK(p.color.x() == doctest::Approx(0.0f));
+        CHECK(p.color.y() == doctest::Approx(1.0f));
+        CHECK(p.color.z() == doctest::Approx(1.0f));
+        CHECK(p.init.color.x() == doctest::Approx(0.0f));
+        CHECK(p.init.color.y() == doctest::Approx(1.0f));
+        CHECK(p.init.color.z() == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("ApplyColorOverride — color (0-255) replaces the preset color") {
+        Particle p = makeParticle();
+        ParticleModify::InitColor(p, 0.5f, 0.4f, 0.1f);
+        ParticleModify::ApplyColorOverride(p,
+                                           /*has_color255=*/true, { 255.0f, 0.0f, 128.0f },
+                                           /*has_colorn=*/false, { 0, 0, 0 });
+        CHECK(p.color.x() == doctest::Approx(1.0f));
+        CHECK(p.color.y() == doctest::Approx(0.0f));
+        CHECK(p.color.z() == doctest::Approx(128.0f / 255.0f));
+    }
+
+    TEST_CASE("ApplyColorOverride — neither flag set leaves the preset alone") {
+        Particle p = makeParticle();
+        ParticleModify::InitColor(p, 0.5f, 0.4f, 0.1f);
+        ParticleModify::ApplyColorOverride(p,
+                                           /*has_color255=*/false, { 0, 0, 0 },
+                                           /*has_colorn=*/false, { 0, 0, 0 });
+        CHECK(p.color.x() == doctest::Approx(0.5f));
+        CHECK(p.color.y() == doctest::Approx(0.4f));
+        CHECK(p.color.z() == doctest::Approx(0.1f));
+    }
+
+    TEST_CASE("ApplyColorOverride — color255 wins when both flags are set") {
+        // Parser enforces mutual exclusivity but pin defensive behaviour.
+        Particle p = makeParticle();
+        ParticleModify::InitColor(p, 0.5f, 0.4f, 0.1f);
+        ParticleModify::ApplyColorOverride(p,
+                                           /*has_color255=*/true, { 255.0f, 255.0f, 0.0f },
+                                           /*has_colorn=*/true, { 0.0f, 1.0f, 1.0f });
+        CHECK(p.color.x() == doctest::Approx(1.0f));
+        CHECK(p.color.y() == doctest::Approx(1.0f));
+        CHECK(p.color.z() == doctest::Approx(0.0f));
+    }
+
     TEST_CASE("Refresh clears trail histories") {
         ParticleInstance inst;
         inst.InitTrails(4, 1.0f);

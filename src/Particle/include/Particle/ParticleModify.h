@@ -181,6 +181,27 @@ inline void ApplyLifetimeOverride(Particle& p, double over, bool is_rope) {
     else
         SetInitLifeTime(p, over);
 }
+
+// Dispatch instanceoverride.color / instanceoverride.colorn to the right
+// semantic.  Both are absolute color replacements of the preset's
+// randomized color; `color` is in 0-255 space, `colorn` is the same
+// quantity in 0-1 normalized space.  An artist authoring `colorn: (0,1,1)`
+// on an amber preset wants bright cyan particles, not "preset filtered to
+// its green+blue channels" (which would be a dim green) — verified against
+// NieR 2B halo where the shipped preview shows cyan sparkles even though
+// the magic_sparkle preset's colorrandom is amber.  Caller passes `true`
+// for at most one of the two (parser enforces mutual exclusivity); when
+// both are false, this is a no-op.
+inline void ApplyColorOverride(Particle& p, bool has_color255,
+                               const std::array<float, 3>& color255,
+                               bool                        has_colorn,
+                               const std::array<float, 3>& colorn) {
+    if (has_color255) {
+        InitColor(p, color255[0] / 255.0f, color255[1] / 255.0f, color255[2] / 255.0f);
+    } else if (has_colorn) {
+        InitColor(p, colorn[0], colorn[1], colorn[2]);
+    }
+}
 inline void MutiplyInitAlpha(Particle& p, double m) {
     p.alpha *= m;
     p.init.alpha = p.alpha;

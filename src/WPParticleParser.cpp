@@ -484,12 +484,8 @@ ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstan
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);
         PM::MutiplyVelocity(p, over.speed);
-        if (over.overColor) {
-            PM::InitColor(
-                p, over.color[0] / 255.0f, over.color[1] / 255.0f, over.color[2] / 255.0f);
-        } else if (over.overColorn) {
-            PM::MutiplyInitColor(p, over.colorn[0], over.colorn[1], over.colorn[2]);
-        }
+        PM::ApplyColorOverride(
+            p, over.overColor, over.color, over.overColorn, over.colorn);
         // Brightness multiplies particle color (e.g. 5.0 for lightning glow).  For additive
         // blending with many overlapping sprites the raw `color * brightness` accumulates
         // aggressively in the HDR buffer — stacking 10 sprites with brightness=5 peaks at
