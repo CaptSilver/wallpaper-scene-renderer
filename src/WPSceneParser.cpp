@@ -1184,6 +1184,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
             LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;
+        } else if (! puppet->is_puppet || ! puppet->puppet) {
+            // scene.json declared this file under "puppet:" but the MDL parsed
+            // cleanly as a non-puppet mesh (flag 9/11/15/39): WPMdlParser's
+            // non-puppet branch never instantiates the WPPuppet shared_ptr.
+            // Fall back to the regular image-quad path instead of dereferencing
+            // the null bones vector below.
+            LOG_INFO("non-puppet MDL referenced as puppet, falling back to image quad: %s",
+                     wpimgobj.puppet.c_str());
+            puppet = nullptr;
         } else if (puppet->puppet->bones.size() == 0) {
             LOG_ERROR("puppet has no bones: %s", wpimgobj.puppet.c_str());
             puppet = nullptr;

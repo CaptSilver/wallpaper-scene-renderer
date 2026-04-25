@@ -121,6 +121,12 @@ TEST_SUITE("WPMdlParser.Model") {
         REQUIRE(WPMdlParser::ParseStream(f, "m9.mdl", mdl));
 
         CHECK_FALSE(mdl.is_puppet);
+        // Non-puppet branch never instantiates the WPPuppet shared_ptr.
+        // Itachi Uchiha (2810492318) ships a `*_puppet.mdl` file that's
+        // actually a flag=9 mesh, so callers that received the MDL via
+        // a scene.json "puppet:" field must check is_puppet / puppet
+        // before dereferencing puppet->bones.
+        CHECK(mdl.puppet == nullptr);
         REQUIRE(mdl.submeshes.size() == 1);
         const auto& s = mdl.submeshes[0];
         CHECK(s.mat_json_file == "mat.json");
