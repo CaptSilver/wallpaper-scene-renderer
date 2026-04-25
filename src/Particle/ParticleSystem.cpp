@@ -67,6 +67,11 @@ std::span<const ParticleControlpoint> ParticleSubSystem::Controlpoints() const {
 }
 std::span<ParticleControlpoint> ParticleSubSystem::Controlpoints() { return m_controlpoints; };
 
+void ParticleSubSystem::MarkCpReferenced(int32_t idx) {
+    int32_t clamped = ClampCpIndex(idx);
+    m_controlpoints[static_cast<size_t>(clamped)].runtime_flags |= kCpReferencedFlag;
+}
+
 ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_type; }
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
@@ -105,16 +110,26 @@ void ParticleSubSystem::ResolveControlpointsForInstance(const ParticleInstance* 
                                      inst->GetBoundedData().particle_idx >= 0);
     Eigen::Vector3d bound_pos = Eigen::Vector3d::Zero();
     if (has_bound_particle) bound_pos = inst->GetBoundedData().pos.cast<double>();
-    for (auto& cp : m_controlpoints) {
-        bool resolved_is_null = false;
+    for (size_t slot = 0; slot < m_controlpoints.size(); ++slot) {
+        auto& cp                 = m_controlpoints[slot];
+        bool  resolved_is_null   = false;
+        // Effective parent CP index = authored value when the author chose one, else
+        // the slot's own index plus the child-container shift.  This keeps the
+        // authored value pristine on the CP record (the WE storage model) while
+        // still routing default-0 slots through the shift the parent's child block
+        // requested.
+        int32_t effective_parent = cp.parent_cp_index;
+        if (effective_parent == 0 && m_cp_start_shift > 0) {
+            effective_parent = static_cast<int32_t>(slot) + m_cp_start_shift;
+        }
         if (cp.follow_parent_particle && has_bound_particle) {
             cp.resolved     = bound_pos;
-        } else if (cp.parent_cp_index > 0 && m_parent_subsystem != nullptr) {
+        } else if (effective_parent > 0 && m_parent_subsystem != nullptr) {
             auto parent_cps = m_parent_subsystem->Controlpoints();
-            // parent_cp_index is a direct (0-based) index into the parent's CPs per the WE
-            // asset convention we validated in memory/cp-parent-chain.md.  Clamp defensively.
+            // Clamp defensively; effective_parent may exceed the parent table when
+            // the author bound a high slot or when the shift carries us past the end.
             auto idx = static_cast<size_t>(
-                std::clamp(cp.parent_cp_index, 0, (int32_t)parent_cps.size() - 1));
+                std::clamp(effective_parent, 0, (int32_t)parent_cps.size() - 1));
             cp.resolved     = parent_cps[idx].resolved;
             resolved_is_null =
                 parent_cps[idx].is_null_offset || parent_cps[idx].is_null_resolved;

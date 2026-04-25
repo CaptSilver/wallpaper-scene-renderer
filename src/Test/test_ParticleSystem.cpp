@@ -2,6 +2,7 @@
 
 #include "Particle/ParticleSystem.h"
 #include "Particle/ParticleEmitter.h"
+#include "WPMapSequenceParse.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneMesh.h"
 
@@ -109,6 +110,121 @@ TEST_SUITE("ParticleSubSystem") {
             CHECK_FALSE(cp.link_mouse);
             CHECK_FALSE(cp.worldspace);
         }
+    }
+
+    TEST_CASE("Controlpoints default runtime_flags to 0 (no operator has touched them yet)") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        auto            cps = sub->Controlpoints();
+        for (const auto& cp : cps) {
+            CHECK(cp.runtime_flags == 0u);
+        }
+    }
+
+    TEST_CASE("MarkCpReferenced ORs kCpReferencedFlag onto only the named slot") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->MarkCpReferenced(2);
+        sub->MarkCpReferenced(5);
+        auto cps = sub->Controlpoints();
+        CHECK((cps[2].runtime_flags & kCpReferencedFlag) != 0u);
+        CHECK((cps[5].runtime_flags & kCpReferencedFlag) != 0u);
+        CHECK((cps[0].runtime_flags & kCpReferencedFlag) == 0u);
+        CHECK((cps[1].runtime_flags & kCpReferencedFlag) == 0u);
+        CHECK((cps[7].runtime_flags & kCpReferencedFlag) == 0u);
+    }
+
+    TEST_CASE("MarkCpReferenced is idempotent — same slot, multiple calls, one bit") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->MarkCpReferenced(3);
+        sub->MarkCpReferenced(3);
+        sub->MarkCpReferenced(3);
+        auto cps = sub->Controlpoints();
+        CHECK((cps[3].runtime_flags & kCpReferencedFlag) != 0u);
+        // Only the high bit; lower authored bits remain untouched.
+        CHECK((cps[3].runtime_flags & 0xffu) == 0u);
+    }
+
+    TEST_CASE("MarkCpReferenced clamps out-of-range indices to 0..7") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->MarkCpReferenced(99); // → slot 7
+        sub->MarkCpReferenced(-3); // → slot 0
+        auto cps = sub->Controlpoints();
+        CHECK((cps[7].runtime_flags & kCpReferencedFlag) != 0u);
+        CHECK((cps[0].runtime_flags & kCpReferencedFlag) != 0u);
+    }
+
+    TEST_CASE("CpStartShift defaults to 0 (no shift on bare subsystems)") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        CHECK(sub->CpStartShift() == 0);
+    }
+
+    TEST_CASE("SetCpStartShift / CpStartShift roundtrip stores the authored value") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->SetCpStartShift(3);
+        CHECK(sub->CpStartShift() == 3);
+    }
+
+    TEST_CASE("Resolver applies CpStartShift to slots whose authored parent_cp_index is 0") {
+        // Mirrors the WE child-container semantic: the child's CP[i] resolves through
+        // the parent's CP[i + shift] when the child didn't explicitly declare a parent.
+        ParticleFixture fx;
+        auto            parent = fx.makeSub();
+        auto            child  = fx.makeSub();
+        // Parent CP[2] sits at (50, 60, 70); resolved=offset by default.
+        parent->Controlpoints()[2].offset = Eigen::Vector3d(50, 60, 70);
+        parent->Controlpoints()[2].resolved = Eigen::Vector3d(50, 60, 70);
+        // Child has authored parent_cp_index=0 (the WE editor default), shift=2.
+        // Authored value MUST survive parse and the resolver layers the shift on top.
+        child->Controlpoints()[0].parent_cp_index = 0;
+        child->SetCpStartShift(2);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        child_raw->ResolveControlpointsForInstance(nullptr);
+        CHECK(child_raw->Controlpoints()[0].resolved.x() == doctest::Approx(50.0));
+        CHECK(child_raw->Controlpoints()[0].resolved.y() == doctest::Approx(60.0));
+        CHECK(child_raw->Controlpoints()[0].resolved.z() == doctest::Approx(70.0));
+    }
+
+    TEST_CASE("Resolver leaves authored parent_cp_index alone when CpStartShift is 0") {
+        ParticleFixture fx;
+        auto            parent = fx.makeSub();
+        auto            child  = fx.makeSub();
+        parent->Controlpoints()[5].offset   = Eigen::Vector3d(11, 22, 33);
+        parent->Controlpoints()[5].resolved = Eigen::Vector3d(11, 22, 33);
+        // Child authored an explicit parent_cp_index — no shift.
+        child->Controlpoints()[1].parent_cp_index = 5;
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        child_raw->ResolveControlpointsForInstance(nullptr);
+        CHECK(child_raw->Controlpoints()[1].resolved.x() == doctest::Approx(11.0));
+        CHECK(child_raw->Controlpoints()[1].resolved.y() == doctest::Approx(22.0));
+        CHECK(child_raw->Controlpoints()[1].resolved.z() == doctest::Approx(33.0));
+    }
+
+    TEST_CASE("Explicit parent_cp_index wins over CpStartShift (no double-shift)") {
+        ParticleFixture fx;
+        auto            parent = fx.makeSub();
+        auto            child  = fx.makeSub();
+        parent->Controlpoints()[3].offset   = Eigen::Vector3d(1, 2, 3);
+        parent->Controlpoints()[3].resolved = Eigen::Vector3d(1, 2, 3);
+        // Child explicitly chose parent CP[3]; shift would otherwise add 2 → CP[5].
+        // Author intent must win.
+        child->Controlpoints()[0].parent_cp_index = 3;
+        child->SetCpStartShift(2);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        child_raw->ResolveControlpointsForInstance(nullptr);
+        CHECK(child_raw->Controlpoints()[0].resolved.x() == doctest::Approx(1.0));
+        CHECK(child_raw->Controlpoints()[0].resolved.y() == doctest::Approx(2.0));
+        CHECK(child_raw->Controlpoints()[0].resolved.z() == doctest::Approx(3.0));
     }
 
     TEST_CASE("AddEmitter/AddInitializer/AddOperator accept std::function callables") {

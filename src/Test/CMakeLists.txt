@@ -46,6 +46,7 @@ add_executable(backend_scene_tests
     test_WPPropertyScriptExtract.cpp
     test_WPParticleInstanceoverride.cpp
     test_WPSceneFileResolver.cpp
+    test_WPMapSequenceParse.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp

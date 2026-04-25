@@ -1,4 +1,5 @@
 #include "WPParticleParser.hpp"
+#include "WPMapSequenceParse.hpp"
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/ParticleSystem.h"
@@ -299,21 +300,20 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 }
             };
         } else if (name == "mapsequencebetweencontrolpoints") {
-            u32         count     = 10;
-            u32         flags     = 0;
-            float       arcamount = 0.0f;
-            int         cpStart   = 0;
-            std::string limitbehavior;
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "arcamount", arcamount);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "limitbehavior", limitbehavior);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "flags", flags);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpointstartindex", cpStart);
-            if (count == 0) count = 1;
-            cpStart = std::clamp(cpStart, 0, 7);
-
-            // Mirror from explicit string or from flags bit 1
-            bool                        mirror  = (limitbehavior == "mirror") || (flags & 2);
+            // Field semantics (clamps, defaults, mirror toggle, arc / size-reduction
+            // capture) are pinned in src/WPMapSequenceParse.hpp and exercised by
+            // test_WPMapSequenceParse.cpp.  The captured params struct is what the
+            // closure consumes — keeping the parse separate from the per-spawn maths
+            // avoids re-reading the JSON on each emission and lets the test suite hit
+            // the parse branch without owning a particle system.
+            const auto                  params  = ParseBetweenParams(wpj);
+            const u32                   count   = params.count;
+            const float                 arcamount = params.arc_amount;
+            const float                 size_reduction = params.size_reduction_amount;
+            const std::array<float, 3>  arc_dir_arr = params.arc_direction;
+            const int                   cpStart = params.cp_start;
+            const int                   cpEnd   = params.cp_end;
+            const bool                  mirror  = params.mirror;
             const ParticleControlpoint* cp_data = controlpoints.data();
             usize                       cp_size = controlpoints.size();
 
@@ -337,7 +337,9 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             float phase0 = 0, phase1 = 0, phase2 = 0;
             return [=](Particle& p, double) mutable {
                 u32& seq = *seq_ptr;
-                if (cp_size < (usize)(cpStart + 2) || count <= 1) {
+                // Both endpoints must lie inside the CP table.  cp_end may be lower,
+                // higher, or equal to cp_start — the engine permits any pair.
+                if (cp_size <= (usize)cpStart || cp_size <= (usize)cpEnd || count <= 1) {
                     seq++;
                     return;
                 }
@@ -369,33 +371,56 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 }
                 float    t       = (float)idx / (float)(count - 1);
                 Vector3f cp0     = cp_data[cpStart].resolved.cast<float>();
-                Vector3f cp1     = cp_data[cpStart + 1].resolved.cast<float>();
+                Vector3f cp1     = cp_data[cpEnd].resolved.cast<float>();
                 Vector3f line    = cp1 - cp0;
                 float    lineLen = line.norm();
                 Vector3f pathpos = cp0 + t * line;
 
-                // Perpendicular direction to the CP line
-                Vector3f perp(-line.y(), line.x(), 0.0f);
-                if (perp.squaredNorm() < 1e-6f)
-                    perp = Vector3f(0, 0, 1.0f);
-                else
-                    perp.normalize();
+                // Arc bulge direction.  When the author supplied `arcdirection`
+                // (non-zero vec3) the bow follows that vector; otherwise fall
+                // back to the screen-plane perpendicular of the CP line so a
+                // 2D arrangement still bulges sideways instead of collapsing.
+                Vector3f arc_dir(arc_dir_arr[0], arc_dir_arr[1], arc_dir_arr[2]);
+                if (arc_dir.squaredNorm() < 1e-6f) {
+                    arc_dir = Vector3f(-line.y(), line.x(), 0.0f);
+                    if (arc_dir.squaredNorm() < 1e-6f)
+                        arc_dir = Vector3f(0, 0, 1.0f);
+                }
+                arc_dir.normalize();
 
-                // Arc: parabolic bulge perpendicular to line
+                // Arc: parabolic bulge along arc_dir, scaled by chord length so
+                // the visual amplitude tracks the rope's own size.
                 if (std::abs(arcamount) > 1e-6f) {
-                    pathpos += arcamount * 4.0f * t * (1.0f - t) * perp * lineLen;
+                    pathpos += arcamount * 4.0f * t * (1.0f - t) * arc_dir * lineLen;
+                }
+
+                // Per-particle size reduction along the rope: when the author
+                // sets `sizereductionamount` the leading particles stay full
+                // size and the trailing particles taper down to (1 - amount)
+                // of their original size.  Authored value 0 = no reduction
+                // (matches today's behavior).
+                if (size_reduction > 1e-6f) {
+                    float scale = 1.0f - size_reduction * t;
+                    if (scale < 0.0f) scale = 0.0f;
+                    PM::MutiplySize(p, static_cast<double>(scale));
                 }
 
                 // Smooth noise displacement: sum-of-sinusoids at 3 octaves
-                // Creates organic curves instead of zigzag
-                // Amplitude scales with line length (~15% of line length)
+                // Creates organic curves instead of zigzag.  Noise rides on
+                // the screen-plane perpendicular (independent of arc_dir) so
+                // the jitter direction stays stable even when arc_dir aligns
+                // with the chord.
+                Vector3f noise_perp(-line.y(), line.x(), 0.0f);
+                if (noise_perp.squaredNorm() < 1e-6f)
+                    noise_perp = Vector3f(0, 0, 1.0f);
+                else
+                    noise_perp.normalize();
                 float amplitude = lineLen * 0.15f;
-                // Taper to zero at endpoints so bolt connects cleanly to CPs
-                float taper = std::sin(t * (float)M_PI);
-                float noise = std::sin(t * 2.5f * (float)M_PI + phase0) * 0.55f +
+                float taper     = std::sin(t * (float)M_PI);
+                float noise     = std::sin(t * 2.5f * (float)M_PI + phase0) * 0.55f +
                               std::sin(t * 5.7f * (float)M_PI + phase1) * 0.30f +
                               std::sin(t * 11.3f * (float)M_PI + phase2) * 0.15f;
-                pathpos += perp * noise * amplitude * taper;
+                pathpos += noise_perp * noise * amplitude * taper;
 
                 PM::Move(p, pathpos.cast<double>());
                 // Explicitly zero velocity — particles are placed, not moving
@@ -403,14 +428,10 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 seq++;
             };
         } else if (name == "mapsequencearoundcontrolpoint") {
-            u32                  count { 10 };
-            int                  cp_id { 0 };
-            std::array<float, 3> axis { 0, 0, 0 };
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "count", count);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "axis", axis);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", cp_id);
-            if (count == 0) count = 1;
-            cp_id = std::clamp(cp_id, 0, 7);
+            const auto                  params = ParseAroundParams(wpj);
+            const u32                   count  = params.count;
+            const int                   cp_id  = params.cp;
+            const std::array<float, 3>  axis   = params.axis;
 
             LOG_INFO("mapsequencearoundcontrolpoint: count=%u axis=(%.1f,%.1f,%.1f) cp=%d",
                      count,
@@ -447,17 +468,18 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
     };
 }
 
-ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over) {
+ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over,
+                                                   bool is_rope) {
     return [=](Particle& p, double) {
-        // WE's instanceoverride.lifetime is an absolute duration in seconds, not
-        // a multiplier on the preset's lifetimerandom range.  NieR 2B halo
-        // (magic_vortex_1) ships lifetime=0.9 intending "0.9-second trails",
-        // but the preset's lifetimerandom min=0.4/max=0.7 multiplied by 0.9
-        // gives 0.36-0.63s — halved trail history, near-invisible ring.
-        // Applied only when the override block was present (over.enabled),
-        // otherwise the preset's random lifetime stands.
-        if (over.enabled && over.lifetime > 0.0f) {
-            PM::SetInitLifeTime(p, over.lifetime);
+        // instanceoverride.lifetime semantic depends on renderer kind: sprites
+        // and halos take it as absolute seconds (NieR 2B halo magic_vortex_1
+        // ships lifetime=0.9 = "0.9s trails"); ropes take it as a multiplier
+        // on the preset's randomized lifetime so per-segment timing scales
+        // proportionally instead of collapsing to a flat constant.  See
+        // ApplyLifetimeOverride for the dispatch and test_ParticleModify.cpp
+        // for the pinned cases.
+        if (over.enabled) {
+            PM::ApplyLifetimeOverride(p, over.lifetime, is_rope);
         }
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);

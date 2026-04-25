@@ -13,6 +13,23 @@
 namespace wallpaper
 {
 
+// Bit OR-ed into a runtime CP's `runtime_flags` once the parser has seen any operator
+// that names that CP slot.  The slot table is exactly 8 entries and the CP-index range
+// any operator may name is [0..7], so the bit lives well above any authored low-byte
+// semantics.  Defined here (rather than in the JSON-coupled WPMapSequenceParse.hpp) so
+// the runtime particle library doesn't pick up a JSON dep just to read the constant.
+constexpr uint32_t kCpReferencedFlag = 0x10000u;
+
+// Largest valid CP slot index.  The runtime CP table has exactly 8 entries (0..7); any
+// authored value beyond the table clamps down to the highest valid slot.
+constexpr int32_t kMaxCpIndex = 7;
+
+inline int32_t ClampCpIndex(int32_t v) {
+    if (v < 0) return 0;
+    if (v > kMaxCpIndex) return kMaxCpIndex;
+    return v;
+}
+
 struct ParticleControlpoint {
     bool            link_mouse { false };
     bool            worldspace { false };
@@ -46,6 +63,14 @@ struct ParticleControlpoint {
     // `instanceoverride.controlpointangle[N]` at scene-load time.  Currently written but
     // not read by any runtime operator — see WPSceneParser::LoadControlPoint and
     // memory/nier-2b-wallpaper.md for the "plumb through, log loudly" rationale.
+
+    uint32_t runtime_flags { 0 };
+    // Parser-derived bitfield about how the runtime should treat this slot.  Today only
+    // bit `kCpReferencedFlag` (0x10000) is consumed: the parser ORs it into every CP
+    // any operator names so resolver fast-paths can skip slots no operator will read.
+    // Authored CP `flags` (link_mouse, worldspace, follow_parent_particle) still live in
+    // their own bools above — `runtime_flags` is intentionally distinct so the boundary
+    // between authored and parser-derived bits stays explicit.
 };
 
 struct ParticleInfo {

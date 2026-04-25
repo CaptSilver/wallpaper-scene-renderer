@@ -161,11 +161,25 @@ inline void MutiplyInitLifeTime(Particle& p, double m) {
 }
 // Set the particle's lifetime to an absolute number of seconds and snapshot the
 // init value so per-particle progress math (`p.lifetime / p.init.lifetime`) remains
-// consistent.  Used by instanceoverride.lifetime, which WE treats as absolute
-// seconds (not a multiplier on the preset's random range).
+// consistent.  Used by instanceoverride.lifetime on sprite/halo subsystems —
+// authors set absolute durations there ("0.9-second trails").
 inline void SetInitLifeTime(Particle& p, double sec) {
     p.lifetime      = (float)sec;
     p.init.lifetime = p.lifetime;
+}
+
+// Dispatch instanceoverride.lifetime to the right semantic.  Sprite/halo
+// subsystems get absolute-seconds replacement; rope subsystems get a
+// multiplier on the preset's randomized lifetime so per-segment timing
+// scales proportionally instead of collapsing to a flat constant (which
+// shrinks the rope's apparent length and breaks the bolt geometry).
+// `over <= 0` is treated as "no override" in either path.
+inline void ApplyLifetimeOverride(Particle& p, double over, bool is_rope) {
+    if (over <= 0.0) return;
+    if (is_rope)
+        MutiplyInitLifeTime(p, over);
+    else
+        SetInitLifeTime(p, over);
 }
 inline void MutiplyInitAlpha(Particle& p, double m) {
     p.alpha *= m;

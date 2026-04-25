@@ -112,6 +112,21 @@ public:
     std::span<const ParticleControlpoint> Controlpoints() const;
     std::span<ParticleControlpoint>       Controlpoints();
 
+    // OR `kCpReferencedFlag` into the runtime flags of CP slot `idx`.  Indices outside
+    // [0..7] are clamped — the engine accepts any integer and silently maps it to the
+    // nearest valid slot, so the marker behaves the same way.  Called once per CP
+    // reference discovered while parsing operators / initializers.
+    void MarkCpReferenced(int32_t idx);
+
+    // Per-child CP shift authored on the parent's child block (`controlpointstartindex`
+    // in the JSON).  Stored verbatim — the engine applies the shift at chain-resolve
+    // time, layered on top of authored `parent_cp_index` rather than folded into it.
+    // Slots whose authored `parent_cp_index` is 0 (the editor default) resolve through
+    // `parent CP[slot_idx + shift]`; slots that authored an explicit non-zero value
+    // route through that value as-is, so author intent always wins over the shift.
+    void    SetCpStartShift(int32_t s) { m_cp_start_shift = s; }
+    int32_t CpStartShift() const { return m_cp_start_shift; }
+
     // Resolve per-frame controlpoint offsets by walking the parent chain.  For CPs with
     // follow_parent_particle + an EVENT_FOLLOW/EVENT_SPAWN instance bound to a live parent
     // particle, the resolved offset = that particle's position.  For CPs with
@@ -185,6 +200,10 @@ private:
 
     // Scripted rate override — see SetDynamicRateMultiplier.
     std::atomic<double> m_dynamic_rate_multiplier { 1.0 };
+
+    // Stored CP-slot shift authored on the parent's child block; consumed by the chain
+    // resolver instead of being baked into per-CP `parent_cp_index` at parse time.
+    int32_t m_cp_start_shift { 0 };
 
     std::string m_debug_name;
 };

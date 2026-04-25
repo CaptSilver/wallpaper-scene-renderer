@@ -824,6 +824,48 @@ TEST_SUITE("ParticleInstance_Refresh") {
         CHECK(child.GetBoundedData().particle_idx == -1);
     }
 
+    TEST_CASE("ApplyLifetimeOverride — sprite path: absolute seconds (replaces preset)") {
+        // Sprite/halo presets that ship a non-zero `lifetime` in their
+        // instanceoverride mean the absolute lifetime (NieR 2B halo
+        // magic_vortex_1: lifetime=0.9 = "0.9s trails").
+        Particle p = makeParticle();
+        p.lifetime      = 1.5f;
+        p.init.lifetime = 1.5f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.9f, /*is_rope=*/false);
+        CHECK(p.lifetime == doctest::Approx(0.9f));
+        CHECK(p.init.lifetime == doctest::Approx(0.9f));
+    }
+
+    TEST_CASE("ApplyLifetimeOverride — rope path: multiplies preset lifetime") {
+        // Rope subsystems treat the same field as a multiplier on the
+        // preset's randomized lifetime so the per-segment timing scales
+        // proportionally instead of being clamped to a flat constant.
+        Particle p = makeParticle();
+        p.lifetime      = 2.0f;
+        p.init.lifetime = 2.0f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.5f, /*is_rope=*/true);
+        CHECK(p.lifetime == doctest::Approx(1.0f));
+        CHECK(p.init.lifetime == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("ApplyLifetimeOverride — over <= 0 leaves the preset alone (sprite)") {
+        Particle p = makeParticle();
+        p.lifetime      = 1.5f;
+        p.init.lifetime = 1.5f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.0f, /*is_rope=*/false);
+        CHECK(p.lifetime == doctest::Approx(1.5f));
+        CHECK(p.init.lifetime == doctest::Approx(1.5f));
+    }
+
+    TEST_CASE("ApplyLifetimeOverride — over <= 0 leaves the preset alone (rope)") {
+        Particle p = makeParticle();
+        p.lifetime      = 2.0f;
+        p.init.lifetime = 2.0f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.0f, /*is_rope=*/true);
+        CHECK(p.lifetime == doctest::Approx(2.0f));
+        CHECK(p.init.lifetime == doctest::Approx(2.0f));
+    }
+
     TEST_CASE("Refresh clears trail histories") {
         ParticleInstance inst;
         inst.InitTrails(4, 1.0f);

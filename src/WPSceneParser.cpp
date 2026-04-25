@@ -15,6 +15,7 @@
 #include "WPShaderParser.hpp"
 #include "WPTexImageParser.hpp"
 #include "WPParticleParser.hpp"
+#include "WPMapSequenceParse.hpp"
 #include "WPSoundParser.hpp"
 #include "WPMdlParser.hpp"
 #include "WPSceneAttachmentCompose.hpp"
@@ -323,17 +324,11 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
         pcs[i].parent_cp_index = wp.controlpoints[i].parentcontrolpoint;
         pcs[i].is_null_offset  = wp.controlpoints[i].offset_is_null;
     }
-    // controlpointstartindex on a ParticleChild means "this child's CP[i] is parent's CP[i+N]"
-    // unless the child already declared an explicit parentcontrolpoint.  This is the auto-chain
-    // path needed for NieR 2B thunderbolt_beam_child, whose CPs all have offset=(0,0,0) and
-    // parentcontrolpoint=0 but rely on the shift to pick up spawner CP1's dynamic follow.
-    if (cp_start_shift > 0) {
-        for (usize i = 0; i < pcs.size(); i++) {
-            if (pcs[i].parent_cp_index == 0) {
-                pcs[i].parent_cp_index = static_cast<int32_t>(i) + cp_start_shift;
-            }
-        }
-    }
+    // The child-container `controlpointstartindex` is stored verbatim on the subsystem
+    // and applied at chain-resolve time.  Keeping the authored `parent_cp_index` value
+    // pristine on the CP record matches the engine's own storage model and lets the
+    // resolver layer the shift on top of explicit author intent without double-shifting.
+    pSys.SetCpStartShift(cp_start_shift);
     // Apply instance override control points.  An explicit override revives a null-offset
     // slot: the author has set a real position, so the runtime should no longer treat this
     // CP as "unassigned" and must not substitute the bounded particle position.
@@ -373,12 +368,10 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                      const wpscene::ParticleInstanceoverride& over, u32 rope_count = 0,
-                     int /*cp_start*/ = 0) {
-    // cp_start is intentionally unused here.  The child-config-level controlpointstartindex is
-    // now consumed by LoadControlPoint to set parent_cp_index on the child's CPs (see
-    // memory/cp-parent-chain.md), so the per-initializer controlpointstartindex (which reads an
-    // index into *this* subsystem's CPs) would double-shift if we injected it again.  Per-op
-    // controlpointstartindex in the initializer JSON itself (separate field) still works.
+                     int /*cp_start*/ = 0, bool is_rope = false) {
+    // cp_start is intentionally unused here.  The child-container `controlpointstartindex`
+    // is stored on the subsystem (see LoadControlPoint → SetCpStartShift) and applied at
+    // chain-resolve time, so injecting it into per-initializer JSON would double-shift.
     for (const auto& ini : wp.initializers) {
         nlohmann::json iniCopy = ini;
         // Inject/override count for mapsequencebetweencontrolpoints
@@ -386,13 +379,15 @@ void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
             iniCopy["name"] == "mapsequencebetweencontrolpoints") {
             iniCopy["count"] = rope_count;
         }
+        for (int32_t cp : CollectCpReferences(iniCopy)) pSys.MarkCpReferenced(cp);
         pSys.AddInitializer(WPParticleParser::genParticleInitOp(iniCopy, pSys.Controlpoints()));
     }
-    if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
+    if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over, is_rope));
 }
 void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                   const wpscene::ParticleInstanceoverride& over) {
     for (const auto& op : wp.operators) {
+        for (int32_t cp : CollectCpReferences(op)) pSys.MarkCpReferenced(cp);
         pSys.AddOperator(WPParticleParser::genParticleOperatorOp(op, over));
     }
 }
@@ -2392,8 +2387,12 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
         if (rope_init_count == 0) rope_init_count = maxcount;
     }
-    LoadInitializer(
-        *particleSub, particle_obj, override, rope_init_count, child_data.controlpointstartindex);
+    LoadInitializer(*particleSub,
+                    particle_obj,
+                    override,
+                    rope_init_count,
+                    child_data.controlpointstartindex,
+                    /*is_rope=*/render_rope);
     LoadOperator(*particleSub, particle_obj, override);
 
     mesh.AddMaterial(std::move(material));
