@@ -164,6 +164,10 @@ public:
     };
     void PassDesc(const Desc& d) override { m_desc = d; }
     void Switch() {
+        if (m_soundPaths.empty()) {
+            m_curActive.reset();
+            return;
+        }
         std::string path = m_soundPaths[NextIndex()];
         LOG_INFO("audio Switch: loading '%s' (channels=%u, sampleRate=%u)",
                  path.c_str(),
@@ -211,6 +215,15 @@ WPSoundStream* WPSoundParser::Parse(const wpscene::WPSoundObject& obj, fs::VFS& 
     if (vol <= 0.001f && ! obj.hasVolumeScript && ! obj.startsilent) {
         LOG_INFO(
             "sound '%s': skipped (volume=%.3f, no script, not startsilent)", obj.name.c_str(), vol);
+        return nullptr;
+    }
+
+    // A stream with zero tracks can never play; mounting it would crash the
+    // miniaudio worker thread the first time it polls NextPcmData → Switch()
+    // (empty-vector dereference). Wallpaper 2979524338 (Outset Island/Zelda)
+    // ships a placeholder "Songs" sound layer with no files.
+    if (obj.sound.empty()) {
+        LOG_INFO("sound '%s': skipped (no tracks)", obj.name.c_str());
         return nullptr;
     }
 

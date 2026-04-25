@@ -31,6 +31,7 @@ add_executable(backend_scene_tests
     test_SceneVertexArray.cpp
     test_WPJson.cpp
     test_WPSoundHelpers.cpp
+    test_WPSoundParser.cpp
     test_SceneTickHelpers.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
@@ -56,6 +57,7 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/WPMdlParser.cpp
     ${SRC_DIR}/WPJson.cpp
     ${SRC_DIR}/WPParticleParser.cpp
+    ${SRC_DIR}/WPSoundParser.cpp
     ${SRC_DIR}/wpscene/WPParticleObject.cpp
     ${SRC_DIR}/wpscene/WPMaterial.cpp
     ${SRC_DIR}/Scene/SceneCamera.cpp
