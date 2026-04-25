@@ -1629,6 +1629,12 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             if (! csp || ! csp->prepared() || ! csp->isCacheable()) continue;
             cacheable_total++;
             if (safe[i]) {
+                // Skip cache for passes whose output is _rt_default: PrePass
+                // unconditionally clears _rt_default each frame, so a cached
+                // CSP for it would leave clearcolor visible on every frame
+                // after the cache marks it skip-safe.  Offscreen/pingpong RTs
+                // are not touched by PrePass and remain safe to cache.
+                if (csp->desc().output == SpecTex_Default) continue;
                 csp->setCanCache(true);
                 cache_gated++;
                 auto&             d    = csp->desc();
