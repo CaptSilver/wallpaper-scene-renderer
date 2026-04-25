@@ -239,6 +239,10 @@ public:
     void requestScreenshot(const std::string& path);
     bool screenshotDone() const;
 
+    // Debug: hide any scene object whose name contains any comma-separated
+    // needle.  Must be set before scene load.  Empty disables.
+    void setHidePattern(const std::string& pat);
+
 private:
     bool m_inited { false };
 

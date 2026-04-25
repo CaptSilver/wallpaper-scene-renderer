@@ -246,7 +246,78 @@ TEST_SUITE("WPPuppet_Prepared") {
         CHECK(bone.noParent() == false);
     }
 
+    TEST_CASE("world_transform on root bone equals its own transform") {
+        auto puppet = makePuppet(2, 1, 10.0, 2);
+        puppet->bones[0].transform.pretranslate(Eigen::Vector3f(7.0f, 0.0f, 0.0f));
+        puppet->prepared();
+        // Root bone has no parent → world_transform == transform
+        CHECK(puppet->bones[0].world_transform.matrix().isApprox(
+            puppet->bones[0].transform.matrix(), 1e-5f));
+    }
+
+    TEST_CASE("world_transform on child bone accumulates the parent chain") {
+        auto puppet = makePuppet(2, 1, 10.0, 2);
+        puppet->bones[0].transform.pretranslate(Eigen::Vector3f(2.0f, 0.0f, 0.0f));
+        puppet->bones[1].transform.pretranslate(Eigen::Vector3f(0.0f, 3.0f, 0.0f));
+        puppet->prepared();
+        // bones[1].world_transform should equal bones[0].transform * bones[1].transform.
+        // For pure translations that's a (2, 3, 0) translation.
+        auto t = puppet->bones[1].world_transform.translation();
+        CHECK(t.x() == doctest::Approx(2.0f));
+        CHECK(t.y() == doctest::Approx(3.0f));
+        CHECK(t.z() == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("world_transform and offset_trans are inverses") {
+        // The two prepared() outputs should form an identity round-trip.
+        // This pins down the contract our scene-loading code relies on
+        // when it picks one or the other.
+        auto puppet = makePuppet(3, 1, 10.0, 2);
+        puppet->bones[0].transform.pretranslate(Eigen::Vector3f(1.5f, 0.0f, 0.0f));
+        puppet->bones[1].transform.pretranslate(Eigen::Vector3f(0.0f, 2.5f, 0.0f));
+        // bone[2] parent default is bone 1 from makePuppet's chain — the
+        // helper builds parent = i-1.
+        puppet->bones[2].transform.pretranslate(Eigen::Vector3f(0.5f, -1.0f, 0.0f));
+        puppet->prepared();
+        for (uint i = 0; i < puppet->bones.size(); i++) {
+            auto product = puppet->bones[i].world_transform * puppet->bones[i].offset_trans;
+            CHECK_MESSAGE(
+                product.matrix().isApprox(Eigen::Affine3f::Identity().matrix(), 1e-5f),
+                "world_transform × offset_trans should be identity for bone " << i);
+        }
+    }
+
 } // TEST_SUITE("WPPuppet_Prepared")
+
+// ===========================================================================
+// WPPuppet::Attachment — fields and lookup
+// ===========================================================================
+
+TEST_SUITE("WPPuppet_Attachment") {
+    TEST_CASE("Attachment defaults") {
+        WPPuppet::Attachment att;
+        CHECK(att.name.empty());
+        CHECK(att.bone_index == 0u);
+        CHECK(att.transform.matrix().isApprox(Eigen::Affine3f::Identity().matrix(), 1e-5f));
+    }
+
+    TEST_CASE("findAttachment by name returns matching record") {
+        WPPuppet puppet;
+        puppet.attachments.push_back({});
+        puppet.attachments.back().name       = "Attachment";
+        puppet.attachments.back().bone_index = 0;
+        puppet.attachments.push_back({});
+        puppet.attachments.back().name       = "head";
+        puppet.attachments.back().bone_index = 2;
+
+        const auto* a = puppet.findAttachment("head");
+        REQUIRE(a != nullptr);
+        CHECK(a->bone_index == 2u);
+
+        const auto* missing = puppet.findAttachment("not-real");
+        CHECK(missing == nullptr);
+    }
+}
 
 // ===========================================================================
 // WPPuppetLayer::prepared() — blend calculation

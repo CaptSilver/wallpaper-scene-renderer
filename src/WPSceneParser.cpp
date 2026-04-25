@@ -17,6 +17,7 @@
 #include "WPParticleParser.hpp"
 #include "WPSoundParser.hpp"
 #include "WPMdlParser.hpp"
+#include "WPSceneAttachmentCompose.hpp"
 
 #include "Particle/WPParticleRawGener.h"
 #include "Particle/ParticleSystem.h"
@@ -36,6 +37,7 @@
 
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -86,6 +88,20 @@ struct ParseContext {
     // "attachment": "<bone-or-attachment-name>" field against the parent's
     // MDAT attachment table.
     std::map<i32, std::shared_ptr<WPPuppet>> node_puppet;
+
+    // Diagnostic-only: parent's MDL vertex bounds and scene.json size, kept
+    // so a child's attachment-resolution log can show what coordinate space
+    // the MDAT attachment matrix is likely in (MDL pixel vs. scene-size).
+    // Layout: {xmin, ymin, zmin, xmax, ymax, zmax}.
+    std::map<i32, std::array<float, 6>> node_mdl_bounds;
+    std::map<i32, std::array<float, 2>> node_scene_size;
+    std::map<i32, std::string>          node_name_for_log;
+
+    // Debug hide-pattern filter (comma-separated substrings).  Objects whose
+    // name contains any needle get rendered invisible.  Plumbed in from
+    // sceneviewer's --hide-pattern CLI flag.  Empty string disables.
+    std::string              hide_pattern;
+    std::vector<std::string> hidden_names; // populated for end-of-parse summary
 
     // Layer names referenced by any SceneScript (via getLayer('X')).  These
     // layers may have their visibility toggled at runtime, so we keep them in
@@ -1178,6 +1194,64 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
     }
 
+    // Diagnostic: capture MDL vertex bounds + scene.json size so a child's
+    // attachment-resolution log can compare attMat coordinates against the
+    // parent's MDL space and scene size.  Helps identify which coordinate
+    // space MDAT attachment matrices live in (MDL-pixel vs scene-size).
+    if (puppet && ! puppet->vertexs.empty()) {
+        float xmin = std::numeric_limits<float>::infinity();
+        float ymin = std::numeric_limits<float>::infinity();
+        float zmin = std::numeric_limits<float>::infinity();
+        float xmax = -std::numeric_limits<float>::infinity();
+        float ymax = -std::numeric_limits<float>::infinity();
+        float zmax = -std::numeric_limits<float>::infinity();
+        for (const auto& v : puppet->vertexs) {
+            xmin = std::min(xmin, v.position[0]);
+            ymin = std::min(ymin, v.position[1]);
+            zmin = std::min(zmin, v.position[2]);
+            xmax = std::max(xmax, v.position[0]);
+            ymax = std::max(ymax, v.position[1]);
+            zmax = std::max(zmax, v.position[2]);
+        }
+        context.node_mdl_bounds[wpimgobj.id]   = { xmin, ymin, zmin, xmax, ymax, zmax };
+        context.node_scene_size[wpimgobj.id]   = { wpimgobj.size[0], wpimgobj.size[1] };
+        context.node_name_for_log[wpimgobj.id] = wpimgobj.name;
+        LOG_INFO("MDL bounds id=%d name='%s' x=[%.1f,%.1f] y=[%.1f,%.1f] span=(%.0f,%.0f) "
+                 "scene_size=(%.0f,%.0f) ratio=(%.2f,%.2f) attachments=%zu",
+                 wpimgobj.id,
+                 wpimgobj.name.c_str(),
+                 xmin,
+                 xmax,
+                 ymin,
+                 ymax,
+                 xmax - xmin,
+                 ymax - ymin,
+                 wpimgobj.size[0],
+                 wpimgobj.size[1],
+                 (xmax - xmin) > 0 ? wpimgobj.size[0] / (xmax - xmin) : 0.0f,
+                 (ymax - ymin) > 0 ? wpimgobj.size[1] / (ymax - ymin) : 0.0f,
+                 puppet->puppet ? puppet->puppet->attachments.size() : 0u);
+        if (puppet->puppet) {
+            for (const auto& att : puppet->puppet->attachments) {
+                const auto& m = att.transform.matrix();
+                float       nx = (xmax - xmin) > 0 ? (m(0, 3) - xmin) / (xmax - xmin) : 0.0f;
+                float       ny = (ymax - ymin) > 0 ? (m(1, 3) - ymin) / (ymax - ymin) : 0.0f;
+                LOG_INFO("  ATT '%s' trans=(%.2f, %.2f, %.2f) bone[0]_trans=(%.2f, %.2f) "
+                         "norm_in_mdl=(%.0f%%, %.0f%%)",
+                         att.name.c_str(),
+                         m(0, 3),
+                         m(1, 3),
+                         m(2, 3),
+                         puppet->puppet->bones.empty() ? 0.0f
+                                                       : puppet->puppet->bones[0].transform.matrix()(0, 3),
+                         puppet->puppet->bones.empty() ? 0.0f
+                                                       : puppet->puppet->bones[0].transform.matrix()(1, 3),
+                         nx * 100.0f,
+                         ny * 100.0f);
+            }
+        }
+    }
+
     // wpimgobj.origin[1] = context.ortho_h - wpimgobj.origin[1];
     auto spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
                                                  Vector3f(wpimgobj.scale.data()),
@@ -1211,6 +1285,38 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // m_visible to match the JSON so they start in the correct state.
     if (wpimgobj.visibleIsComboSelector || isScriptedLayer) {
         spImgNode->SetVisible(wpimgobj.visible);
+    }
+    // Debug hide-pattern filter.  When set (via SceneWallpaper::setHidePattern,
+    // wired from sceneviewer's --hide-pattern CLI flag), hides any scene
+    // object whose name contains any comma-separated needle.  Useful for
+    // isolating which cards occupy which world positions when a cluster of
+    // same-attachment siblings overlaps.
+    if (! context.hide_pattern.empty()) {
+        auto to_lower = [](std::string_view s) {
+            std::string r(s);
+            for (auto& c : r) c = (char)std::tolower((unsigned char)c);
+            return r;
+        };
+        const std::string name_lower = to_lower(wpimgobj.name);
+        std::string_view  needles(context.hide_pattern);
+        while (! needles.empty()) {
+            auto        comma  = needles.find(',');
+            auto        needle = needles.substr(0, comma);
+            std::string needle_lower = to_lower(needle);
+            if (! needle_lower.empty()
+                && name_lower.find(needle_lower) != std::string::npos) {
+                spImgNode->SetVisible(false);
+                context.hidden_names.push_back(wpimgobj.name + " (id=" +
+                                               std::to_string(wpimgobj.id) + ")");
+                LOG_INFO("HidePattern: id=%d name='%s' (match '%s')",
+                         wpimgobj.id,
+                         wpimgobj.name.c_str(),
+                         needle_lower.c_str());
+                break;
+            }
+            if (comma == std::string_view::npos) break;
+            needles.remove_prefix(comma + 1);
+        }
     }
     spImgNode->SetOffscreen(isOffscreen);
 
@@ -1409,16 +1515,89 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             if (context.original_world_transforms.count(wpimgobj.parent_id)) {
                 parent_chain = context.original_world_transforms[wpimgobj.parent_id];
             }
-            if (! wpimgobj.attachment.empty()) {
+            // Resolve parent's puppet (may be null for non-puppet parents
+            // or unknown parent ids).  Used both for diagnostic logging
+            // below and for the actual composition via composeAttachedChildWorld.
+            std::shared_ptr<WPPuppet> parent_puppet;
+            {
                 auto pit = context.node_puppet.find(wpimgobj.parent_id);
-                if (pit != context.node_puppet.end() && pit->second) {
-                    if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
-                        Eigen::Matrix4d attMat = att->transform.matrix().cast<double>();
-                        parent_chain           = parent_chain * attMat;
+                if (pit != context.node_puppet.end()) parent_puppet = pit->second;
+            }
+
+            // Diagnostic: dump where the named attachment's transform lives
+            // in the parent's MDL bounds vs the parent's scene.json size.
+            // The "scaled" line shows what the offset would be if the
+            // attachment translation were proportionally remapped from MDL
+            // pixel units to scene-size units.  No effect on rendering;
+            // grep for "ATT " in the sceneviewer log.
+            if (parent_puppet && ! wpimgobj.attachment.empty()) {
+                if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
+                    if (att->bone_index < parent_puppet->bones.size()) {
+                        Eigen::Matrix4d attMat =
+                            att->transform.matrix().cast<double>();
+                        auto bit = context.node_mdl_bounds.find(wpimgobj.parent_id);
+                        auto sit = context.node_scene_size.find(wpimgobj.parent_id);
+                        auto nit = context.node_name_for_log.find(wpimgobj.parent_id);
+                        const char* parent_name =
+                            (nit != context.node_name_for_log.end()) ? nit->second.c_str() : "?";
+                        double tx = attMat(0, 3);
+                        double ty = attMat(1, 3);
+                        double tz = attMat(2, 3);
+                        double xmin = 0, ymin = 0, span_x = 1, span_y = 1;
+                        bool   have_bounds = bit != context.node_mdl_bounds.end();
+                        bool   have_size   = sit != context.node_scene_size.end();
+                        if (have_bounds) {
+                            xmin   = bit->second[0];
+                            ymin   = bit->second[1];
+                            span_x = bit->second[3] - bit->second[0];
+                            span_y = bit->second[4] - bit->second[1];
+                        }
+                        if (have_bounds && have_size && span_x > 0 && span_y > 0) {
+                            double ratio_x = sit->second[0] / span_x;
+                            double ratio_y = sit->second[1] / span_y;
+                            LOG_INFO(
+                                "ATT child id=%d name='%s' attach='%s' parent_id=%d ('%s')",
+                                wpimgobj.id,
+                                wpimgobj.name.c_str(),
+                                wpimgobj.attachment.c_str(),
+                                wpimgobj.parent_id,
+                                parent_name);
+                            LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
+                            LOG_INFO("  parent mdl_span=(%.0f,%.0f) scene_size=(%.0f,%.0f) "
+                                     "ratio=(%.2f,%.2f)",
+                                     span_x,
+                                     span_y,
+                                     sit->second[0],
+                                     sit->second[1],
+                                     ratio_x,
+                                     ratio_y);
+                            LOG_INFO("  attMat if scaled to scene-size = (%.2f, %.2f)",
+                                     tx * ratio_x,
+                                     ty * ratio_y);
+                            LOG_INFO("  norm_in_parent_mdl = (%.0f%%, %.0f%%)",
+                                     span_x > 0 ? (tx - xmin) / span_x * 100.0 : 0.0,
+                                     span_y > 0 ? (ty - ymin) / span_y * 100.0 : 0.0);
+                            LOG_INFO("  parent_world=(%.1f,%.1f) -> with raw attMat: (%.1f,%.1f)",
+                                     parent_chain(0, 3),
+                                     parent_chain(1, 3),
+                                     parent_chain(0, 3) + tx,
+                                     parent_chain(1, 3) + ty);
+                        } else {
+                            LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d "
+                                     "(no parent bounds/size cached)",
+                                     wpimgobj.id,
+                                     wpimgobj.name.c_str(),
+                                     wpimgobj.attachment.c_str(),
+                                     wpimgobj.parent_id);
+                            LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
+                        }
                     }
                 }
             }
-            context.original_world_transforms[wpimgobj.id] = parent_chain * local;
+
+            auto compose_result = composeAttachedChildWorld(
+                parent_chain, parent_puppet, wpimgobj.attachment, local);
+            context.original_world_transforms[wpimgobj.id] = compose_result.world;
         } else {
             context.original_world_transforms[wpimgobj.id] = local;
         }
@@ -2945,6 +3124,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     //	LOG_INFO(nlohmann::json(sc).dump(4));
 
     ParseContext context;
+    context.hide_pattern = m_hide_pattern;
 
     std::vector<WPObjectVar> wp_objs;
 
@@ -3892,5 +4072,17 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     WPShaderParser::FinalGlslang();
     WPTextRenderer::Shutdown();
+
+    // End-of-parse hide-pattern summary — prints once to stderr so it's easy
+    // to see what the --hide-pattern flag filtered out without greping logs.
+    if (! context.hidden_names.empty()) {
+        std::cerr << "HidePattern: filtered " << context.hidden_names.size()
+                  << " scene object(s) matching '" << context.hide_pattern << "':\n";
+        for (const auto& s : context.hidden_names) {
+            std::cerr << "  - " << s << '\n';
+        }
+        std::cerr.flush();
+    }
+
     return context.scene;
 }

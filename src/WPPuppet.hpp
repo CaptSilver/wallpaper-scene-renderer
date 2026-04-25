@@ -28,6 +28,14 @@ public:
         bool noParent() const { return parent == 0xFFFFFFFFu; }
         // prepared
         Eigen::Affine3f offset_trans { Eigen::Affine3f::Identity() };
+        // Accumulated bind-pose transform through the bone hierarchy
+        // (parent.world_transform * this.transform).  Used to compute each
+        // attachment point's position relative to bone[0] — the puppet's
+        // SceneNode origin is interpreted as "where bone[0] lives", so a
+        // child anchored to bone i picks up an extra
+        //   (bones[i].world_transform * bones[0].world_transform.inverse())
+        // factor in its attachment chain.
+        Eigen::Affine3f world_transform { Eigen::Affine3f::Identity() };
         /*
         Eigen::Vector3f world_axis_x;
         Eigen::Vector3f world_axis_y;
@@ -42,6 +50,13 @@ public:
     struct Attachment {
         std::string     name;
         Eigen::Affine3f transform { Eigen::Affine3f::Identity() };
+        // Bone this attachment is rigged to.  Children of a puppet attached
+        // via this slot inherit the bone's world transform in addition to the
+        // attachment's local matrix:
+        //   child.world = parent.world * bones[bone_index].transform
+        //                                * attachment.transform * child.local
+        // Stored in the MDAT block as a u16 immediately before the name.
+        uint32_t        bone_index { 0 };
     };
     struct BoneFrame {
         Eigen::Vector3f position;

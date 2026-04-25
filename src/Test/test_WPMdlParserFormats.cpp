@@ -583,7 +583,9 @@ TEST_SUITE("WPMdlParser.Puppet") {
         b.u32(0);          // 4 unused bytes
         b.u16(1);          // one attachment
 
-        b.u16(0);      // 2 unused bytes per attachment
+        // The u16 immediately before the name is the bone_index this
+        // attachment is rigged to.  bone_index=0 here means "rigged to root".
+        b.u16(0);
         b.str("hand"); // name
         b.translated_mat4(1.0f, 2.0f, 3.0f);
 
@@ -597,10 +599,58 @@ TEST_SUITE("WPMdlParser.Puppet") {
         REQUIRE(mdl.puppet != nullptr);
         REQUIRE(mdl.puppet->attachments.size() == 1);
         CHECK(mdl.puppet->attachments[0].name == "hand");
+        CHECK(mdl.puppet->attachments[0].bone_index == 0u);
         auto t = mdl.puppet->attachments[0].transform.translation();
         CHECK(t.x() == doctest::Approx(1.0f));
         CHECK(t.y() == doctest::Approx(2.0f));
         CHECK(t.z() == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("MDAT attachment captures non-zero bone_index") {
+        // Reproduces SAO Asuna body's 'head' attachment which is rigged
+        // to bone[2].  Verifies the u16 immediately before the name is
+        // actually parsed (we used to skip it).
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 1);
+        b.u32(0);
+        b.u16(0);
+        b.u16(0);
+
+        b.str("MDAT0001");
+        b.u32(0);
+        b.u16(2); // two attachments
+
+        b.u16(0); // bone_index = 0 (root)
+        b.str("Attachment");
+        b.translated_mat4(0.0f, 0.0f, 0.0f);
+
+        b.u16(2); // bone_index = 2 (head bone, like SAO asuna body)
+        b.str("head");
+        b.translated_mat4(-32.51f, 116.41f, 0.0f);
+
+        b.str("MDLA0000");
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "mdat_bones.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        REQUIRE(mdl.puppet->attachments.size() == 2);
+        CHECK(mdl.puppet->attachments[0].name == "Attachment");
+        CHECK(mdl.puppet->attachments[0].bone_index == 0u);
+        CHECK(mdl.puppet->attachments[1].name == "head");
+        CHECK(mdl.puppet->attachments[1].bone_index == 2u);
+        auto t = mdl.puppet->attachments[1].transform.translation();
+        CHECK(t.x() == doctest::Approx(-32.51f));
+        CHECK(t.y() == doctest::Approx(116.41f));
     }
 
     TEST_CASE("puppet with MDLA animation + keyframe events") {

@@ -90,6 +90,8 @@ public:
     MainHandler();
     virtual ~MainHandler() {};
 
+    void setHidePattern(const std::string& pat) { m_scene_parser.SetHidePattern(pat); }
+
     bool init();
     auto renderHandler() const { return m_render_handler; }
     bool inited() const { return m_inited; }
@@ -1724,6 +1726,10 @@ void SceneWallpaper::requestScreenshot(const std::string& path) {
 
 bool SceneWallpaper::screenshotDone() const {
     return m_main_handler->renderHandler()->screenshotDone();
+}
+
+void SceneWallpaper::setHidePattern(const std::string& pat) {
+    m_main_handler->setHidePattern(pat);
 }
 
 MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {

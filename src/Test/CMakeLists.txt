@@ -18,6 +18,7 @@ add_executable(backend_scene_tests
     test_ParticleSystem.cpp
     test_ParticleTrail.cpp
     test_WPPuppet.cpp
+    test_WPSceneAttachmentCompose.cpp
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
     test_SceneCamera.cpp

@@ -429,9 +429,13 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     f.ReadUint16(); // number of attachments in the MDAT section
 
                 for (int i = 0; i < num_attachments; i++) {
-                    f.ReadUint16(); // skip 2 bytes
+                    // u16 before the name is the bone-index the attachment
+                    // is rigged to.  Used at render time so children of this
+                    // puppet attached via this slot inherit the bone's world
+                    // transform in addition to the attachment matrix.
                     WPPuppet::Attachment att;
-                    att.name = f.ReadStr();
+                    att.bone_index = f.ReadUint16();
+                    att.name       = f.ReadStr();
                     // 64 bytes = 4x4 float matrix (column-major) describing
                     // the attachment point's transform in puppet local space.
                     // Children that rig to this attachment (via scene.json's
@@ -442,9 +446,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
                     {
                         auto m = att.transform.matrix();
-                        LOG_INFO("    MDAT attach '%s' trans=(%.2f, %.2f, %.2f) "
+                        LOG_INFO("    MDAT attach '%s' bone_idx=%u trans=(%.2f, %.2f, %.2f) "
                                  "row0=[%.3f %.3f %.3f %.3f] row1=[%.3f %.3f %.3f %.3f]",
                                  att.name.c_str(),
+                                 att.bone_index,
                                  att.transform.translation().x(),
                                  att.transform.translation().y(),
                                  att.transform.translation().z(),

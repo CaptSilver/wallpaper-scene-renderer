@@ -20,7 +20,8 @@ void WPPuppet::prepared() {
         combined_tran[i] =
             (b.noParent() ? Affine3f::Identity() : combined_tran[b.parent]) * b.transform;
 
-        b.offset_trans = combined_tran[i].inverse();
+        b.world_transform = combined_tran[i];
+        b.offset_trans    = combined_tran[i].inverse();
         /*
         b.world_axis_x = (b.offset_trans.linear() *
         Vector3f::UnitX()).normalized(); b.world_axis_y =

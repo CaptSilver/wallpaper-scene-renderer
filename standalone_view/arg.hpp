@@ -163,6 +163,12 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .nargs(1)
         .scan<'g', double>();
 
+    arg.add_argument("--hide-pattern")
+        .help("debug: hide any scene object whose name contains any of the "
+              "comma-separated substrings (e.g. 'hair' or 'hair c1,hair top')")
+        .default_value(std::string())
+        .nargs(1);
+
     arg.add_argument("--js-eval")
         .help("run arbitrary JS in the SceneScript QJSEngine once at tick 1 "
               "(e.g. 'shared.rst=1' to force a 3body universe reset)")

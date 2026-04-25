@@ -138,6 +138,14 @@ int main(int argc, char** argv) {
         psw->setPropertyString(wallpaper::PROPERTY_USER_PROPS, user_props);
     }
 
+    // --hide-pattern goes in before scene-load so WPSceneParser sees it
+    // while building the scene graph.
+    std::string hide_pattern = program.get<std::string>("--hide-pattern");
+    if (! hide_pattern.empty()) {
+        std::cout << "--hide-pattern: " << hide_pattern << std::endl;
+        psw->setHidePattern(hide_pattern);
+    }
+
     glfwSetWindowUserPointer(window, &data);
 
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
