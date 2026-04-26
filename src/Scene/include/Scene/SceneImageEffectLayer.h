@@ -44,6 +44,14 @@ public:
     void AddEffect(const std::shared_ptr<SceneImageEffect>& node) { m_effects.push_back(node); }
     std::size_t EffectCount() const { return m_effects.size(); }
     auto&       GetEffect(std::size_t index) { return m_effects.at(index); }
+
+    // Remove effects whose first node's shader has empty SPIR-V codes
+    // (compilation failed during async flush — typically workshop shaders
+    // that didn't survive HLSL→GLSL).  Returns the number removed.
+    // Intended to be called once after WPShaderParser::FlushPendingCompilations
+    // so ResolveEffect can pick the previous successfully-compiled effect as
+    // last_output instead of leaving a hole at the end of the chain.
+    std::size_t RemoveFailedEffects();
     const auto& FirstTarget() const { return m_pingpong_a; }
     SceneMesh&  FinalMesh() const { return *m_final_mesh; }
     SceneNode&  FinalNode() const { return *m_final_node; }

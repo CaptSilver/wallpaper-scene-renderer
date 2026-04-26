@@ -4087,6 +4087,31 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // Wait for all deferred async shader compilations
     WPShaderParser::FlushPendingCompilations(*context.vfs);
 
+    // Filter dead effects whose shaders failed to compile (workshop shaders
+    // that didn't survive HLSL→GLSL — e.g. workshop/2487531853 lens_flare_sun
+    // on the Naruto-family wallpapers).  Without this, ResolveEffect would
+    // still target the failed effect as last_output and rewrite its output
+    // to _rt_default — but the failed pass is dropped at prepare time, so
+    // nothing actually composes the chain into _rt_default and the layer
+    // disappears (or only the BG behind it shows through).  Removing the
+    // dead effects lets ResolveEffect promote the previous good effect as
+    // last_output and the chain composes correctly.
+    {
+        std::size_t total_removed = 0;
+        for (auto& [_, cam] : context.scene->cameras) {
+            if (! cam || ! cam->HasImgEffect()) continue;
+            auto& effs = cam->GetImgEffect();
+            if (! effs) continue;
+            std::size_t r = effs->RemoveFailedEffects();
+            total_removed += r;
+        }
+        if (total_removed > 0) {
+            LOG_INFO("Effect chain repair: dropped %zu effect(s) with failed shader "
+                     "compile so chains compose correctly via earlier-good last_output",
+                     total_removed);
+        }
+    }
+
     WPShaderParser::FinalGlslang();
     WPTextRenderer::Shutdown();
 

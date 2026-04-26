@@ -1,5 +1,7 @@
 #include "SceneImageEffectLayer.h"
 #include "SceneNode.h"
+#include "SceneMaterial.h"
+#include "SceneShader.h"
 
 #include "SpecTexs.hpp"
 #include "Core/StringHelper.hpp"
@@ -17,6 +19,34 @@ SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, float w, float h,
       m_pingpong_b(pingpong_b),
       m_final_mesh(std::make_unique<SceneMesh>()),
       m_final_node(std::make_unique<SceneNode>()) {};
+
+std::size_t SceneImageEffectLayer::RemoveFailedEffects() {
+    std::size_t removed = 0;
+    auto it = m_effects.begin();
+    while (it != m_effects.end()) {
+        bool any_compiled = false;
+        for (auto& n : (*it)->nodes) {
+            if (! n.sceneNode || ! n.sceneNode->HasMaterial()) continue;
+            auto* mat = n.sceneNode->Mesh()->Material();
+            auto& shader = mat->customShader.shader;
+            if (shader && ! shader->codes.empty()) {
+                any_compiled = true;
+                break;
+            }
+        }
+        if (! any_compiled && ! (*it)->nodes.empty()) {
+            LOG_INFO("RemoveFailedEffects: dropping effect '%s' (%zu node(s)) — "
+                     "no node compiled successfully",
+                     (*it)->name.c_str(),
+                     (*it)->nodes.size());
+            it = m_effects.erase(it);
+            removed++;
+        } else {
+            ++it;
+        }
+    }
+    return removed;
+}
 
 void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                                           std::string_view effect_cam) {
