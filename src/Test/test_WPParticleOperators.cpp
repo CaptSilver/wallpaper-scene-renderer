@@ -567,6 +567,43 @@ TEST_SUITE("remapvalue") {
         CHECK(p.size == doctest::Approx(0.5));
     }
 
+    TEST_CASE("subtract operation reduces current value") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "subtract" },
+                   { "input", "particlelifetime" },
+                   { "output", "particlesize" },
+                   { "outputrangemin", 5.0 }, { "outputrangemax", 5.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.size = 20.0f;
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(15.0));
+    }
+
+    TEST_CASE("`remap` is the explicit replace operation (alias for set)") {
+        json j_remap = { { "name", "remapvalue" },
+                         { "operation", "remap" },
+                         { "input", "particlelifetime" },
+                         { "output", "particlesize" },
+                         { "outputrangemin", 77.0 }, { "outputrangemax", 77.0 } };
+        json j_set   = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "particlelifetime" },
+                         { "output", "particlesize" },
+                         { "outputrangemin", 77.0 }, { "outputrangemax", 77.0 } };
+        auto op_r = WPParticleParser::genParticleOperatorOp(j_remap, empty_override());
+        auto op_s = WPParticleParser::genParticleOperatorOp(j_set, empty_override());
+        OpFixture fx_r, fx_s;
+        Particle& p_r = fx_r.spawn();
+        Particle& p_s = fx_s.spawn();
+        p_r.size = p_s.size = 5.0f;
+        op_r(fx_r.info());
+        op_s(fx_s.info());
+        CHECK(p_r.size == doctest::Approx(p_s.size));
+        CHECK(p_r.size == doctest::Approx(77.0));
+    }
+
     TEST_CASE("input: random produces a stable per-particle value") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },

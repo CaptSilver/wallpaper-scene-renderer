@@ -1306,13 +1306,24 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     double blend = bw.Factor(p);
 
                     auto apply_scalar = [&](double current, double op_val) -> double {
-                        if (operation == "set") {
+                        // `remap` is the universal default in the source
+                        // operation enum: dest = remapped value (replace).
+                        // Existing wallpapers that omit `operation` were parsed
+                        // with `multiply` as the default in our older impl, so
+                        // keep `multiply` as the no-string fallback to avoid
+                        // shifting visuals on already-shipped scenes; authors
+                        // who want the source-engine default behaviour write
+                        // `operation: "remap"` (or the equivalent `"set"`).
+                        if (operation == "set" || operation == "remap") {
                             return current * (1.0 - blend) + op_val * blend;
                         }
                         if (operation == "add") {
                             return current + op_val * blend;
                         }
-                        // multiply (default)
+                        if (operation == "subtract") {
+                            return current - op_val * blend;
+                        }
+                        // multiply (default — see note above)
                         return current * (1.0 + (op_val - 1.0) * blend);
                     };
 
