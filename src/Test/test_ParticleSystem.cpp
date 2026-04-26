@@ -60,6 +60,50 @@ TEST_SUITE("ParticleInstance") {
         CHECK(inst.Particles().size() == 2);
     }
 
+    TEST_CASE("GetEventParentParticle returns null without parent or with negative index") {
+        ParticleInstance inst;
+        CHECK(inst.GetEventParentParticle() == nullptr);
+        // Synthesise a "parent set, index unset" state: the helper must still reject -1.
+        ParticleInstance fake_parent;
+        fake_parent.ParticlesVec().emplace_back();
+        inst.GetBoundedData().parent       = &fake_parent;
+        inst.GetBoundedData().particle_idx = -1;
+        CHECK(inst.GetEventParentParticle() == nullptr);
+    }
+
+    TEST_CASE("GetEventParentParticle returns null when index is out of range") {
+        ParticleInstance parent;
+        parent.ParticlesVec().resize(2);
+        ParticleInstance child;
+        child.GetBoundedData().parent       = &parent;
+        child.GetBoundedData().particle_idx = 5;
+        CHECK(child.GetEventParentParticle() == nullptr);
+    }
+
+    TEST_CASE("GetEventParentParticle returns null when the parent particle is dead") {
+        ParticleInstance parent;
+        parent.ParticlesVec().resize(1);
+        parent.ParticlesVec()[0].lifetime = 0.0f;
+        ParticleInstance child;
+        child.GetBoundedData().parent       = &parent;
+        child.GetBoundedData().particle_idx = 0;
+        CHECK(child.GetEventParentParticle() == nullptr);
+    }
+
+    TEST_CASE("GetEventParentParticle returns the live parent particle") {
+        ParticleInstance parent;
+        parent.ParticlesVec().resize(2);
+        parent.ParticlesVec()[1].lifetime = 1.5f;
+        parent.ParticlesVec()[1].size     = 42.0f;
+        ParticleInstance child;
+        child.GetBoundedData().parent       = &parent;
+        child.GetBoundedData().particle_idx = 1;
+        const Particle* p                   = child.GetEventParentParticle();
+        REQUIRE(p != nullptr);
+        CHECK(p->lifetime == doctest::Approx(1.5f));
+        CHECK(p->size == doctest::Approx(42.0f));
+    }
+
 } // ParticleInstance
 
 // ===========================================================================

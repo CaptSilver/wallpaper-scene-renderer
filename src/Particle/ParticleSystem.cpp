@@ -39,6 +39,16 @@ std::vector<Particle>&    ParticleInstance::ParticlesVec() { return m_particles;
 
 ParticleInstance::BoundedData& ParticleInstance::GetBoundedData() { return m_bounded_data; }
 
+const Particle* ParticleInstance::GetEventParentParticle() const {
+    if (m_bounded_data.parent == nullptr) return nullptr;
+    if (m_bounded_data.particle_idx < 0) return nullptr;
+    auto parent_particles = m_bounded_data.parent->Particles();
+    if (static_cast<usize>(m_bounded_data.particle_idx) >= parent_particles.size()) return nullptr;
+    const Particle& p = parent_particles[static_cast<usize>(m_bounded_data.particle_idx)];
+    if (p.lifetime <= 0.0f) return nullptr;
+    return &p;
+}
+
 ParticleSubSystem::ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMesh> sm,
                                      uint32_t maxcount, double rate, u32 maxcount_instance,
                                      double probability, SpawnType type,
@@ -321,6 +331,7 @@ void ParticleSubSystem::Emitt() {
             .controlpoints = m_controlpoints,
             .time          = m_time,
             .time_pass     = particleTime,
+            .instance      = inst.get(),
         };
 
         bool  has_live = false;

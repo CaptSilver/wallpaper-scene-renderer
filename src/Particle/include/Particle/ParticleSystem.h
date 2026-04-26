@@ -47,6 +47,15 @@ public:
     std::vector<ParticleTrailHistory>& TrailHistories();
     u32                                TrailCapacity() const;
 
+    // Resolves the parent-event particle for this instance, or nullptr when the link is
+    // missing/stale/dead.  EVENT_FOLLOW, EVENT_SPAWN, and EVENT_DEATH children carry a
+    // `parent` subsystem pointer + `particle_idx`; the helper guards each step (parent
+    // pointer set, index in range, particle still alive) so callers can dereference the
+    // returned pointer without re-checking.  Used by the inherit-from-event family
+    // (initializer + per-frame operator) to read the parent's current color/size/alpha/
+    // velocity/rotation, and by any future op that needs to bind to the parent.
+    const Particle* GetEventParentParticle() const;
+
 private:
     bool                              m_is_death { false };
     bool                              m_no_live_particle { false };

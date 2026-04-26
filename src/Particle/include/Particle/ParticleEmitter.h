@@ -13,6 +13,8 @@
 namespace wallpaper
 {
 
+class ParticleInstance;
+
 // Bit OR-ed into a runtime CP's `runtime_flags` once the parser has seen any operator
 // that names that CP slot.  The slot table is exactly 8 entries and the CP-index range
 // any operator may name is [0..7], so the bit lives well above any authored low-byte
@@ -89,6 +91,10 @@ struct ParticleInfo {
     std::span<const ParticleControlpoint> controlpoints;
     double                                time;
     double                                time_pass;
+    // Per-instance back-pointer.  Operators that need to dereference the parent
+    // particle (event-bound subsystems) read it through `instance->GetEventParentParticle()`.
+    // Null on STATIC top-level subsystems and on instances with no live bound parent.
+    const ParticleInstance*               instance { nullptr };
 };
 
 using ParticleInitOp = std::function<void(Particle&, double)>;
