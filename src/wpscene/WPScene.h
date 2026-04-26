@@ -18,6 +18,13 @@ public:
     int32_t width;
     int32_t height;
     bool    auto_ { false };
+    // WE editor preset selecting the bloom/compose pipeline:
+    //   "low" / "medium" / absent → LDR bloom (legacy 4-pass + raw `combine`)
+    //   "ultra"                   → scene-HDR (mip-chain + `combine_hdr`)
+    //   "displayhdr"              → display-HDR (mip-chain + `combine_dhdr_upsample`)
+    // Gated on scene-level `bloom == true` AND `hdr == true` for the HDR/displayHDR
+    // branches; otherwise the LDR path is forced regardless of this string.
+    std::string postprocessing;
 };
 
 class WPSceneCamera {

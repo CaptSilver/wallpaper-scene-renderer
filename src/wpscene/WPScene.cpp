@@ -10,6 +10,7 @@ bool Orthogonalprojection::FromJson(const nlohmann::json& json) {
         GET_JSON_NAME_VALUE(json, "width", width);
         GET_JSON_NAME_VALUE(json, "height", height);
     }
+    GET_JSON_NAME_VALUE_NOWARN(json, "postprocessing", postprocessing);
     return true;
 }
 

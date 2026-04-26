@@ -54,7 +54,9 @@ add_executable(backend_scene_tests
     test_WPMapSequenceParse.cpp
     test_WPRopeCombos.cpp
     test_WPParticleOperators.cpp
+    test_WPScenePostprocessing.cpp
     # Compile specific source files to avoid pulling in Vulkan
+    ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp

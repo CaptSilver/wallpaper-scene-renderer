@@ -33,7 +33,15 @@ constexpr std::string_view WE_REFLECTION_BLUR { "_rt_Reflection_blur" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
 constexpr std::string_view WE_BLOOM_PREFIX { "_rt_Bloom_" };
-constexpr std::string_view WE_BLOOM_SCENE { "_rt_Bloom_Scene" };
+constexpr std::string_view WE_BLOOM_SCENE { "_rt_Bloom_Scene" }; // mip0 (full-res copy of scene)
+// COD-style PBR bloom mip chain — fed by hdr_downsample.frag.  Mip N is at
+// scale 1/(2^N).  Bright-pass extracts mip0→mip1; cascade downsample 1→2→3→4;
+// cascade upsample (additive blend) 4→3→2→1; final compose mip0+mip1.
+constexpr std::string_view WE_BLOOM_MIP1 { "_rt_Bloom_Mip1" };
+constexpr std::string_view WE_BLOOM_MIP2 { "_rt_Bloom_Mip2" };
+constexpr std::string_view WE_BLOOM_MIP3 { "_rt_Bloom_Mip3" };
+constexpr std::string_view WE_BLOOM_MIP4 { "_rt_Bloom_Mip4" };
+// Legacy aliases retained until the rest of the codebase migrates off them.
 constexpr std::string_view WE_BLOOM_QUARTER { "_rt_Bloom_Quarter" };
 constexpr std::string_view WE_BLOOM_EIGHTH { "_rt_Bloom_Eighth" };
 constexpr std::string_view WE_BLOOM_RESULT { "_rt_Bloom_Result" };

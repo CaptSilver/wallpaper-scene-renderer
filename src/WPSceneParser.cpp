@@ -4050,16 +4050,236 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     // Create bloom post-processing passes if enabled
     if (sc.general.bloom) {
-        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d effective_hdr=%d)",
+        // WE chooses between the legacy LDR bloom path and the modern HDR
+        // mip-chain pipeline based on the scene's `postprocessing` enum AND
+        // the scene-level `hdr` boolean.  Per asset+binary inspection:
+        //   - "ultra"      → scene-HDR  (mip-chain + combine_hdr_upsample)
+        //   - "displayhdr" → display-HDR (mip-chain + combine_dhdr_upsample;
+        //                    we currently treat this the same as "ultra"
+        //                    because we don't expose a display-HDR swapchain
+        //                    upgrade — running combine_hdr's SDR LINEAR=0
+        //                    branch is the closest equivalent and gives a
+        //                    sensible degradation on UNORM swapchains)
+        //   - "low" / "medium" / absent → LDR (legacy 4-pass + raw `combine`)
+        // The HDR branches additionally require `hdr: true` at scene level;
+        // without it the LDR path is forced regardless of postprocessing.
+        const auto& pp = sc.general.orthogonalprojection.postprocessing;
+        const bool use_hdr_pipeline =
+            sc.general.hdr && (pp == "ultra" || pp == "displayhdr");
+
+        LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d effective_hdr=%d "
+                 "postprocessing='%s' pipeline=%s)",
                  scene_bloom_strength,
                  scene_bloom_threshold,
                  (int)sc.general.hdr,
-                 (int)effective_hdr);
+                 (int)effective_hdr,
+                 pp.c_str(),
+                 use_hdr_pipeline ? "HDR-mip-chain" : "LDR-legacy");
 
-        auto& scene = *context.scene;
-        auto& vfs   = *context.vfs;
+        auto& scene  = *context.scene;
+        auto& vfs    = *context.vfs;
+        const auto fullW = static_cast<float>(context.ortho_w);
+        const auto fullH = static_cast<float>(context.ortho_h);
 
-        // Create bloom render targets
+      if (use_hdr_pipeline) {
+        // 5-level mip chain.  Mip 0 (= scene RT copy) at full res; each next
+        // level is halved.  hdr_downsample.frag handles all DS/US/extract
+        // variants via combos (BLOOM=1 bright-pass, UPSAMPLE=1 scatter-add,
+        // BICUBIC=1 cubic interp).  See WE assets/shaders/hdr_downsample.frag.
+        scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
+            .width  = context.ortho_w,
+            .height = context.ortho_h,
+            .bind   = { .enable = true, .screen = true },
+        };
+        const std::array<std::pair<std::string_view, float>, 4> mip_specs { {
+            { WE_BLOOM_MIP1, 0.5f },
+            { WE_BLOOM_MIP2, 0.25f },
+            { WE_BLOOM_MIP3, 0.125f },
+            { WE_BLOOM_MIP4, 0.0625f },
+        } };
+        for (auto& [name, scale] : mip_specs) {
+            scene.renderTargets[std::string(name)] = {
+                .width  = 2,
+                .height = 2,
+                .bind   = { .enable = true, .screen = true, .scale = scale },
+            };
+        }
+
+        // Per-pass spec.  `src_scale` is the SOURCE mip's scale (1/(2^src_lvl)),
+        // used to compute g_RenderVar0 corner offsets in UV space:
+        //   dx = 0.5 / src_w = 0.5 / (fullW * src_scale)
+        // The 4-tap shader samples (-dx,-dy), (+dx,-dy), (-dx,+dy), (+dx,+dy)
+        // around v_TexCoord, averaging into the destination mip.
+        enum class Stage
+        {
+            Extract, // BLOOM=1, mip0 → mip1
+            Down,    // plain 4-tap, mipN → mip(N+1)
+            Up,      // UPSAMPLE=1 + additive, mipN → mip(N-1)
+            Compose, // combine_hdr final
+        };
+        struct BloomPassDef {
+            Stage                    stage;
+            std::vector<std::string> textures; // input texture refs
+            std::string              output;   // destination RT
+            float                    src_scale; // source mip scale (for offset calc)
+        };
+        const std::array<BloomPassDef, 8> bloomPasses { {
+            // Bright-pass extract: source is mip0 at full res
+            { Stage::Extract,
+              { std::string(WE_BLOOM_SCENE) },
+              std::string(WE_BLOOM_MIP1),
+              1.0f },
+            // Cascade downsample
+            { Stage::Down,
+              { std::string(WE_BLOOM_MIP1) },
+              std::string(WE_BLOOM_MIP2),
+              0.5f },
+            { Stage::Down,
+              { std::string(WE_BLOOM_MIP2) },
+              std::string(WE_BLOOM_MIP3),
+              0.25f },
+            { Stage::Down,
+              { std::string(WE_BLOOM_MIP3) },
+              std::string(WE_BLOOM_MIP4),
+              0.125f },
+            // Cascade upsample (additive — accumulates into the next-larger mip
+            // which already holds its downsampled-from-above content).
+            { Stage::Up,
+              { std::string(WE_BLOOM_MIP4) },
+              std::string(WE_BLOOM_MIP3),
+              0.0625f },
+            { Stage::Up,
+              { std::string(WE_BLOOM_MIP3) },
+              std::string(WE_BLOOM_MIP2),
+              0.125f },
+            { Stage::Up,
+              { std::string(WE_BLOOM_MIP2) },
+              std::string(WE_BLOOM_MIP1),
+              0.25f },
+            // Final compose: combine_hdr LINEAR=0 path produces clamped linear
+            // (sRGB-decoded scene + 4-tap upsampled bloom · exposure).  FinPass
+            // sRGB-encodes for display.
+            { Stage::Compose,
+              { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_MIP1) },
+              std::string(SpecTex_Default),
+              0.5f },
+        } };
+
+        scene.bloomConfig.enabled   = true;
+        scene.bloomConfig.strength  = scene_bloom_strength;
+        scene.bloomConfig.threshold = scene_bloom_threshold;
+
+        for (auto& def : bloomPasses) {
+            wpscene::WPMaterial wpmat;
+            switch (def.stage) {
+            case Stage::Extract:
+            case Stage::Down:
+            case Stage::Up:      wpmat.shader = "hdr_downsample"; break;
+            case Stage::Compose: wpmat.shader = "combine_hdr"; break;
+            }
+            wpmat.textures = def.textures;
+
+            // Combos drive the shader-side variant.
+            if (def.stage == Stage::Extract) wpmat.combos["BLOOM"] = 1;
+            if (def.stage == Stage::Up) wpmat.combos["UPSAMPLE"] = 1;
+            // Upsample passes additively accumulate into the destination —
+            // the destination mip already holds its downsampled-from-above
+            // content from a prior Down pass, and the Up pass adds the
+            // upsampled smaller mip.  ParseBlendMode("additive") →
+            // BlendMode::Additive (srcAlpha*src + 1*dst), which becomes
+            // src + dst since the shader writes alpha=1.
+            if (def.stage == Stage::Up) wpmat.blending = "additive";
+            // Otherwise: extract / downsample / compose all overwrite (alpha=1
+            // shader output through Normal blend = pure write).
+
+            auto         spNode = std::make_shared<SceneNode>();
+            WPShaderInfo shaderInfo;
+            shaderInfo.baseConstSvs = context.global_base_uniforms;
+            SceneMaterial     material;
+            WPShaderValueData svData;
+
+            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                LOG_ERROR("bloom: failed to load material (stage=%d)", (int)def.stage);
+                scene.bloomConfig.enabled = false;
+                break;
+            }
+
+            LoadConstvalue(material, wpmat, shaderInfo);
+
+            // Per-pass uniforms (set on customShader.constValues directly —
+            // LoadConstvalue's name→glname lookup doesn't map direct
+            // g_-prefixed uniforms reliably through the alias fallback).
+            if (def.stage == Stage::Compose) {
+                // combine_hdr g_RenderVar0: .x = exposure, .y = HDR-display
+                // smoothstep boost (only used by DISPLAYHDR=1 branch we don't
+                // activate; 0 for SDR).
+                material.customShader.constValues["g_RenderVar0"] =
+                    std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
+                // combine_hdr g_TexelSize: 1 texel of g_Texture1 (the bloom
+                // mip we sample).  g_Texture1 = WE_BLOOM_MIP1 at 1/2 scale.
+                material.customShader.constValues["g_TexelSize"] = std::vector<float> {
+                    1.0f / (fullW * 0.5f),
+                    1.0f / (fullH * 0.5f),
+                };
+            } else {
+                // hdr_downsample g_RenderVar0: 4-corner offsets in source RT
+                // UV space (-dx, -dy, +dx, +dy) where d = 0.5 / src_resolution.
+                const float dx = 0.5f / (fullW * def.src_scale);
+                const float dy = 0.5f / (fullH * def.src_scale);
+                material.customShader.constValues["g_RenderVar0"] =
+                    std::vector<float> { -dx, -dy, dx, dy };
+
+                if (def.stage == Stage::Extract) {
+                    // BLOOM=1 branch reads g_BloomBlendParams (knee shape),
+                    // g_BloomTint, g_BloomStrength.  Soft knee from
+                    // (threshold - knee) ramping to (threshold + knee):
+                    //   .x = threshold (hard cutoff)
+                    //   .y = threshold - knee  (knee start)
+                    //   .z = 2*knee            (knee width)
+                    //   .w = 0.25 / knee       (quadratic shaping factor)
+                    // knee=0.30 gives a smooth roll-on around scene_threshold.
+                    const float knee = 0.30f;
+                    material.customShader.constValues["g_BloomBlendParams"] =
+                        std::vector<float> {
+                            scene_bloom_threshold,
+                            scene_bloom_threshold - knee,
+                            2.0f * knee,
+                            0.25f / knee,
+                        };
+                    material.customShader.constValues["g_BloomTint"] =
+                        std::vector<float> { 1.0f, 1.0f, 1.0f };
+                    material.customShader.constValues["g_BloomStrength"] =
+                        std::vector<float> { scene_bloom_strength };
+                }
+                if (def.stage == Stage::Up) {
+                    // UPSAMPLE=1 branch reads g_BloomScatter (multiplies the
+                    // 4-tap average).  1.0 = neutral pass-through scatter.
+                    material.customShader.constValues["g_BloomScatter"] =
+                        std::vector<float> { 1.0f };
+                }
+            }
+
+            auto spMesh = std::make_shared<SceneMesh>();
+            spMesh->AddMaterial(std::move(material));
+            spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
+            spNode->AddMesh(spMesh);
+            spNode->SetCamera("effect");
+
+            context.shader_updater->SetNodeData(spNode.get(), svData);
+
+            scene.bloomConfig.outputs.push_back(def.output);
+            scene.bloomConfig.nodes.push_back(spNode);
+
+            LOG_INFO("bloom: stage=%d shader='%s' → '%s' created",
+                     (int)def.stage,
+                     wpmat.shader.c_str(),
+                     def.output.c_str());
+        }
+      } else {
+        // Legacy LDR bloom: 4 passes (bright-pass quarter, eighth blur-V,
+        // blur-H, raw `combine` add).  Output is unbounded linear; FinPass
+        // hard-clips and sRGB-encodes for display.  Matches WE's `combine_ldr`
+        // material chain for non-"ultra" scenes.
         scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
             .width  = context.ortho_w,
             .height = context.ortho_h,
@@ -4081,29 +4301,22 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             .bind   = { .enable = true, .screen = true, .scale = 0.125 },
         };
 
-        // Bloom pass definitions: shader, input textures, output RT
-        struct BloomPassDef {
+        struct LegacyBloomPassDef {
             std::string              shader;
             std::vector<std::string> textures;
             std::string              output;
         };
-        std::array<BloomPassDef, 4> bloomPasses { {
+        const std::array<LegacyBloomPassDef, 4> legacyPasses { {
             { "downsample_quarter_bloom",
               { std::string(WE_BLOOM_SCENE) },
               std::string(WE_BLOOM_QUARTER) },
             { "downsample_eighth_blur_v",
               { std::string(WE_BLOOM_QUARTER) },
               std::string(WE_BLOOM_EIGHTH) },
-            { "blur_h_bloom", { std::string(WE_BLOOM_EIGHTH) }, std::string(WE_BLOOM_RESULT) },
-            // Final compose: was the legacy "combine" (raw `albedo + bloom`).
-            // combine_hdr (LINEAR=0 default branch) does
-            // `saturate(lin(albedo + bloom)) * g_RenderVar0.x` — sRGB decode
-            // on the accumulated value, clamp, and exposure scale.  Output
-            // is linear in [0, exposure]; FinPass then sRGB-encodes for the
-            // swapchain.  The 4-tap bloom upsample inside the shader uses
-            // g_TexelSize as the offset in UV space — set below to the
-            // eighth-RT texel so the 4 corners span one texel of the bloom RT.
-            { "combine_hdr",
+            { "blur_h_bloom",
+              { std::string(WE_BLOOM_EIGHTH) },
+              std::string(WE_BLOOM_RESULT) },
+            { "combine",
               { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_RESULT) },
               std::string(SpecTex_Default) },
         } };
@@ -4112,12 +4325,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         scene.bloomConfig.strength  = scene_bloom_strength;
         scene.bloomConfig.threshold = scene_bloom_threshold;
 
-        for (auto& def : bloomPasses) {
+        for (auto& def : legacyPasses) {
             wpscene::WPMaterial wpmat;
             wpmat.shader   = def.shader;
             wpmat.textures = def.textures;
 
-            // Pass bloom parameters to downsample_quarter_bloom (first pass extracts bright pixels)
             if (def.shader == "downsample_quarter_bloom") {
                 wpmat.constantshadervalues["bloomstrength"]  = { scene_bloom_strength };
                 wpmat.constantshadervalues["bloomthreshold"] = { scene_bloom_threshold };
@@ -4130,29 +4342,13 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             WPShaderValueData svData;
 
             if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
-                LOG_ERROR("bloom: failed to load material for '%s'", def.shader.c_str());
+                LOG_ERROR("bloom (LDR): failed to load material for '%s'",
+                          def.shader.c_str());
                 scene.bloomConfig.enabled = false;
                 break;
             }
 
             LoadConstvalue(material, wpmat, shaderInfo);
-
-            // combine_hdr per-pass uniforms (post LoadMaterial so they survive
-            // alias resolution; LoadConstvalue's name→glname lookup doesn't
-            // map direct g_-prefixed uniforms reliably here).
-            if (def.shader == "combine_hdr") {
-                // .x = exposure scale.  .y = HDR-display smoothstep boost
-                // (only sampled by the DISPLAYHDR=1 branch which we don't
-                // activate; left at 0 for SDR).  .z/.w unused.
-                material.customShader.constValues["g_RenderVar0"] =
-                    std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
-                // 4-tap bloom-upsample offsets in g_Texture1's UV space.
-                // Bloom RT is at scale 0.125 → 1 texel = 8 / fullW in UV.
-                material.customShader.constValues["g_TexelSize"] = std::vector<float> {
-                    8.0f / static_cast<float>(context.ortho_w),
-                    8.0f / static_cast<float>(context.ortho_h),
-                };
-            }
 
             auto spMesh = std::make_shared<SceneMesh>();
             spMesh->AddMaterial(std::move(material));
@@ -4165,8 +4361,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             scene.bloomConfig.outputs.push_back(def.output);
             scene.bloomConfig.nodes.push_back(spNode);
 
-            LOG_INFO("bloom: pass '%s' → '%s' created", def.shader.c_str(), def.output.c_str());
+            LOG_INFO("bloom (LDR): pass '%s' → '%s' created",
+                     def.shader.c_str(),
+                     def.output.c_str());
         }
+      }
     }
 
     // Reflection blur: two-pass separable Gaussian blur on _rt_Reflection
