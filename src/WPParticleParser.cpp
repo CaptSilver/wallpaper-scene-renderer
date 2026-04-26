@@ -168,9 +168,29 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             r.min[0] = r.min[1] = -32.0f;
             r.max[0] = r.max[1] = 32.0f;
             VecRandom::ReadFromJson(wpj, r);
+            // Optional sub-flag: when true, add the named controlpoint's per-
+            // frame velocity (at scale 1.0) to the random init velocity at
+            // spawn.  Lets a trail spawned from a moving CP inherit that
+            // motion direction (mouse-following sparkles, drift rooted on a
+            // moving spaceline CP).  Authors who need a randomised scaling
+            // factor on top of the CP velocity should use the standalone
+            // `inheritcontrolpointvelocity` initializer instead — this flag
+            // intentionally has no `min` / `max` of its own because those
+            // keys are already consumed by the vec3 random range.
+            bool inherit_cp_vel = false;
+            int  inherit_cp     = 0;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "inheritcontrolpointvelocity", inherit_cp_vel);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", inherit_cp);
+            inherit_cp = ClampCpIndex(inherit_cp);
+            const ParticleControlpoint* cp_data = controlpoints.data();
+            usize                       cp_size = controlpoints.size();
             return [=](Particle& p, double) {
                 auto result = GenRandomVec3(r.min, r.max);
                 PM::ChangeVelocity(p, result[0], result[1], result[2]);
+                if (inherit_cp_vel && (usize)inherit_cp < cp_size) {
+                    Vector3d v = cp_data[inherit_cp].velocity;
+                    PM::ChangeVelocity(p, v);
+                }
             };
         } else if (name == "rotationrandom") {
             VecRandom r;

@@ -859,6 +859,57 @@ TEST_SUITE("BlendWindow on kinematic ops") {
 }
 
 // ===========================================================================
+// velocityrandom inheritcontrolpointvelocity sub-flag
+// ===========================================================================
+
+TEST_SUITE("velocityrandom inherit-cp-velocity flag") {
+    TEST_CASE("flag absent: only the random velocity is applied") {
+        std::array<ParticleControlpoint, 8> cps;
+        cps[0].velocity = Eigen::Vector3d(50, 0, 0);
+        json j = { { "name", "velocityrandom" },
+                   { "min", "0 0 0" }, { "max", "0 0 0" } };
+        auto init = WPParticleParser::genParticleInitOp(
+            j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
+        Particle p;
+        p.velocity = Eigen::Vector3f(0, 0, 0);
+        init(p, 0.0);
+        CHECK(p.velocity.x() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("flag set: CP velocity is added on top of the random velocity") {
+        std::array<ParticleControlpoint, 8> cps;
+        cps[0].velocity = Eigen::Vector3d(50, 0, 0);
+        json j = { { "name", "velocityrandom" },
+                   { "min", "0 0 0" }, { "max", "0 0 0" },
+                   { "inheritcontrolpointvelocity", true },
+                   { "controlpoint", 0 } };
+        auto init = WPParticleParser::genParticleInitOp(
+            j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
+        Particle p;
+        p.velocity = Eigen::Vector3f(0, 0, 0);
+        init(p, 0.0);
+        // min=max=1 → exactly the CP velocity is added.
+        CHECK(p.velocity.x() == doctest::Approx(50.0));
+    }
+
+    TEST_CASE("flag set: CP velocity adds to a non-zero random base") {
+        std::array<ParticleControlpoint, 8> cps;
+        cps[0].velocity = Eigen::Vector3d(50, 0, 0);
+        json j = { { "name", "velocityrandom" },
+                   { "min", "10 0 0" }, { "max", "10 0 0" },
+                   { "inheritcontrolpointvelocity", true },
+                   { "controlpoint", 0 } };
+        auto init = WPParticleParser::genParticleInitOp(
+            j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
+        Particle p;
+        p.velocity = Eigen::Vector3f(0, 0, 0);
+        init(p, 0.0);
+        // 10 (random) + 50 (CP) = 60.
+        CHECK(p.velocity.x() == doctest::Approx(60.0));
+    }
+}
+
+// ===========================================================================
 // inheritcontrolpointvelocity initializer
 // ===========================================================================
 
