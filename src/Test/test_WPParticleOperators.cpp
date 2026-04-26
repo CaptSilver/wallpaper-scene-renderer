@@ -762,6 +762,125 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 }
 
 // ===========================================================================
+// collisionbox / collisionbounds — AABB at CP
+// ===========================================================================
+
+TEST_SUITE("collisionbox") {
+    TEST_CASE("particle inside the box is left alone") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(5, 5, 5);
+        p.velocity  = Eigen::Vector3f(1, 0, 0);
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(5.0f));
+        CHECK(p.velocity.x() == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("particle past +X face: clamped to surface and X velocity flipped") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(150, 0, 0);
+        p.velocity  = Eigen::Vector3f(20, 5, 0);
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(100.0f));
+        CHECK(p.velocity.x() == doctest::Approx(-20.0f));
+        // Y velocity untouched — box is per-axis.
+        CHECK(p.velocity.y() == doctest::Approx(5.0f));
+    }
+
+    TEST_CASE("particle past -Y face: clamped and Y velocity flipped") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(0, -200, 0);
+        p.velocity  = Eigen::Vector3f(0, -10, 0);
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(-100.0f));
+        CHECK(p.velocity.y() == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("box anchored at non-zero CP") {
+        OpFixture of;
+        of.cps[2].resolved = Eigen::Vector3d(50, 50, 0);
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(170, 50, 0);  // +X past CP+halfsize
+        p.velocity  = Eigen::Vector3f(5, 0, 0);
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 2 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(150.0f));  // CP.x + halfsize.x
+        CHECK(p.velocity.x() == doctest::Approx(-5.0f));
+    }
+
+    TEST_CASE("restitution scales the bounce") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(120, 0, 0);
+        p.velocity  = Eigen::Vector3f(10, 0, 0);
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" },
+                        { "restitution", 0.5f } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.velocity.x() == doctest::Approx(-5.0f));
+    }
+
+    TEST_CASE("velocity already moving away: position clamped but velocity preserved") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(120, 0, 0);
+        p.velocity  = Eigen::Vector3f(-3, 0, 0);  // already moving inward
+        json j      = { { "name", "collisionbox" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(100.0f));
+        CHECK(p.velocity.x() == doctest::Approx(-3.0f));  // not flipped
+    }
+
+    TEST_CASE("collisionbounds shares the box implementation") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(150, 0, 0);
+        p.velocity  = Eigen::Vector3f(20, 0, 0);
+        json j      = { { "name", "collisionbounds" },
+                        { "controlpoint", 0 },
+                        { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(100.0f));
+        CHECK(p.velocity.x() == doctest::Approx(-20.0f));
+    }
+
+    TEST_CASE("dead particle is skipped") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(150, 0, 0);
+        p.velocity  = Eigen::Vector3f(5, 0, 0);
+        p.lifetime  = 0.0f;
+        json j      = { { "name", "collisionbox" }, { "halfsize", "100 100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(150.0f));  // untouched
+    }
+}
+
+// ===========================================================================
 // inheritvaluefromevent operator — per-frame parent property tracking
 // ===========================================================================
 

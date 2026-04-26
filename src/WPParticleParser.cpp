@@ -1479,6 +1479,61 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     ParticleCollision::ReflectVelocity(p, n);
                 }
             };
+        } else if (name == "collisionbox" || name == "collisionbounds") {
+            // Axis-aligned bounding-box collision anchored at a CP.  Particles
+            // that cross any face of the box are clamped to the surface and
+            // their velocity reflected along that axis only (per-axis bounce
+            // — opposite-axis components keep their direction).
+            //
+            // The two operator names share an implementation: in the source
+            // dispatcher both have the smallest collision-slot footprint and
+            // only the CP slot is universally required.  `collisionbounds`
+            // is the generic-bounds variant that — pending a scene-bounds
+            // plumbing pass — falls through to the same per-axis test.
+            //
+            // Authors can override the box extents via `halfsize` (vec3,
+            // `[hx, hy, hz]`).  Falls back to a large default (1024, 1024,
+            // 256) so wallpapers that author no extent get a permissive box
+            // and the operator effectively no-ops within typical scene
+            // bounds — this matches the editor's "viewport boundaries"
+            // semantic without having to plumb camera ortho extents into
+            // ParticleInfo just yet.  When a driver wallpaper surfaces that
+            // depends on viewport-tracking bounds, plumb scene ortho extents
+            // through and prefer them when `halfsize` is unset.
+            std::array<float, 3> halfsize { 1024.0f, 1024.0f, 256.0f };
+            int   controlpoint = 0;
+            float restitution  = 1.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "halfsize", halfsize);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "restitution", restitution);
+            controlpoint = ClampCpIndex(controlpoint);
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                const Vector3d cp = info.controlpoints[controlpoint].resolved;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    const Vector3d ppos = p.position.cast<double>();
+                    Vector3d       local = ppos - cp;
+                    bool           hit   = false;
+                    for (int a = 0; a < 3; a++) {
+                        const double h = (double)halfsize[a];
+                        if (local[a] > h) {
+                            local[a] = h;
+                            if (p.velocity[a] > 0) {
+                                p.velocity[a] = (float)(-(double)p.velocity[a] * restitution);
+                            }
+                            hit = true;
+                        } else if (local[a] < -h) {
+                            local[a] = -h;
+                            if (p.velocity[a] < 0) {
+                                p.velocity[a] = (float)(-(double)p.velocity[a] * restitution);
+                            }
+                            hit = true;
+                        }
+                    }
+                    if (hit) p.position = (cp + local).cast<float>();
+                }
+            };
         } else if (name == "boids") {
             // Reynolds 1987 flocking — each particle steers based on its
             // neighbours within `neighborthreshold`: separation pushes
