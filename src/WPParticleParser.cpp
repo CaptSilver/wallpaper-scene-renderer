@@ -1237,14 +1237,26 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             outputCP0 = ClampCpIndex(outputCP0);
             BlendWindow bw = BlendWindow::FromJson(wpj);
 
-            // Reduce a vec3 to a scalar based on the named component.  Names
-            // mirror the WE editor dropdown ("x" / "y" / "z" / "magnitude").
+            // Reduce a vec3 to a scalar based on the named component.  The
+            // source enum lists 8 reductions: { all, x, y, z, sum, average,
+            // max, min } — `all` only makes sense on the output side as the
+            // scalar-broadcast indicator, so on the input side `all` is
+            // treated as magnitude (the natural "use the whole vector"
+            // scalar projection).  The legacy aliases `magnitude`, `w`,
+            // `x+y` from earlier shipping are kept for back-compat: existing
+            // scenes that authored `magnitude` continue to work, and `w`
+            // (out-of-range index, source has no fourth component) returns 0.
             auto reduce = [](const Vector3d& v, const std::string& comp) -> double {
                 if (comp == "x") return v.x();
                 if (comp == "y") return v.y();
                 if (comp == "z") return v.z();
                 if (comp == "w") return 0.0;
                 if (comp == "x+y") return v.x() + v.y();
+                if (comp == "sum") return v.x() + v.y() + v.z();
+                if (comp == "average") return (v.x() + v.y() + v.z()) / 3.0;
+                if (comp == "max") return std::max({ v.x(), v.y(), v.z() });
+                if (comp == "min") return std::min({ v.x(), v.y(), v.z() });
+                // "all" / "magnitude" / unknown → vector norm.
                 return v.norm();
             };
 

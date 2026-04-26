@@ -752,6 +752,41 @@ TEST_SUITE("remapvalue") {
         CHECK(p_o.alpha != p_f.alpha);
     }
 
+    TEST_CASE("inputcomponent: all 8 reductions of a vec3 input") {
+        // Particle velocity = (3, 4, 12); norm = 13, sum = 19, avg ≈ 6.333,
+        // max = 12, min = 3.
+        struct Case {
+            const char* component;
+            double      expected;
+        };
+        const Case cases[] = {
+            { "x",        3.0  },
+            { "y",        4.0  },
+            { "z",        12.0 },
+            { "sum",      19.0 },
+            { "average",  19.0 / 3.0 },
+            { "max",      12.0 },
+            { "min",      3.0  },
+            { "magnitude", 13.0 },
+        };
+        for (const auto& kase : cases) {
+            json j = { { "name", "remapvalue" },
+                       { "operation", "set" },
+                       { "input", "particlevelocity" },
+                       { "inputcomponent", kase.component },
+                       { "output", "particlesize" },
+                       { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                       { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+            auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+            OpFixture fx;
+            Particle& p = fx.spawn();
+            p.velocity = Eigen::Vector3f(3, 4, 12);
+            op(fx.info());
+            CHECK_MESSAGE(p.size == doctest::Approx(kase.expected).epsilon(0.01),
+                          "component=", kase.component);
+        }
+    }
+
     TEST_CASE("output: controlpoint writes back to the resolved CP") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },
