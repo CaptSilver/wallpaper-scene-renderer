@@ -44,6 +44,7 @@ add_executable(backend_scene_tests
     test_WPMdlParserFormats.cpp
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
+    test_BlendModeFactors.cpp
     test_SceneImageEffectLayer.cpp
     test_WPCreateLayerScan.cpp
     ${SRC_DIR}/Scene/SceneImageEffectLayer.cpp
