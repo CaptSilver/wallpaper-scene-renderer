@@ -143,7 +143,14 @@ void ParticleSubSystem::ResolveControlpointsForInstance(const ParticleInstance* 
         if (effective_parent == 0 && m_cp_start_shift > 0) {
             effective_parent = static_cast<int32_t>(slot) + m_cp_start_shift;
         }
-        if (cp.follow_parent_particle && has_bound_particle) {
+        if (cp.worldspace) {
+            // Author opted out of the parent chain by marking the CP as world-
+            // space — its `offset` is already in scene coordinates, so chain
+            // resolution and follow-parent-particle would both shift it
+            // incorrectly.  Use the local offset verbatim.
+            cp.resolved      = cp.offset;
+            resolved_is_null = cp.is_null_offset;
+        } else if (cp.follow_parent_particle && has_bound_particle) {
             cp.resolved     = bound_pos;
         } else if (effective_parent > 0 && m_parent_subsystem != nullptr) {
             auto parent_cps = m_parent_subsystem->Controlpoints();

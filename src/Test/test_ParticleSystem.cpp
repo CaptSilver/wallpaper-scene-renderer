@@ -271,6 +271,46 @@ TEST_SUITE("ParticleSubSystem") {
         CHECK(child_raw->Controlpoints()[0].resolved.z() == doctest::Approx(3.0));
     }
 
+    TEST_CASE("worldspace CP keeps its local offset and ignores parent chain") {
+        ParticleFixture fx;
+        auto            parent = fx.makeSub();
+        auto            child  = fx.makeSub();
+        parent->Controlpoints()[2].offset   = Eigen::Vector3d(99, 99, 99);
+        parent->Controlpoints()[2].resolved = Eigen::Vector3d(99, 99, 99);
+        // Child authored a chain to parent CP[2] but flagged the slot as
+        // worldspace — the resolver must NOT walk the chain.
+        child->Controlpoints()[0].parent_cp_index = 2;
+        child->Controlpoints()[0].worldspace      = true;
+        child->Controlpoints()[0].offset          = Eigen::Vector3d(10, 0, 0);
+        auto* child_raw = child.get();
+        parent->AddChild(std::move(child));
+
+        child_raw->ResolveControlpointsForInstance(nullptr);
+        CHECK(child_raw->Controlpoints()[0].resolved.x() == doctest::Approx(10.0));
+        CHECK(child_raw->Controlpoints()[0].resolved.y() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("worldspace CP also ignores follow_parent_particle binding") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].follow_parent_particle = true;
+        sub->Controlpoints()[0].worldspace             = true;
+        sub->Controlpoints()[0].offset                 = Eigen::Vector3d(7, 8, 9);
+        // Bound parent particle at (50, 60, 70) — would normally win, but
+        // worldspace overrides it.
+        ParticleInstance fake_parent;
+        fake_parent.ParticlesVec().resize(1);
+        ParticleInstance host_inst;
+        host_inst.GetBoundedData().parent       = &fake_parent;
+        host_inst.GetBoundedData().particle_idx = 0;
+        host_inst.GetBoundedData().pos          = Eigen::Vector3f(50, 60, 70);
+
+        sub->ResolveControlpointsForInstance(&host_inst);
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(7.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(8.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(9.0));
+    }
+
     TEST_CASE("AddEmitter/AddInitializer/AddOperator accept std::function callables") {
         ParticleFixture fx;
         auto            sub = fx.makeSub();
