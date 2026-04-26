@@ -1479,6 +1479,15 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     ParticleCollision::ReflectVelocity(p, n);
                 }
             };
+        } else if (name == "collisionmodel") {
+            // Stubbed: full impl needs BVH + ray-triangle against a referenced
+            // model.  No driver wallpaper has been reported, so the operator
+            // logs once at parse time and the per-frame lambda is a no-op —
+            // particles pass through the model.  When a wallpaper actually
+            // requires this, wire the model reference into ParticleInfo and
+            // run the BVH walk here.
+            LOG_INFO("collisionmodel not yet implemented — particles pass through model");
+            return [](const ParticleInfo&) {};
         } else if (name == "collisionquad") {
             // Finite-quad collision.  The quad lives in a plane defined by
             // `plane` (the surface normal) and `forward` (a tangent vector

@@ -762,6 +762,24 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 }
 
 // ===========================================================================
+// collisionmodel — stub
+// ===========================================================================
+
+TEST_SUITE("collisionmodel") {
+    TEST_CASE("stub: parses without crash and runs as a no-op") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(10, 20, 30);
+        p.velocity  = Eigen::Vector3f(1, 2, 3);
+        json j      = { { "name", "collisionmodel" }, { "controlpoint", 0 } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.x() == doctest::Approx(10.0f));
+        CHECK(p.velocity.z() == doctest::Approx(3.0f));
+    }
+}
+
+// ===========================================================================
 // collisionquad — finite quad with author basis
 // ===========================================================================
 
