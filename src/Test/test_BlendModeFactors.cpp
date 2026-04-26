@@ -1,11 +1,4 @@
 // Pin the Vulkan blend-factor mapping for each BlendMode enum case.
-//
-// Naruto Shippuden 2800255344 (effects/spin compose) used "blending":"normal"
-// on a 2000x2000 RT whose content was a round sun with alpha=0 corners.  The
-// previous Normal mapping (ONE/ZERO color factors) was an OVERWRITE blend and
-// echoed the corner RGB through to _rt_default as a 1-pixel orange halo
-// outside the round sun.  This suite locks the SrcAlpha/OneMinusSrcAlpha mapping
-// in so future BlendMode tweaks have to acknowledge it.
 
 #include <doctest.h>
 
@@ -29,19 +22,14 @@ TEST_SUITE("BlendMode → Vulkan factors") {
         CHECK(s.blendEnable == VK_FALSE);
     }
 
-    TEST_CASE("Normal uses alpha-aware factors so RGB at alpha=0 doesn't leak") {
+    TEST_CASE("Normal is straight overwrite (src replaces dst on both color and alpha)") {
         auto s = makeState();
         SetBlend(BlendMode::Normal, s);
         CHECK(s.blendEnable == VK_TRUE);
         CHECK(s.colorBlendOp == VK_BLEND_OP_ADD);
         CHECK(s.alphaBlendOp == VK_BLEND_OP_ADD);
-        // Color: SrcAlpha / OneMinusSrcAlpha — opaque sources still write
-        // src directly (1*src + 0*dst = src), but the round-on-square case
-        // properly hides the alpha=0 corners.
-        CHECK(s.srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA);
-        CHECK(s.dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
-        // Alpha factors stay overwrite — destination alpha matches what the
-        // source shader wrote.  FinPass forces _rt_default alpha=1 anyway.
+        CHECK(s.srcColorBlendFactor == VK_BLEND_FACTOR_ONE);
+        CHECK(s.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO);
         CHECK(s.srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE);
         CHECK(s.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO);
     }

@@ -18,21 +18,14 @@ inline void SetBlend(BlendMode bm, VkPipelineColorBlendAttachmentState& state) {
     switch (bm) {
     case BlendMode::Disable: state.blendEnable = false; break;
     case BlendMode::Normal:
-        // WE "normal" = standard alpha blending for the color channel.
-        // Opaque sources (alpha=1) still get a clean write since
-        // 1*src + 0*dst = src — but alpha=0 pixels (e.g. round content
-        // on a square RT) no longer overwrite the destination with
-        // garbage RGB.  Naruto Shippuden 2800255344 surfaced this:
-        // the eye effect chain's spin compose used "normal" and the
-        // 2000x2000 pingpong RT's alpha=0 corners were leaking the
-        // texture's underlying orange gradient as a 1-pixel halo
-        // outside the round sun.  Alpha factors stay overwrite (ONE/
-        // ZERO) so the destination alpha matches what the source
-        // shader actually wrote — this preserves the prior "write
-        // through" behavior on non-_rt_default targets (FinPass forces
-        // _rt_default alpha=1 regardless).
-        state.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        state.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        // Overwrite: result = src.  The alpha-aware mapping
+        // (SRC_ALPHA / ONE_MINUS_SRC_ALPHA) is the by-the-book
+        // interpretation of WE's "normal" blend mode and pins a halo
+        // case on Naruto Shippuden 2800255344, but darkens or shifts
+        // the look of other wallpapers in ways that aren't worth the
+        // single-scene fix — keep this as straight overwrite.
+        state.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        state.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
         state.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         state.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         break;
