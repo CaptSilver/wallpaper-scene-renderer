@@ -164,7 +164,17 @@ public:
     float                alpha { 1.0f };
     float                brightness { 1.0f };
     float                count { 1.0f };
-    float                lifetime { 1.0f };
+    // `lifetime` is the only field whose default differs from the others'
+    // multiplicative identity (1.0).  The override dispatches through
+    // `ApplyLifetimeOverride`, which on sprite/halo subsystems treats the
+    // value as an ABSOLUTE per-particle duration (`SetInitLifeTime`) — not a
+    // multiplier.  Default 1.0 would unconditionally stomp every authored
+    // `lifetimerandom` range to "1 second" whenever any wallpaper authored
+    // any instanceoverride block (because `enabled=true` flips on the entire
+    // override-init function), even for fields the author didn't touch.
+    // Default 0.0 routes through the `<= 0` short-circuit in
+    // `ApplyLifetimeOverride` so absent-from-JSON means "no override".
+    float                lifetime { 0.0f };
     float                rate { 1.0f };
     float                speed { 1.0f };
     float                size { 1.0f };

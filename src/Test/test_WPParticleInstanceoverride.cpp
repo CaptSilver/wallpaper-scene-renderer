@@ -76,6 +76,35 @@ TEST_SUITE("ParticleInstanceoverride") {
         }
     }
 
+    TEST_CASE("absent lifetime defaults to 0 (no-override sentinel)") {
+        // Regression: `lifetime` previously defaulted to 1.0, so any JSON with
+        // an `instanceoverride` block — even authoring only `colorn` /
+        // `brightness` — would flip `enabled=true` and the override-init
+        // function would unconditionally `SetInitLifeTime(p, over.lifetime)`,
+        // stomping every authored `lifetimerandom` range to "1 second".
+        // ApplyLifetimeOverride short-circuits on `<= 0.0`, so default 0.0 is
+        // the correct sentinel for absent.
+        njson j;
+        j["colorn"]     = "1.0 0.0 0.0";
+        j["brightness"] = 2.0f;
+        ParticleInstanceoverride over;
+        REQUIRE(over.FromJosn(j));
+        CHECK(over.enabled);
+        CHECK(over.lifetime == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("explicit lifetime: 0.9 still parses verbatim (NieR 2B halo)") {
+        // Driver case for the "absolute seconds on sprite/halo subsystems"
+        // semantic — the regression-default fix must not affect explicitly
+        // authored values.
+        njson j;
+        j["lifetime"] = 0.9f;
+        ParticleInstanceoverride over;
+        REQUIRE(over.FromJosn(j));
+        CHECK(over.enabled);
+        CHECK(over.lifetime == doctest::Approx(0.9f));
+    }
+
     TEST_CASE("color vs colorn are mutually exclusive") {
         {
             njson j;
