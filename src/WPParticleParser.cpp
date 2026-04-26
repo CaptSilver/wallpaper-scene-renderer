@@ -1277,6 +1277,29 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                                       .norm();
                     } else if (input == "random") {
                         raw = p.RandomFloat();
+                    } else if (input == "noise") {
+                        // Per-particle smooth-noise input source.  Samples 3D
+                        // Perlin noise at the particle's position offset by
+                        // scene time so the value drifts smoothly across the
+                        // scene over time.  Honours `transformoctaves` for
+                        // fbm-style summing — extra octaves stack higher-
+                        // frequency detail on top of the base layer.  Useful
+                        // for "wind drift" / "shimmer" effects that authors
+                        // would otherwise route through a controlpoint
+                        // animation.
+                        const Vector3d ppos = p.position.cast<double>() * 0.01;
+                        double sum = 0.0, amp = 1.0, freq = 1.0, maxAmp = 0.0;
+                        for (int oct = 0; oct < transformoctaves; oct++) {
+                            sum += amp * algorism::PerlinNoise(
+                                             ppos.x() * freq + info.time,
+                                             ppos.y() * freq,
+                                             ppos.z() * freq);
+                            maxAmp += amp;
+                            amp *= 0.5;
+                            freq *= 2.0;
+                        }
+                        if (maxAmp < 1e-9) maxAmp = 1.0;
+                        raw = std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
                     }
 
                     // 2) Normalise to [0, 1] over the author's input range.

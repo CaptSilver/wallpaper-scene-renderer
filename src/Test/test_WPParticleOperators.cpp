@@ -698,6 +698,60 @@ TEST_SUITE("remapvalue") {
         CHECK(p_s.size == doctest::Approx(p_f.size).epsilon(0.01));
     }
 
+    TEST_CASE("input: noise produces a value in [0, 1] that varies with position") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "noise" },
+                   { "output", "particlealpha" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.particles.resize(2);
+        for (auto& q : fx.particles) {
+            q.lifetime = 1.0f;
+            q.init.lifetime = 1.0f;
+        }
+        fx.particles[0].position = Eigen::Vector3f(33, 17, 0);
+        fx.particles[1].position = Eigen::Vector3f(540, 215, 0);
+        op(fx.info());
+        for (const auto& q : fx.particles) {
+            CHECK(q.alpha >= 0.0f);
+            CHECK(q.alpha <= 1.0f);
+        }
+        // Far-apart particles produce different noise samples (statistical, not
+        // guaranteed at every position pair, but Perlin noise at this distance
+        // is virtually never identical).
+        CHECK(fx.particles[0].alpha != fx.particles[1].alpha);
+    }
+
+    TEST_CASE("input: noise honours transformoctaves for fbm summing") {
+        json j_one = { { "name", "remapvalue" },
+                       { "operation", "set" },
+                       { "input", "noise" },
+                       { "output", "particlealpha" },
+                       { "transformoctaves", 1 },
+                       { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                       { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        json j_four = j_one;
+        j_four["transformoctaves"] = 4;
+        auto op_o = WPParticleParser::genParticleOperatorOp(j_one, empty_override());
+        auto op_f = WPParticleParser::genParticleOperatorOp(j_four, empty_override());
+        OpFixture fx_o, fx_f;
+        Particle& p_o = fx_o.spawn();
+        Particle& p_f = fx_f.spawn();
+        p_o.position = Eigen::Vector3f(123, 45, 0);
+        p_f.position = Eigen::Vector3f(123, 45, 0);
+        op_o(fx_o.info());
+        op_f(fx_f.info());
+        CHECK(p_o.alpha >= 0.0f);
+        CHECK(p_o.alpha <= 1.0f);
+        CHECK(p_f.alpha >= 0.0f);
+        CHECK(p_f.alpha <= 1.0f);
+        // Different octave counts almost always produce different sums.
+        CHECK(p_o.alpha != p_f.alpha);
+    }
+
     TEST_CASE("input: random produces a stable per-particle value") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },
