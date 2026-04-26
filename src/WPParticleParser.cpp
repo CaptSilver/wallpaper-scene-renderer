@@ -533,6 +533,41 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 float    s = Random::get(scale_min, scale_max);
                 PM::ChangeVelocity(p, v * s);
             };
+        } else if (name == "inheritinitialvaluefromevent") {
+            // Initializer fired on EVENT_FOLLOW / EVENT_SPAWN / EVENT_DEATH children.
+            // At spawn, dereferences the parent-event particle (the parent particle
+            // whose mark_new / death triggered this child's instance) and snapshots
+            // ONE named property into both the child's init and current state, so
+            // every newly-spawned child inherits a colour / size / velocity / etc.
+            // from the parent that triggered it.  Subsequent operators run normally
+            // on top of the inherited value.  No-op when the parent link is missing
+            // (STATIC top-level instances) or the parent particle has already died
+            // — the child falls through to whatever the prior initializers set
+            // rather than zeroing the field, which would yield instant-death or
+            // invisible children.
+            std::string input;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
+            return [input](Particle& p, double) {
+                const ParticleInstance* inst =
+                    particle_spawn_context::CurrentSpawnInstance();
+                if (inst == nullptr) return;
+                const Particle* parent = inst->GetEventParentParticle();
+                if (parent == nullptr) return;
+                if (input == "color" || input == "particlecolor") {
+                    PM::InitColor(p, parent->color.x(), parent->color.y(), parent->color.z());
+                } else if (input == "size" || input == "particlesize") {
+                    PM::InitSize(p, parent->size);
+                } else if (input == "alpha" || input == "opacity" ||
+                           input == "particlealpha") {
+                    PM::InitAlpha(p, parent->alpha);
+                } else if (input == "velocity" || input == "particlevelocity") {
+                    PM::InitVelocity(p, parent->velocity.cast<double>());
+                } else if (input == "rotation" || input == "particlerotation") {
+                    p.rotation = parent->rotation;
+                } else if (input == "lifetime" || input == "particlelifetime") {
+                    PM::InitLifetime(p, parent->lifetime);
+                }
+            };
         } else if (name == "mapsequencearoundcontrolpoint") {
             const auto                  params = ParseAroundParams(wpj);
             const u32                   count  = params.count;

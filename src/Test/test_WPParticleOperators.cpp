@@ -3,6 +3,7 @@
 #include "WPParticleParser.hpp"
 #include "Particle/Particle.h"
 #include "Particle/ParticleEmitter.h"
+#include "Particle/ParticleSystem.h"
 #include "Particle/BlendWindow.h"
 #include "Particle/HsvColor.h"
 #include "Particle/ParticleCollision.h"
@@ -615,6 +616,148 @@ TEST_SUITE("inheritcontrolpointvelocity") {
         p.velocity = Eigen::Vector3f(0, 0, 0);
         init(p, 0.0);
         CHECK(p.velocity.x() == doctest::Approx(50.0));
+    }
+}
+
+// ===========================================================================
+// inheritinitialvaluefromevent initializer
+// ===========================================================================
+
+namespace
+{
+
+// Builds an event-bound child instance whose parent has one live particle with
+// the supplied state, sets the spawn-context thread-local, and returns both
+// instances so the test can clear the context after running the initializer.
+struct EventInheritFixture {
+    ParticleInstance parent;
+    ParticleInstance child;
+
+    EventInheritFixture(const Particle& seed) {
+        parent.ParticlesVec().push_back(seed);
+        child.GetBoundedData().parent       = &parent;
+        child.GetBoundedData().particle_idx = 0;
+        particle_spawn_context::SetSpawnInstance(&child);
+    }
+    ~EventInheritFixture() {
+        particle_spawn_context::SetSpawnInstance(nullptr);
+    }
+};
+
+Particle makeParent() {
+    Particle p;
+    p.lifetime = 1.5f;
+    p.alpha    = 0.6f;
+    p.size     = 42.0f;
+    p.color    = Eigen::Vector3f(0.2f, 0.4f, 0.8f);
+    p.velocity = Eigen::Vector3f(7.0f, -3.0f, 11.0f);
+    p.rotation = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
+    return p;
+}
+
+} // namespace
+
+TEST_SUITE("inheritinitialvaluefromevent") {
+    TEST_CASE("color: copies parent rgb into init+current") {
+        EventInheritFixture fx(makeParent());
+        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
+        auto init = WPParticleParser::genParticleInitOp(j);
+        Particle p;
+        init(p, 0.0);
+        CHECK(p.color.x() == doctest::Approx(0.2f));
+        CHECK(p.color.y() == doctest::Approx(0.4f));
+        CHECK(p.color.z() == doctest::Approx(0.8f));
+        CHECK(p.init.color.x() == doctest::Approx(0.2f));
+    }
+
+    TEST_CASE("size and alpha: copies parent into init+current") {
+        EventInheritFixture fx(makeParent());
+        json j_size  = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
+        json j_alpha = { { "name", "inheritinitialvaluefromevent" }, { "input", "alpha" } };
+        auto i_size  = WPParticleParser::genParticleInitOp(j_size);
+        auto i_alpha = WPParticleParser::genParticleInitOp(j_alpha);
+        Particle p;
+        i_size(p, 0.0);
+        i_alpha(p, 0.0);
+        CHECK(p.size == doctest::Approx(42.0f));
+        CHECK(p.init.size == doctest::Approx(42.0f));
+        CHECK(p.alpha == doctest::Approx(0.6f));
+        CHECK(p.init.alpha == doctest::Approx(0.6f));
+    }
+
+    TEST_CASE("velocity and rotation: copies parent vec3") {
+        EventInheritFixture fx(makeParent());
+        json j_vel = { { "name", "inheritinitialvaluefromevent" }, { "input", "velocity" } };
+        json j_rot = { { "name", "inheritinitialvaluefromevent" }, { "input", "rotation" } };
+        auto i_vel = WPParticleParser::genParticleInitOp(j_vel);
+        auto i_rot = WPParticleParser::genParticleInitOp(j_rot);
+        Particle p;
+        i_vel(p, 0.0);
+        i_rot(p, 0.0);
+        CHECK(p.velocity.x() == doctest::Approx(7.0f));
+        CHECK(p.velocity.y() == doctest::Approx(-3.0f));
+        CHECK(p.velocity.z() == doctest::Approx(11.0f));
+        CHECK(p.rotation.x() == doctest::Approx(0.1f));
+        CHECK(p.rotation.z() == doctest::Approx(0.3f));
+    }
+
+    TEST_CASE("lifetime: copies parent's remaining lifetime into init+current") {
+        EventInheritFixture fx(makeParent());
+        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "lifetime" } };
+        auto init = WPParticleParser::genParticleInitOp(j);
+        Particle p;
+        p.lifetime      = 999.0f;
+        p.init.lifetime = 999.0f;
+        init(p, 0.0);
+        CHECK(p.lifetime == doctest::Approx(1.5f));
+        CHECK(p.init.lifetime == doctest::Approx(1.5f));
+    }
+
+    TEST_CASE("no spawn context → no-op (defensive: child stays at default)") {
+        // Don't touch the thread-local — emulate "called outside an emit cycle".
+        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
+        auto init = WPParticleParser::genParticleInitOp(j);
+        Particle p;
+        Eigen::Vector3f original = p.color;
+        init(p, 0.0);
+        CHECK(p.color.x() == doctest::Approx(original.x()));
+    }
+
+    TEST_CASE("dead parent particle → no-op (preserves prior initializer output)") {
+        Particle dead = makeParent();
+        dead.lifetime = 0.0f;
+        EventInheritFixture fx(dead);
+        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
+        auto init = WPParticleParser::genParticleInitOp(j);
+        Particle p;
+        p.size      = 7.0f;
+        p.init.size = 7.0f;
+        init(p, 0.0);
+        CHECK(p.size == doctest::Approx(7.0f));
+        CHECK(p.init.size == doctest::Approx(7.0f));
+    }
+
+    TEST_CASE("unknown input string → no-op (typo-safe)") {
+        EventInheritFixture fx(makeParent());
+        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "bogus" } };
+        auto init = WPParticleParser::genParticleInitOp(j);
+        Particle p;
+        Eigen::Vector3f original_color = p.color;
+        init(p, 0.0);
+        CHECK(p.color.x() == doctest::Approx(original_color.x()));
+    }
+
+    TEST_CASE("aliases: opacity ≡ alpha, particlecolor ≡ color") {
+        EventInheritFixture fx(makeParent());
+        json j_op = { { "name", "inheritinitialvaluefromevent" }, { "input", "opacity" } };
+        json j_pc = { { "name", "inheritinitialvaluefromevent" }, { "input", "particlecolor" } };
+        auto i_op = WPParticleParser::genParticleInitOp(j_op);
+        auto i_pc = WPParticleParser::genParticleInitOp(j_pc);
+        Particle p;
+        i_op(p, 0.0);
+        i_pc(p, 0.0);
+        CHECK(p.alpha == doctest::Approx(0.6f));
+        CHECK(p.color.y() == doctest::Approx(0.4f));
     }
 }
 

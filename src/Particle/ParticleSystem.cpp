@@ -11,6 +11,17 @@
 
 using namespace wallpaper;
 
+namespace
+{
+thread_local const ParticleInstance* tl_spawn_instance { nullptr };
+}
+
+namespace wallpaper::particle_spawn_context
+{
+void                    SetSpawnInstance(const ParticleInstance* inst) { tl_spawn_instance = inst; }
+const ParticleInstance* CurrentSpawnInstance() { return tl_spawn_instance; }
+} // namespace wallpaper::particle_spawn_context
+
 void ParticleInstance::Refresh() {
     SetDeath(false);
     SetNoLiveParticle(false);
@@ -315,9 +326,14 @@ void ParticleSubSystem::Emitt() {
         ResolveControlpointsForInstance(inst.get());
 
         if (! inst->IsDeath()) {
+            // Plumb the currently-spawning instance through a thread-local cell so
+            // initializers (notably `inheritinitialvaluefromevent`) can resolve the
+            // parent-event particle without a signature change on ParticleInitOp.
+            particle_spawn_context::SetSpawnInstance(inst.get());
             for (auto& emittOp : m_emiters) {
                 emittOp(inst->ParticlesVec(), m_initializers, m_maxcount, particleTime);
             }
+            particle_spawn_context::SetSpawnInstance(nullptr);
         }
 
         // event_death is death when no live particles left

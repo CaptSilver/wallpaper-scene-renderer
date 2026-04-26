@@ -104,6 +104,22 @@ using ParticleOperatorOp = std::function<void(const ParticleInfo&)>;
 using ParticleEmittOp = std::function<void(std::vector<Particle>&, std::vector<ParticleInitOp>&,
                                            uint32_t maxcount, double timepass)>;
 
+// Per-spawn back-pointer so initializers that need parent-event context can dereference
+// the currently-spawning ParticleInstance without an explicit signature change on
+// ParticleInitOp.  Set by ParticleSubSystem::Emitt before invoking each instance's
+// emitters and cleared after, so reads outside the emit-loop see nullptr.  The pointer
+// is thread-local; every particle-system call path runs on the render thread, so the
+// cell is shared across emit ops within one tick and isolated from the script thread
+// (where atomic dynamic-rate writes live, but no emit traffic).
+//
+// Used by `inheritinitialvaluefromevent` to copy the parent particle's color / size /
+// alpha / velocity / rotation / lifetime into the child at spawn.
+namespace particle_spawn_context
+{
+void                    SetSpawnInstance(const ParticleInstance* inst);
+const ParticleInstance* CurrentSpawnInstance();
+} // namespace particle_spawn_context
+
 struct ParticleBoxEmitterArgs {
     std::array<float, 3> directions;
     std::array<float, 3> minDistance;
