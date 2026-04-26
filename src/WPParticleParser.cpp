@@ -1202,6 +1202,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             std::string inputcomponent { "magnitude" };
             std::string outputcomponent { "magnitude" };
             float       transforminputscale = 1.0f;
+            int         transformoctaves   = 1;
             float       inMin = 0.0f, inMax = 1.0f;
             float       outMin = 0.0f, outMax = 1.0f;
             int         inputCP0 = 0, outputCP0 = 0;
@@ -1210,6 +1211,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "output", output);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "transformfunction", transformfunction);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "transforminputscale", transforminputscale);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "transformoctaves", transformoctaves);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcomponent", inputcomponent);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputcomponent", outputcomponent);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "inputrangemin", inMin);
@@ -1218,6 +1220,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemax", outMax);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcontrolpoint0", inputCP0);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputcontrolpoint0", outputCP0);
+            if (transformoctaves < 1) transformoctaves = 1;
+            if (transformoctaves > 8) transformoctaves = 8;
             inputCP0  = ClampCpIndex(inputCP0);
             outputCP0 = ClampCpIndex(outputCP0);
             BlendWindow bw = BlendWindow::FromJson(wpj);
@@ -1283,19 +1287,64 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     // 3) Apply transform.  `transforminputscale` multiplies
                     //    BEFORE the transform so authors can speed up the sine
                     //    period (scale=2 = double-frequency oscillation).
+                    //
+                    //    The 7 transforms in the source enum:
+                    //      none / linear:  identity pass-through
+                    //      sine:           shifted into [0, 1]
+                    //      square:         square wave (0 / 1 alternating)
+                    //      saw:            sawtooth (fract(x))
+                    //      triangle:       triangle wave (peak at 0.5)
+                    //      simplexnoise:   smooth pseudo-random noise (1 octave)
+                    //      fbmnoise:       fractal Brownian motion (`octaves`)
+                    //
+                    //    Legacy names `cosine`, `step`, `smoothstep` are kept as
+                    //    aliases for back-compat with our prior shipping.
                     double xs = t * transforminputscale;
                     double tx;
                     if (transformfunction == "sine") {
                         tx = (std::sin(xs * 2.0 * M_PI) + 1.0) * 0.5;
                     } else if (transformfunction == "cosine") {
                         tx = (std::cos(xs * 2.0 * M_PI) + 1.0) * 0.5;
+                    } else if (transformfunction == "square") {
+                        // Square wave shifted into [0, 1]: high half then low half.
+                        tx = std::sin(xs * 2.0 * M_PI) >= 0.0 ? 1.0 : 0.0;
+                    } else if (transformfunction == "saw") {
+                        tx = xs - std::floor(xs);
+                    } else if (transformfunction == "triangle") {
+                        const double f = xs - std::floor(xs);
+                        tx = std::abs(2.0 * f - 1.0);
+                    } else if (transformfunction == "simplexnoise") {
+                        // Use the available 3D Perlin sampler with two zero
+                        // axes so the output varies smoothly along the input
+                        // dimension only.  Output range is roughly [-0.7, 0.7];
+                        // shift+scale into [0, 1].
+                        const double n = algorism::PerlinNoise(xs, 0.0, 0.0);
+                        tx = std::clamp((n + 1.0) * 0.5, 0.0, 1.0);
+                    } else if (transformfunction == "fbmnoise") {
+                        // Fractal Brownian motion: sum of `transformoctaves`
+                        // noise octaves with doubling frequency and halving
+                        // amplitude.  Normalised so the running max-amplitude
+                        // sum keeps the result well-centred near 0.5.
+                        double sum    = 0.0;
+                        double amp    = 1.0;
+                        double freq   = 1.0;
+                        double maxAmp = 0.0;
+                        for (int oct = 0; oct < transformoctaves; oct++) {
+                            sum += amp * algorism::PerlinNoise(xs * freq, 0.0, 0.0);
+                            maxAmp += amp;
+                            amp *= 0.5;
+                            freq *= 2.0;
+                        }
+                        if (maxAmp < 1e-9) maxAmp = 1.0;
+                        tx = std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
                     } else if (transformfunction == "step") {
                         tx = std::floor(xs);
                     } else if (transformfunction == "smoothstep") {
                         double c = std::clamp(xs, 0.0, 1.0);
                         tx = c * c * (3.0 - 2.0 * c);
                     } else {
-                        tx = xs; // linear (default)
+                        // none / linear / unknown — identity pass-through.
+                        tx = xs;
                     }
 
                     // 4) Map into the author's output range.

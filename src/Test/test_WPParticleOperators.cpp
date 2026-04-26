@@ -604,6 +604,100 @@ TEST_SUITE("remapvalue") {
         CHECK(p_r.size == doctest::Approx(77.0));
     }
 
+    TEST_CASE("square transform alternates 0 and 1 at the half-period") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" },
+                   { "transformfunction", "square" },
+                   { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        // t=0.25 → sin(π/2)=1 ≥ 0 → high
+        fx.time = 0.25; op(fx.info());
+        CHECK(p.size == doctest::Approx(1.0));
+        // t=0.75 → sin(3π/2)=-1 → low
+        fx.time = 0.75; op(fx.info());
+        CHECK(p.size == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("saw transform period is 1 (fractional part)") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" },
+                   { "transformfunction", "saw" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        fx.time = 0.3; op(fx.info());
+        CHECK(p.size == doctest::Approx(0.3));
+    }
+
+    TEST_CASE("triangle wave: |2*fract(x)-1| peaks at boundaries, zero at midpoint") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" },
+                   { "transformfunction", "triangle" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        fx.time = 0.0; op(fx.info());
+        CHECK(p.size == doctest::Approx(1.0));  // |2*0 - 1| = 1
+        fx.time = 0.5; op(fx.info());
+        CHECK(p.size == doctest::Approx(0.0));  // |2*0.5 - 1| = 0
+        fx.time = 0.25; op(fx.info());
+        CHECK(p.size == doctest::Approx(0.5));  // |2*0.25 - 1| = 0.5
+    }
+
+    TEST_CASE("simplexnoise stays in [0, 1] across many samples") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" },
+                   { "transformfunction", "simplexnoise" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        for (double t = 0.0; t < 100.0; t += 1.7) {
+            fx.time = t; op(fx.info());
+            CHECK(p.size >= 0.0f);
+            CHECK(p.size <= 1.0f);
+        }
+    }
+
+    TEST_CASE("fbmnoise reduces to simplexnoise when octaves=1") {
+        json j_simp = { { "name", "remapvalue" },
+                        { "operation", "set" },
+                        { "input", "particlesystemtime" },
+                        { "output", "particlesize" },
+                        { "transformfunction", "simplexnoise" },
+                        { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                        { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        json j_fbm  = j_simp;
+        j_fbm["transformfunction"] = "fbmnoise";
+        j_fbm["transformoctaves"] = 1;
+        auto op_s = WPParticleParser::genParticleOperatorOp(j_simp, empty_override());
+        auto op_f = WPParticleParser::genParticleOperatorOp(j_fbm, empty_override());
+        OpFixture fx_s, fx_f;
+        fx_s.time = fx_f.time = 0.42;
+        Particle& p_s = fx_s.spawn();
+        Particle& p_f = fx_f.spawn();
+        op_s(fx_s.info());
+        op_f(fx_f.info());
+        CHECK(p_s.size == doctest::Approx(p_f.size).epsilon(0.01));
+    }
+
     TEST_CASE("input: random produces a stable per-particle value") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },
