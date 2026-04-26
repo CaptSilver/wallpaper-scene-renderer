@@ -804,6 +804,49 @@ TEST_SUITE("remapvalue") {
 }
 
 // ===========================================================================
+// controlpointattract / controlpointforce equivalence
+// ===========================================================================
+
+TEST_SUITE("controlpoint force equivalence") {
+    TEST_CASE("controlpointforce is controlpointattract with reversed direction") {
+        json j_attract = { { "name", "controlpointattract" },
+                           { "controlpoint", 0 }, { "scale", 100.0 },
+                           { "threshold", 1000.0 } };
+        json j_force   = { { "name", "controlpointforce" },
+                           { "controlpoint", 0 }, { "scale", 100.0 },
+                           { "threshold", 1000.0 } };
+        auto op_a = WPParticleParser::genParticleOperatorOp(j_attract, empty_override());
+        auto op_f = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
+        OpFixture fx_a, fx_f;
+        // CP at +X, particle at origin: attract pulls +X, force pushes -X.
+        fx_a.cps[0].resolved = fx_f.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
+        Particle& p_a = fx_a.spawn();
+        Particle& p_f = fx_f.spawn();
+        op_a(fx_a.info());
+        op_f(fx_f.info());
+        CHECK(p_a.velocity.x() == doctest::Approx(-p_f.velocity.x()));
+        CHECK(p_a.velocity.x() > 0.0);
+        CHECK(p_f.velocity.x() < 0.0);
+    }
+
+    TEST_CASE("controlpointforce honours the same threshold as attract") {
+        json j_force = { { "name", "controlpointforce" },
+                         { "controlpoint", 0 }, { "scale", 100.0 },
+                         { "threshold", 50.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
+        OpFixture fx;
+        fx.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
+        Particle& p = fx.spawn();
+        // Particle at +X 100 — outside threshold of 50.
+        p.position = Eigen::Vector3f(100, 0, 0);
+        p.velocity = Eigen::Vector3f(0, 0, 0);
+        op(fx.info());
+        // Untouched.
+        CHECK(p.velocity.x() == doctest::Approx(0.0));
+    }
+}
+
+// ===========================================================================
 // Universal blend-window coverage on existing kinematic operators
 // ===========================================================================
 

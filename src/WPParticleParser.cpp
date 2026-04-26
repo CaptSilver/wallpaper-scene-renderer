@@ -1839,34 +1839,31 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     }
                 }
             };
-        } else if (name == "controlpointattract") {
+        } else if (name == "controlpointattract" || name == "controlpointforce") {
+            // controlpointattract pulls particles toward a controlpoint.
+            // controlpointforce is a project-local sibling that pushes
+            // particles AWAY from the controlpoint instead.  Mathematically
+            // it's equivalent to `controlpointattract` with a negated scale
+            // — no shipped scene authors `controlpointforce` (the source
+            // operator surface only documents `controlpointattract`), so
+            // this branch keeps the alias working for project-local scenes
+            // that may have used it while normalising both into a single
+            // implementation.  Authors writing new scenes should prefer
+            // `controlpointattract` with a negative `scale` to repel.
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             BlendWindow bw      = BlendWindow::FromJson(wpj);
+            const bool repel    = (name == "controlpointforce");
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[c.controlpoint].resolved +
                                   Vector3f { c.origin.data() }.cast<double>();
                 for (auto& p : info.particles) {
-                    Vector3d diff     = offset - PM::GetPos(p).cast<double>();
-                    double   distance = diff.norm();
-                    if (distance < c.threshold) {
-                        PM::Accelerate(p, diff.normalized() * c.scale * bw.Factor(p),
-                                       info.time_pass);
-                    }
-                }
-            };
-        } else if (name == "controlpointforce") {
-            ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
-            BlendWindow bw      = BlendWindow::FromJson(wpj);
-            return [=](const ParticleInfo& info) {
-                Vector3d offset = info.controlpoints[c.controlpoint].resolved +
-                                  Vector3f { c.origin.data() }.cast<double>();
-                for (auto& p : info.particles) {
-                    Vector3d diff     = PM::GetPos(p).cast<double>() - offset;
-                    double   distance = diff.norm();
-                    if (distance < c.threshold && distance > 0.0) {
-                        PM::Accelerate(p, diff.normalized() * c.scale * bw.Factor(p),
-                                       info.time_pass);
-                    }
+                    Vector3d toward   = offset - PM::GetPos(p).cast<double>();
+                    double   distance = toward.norm();
+                    if (distance >= c.threshold) continue;
+                    if (distance < 1e-9) continue;
+                    Vector3d direction = repel ? -toward.normalized()
+                                               :  toward.normalized();
+                    PM::Accelerate(p, direction * c.scale * bw.Factor(p), info.time_pass);
                 }
             };
         }
