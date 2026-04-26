@@ -3305,14 +3305,37 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     }
 
     if (sc.general.orthogonalprojection.auto_) {
-        i32 w = 0, h = 0;
+        // For autosize image objects, WPImageObject::FromJson leaves size at
+        // the default (2,2) — the real dimensions are only resolved later in
+        // ParseImageObj when the texture parser is in scope.  Probe the .tex
+        // header here too so the auto-ortho measurement reflects the actual
+        // sprite/map dimensions instead of the default placeholder.  Without
+        // this the ortho collapses to 2x2 and every world-space-positioned
+        // image renders far outside clip space (Aesthetic City 843532366
+        // background was ~240,150 in a 2x2 ortho — entirely off-screen).
+        WPTexImageParser tempParser(&vfs);
+        i32              w = 0, h = 0;
         for (auto& obj : wp_objs) {
             auto* img = std::get_if<wpscene::WPImageObject>(&obj);
             if (img == nullptr) continue;
-            i32 size = (i32)(img->size.at(0) * img->size.at(1));
-            if (size > w * h) {
-                w = (i32)img->size.at(0);
-                h = (i32)img->size.at(1);
+            i32 iw = (i32)img->size.at(0);
+            i32 ih = (i32)img->size.at(1);
+            if (img->autosize && iw <= 2 && ih <= 2 &&
+                ! img->material.textures.empty() &&
+                ! img->material.textures.front().empty()) {
+                auto header = tempParser.ParseHeader(img->material.textures.front());
+                if (header.isSprite && header.spriteAnim.numFrames() > 0) {
+                    const auto& frame = header.spriteAnim.GetCurFrame();
+                    iw                = (i32)frame.width;
+                    ih                = (i32)frame.height;
+                } else if (header.mapWidth > 0 && header.mapHeight > 0) {
+                    iw = header.mapWidth;
+                    ih = header.mapHeight;
+                }
+            }
+            if (iw * ih > w * h) {
+                w = iw;
+                h = ih;
             }
         }
         sc.general.orthogonalprojection.width  = w;
