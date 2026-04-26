@@ -939,17 +939,38 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             };
 
         } else if (name == "alphafade") {
+            // fadeintime / fadeouttime are durations in SECONDS, not lifetime
+            // fractions.  The WE editor labels them "Fade-in time" / "Fade-out
+            // time" and the shipping ember preset authors fadeouttime=1 on a
+            // 3-5s particle — only sensible as "last 1 second of life ramps
+            // to zero", not as a fraction (life > 1.0 would be unreachable).
+            //
+            // Convert to per-particle lifetime fraction at frame time using
+            // each particle's own init.lifetime so the curve scales correctly
+            // across populations with mixed lifetimes from lifetimerandom.
+            //
+            // Both windows apply independently (multiplicatively) so they tent
+            // when their sum exceeds lifetime — relevant for very short
+            // particles (e.g. blow_torch with 0.125s life and 0.1s+0.1s fade).
             float fadeintime { 0.5f }, fadeouttime { 0.5f };
             GET_JSON_NAME_VALUE_NOWARN(wpj, "fadeintime", fadeintime);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "fadeouttime", fadeouttime);
             return [fadeintime, fadeouttime](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
-                    auto life = PM::LifetimePos(p);
-                    if (life <= fadeintime)
-                        PM::MutiplyAlpha(p, FadeValueChange(life, 0, fadeintime, 0, 1.0f));
-                    else if (life > fadeouttime)
-                        PM::MutiplyAlpha(p,
-                                         1.0f - FadeValueChange(life, fadeouttime, 1.0f, 0, 1.0f));
+                    const float L = p.init.lifetime;
+                    if (L <= 1e-6f) continue;
+                    const float in_frac  = std::min(fadeintime  / L, 1.0f);
+                    const float out_frac = std::min(fadeouttime / L, 1.0f);
+                    const float life     = (float)PM::LifetimePos(p);
+                    float       a        = 1.0f;
+                    if (in_frac > 1e-6f && life < in_frac) {
+                        a *= life / in_frac;
+                    }
+                    const float out_start = 1.0f - out_frac;
+                    if (out_frac > 1e-6f && life > out_start) {
+                        a *= 1.0f - (life - out_start) / out_frac;
+                    }
+                    PM::MutiplyAlpha(p, a);
                 }
             };
         } else if (name == "alphachange") {

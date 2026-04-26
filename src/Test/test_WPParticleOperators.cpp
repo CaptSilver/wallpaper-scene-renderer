@@ -1702,3 +1702,122 @@ TEST_SUITE("Particle.RandomFloat") {
         }
     }
 }
+
+// ===========================================================================
+// alphafade — fadeintime / fadeouttime are SECONDS, not lifetime fractions.
+// Per WE editor UI label "Fade-in time" / "Fade-out time" and ember.json
+// authoring fadeouttime=1 on a 3-5s particle (a fraction reading would make
+// that value unreachable, so the operator would never fade out).
+// ===========================================================================
+
+TEST_SUITE("alphafade") {
+    // Run the alphafade operator one frame at a chosen LifetimePos on a
+    // particle with the given init.lifetime, returning the resulting alpha.
+    // life_pos = 0 means freshly emitted; life_pos = 1 means at end of life.
+    auto run_at = [](float fadein, float fadeout, float init_life,
+                     float life_pos) -> float {
+        json j = { { "name", "alphafade" },
+                   { "fadeintime",  fadein  },
+                   { "fadeouttime", fadeout } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p     = fx.spawn();
+        p.init.lifetime = init_life;
+        // LifetimePos = 1 - lifetime/init.lifetime → invert to set lifetime.
+        p.lifetime = init_life * (1.0f - life_pos);
+        p.alpha    = 1.0f;
+        op(fx.info());
+        return p.alpha;
+    };
+
+    TEST_CASE("ember preset: fadeouttime=1 on a 5s particle produces a real fade-out") {
+        // Driver case for the seconds-vs-fraction interpretation.  Under a
+        // fraction reading life > 1.0 is unreachable and the particle would
+        // pop off at end-of-life with no fade.  Seconds: last 1s = last 20%
+        // of life ramps from full alpha to 0.
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 0.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 0.02f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 0.50f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 0.80f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 0.90f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.1f, 1.0f, 5.0f, 1.0f)  == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("NieR dust 0.8/0.8 on 4s: long full-alpha plateau, not a sharp peak") {
+        // Driver case for the user report.  Author intent is "particles
+        // visible most of their life with a soft fade at each end".  Under a
+        // fraction reading the curve was triangular, peaking only briefly at
+        // life=0.8 — the bug under investigation.
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.0f) == doctest::Approx(0.0f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.1f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.2f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.5f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.8f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 0.9f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.8f, 0.8f, 4.0f, 1.0f) == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("rising_debris 0.5/0.5 on 7.5s: long plateau scales with init.lifetime") {
+        // Same fadeintime/fadeouttime but a much longer particle.  The fade
+        // windows still consume only fadein/L = fadeout/L ≈ 6.7% of life each.
+        CHECK(run_at(0.5f, 0.5f, 7.5f, 0.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.5f, 0.5f, 7.5f, 0.10f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 7.5f, 0.50f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 7.5f, 0.90f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 7.5f, 1.0f)  == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("overlapping windows: fadein+fadeout > lifetime gives a tent function") {
+        // blow_torch case: 0.125s life with 0.1s fadein and 0.1s fadeout.
+        // Both windows cover most of life and overlap; the fade-in and
+        // fade-out gates multiply where they intersect, with no flat top.
+        const float a_mid = run_at(0.1f, 0.1f, 0.125f, 0.5f);
+        CHECK(a_mid > 0.0f);
+        CHECK(a_mid < 1.0f);
+        // Endpoints still hit zero.
+        CHECK(run_at(0.1f, 0.1f, 0.125f, 0.0f) == doctest::Approx(0.0f));
+        CHECK(run_at(0.1f, 0.1f, 0.125f, 1.0f) == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("default (0.5s/0.5s) on a 5s particle: 90% of life at full alpha") {
+        // Bare alphafade with no authored fields: defaults are 0.5s+0.5s.
+        // On a 5s lifetime that's 10% fade-in and 10% fade-out.
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.05f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.10f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.50f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.90f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.95f) == doctest::Approx(0.5f));
+    }
+
+    TEST_CASE("default (0.5s/0.5s) on a 1s particle: full overlap, symmetric tent") {
+        // L=1s, fadein=fadeout=0.5s → in_frac=out_frac=0.5; the tent peaks
+        // only at life=0.5 where both fade windows are at full strength.
+        CHECK(run_at(0.5f, 0.5f, 1.0f, 0.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.5f, 0.5f, 1.0f, 0.5f)  == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 1.0f, 1.0f)  == doctest::Approx(0.0f));
+        // Symmetric around midlife.
+        CHECK(run_at(0.5f, 0.5f, 1.0f, 0.25f) == doctest::Approx(run_at(0.5f, 0.5f, 1.0f, 0.75f)));
+    }
+
+    TEST_CASE("zero fadein and fadeout: alpha unchanged across the whole life") {
+        // Author opts out of fade entirely.  Defaults to alpha=1.0 throughout.
+        CHECK(run_at(0.0f, 0.0f, 4.0f, 0.0f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.0f, 0.0f, 4.0f, 0.5f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.0f, 0.0f, 4.0f, 1.0f) == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("zero init.lifetime is skipped without dividing by zero") {
+        // Defensive: a degenerate particle with zero init.lifetime must not
+        // hit a /0.  The operator should leave alpha untouched.
+        json j = { { "name", "alphafade" },
+                   { "fadeintime", 0.5f }, { "fadeouttime", 0.5f } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p     = fx.spawn();
+        p.init.lifetime = 0.0f;
+        p.lifetime      = 0.0f;
+        p.alpha         = 0.7f;
+        op(fx.info());
+        CHECK(p.alpha == doctest::Approx(0.7f));
+    }
+}
