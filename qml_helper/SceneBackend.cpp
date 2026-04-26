@@ -2277,7 +2277,16 @@ void SceneObject::setupTextScripts() {
         "  }\n"
         "}\n"
         "thisScene.createLayer = function(asset) {\n"
-        "  var path = asset && (asset.__asset || asset.image);\n"
+        // Accept three argument forms:
+        //   1. string:  createLayer('models/bar.json')
+        //   2. asset descriptor returned by engine.registerAsset()
+        //      (carries __asset)
+        //   3. object literal: createLayer({image:'path', origin:...})
+        // Naruto Shippuden 2800255344's audio-spectrum bar script uses
+        // form 1 — without it, every createLayer returned a stub and 63
+        // bars collapsed onto each other in the centre of the scene.
+        "  var path = (typeof asset === 'string') ? asset\n"
+        "             : (asset && (asset.__asset || asset.image));\n"
         "  var pool = path && engine._assetPools[path];\n"
         "  if (!engine._assetLive[path]) engine._assetLive[path] = [];\n"
         "  var live = engine._assetLive[path];\n"

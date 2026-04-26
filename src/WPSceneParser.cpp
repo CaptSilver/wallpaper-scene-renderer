@@ -118,6 +118,13 @@ struct ParseContext {
     // thisScene.createLayer(asset) can instantiate them at runtime.
     std::unordered_set<std::string> registered_asset_paths;
 
+    // Workshop id declared by the script that asked for each asset path.
+    // When a bare path like 'models/bar.json' doesn't exist on disk, we
+    // probe 'models/workshop/<id>/bar.json' as a fallback (workshop
+    // imports rebuild a `__workshopId = 'NNN'` declaration at the top of
+    // every script — that's our resolver hint).
+    std::unordered_map<std::string, std::string> script_asset_workshop_id;
+
     // Per-asset pool-size hints derived from the enclosing script.  When a
     // script implements its own object pool (pattern: `XxxPool.pop()`), it
     // expects createLayer to eventually return many layers — one per pool
@@ -3174,11 +3181,23 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // [\s\S] to span newlines).
         static const std::regex createLayerLiteralRe(
             R"(createLayer\s*\(\s*\{[\s\S]*?(?:image|"image"|'image')\s*:\s*['"]([^'"]+)['"])");
+        // String form: createLayer('models/foo.json') — used by scripts like
+        // Naruto Shippuden 2800255344's audio-spectrum bar (passes the asset
+        // path directly without registerAsset).  Pre-register the path so
+        // the runtime can rent pool nodes instead of returning stubs.
+        static const std::regex createLayerStringRe(
+            R"(createLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
         // Script-managed pool pattern: `identifier + Pool . (pop|push|length)`.
         // When present, the script expects createLayer to produce many
         // long-lived layers it manages itself — an 8-slot backend pool is
         // nowhere near enough.
         static const std::regex scriptPoolRe(R"(\w*[Pp]ool\s*\.\s*(pop|push|length))");
+        // Workshop-id declaration: `__workshopId = 'NNN'` (top of every
+        // workshop-imported script).  Used to resolve bare paths like
+        // 'models/bar.json' to 'models/workshop/<id>/bar.json' when the bare
+        // path doesn't exist on disk.
+        static const std::regex workshopIdRe(
+            R"(__workshopId\s*=\s*['"]([^'"]+)['"])");
         // Integer slider maxes in the same script — used as pool-size hints.
         // Matches `max: 400` but skips `max: 0.5` and `max: 1e10` (only `\d+`).
         static const std::regex                    intMaxRe(R"(max\s*:\s*(\d+)\s*[,\n])");
@@ -3204,6 +3223,27 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                     context.registered_asset_paths.insert((*it)[1].str());
                     thisScriptPaths.push_back((*it)[1].str());
                 }
+                // String form: createLayer('models/foo.json')
+                for (auto it = std::sregex_iterator(s.begin(), s.end(), createLayerStringRe);
+                     it != std::sregex_iterator();
+                     ++it) {
+                    context.registered_asset_paths.insert((*it)[1].str());
+                    thisScriptPaths.push_back((*it)[1].str());
+                }
+                // Workshop-id resolution: associate this script's createLayer
+                // paths with its `__workshopId = 'NNN'` declaration so we can
+                // fall back to `models/workshop/<id>/<file>.json` if the bare
+                // path doesn't exist on disk (Naruto Shippuden 2800255344's
+                // bar.json sits under workshop/2092495494).
+                {
+                    std::smatch wm;
+                    if (std::regex_search(s, wm, workshopIdRe)) {
+                        const std::string id = wm[1].str();
+                        for (const auto& p : thisScriptPaths) {
+                            context.script_asset_workshop_id[p] = id;
+                        }
+                    }
+                }
                 // If this script manages its own pool, bump the backend pool
                 // size hint for everything it creates.
                 if (! thisScriptPaths.empty() && std::regex_search(s, scriptPoolRe)) {
@@ -3224,6 +3264,34 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                     for (const auto& p : thisScriptPaths) {
                         auto& cur = context.asset_pool_size_hints[p];
                         if (hint > cur) cur = hint;
+                    }
+                }
+                // createLayer in a `for (...; i < N; ...)` loop — common pattern
+                // for batch-spawning bars/stars/rings (Naruto Shippuden's audio
+                // spectrum needs 64 bars).  Use the loop bound as a pool-size
+                // hint when no Pool.pop pattern is present.  Detect both
+                // `i < N` and `i <= N` forms.
+                if (! thisScriptPaths.empty()) {
+                    // Locate every for-loop bound and pick the largest, capped
+                    // at 2048 to match the explicit-pool path.
+                    static const std::regex forBoundRe(
+                        R"(for\s*\([^)]*?\b\w+\s*<=?\s*(\d+))");
+                    size_t largestBound = 0;
+                    for (auto it = std::sregex_iterator(s.begin(), s.end(), forBoundRe);
+                         it != std::sregex_iterator();
+                         ++it) {
+                        try {
+                            size_t v = std::stoull((*it)[1].str());
+                            if (v > largestBound) largestBound = v;
+                        } catch (...) {
+                        }
+                    }
+                    if (largestBound > 8) {
+                        size_t hint = std::min<size_t>(2048, largestBound + 1);
+                        for (const auto& p : thisScriptPaths) {
+                            auto& cur = context.asset_pool_size_hints[p];
+                            if (hint > cur) cur = hint;
+                        }
                     }
                 }
                 return;
@@ -3441,6 +3509,31 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             std::string safePrefix = "__pool_" + assetPath;
             for (char& c : safePrefix)
                 if (c == '/' || c == '.') c = '_';
+            // Resolve the on-disk path.  Pools are keyed by the bare
+            // assetPath (what the script writes in createLayer/registerAsset),
+            // but the actual file may live under
+            // `<root>/workshop/<workshopId>/<rest>` for workshop-imported
+            // scripts.  Probe both forms so the synthetic pool wpobj's
+            // `image` field references a file that actually exists in the
+            // VFS — otherwise the wpobj parse fails and the pool stays empty.
+            std::string resolvedPath = assetPath;
+            if (! isParticle && ! vfs.Contains("/assets/" + assetPath)) {
+                auto wid = context.script_asset_workshop_id.find(assetPath);
+                if (wid != context.script_asset_workshop_id.end()) {
+                    auto slash = assetPath.find('/');
+                    if (slash != std::string::npos) {
+                        std::string candidate = assetPath.substr(0, slash) +
+                                                "/workshop/" + wid->second +
+                                                assetPath.substr(slash);
+                        if (vfs.Contains("/assets/" + candidate)) {
+                            LOG_INFO("  asset workshop-resolved: '%s' → '%s'",
+                                     assetPath.c_str(),
+                                     candidate.c_str());
+                            resolvedPath = candidate;
+                        }
+                    }
+                }
+            }
             auto hint      = context.asset_pool_size_hints.find(assetPath);
             int  kPoolSize = hint != context.asset_pool_size_hints.end()
                                  ? static_cast<int>(hint->second)
@@ -3458,9 +3551,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                     { "scale", "1 1 1" }, { "angles", "0 0 0" }, { "visible", false },
                 };
                 if (isParticle)
-                    poolObj["particle"] = assetPath;
+                    poolObj["particle"] = resolvedPath;
                 else
-                    poolObj["image"] = assetPath;
+                    poolObj["image"] = resolvedPath;
                 size_t beforeSize = wp_objs.size();
                 if (isParticle)
                     AddWPObject<wpscene::WPParticleObject>(wp_objs, poolObj, vfs);
