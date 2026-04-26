@@ -19,20 +19,33 @@ void main()
 )";
 
 constexpr std::string_view frag_code_sdr = R"(#version 320 es
-precision mediump float;
+precision highp float;
 layout(location = 0) in vec2 v_Texcoord;
 layout(location = 0) out vec4 out_FragColor;
 
 // 0 is global ublock
 layout(binding = 1) uniform sampler2D u_Texture;
 
+// IEC 61966-2-1 sRGB encode (linear → display-encoded).  Matches the curve
+// the swapchain colorspace tag (SRGB_NONLINEAR_KHR / Qt SceneGraph) expects:
+// without this, linear RT data is interpreted by the compositor as already-
+// encoded sRGB and displays ~38% darker in midtones.
+vec3 srgb_encode(vec3 v)
+{
+	v = max(v, vec3(0.0));
+	vec3 lo = v * 12.92;
+	vec3 hi = 1.055 * pow(v, vec3(1.0/2.4)) - 0.055;
+	return mix(lo, hi, step(vec3(0.0031308), v));
+}
+
 void main()
 {
 	vec3 hdr = texture(u_Texture, v_Texcoord).rgb;
-	// Exposure tonemap: preserves HDR glow gradients from additive particles
-	// (beam textures + brightness 5x + alpha 10x produce values up to ~50)
-	// 1 - exp(-x) smoothly compresses: 0→0, 1→0.63, 5→0.99, 50→1.0
-	out_FragColor = vec4(1.0 - exp(-hdr), 1.0);
+	// Compose pass (combine_hdr) clamps to [0,1] linear when bloom is active;
+	// for non-bloom HDR scenes the data is unbounded linear, so saturate
+	// caps the upper end (hard clip — A2's full mip-chain bloom will absorb
+	// the energy properly).  Then sRGB-encode for display.
+	out_FragColor = vec4(srgb_encode(clamp(hdr, vec3(0.0), vec3(1.0))), 1.0);
 }
 )";
 

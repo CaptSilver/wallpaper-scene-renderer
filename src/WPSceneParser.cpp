@@ -4095,7 +4095,15 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
               { std::string(WE_BLOOM_QUARTER) },
               std::string(WE_BLOOM_EIGHTH) },
             { "blur_h_bloom", { std::string(WE_BLOOM_EIGHTH) }, std::string(WE_BLOOM_RESULT) },
-            { "combine",
+            // Final compose: was the legacy "combine" (raw `albedo + bloom`).
+            // combine_hdr (LINEAR=0 default branch) does
+            // `saturate(lin(albedo + bloom)) * g_RenderVar0.x` — sRGB decode
+            // on the accumulated value, clamp, and exposure scale.  Output
+            // is linear in [0, exposure]; FinPass then sRGB-encodes for the
+            // swapchain.  The 4-tap bloom upsample inside the shader uses
+            // g_TexelSize as the offset in UV space — set below to the
+            // eighth-RT texel so the 4 corners span one texel of the bloom RT.
+            { "combine_hdr",
               { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_RESULT) },
               std::string(SpecTex_Default) },
         } };
@@ -4128,6 +4136,23 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             }
 
             LoadConstvalue(material, wpmat, shaderInfo);
+
+            // combine_hdr per-pass uniforms (post LoadMaterial so they survive
+            // alias resolution; LoadConstvalue's name→glname lookup doesn't
+            // map direct g_-prefixed uniforms reliably here).
+            if (def.shader == "combine_hdr") {
+                // .x = exposure scale.  .y = HDR-display smoothstep boost
+                // (only sampled by the DISPLAYHDR=1 branch which we don't
+                // activate; left at 0 for SDR).  .z/.w unused.
+                material.customShader.constValues["g_RenderVar0"] =
+                    std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
+                // 4-tap bloom-upsample offsets in g_Texture1's UV space.
+                // Bloom RT is at scale 0.125 → 1 texel = 8 / fullW in UV.
+                material.customShader.constValues["g_TexelSize"] = std::vector<float> {
+                    8.0f / static_cast<float>(context.ortho_w),
+                    8.0f / static_cast<float>(context.ortho_h),
+                };
+            }
 
             auto spMesh = std::make_shared<SceneMesh>();
             spMesh->AddMaterial(std::move(material));
