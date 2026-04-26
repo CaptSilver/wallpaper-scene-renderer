@@ -332,6 +332,11 @@ void ParticleSubSystem::Emitt() {
         // ParticleSystem::Emitt), so parent CPs are already resolved this frame.
         ResolveControlpointsForInstance(inst.get());
 
+        // Pre-emit particle count so we can detect newly-spawned particles by
+        // counting how many got appended this frame.  Used by the
+        // WEKDE_DEBUG_PARTICLE first-emit log to peek at init values.
+        const usize pre_emit_count = inst->ParticlesVec().size();
+
         if (! inst->IsDeath()) {
             // Plumb the currently-spawning instance through a thread-local cell so
             // initializers (notably `inheritinitialvaluefromevent`) can resolve the
@@ -341,6 +346,37 @@ void ParticleSubSystem::Emitt() {
                 emittOp(inst->ParticlesVec(), m_initializers, m_maxcount, particleTime);
             }
             particle_spawn_context::SetSpawnInstance(nullptr);
+        }
+
+        // First-emit diagnostic: when WEKDE_DEBUG_PARTICLE is set, log the init
+        // values of the very first particle emitted per subsystem name.  Reveals
+        // whether `lifetimerandom` actually applied (init.lifetime should match
+        // the authored range, not the C++ default 1.0) and whether init.alpha/
+        // init.size landed where authoring intended.  One log per name across
+        // the lifetime of the process — the `static thread_local` flag is
+        // checked-and-set by name, so re-arming the subsystem (Reset → fresh
+        // Emitt) won't repeat the line.
+        static const bool particle_debug_first_emit = [] {
+            const char* v = std::getenv("WEKDE_DEBUG_PARTICLE");
+            return v && v[0] != '\0' && v[0] != '0';
+        }();
+        if (particle_debug_first_emit && ! m_debug_name.empty() &&
+            inst->ParticlesVec().size() > pre_emit_count) {
+            static thread_local std::map<std::string, bool, std::less<>> first_emit_logged;
+            auto& seen = first_emit_logged[m_debug_name];
+            if (! seen) {
+                seen = true;
+                const Particle& p = inst->ParticlesVec()[pre_emit_count];
+                LOG_INFO("particle-first-emit: '%s' init.lifetime=%.4g init.alpha=%.3f "
+                         "init.size=%.2f init.color=(%.2f,%.2f,%.2f) "
+                         "lifetime=%.4g alpha=%.3f spawn_type=%d",
+                         m_debug_name.c_str(),
+                         p.init.lifetime, p.init.alpha,
+                         p.init.size,
+                         p.init.color.x(), p.init.color.y(), p.init.color.z(),
+                         p.lifetime, p.alpha,
+                         (int)m_spawn_type);
+            }
         }
 
         // event_death is death when no live particles left
@@ -477,11 +513,19 @@ void ParticleSubSystem::Emitt() {
         m_sys.gener->GenGLData(m_instances, *m_mesh, m_genSpecOp);
     }
 
-    // Rate-limited snapshot: live instances, live particle total, and the bounded
-    // parent pos of up to 3 instances — lets us see at a glance whether a "sticky"
-    // subsystem's instances are actually pinned at a position or cycling.  Logs
+    // Rate-limited snapshot: live instances, live particle total, alpha + life
+    // distribution, and the bounded parent pos of up to 3 instances.  Logs
     // every ~120 frames per subsystem (≈2s at 60fps) only for named subsystems.
     // Gated on WEKDE_DEBUG_PARTICLE env var so production journal stays quiet.
+    //
+    // The alpha + life-left stats answer "are particles disappearing too
+    // quickly?" diagnostically: a healthy population has avg_alpha near
+    // peak-of-curve and life_left buckets evenly distributed across the four
+    // quartiles.  A population that fades too fast shows max_alpha < 1.0 and
+    // most particles in the 75-100% life-left bucket (newly spawned, briefly
+    // visible, then immediately culled).  A population whose particles die
+    // before lifetime expiry shows life_left buckets all at the high end and
+    // a low live count vs maxcount.
     static const bool particle_debug_enabled = [] {
         const char* v = std::getenv("WEKDE_DEBUG_PARTICLE");
         return v && v[0] != '\0' && v[0] != '0';
@@ -495,26 +539,60 @@ void ParticleSubSystem::Emitt() {
                                                           Eigen::Vector3f::Zero(),
                                                           Eigen::Vector3f::Zero() };
             usize sample_n = 0;
+            // Alpha + life statistics across the live population.  Life-left
+            // is `lifetime / init.lifetime ∈ [0,1]`: 1.0 means freshly emitted,
+            // 0.0 means at-or-past death.  Buckets count particles in each
+            // quartile so we can see the distribution at a glance.
+            float alpha_sum = 0.0f, alpha_min = 1e9f, alpha_max = -1.0f;
+            float life_sum = 0.0f, life_min = 1e9f, life_max = -1.0f;
+            float init_life_min = 1e9f, init_life_max = -1.0f;
+            std::array<usize, 4> life_buckets { 0, 0, 0, 0 };
             for (auto& inst : m_instances) {
                 if (! inst) continue;
                 bool any_live = false;
                 for (auto& p : inst->ParticlesVec()) {
-                    if (ParticleModify::LifetimeOk(p)) {
-                        live_p++;
-                        any_live = true;
-                    }
+                    if (! ParticleModify::LifetimeOk(p)) continue;
+                    live_p++;
+                    any_live = true;
+                    const float L = p.init.lifetime;
+                    const float life_left = (L > 1e-6f) ? (p.lifetime / L) : 0.0f;
+                    alpha_sum += p.alpha;
+                    if (p.alpha < alpha_min) alpha_min = p.alpha;
+                    if (p.alpha > alpha_max) alpha_max = p.alpha;
+                    life_sum += life_left;
+                    if (life_left < life_min) life_min = life_left;
+                    if (life_left > life_max) life_max = life_left;
+                    if (L < init_life_min) init_life_min = L;
+                    if (L > init_life_max) init_life_max = L;
+                    // 0..0.25 → bucket 0, 0.25..0.5 → 1, 0.5..0.75 → 2, 0.75..1.0 → 3.
+                    int b = std::clamp((int)(life_left * 4.0f), 0, 3);
+                    life_buckets[b]++;
                 }
                 if (any_live) {
                     if (sample_n < 3) live_samples[sample_n++] = inst->GetBoundedData().pos;
                     live_inst++;
                 }
             }
+            const float alpha_avg = live_p ? alpha_sum / (float)live_p : 0.0f;
+            const float life_avg  = live_p ? life_sum  / (float)live_p : 0.0f;
+            if (live_p == 0) {
+                alpha_min = alpha_max = life_min = life_max = 0.0f;
+                init_life_min = init_life_max = 0.0f;
+            }
             LOG_INFO("particle-state: '%s' inst=%zu/%zu liveP=%zu "
+                     "alpha[avg/min/max]=%.2f/%.2f/%.2f "
+                     "life_left[avg/min/max]=%.2f/%.2f/%.2f "
+                     "init_life=%.2f..%.2f "
+                     "buckets[0-25,25-50,50-75,75-100]=%zu/%zu/%zu/%zu "
                      "livePos[0]=(%.1f,%.1f) livePos[1]=(%.1f,%.1f) livePos[2]=(%.1f,%.1f)",
                      m_debug_name.c_str(),
                      live_inst,
                      m_instances.size(),
                      live_p,
+                     alpha_avg, alpha_min, alpha_max,
+                     life_avg, life_min, life_max,
+                     init_life_min, init_life_max,
+                     life_buckets[0], life_buckets[1], life_buckets[2], life_buckets[3],
                      live_samples[0].x(), live_samples[0].y(),
                      live_samples[1].x(), live_samples[1].y(),
                      live_samples[2].x(), live_samples[2].y());
