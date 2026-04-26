@@ -762,6 +762,136 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 }
 
 // ===========================================================================
+// inheritvaluefromevent operator — per-frame parent property tracking
+// ===========================================================================
+
+namespace
+{
+
+struct InheritOpFixture {
+    ParticleInstance parent;
+    ParticleInstance child;
+    OpFixture        of;
+
+    explicit InheritOpFixture(const Particle& seed) {
+        parent.ParticlesVec().push_back(seed);
+        child.GetBoundedData().parent       = &parent;
+        child.GetBoundedData().particle_idx = 0;
+    }
+
+    ParticleInfo info() {
+        ParticleInfo i = of.info();
+        i.instance     = &child;
+        return i;
+    }
+};
+
+} // namespace
+
+TEST_SUITE("inheritvaluefromevent") {
+    TEST_CASE("color: fully overwrites child each tick (no blend)") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.color     = Eigen::Vector3f(0, 0, 0);
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "color" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        CHECK(p.color.x() == doctest::Approx(0.2f));
+        CHECK(p.color.y() == doctest::Approx(0.4f));
+        CHECK(p.color.z() == doctest::Approx(0.8f));
+    }
+
+    TEST_CASE("size and alpha overwrite each tick") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.size      = 5.0f;
+        p.alpha     = 0.0f;
+        json j_size = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        json j_a    = { { "name", "inheritvaluefromevent" }, { "input", "alpha" } };
+        auto op_s   = WPParticleParser::genParticleOperatorOp(j_size, empty_override());
+        auto op_a   = WPParticleParser::genParticleOperatorOp(j_a, empty_override());
+        op_s(fx.info());
+        op_a(fx.info());
+        CHECK(p.size == doctest::Approx(42.0f));
+        CHECK(p.alpha == doctest::Approx(0.6f));
+    }
+
+    TEST_CASE("velocity overwrite tracks parent velocity") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.velocity  = Eigen::Vector3f(0, 0, 0);
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "velocity" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        CHECK(p.velocity.x() == doctest::Approx(7.0f));
+        CHECK(p.velocity.z() == doctest::Approx(11.0f));
+    }
+
+    TEST_CASE("blend-window halves the override") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.size      = 0.0f;
+        // Particle at LifetimePos = 0.5; blend ramps in over [0, 0.5] and out over [0.5, 1].
+        p.lifetime      = 0.5f;
+        p.init.lifetime = 1.0f;
+        // Blend in from 0..0.5 (factor at life=0.5 is 1) — but we want a partial factor
+        // so authour fade-in extending past current life: 0..1.0 makes factor=0.5.
+        json j = { { "name", "inheritvaluefromevent" },
+                   { "input", "size" },
+                   { "blendinstart", 0.0 },
+                   { "blendinend", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        // factor = 0.5 → size = 0*(0.5) + 42*(0.5) = 21
+        CHECK(p.size == doctest::Approx(21.0f));
+    }
+
+    TEST_CASE("dead parent: child is untouched (no-op guard)") {
+        Particle dead = makeParent();
+        dead.lifetime = 0.0f;
+        InheritOpFixture fx(dead);
+        Particle& p = fx.of.spawn();
+        p.size      = 7.0f;
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(7.0f));
+    }
+
+    TEST_CASE("null instance: no-op (defensive guard)") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.size      = 99.0f;
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        // info.instance is nullptr by default.
+        op(of.info());
+        CHECK(p.size == doctest::Approx(99.0f));
+    }
+
+    TEST_CASE("dead child particle: skipped by lifetime gate") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.size      = 3.0f;
+        p.lifetime  = 0.0f;
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("unknown input string: silent no-op") {
+        InheritOpFixture fx(makeParent());
+        Particle& p = fx.of.spawn();
+        p.size      = 11.0f;
+        json j      = { { "name", "inheritvaluefromevent" }, { "input", "noeffect" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(11.0f));
+    }
+}
+
+// ===========================================================================
 // Particle::RandomFloat — stable per-seed value.
 // ===========================================================================
 

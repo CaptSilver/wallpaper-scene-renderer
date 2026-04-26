@@ -1540,6 +1540,57 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     }
                 }
             };
+        } else if (name == "inheritvaluefromevent") {
+            // Per-frame variant of `inheritinitialvaluefromevent`: every tick,
+            // re-reads the parent-event particle's named property and writes it
+            // into the child's CURRENT state (not init).  Lets a tethered child
+            // track parent appearance over time — e.g. a glow trail behind a
+            // colour-shifting comet keeps recolouring as the comet's per-frame
+            // colour script runs.
+            //
+            // When a blend window is authored, the operator interpolates from
+            // the child's existing value to the parent's value by `factor`:
+            // factor=1 fully copies (matches the no-blend default), factor=0
+            // leaves the child untouched.  This matches the universal blend-
+            // window semantic (fade the operator's effect in/out across
+            // lifetime) — at factor=0 the operator is a no-op so the child
+            // free-runs; at factor=1 the operator dominates so the child
+            // tracks the parent.
+            //
+            // No-op when info.instance is null (STATIC top-level), when there
+            // is no live parent particle (parent dead, missing link), or when
+            // the input string is unrecognised.
+            std::string input;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
+            return [input, bw](const ParticleInfo& info) {
+                if (info.instance == nullptr) return;
+                const Particle* parent = info.instance->GetEventParentParticle();
+                if (parent == nullptr) return;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    double f = bw.Factor(p);
+                    if (f <= 0.0) continue;
+                    if (input == "color" || input == "particlecolor") {
+                        p.color = (p.color.cast<double>() * (1.0 - f) +
+                                   parent->color.cast<double>() * f)
+                                      .cast<float>();
+                    } else if (input == "size" || input == "particlesize") {
+                        p.size = (float)(p.size * (1.0 - f) + parent->size * f);
+                    } else if (input == "alpha" || input == "opacity" ||
+                               input == "particlealpha") {
+                        p.alpha = (float)(p.alpha * (1.0 - f) + parent->alpha * f);
+                    } else if (input == "velocity" || input == "particlevelocity") {
+                        p.velocity = (p.velocity.cast<double>() * (1.0 - f) +
+                                      parent->velocity.cast<double>() * f)
+                                         .cast<float>();
+                    } else if (input == "rotation" || input == "particlerotation") {
+                        p.rotation = (p.rotation.cast<double>() * (1.0 - f) +
+                                      parent->rotation.cast<double>() * f)
+                                         .cast<float>();
+                    }
+                }
+            };
         } else if (name == "controlpointattract") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
             return [=](const ParticleInfo& info) {
