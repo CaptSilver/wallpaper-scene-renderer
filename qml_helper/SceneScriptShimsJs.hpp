@@ -363,4 +363,27 @@ Vec4.lerp = function(a, b, t) {
 };
 )JS";
 
+// thisScene.createLayer's helper that applies an object-literal-form asset's
+// per-call overrides (origin/scale/angles/alpha/color/visible) onto the rented
+// layer proxy.  String / asset-descriptor forms skip the literal branch via
+// the `typeof asset === 'object'` guard — without it `'visible' in 'string'`
+// throws TypeError (Naruto Shippuden 2800255344's bar script bug, where
+// init() crashed at the first createLayer('models/bar.json') call so only
+// thisLayer ended up in bars[] and update() then TypeError'd on bars[i] for
+// i>0).
+inline constexpr const char* kApplyLayerLiteralJs = R"JS(
+function _applyLayerLiteral(layer, asset) {
+  if (asset && typeof asset === 'object' && !asset.__asset) {
+    if (asset.origin) layer.origin = asset.origin;
+    if (asset.scale)  layer.scale  = asset.scale;
+    if (asset.angles) layer.angles = asset.angles;
+    if ('alpha' in asset) layer.alpha = asset.alpha;
+    if (asset.color) layer.color = asset.color;
+    layer.visible = ('visible' in asset) ? !!asset.visible : true;
+  } else {
+    layer.visible = true;
+  }
+}
+)JS";
+
 } // namespace wek::qml_helper

@@ -2625,6 +2625,116 @@ TEST_SUITE("_Internal") {
     }
 } // TEST_SUITE _Internal
 
+// _applyLayerLiteral is the helper inside thisScene.createLayer that copies
+// per-call overrides (origin/scale/angles/...) from an object-literal asset
+// onto the rented layer.  Naruto Shippuden 2800255344's bar script calls
+// `thisScene.createLayer('models/bar.json')` — the string form.  Before the
+// `typeof asset === 'object'` guard, the helper hit `'visible' in asset`
+// where asset was a JS string, which throws TypeError ("Cannot use 'in'
+// operator to search for 'visible' in models/bar.json") and aborted init().
+// These tests pin the guard so future refactors can't reintroduce the throw.
+TEST_SUITE("_applyLayerLiteral guard") {
+    struct LayerEnv {
+        QJSEngine engine;
+        LayerEnv() {
+            engine.evaluate(wek::qml_helper::kVecClassesJs);
+            engine.evaluate(wek::qml_helper::kApplyLayerLiteralJs);
+            engine.evaluate(
+                "function _newLayer() {\n"
+                "  return { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
+                "           angles: Vec3(0,0,0), alpha: 1, color: Vec3(1,1,1),\n"
+                "           visible: false };\n"
+                "}\n");
+        }
+    };
+
+    TEST_CASE("string asset path doesn't throw and forces visible=true") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, 'models/bar.json');\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("visible").toBool() == true);
+    }
+
+    TEST_CASE("asset descriptor with __asset is treated as opaque handle") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "var asset = { __asset: 'models/bar.json' };\n"
+            "_applyLayerLiteral(L, asset);\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("visible").toBool() == true);
+    }
+
+    TEST_CASE("object literal applies origin/scale/angles overrides") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, { origin: Vec3(10,20,30),\n"
+            "                         scale:  Vec3(2,3,4),\n"
+            "                         angles: Vec3(0,0,90),\n"
+            "                         visible: true });\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("origin").property("x").toNumber() == doctest::Approx(10));
+        CHECK(r.property("origin").property("y").toNumber() == doctest::Approx(20));
+        CHECK(r.property("origin").property("z").toNumber() == doctest::Approx(30));
+        CHECK(r.property("scale").property("x").toNumber() == doctest::Approx(2));
+        CHECK(r.property("angles").property("z").toNumber() == doctest::Approx(90));
+        CHECK(r.property("visible").toBool() == true);
+    }
+
+    TEST_CASE("object literal honors visible:false") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, { visible: false });\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("visible").toBool() == false);
+    }
+
+    TEST_CASE("missing visible key defaults to true") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, { origin: Vec3(1,2,3) });\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("visible").toBool() == true);
+    }
+
+    TEST_CASE("alpha:0 is honored (uses 'in' check, not truthiness)") {
+        LayerEnv env;
+        QJSValue r = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, { alpha: 0 });\n"
+            "L;\n");
+        REQUIRE(! r.isError());
+        CHECK(r.property("alpha").toNumber() == doctest::Approx(0));
+    }
+
+    TEST_CASE("null/undefined asset just sets visible=true") {
+        LayerEnv env;
+        QJSValue r1 = env.engine.evaluate(
+            "var L = _newLayer();\n"
+            "_applyLayerLiteral(L, null);\n"
+            "L;\n");
+        REQUIRE(! r1.isError());
+        CHECK(r1.property("visible").toBool() == true);
+
+        QJSValue r2 = env.engine.evaluate(
+            "var L2 = _newLayer();\n"
+            "_applyLayerLiteral(L2, undefined);\n"
+            "L2;\n");
+        REQUIRE(! r2.isError());
+        CHECK(r2.property("visible").toBool() == true);
+    }
+} // TEST_SUITE _applyLayerLiteral guard
+
 // ------------------------------------------------------------------
 // SceneScript Globals
 // ------------------------------------------------------------------

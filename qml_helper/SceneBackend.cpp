@@ -2263,19 +2263,13 @@ void SceneObject::setupTextScripts() {
         // Fallback: if asset wasn't pre-scanned or pool exhausted, return a
         // throwaway stub so scripts don't crash (but the "layer" renders
         // nothing).
-        // Helper: apply object-literal properties to a rented layer.
-        "function _applyLayerLiteral(layer, asset) {\n"
-        "  if (asset && !asset.__asset) {\n"
-        "    if (asset.origin) layer.origin = asset.origin;\n"
-        "    if (asset.scale)  layer.scale  = asset.scale;\n"
-        "    if (asset.angles) layer.angles = asset.angles;\n"
-        "    if ('alpha' in asset) layer.alpha = asset.alpha;\n"
-        "    if (asset.color) layer.color = asset.color;\n"
-        "    layer.visible = ('visible' in asset) ? !!asset.visible : true;\n"
-        "  } else {\n"
-        "    layer.visible = true;\n"
-        "  }\n"
-        "}\n"
+        );
+    // _applyLayerLiteral is shared with scenescript_tests via
+    // SceneScriptShimsJs.hpp — evaluated as a separate top-level statement
+    // so the production QJSEngine sees the exact same source string the
+    // tests do.
+    m_jsEngine->evaluate(wek::qml_helper::kApplyLayerLiteralJs);
+    m_jsEngine->evaluate(
         "thisScene.createLayer = function(asset) {\n"
         // Accept three argument forms:
         //   1. string:  createLayer('models/bar.json')
@@ -3080,13 +3074,14 @@ void SceneObject::setupTextScripts() {
                 "                 (typeof init === 'function' ? init : null);\n"
                 "  var _init = _rawInit ? function(v) {\n"
                 "    try { return _rawInit(v); }\n"
-                "    catch(e) { console.log('SceneScript init error: ' + e.message); }\n"
+                "    catch(e) { console.log('SceneScript init error: ' + e.message + ' line=' + "
+                "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
                 "  } : null;\n"
                 "  var _rawUpd = _upd;\n"
                 "  if (_rawUpd) _upd = function(v) {\n"
                 "    try { return _rawUpd(v); }\n"
                 "    catch(e) { console.log('update error: ' + e.message + ' line=' + "
-                "e.lineNumber); return v; }\n"
+                "e.lineNumber + ' stack=' + (e.stack||'')); return v; }\n"
                 "  };\n"
                 "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
                 "               (typeof cursorClick === 'function' ? cursorClick : null);\n"

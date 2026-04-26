@@ -748,12 +748,23 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                                sanitize(entry.output) + ".ppm";
 
             FILE* f = std::fopen(path.c_str(), "wb");
+            // Companion alpha PGM (only for 8bpc formats) so we can inspect the
+            // alpha channel of every pass — required for diagnosing edge-bleed
+            // composite issues where the alpha mask doesn't match what the
+            // RGB-only PPM suggests.
+            std::string alpha_path = path.substr(0, path.size() - 4) + "_alpha.pgm";
+            FILE*       af         = nullptr;
             if (f) {
                 std::fprintf(f, "P6\n%u %u\n255\n", entry.width, entry.height);
                 std::vector<uint8_t> row((size_t)entry.width * 3);
+                std::vector<uint8_t> alpha_row((size_t)entry.width);
                 const bool           is_bgra = (entry.format == VK_FORMAT_B8G8R8A8_UNORM ||
                                       entry.format == VK_FORMAT_B8G8R8A8_SRGB);
                 const bool           is_8bpc = (BytesPerPixelFor(entry.format) == 4);
+                if (is_8bpc) {
+                    af = std::fopen(alpha_path.c_str(), "wb");
+                    if (af) std::fprintf(af, "P5\n%u %u\n255\n", entry.width, entry.height);
+                }
 
                 for (uint32_t y = 0; y < entry.height; y++) {
                     if (is_8bpc) {
@@ -761,10 +772,12 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                         const uint8_t* src =
                             static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 4;
                         for (uint32_t x = 0; x < entry.width; x++) {
-                            row[x * 3 + 0] = src[x * 4 + (is_bgra ? 2 : 0)];
-                            row[x * 3 + 1] = src[x * 4 + 1];
-                            row[x * 3 + 2] = src[x * 4 + (is_bgra ? 0 : 2)];
+                            row[x * 3 + 0]   = src[x * 4 + (is_bgra ? 2 : 0)];
+                            row[x * 3 + 1]   = src[x * 4 + 1];
+                            row[x * 3 + 2]   = src[x * 4 + (is_bgra ? 0 : 2)];
+                            alpha_row[x]     = src[x * 4 + 3];
                         }
+                        if (af) std::fwrite(alpha_row.data(), 1, alpha_row.size(), af);
                     } else {
                         // RGBA16F: decode 16-bit half-floats, apply the same exposure
                         // tonemap FinPass uses (`1 - exp(-hdr)`) to land in [0,1],
@@ -791,6 +804,7 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                     std::fwrite(row.data(), 1, row.size(), f);
                 }
                 std::fclose(f);
+                if (af) std::fclose(af);
                 written++;
             }
             entry.staging.handle.UnMapMemory();
