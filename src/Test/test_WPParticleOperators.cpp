@@ -873,6 +873,69 @@ TEST_SUITE("remapvalue") {
         CHECK(p.size == doctest::Approx(30.0));
     }
 
+    TEST_CASE("output sugar: `setvelocity` resolves to set + particlevelocity") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlelifetime" },
+                   { "output", "setvelocity" },
+                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.velocity = Eigen::Vector3f(0, 0, 0);
+        op(fx.info());
+        // `set` operation broadcasts the scalar to all 3 axes (no
+        // outputcomponent).  Each axis gets 7.
+        CHECK(p.velocity.x() == doctest::Approx(7.0));
+        CHECK(p.velocity.y() == doctest::Approx(7.0));
+        CHECK(p.velocity.z() == doctest::Approx(7.0));
+    }
+
+    TEST_CASE("output sugar: `multiplyopacity` resolves to multiply + particlealpha") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlelifetime" },
+                   { "output", "multiplyopacity" },
+                   { "outputrangemin", 0.5 }, { "outputrangemax", 0.5 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.alpha = 1.0f;
+        op(fx.info());
+        // multiply by 0.5 → alpha becomes 0.5.
+        CHECK(p.alpha == doctest::Approx(0.5));
+    }
+
+    TEST_CASE("output sugar: explicit operation key beats the prefix") {
+        // Author writes "setvelocity" but explicitly says operation=add —
+        // explicit must win.
+        json j = { { "name", "remapvalue" },
+                   { "operation", "add" },
+                   { "input", "particlelifetime" },
+                   { "output", "setvelocity" },
+                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.velocity = Eigen::Vector3f(3, 0, 0);
+        op(fx.info());
+        // add: velocity.x = 3 + 7 = 10 (not set to 7).
+        CHECK(p.velocity.x() == doctest::Approx(10.0));
+    }
+
+    TEST_CASE("output sugar: short-form `color` resolves to particlecolor") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlelifetime" },
+                   { "output", "color" },
+                   { "outputcomponent", "x" },
+                   { "outputrangemin", 0.5 }, { "outputrangemax", 0.5 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.color = Eigen::Vector3f(0, 0, 0);
+        op(fx.info());
+        CHECK(p.color.x() == doctest::Approx(0.5));
+    }
+
     TEST_CASE("output: controlpoint writes back to the resolved CP") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },

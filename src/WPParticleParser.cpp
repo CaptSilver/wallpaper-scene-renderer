@@ -7,6 +7,7 @@
 #include "Particle/HsvColor.h"
 #include "Particle/ParticleCollision.h"
 #include <chrono>
+#include <cstring>
 #include <ctime>
 #include <random>
 #include <memory>
@@ -1234,6 +1235,47 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputcontrolpoint0", outputCP0);
             if (transformoctaves < 1) transformoctaves = 1;
             if (transformoctaves > 8) transformoctaves = 8;
+
+            // The source editor exposes a single dropdown that pre-bakes the
+            // (operation, output) pair: e.g. "set velocity" maps to
+            // (operation="set", output="particlevelocity").  Wallpapers
+            // authored that way ship the JSON as `output: "setvelocity"` with
+            // no explicit `operation` key, so normalise such aliases here.
+            //
+            // The normalisation only fires when the alias is recognised and
+            // an explicit operation key was NOT authored — so a scene that
+            // happens to ship `output: "setvelocity"` AND
+            // `operation: "multiply"` (rare but possible) keeps its explicit
+            // operation, matching author intent.
+            const bool operation_explicit = wpj.contains("operation");
+            auto strip_prefix = [](std::string& s, const char* prefix) -> bool {
+                const std::size_t n = std::strlen(prefix);
+                if (s.size() > n && s.compare(0, n, prefix) == 0) {
+                    s.erase(0, n);
+                    return true;
+                }
+                return false;
+            };
+            // Strip operation-prefix sugar from the output string regardless
+            // of whether `operation` was authored — author intent for the
+            // (operation, output) tuple lives in two places that need to be
+            // kept consistent.  Only update the `operation` capture when no
+            // explicit key was authored, so an explicit key always wins.
+            std::string output_norm = output;
+            std::string prefix_op;
+            if (strip_prefix(output_norm, "set")) prefix_op = "set";
+            else if (strip_prefix(output_norm, "add")) prefix_op = "add";
+            else if (strip_prefix(output_norm, "multiply")) prefix_op = "multiply";
+            else if (strip_prefix(output_norm, "subtract")) prefix_op = "subtract";
+            else if (strip_prefix(output_norm, "fade")) prefix_op = "multiply";
+            output = std::move(output_norm);
+            if (! operation_explicit && ! prefix_op.empty()) operation = prefix_op;
+            // Canonicalise short-form output names that the editor uses
+            // interchangeably with the long-form `particle*` names.
+            if (output == "velocity") output = "particlevelocity";
+            else if (output == "angularvelocity") output = "particleangularvelocity";
+            else if (output == "rotation") output = "particlerotation";
+            else if (output == "color" || output == "coloropacity") output = "particlecolor";
             inputCP0  = ClampCpIndex(inputCP0);
             outputCP0 = ClampCpIndex(outputCP0);
             BlendWindow bw = BlendWindow::FromJson(wpj);
