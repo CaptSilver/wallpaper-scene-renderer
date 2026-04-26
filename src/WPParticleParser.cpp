@@ -1479,6 +1479,75 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     ParticleCollision::ReflectVelocity(p, n);
                 }
             };
+        } else if (name == "collisionquad") {
+            // Finite-quad collision.  The quad lives in a plane defined by
+            // `plane` (the surface normal) and `forward` (a tangent vector
+            // that defines the local +U axis once it has been orthogonalised
+            // against the normal).  `size` gives the quad's full width and
+            // height in those tangent directions; `origin` shifts the centre
+            // off the controlpoint anchor.
+            //
+            // A particle crossing the plane is reflected only when the
+            // crossing point falls inside the |U|, |V| half-extents — outside
+            // those bounds the quad is invisible to that particle.  The
+            // crossing test compares the current signed distance to the
+            // signed distance one frame earlier (recovered from the velocity
+            // step), so particles tunnelling through at high speed in a
+            // single frame still trigger the bounce.
+            std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
+            std::array<float, 3> plane_v { 0.0f, 1.0f, 0.0f };
+            std::array<float, 3> forward_v { 1.0f, 0.0f, 0.0f };
+            std::array<float, 2> size { 100.0f, 100.0f };
+            int                  controlpoint = 0;
+            float                restitution  = 1.0f;
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "origin", origin);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "plane", plane_v);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "forward", forward_v);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "size", size);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "controlpoint", controlpoint);
+            GET_JSON_NAME_VALUE_NOWARN(wpj, "restitution", restitution);
+            controlpoint = ClampCpIndex(controlpoint);
+            Vector3d n_raw(plane_v[0], plane_v[1], plane_v[2]);
+            if (n_raw.norm() < 1e-9) n_raw = Vector3d(0, 1, 0);
+            const Vector3d n = n_raw.normalized();
+            Vector3d       fwd_raw(forward_v[0], forward_v[1], forward_v[2]);
+            Vector3d       fwd_orth = fwd_raw - fwd_raw.dot(n) * n;
+            if (fwd_orth.norm() < 1e-9) {
+                // Forward parallel to normal → pick an arbitrary perpendicular axis.
+                fwd_orth = (std::abs(n.x()) < 0.9) ? Vector3d(1, 0, 0).cross(n)
+                                                   : Vector3d(0, 1, 0).cross(n);
+            }
+            const Vector3d forward_orth = fwd_orth.normalized();
+            const Vector3d right        = forward_orth.cross(n).normalized();
+            const Vector3d local_origin(origin[0], origin[1], origin[2]);
+            const double   half_u = size[0] * 0.5;
+            const double   half_v = size[1] * 0.5;
+            return [=](const ParticleInfo& info) {
+                if ((usize)controlpoint >= info.controlpoints.size()) return;
+                const Vector3d center = info.controlpoints[controlpoint].resolved + local_origin;
+                for (auto& p : info.particles) {
+                    if (! PM::LifetimeOk(p)) continue;
+                    const Vector3d ppos = p.position.cast<double>();
+                    const Vector3d d    = ppos - center;
+                    const double   sd   = d.dot(n);
+                    // Recover previous-frame signed distance via the velocity step.
+                    // Used to detect crossings within one tick rather than relying on
+                    // the particle ending the frame on a specific side.
+                    const Vector3d pvel = p.velocity.cast<double>();
+                    const double   prev_sd = sd - pvel.dot(n) * info.time_pass;
+                    const bool crossed = (sd >= 0.0) != (prev_sd >= 0.0);
+                    if (! crossed) continue;
+                    // Project particle onto the plane and decompose into local UV.
+                    const Vector3d proj  = ppos - sd * n;
+                    const Vector3d local = proj - center;
+                    const double   u     = local.dot(forward_orth);
+                    const double   v     = local.dot(right);
+                    if (std::abs(u) > half_u || std::abs(v) > half_v) continue;
+                    // Inside the quad bounds — snap to the plane and reflect.
+                    p.position = (ppos - sd * n).cast<float>();
+                    ParticleCollision::ReflectVelocity(p, n, restitution);
+                }
+            };
         } else if (name == "collisionbox" || name == "collisionbounds") {
             // Axis-aligned bounding-box collision anchored at a CP.  Particles
             // that cross any face of the box are clamped to the surface and

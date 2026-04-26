@@ -762,6 +762,101 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 }
 
 // ===========================================================================
+// collisionquad — finite quad with author basis
+// ===========================================================================
+
+TEST_SUITE("collisionquad") {
+    TEST_CASE("particle crossing a horizontal quad gets snapped + reflected") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(0, -10, 0);  // crossed below the plane
+        p.velocity  = Eigen::Vector3f(0, -50, 0);  // moving downward
+        of.time_pass = 1.0;                         // 1s frame so prev_sd recovers as +40
+        json j      = { { "name", "collisionquad" },
+                        { "controlpoint", 0 },
+                        { "plane", "0 1 0" },
+                        { "forward", "1 0 0" },
+                        { "size", "200 200" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(0.0f));
+        CHECK(p.velocity.y() == doctest::Approx(50.0f));
+    }
+
+    TEST_CASE("particle outside U/V bounds is unaffected") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        // Particle sits past the +X edge of a 100×100 quad.
+        p.position  = Eigen::Vector3f(200, -10, 0);
+        p.velocity  = Eigen::Vector3f(0, -50, 0);
+        of.time_pass = 1.0;
+        json j      = { { "name", "collisionquad" },
+                        { "controlpoint", 0 },
+                        { "plane", "0 1 0" },
+                        { "forward", "1 0 0" },
+                        { "size", "100 100" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(-10.0f));  // unaffected
+        CHECK(p.velocity.y() == doctest::Approx(-50.0f));
+    }
+
+    TEST_CASE("particle that did not cross within the frame is unaffected") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(0, 50, 0);  // above plane, moving up
+        p.velocity  = Eigen::Vector3f(0, 10, 0);
+        of.time_pass = 1.0;
+        json j      = { { "name", "collisionquad" },
+                        { "controlpoint", 0 },
+                        { "plane", "0 1 0" },
+                        { "forward", "1 0 0" },
+                        { "size", "200 200" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(50.0f));
+        CHECK(p.velocity.y() == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("origin shifts quad centre off the CP anchor") {
+        OpFixture of;
+        of.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
+        Particle& p = of.spawn();
+        // Quad anchored at (10, 0, 0) via origin.  Particle crossed at +X centre.
+        p.position  = Eigen::Vector3f(10, -5, 0);
+        p.velocity  = Eigen::Vector3f(0, -10, 0);
+        of.time_pass = 1.0;
+        json j      = { { "name", "collisionquad" },
+                        { "origin", "10 0 0" },
+                        { "plane", "0 1 0" },
+                        { "forward", "1 0 0" },
+                        { "size", "20 20" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(0.0f));
+        CHECK(p.velocity.y() == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("forward parallel to plane normal: arbitrary perpendicular fallback") {
+        OpFixture of;
+        Particle& p = of.spawn();
+        p.position  = Eigen::Vector3f(0, -5, 0);
+        p.velocity  = Eigen::Vector3f(0, -50, 0);
+        of.time_pass = 1.0;
+        // Author bug: forward is colinear with plane normal — should still produce
+        // a usable basis without dividing by zero.
+        json j      = { { "name", "collisionquad" },
+                        { "plane", "0 1 0" },
+                        { "forward", "0 1 0" },
+                        { "size", "200 200" } };
+        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        op(of.info());
+        CHECK(p.position.y() == doctest::Approx(0.0f));
+        CHECK(p.velocity.y() == doctest::Approx(50.0f));
+    }
+}
+
+// ===========================================================================
 // collisionbox / collisionbounds — AABB at CP
 // ===========================================================================
 
