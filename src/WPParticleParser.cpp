@@ -1441,11 +1441,32 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                             c.z() = apply_scalar(c.z(), mapped);
                         }
                         p.color = c.cast<float>();
+                    } else if (output == "controlpoint") {
+                        // Write back into a controlpoint's resolved position
+                        // so subsequent operators in this tick (and the next
+                        // tick's chain consumers via the resolver re-walk)
+                        // see the driven value.  The next frame's resolve
+                        // pass recomputes from the static authored offset, so
+                        // writes are per-frame transient — exactly matching
+                        // an author who scripts "drive CP1 from particle
+                        // alpha each tick".
+                        if ((usize)outputCP0 < info.controlpoints.size()) {
+                            Vector3d cp = info.controlpoints[outputCP0].resolved;
+                            if (outputcomponent == "x") cp.x() = apply_scalar(cp.x(), mapped);
+                            else if (outputcomponent == "y") cp.y() = apply_scalar(cp.y(), mapped);
+                            else if (outputcomponent == "z") cp.z() = apply_scalar(cp.z(), mapped);
+                            else {
+                                cp.x() = apply_scalar(cp.x(), mapped);
+                                cp.y() = apply_scalar(cp.y(), mapped);
+                                cp.z() = apply_scalar(cp.z(), mapped);
+                            }
+                            info.controlpoints[outputCP0].resolved = cp;
+                        }
                     }
-                    // Other outputs (controlpoint, position) intentionally
-                    // unhandled — writing back into world space would need a
-                    // pending-CP-update path we don't have; report loudly the
-                    // first time we see one in the wild.
+                    // Other outputs (position) intentionally unhandled —
+                    // writing back into world space would need a pending
+                    // particle-position queue we don't have; report loudly
+                    // the first time we see one in the wild.
                 }
             };
         } else if (name == "capvelocity") {

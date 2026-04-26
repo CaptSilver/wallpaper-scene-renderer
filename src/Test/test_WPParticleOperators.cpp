@@ -31,7 +31,7 @@ struct OpFixture {
     ParticleInfo info() {
         return ParticleInfo {
             .particles     = std::span<Particle>(particles),
-            .controlpoints = std::span<const ParticleControlpoint>(cps.data(), cps.size()),
+            .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
             .time          = time,
             .time_pass     = time_pass,
         };
@@ -750,6 +750,39 @@ TEST_SUITE("remapvalue") {
         CHECK(p_f.alpha <= 1.0f);
         // Different octave counts almost always produce different sums.
         CHECK(p_o.alpha != p_f.alpha);
+    }
+
+    TEST_CASE("output: controlpoint writes back to the resolved CP") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlelifetime" },
+                   { "output", "controlpoint" },
+                   { "outputcontrolpoint0", 3 },
+                   { "outputcomponent", "x" },
+                   { "outputrangemin", 50.0 }, { "outputrangemax", 50.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.cps[3].resolved = Eigen::Vector3d(0, 0, 0);
+        fx.spawn();
+        op(fx.info());
+        CHECK(fx.cps[3].resolved.x() == doctest::Approx(50.0));
+        CHECK(fx.cps[3].resolved.y() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("output: controlpoint with no outputcomponent broadcasts scalar to xyz") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "particlelifetime" },
+                   { "output", "controlpoint" },
+                   { "outputcontrolpoint0", 5 },
+                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.spawn();
+        op(fx.info());
+        CHECK(fx.cps[5].resolved.x() == doctest::Approx(7.0));
+        CHECK(fx.cps[5].resolved.y() == doctest::Approx(7.0));
+        CHECK(fx.cps[5].resolved.z() == doctest::Approx(7.0));
     }
 
     TEST_CASE("input: random produces a stable per-particle value") {

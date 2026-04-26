@@ -88,7 +88,7 @@ struct ParticleControlpoint {
 
 struct ParticleInfo {
     std::span<Particle>                   particles;
-    std::span<const ParticleControlpoint> controlpoints;
+    std::span<ParticleControlpoint>       controlpoints;
     double                                time;
     double                                time_pass;
     // Per-instance back-pointer.  Operators that need to dereference the parent
