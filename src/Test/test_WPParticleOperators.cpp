@@ -804,6 +804,61 @@ TEST_SUITE("remapvalue") {
 }
 
 // ===========================================================================
+// Universal blend-window coverage on existing kinematic operators
+// ===========================================================================
+
+TEST_SUITE("BlendWindow on kinematic ops") {
+    TEST_CASE("movement: gravity is scaled by the blend factor") {
+        json j_no_blend = { { "name", "movement" },
+                            { "gravity", "0 -10 0" } };
+        json j_blend    = { { "name", "movement" },
+                            { "gravity", "0 -10 0" },
+                            { "blendinstart", 0.0 }, { "blendinend", 1.0 } };
+        wpscene::ParticleInstanceoverride over;
+        over.enabled = true;
+        over.speed   = 1.0f;
+        auto op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, over);
+        auto op_b = WPParticleParser::genParticleOperatorOp(j_blend, over);
+        OpFixture fx_a, fx_b;
+        Particle& p_a = fx_a.spawn();
+        Particle& p_b = fx_b.spawn();
+        // Both particles at LifetimePos = 0.5; with blend window [0,1] the
+        // blend factor at life=0.5 is exactly 0.5.
+        p_a.lifetime = p_b.lifetime = 0.5f;
+        p_a.init.lifetime = p_b.init.lifetime = 1.0f;
+        op_a(fx_a.info());
+        op_b(fx_b.info());
+        // No-blend version applies full gravity; blended version applies half.
+        CHECK(p_a.velocity.y() < p_b.velocity.y());
+        CHECK(p_b.velocity.y() == doctest::Approx(p_a.velocity.y() * 0.5));
+    }
+
+    TEST_CASE("controlpointattract: force is scaled by the blend factor") {
+        json j_no_blend = { { "name", "controlpointattract" },
+                            { "controlpoint", 0 },
+                            { "scale", 50.0 },
+                            { "threshold", 1000.0 } };
+        json j_blend    = { { "name", "controlpointattract" },
+                            { "controlpoint", 0 },
+                            { "scale", 50.0 },
+                            { "threshold", 1000.0 },
+                            { "blendinstart", 0.0 }, { "blendinend", 1.0 } };
+        auto op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, empty_override());
+        auto op_b = WPParticleParser::genParticleOperatorOp(j_blend, empty_override());
+        OpFixture fx_a, fx_b;
+        fx_a.cps[0].resolved = fx_b.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
+        Particle& p_a = fx_a.spawn();
+        Particle& p_b = fx_b.spawn();
+        p_a.lifetime = p_b.lifetime = 0.5f;
+        p_a.init.lifetime = p_b.init.lifetime = 1.0f;
+        op_a(fx_a.info());
+        op_b(fx_b.info());
+        // Blended version is half-strength at life=0.5.
+        CHECK(p_b.velocity.x() == doctest::Approx(p_a.velocity.x() * 0.5));
+    }
+}
+
+// ===========================================================================
 // inheritcontrolpointvelocity initializer
 // ===========================================================================
 

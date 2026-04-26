@@ -874,14 +874,21 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "gravity", gravity);
             Vector3d vecG = Vector3f(gravity.data()).cast<double>();
             double   spd  = over.speed;
+            BlendWindow bw = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
-                    // Gravity scaled by speed override
-                    PM::Accelerate(p, vecG * spd, info.time_pass);
+                    // Gravity scaled by speed override; lifetime blend tapers
+                    // gravity in/out so authors can ease an upward "lift" from
+                    // a gust of wind without the discontinuity of a sharp on /
+                    // off boundary.  At factor=1 the operator runs as before.
+                    const double f = bw.Factor(p);
+                    PM::Accelerate(p, vecG * spd * f, info.time_pass);
                     PM::MoveByTime(p, info.time_pass);
-                    // Multiplicative drag: velocity *= (1 - drag * dt)
+                    // Multiplicative drag: velocity *= (1 - drag * dt).  Drag
+                    // is also blended — at factor=0 the particle keeps its
+                    // current velocity untouched.
                     if (drag > 0.0f) {
-                        double factor = std::max(0.0, 1.0 - drag * info.time_pass);
+                        double factor = std::max(0.0, 1.0 - drag * f * info.time_pass);
                         PM::MutiplyVelocity(p, factor);
                     }
                 }
@@ -892,11 +899,13 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "drag", drag);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "force", force);
             Vector3d vecF = Vector3f(force.data()).cast<double>();
+            BlendWindow bw = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
+                    const double f = bw.Factor(p);
                     Vector3d acc =
                         algorism::DragForce(PM::GetAngular(p).cast<double>(), drag) + vecF;
-                    PM::AngularAccelerate(p, acc, info.time_pass);
+                    PM::AngularAccelerate(p, acc * f, info.time_pass);
                     PM::RotateByTime(p, info.time_pass);
                 }
             };
@@ -984,14 +993,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             Turbulence tur   = Turbulence::ReadFromJson(wpj);
             double     phase = Random::get(tur.phasemin, tur.phasemax);
             double     speed = Random::get(tur.speedmin, tur.speedmax);
-
-            float blendinstart = 0.0f, blendinend = 0.0f;
-            float blendoutstart = 1.0f, blendoutend = 1.0f;
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinstart", blendinstart);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendinend", blendinend);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutstart", blendoutstart);
-            GET_JSON_NAME_VALUE_NOWARN(wpj, "blendoutend", blendoutend);
-            bool hasBlend = blendinend > 0.0f || blendoutend < 1.0f;
+            BlendWindow bw   = BlendWindow::FromJson(wpj);
 
             return [=](const ParticleInfo& info) {
                 double noiseRate  = std::abs(tur.timescale * tur.scale * 2.0) * info.time_pass;
@@ -999,20 +1001,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
 
                 for (auto& p : info.particles) {
                     Vector3d pos    = PM::GetPos(p).cast<double>();
-                    double   factor = speed;
-                    if (hasBlend) {
-                        double life  = PM::LifetimePos(p);
-                        double blend = 1.0;
-                        if (blendinend > blendinstart && life < blendinend)
-                            blend = std::clamp(
-                                (life - blendinstart) / (blendinend - blendinstart), 0.0, 1.0);
-                        if (blendoutend > blendoutstart && life > blendoutstart) {
-                            double bo = std::clamp(
-                                (life - blendoutstart) / (blendoutend - blendoutstart), 0.0, 1.0);
-                            blend *= (1.0 - bo);
-                        }
-                        factor *= blend;
-                    }
+                    double   factor = speed * bw.Factor(p);
                     if (incoherent) {
                         // High-frequency spatial noise so adjacent rope particles
                         // jitter independently (not uniformly).  Time evolves slowly
@@ -1037,6 +1026,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             };
         } else if (name == "vortex") {
             Vortex v = Vortex::ReadFromJson(wpj);
+            BlendWindow bw = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[v.controlpoint].resolved +
                                   (Vector3f { v.offset.data() }).cast<double>();
@@ -1044,18 +1034,19 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 double   dis_mid = v.distanceouter - v.distanceinner + 0.1f;
 
                 for (auto& p : info.particles) {
+                    const double f = bw.Factor(p);
                     Vector3d pos      = p.position.cast<double>();
                     Vector3d direct   = -axis.cross(pos).normalized();
                     double   distance = (pos - offset).norm();
                     if (dis_mid < 0 || distance < v.distanceinner) {
-                        PM::Accelerate(p, direct * v.speedinner, info.time_pass);
+                        PM::Accelerate(p, direct * v.speedinner * f, info.time_pass);
                     }
                     if (distance > v.distanceouter) {
-                        PM::Accelerate(p, direct * v.speedouter, info.time_pass);
+                        PM::Accelerate(p, direct * v.speedouter * f, info.time_pass);
                     } else if (distance > v.distanceinner) {
                         double t = (distance - v.distanceinner) / dis_mid;
                         PM::Accelerate(p,
-                                       direct * algorism::lerp(t, v.speedinner, v.speedouter),
+                                       direct * algorism::lerp(t, v.speedinner, v.speedouter) * f,
                                        info.time_pass);
                     }
                 }
@@ -1830,6 +1821,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             };
         } else if (name == "controlpointattract") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
+            BlendWindow bw      = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[c.controlpoint].resolved +
                                   Vector3f { c.origin.data() }.cast<double>();
@@ -1837,12 +1829,14 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     Vector3d diff     = offset - PM::GetPos(p).cast<double>();
                     double   distance = diff.norm();
                     if (distance < c.threshold) {
-                        PM::Accelerate(p, diff.normalized() * c.scale, info.time_pass);
+                        PM::Accelerate(p, diff.normalized() * c.scale * bw.Factor(p),
+                                       info.time_pass);
                     }
                 }
             };
         } else if (name == "controlpointforce") {
             ControlPointForce c = ControlPointForce::ReadFromJson(wpj);
+            BlendWindow bw      = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
                 Vector3d offset = info.controlpoints[c.controlpoint].resolved +
                                   Vector3f { c.origin.data() }.cast<double>();
@@ -1850,7 +1844,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     Vector3d diff     = PM::GetPos(p).cast<double>() - offset;
                     double   distance = diff.norm();
                     if (distance < c.threshold && distance > 0.0) {
-                        PM::Accelerate(p, diff.normalized() * c.scale, info.time_pass);
+                        PM::Accelerate(p, diff.normalized() * c.scale * bw.Factor(p),
+                                       info.time_pass);
                     }
                 }
             };
