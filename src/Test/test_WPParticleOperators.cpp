@@ -787,6 +787,92 @@ TEST_SUITE("remapvalue") {
         }
     }
 
+    TEST_CASE("input: speed reads particle velocity magnitude") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "speed" },
+                   { "output", "particlesize" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.velocity = Eigen::Vector3f(3, 4, 0);  // norm = 5
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(5.0));
+    }
+
+    TEST_CASE("input: maxlifetime reads p.init.lifetime") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "maxlifetime" },
+                   { "output", "particlesize" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 10.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 10.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p = fx.spawn();
+        p.init.lifetime = 7.5f;
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(7.5));
+    }
+
+    TEST_CASE("input: deltatocontrolpoint with x-component") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "deltatocontrolpoint" },
+                   { "inputcomponent", "x" },
+                   { "inputcontrolpoint0", 0 },
+                   { "output", "particlesize" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.cps[0].resolved = Eigen::Vector3d(20, 0, 0);
+        Particle& p = fx.spawn();
+        p.position = Eigen::Vector3f(80, 0, 0);
+        op(fx.info());
+        // delta.x = 80 - 20 = 60.
+        CHECK(p.size == doctest::Approx(60.0));
+    }
+
+    TEST_CASE("input: directiontocontrolpoint normalises before component reduction") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "directiontocontrolpoint" },
+                   { "inputcomponent", "x" },
+                   { "inputcontrolpoint0", 0 },
+                   { "output", "particlesize" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
+        Particle& p = fx.spawn();
+        p.position = Eigen::Vector3f(0, 0, 0);
+        op(fx.info());
+        // Direction toward CP at +X = (1, 0, 0) → x = 1.
+        CHECK(p.size == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("input: positionbetweentwocontrolpoints projects onto cp0→cp1 segment") {
+        json j = { { "name", "remapvalue" },
+                   { "operation", "set" },
+                   { "input", "positionbetweentwocontrolpoints" },
+                   { "inputcontrolpoint0", 0 },
+                   { "output", "particlesize" },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        fx.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
+        fx.cps[1].resolved = Eigen::Vector3d(100, 0, 0);
+        Particle& p = fx.spawn();
+        p.position = Eigen::Vector3f(30, 50, 0);  // projection at t=0.3
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(30.0));
+    }
+
     TEST_CASE("output: controlpoint writes back to the resolved CP") {
         json j = { { "name", "remapvalue" },
                    { "operation", "set" },
