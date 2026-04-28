@@ -111,6 +111,36 @@ TEST_SUITE("BlendWindow") {
         CHECK_FALSE(bw.has_fade_in); // collapsed to 0-width — gated off
         CHECK(bw.Factor(0.5) == doctest::Approx(1.0));
     }
+
+    // Non-zero blendinstart pins the (life - blendin_start) and
+    // (blendin_end - blendin_start) sub-expressions to non-degenerate values
+    // so a `-` → `+` mutation produces a different factor.
+    TEST_CASE("fade-in with non-zero start computes correct mid-window factor") {
+        json j  = { { "blendinstart", 0.4 }, { "blendinend", 0.8 } };
+        auto bw = BlendWindow::FromJson(j);
+        CHECK(bw.Has());
+        // life=0.4 (start): (0.4-0.4)/(0.8-0.4) = 0   → factor 0
+        CHECK(bw.Factor(0.4) == doctest::Approx(0.0));
+        // life=0.6 (mid):   (0.6-0.4)/(0.8-0.4) = 0.5 → factor 0.5
+        CHECK(bw.Factor(0.6) == doctest::Approx(0.5));
+        // life=0.8 (end):   (0.8-0.4)/(0.8-0.4) = 1   → factor 1
+        CHECK(bw.Factor(0.8) == doctest::Approx(1.0));
+        // life=0.2 (below start): clamps to 0
+        CHECK(bw.Factor(0.2) == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("fade-out with non-trivial start computes correct mid-window factor") {
+        // blendoutstart < 1 - epsilon, so has_fade_out gates on.  Window 0.4..0.7.
+        json j  = { { "blendoutstart", 0.4 }, { "blendoutend", 0.7 } };
+        auto bw = BlendWindow::FromJson(j);
+        CHECK(bw.Has());
+        // life=0.4 (start): factor = 1 - (0/0.3) = 1
+        CHECK(bw.Factor(0.4) == doctest::Approx(1.0));
+        // life=0.55 (mid):  factor = 1 - 0.5 = 0.5
+        CHECK(bw.Factor(0.55) == doctest::Approx(0.5));
+        // life=0.7 (end):   factor = 0
+        CHECK(bw.Factor(0.7) == doctest::Approx(0.0));
+    }
 }
 
 // ===========================================================================
