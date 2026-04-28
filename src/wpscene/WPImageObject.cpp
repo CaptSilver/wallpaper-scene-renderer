@@ -300,10 +300,12 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
     GET_JSON_NAME_VALUE_NOWARN(jImage, "autosize", autosize);
+    GET_JSON_NAME_VALUE_NOWARN(jImage, "solidlayer", solidlayer);
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
     GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
+    GET_JSON_NAME_VALUE_NOWARN(json, "copybackground", copybackground);
     if (! fullscreen) {
         GET_JSON_NAME_VALUE(json, "origin", origin);
         GET_JSON_NAME_VALUE(json, "angles", angles);

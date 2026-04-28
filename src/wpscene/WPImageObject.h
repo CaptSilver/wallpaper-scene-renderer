@@ -79,6 +79,21 @@ public:
     // ParseImageObj by reading the first texture's sprite-frame dimensions
     // (or mapWidth × mapHeight for non-sprite textures).
     bool autosize { false };
+    // Model JSON "solidlayer": true — placeholder layer with no visible base.
+    // WE's flat shader convention is that solidlayers render fully transparent
+    // (g_Alpha = 0) so the effect chain reads (0,0,0,0) for the first pass and
+    // builds visible content via effects only.  Without this override, our
+    // base pass would render an opaque white quad if g_Color/g_Alpha were
+    // populated, polluting any per-image effect chain.
+    bool solidlayer { false };
+    // Scene-level "copybackground": true (default) means a passthrough compose
+    // layer captures _rt_default into its pingpong before running its effect
+    // chain.  When false, the effect chain runs on whatever the scene graph
+    // has already written into the pingpong (e.g. children rendered there) —
+    // suppress the implicit screen copy in SceneToRenderGraph's passthrough
+    // path so the pingpong isn't overwritten.  Default true matches WE
+    // semantics for composelayers.
+    bool copybackground { true };
     bool visible { true };
     bool visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
     // WE editor flag: when true, this object doesn't inherit transform /

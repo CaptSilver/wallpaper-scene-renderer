@@ -79,6 +79,15 @@ public:
     void SetPassthrough(bool v) { m_passthrough = v; }
     bool IsPassthrough() const { return m_passthrough; }
 
+    // Scene-level "copybackground" flag (default true).  Only meaningful when
+    // m_passthrough is also true — controls whether the implicit screen-copy
+    // (_rt_default → pingpong) actually fires before the effect chain runs.
+    // Wallpapers that author content directly into the compose pingpong via
+    // children scene-graph passes set copybackground=false to suppress the
+    // screen capture so the children's content isn't overwritten.
+    void SetCopyBackground(bool v) { m_copy_background = v; }
+    bool CopyBackground() const { return m_copy_background; }
+
     // Camera override for the final composite output (non-offscreen).
     // When set, the last effect node uses this camera instead of activeCamera.
     // Used for flat image layers in perspective scenes that need ortho projection.
@@ -102,6 +111,7 @@ private:
     bool                       m_is_offscreen { false };
     bool                       m_inherit_parent { false };
     bool                       m_passthrough { false };
+    bool                       m_copy_background { true };
     std::string                m_final_camera; // Camera for final composite (empty → activeCamera)
     std::unique_ptr<SceneMesh> m_final_mesh;
     std::unique_ptr<SceneNode> m_final_node;

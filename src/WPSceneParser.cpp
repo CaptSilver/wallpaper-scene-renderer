@@ -1150,8 +1150,32 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         if (wpeffobj.visible) count_eff++;
     }
     bool hasEffect = count_eff > 0;
-    // skip no effect fullscreen layer
+    // No-effect fullscreen layer: skip rendering BUT still register a bare
+    // placeholder node so SceneScript can find this layer via
+    // thisScene.getLayer(name).  Wallpapers (e.g. 3470764447 Nightingale "后处理层")
+    // use fullscreen layers as script hosts — the layer's display script reads
+    // engine.canvasSize, calls getLayer('morning')/getLayer('day')/etc, and
+    // toggles their visibility based on time of day.  Without the placeholder,
+    // every script-host fullscreen layer logs `getLayer: unknown layer: <name>`
+    // when its property scripts initialize `thisLayer = thisScene.getLayer(...)`,
+    // and any script that touches `thisLayer.foo` would crash quietly.
     if (! hasEffect && wpimgobj.fullscreen) {
+        auto spPlaceholder = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
+                                                         Vector3f(wpimgobj.scale.data()),
+                                                         Vector3f(wpimgobj.angles.data()));
+        spPlaceholder->ID() = wpimgobj.id;
+        spPlaceholder->SetVisible(wpimgobj.visible);
+        spPlaceholder->SetOffscreen(true); // never rendered (no mesh/material)
+        if (wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id)) {
+            context.node_map.at(wpimgobj.parent_id)->AppendChild(spPlaceholder);
+        } else {
+            context.scene->sceneGraph->AppendChild(spPlaceholder);
+        }
+        context.node_map[wpimgobj.id] = spPlaceholder;
+        LOG_INFO("fullscreen no-effect layer id=%d name='%s': registered as script-host "
+                 "placeholder (no rendering)",
+                 wpimgobj.id,
+                 wpimgobj.name.c_str());
         return;
     }
 
@@ -1350,6 +1374,18 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         };
         baseConstSvs["g_UserAlpha"]  = wpimgobj.alpha;
         baseConstSvs["g_Brightness"] = wpimgobj.brightness;
+        // WE flat.frag reads g_Color (vec3) and g_Alpha (float) as separate
+        // uniforms — distinct from the g_Color4 vec4 used by image shaders.
+        // Without explicit values, GLSL leaves them zero-initialized which
+        // happens to match WE's solidlayer convention (transparent placeholder)
+        // but breaks every other use of `flat` (e.g. shape-quads with authored
+        // color).  Populate both unconditionally; for solidlayer placeholders
+        // override g_Alpha=0 so the per-image effect chain reads a clean
+        // (0,0,0,0) base instead of an opaque colored quad.
+        baseConstSvs["g_Color"] = std::array<float, 3> {
+            wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2]
+        };
+        baseConstSvs["g_Alpha"] = wpimgobj.solidlayer ? 0.0f : wpimgobj.alpha;
 
         shaderInfo.baseConstSvs = baseConstSvs;
 
@@ -1677,7 +1713,21 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
             imgEffectLayer->SetOffscreen(isOffscreen);
-            imgEffectLayer->SetPassthrough(isCompose && wpimgobj.config.passthrough);
+            // Compose layer with copybackground:false — author intent is "do
+            // NOT capture _rt_default into the pingpong" (e.g. Nightingale
+            // 3470764447 id=249 with colorBlendMode=21 BlendReflect, where
+            // capturing the screen amplifies the day-character's blue TV-glow
+            // into a hard-edged blue rectangle at the layer's bbox).  Force
+            // passthrough so SceneToRenderGraph takes the alternate path that
+            // (a) skips the composelayer.frag base-pass screen capture, and
+            // (b) honors copybackground=false to also skip the implicit copy.
+            // The pingpong stays cleared, BlendReflect over a transparent
+            // pingpong = no-op, no blue box.
+            const bool forcePassthroughForCopyBg =
+                isCompose && ! wpimgobj.copybackground;
+            imgEffectLayer->SetPassthrough(isCompose &&
+                                           (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
+            imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
             // Only visible (non-offscreen) nodes inherit the parent-group
             // transform.  Offscreen dependency nodes render into their own
             // fixed-size RTs and must stay centered — applying the parent

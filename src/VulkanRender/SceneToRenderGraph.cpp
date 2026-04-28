@@ -168,13 +168,25 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     // so foreground elements (e.g. Lucy) render ON TOP of the compose result.
     // At this point _rt_default contains background content rendered before
     // this node in the scene graph — exactly what the compose needs.
+    //
+    // Honor scene.json "copybackground": false — wallpapers that author the
+    // pingpong via children scene-graph passes (or expect a clean black
+    // baseline) suppress the implicit screen capture.  Without this gate,
+    // every passthrough compose layer overwrites whatever the scene already
+    // wrote into the pingpong.
     if (imgeff != nullptr && imgeff->IsPassthrough()) {
-        LOG_INFO("passthrough compose: inline copy _rt_default → '%.*s'",
-                 (int)output.size(),
-                 output.data());
-        rg::addCopyPass(rgraph,
-                        rg::createTexDesc(std::string(SpecTex_Default)),
-                        rg::createTexDesc(std::string(output)));
+        if (imgeff->CopyBackground()) {
+            LOG_INFO("passthrough compose: inline copy _rt_default → '%.*s'",
+                     (int)output.size(),
+                     output.data());
+            rg::addCopyPass(rgraph,
+                            rg::createTexDesc(std::string(SpecTex_Default)),
+                            rg::createTexDesc(std::string(output)));
+        } else {
+            LOG_INFO("passthrough compose: skipping screen copy (copybackground=false) for '%.*s'",
+                     (int)output.size(),
+                     output.data());
+        }
         loadEffect(imgeff);
         return;
     }
