@@ -85,6 +85,11 @@ public:
         m_nearClip    = cam.m_nearClip;
         m_farClip     = cam.m_farClip;
         m_perspective = cam.m_perspective;
+        m_fov         = cam.m_fov;
+        m_direct_lookat = cam.m_direct_lookat;
+        m_eye           = cam.m_eye;
+        m_center        = cam.m_center;
+        m_up_vec        = cam.m_up_vec;
     }
 
     void                           LoadPaths(std::vector<CameraPath> paths);
