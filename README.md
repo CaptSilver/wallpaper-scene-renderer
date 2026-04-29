@@ -121,7 +121,7 @@ to a valid fragment shader will render. Known working:
 - [x] Sprite sheet animation (sequential / random frames)
 - [x] Perspective rendering flag
 - [ ] Real-time particle lighting (sample SceneLights in particle vertex/fragment shader)
-- [ ] Audio-responsive emission (`audioprocessingmode` is parsed but not yet wired into emit-rate/size/color)
+- [x] Audio-responsive emission — `audioprocessingmode != 0` enables bass-band-driven emit-rate scaling (FFT bins 0..3 averaged, exponentially smoothed with fast attack / slow decay, mapped to ~0.4× at silence and ~2.0× at full).  Future bits in the mode value can split rate / size / color.
 
 ### Puppet Warp
 - [x] Multi-bone skeletal animation
@@ -258,10 +258,6 @@ ordered by scope (smallest → largest).
 - **`bloomEnabled` runtime toggle** — bloom passes are baked into the render
   graph at scene load. Cheapest implementation is a "bypass mode" branch in
   the combine pass; the harder/cleaner path is a graph rebuild on toggle.
-- **Audio-responsive particle emission** — `audioprocessingmode` is already
-  parsed (`WPParticleObject.cpp:78`) but never consumed. Wire it into the
-  emit-rate / size / color paths using the existing `g_AudioSpectrum*`
-  uniforms; gate the per-particle sample on the mode value.
 - **Parent / child layer hierarchy from SceneScript** — add
   `setParent(layer)` / `getParent()` / `getChildren()` to the layer JS proxy
   and a graph-rebuild hook in `RenderHandler` so reparenting takes effect on
