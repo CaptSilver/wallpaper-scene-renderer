@@ -541,6 +541,134 @@ TEST_SUITE("SceneScript Video Texture") {
 } // TEST_SUITE SceneScript Video Texture
 
 // ------------------------------------------------------------------
+// getMaterial() proxy (JS side)
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript Material") {
+    // Mock __sceneBridge that records every materialSetValue call so tests
+    // can assert the JS proxy delegates correctly without pulling Vulkan or
+    // a real Scene into the harness.
+    struct MaterialBridgeEnv {
+        QJSEngine engine;
+        MaterialBridgeEnv() {
+            // Vec2/Vec3/Vec4 — needed because the proxy unpacks Vec instances.
+            engine.evaluate(wek::qml_helper::kVecClassesJs);
+            // Fake bridge.  The proxy looks up __sceneBridge.materialSetValue
+            // dynamically, so the bridge can be replaced in individual tests
+            // if needed.
+            engine.evaluate(R"JS(
+                var __sceneBridge = {
+                    _calls: [],
+                    materialSetValue: function(layer, name, arr) {
+                        var copy = [];
+                        for (var i = 0; i < arr.length; i++) copy.push(arr[i]);
+                        this._calls.push({ layer: layer, name: name, arr: copy });
+                    }
+                };
+            )JS");
+            engine.evaluate(wek::qml_helper::kMaterialProxyJs);
+        }
+    };
+
+    TEST_CASE("setValue with scalar packs as 1-element array") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.setValue('g_Alpha', 0.5);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].layer").toString() == "bg");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_Alpha");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[0]").toNumber() ==
+              doctest::Approx(0.5));
+    }
+
+    TEST_CASE("setValue with array forwards element-wise") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.setValue('g_Tint', [1, 0, 0.25]);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 3);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[2]").toNumber() ==
+              doctest::Approx(0.25));
+    }
+
+    TEST_CASE("setValue with Vec3 unpacks x,y,z") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate(
+            "var m = _makeMaterialProxy('bg'); m.setValue('g_Tint', Vec3(0.1, 0.2, 0.3));");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 3);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[1]").toNumber() ==
+              doctest::Approx(0.2));
+    }
+
+    TEST_CASE("setValue with empty name is a no-op") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.setValue('', 1.0);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+    }
+
+    TEST_CASE("setValue with non-numeric value is a no-op") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.setValue('g_Tint', 'red');");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+    }
+
+    TEST_CASE("getValue returns null until setValue is called") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg');");
+        CHECK(env.engine.evaluate("m.getValue('g_Tint')").isNull());
+    }
+
+    TEST_CASE("getValue returns the last set value") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate(
+            "var m = _makeMaterialProxy('bg'); m.setValue('g_Tint', [1, 2, 3]);");
+        CHECK(env.engine.evaluate("m.getValue('g_Tint').length").toInt() == 3);
+        CHECK(env.engine.evaluate("m.getValue('g_Tint')[1]").toNumber() == doctest::Approx(2));
+    }
+
+    TEST_CASE("getValue is per-layer per-name") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var a = _makeMaterialProxy('bg');"
+                            "var b = _makeMaterialProxy('fg');"
+                            "a.setValue('g_Tint', [1]); b.setValue('g_Tint', [9]);");
+        CHECK(env.engine.evaluate("a.getValue('g_Tint')[0]").toNumber() == doctest::Approx(1));
+        CHECK(env.engine.evaluate("b.getValue('g_Tint')[0]").toNumber() == doctest::Approx(9));
+    }
+
+    TEST_CASE("setValue overwrites cached value") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg');"
+                            "m.setValue('g_Alpha', 0.5);"
+                            "m.setValue('g_Alpha', 0.9);");
+        CHECK(env.engine.evaluate("m.getValue('g_Alpha')[0]").toNumber() == doctest::Approx(0.9));
+    }
+
+    TEST_CASE("nullMaterialProxy setValue and getValue are safe") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeNullMaterialProxy(); m.setValue('g_Tint', [1,0,0]);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+        CHECK(env.engine.evaluate("m.getValue('g_Tint')").isNull());
+    }
+
+    TEST_CASE("setValue truncates arrays >16 elements") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var arr = []; for (var i=0;i<32;i++) arr.push(i);"
+                            "var m = _makeMaterialProxy('bg'); m.setValue('g_Big', arr);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 16);
+    }
+
+    TEST_CASE("setValue filters non-finite array elements") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg');"
+                            "m.setValue('g_X', [1, NaN, 2, 'oops', 3]);");
+        // Non-finite entries are dropped; the resulting array still passes
+        // through if at least one value survives.  Keeps malformed authoring
+        // from sending NaN to the GPU.
+        QJSValue arr = env.engine.evaluate("__sceneBridge._calls[0].arr");
+        CHECK(arr.property("length").toInt() == 3);
+        CHECK(arr.property(0).toNumber() == doctest::Approx(1));
+        CHECK(arr.property(2).toNumber() == doctest::Approx(3));
+    }
+}
+
+// ------------------------------------------------------------------
 // engine.userProperties population
 // ------------------------------------------------------------------
 TEST_SUITE("SceneScript engine.userProperties") {
