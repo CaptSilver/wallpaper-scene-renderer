@@ -416,6 +416,11 @@ public:
         m_pending_effect_visible.emplace_back(nodeId, effectIndex, visible);
     }
 
+    void setMaterialValue(i32 nodeId, std::string name, std::vector<float> floats) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_material_values.emplace_back(nodeId, std::move(name), std::move(floats));
+    }
+
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
@@ -873,6 +878,19 @@ private:
                     }
                 }
                 m_pending_effect_visible.clear();
+                // Apply material uniform updates from SceneScript.
+                for (auto& [nodeId, uName, floats] : m_pending_material_values) {
+                    auto nit = m_scene->nodeById.find(nodeId);
+                    if (nit == m_scene->nodeById.end()) continue;
+                    auto* mesh = nit->second->Mesh();
+                    if (! mesh) continue;
+                    auto* mat = mesh->Material();
+                    if (! mat) continue;
+                    mat->customShader.constValues[uName] =
+                        ShaderValue(floats.data(), floats.size());
+                    mat->customShader.constValuesDirty = true;
+                }
+                m_pending_material_values.clear();
                 if (logDiag) {
                     LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d "
                              "miss=%d, alpha=%zu",
@@ -1368,6 +1386,12 @@ private:
     std::unordered_map<i32, float> m_pending_particle_rate;
     std::vector<std::tuple<i32, i32, bool>>
         m_pending_effect_visible; // (nodeId, effectIdx, visible)
+    // (nodeId, uniformName, floats) — IMaterial.setValue from SceneScript.
+    // Drained alongside m_pending_effect_visible; applies to
+    // mesh.Material()->customShader.constValues and toggles
+    // constValuesDirty so CustomShaderPass re-uploads on the next frame.
+    std::vector<std::tuple<i32, std::string, std::vector<float>>>
+        m_pending_material_values;
 
     // Scene-level pending updates (under m_property_update_mutex)
     std::optional<std::array<float, 3>> m_pending_clear_color;
@@ -1560,6 +1584,13 @@ void SceneWallpaper::updateParticleRate(int32_t id, float rate) {
 
 void SceneWallpaper::updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible) {
     m_main_handler->renderHandler()->setEffectVisible(nodeId, effectIndex, visible);
+}
+
+void SceneWallpaper::updateMaterialValue(int32_t            nodeId,
+                                         std::string        name,
+                                         std::vector<float> floats) {
+    m_main_handler->renderHandler()->setMaterialValue(
+        nodeId, std::move(name), std::move(floats));
 }
 
 void SceneWallpaper::applyLayerBatch(const std::vector<LayerBatchUpdate>& batch) {

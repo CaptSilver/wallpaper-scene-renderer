@@ -171,6 +171,11 @@ public:
     void applyLayerBatch(const std::vector<LayerBatchUpdate>& batch);
 
     void updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible);
+    // IMaterial.setValue from SceneScript — enqueues for the render thread,
+    // applied to mesh.Material()->customShader.constValues with dirty flag.
+    void updateMaterialValue(int32_t            nodeId,
+                             std::string        name,
+                             std::vector<float> floats);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);
     std::string                        getUserPropertiesJson() const;
