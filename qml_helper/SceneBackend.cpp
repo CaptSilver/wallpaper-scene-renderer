@@ -1586,6 +1586,10 @@ void SceneObject::setupTextScripts() {
     // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
     m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
 
+    // IMaterial proxy — defines _materialValueCache + _makeMaterialProxy.
+    // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
+    m_jsEngine->evaluate(wek::qml_helper::kMaterialProxyJs);
+
     // `_Internal` helper namespace — updateScriptProperties /
     // convertUserProperties / stringifyConfig.  Requires Vec3.
     m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
@@ -2055,6 +2059,11 @@ void SceneObject::setupTextScripts() {
         "      enumerable:true });\n"
         "    return o;\n"
         "  };\n"
+        // getMaterial(): returns IMaterial proxy bound to this layer.
+        // setValue queues a uniform write via __sceneBridge; getValue reads
+        // a JS-side cache so it never crosses threads.  See
+        // SceneScriptShimsJs.hpp::kMaterialProxyJs for the implementation.
+        "  p.getMaterial = function() { return _makeMaterialProxy(_s.name); };\n"
         // Animation layer stub: getAnimationLayer(index|name) returns an IAnimationLayer proxy.
         // Scripts control puppet animation layers (play, pause, rate, blend, frame).
         "  if (!_s._aniLayers) _s._aniLayers = {};\n"
@@ -2208,6 +2217,7 @@ void SceneObject::setupTextScripts() {
         "  };\n"
         "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
         "  p.getEffectCount = function() { return 0; };\n"
+        "  p.getMaterial = function() { return _makeNullMaterialProxy(); };\n"
         // Null proxy is always valid (it's shared, never destroyed).
         "  p.isObjectValid = function() { return true; };\n"
         "  p._state = _s;\n"
