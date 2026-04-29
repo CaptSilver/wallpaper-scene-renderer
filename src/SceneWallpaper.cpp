@@ -11,6 +11,7 @@
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Particle/ParticleSystem.h"
+#include "Particle/AudioRateMultiplier.hpp"
 #include "Interface/IShaderValueUpdater.h"
 #include "WPShaderValueUpdater.hpp"
 
@@ -576,6 +577,28 @@ private:
                 m_scene->paritileSys->UpdateMouseControlPoints(
                     mousePos, { m_scene->ortho[0], m_scene->ortho[1] });
             }
+
+            // Audio-reactive emit-rate push.  For each subsystem whose source
+            // emitter authored audioprocessingmode != 0, sample the bass band
+            // of the FFT spectrum and push a multiplier into Emitt's rate_eff.
+            // Smoothing state lives on the subsystem so attack/decay survives
+            // across frames.  Cheap when no subsystems are flagged (early-out
+            // on IsAudioReactive).
+            {
+                auto                   analyzer = m_scene->audioAnalyzer;
+                std::span<const float> spectrum = analyzer && analyzer->HasData()
+                                                      ? analyzer->GetRawSpectrum(16, 0)
+                                                      : std::span<const float> {};
+                double dt = m_scene->frameTime;
+                for (auto& [nodeId, sub] : m_scene->particleSubByNodeId) {
+                    if (! sub || ! sub->IsAudioReactive()) continue;
+                    auto r = audio_reactive::computeRateMultiplier(
+                        spectrum, sub->AudioSmoothedRef(), dt, /*mode=*/1);
+                    sub->AudioSmoothedRef() = r.newSmoothed;
+                    sub->SetAudioRateMultiplier(r.multiplier);
+                }
+            }
+
             m_scene->paritileSys->Emitt();
 
             // Auto-hide pool particle nodes whose burst has played out.
