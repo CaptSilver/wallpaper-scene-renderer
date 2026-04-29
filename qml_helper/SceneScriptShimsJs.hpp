@@ -386,4 +386,65 @@ function _applyLayerLiteral(layer, asset) {
 }
 )JS";
 
+// IMaterial proxy — defines _materialValueCache (per-script) and
+// _makeMaterialProxy(layerName).  layerName is captured by closure; the
+// proxy delegates writes to __sceneBridge.materialSetValue and reads from
+// a JS-side cache so getValue never crosses threads.  Identical code is
+// injected into production (SceneBackend.cpp) and the MaterialBridgeEnv
+// test fixture; bugs found in tests apply to prod.
+//
+// Value packing rules:
+// - Number             -> [n]
+// - Array of numbers   -> filtered to finite, capped at 16 entries
+// - Vec2/3/4 instance  -> [x], [x,y], [x,y,z], [x,y,z,w] depending on shape
+// - Anything else      -> null (setValue becomes a no-op)
+inline constexpr const char* kMaterialProxyJs = R"JS(
+var _materialValueCache = {};
+function _packMaterialValue(v) {
+  if (typeof v === 'number') return isFinite(v) ? [v] : null;
+  if (v && typeof v === 'object') {
+    if (Array.isArray(v)) {
+      var out = [];
+      for (var i = 0; i < v.length && out.length < 16; i++) {
+        var n = +v[i];
+        if (isFinite(n)) out.push(n);
+      }
+      return out.length ? out : null;
+    }
+    var pieces = [];
+    if (typeof v.x === 'number') pieces.push(v.x);
+    if (typeof v.y === 'number') pieces.push(v.y);
+    if (typeof v.z === 'number') pieces.push(v.z);
+    if (typeof v.w === 'number') pieces.push(v.w);
+    return pieces.length ? pieces : null;
+  }
+  return null;
+}
+function _makeMaterialProxy(layerName) {
+  return {
+    setValue: function(uName, v) {
+      var name = String(uName || '');
+      if (!name) return;
+      var arr = _packMaterialValue(v);
+      if (!arr) return;
+      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.materialSetValue)
+        __sceneBridge.materialSetValue(layerName, name, arr);
+      _materialValueCache[layerName + '|' + name] = arr;
+    },
+    getValue: function(uName) {
+      var name = String(uName || '');
+      var key = layerName + '|' + name;
+      return Object.prototype.hasOwnProperty.call(_materialValueCache, key)
+        ? _materialValueCache[key] : null;
+    }
+  };
+}
+function _makeNullMaterialProxy() {
+  return {
+    setValue: function() {},
+    getValue: function() { return null; }
+  };
+}
+)JS";
+
 } // namespace wek::qml_helper
