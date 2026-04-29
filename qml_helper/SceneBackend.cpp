@@ -827,6 +827,33 @@ void SceneObject::videoSetRate(const QString& layerName, double rate) {
     m_scene->videoSetRate(it->second, rate);
 }
 
+// Material uniform bridge — resolves layerName -> nodeId via m_nodeNameToId
+// and forwards to SceneWallpaper, which enqueues the update for the render
+// thread.  value is a plain JS array of numbers (the JS proxy guarantees
+// shape; we only defensively skip empty / oversized arrays here and filter
+// non-finite entries so a stray NaN never reaches the GPU).
+void SceneObject::materialSetValue(const QString&  layerName,
+                                   const QString&  name,
+                                   const QJSValue& value) {
+    if (! m_scene) return;
+    if (name.isEmpty()) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    if (! value.isArray()) return;
+    int n = value.property("length").toInt();
+    if (n <= 0 || n > 16) return;
+    std::vector<float> floats;
+    floats.reserve(n);
+    for (int i = 0; i < n; i++) {
+        QJSValue elem = value.property(i);
+        if (! elem.isNumber()) continue;
+        double d = elem.toNumber();
+        if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
+    }
+    if (floats.empty()) return;
+    m_scene->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
+}
+
 // -------- engine.openUserShortcut bridge --------
 // Routes a named user-shortcut from SceneScript to (a) the main plugin via
 // the userShortcutRequested signal (mapped to MPRIS by Scene.qml) and

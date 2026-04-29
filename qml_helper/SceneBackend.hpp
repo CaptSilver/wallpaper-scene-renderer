@@ -128,6 +128,14 @@ public:
     Q_INVOKABLE void   videoSetCurrentTime(const QString& layerName, double t);
     Q_INVOKABLE void   videoSetRate(const QString& layerName, double rate);
 
+    // Material uniform bridge — thisLayer.getMaterial().setValue(name, value).
+    // Resolves layerName -> nodeId via m_nodeNameToId; unknown layers, empty
+    // names, and malformed values are silently no-ops (matching the JS-side
+    // _packMaterialValue guards).
+    Q_INVOKABLE void materialSetValue(const QString& layerName,
+                                      const QString& name,
+                                      const QJSValue& value);
+
     // engine.openUserShortcut(name) — routes a named user-shortcut fired from
     // SceneScript.  Emits userShortcutRequested() for the main plugin to map
     // to MPRIS (media-control names like "bplay"/"b11"/"bprev") and fires a
