@@ -654,6 +654,36 @@ TEST_SUITE("ParticleSubSystem.AudioReactive") {
         }
         CHECK(half_total == doctest::Approx(0.5 * base_total));
     }
+
+    TEST_CASE("AudioParams default to mode=0 (off) until set") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        CHECK(sub->AudioParams().mode == 0u);
+        CHECK_FALSE(sub->AudioParams().weShapeAuthored);
+    }
+
+    TEST_CASE("SetAudioParams stores mode + WE-shape config for later read") {
+        ParticleFixture                      fx;
+        auto                                 sub = fx.makeSub();
+        audio_reactive::RateMultiplierParams p;
+        p.mode             = 3;
+        p.weShapeAuthored  = true;
+        p.freqStart        = 8;
+        p.freqEnd          = 12;
+        p.boundsLow        = 0.25f;
+        p.boundsHigh       = 0.75f;
+        p.exponent         = 2.0f;
+        p.amount           = 1.5f;
+        sub->SetAudioParams(p);
+        CHECK(sub->AudioParams().mode == 3u);
+        CHECK(sub->AudioParams().weShapeAuthored);
+        CHECK(sub->AudioParams().freqStart == 8);
+        CHECK(sub->AudioParams().freqEnd == 12);
+        CHECK(sub->AudioParams().boundsLow == doctest::Approx(0.25f));
+        CHECK(sub->AudioParams().boundsHigh == doctest::Approx(0.75f));
+        CHECK(sub->AudioParams().exponent == doctest::Approx(2.0f));
+        CHECK(sub->AudioParams().amount == doctest::Approx(1.5f));
+    }
 }
 // ===========================================================================
 // Nested-STATIC parent-type differentiation

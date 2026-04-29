@@ -586,14 +586,17 @@ private:
             // on IsAudioReactive).
             {
                 auto                   analyzer = m_scene->audioAnalyzer;
-                std::span<const float> spectrum = analyzer && analyzer->HasData()
-                                                      ? analyzer->GetRawSpectrum(16, 0)
-                                                      : std::span<const float> {};
-                double dt = m_scene->frameTime;
+                std::span<const float> specLeft  = analyzer && analyzer->HasData()
+                                                       ? analyzer->GetRawSpectrum(16, 0)
+                                                       : std::span<const float> {};
+                std::span<const float> specRight = analyzer && analyzer->HasData()
+                                                       ? analyzer->GetRawSpectrum(16, 1)
+                                                       : std::span<const float> {};
+                double                 dt        = m_scene->frameTime;
                 for (auto& [nodeId, sub] : m_scene->particleSubByNodeId) {
                     if (! sub || ! sub->IsAudioReactive()) continue;
                     auto r = audio_reactive::computeRateMultiplier(
-                        spectrum, sub->AudioSmoothedRef(), dt, /*mode=*/1);
+                        specLeft, specRight, sub->AudioSmoothedRef(), dt, sub->AudioParams());
                     sub->AudioSmoothedRef() = r.newSmoothed;
                     sub->SetAudioRateMultiplier(r.multiplier);
                 }

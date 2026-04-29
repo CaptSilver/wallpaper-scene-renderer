@@ -1,6 +1,7 @@
 #pragma once
 #include "ParticleEmitter.h"
 #include "ParticleTrail.h"
+#include "AudioRateMultiplier.hpp"
 #include "Interface/IParticleRawGener.h"
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
@@ -119,6 +120,13 @@ public:
     // frames.  Touched only on the render thread (no atomic needed).
     double& AudioSmoothedRef() { return m_audio_smoothed; }
 
+    // Per-emitter response parameters (channel mode + optional WE-shape curve
+    // window / bounds / exponent / amount).  Populated at parse time from the
+    // first audio-reactive emitter on this subsystem and read on the render
+    // thread; not mutated post-load so no atomic is needed.
+    void                                        SetAudioParams(const audio_reactive::RateMultiplierParams& p) { m_audio_params = p; }
+    const audio_reactive::RateMultiplierParams& AudioParams() const { return m_audio_params; }
+
     ParticleInstance* QueryNewInstance();
 
     void AddEmitter(ParticleEmittOp&&);
@@ -224,9 +232,10 @@ private:
 
     // Audio-reactive rate override — see SetAudioRateMultiplier.  Only ever
     // pushed when m_audio_reactive is true; otherwise stays at 1.0 (no-op).
-    std::atomic<double> m_audio_rate_multiplier { 1.0 };
-    double              m_audio_smoothed { 0.0 };
-    bool                m_audio_reactive { false };
+    std::atomic<double>                  m_audio_rate_multiplier { 1.0 };
+    double                               m_audio_smoothed { 0.0 };
+    bool                                 m_audio_reactive { false };
+    audio_reactive::RateMultiplierParams m_audio_params {};
 
     // Stored CP-slot shift authored on the parent's child block; consumed by the chain
     // resolver instead of being baked into per-CP `parent_cp_index` at parse time.
