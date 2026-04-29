@@ -401,10 +401,25 @@ void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
 }
 void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count, float rate,
                  bool render_rope, u32 rope_batch_size = 1, bool has_periodic = false) {
-    bool sort      = render_rope;
-    bool any_audio = false;
+    bool                                 sort      = render_rope;
+    bool                                 any_audio = false;
+    audio_reactive::RateMultiplierParams audioParams {};
     for (const auto& em : wp.emitters) {
-        if (em.audioprocessingmode != 0) any_audio = true;
+        if (em.audioprocessingmode != 0 && ! any_audio) {
+            // First audio-reactive emitter on this subsystem wins.  Multiple
+            // emitters per subsystem with diverging audio params would need
+            // per-emitter state on the subsystem — out of scope; in practice
+            // wallpapers tend to set a single audio-reactive emitter.
+            any_audio                    = true;
+            audioParams.mode             = em.audioprocessingmode;
+            audioParams.weShapeAuthored  = em.audio_we_shape_authored;
+            audioParams.freqStart        = em.audioprocessingfrequencystart;
+            audioParams.freqEnd          = em.audioprocessingfrequencyend;
+            audioParams.boundsLow        = em.audioprocessingbounds[0];
+            audioParams.boundsHigh       = em.audioprocessingbounds[1];
+            audioParams.exponent         = em.audioprocessingexponent;
+            audioParams.amount           = em.audioprocessing;
+        }
         auto  newEm      = em;
         float burst_rate = 0.0f;
         if (rope_batch_size > 1 && ! has_periodic && count * rate > 0.001f) {
@@ -428,11 +443,21 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
             WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
     }
     if (any_audio) {
-        // SceneWallpaper's per-frame loop will sample the FFT bass band each
+        // SceneWallpaper's per-frame loop will sample the FFT spectrum each
         // tick and push a multiplier via SetAudioRateMultiplier; folded into
         // rate_eff in ParticleSubSystem::Emitt.
         pSys.MarkAudioReactive();
-        LOG_INFO("particle subsystem flagged audio-reactive (audioprocessingmode set on emitter)");
+        pSys.SetAudioParams(audioParams);
+        LOG_INFO("particle subsystem audio-reactive: mode=%u, freq=[%d,%d), bounds=[%.2f,%.2f], "
+                 "exp=%.2f, amount=%.2f, we_shape=%d",
+                 audioParams.mode,
+                 audioParams.freqStart,
+                 audioParams.freqEnd,
+                 audioParams.boundsLow,
+                 audioParams.boundsHigh,
+                 audioParams.exponent,
+                 audioParams.amount,
+                 audioParams.weShapeAuthored ? 1 : 0);
     }
 }
 
