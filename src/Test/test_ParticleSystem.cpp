@@ -594,6 +594,68 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
 } // ParticleSubSystem.Emitt
 
 // ===========================================================================
+// Audio-reactive emit-rate (audioprocessingmode wiring)
+// ===========================================================================
+TEST_SUITE("ParticleSubSystem.AudioReactive") {
+
+    // Emitter that records the emitDur it was called with — sums across calls.
+    static ParticleEmittOp makeTallyEmitter(double* total) {
+        return [total](std::vector<wallpaper::Particle>&,
+                       std::vector<wallpaper::ParticleInitOp>&,
+                       uint32_t,
+                       double emitDur) { *total += emitDur; };
+    }
+
+    TEST_CASE("default flag is false and multiplier is 1.0") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        CHECK_FALSE(sub->IsAudioReactive());
+        CHECK(sub->AudioRateMultiplier() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("MarkAudioReactive flips flag without changing multiplier") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->MarkAudioReactive();
+        CHECK(sub->IsAudioReactive());
+        CHECK(sub->AudioRateMultiplier() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("SetAudioRateMultiplier(2.0) doubles emitDur passed to emitter") {
+        ParticleFixture fx;
+        auto            sub_baseline = fx.makeSub(10, 1.0, 1, 1.0);
+        auto            sub_doubled  = fx.makeSub(10, 1.0, 1, 1.0);
+        double          base_total   = 0.0;
+        double          dbl_total    = 0.0;
+        sub_baseline->AddEmitter(makeTallyEmitter(&base_total));
+        sub_doubled->AddEmitter(makeTallyEmitter(&dbl_total));
+        sub_doubled->SetAudioRateMultiplier(2.0);
+        for (int i = 0; i < 5; i++) {
+            fx.scene.PassFrameTime(0.016);
+            sub_baseline->Emitt();
+            sub_doubled->Emitt();
+        }
+        CHECK(dbl_total == doctest::Approx(2.0 * base_total));
+    }
+
+    TEST_CASE("SetAudioRateMultiplier(0.5) halves emitDur passed to emitter") {
+        ParticleFixture fx;
+        auto            sub_baseline = fx.makeSub(10, 1.0, 1, 1.0);
+        auto            sub_halved   = fx.makeSub(10, 1.0, 1, 1.0);
+        double          base_total   = 0.0;
+        double          half_total   = 0.0;
+        sub_baseline->AddEmitter(makeTallyEmitter(&base_total));
+        sub_halved->AddEmitter(makeTallyEmitter(&half_total));
+        sub_halved->SetAudioRateMultiplier(0.5);
+        for (int i = 0; i < 5; i++) {
+            fx.scene.PassFrameTime(0.016);
+            sub_baseline->Emitt();
+            sub_halved->Emitt();
+        }
+        CHECK(half_total == doctest::Approx(0.5 * base_total));
+    }
+}
+// ===========================================================================
 // Nested-STATIC parent-type differentiation
 //
 // WE's `type: static` child has two canonical meanings depending on its

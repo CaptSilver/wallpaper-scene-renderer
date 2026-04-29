@@ -107,6 +107,18 @@ public:
     void   SetDynamicRateMultiplier(double m) { m_dynamic_rate_multiplier.store(m); }
     double DynamicRateMultiplier() const { return m_dynamic_rate_multiplier.load(); }
 
+    // Audio-reactive emit-rate scalar — pushed each render frame by
+    // SceneWallpaper when this subsystem was flagged audio-reactive (any
+    // emitter authored with a non-zero `audioprocessingmode`).  Independent
+    // of the scripted dynamic multiplier so the two compose multiplicatively.
+    void   SetAudioRateMultiplier(double m) { m_audio_rate_multiplier.store(m); }
+    double AudioRateMultiplier() const { return m_audio_rate_multiplier.load(); }
+    void   MarkAudioReactive() { m_audio_reactive = true; }
+    bool   IsAudioReactive() const { return m_audio_reactive; }
+    // Smoothing state held on the subsystem so attack/decay survives across
+    // frames.  Touched only on the render thread (no atomic needed).
+    double& AudioSmoothedRef() { return m_audio_smoothed; }
+
     ParticleInstance* QueryNewInstance();
 
     void AddEmitter(ParticleEmittOp&&);
@@ -209,6 +221,12 @@ private:
 
     // Scripted rate override — see SetDynamicRateMultiplier.
     std::atomic<double> m_dynamic_rate_multiplier { 1.0 };
+
+    // Audio-reactive rate override — see SetAudioRateMultiplier.  Only ever
+    // pushed when m_audio_reactive is true; otherwise stays at 1.0 (no-op).
+    std::atomic<double> m_audio_rate_multiplier { 1.0 };
+    double              m_audio_smoothed { 0.0 };
+    bool                m_audio_reactive { false };
 
     // Stored CP-slot shift authored on the parent's child block; consumed by the chain
     // resolver instead of being baked into per-CP `parent_cp_index` at parse time.
