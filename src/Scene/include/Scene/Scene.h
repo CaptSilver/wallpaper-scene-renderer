@@ -265,6 +265,12 @@ public:
         elapsingTime += t;
     }
 
+    // Serialize all layer initial states (origin/scale/angles/visible/size/
+    // parallaxDepth/effects/parent-name) to a JSON string consumed by the
+    // SceneScript JS proxy initializer (_layerInitStates).  Implemented in
+    // Scene.cpp to keep nlohmann/json out of this header.
+    std::string SerializeLayerInitialStates() const;
+
     void UpdateLinkedCamera(const std::string& name) {
         if (linkedCameras.count(name) != 0) {
             auto& cams = linkedCameras.at(name);
@@ -276,5 +282,59 @@ public:
             }
         }
     }
+
+    // ===================================================================
+    // Pending parent-change queue — drained at the start of
+    // RenderHandler::CMD_DRAW.  Same pattern as m_pending_material_values.
+    // Each pair is (child_node_id, new_parent_id).  parent_id == -1 means
+    // "reattach to scene root".  Mutex-guarded.
+    // ===================================================================
+    void QueueParentChange(i32 child_id, i32 parent_id) {
+        std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
+        m_pending_parent_changes.emplace_back(child_id, parent_id);
+    }
+
+    std::vector<std::pair<i32, i32>> TakePendingParentChanges() {
+        std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
+        std::vector<std::pair<i32, i32>> out;
+        out.swap(m_pending_parent_changes);
+        return out;
+    }
+
+    // Apply all queued parent changes against the live SceneNode tree.
+    // Called from RenderHandler::DRAW.  Handles: child id miss (skip),
+    // parent id miss (skip), parent_id == -1 (reattach to sceneGraph),
+    // and old-parent extraction via SceneNode::ExtractChild + new-parent
+    // re-attach via AppendChild (re-wires both m_parent and
+    // m_visibility_parent).
+    void ApplyPendingParentChanges() {
+        auto pending = TakePendingParentChanges();
+        for (auto& [child_id, parent_id] : pending) {
+            auto child_it = nodeById.find(child_id);
+            if (child_it == nodeById.end()) continue;
+            SceneNode* child_raw = child_it->second;
+            if (! child_raw) continue;
+
+            SceneNode* new_parent = nullptr;
+            if (parent_id == -1) {
+                new_parent = sceneGraph.get();
+            } else {
+                auto parent_it = nodeById.find(parent_id);
+                if (parent_it == nodeById.end()) continue;
+                new_parent = parent_it->second;
+            }
+            if (! new_parent) continue;
+
+            SceneNode* old_parent = child_raw->Parent();
+            if (! old_parent) continue;
+            auto child_sp = old_parent->ExtractChild(child_raw);
+            if (! child_sp) continue;
+            new_parent->AppendChild(child_sp);
+        }
+    }
+
+private:
+    std::mutex                       m_pending_parent_mutex;
+    std::vector<std::pair<i32, i32>> m_pending_parent_changes;
 };
 } // namespace wallpaper

@@ -99,6 +99,28 @@ public:
         m_dirty  = true;
     }
 
+    // Read-only access to the transform parent.  Returns nullptr for orphan
+    // nodes (scene root or freshly constructed).  Used by the render-thread
+    // reparent drain (Scene::ApplyPendingParentChanges).
+    SceneNode* Parent() const { return m_parent; }
+
+    // Atomically remove a child by raw pointer and return its shared_ptr so
+    // the caller can re-attach it elsewhere (used by the render-thread
+    // reparent drain — see Scene::ApplyPendingParentChanges).  Returns
+    // nullptr if the pointer is not in m_children.  Leaves the returned
+    // child's m_parent unchanged for the caller to overwrite via
+    // AppendChild / SetParent.
+    std::shared_ptr<SceneNode> ExtractChild(SceneNode* child) {
+        for (auto it = m_children.begin(); it != m_children.end(); ++it) {
+            if (it->get() == child) {
+                auto sp = *it;
+                m_children.erase(it);
+                return sp;
+            }
+        }
+        return nullptr;
+    }
+
     // Set a pre-computed world transform, bypassing the parent chain.
     // Used by proxy nodes that have their transform baked at parse time.
     void SetWorldTransform(const Eigen::Matrix4d& t) {

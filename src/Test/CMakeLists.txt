@@ -28,6 +28,7 @@ add_executable(backend_scene_tests
     test_SceneMesh.cpp
     test_SceneShader.cpp
     test_Scene.cpp
+    test_WPSceneInitJsonHierarchy.cpp
     test_SceneIndexArray.cpp
     test_SceneVertexArray.cpp
     test_WPJson.cpp

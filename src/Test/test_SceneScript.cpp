@@ -1348,6 +1348,12 @@ static const char* JS_LAYER_INFRA =
     "  p._destroyed = false;\n"
     "  p.isObjectValid = function() { return !this._destroyed; };\n"
     "  p._state = _s;\n"
+    // Layer-hierarchy fields & methods (mirror production _makeLayerProxy).
+    // Stash the node id on _state so __sceneBridge.setParent can resolve it.
+    "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
+    "    _s.id = _layerNameToId[name];\n"
+    "  }\n"
+    "  if (typeof _installHierarchyMethods === 'function') _installHierarchyMethods(p);\n"
     "  return p;\n"
     "}\n"
     "var _nullProxy = (function() {\n"
@@ -1536,6 +1542,8 @@ static const char* JS_SOUND_INFRA =
     "    };\n"
     "  };\n"
     "  p._state = _s;\n"
+    // Sound-layer hierarchy stubs — mirrors production _makeSoundLayerProxy.
+    "  if (typeof _installSoundHierarchyStubs === 'function') _installSoundHierarchyStubs(p);\n"
     "  return p;\n"
     "}\n"
     "var _origGetLayer = thisScene.getLayer;\n"
@@ -1680,6 +1688,8 @@ struct ScriptEnv {
 
         // Layer infrastructure
         engine.evaluate(JS_LAYER_INFRA);
+        // Hierarchy shim — mirrors production injection sequence.
+        engine.evaluate(wek::qml_helper::kHierarchyProxyJs);
 
         // Sound layer infrastructure
         engine.evaluate(JS_SOUND_INFRA);
@@ -7196,3 +7206,535 @@ TEST_SUITE("engine.registerAudioBuffers shim") {
         CHECK(buf.property("average").property("length").toInt() == 64);
     }
 } // TEST_SUITE engine.registerAudioBuffers shim
+
+// =====================================================================
+// Layer hierarchy: thisLayer.setParent / getParent / getChildren /
+// removeFromParent / getRoot / isAncestorOf / getDepth.
+//
+// Most tests use a 3-layer fixture: 'bg' (root), 'child' (parent='bg'),
+// 'grandchild' (parent='child').  Each test extends ScriptEnv and calls
+// _linkupHierarchy() to wire the cached parent refs.
+// =====================================================================
+namespace
+{
+
+// Set up a parent/child fixture on top of the default ScriptEnv layers
+// ('bg', 'fg').  Adds 'child' (parent='bg') and 'grandchild' (parent='child').
+// Materializes each proxy and runs _linkupHierarchy.
+void setupHierarchyFixture(ScriptEnv& env) {
+    env.engine.evaluate(
+        "_layerInitStates['child'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0], "
+        "                              sz:[10,10], v:true, pn:'bg' };\n"
+        "_layerInitStates['grandchild'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0], "
+        "                                   sz:[5,5], v:true, pn:'child' };\n"
+        "_layerNameToId['child'] = 101;\n"
+        "_layerNameToId['grandchild'] = 102;\n"
+        "_layerIdToName['101'] = 'child';\n"
+        "_layerIdToName['102'] = 'grandchild';\n"
+        // Materialize each proxy so _layerCache is populated, then linkup.
+        "thisScene.getLayer('bg');\n"
+        "thisScene.getLayer('fg');\n"
+        "thisScene.getLayer('child');\n"
+        "thisScene.getLayer('grandchild');\n"
+        "_linkupHierarchy();\n");
+}
+
+// Install a stub __sceneBridge that records setParent invocations into a
+// JS-side array `__bridgeCalls` for assertion.
+void installBridgeStub(ScriptEnv& env) {
+    env.engine.evaluate(
+        "var __bridgeCalls = [];\n"
+        "var __sceneBridge = {\n"
+        "  setLayerParent: function(childId, parentId) {\n"
+        "    __bridgeCalls.push([childId, parentId]);\n"
+        "  }\n"
+        "};\n");
+}
+
+} // anonymous namespace
+
+TEST_SUITE("SceneScript Hierarchy Fields") {
+    TEST_CASE("regular proxy has _parent null and _children empty by default") {
+        ScriptEnv env;
+        QJSValue  p = env.engine.evaluate("thisScene.getLayer('bg')");
+        CHECK(p.property("_parent").isNull());
+        CHECK(p.property("_children").isArray());
+        CHECK(p.property("_children").property("length").toInt() == 0);
+    }
+
+    TEST_CASE("_linkupHierarchy resolves pn references") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        QJSValue parent = env.engine.evaluate("thisScene.getLayer('child')._parent");
+        REQUIRE(parent.isObject());
+        CHECK(parent.property("name").toString() == "bg");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 1);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('bg')._children[0] === thisScene.getLayer('child')")
+                  .toBool());
+    }
+
+    TEST_CASE("_linkupHierarchy is idempotent — second call is a no-op") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        env.engine.evaluate("_linkupHierarchy();"); // call again
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 1);
+    }
+
+    TEST_CASE("_linkupHierarchy ordering-independent: child queried before parent") {
+        // The fixture queries 'bg' before 'child'.  Verify the reverse order
+        // still wires up via the deferred linkup.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['kid'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0], "
+            "                            sz:[10,10], v:true, pn:'bg' };\n"
+            "thisScene.getLayer('kid');\n"     // child first
+            "thisScene.getLayer('bg');\n"      // parent later
+            "_linkupHierarchy();\n");
+        CHECK(env.engine.evaluate(
+                       "thisScene.getLayer('kid')._parent === thisScene.getLayer('bg')")
+                  .toBool());
+    }
+
+    TEST_CASE("_linkupHierarchy skips entries whose parent name is not in cache") {
+        // pn pointing to a non-existent / sound-only layer must not crash.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['orphan'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0], "
+            "                               sz:[10,10], v:true, pn:'__missing__' };\n"
+            "thisScene.getLayer('orphan');\n"
+            "_linkupHierarchy();\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('orphan')._parent").isNull());
+    }
+} // SceneScript Hierarchy Fields
+
+TEST_SUITE("SceneScript Hierarchy Read-Only Methods") {
+    TEST_CASE("getParent returns cached ref / null") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('child').getParent() === thisScene.getLayer('bg')")
+                  .toBool());
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').getParent()").isNull());
+    }
+
+    TEST_CASE("getChildren returns defensive copy — mutating doesn't leak back") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        env.engine.evaluate(
+            "var k = thisScene.getLayer('bg').getChildren();\n"
+            "k.push('garbage');\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').getChildren().length").toInt() == 1);
+    }
+
+    TEST_CASE("getChildren contains real proxy refs") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('bg').getChildren()[0] === "
+                            "thisScene.getLayer('child')")
+                  .toBool());
+    }
+
+    TEST_CASE("getRoot walks up the parent chain") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('grandchild').getRoot() === "
+                            "thisScene.getLayer('bg')")
+                  .toBool());
+    }
+
+    TEST_CASE("getRoot returns self when orphan / no parent") {
+        ScriptEnv env;
+        QJSValue  ret = env.engine.evaluate(
+            "thisScene.getLayer('bg').getRoot() === thisScene.getLayer('bg')");
+        CHECK(ret.toBool());
+    }
+
+    TEST_CASE("isAncestorOf descendant returns true") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('bg').isAncestorOf("
+                            "thisScene.getLayer('grandchild'))")
+                  .toBool());
+    }
+
+    TEST_CASE("isAncestorOf reversed returns false") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK_FALSE(env.engine
+                        .evaluate("thisScene.getLayer('grandchild').isAncestorOf("
+                                  "thisScene.getLayer('bg'))")
+                        .toBool());
+    }
+
+    TEST_CASE("isAncestorOf self returns false (strict ancestor)") {
+        ScriptEnv env;
+        CHECK_FALSE(
+            env.engine
+                .evaluate("thisScene.getLayer('bg').isAncestorOf(thisScene.getLayer('bg'))")
+                .toBool());
+    }
+
+    TEST_CASE("isAncestorOf null returns false") {
+        ScriptEnv env;
+        CHECK_FALSE(
+            env.engine.evaluate("thisScene.getLayer('bg').isAncestorOf(null)").toBool());
+    }
+
+    TEST_CASE("isAncestorOf non-layer object returns false") {
+        ScriptEnv env;
+        CHECK_FALSE(env.engine
+                        .evaluate("thisScene.getLayer('bg').isAncestorOf({junk:true})")
+                        .toBool());
+    }
+
+    TEST_CASE("getDepth root=0, child=1, grandchild=2") {
+        ScriptEnv env;
+        setupHierarchyFixture(env);
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').getDepth()").toInt() == 0);
+        CHECK(env.engine.evaluate("thisScene.getLayer('child').getDepth()").toInt() == 1);
+        CHECK(env.engine.evaluate("thisScene.getLayer('grandchild').getDepth()").toInt() == 2);
+    }
+} // SceneScript Hierarchy Read-Only Methods
+
+TEST_SUITE("SceneScript Hierarchy setParent") {
+    TEST_CASE("setParent updates _parent reference") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        env.engine.evaluate(
+            "thisScene.getLayer('fg').setParent(thisScene.getLayer('bg'));");
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('fg')._parent === thisScene.getLayer('bg')")
+                  .toBool());
+    }
+
+    TEST_CASE("setParent adds to new parent's _children") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        env.engine.evaluate(
+            "thisScene.getLayer('fg').setParent(thisScene.getLayer('bg'));");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 1);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('bg')._children[0] === thisScene.getLayer('fg')")
+                  .toBool());
+    }
+
+    TEST_CASE("setParent removes from old parent's _children") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        // Reparent 'child' from 'bg' to 'fg'.
+        env.engine.evaluate(
+            "thisScene.getLayer('child').setParent(thisScene.getLayer('fg'));");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 0);
+        CHECK(env.engine.evaluate("thisScene.getLayer('fg')._children.length").toInt() == 1);
+    }
+
+    TEST_CASE("setParent(null) detaches and clears old parent's children") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        env.engine.evaluate("thisScene.getLayer('child').setParent(null);");
+        CHECK(env.engine.evaluate("thisScene.getLayer('child')._parent").isNull());
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 0);
+    }
+
+    TEST_CASE("setParent returns this for chaining") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        QJSValue  ret = env.engine.evaluate(
+            "thisScene.getLayer('fg').setParent(thisScene.getLayer('bg')) "
+             "=== thisScene.getLayer('fg')");
+        CHECK(ret.toBool());
+    }
+
+    TEST_CASE("setParent invokes __sceneBridge.setParent exactly once") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        env.engine.evaluate(
+            "thisScene.getLayer('fg').setParent(thisScene.getLayer('bg'));");
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__bridgeCalls[0][0]").toInt() == 11); // fg id
+        CHECK(env.engine.evaluate("__bridgeCalls[0][1]").toInt() == 7);  // bg id
+    }
+
+    TEST_CASE("setParent(null) sends parent_id=-1 across the bridge") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        env.engine.evaluate("__bridgeCalls.length = 0;\n"
+                            "thisScene.getLayer('child').setParent(null);");
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__bridgeCalls[0][0]").toInt() == 101); // child id
+        CHECK(env.engine.evaluate("__bridgeCalls[0][1]").toInt() == -1);
+    }
+
+    TEST_CASE("removeFromParent equals setParent(null)") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        env.engine.evaluate("thisScene.getLayer('child').removeFromParent();");
+        CHECK(env.engine.evaluate("thisScene.getLayer('child')._parent").isNull());
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 0);
+    }
+} // SceneScript Hierarchy setParent
+
+TEST_SUITE("SceneScript Hierarchy Cycle Prevention") {
+    TEST_CASE("setParent(self) is a no-op — no _parent change, no bridge call") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        env.engine.evaluate(
+            "thisScene.getLayer('bg').setParent(thisScene.getLayer('bg'));");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._parent").isNull());
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 0);
+    }
+
+    TEST_CASE("setParent(descendant) is a no-op — would create a cycle") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        env.engine.evaluate("__bridgeCalls.length = 0;\n"
+                            "thisScene.getLayer('bg').setParent("
+                            "  thisScene.getLayer('grandchild'));");
+        // bg's _parent still null; bg not in grandchild's children.
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._parent").isNull());
+        CHECK(env.engine.evaluate("thisScene.getLayer('grandchild')._children.length").toInt() ==
+              0);
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 0);
+    }
+
+    TEST_CASE("setParent(currentParent) is idempotent — no bridge call") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupHierarchyFixture(env);
+        env.engine.evaluate("__bridgeCalls.length = 0;\n"
+                            "thisScene.getLayer('child').setParent("
+                            "  thisScene.getLayer('bg'));");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 0);
+    }
+
+    TEST_CASE("setParent(non-layer object) is a no-op + warning") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        env.engine.evaluate(
+            "thisScene.getLayer('bg').setParent({randomObject: true});");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._parent").isNull());
+        CHECK(env.engine.evaluate("__bridgeCalls.length").toInt() == 0);
+    }
+} // SceneScript Hierarchy Cycle Prevention
+
+TEST_SUITE("SceneScript Hierarchy Sound Stubs") {
+    TEST_CASE("setParent on sound layer is no-op + warning") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        QJSValue ret = env.engine.evaluate(
+            "var s = thisScene.getLayer('music.mp3');\n"
+            "s.setParent(thisScene.getLayer('bg'));\n"
+            "s === s.setParent(null) && __bridgeCalls.length === 0;");
+        CHECK(ret.toBool());
+    }
+
+    TEST_CASE("getParent on sound layer returns null") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('music.mp3').getParent()").isNull());
+    }
+
+    TEST_CASE("getChildren on sound layer returns empty array") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('music.mp3').getChildren().length")
+                  .toInt() == 0);
+    }
+
+    TEST_CASE("isAncestorOf on sound layer always returns false") {
+        ScriptEnv env;
+        QJSValue  ret = env.engine.evaluate(
+            "thisScene.getLayer('music.mp3').isAncestorOf(thisScene.getLayer('bg'))");
+        CHECK_FALSE(ret.toBool());
+    }
+
+    TEST_CASE("getDepth on sound layer returns 0") {
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('music.mp3').getDepth()").toInt() == 0);
+    }
+
+    TEST_CASE("getRoot on sound layer returns self") {
+        ScriptEnv env;
+        QJSValue  ret = env.engine.evaluate(
+            "thisScene.getLayer('music.mp3').getRoot() === thisScene.getLayer('music.mp3')");
+        CHECK(ret.toBool());
+    }
+
+    TEST_CASE("removeFromParent on sound layer returns this") {
+        ScriptEnv env;
+        QJSValue  ret = env.engine.evaluate(
+            "var s = thisScene.getLayer('music.mp3');"
+            "s.removeFromParent() === s;");
+        CHECK(ret.toBool());
+    }
+} // SceneScript Hierarchy Sound Stubs
+
+// ---------------------------------------------------------------------
+// Pool-layer hierarchy + cross-type reparenting + destroyLayer reset.
+// Pool slots are injected into _layerInitStates with __pool_ names, then
+// createLayer/destroyLayer are mocked exactly as the existing pool tests
+// (line 3621+) do.  The test mock's destroyLayer calls _detachLayerHierarchy
+// from the shared shim — same call production destroyLayer makes.
+// ---------------------------------------------------------------------
+namespace
+{
+void setupPoolFixture(ScriptEnv& env) {
+    env.engine.evaluate(
+        "_layerInitStates['__pool_fx_0'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0],\n"
+        "                                    sz:[10,10], v:false };\n"
+        "_layerInitStates['__pool_fx_1'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0],\n"
+        "                                    sz:[10,10], v:false };\n"
+        "_layerNameToId['__pool_fx_0'] = 200;\n"
+        "_layerNameToId['__pool_fx_1'] = 201;\n"
+        "engine._assetPools = { 'fx': ['__pool_fx_0','__pool_fx_1'] };\n"
+        "engine._assetLive  = { 'fx': [] };\n"
+        "engine.registerAsset = function(path) { return { __asset: path }; };\n"
+        "thisScene.createLayer = function(asset) {\n"
+        "  var path = asset && asset.__asset;\n"
+        "  var pool = path && engine._assetPools[path];\n"
+        "  if (pool && pool.length > 0) {\n"
+        "    var name = pool.shift();\n"
+        "    var layer = thisScene.getLayer(name);\n"
+        "    if (layer) {\n"
+        "      layer.__asset = path;\n"
+        "      layer.visible = true;\n"
+        "      engine._assetLive[path].push(name);\n"
+        "      return layer;\n"
+        "    }\n"
+        "  }\n"
+        "  return { __stub: true };\n"
+        "};\n"
+        // Mock destroyLayer reuses the shared _detachLayerHierarchy helper.
+        "thisScene.destroyLayer = function(layer) {\n"
+        "  if (!layer || layer.__stub) return;\n"
+        "  layer.visible = false;\n"
+        "  layer._destroyed = true;\n"
+        "  _detachLayerHierarchy(layer);\n"
+        "  var path = layer.__asset;\n"
+        "  if (path && engine._assetPools[path] && layer.name) {\n"
+        "    engine._assetPools[path].push(layer.name);\n"
+        "  }\n"
+        "};\n");
+}
+} // anonymous namespace
+
+TEST_SUITE("SceneScript Hierarchy Pool Layers") {
+    TEST_CASE("createLayer-spawned slot has _parent=null and _children=[] by default") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        QJSValue layer = env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "thisScene.createLayer(fxAsset);");
+        CHECK(layer.property("_parent").isNull());
+        CHECK(layer.property("_children").isArray());
+        CHECK(layer.property("_children").property("length").toInt() == 0);
+    }
+
+    TEST_CASE("pool slot can be reparented under a regular layer") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var fx = thisScene.createLayer(fxAsset);\n"
+            "fx.setParent(thisScene.getLayer('bg'));");
+        // bg now has fx as a child; fx._parent is bg.
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 1);
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('bg')._children[0]._parent === "
+                            "thisScene.getLayer('bg')")
+                  .toBool());
+    }
+
+    TEST_CASE("regular layer can be reparented under a pool slot (anchor pattern)") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var anchor = thisScene.createLayer(fxAsset);\n"
+            "thisScene.getLayer('fg').setParent(anchor);");
+        CHECK(env.engine
+                  .evaluate("thisScene.getLayer('fg')._parent && "
+                            "thisScene.getLayer('fg')._parent.__asset === 'fx'")
+                  .toBool());
+    }
+
+    TEST_CASE("pool slot can be reparented under another pool slot") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var a = thisScene.createLayer(fxAsset);\n"
+            "var b = thisScene.createLayer(fxAsset);\n"
+            "a.setParent(b);");
+        CHECK(env.engine.evaluate("a._parent === b").toBool());
+        CHECK(env.engine.evaluate("b._children.length").toInt() == 1);
+    }
+} // SceneScript Hierarchy Pool Layers
+
+TEST_SUITE("SceneScript Hierarchy destroyLayer Reset") {
+    TEST_CASE("destroyLayer detaches the slot from its parent's children") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var fx = thisScene.createLayer(fxAsset);\n"
+            "fx.setParent(thisScene.getLayer('bg'));\n"
+            "thisScene.destroyLayer(fx);");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg')._children.length").toInt() == 0);
+    }
+
+    TEST_CASE("destroyLayer clears the slot's own _parent reference") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var fx = thisScene.createLayer(fxAsset);\n"
+            "fx.setParent(thisScene.getLayer('bg'));\n"
+            "thisScene.destroyLayer(fx);");
+        CHECK(env.engine.evaluate("fx._parent").isNull());
+    }
+
+    TEST_CASE("destroyLayer enqueues parentId=-1 reset for the slot") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var fx = thisScene.createLayer(fxAsset);\n"
+            "fx.setParent(thisScene.getLayer('bg'));\n"
+            "__bridgeCalls.length = 0;\n" // clear setParent's earlier call
+            "thisScene.destroyLayer(fx);");
+        QJSValue calls = env.engine.evaluate("__bridgeCalls");
+        REQUIRE(calls.property("length").toInt() >= 1);
+        CHECK(env.engine.evaluate("__bridgeCalls[0][0]").toInt() == 200); // fx_0 id
+        CHECK(env.engine.evaluate("__bridgeCalls[0][1]").toInt() == -1);
+    }
+
+    TEST_CASE("destroyLayer orphans any children of the destroyed slot") {
+        ScriptEnv env;
+        installBridgeStub(env);
+        setupPoolFixture(env);
+        env.engine.evaluate(
+            "var fxAsset = engine.registerAsset('fx');\n"
+            "var anchor = thisScene.createLayer(fxAsset);\n"
+            "thisScene.getLayer('fg').setParent(anchor);\n"
+            "thisScene.destroyLayer(anchor);");
+        CHECK(env.engine.evaluate("thisScene.getLayer('fg')._parent").isNull());
+    }
+} // SceneScript Hierarchy destroyLayer Reset
+
+

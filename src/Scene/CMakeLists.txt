@@ -18,6 +18,7 @@ PUBLIC
 PRIVATE
     wpFs
     wpParticle
+    nlohmann_json
 )
 target_include_directories(${LIB_NAME} PUBLIC include ${CMAKE_CURRENT_SOURCE_DIR}/.. PRIVATE include/Scene)
 target_compile_options(${LIB_NAME} PRIVATE ${warn_opts})

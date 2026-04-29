@@ -422,6 +422,11 @@ public:
         m_pending_material_values.emplace_back(nodeId, std::move(name), std::move(floats));
     }
 
+    void queueParentChange(i32 childId, i32 parentId) {
+        // Scene owns its own mutex on the queue, so no extra locking here.
+        if (m_scene) m_scene->QueueParentChange(childId, parentId);
+    }
+
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
@@ -560,6 +565,14 @@ private:
         if (m_render->deviceLost()) {
             recoverFromDeviceLost();
             return;
+        }
+
+        // Apply queued parent-change requests from SceneScript before any
+        // transform / visibility traversal.  See layer-hierarchy spec for
+        // the JS-side queue API and cycle prevention.  No-op when no scene
+        // is loaded yet.
+        if (m_scene) {
+            m_scene->ApplyPendingParentChanges();
         }
 
         frame_timer.FrameBegin();
@@ -1619,6 +1632,10 @@ void SceneWallpaper::updateMaterialValue(int32_t            nodeId,
         nodeId, std::move(name), std::move(floats));
 }
 
+void SceneWallpaper::queueParentChange(int32_t childId, int32_t parentId) {
+    m_main_handler->renderHandler()->queueParentChange(childId, parentId);
+}
+
 void SceneWallpaper::applyLayerBatch(const std::vector<LayerBatchUpdate>& batch) {
     m_main_handler->renderHandler()->applyLayerBatch(batch);
 }
@@ -2360,38 +2377,12 @@ void MainHandler::loadScene() {
         }
     }
 
-    // Serialize layer initial states as JSON for JS proxy initialization
+    // Serialize layer initial states as JSON for JS proxy initialization.
+    // Includes parent name (`pn`) and node id (`id`) for SceneScript
+    // hierarchy methods — see Scene::SerializeLayerInitialStates.
     {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
-        nlohmann::json              j = nlohmann::json::object();
-        for (const auto& [name, lis] : scene->layerInitialStates) {
-            auto entry =
-                nlohmann::json { { "o", { lis.origin[0], lis.origin[1], lis.origin[2] } },
-                                 { "s", { lis.scale[0], lis.scale[1], lis.scale[2] } },
-                                 { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
-                                 { "v", lis.visible },
-                                 { "sz", { lis.size[0], lis.size[1] } },
-                                 { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } } };
-            // Include effect names for SceneScript getEffect()
-            auto eit = scene->layerEffectNames.find(name);
-            if (eit != scene->layerEffectNames.end()) {
-                entry["efx"] = eit->second;
-            }
-            j[name] = std::move(entry);
-        }
-        j["_ortho"] = { scene->ortho[0], scene->ortho[1] };
-        // Dynamic-asset pools: { "models/coin_0.json": ["__pool_..._0", ...], ... }
-        // JS createLayer(asset) pops a pool name, getLayer() turns it into a
-        // proxy, and visibility/origin toggling flows through the standard
-        // dirty pipeline.
-        if (! scene->assetPools.empty()) {
-            nlohmann::json pools = nlohmann::json::object();
-            for (const auto& [path, names] : scene->assetPools) {
-                pools[path] = names;
-            }
-            j["_assetPools"] = std::move(pools);
-        }
-        m_layer_init_json = j.dump();
+        m_layer_init_json = scene->SerializeLayerInitialStates();
     }
 
     // Serialize scene-level initial state for JS thisScene properties

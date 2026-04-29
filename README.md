@@ -209,7 +209,7 @@ to a valid fragment shader will render. Known working:
   - [x] Camera transforms
 - [x] `thisLayer` global (ILayer)
   - [x] Position, angles, scale, visibility control
-  - [ ] Parent/child hierarchy manipulation
+  - [x] Parent/child hierarchy manipulation (`setParent`, `getParent`, `getChildren`, `removeFromParent`, `getRoot`, `isAncestorOf`, `getDepth` — pool slots fully supported; sound layers gracefully no-op; cycle-checked)
   - [x] Animation layer access (`getAnimationLayer`, `getAnimationLayerCount`)
 - [x] `input` global (IInput)
   - [x] Mouse cursor position and events
@@ -258,10 +258,6 @@ ordered by scope (smallest → largest).
 - **`bloomEnabled` runtime toggle** — bloom passes are baked into the render
   graph at scene load. Cheapest implementation is a "bypass mode" branch in
   the combine pass; the harder/cleaner path is a graph rebuild on toggle.
-- **Parent / child layer hierarchy from SceneScript** — add
-  `setParent(layer)` / `getParent()` / `getChildren()` to the layer JS proxy
-  and a graph-rebuild hook in `RenderHandler` so reparenting takes effect on
-  the next frame.
 - **`IParticleSystem` / `IParticleSystemInstance`** — expose a stable
   `nodeId → ParticleSubSystem` map through `__sceneBridge`, then thread
   emission rate / pause / per-instance CP overrides through the existing

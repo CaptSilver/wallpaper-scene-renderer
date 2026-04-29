@@ -234,6 +234,36 @@ TEST_SUITE("SceneNode.Graph") {
         CHECK(p->GetChildren().size() == 1);
     }
 
+    TEST_CASE("Parent() getter returns nullptr for orphan, parent for child") {
+        auto p = std::make_shared<SceneNode>();
+        auto c = std::make_shared<SceneNode>();
+        CHECK(c->Parent() == nullptr);
+        p->AppendChild(c);
+        CHECK(c->Parent() == p.get());
+    }
+
+    TEST_CASE("ExtractChild removes from m_children and returns the shared_ptr") {
+        auto p = std::make_shared<SceneNode>();
+        auto a = std::make_shared<SceneNode>();
+        auto b = std::make_shared<SceneNode>();
+        p->AppendChild(a);
+        p->AppendChild(b);
+
+        auto extracted = p->ExtractChild(a.get());
+        CHECK(extracted.get() == a.get());
+        CHECK(p->GetChildren().size() == 1);
+        // Caller and our local var both hold the shared_ptr.
+        CHECK(extracted.use_count() >= 2);
+    }
+
+    TEST_CASE("ExtractChild returns nullptr when child not found") {
+        auto p        = std::make_shared<SceneNode>();
+        auto stranger = std::make_shared<SceneNode>();
+        auto extracted = p->ExtractChild(stranger.get());
+        CHECK(extracted == nullptr);
+        CHECK(p->GetChildren().empty());
+    }
+
     TEST_CASE("RemoveChild + AppendChild supports re-parent flow for deferred groups") {
         // Reproduces the WPSceneParser deferred re-link pattern:
         //   1. child is temporarily attached to scene root

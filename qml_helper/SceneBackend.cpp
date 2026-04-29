@@ -854,6 +854,15 @@ void SceneObject::materialSetValue(const QString&  layerName,
     m_scene->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
 }
 
+// Layer-hierarchy bridge — enqueues (childId, parentId) for the render
+// thread to apply at the start of CMD_DRAW.  parentId == -1 means
+// "reattach to scene root".  Unknown ids are dropped silently during
+// drain (see Scene::ApplyPendingParentChanges).
+void SceneObject::setLayerParent(int childId, int parentId) {
+    if (! m_scene) return;
+    m_scene->queueParentChange(childId, parentId);
+}
+
 // -------- engine.openUserShortcut bridge --------
 // Routes a named user-shortcut from SceneScript to (a) the main plugin via
 // the userShortcutRequested signal (mapped to MPRIS by Scene.qml) and
@@ -1590,6 +1599,11 @@ void SceneObject::setupTextScripts() {
     // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
     m_jsEngine->evaluate(wek::qml_helper::kMaterialProxyJs);
 
+    // Layer-hierarchy shim — defines _installHierarchyMethods,
+    // _installSoundHierarchyStubs, _hierarchyResolveId, _linkupHierarchy.
+    // Layer factories below call _installHierarchyMethods on each proxy.
+    m_jsEngine->evaluate(wek::qml_helper::kHierarchyProxyJs);
+
     // `_Internal` helper namespace — updateScriptProperties /
     // convertUserProperties / stringifyConfig.  Requires Vec3.
     m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
@@ -1881,6 +1895,12 @@ void SceneObject::setupTextScripts() {
         "              sx: p.scale.x, sy: p.scale.y, sz: p.scale.z,\n"
         "              ax: p.angles.x, ay: p.angles.y, az: p.angles.z,\n"
         "              alpha: p.alpha, visible: p.visible };\n"
+        // Layer-hierarchy fields & methods on the pool slot.  Pool proxies
+        // are plain objects; `id` lives directly on the proxy (not _state).
+        "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
+        "    p.id = _layerNameToId[name];\n"
+        "  }\n"
+        "  _installHierarchyMethods(p);\n"
         "  return p;\n"
         "}\n"
         "function _makeLayerProxy(name) {\n"
@@ -2136,6 +2156,12 @@ void SceneObject::setupTextScripts() {
         "  p._destroyed = false;\n"
         "  p.isObjectValid = function() { return !this._destroyed; };\n"
         "  p._state = _s;\n"
+        // Layer-hierarchy fields & methods.  ID is stashed on _state so
+        // _hierarchyResolveId can dispatch to __sceneBridge.setParent.
+        "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
+        "    _s.id = _layerNameToId[name];\n"
+        "  }\n"
+        "  _installHierarchyMethods(p);\n"
         "  return p;\n"
         "}\n"
         // Null-safe proxy: returned when getLayer() can't find a layer.
@@ -2367,6 +2393,11 @@ void SceneObject::setupTextScripts() {
         // Flip the validity flag BEFORE recycling.  Async callbacks that
         // captured this proxy can now bail via isObjectValid().
         "  layer._destroyed = true;\n"
+        // Layer-hierarchy reset: detach from any parent and clear children.
+        // Without this, the next createLayer on the same pool slot inherits
+        // stale linkage; the render-thread queue gets a -1 dispatch so the
+        // C++ SceneNode reattaches to the scene-graph root.
+        "  if (typeof _detachLayerHierarchy === 'function') _detachLayerHierarchy(layer);\n"
         "  var path = layer.__asset;\n"
         "  if (!path) return;\n"
         "  var live = engine._assetLive[path];\n"
@@ -2834,6 +2865,8 @@ void SceneObject::setupTextScripts() {
                 "    return ctrl;\n"
                 "  };\n"
                 "  p._state = _s;\n"
+                // Sound-layer hierarchy stubs — no transform, methods no-op.
+                "  _installSoundHierarchyStubs(p);\n"
                 "  return p;\n"
                 "}\n");
 
@@ -2910,6 +2943,17 @@ void SceneObject::setupTextScripts() {
                                  "};\n");
         }
     }
+
+    // Eager linkup of layer-hierarchy parent/child references.  Walks
+    // _layerInitStates one final time and resolves each `pn` (parent
+    // name) into a proxy ref; all proxies were materialized by the
+    // enumerateLayers() call above (or via the no-sound-layers branch).
+    // This also covers proxies created lazily afterwards — _linkupHierarchy
+    // is idempotent and safe to call again, but most scripts query
+    // parents during init so the eager pass catches the common cases.
+    m_jsEngine->evaluate(
+        "if (typeof thisScene.enumerateLayers === 'function') thisScene.enumerateLayers();\n"
+        "if (typeof _linkupHierarchy === 'function') _linkupHierarchy();\n");
 
     // Final null-safety wrapper: ensures getLayer() never returns null.
     // The original getLayer returns null for unknown image layers so the sound-layer

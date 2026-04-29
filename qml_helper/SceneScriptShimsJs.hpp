@@ -447,4 +447,164 @@ function _makeNullMaterialProxy() {
 }
 )JS";
 
+// =====================================================================
+// Layer hierarchy: thisLayer.setParent / getParent / getChildren /
+// removeFromParent / getRoot / isAncestorOf / getDepth.
+//
+// JS-authoritative: each proxy carries a cached `_parent` reference and
+// `_children` array.  Reads are synchronous against the cache; writes
+// validate cycles JS-side and dispatch via __sceneBridge.setParent into
+// Scene::QueueParentChange (drained at the start of RenderHandler::DRAW).
+//
+// Sound-layer variant stubs every method as a graceful no-op since
+// sound layers carry no transform.
+// =====================================================================
+inline constexpr const char* kHierarchyProxyJs = R"JS(
+function _installHierarchyMethods(p) {
+  if (typeof p._parent === 'undefined') p._parent = null;
+  if (!Array.isArray(p._children)) p._children = [];
+
+  p.getParent = function() { return this._parent; };
+  p.getChildren = function() { return this._children.slice(); };
+  p.getRoot = function() {
+    var cur = this;
+    while (cur._parent) cur = cur._parent;
+    return cur;
+  };
+  p.isAncestorOf = function(other) {
+    if (!other || typeof other !== 'object') return false;
+    var cur = other._parent;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur._parent;
+    }
+    return false;
+  };
+  p.getDepth = function() {
+    var d = 0, cur = this;
+    while (cur._parent) { d++; cur = cur._parent; }
+    return d;
+  };
+
+  p.setParent = function(other) {
+    if (other === undefined) other = null;
+    // Validity: must be null or a layer-shaped object.  Sound proxies
+    // stub setParent separately, so non-layer args land here only via
+    // user error or test code.
+    if (other !== null && (typeof other !== 'object' || !Array.isArray(other._children))) {
+      console.log('setParent: ignoring non-layer argument');
+      return this;
+    }
+    // Cycle: refuse self-parent.
+    if (other === this) {
+      console.log('setParent: cannot parent to self');
+      return this;
+    }
+    // Cycle: refuse parenting under own descendant (would create a loop).
+    if (other && this.isAncestorOf(other)) {
+      console.log('setParent: cannot parent under own descendant');
+      return this;
+    }
+    // Idempotent: already parented to `other`.
+    if (other === this._parent) return this;
+
+    if (this._parent) {
+      var idx = this._parent._children.indexOf(this);
+      if (idx >= 0) this._parent._children.splice(idx, 1);
+    }
+    this._parent = other;
+    if (other) other._children.push(this);
+
+    var myId = _hierarchyResolveId(this);
+    var otherId = other ? _hierarchyResolveId(other) : -1;
+    if (myId !== -1 && typeof __sceneBridge !== 'undefined' &&
+        typeof __sceneBridge.setLayerParent === 'function') {
+      __sceneBridge.setLayerParent(myId, otherId);
+    }
+    return this;
+  };
+
+  p.removeFromParent = function() { return this.setParent(null); };
+}
+
+// Sound-layer hierarchy stubs — no transform, so reparenting is a no-op.
+// Stubbed methods log + return safe values; matches WE behavior.
+function _installSoundHierarchyStubs(p) {
+  p.setParent = function() {
+    console.log('setParent: sound layer ' + this.name + ' cannot be reparented');
+    return this;
+  };
+  p.removeFromParent = function() { return this; };
+  p.getParent = function() { return null; };
+  p.getChildren = function() { return []; };
+  p.getRoot = function() { return this; };
+  p.isAncestorOf = function() { return false; };
+  p.getDepth = function() { return 0; };
+}
+
+// Resolve a layer proxy to its node id.  Regular proxies stash the id on
+// `_state.id`; pool/sound proxies expose it as a plain `id` field.
+// Returns -1 when no id is available.
+function _hierarchyResolveId(p) {
+  if (!p) return -1;
+  if (p._state && typeof p._state.id === 'number') return p._state.id;
+  if (typeof p.id === 'number') return p.id;
+  return -1;
+}
+
+// Detach a layer from its parent and orphan all its children, then
+// dispatch the corresponding render-thread reset.  Called by
+// thisScene.destroyLayer (production + tests) so a recycled pool slot
+// returns to the scene root with no stale linkage.
+function _detachLayerHierarchy(layer) {
+  if (!layer) return;
+  if (layer._parent) {
+    var pidx = layer._parent._children.indexOf(layer);
+    if (pidx >= 0) layer._parent._children.splice(pidx, 1);
+    layer._parent = null;
+    var myId = _hierarchyResolveId(layer);
+    if (myId !== -1 && typeof __sceneBridge !== 'undefined' &&
+        typeof __sceneBridge.setLayerParent === 'function') {
+      __sceneBridge.setLayerParent(myId, -1);
+    }
+  }
+  if (layer._children && layer._children.length > 0) {
+    for (var ci = 0; ci < layer._children.length; ci++) {
+      var ch = layer._children[ci];
+      ch._parent = null;
+      var chId = _hierarchyResolveId(ch);
+      if (chId !== -1 && typeof __sceneBridge !== 'undefined' &&
+          typeof __sceneBridge.setLayerParent === 'function') {
+        __sceneBridge.setLayerParent(chId, -1);
+      }
+    }
+    layer._children = [];
+  }
+}
+
+// Deferred linkup: walk _layerInitStates and resolve each `pn` reference
+// to a proxy in _layerCache.  Skips entries whose names start with `_`
+// (reserved metadata like _ortho / _assetPools) and missing proxies
+// (sound layers, typos, etc.).  Idempotent — safe to call multiple times.
+function _linkupHierarchy() {
+  if (typeof _layerInitStates !== 'object' || !_layerInitStates) return;
+  for (var name in _layerInitStates) {
+    if (!Object.prototype.hasOwnProperty.call(_layerInitStates, name)) continue;
+    if (name.charAt(0) === '_') continue;
+    var init = _layerInitStates[name];
+    if (!init || !init.pn) continue;
+    var child  = _layerCache[name];
+    var parent = _layerCache[init.pn];
+    if (!child || !parent) continue;
+    if (child._parent === parent) continue;
+    if (child._parent) {
+      var idx = child._parent._children.indexOf(child);
+      if (idx >= 0) child._parent._children.splice(idx, 1);
+    }
+    child._parent = parent;
+    if (parent._children.indexOf(child) < 0) parent._children.push(child);
+  }
+}
+)JS";
+
 } // namespace wek::qml_helper

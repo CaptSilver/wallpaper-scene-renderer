@@ -176,6 +176,12 @@ public:
     void updateMaterialValue(int32_t            nodeId,
                              std::string        name,
                              std::vector<float> floats);
+
+    // Layer-hierarchy bridge — thisLayer.setParent() JS path enqueues
+    // a (childId, parentId) pair into Scene::m_pending_parent_changes,
+    // which is drained at the start of RenderHandler::CMD_DRAW.  parentId
+    // == -1 means "reattach to scene root".
+    void queueParentChange(int32_t childId, int32_t parentId);
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);
     std::string                        getUserPropertiesJson() const;

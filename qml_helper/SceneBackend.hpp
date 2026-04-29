@@ -136,6 +136,14 @@ public:
                                       const QString& name,
                                       const QJSValue& value);
 
+    // Layer-hierarchy bridge — thisLayer.setParent(other) JS path enqueues
+    // a (childId, parentId) pair into Scene::m_pending_parent_changes,
+    // which is drained at the start of RenderHandler::CMD_DRAW.  parentId
+    // == -1 means "reattach to scene root".  Unknown ids are silently
+    // dropped during drain (no-op).  Named `setLayerParent` instead of
+    // `setParent` to avoid collision with QObject::setParent.
+    Q_INVOKABLE void setLayerParent(int childId, int parentId);
+
     // engine.openUserShortcut(name) — routes a named user-shortcut fired from
     // SceneScript.  Emits userShortcutRequested() for the main plugin to map
     // to MPRIS (media-control names like "bplay"/"b11"/"bprev") and fires a
