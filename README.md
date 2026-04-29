@@ -72,6 +72,8 @@ to a valid fragment shader will render. Known working:
   - [x] Duration (emitter lifetime limit)
 - [x] **Initializers**:
   - [x] `colorrandom` — random color (min/max RGB)
+  - [x] `hsvcolorrandom` — random color in HSV space
+  - [x] `colorlist` — pick from discrete color palette
   - [x] `lifetimerandom` — random lifetime (min/max, exponent)
   - [x] `sizerandom` — random size (min/max, exponent)
   - [x] `alpharandom` — random alpha
@@ -85,6 +87,8 @@ to a valid fragment shader will render. Known working:
   - [x] `remapinitialvalue` — map input values to output properties
   - [x] `mapsequencebetweencontrolpoints` — distribute along line between CPs (arc, mirror, noise)
   - [x] `mapsequencearoundcontrolpoint` — distribute around a control point
+  - [x] `inheritcontrolpointvelocity` — adopt CP velocity at spawn
+  - [x] `inheritinitialvaluefromevent` — copy a parent-particle property at spawn (eventspawn / eventdeath children)
 - [x] **Operators**:
   - [x] `movement` — velocity + gravity + drag
   - [x] `angularmovement` — angular velocity + force + drag
@@ -103,6 +107,11 @@ to a valid fragment shader will render. Known working:
   - [x] `reducemovementnearcontrolpoint` — movement dampening near CP
   - [x] `remapvalue` — remap particle property values
   - [x] `controlpointforce` — radial force from control point
+  - [x] `capvelocity` — clamp speed to maxvelocity
+  - [x] `maintaindistancetocontrolpoint` — soft distance constraint to a single CP
+  - [x] `inheritvaluefromevent` — copy event/parent particle property each frame
+  - [x] **Collision** — `collisionplane`, `collisionsphere`, `collisionbox` / `collisionbounds`, `collisionquad`, `collisionmodel` (with restitution)
+  - [x] `boids` — Reynolds 1987 flocking (separation, alignment, cohesion, maxspeed)
 - [x] **Control Points** (up to 8)
   - [x] Mouse follow (`link_mouse`)
   - [x] Worldspace mode
@@ -111,10 +120,8 @@ to a valid fragment shader will render. Known working:
 - [x] Instance overrides (color, alpha, brightness, count, lifetime, rate, speed, size)
 - [x] Sprite sheet animation (sequential / random frames)
 - [x] Perspective rendering flag
-- [ ] Collision operators
-- [ ] Boids (flocking behavior)
-- [ ] Real-time particle lighting
-- [ ] Audio-responsive emission (`audioprocessingmode`)
+- [ ] Real-time particle lighting (sample SceneLights in particle vertex/fragment shader)
+- [ ] Audio-responsive emission (`audioprocessingmode` is parsed but not yet wired into emit-rate/size/color)
 
 ### Puppet Warp
 - [x] Multi-bone skeletal animation
@@ -216,9 +223,14 @@ to a valid fragment shader will render. Known working:
 - [x] Text layer dynamic content (scripts driving text updates)
 - [x] Color scripts (`colorScript` field parsed, compiled, evaluated at 30Hz)
 - [x] `WEMath`, `WEColor` utility modules
-- [x] `Vec3` factory (position math for cursor/drag scripts)
+- [x] `Vec2`, `Vec3`, `Vec4` factories (full method sets — add/sub/mul/div, length/normalize/dot/cross, lerp, distance, fromString, r/g/b aliases)
+- [x] `Mat3`, `Mat4` matrix classes (translation/rotation/scale; view + projection helpers for cursor / drag scripts)
 - [x] `WEVector` utility module (`angleVector2`, `vectorAngle2`)
-- [x] `Vec2` class (full method set matching official API)
+- [x] `engine.colorScheme` — `Vec3` from the `schemecolor` user property (refreshed on apply)
+- [x] `engine.openUserShortcut(name)` — dispatched to MPRIS (play/pause/next/prev) and to in-scene `scene.on('userShortcut', …)` listeners
+- [x] `getEffect(name).visible` runtime per-effect toggle (dirty-tracked)
+- [x] `scene.on(event, fn)` / `scene.off(event[, fn])` — in-scene event bus, fans out 10 fixed event points (update, cursor*, media*, resize, …) plus `userShortcut`
+- [x] `IVideoTexture` — `thisLayer.getVideoTexture()` returns a proxy with `getCurrentTime`, `setCurrentTime`, `duration`, `rate`, `play`, `pause`, `stop`, `isPlaying` (mpv-backed video texture decoder)
 - [x] Sound layer control (`enumerateLayers`, `play`/`stop`/`pause`/`isPlaying`/`volume`)
 - [x] `console.log` support (buffered → LOG_INFO flush)
 
@@ -230,8 +242,100 @@ to a valid fragment shader will render. Known working:
 - [ ] SceneScript animation events
 
 ### Not Yet Investigated
-- [ ] RGB hardware lighting integration
-- [ ] User shortcuts (`engine.openUserShortcut`)
+- [ ] RGB hardware lighting integration (OpenRGB / liquidctl)
 - [ ] `IParticleSystem` / `IParticleSystemInstance` SceneScript control
 - [ ] `IMaterial` dynamic shader property access via SceneScript
-- [ ] `IVideoTexture` (video as texture source)
+
+---
+
+## Roadmap — Unimplemented Features
+
+What it would take to finish each unchecked item above. Items are roughly
+ordered by scope (smallest → largest).
+
+### Easy / mostly plumbing
+
+- **`bloomEnabled` runtime toggle** — bloom passes are baked into the render
+  graph at scene load. Cheapest implementation is a "bypass mode" branch in
+  the combine pass; the harder/cleaner path is a graph rebuild on toggle.
+- **Audio-responsive particle emission** — `audioprocessingmode` is already
+  parsed (`WPParticleObject.cpp:78`) but never consumed. Wire it into the
+  emit-rate / size / color paths using the existing `g_AudioSpectrum*`
+  uniforms; gate the per-particle sample on the mode value.
+- **Parent / child layer hierarchy from SceneScript** — add
+  `setParent(layer)` / `getParent()` / `getChildren()` to the layer JS proxy
+  and a graph-rebuild hook in `RenderHandler` so reparenting takes effect on
+  the next frame.
+- **`IParticleSystem` / `IParticleSystemInstance`** — expose a stable
+  `nodeId → ParticleSubSystem` map through `__sceneBridge`, then thread
+  emission rate / pause / per-instance CP overrides through the existing
+  `ParticleModify` queue.
+- **`IMaterial` dynamic shader property access** — `getMaterial(slot)` on
+  layer proxies, with setters that push values directly into
+  `SceneMaterial::constValues` (the dirty-tracking path already exists for
+  user-property bindings).
+- **User-defined `customshader` user-properties** — accept a `customshader`
+  property type, swap the layer's shader pass at runtime through the async
+  compile cache. Most plumbing already exists; missing piece is the
+  user-property → pass swap.
+- **RGB hardware lighting** — pure plumbing: forward
+  audio-spectrum + dominant-color outputs to OpenRGB / liquidctl over
+  D-Bus. No renderer work.
+
+### Medium
+
+- **Real-time particle lighting** — particles use a separate sprite/rope
+  shader path that ignores `SceneLight`s. Add a per-particle sample of
+  nearby point lights (vertex or fragment), broadcast positions via a small
+  uniform array, and reuse the PBR shader prelude.
+- **Procedural Clouds effect** — multi-octave 3D noise (or a 3D noise LUT)
+  + a custom-binding for cloud uniforms (cover, density, speed). One new
+  shader stage.
+- **Spot lights** — extend `SceneLight.hpp` with cone angle, inner/outer
+  falloff, and direction; add cone culling in shaders; integrate with the
+  PBR prelude alongside point lights and skylight.
+- **HDR bloom post-process** — the `combine_hdr` postprocessing variant
+  exists (see `blend-tonemap-audit.md` A2), but the per-mip bloom
+  convolution chain that feeds it isn't built. Add the down/up sample
+  pyramid and feed mips into the combine pass.
+- **Puppet: blend shapes** — linear morph-target blending. Adds vertex
+  streams for shape deltas and per-shape weight uniforms.
+- **Puppet: 3D perspective extrusion** — synthesize Z + normals on a 2D
+  puppet so it picks up lighting and parallax. Mostly mechanical.
+- **Puppet: texture channel animations** — per-bone texcoord offsets,
+  separate from skin matrices. Needs an extra channel parsed out of the
+  Puppet binary.
+- **Interactive puppet warps (SceneScript-triggered)** — expose Puppet
+  bone manipulation through a `thisLayer.getPuppet()` JS proxy with
+  `bones[i]` setters and an entry point for triggering authored animations.
+
+### Large
+
+- **Shadow mapping** — depth-only render pass per light, cascade for the
+  skylight, PCF/PCSS sampler, integration into the PBR prelude (which
+  already takes a `shadowFactor` parameter wired to `1.0` —
+  `WPShaderParser.cpp:391`). New light view-proj matrices, depth-target
+  attachments, fragment-side sampling.
+- **Volumetric lighting** — ray-march from camera through participating
+  media; needs depth-buffer access, per-pixel scattering integration, and
+  per-light volume bounds. Pairs naturally with shadow mapping.
+- **Iris Movement effect** — depends on external eye/face tracking input
+  (webcam + tracker daemon). IPC bridge + driver + mapping to layer
+  transform. Out of scope until that stack exists.
+- **Advanced Fluid Simulation effect** — the renderer has no compute
+  pipeline today. Would need `VkComputePipeline` plumbing, pressure /
+  velocity field textures, and a Navier-Stokes solver (advect → divergence
+  → jacobi → project) split across passes.
+- **Puppet: inverse kinematics** — FABRIK/CCD per chain. Limited value
+  until interactive puppet warps land.
+- **Timeline animations (entire section)** — WE's authoring-time keyframe
+  system. Requires:
+  - extracting the timeline JSON in `WPSceneParser` (not currently parsed),
+  - per-property bezier/Hermite interpolation,
+  - loop / mirror / single state machines,
+  - binding into the existing dirty-update queues for `SceneNode` /
+    `SceneMaterial`.
+
+  Largest single missing system — comparable in scope to SceneScript
+  itself. Many wallpapers use SceneScript instead; the gap mostly affects
+  authored-without-script scenes.
