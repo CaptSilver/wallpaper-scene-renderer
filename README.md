@@ -231,6 +231,7 @@ to a valid fragment shader will render. Known working:
 - [x] `getEffect(name).visible` runtime per-effect toggle (dirty-tracked)
 - [x] `scene.on(event, fn)` / `scene.off(event[, fn])` — in-scene event bus, fans out 10 fixed event points (update, cursor*, media*, resize, …) plus `userShortcut`
 - [x] `IVideoTexture` — `thisLayer.getVideoTexture()` returns a proxy with `getCurrentTime`, `setCurrentTime`, `duration`, `rate`, `play`, `pause`, `stop`, `isPlaying` (mpv-backed video texture decoder)
+- [x] `IMaterial` — `thisLayer.getMaterial().setValue(name, value)` / `getValue(name)`; uniform writes go through a render-thread queue into `customShader.constValues`, dirty flag re-uploads on next frame.  Reads are JS-side cached so they never race the renderer.
 - [x] Sound layer control (`enumerateLayers`, `play`/`stop`/`pause`/`isPlaying`/`volume`)
 - [x] `console.log` support (buffered → LOG_INFO flush)
 
@@ -244,7 +245,6 @@ to a valid fragment shader will render. Known working:
 ### Not Yet Investigated
 - [ ] RGB hardware lighting integration (OpenRGB / liquidctl)
 - [ ] `IParticleSystem` / `IParticleSystemInstance` SceneScript control
-- [ ] `IMaterial` dynamic shader property access via SceneScript
 
 ---
 
@@ -270,10 +270,6 @@ ordered by scope (smallest → largest).
   `nodeId → ParticleSubSystem` map through `__sceneBridge`, then thread
   emission rate / pause / per-instance CP overrides through the existing
   `ParticleModify` queue.
-- **`IMaterial` dynamic shader property access** — `getMaterial(slot)` on
-  layer proxies, with setters that push values directly into
-  `SceneMaterial::constValues` (the dirty-tracking path already exists for
-  user-property bindings).
 - **User-defined `customshader` user-properties** — accept a `customshader`
   property type, swap the layer's shader pass at runtime through the async
   compile cache. Most plumbing already exists; missing piece is the
