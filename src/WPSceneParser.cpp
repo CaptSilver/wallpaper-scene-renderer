@@ -401,8 +401,10 @@ void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
 }
 void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float count, float rate,
                  bool render_rope, u32 rope_batch_size = 1, bool has_periodic = false) {
-    bool sort = render_rope;
+    bool sort      = render_rope;
+    bool any_audio = false;
     for (const auto& em : wp.emitters) {
+        if (em.audioprocessingmode != 0) any_audio = true;
         auto  newEm      = em;
         float burst_rate = 0.0f;
         if (rope_batch_size > 1 && ! has_periodic && count * rate > 0.001f) {
@@ -424,6 +426,13 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
         }
         pSys.AddEmitter(
             WPParticleParser::genParticleEmittOp(newEm, sort, rope_batch_size, burst_rate));
+    }
+    if (any_audio) {
+        // SceneWallpaper's per-frame loop will sample the FFT bass band each
+        // tick and push a multiplier via SetAudioRateMultiplier; folded into
+        // rate_eff in ParticleSubSystem::Emitt.
+        pSys.MarkAudioReactive();
+        LOG_INFO("particle subsystem flagged audio-reactive (audioprocessingmode set on emitter)");
     }
 }
 
