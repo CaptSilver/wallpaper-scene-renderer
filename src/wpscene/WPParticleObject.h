@@ -86,6 +86,17 @@ public:
     float                  speedmin { 0 };
     float                  speedmax { 0 };
     u32                    audioprocessingmode { 0 };
+    // Optional WE-shape audio response keys.  When any are present in the JSON,
+    // `audio_we_shape_authored` flips on and the runtime switches from the
+    // legacy 0.4..2.0 bass curve to WE's
+    //   smoothstep(bounds, mean(spectrum[freqStart..freqEnd))) ^ exp * amount
+    // mapping.  Values left at the defaults below recreate the legacy curve.
+    int                    audioprocessingfrequencystart { 0 };
+    int                    audioprocessingfrequencyend { 4 };
+    std::array<float, 2>   audioprocessingbounds { 0.0f, 1.0f };
+    float                  audioprocessingexponent { 1.0f };
+    float                  audioprocessing { 1.0f };
+    bool                   audio_we_shape_authored { false };
     i32                    controlpoint { 0 };
     i32                    id;
     EFlags                 flags;

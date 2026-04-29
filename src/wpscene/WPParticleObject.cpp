@@ -76,6 +76,32 @@ bool Emitter::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
     GET_JSON_NAME_VALUE_NOWARN(json, "sign", sign);
     GET_JSON_NAME_VALUE_NOWARN(json, "audioprocessingmode", audioprocessingmode);
+
+    // Optional WE-shape audio keys: only flip the authored flag when at least
+    // one is present in the JSON.  GET_JSON_NAME_VALUE_NOWARN silently leaves
+    // defaults in place when keys are absent, so we check `contains` to detect
+    // author intent.
+    if (json.contains("audioprocessingfrequencystart")) {
+        GET_JSON_NAME_VALUE(json, "audioprocessingfrequencystart", audioprocessingfrequencystart);
+        audio_we_shape_authored = true;
+    }
+    if (json.contains("audioprocessingfrequencyend")) {
+        GET_JSON_NAME_VALUE(json, "audioprocessingfrequencyend", audioprocessingfrequencyend);
+        audio_we_shape_authored = true;
+    }
+    if (json.contains("audioprocessingbounds")) {
+        GET_JSON_NAME_VALUE(json, "audioprocessingbounds", audioprocessingbounds);
+        audio_we_shape_authored = true;
+    }
+    if (json.contains("audioprocessingexponent")) {
+        GET_JSON_NAME_VALUE(json, "audioprocessingexponent", audioprocessingexponent);
+        audio_we_shape_authored = true;
+    }
+    if (json.contains("audioprocessing")) {
+        GET_JSON_NAME_VALUE(json, "audioprocessing", audioprocessing);
+        audio_we_shape_authored = true;
+    }
+
     GET_JSON_NAME_VALUE_NOWARN(json, "controlpoint", controlpoint);
 
     if (controlpoint >= 8) LOG_ERROR("wrong controlpoint %d", controlpoint);

@@ -184,6 +184,71 @@ TEST_SUITE("Emitter::FromJson") {
         auto e = ParseEmitter(R"({"name": "x", "id": 1, "flags": 2})");
         CHECK(e.flags[Emitter::FlagEnum::one_per_frame]);
     }
+
+    TEST_CASE("audioprocessingmode parses as the WE channel enum (1=L, 2=R, 3=Stereo)") {
+        auto eOff = ParseEmitter(R"({"name": "x", "id": 1})");
+        CHECK(eOff.audioprocessingmode == 0u);
+        auto eL = ParseEmitter(R"({"name": "x", "id": 1, "audioprocessingmode": 1})");
+        CHECK(eL.audioprocessingmode == 1u);
+        auto eR = ParseEmitter(R"({"name": "x", "id": 1, "audioprocessingmode": 2})");
+        CHECK(eR.audioprocessingmode == 2u);
+        auto eS = ParseEmitter(R"({"name": "x", "id": 1, "audioprocessingmode": 3})");
+        CHECK(eS.audioprocessingmode == 3u);
+    }
+
+    TEST_CASE("WE-shape audio keys default identity values when absent") {
+        auto e = ParseEmitter(R"({"name": "x", "id": 1, "audioprocessingmode": 1})");
+        CHECK_FALSE(e.audio_we_shape_authored);
+        CHECK(e.audioprocessingfrequencystart == 0);
+        CHECK(e.audioprocessingfrequencyend == 4);
+        CHECK(e.audioprocessingbounds[0] == doctest::Approx(0.0f));
+        CHECK(e.audioprocessingbounds[1] == doctest::Approx(1.0f));
+        CHECK(e.audioprocessingexponent == doctest::Approx(1.0f));
+        CHECK(e.audioprocessing == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("audioprocessingfrequencystart/end parse and trip the WE-shape flag") {
+        auto e = ParseEmitter(R"({
+            "name": "x", "id": 1,
+            "audioprocessingmode": 1,
+            "audioprocessingfrequencystart": 8,
+            "audioprocessingfrequencyend": 12
+        })");
+        CHECK(e.audioprocessingfrequencystart == 8);
+        CHECK(e.audioprocessingfrequencyend == 12);
+        CHECK(e.audio_we_shape_authored);
+    }
+
+    TEST_CASE("audioprocessingbounds parses as a 2-vec and trips the WE-shape flag") {
+        auto e = ParseEmitter(R"({
+            "name": "x", "id": 1,
+            "audioprocessingmode": 1,
+            "audioprocessingbounds": "0.25 0.75"
+        })");
+        CHECK(e.audioprocessingbounds[0] == doctest::Approx(0.25f));
+        CHECK(e.audioprocessingbounds[1] == doctest::Approx(0.75f));
+        CHECK(e.audio_we_shape_authored);
+    }
+
+    TEST_CASE("audioprocessingexponent parses and trips the WE-shape flag") {
+        auto e = ParseEmitter(R"({
+            "name": "x", "id": 1,
+            "audioprocessingmode": 1,
+            "audioprocessingexponent": 2.5
+        })");
+        CHECK(e.audioprocessingexponent == doctest::Approx(2.5f));
+        CHECK(e.audio_we_shape_authored);
+    }
+
+    TEST_CASE("audioprocessing (post-multiplier) parses and trips the WE-shape flag") {
+        auto e = ParseEmitter(R"({
+            "name": "x", "id": 1,
+            "audioprocessingmode": 1,
+            "audioprocessing": 1.5
+        })");
+        CHECK(e.audioprocessing == doctest::Approx(1.5f));
+        CHECK(e.audio_we_shape_authored);
+    }
 }
 
 TEST_SUITE("ParticleInstanceoverride::FromJosn") {
