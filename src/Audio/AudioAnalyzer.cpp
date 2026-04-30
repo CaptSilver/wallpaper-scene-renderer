@@ -35,10 +35,13 @@ constexpr float    MAX_FREQ         = 20000.0f;
 //     intact but audio visualizers (Blue Archive 2764537029, similar) felt
 //     visibly under-pumped: bars topped out at ~30px instead of the
 //     ~60–80px the wallpapers visually aim for.
-//   - 8.0 with the same soft saturation — peaks land around 0.5–0.7 (still
-//     well below 1.0 thanks to the asymptote), giving visualizers more
-//     amplitude without re-introducing the text-shake saturation problem.
-constexpr float SPECTRUM_GAIN = 8.0f;
+//   - 8.0 with the same soft saturation — peaks land around 0.5–0.7,
+//     visually closer to WE.
+//   - 15.0 with soft saturation — peaks land around 0.65–0.85 thanks to
+//     the sqrt-first + x/(1+0.4x) curve (analytical asymptote 2.5), so the
+//     old 15.0+hard-clamp saturation problem doesn't return.  Driver:
+//     user explicitly wanted maximum visible amplitude on visualizers.
+constexpr float SPECTRUM_GAIN = 15.0f;
 
 // Precompute Hanning window coefficients
 struct HanningWindow {
