@@ -427,6 +427,10 @@ public:
         if (m_scene) m_scene->QueueParentChange(childId, parentId);
     }
 
+    void queueChildSort(i32 childId, i32 targetIndex) {
+        if (m_scene) m_scene->QueueChildSort(childId, targetIndex);
+    }
+
     void setNodeAlpha(i32 id, float alpha) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_alpha_updates[id] = alpha;
@@ -570,9 +574,11 @@ private:
         // Apply queued parent-change requests from SceneScript before any
         // transform / visibility traversal.  See layer-hierarchy spec for
         // the JS-side queue API and cycle prevention.  No-op when no scene
-        // is loaded yet.
+        // is loaded yet.  Apply child-sort drain in the same window so
+        // sortLayer + setLayerParent run on the same frame.
         if (m_scene) {
             m_scene->ApplyPendingParentChanges();
+            m_scene->ApplyPendingChildSorts();
         }
 
         frame_timer.FrameBegin();
@@ -1634,6 +1640,10 @@ void SceneWallpaper::updateMaterialValue(int32_t            nodeId,
 
 void SceneWallpaper::queueParentChange(int32_t childId, int32_t parentId) {
     m_main_handler->renderHandler()->queueParentChange(childId, parentId);
+}
+
+void SceneWallpaper::queueChildSort(int32_t childId, int32_t targetIndex) {
+    m_main_handler->renderHandler()->queueChildSort(childId, targetIndex);
 }
 
 void SceneWallpaper::applyLayerBatch(const std::vector<LayerBatchUpdate>& batch) {

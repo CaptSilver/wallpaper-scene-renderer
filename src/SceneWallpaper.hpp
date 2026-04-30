@@ -182,6 +182,13 @@ public:
     // which is drained at the start of RenderHandler::CMD_DRAW.  parentId
     // == -1 means "reattach to scene root".
     void queueParentChange(int32_t childId, int32_t parentId);
+
+    // SceneScript thisScene.sortLayer(layer, index) bridge.  Enqueues a
+    // (childId, targetIndex) pair into Scene::m_pending_child_sorts, drained
+    // alongside the parent-change queue at the start of CMD_DRAW.
+    // targetIndex clamps to [0, parent->children.size()-1].
+    void queueChildSort(int32_t childId, int32_t targetIndex);
+
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const;
     void                               updateSoundVolume(int32_t index, float volume);
     std::string                        getUserPropertiesJson() const;

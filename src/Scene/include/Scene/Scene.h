@@ -333,8 +333,50 @@ public:
         }
     }
 
+    // ===================================================================
+    // Pending child-sort queue — drained alongside parent-change queue at
+    // the start of RenderHandler::CMD_DRAW.  Each pair is
+    // (child_node_id, target_index).  target_index clamps to
+    // [0, parent->children.size()-1].  Mutex-guarded.
+    //
+    // Used by SceneScript thisScene.sortLayer(layer, index) so wallpapers
+    // (Blue Archive 2764537029 visualizer) can keep dynamically-spawned
+    // layers at a specific depth slot relative to siblings.
+    // ===================================================================
+    void QueueChildSort(i32 child_id, i32 target_index) {
+        std::lock_guard<std::mutex> lk(m_pending_sort_mutex);
+        m_pending_child_sorts.emplace_back(child_id, target_index);
+    }
+
+    std::vector<std::pair<i32, i32>> TakePendingChildSorts() {
+        std::lock_guard<std::mutex> lk(m_pending_sort_mutex);
+        std::vector<std::pair<i32, i32>> out;
+        out.swap(m_pending_child_sorts);
+        return out;
+    }
+
+    // Apply queued child sorts.  Each sort extracts the child from its
+    // current parent's children list and re-inserts at target_index
+    // (clamped).  Unknown ids and orphan children skip silently.
+    void ApplyPendingChildSorts() {
+        auto pending = TakePendingChildSorts();
+        for (auto& [child_id, target_index] : pending) {
+            auto child_it = nodeById.find(child_id);
+            if (child_it == nodeById.end()) continue;
+            SceneNode* child_raw = child_it->second;
+            if (! child_raw) continue;
+            SceneNode* parent = child_raw->Parent();
+            if (! parent) continue;
+            auto child_sp = parent->ExtractChild(child_raw);
+            if (! child_sp) continue;
+            parent->InsertChildAt(child_sp, target_index);
+        }
+    }
+
 private:
     std::mutex                       m_pending_parent_mutex;
     std::vector<std::pair<i32, i32>> m_pending_parent_changes;
+    std::mutex                       m_pending_sort_mutex;
+    std::vector<std::pair<i32, i32>> m_pending_child_sorts;
 };
 } // namespace wallpaper

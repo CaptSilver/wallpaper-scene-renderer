@@ -144,6 +144,16 @@ public:
     // `setParent` to avoid collision with QObject::setParent.
     Q_INVOKABLE void setLayerParent(int childId, int parentId);
 
+    // SceneScript thisScene.sortLayer(layer, index) bridge.  Enqueues a
+    // (childId, targetIndex) pair into Scene::m_pending_child_sorts, drained
+    // at the start of RenderHandler::CMD_DRAW.  Reorders the child within
+    // its current parent's children list — `targetIndex` clamps to
+    // [0, parent->children.size() - 1].  Used by Blue Archive (2764537029)
+    // visualizer to keep all 64 dynamically-spawned audio bars at the same
+    // depth as the template layer.  Unknown ids are silently dropped during
+    // drain.
+    Q_INVOKABLE void sortLayer(int childId, int targetIndex);
+
     // engine.openUserShortcut(name) — routes a named user-shortcut fired from
     // SceneScript.  Emits userShortcutRequested() for the main plugin to map
     // to MPRIS (media-control names like "bplay"/"b11"/"bprev") and fires a

@@ -121,6 +121,27 @@ public:
         return nullptr;
     }
 
+    // Insert `sub` at zero-based child index `index`.  Negative or
+    // out-of-range indexes clamp to [0, size()] (size() = append at end).
+    // Sets parent + visibility-parent pointers like AppendChild.  Used by
+    // the render-thread sort drain (Scene::ApplyPendingChildSorts) to
+    // reorder existing children — caller is expected to ExtractChild first
+    // and pass the same shared_ptr back in.
+    void InsertChildAt(std::shared_ptr<SceneNode> sub, int index) {
+        sub->m_parent            = this;
+        sub->m_visibility_parent = this;
+        const int n = static_cast<int>(m_children.size());
+        if (index < 0)        index = 0;
+        if (index > n)        index = n;
+        if (index == n) {
+            m_children.push_back(sub);
+            return;
+        }
+        auto it = m_children.begin();
+        std::advance(it, index);
+        m_children.insert(it, sub);
+    }
+
     // Set a pre-computed world transform, bypassing the parent chain.
     // Used by proxy nodes that have their transform baked at parse time.
     void SetWorldTransform(const Eigen::Matrix4d& t) {

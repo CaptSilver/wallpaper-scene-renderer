@@ -141,3 +141,170 @@ TEST_SUITE("Scene.PendingParentChanges") {
     }
 
 } // Scene.PendingParentChanges
+
+// ===========================================================================
+// Pending-child-sort queue + ApplyPendingChildSorts drain
+// (thisScene.sortLayer bridge — Blue Archive 2764537029 visualizer)
+// ===========================================================================
+
+TEST_SUITE("Scene.PendingChildSorts") {
+    TEST_CASE("queue stores child→index pairs in FIFO order") {
+        Scene s;
+        s.QueueChildSort(10, 0);
+        s.QueueChildSort(11, 5);
+        s.QueueChildSort(12, 99);
+        auto pending = s.TakePendingChildSorts();
+        REQUIRE(pending.size() == 3);
+        CHECK(pending[0] == std::pair<i32, i32> { 10, 0 });
+        CHECK(pending[1] == std::pair<i32, i32> { 11, 5 });
+        CHECK(pending[2] == std::pair<i32, i32> { 12, 99 });
+    }
+
+    TEST_CASE("Take leaves the queue empty for next caller") {
+        Scene s;
+        s.QueueChildSort(1, 2);
+        (void)s.TakePendingChildSorts();
+        auto pending = s.TakePendingChildSorts();
+        CHECK(pending.empty());
+    }
+
+    TEST_CASE("ApplyPendingChildSorts moves child to target index") {
+        // parent has children [a, b, c]; sort c → index 0; expect [c, a, b].
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p   = std::make_shared<SceneNode>();
+        auto a   = std::make_shared<SceneNode>();
+        auto b   = std::make_shared<SceneNode>();
+        auto c   = std::make_shared<SceneNode>();
+        p->ID()  = 1; a->ID() = 10; b->ID() = 11; c->ID() = 12;
+        s.sceneGraph->AppendChild(p);
+        p->AppendChild(a);
+        p->AppendChild(b);
+        p->AppendChild(c);
+        s.nodeById[1]  = p.get();
+        s.nodeById[10] = a.get();
+        s.nodeById[11] = b.get();
+        s.nodeById[12] = c.get();
+
+        s.QueueChildSort(12, 0);
+        s.ApplyPendingChildSorts();
+
+        REQUIRE(p->GetChildren().size() == 3);
+        auto it = p->GetChildren().begin();
+        CHECK((*it++).get() == c.get());
+        CHECK((*it++).get() == a.get());
+        CHECK((*it++).get() == b.get());
+    }
+
+    TEST_CASE("ApplyPendingChildSorts clamps target_index above end") {
+        // children [a, b, c]; sort a → index 99; expect [b, c, a] (clamps to size-1=2).
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p   = std::make_shared<SceneNode>();
+        auto a   = std::make_shared<SceneNode>();
+        auto b   = std::make_shared<SceneNode>();
+        auto c   = std::make_shared<SceneNode>();
+        p->ID()  = 1; a->ID() = 10; b->ID() = 11; c->ID() = 12;
+        s.sceneGraph->AppendChild(p);
+        p->AppendChild(a);
+        p->AppendChild(b);
+        p->AppendChild(c);
+        s.nodeById[10] = a.get();
+        s.nodeById[11] = b.get();
+        s.nodeById[12] = c.get();
+
+        s.QueueChildSort(10, 99);
+        s.ApplyPendingChildSorts();
+
+        REQUIRE(p->GetChildren().size() == 3);
+        auto it = p->GetChildren().begin();
+        CHECK((*it++).get() == b.get());
+        CHECK((*it++).get() == c.get());
+        CHECK((*it++).get() == a.get());
+    }
+
+    TEST_CASE("ApplyPendingChildSorts clamps negative target_index to 0") {
+        // children [a, b]; sort b → index -5; expect [b, a].
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p   = std::make_shared<SceneNode>();
+        auto a   = std::make_shared<SceneNode>();
+        auto b   = std::make_shared<SceneNode>();
+        p->ID()  = 1; a->ID() = 10; b->ID() = 11;
+        s.sceneGraph->AppendChild(p);
+        p->AppendChild(a);
+        p->AppendChild(b);
+        s.nodeById[10] = a.get();
+        s.nodeById[11] = b.get();
+
+        s.QueueChildSort(11, -5);
+        s.ApplyPendingChildSorts();
+
+        REQUIRE(p->GetChildren().size() == 2);
+        auto it = p->GetChildren().begin();
+        CHECK((*it++).get() == b.get());
+        CHECK((*it++).get() == a.get());
+    }
+
+    TEST_CASE("ApplyPendingChildSorts is a no-op for unknown child id") {
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        s.QueueChildSort(999, 0);
+        CHECK_NOTHROW(s.ApplyPendingChildSorts());
+    }
+
+    TEST_CASE("ApplyPendingChildSorts is a no-op for orphan child (no parent)") {
+        // Child registered in nodeById but never attached to a parent.
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto orphan  = std::make_shared<SceneNode>();
+        orphan->ID() = 5;
+        s.nodeById[5] = orphan.get();
+
+        s.QueueChildSort(5, 0);
+        CHECK_NOTHROW(s.ApplyPendingChildSorts());
+    }
+
+    TEST_CASE("Visualizer pattern: 64 sortLayer calls all collapse to same target") {
+        // Direct repro of Blue Archive's init() loop: every spawned bar gets
+        // sortLayer(bar, thisIndex).  Each call moves the bar to thisIndex,
+        // pushing previous siblings down; the order is reverse-creation.
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p       = std::make_shared<SceneNode>();
+        p->ID()      = 1;
+        s.sceneGraph->AppendChild(p);
+        s.nodeById[1] = p.get();
+
+        // Build [t, b0, b1, b2, b3] where t is the template at index 0.
+        const int kTemplateIndex = 0;
+        auto t = std::make_shared<SceneNode>(); t->ID() = 100; p->AppendChild(t);
+        s.nodeById[100] = t.get();
+        std::vector<std::shared_ptr<SceneNode>> bars;
+        for (int i = 0; i < 4; ++i) {
+            auto b = std::make_shared<SceneNode>();
+            b->ID() = 200 + i;
+            p->AppendChild(b);
+            s.nodeById[200 + i] = b.get();
+            bars.push_back(b);
+        }
+        // Visualizer init() then calls sortLayer on each spawned bar to
+        // pin them at the template's index.
+        for (int i = 0; i < 4; ++i) {
+            s.QueueChildSort(200 + i, kTemplateIndex);
+        }
+        s.ApplyPendingChildSorts();
+
+        // After the drain, the four bars are at indices 0..3 (in
+        // reverse-spawn order — last sort wins for that slot, earlier
+        // bars shifted down) and the template is pushed to the back.
+        REQUIRE(p->GetChildren().size() == 5);
+        auto it = p->GetChildren().begin();
+        CHECK((*it++).get() == bars[3].get());
+        CHECK((*it++).get() == bars[2].get());
+        CHECK((*it++).get() == bars[1].get());
+        CHECK((*it++).get() == bars[0].get());
+        CHECK((*it++).get() == t.get());
+    }
+
+} // Scene.PendingChildSorts
