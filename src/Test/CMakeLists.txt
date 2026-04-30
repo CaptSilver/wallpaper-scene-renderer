@@ -70,6 +70,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserGaps.cpp
     test_WPParticleParserDeepKill.cpp
     test_WPParticleParserResidual.cpp
+    test_WPParticleParserResidual2.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
