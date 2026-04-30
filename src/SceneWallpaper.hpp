@@ -102,6 +102,7 @@ constexpr std::string_view PROPERTY_HDR_OUTPUT           = "hdr_output";
 constexpr std::string_view PROPERTY_HDR_CONTENT          = "hdr_content";
 constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE = "system_audio_capture";
 constexpr std::string_view PROPERTY_SCREENSHOT_PATH      = "screenshot_path";
+constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE = "postprocessing_override";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;

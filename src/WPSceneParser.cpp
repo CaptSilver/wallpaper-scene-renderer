@@ -106,6 +106,12 @@ struct ParseContext {
     std::string              hide_pattern;
     std::vector<std::string> hidden_names; // populated for end-of-parse summary
 
+    // Plugin-level override for scene.general.orthogonalprojection.postprocessing.
+    // When non-empty, replaces the scene-declared value during bloom-pipeline
+    // selection so users can force "ultra" on wallpapers that ship with
+    // hdr+bloom but no postprocessing field.
+    std::string postprocessing_override;
+
     // Layer names referenced by any SceneScript (via getLayer('X')).  These
     // layers may have their visibility toggled at runtime, so we keep them in
     // the main render graph even if they start with visible=false.  Without
@@ -3248,7 +3254,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     //	LOG_INFO(nlohmann::json(sc).dump(4));
 
     ParseContext context;
-    context.hide_pattern = m_hide_pattern;
+    context.hide_pattern           = m_hide_pattern;
+    context.postprocessing_override = m_postprocessing_override;
 
     std::vector<WPObjectVar> wp_objs;
 
@@ -4163,7 +4170,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         //   - "low" / "medium" / absent → LDR (legacy 4-pass + raw `combine`)
         // The HDR branches additionally require `hdr: true` at scene level;
         // without it the LDR path is forced regardless of postprocessing.
-        const auto& pp = sc.general.orthogonalprojection.postprocessing;
+        // Plugin-level override (sceneviewer --postprocessing / KDE setting page)
+        // takes precedence over the scene.json value.  Lets users force the HDR
+        // mip-chain on wallpapers that declare hdr+bloom but omit the field.
+        const std::string& pp = context.postprocessing_override.empty()
+                                    ? sc.general.orthogonalprojection.postprocessing
+                                    : context.postprocessing_override;
         const bool use_hdr_pipeline =
             sc.general.hdr && (pp == "ultra" || pp == "displayhdr");
 

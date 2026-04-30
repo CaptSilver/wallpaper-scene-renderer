@@ -77,6 +77,15 @@ int main(int argc, char** argv) {
     if (program.get<bool>(OPT_VALID_LAYER)) sv->enableVulkanValid();
     if (program.get<bool>(OPT_GRAPHVIZ)) sv->enableGenGraphviz();
     sv->setProperty("assets", QUrl::fromLocalFile(program.get<std::string>(ARG_ASSETS).c_str()));
+    {
+        // Set BEFORE source so the first scene load sees the override.  The
+        // bloom pipeline is selected at parse time; setting after source would
+        // require a scene reload.
+        const std::string pp = program.get<std::string>(OPT_POSTPROCESSING);
+        if (! pp.empty()) {
+            sv->setProperty("postprocessingOverride", QString::fromStdString(pp));
+        }
+    }
     sv->setProperty("source", QUrl::fromLocalFile(program.get<std::string>(ARG_SCENE).c_str()));
     sv->setProperty("fps", program.get<int32_t>(OPT_FPS));
     sv->setProperty("hdrOutput", program.get<bool>(OPT_HDR));

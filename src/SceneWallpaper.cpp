@@ -256,6 +256,7 @@ private:
     bool        m_gen_graphviz { false };
     bool        m_hdr_output { false };
     bool        m_system_audio_capture { false };
+    std::string m_postprocessing_override;
 
     WPSceneParser                         m_scene_parser;
     std::unique_ptr<audio::SoundManager>  m_sound_manager;
@@ -1929,6 +1930,20 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                     auto nmsg = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_HDR);
                     nmsg->setBool("value", value);
                     nmsg->post();
+                }
+            }
+        } else if (property == PROPERTY_POSTPROCESSING_OVERRIDE) {
+            std::string value;
+            msg->findString("value", &value);
+            if (m_postprocessing_override != value) {
+                m_postprocessing_override = value;
+                m_scene_parser.SetPostprocessingOverride(value);
+                LOG_INFO("Postprocessing override: '%s'",
+                         value.empty() ? "(scene default)" : value.c_str());
+                // Bloom pipeline selection happens at scene-load, so a runtime
+                // change must reload the scene to take effect.
+                if (! m_source.empty() && ! m_assets.empty()) {
+                    CALL_MHANDLER_CMD(LOAD_SCENE, msg);
                 }
             }
         }

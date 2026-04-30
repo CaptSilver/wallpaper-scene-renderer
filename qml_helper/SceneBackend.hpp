@@ -36,6 +36,12 @@ class SceneObject : public QQuickItem {
                    userPropertiesChanged)
     Q_PROPERTY(bool hdrOutput READ hdrOutput WRITE setHdrOutput)
     Q_PROPERTY(bool systemAudioCapture READ systemAudioCapture WRITE setSystemAudioCapture)
+    // Override scene.general.orthogonalprojection.postprocessing.  Empty string
+    // means "use the scene's own value".  Common values: "low", "medium",
+    // "ultra" (HDR mip-chain bloom), "displayhdr".  Effective when scene also
+    // declares hdr+bloom; otherwise the legacy LDR bloom path runs.
+    Q_PROPERTY(QString postprocessingOverride READ postprocessingOverride WRITE
+                   setPostprocessingOverride)
     // Standalone viewer override: when non-zero, initVulkan() uses these
     // values verbatim instead of item-width * devicePixelRatio.  Lets -R
     // on sceneviewer-script land an exact physical pixel size regardless of
@@ -69,6 +75,7 @@ public:
     bool    hdrOutput() const;
     bool    systemAudioCapture() const;
     QString userProperties() const;
+    QString postprocessingOverride() const;
 
     void setFps(int);
     void setFillMode(int);
@@ -78,6 +85,7 @@ public:
     void setUserProperties(const QString&);
     void setHdrOutput(bool);
     void setSystemAudioCapture(bool);
+    void setPostprocessingOverride(const QString&);
 
     // debug
     bool vulkanValid() const;
@@ -211,6 +219,7 @@ private:
     bool    m_muted { false };
     bool    m_hdrOutput { false };
     bool    m_systemAudioCapture { false };
+    QString m_postprocessingOverride;
     QString m_userProperties;
     int     m_renderPixelWidth { 0 };
     int     m_renderPixelHeight { 0 };

@@ -15,6 +15,7 @@ constexpr std::string_view OPT_FPS               = "--fps";
 constexpr std::string_view OPT_RESOLUTION        = "--resolution";
 constexpr std::string_view OPT_CACHE_PATH        = "--cache-path";
 constexpr std::string_view OPT_HDR               = "--hdr";
+constexpr std::string_view OPT_POSTPROCESSING    = "--postprocessing";
 constexpr std::string_view OPT_USER_PROPS        = "--user-props";
 constexpr std::string_view OPT_SET_PROP          = "--set";
 constexpr std::string_view OPT_SCREENSHOT        = "--screenshot";
@@ -75,6 +76,13 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .implicit_value(true)
         .nargs(0)
         .append();
+
+    arg.add_argument(OPT_POSTPROCESSING)
+        .help("override scene postprocessing variant: 'low' / 'medium' / 'ultra' / "
+              "'displayhdr'.  'ultra' enables the HDR mip-chain bloom pipeline "
+              "on hdr+bloom scenes that don't declare a postprocessing field")
+        .default_value(std::string())
+        .nargs(1);
 
     arg.add_argument("-R", OPT_RESOLUTION)
         .help("Set the resolution, eg. 1920x1080")

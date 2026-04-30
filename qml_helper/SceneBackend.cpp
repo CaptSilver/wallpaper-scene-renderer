@@ -362,6 +362,14 @@ void SceneObject::setSystemAudioCapture(bool value) {
     SET_PROPERTY(Bool, wallpaper::PROPERTY_SYSTEM_AUDIO_CAPTURE, value);
 }
 
+QString SceneObject::postprocessingOverride() const { return m_postprocessingOverride; }
+
+void SceneObject::setPostprocessingOverride(const QString& value) {
+    if (m_postprocessingOverride == value) return;
+    m_postprocessingOverride = value;
+    SET_PROPERTY(String, wallpaper::PROPERTY_POSTPROCESSING_OVERRIDE, value.toStdString());
+}
+
 QString SceneObject::userProperties() const { return m_userProperties; }
 
 void SceneObject::setUserProperties(const QString& value) {
