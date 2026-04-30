@@ -20,6 +20,7 @@
 #include "WPSoundParser.hpp"
 #include "WPMdlParser.hpp"
 #include "WPSceneAttachmentCompose.hpp"
+#include "SystemFontFallback.hpp"
 
 #include "Particle/WPParticleRawGener.h"
 #include "Particle/ParticleSystem.h"
@@ -2720,21 +2721,36 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
     };
 
-    // systemfont / missing font: no FreeType-backed rasterization possible.
-    // Fall back to a placeholder node so getLayer() still works.
-    if (textObj.font.empty() || textObj.font.find("systemfont") != std::string::npos) {
-        LOG_INFO("  system font or missing font '%s', creating placeholder", textObj.font.c_str());
+    // Empty font -> no rasterization possible.  Placeholder keeps getLayer() working.
+    if (textObj.font.empty()) {
+        LOG_INFO("  empty font, creating placeholder");
         createPlaceholderNode();
         return;
     }
 
     // Load font from VFS — try /assets/ prefix first (PKG assets), then bare path.
-    // Log the chosen source + byte size so font-swaps / VFS priority issues are
-    // visible at a glance in the journal (the parent repo asked to confirm
-    // correct font selection for wallpaper 2866203962).
+    // For Windows-style systemfont_* names (e.g. systemfont_consolas), fall back
+    // to a metric-compatible Linux font (Liberation / DejaVu) via
+    // ResolveSystemFontFallback so wallpapers using system fonts still render
+    // text rather than vanishing into a placeholder.
     std::string fontData;
     std::string fontLoadedFrom;
-    if (vfs.Contains("/assets/" + textObj.font)) {
+    if (textObj.font.find("systemfont") != std::string::npos) {
+        const std::string sysPath = ResolveSystemFontFallback(textObj.font);
+        if (!sysPath.empty()) {
+            fontData       = ReadSystemFile(sysPath);
+            fontLoadedFrom = sysPath;
+            LOG_INFO("  systemfont '%s' resolved to %s",
+                     textObj.font.c_str(),
+                     sysPath.c_str());
+        }
+        if (fontData.empty()) {
+            LOG_INFO("  systemfont '%s' has no available fallback, creating placeholder",
+                     textObj.font.c_str());
+            createPlaceholderNode();
+            return;
+        }
+    } else if (vfs.Contains("/assets/" + textObj.font)) {
         fontData       = fs::GetFileContent(vfs, "/assets/" + textObj.font);
         fontLoadedFrom = "/assets/" + textObj.font;
     } else if (vfs.Contains("/" + textObj.font)) {

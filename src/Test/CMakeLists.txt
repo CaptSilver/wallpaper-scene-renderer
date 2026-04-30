@@ -47,6 +47,8 @@ add_executable(backend_scene_tests
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
     test_BlendModeFactors.cpp
+    test_SystemFontFallback.cpp
+    ${SRC_DIR}/SystemFontFallback.cpp
     test_SceneImageEffectLayer.cpp
     test_WPCreateLayerScan.cpp
     ${SRC_DIR}/Scene/SceneImageEffectLayer.cpp

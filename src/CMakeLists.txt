@@ -52,6 +52,7 @@ add_library(
   WPParticleParser.cpp
   WPShaderParser.cpp
   WPSceneParser.cpp
+  SystemFontFallback.cpp
   WPShaderValueUpdater.cpp
   WPTexImageParser.cpp
   WPSoundParser.cpp
