@@ -3509,6 +3509,58 @@ TEST_SUITE("Layer Proxy") {
               doctest::Approx(42));
     }
 
+    TEST_CASE("origin setter copies — script-side mutation does not leak in") {
+        // Regression for Blue Archive (2764537029) audio visualizer:
+        //   var origin = baseOrigin.copy();
+        //   for (i = 0; i < 64; ++i) {
+        //       origin.x += 30;
+        //       bar.origin = origin;
+        //   }
+        // Without copy-on-set, all 64 bars end up sharing the same Vec3 ref
+        // and pile up at iteration 63's x value (e.g. 2218 instead of spreading
+        // 30..2218).  The setter must take a value snapshot of the assigned
+        // Vec3, not store the reference.
+        ScriptEnv env;
+        env.engine.evaluate("var o = Vec3(10, 20, 30);\n"
+                            "thisScene.getLayer('bg').origin = o;\n"
+                            "o.x = 999;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').origin.x").toNumber() ==
+              doctest::Approx(10));
+    }
+
+    TEST_CASE("origin setter — same Vec3 assigned to multiple layers yields independent state") {
+        // Direct reproduction of the visualizer's per-bar update pattern.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "var l1 = thisScene.getLayer('bg');\n"
+            "var l2 = thisScene.getLayer('fg');\n"
+            "var origin = Vec3(0, 0, 0);\n"
+            "origin.x = 30; l1.origin = origin;\n"
+            "origin.x = 60; l2.origin = origin;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').origin.x").toNumber() ==
+              doctest::Approx(30));
+        CHECK(env.engine.evaluate("thisScene.getLayer('fg').origin.x").toNumber() ==
+              doctest::Approx(60));
+    }
+
+    TEST_CASE("scale setter — copy-on-assign matches origin behavior") {
+        ScriptEnv env;
+        env.engine.evaluate("var s = Vec3(2, 2, 2);\n"
+                            "thisScene.getLayer('bg').scale = s;\n"
+                            "s.y = 99;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').scale.y").toNumber() ==
+              doctest::Approx(2));
+    }
+
+    TEST_CASE("angles setter — copy-on-assign matches origin behavior") {
+        ScriptEnv env;
+        env.engine.evaluate("var a = Vec3(0, 0, 90);\n"
+                            "thisScene.getLayer('bg').angles = a;\n"
+                            "a.z = -1;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').angles.z").toNumber() ==
+              doctest::Approx(90));
+    }
+
     TEST_CASE("originalOrigin reflects parse-time value") {
         // Drag-reset scripts (Lucy Clock, Cyberpunk Lucy media player) do
         // `thisLayer.origin = thisLayer.originalOrigin` to snap back to
@@ -3666,6 +3718,52 @@ TEST_SUITE("Layer Proxy") {
         CHECK(env.engine.evaluate("c1.visible").toBool());
         CHECK(env.engine.evaluate("c2.visible").toBool());
         CHECK(env.engine.evaluate("engine._assetPools.coin.length").toInt() == 1);
+    }
+
+    TEST_CASE("pool layer origin setter copies — visualizer per-bar pattern") {
+        // Direct repro of Blue Archive (2764537029) audio visualizer logic.
+        // Without copy-on-set on pool slots, all 64 bars share one Vec3 ref
+        // and pile up at the last loop iteration.
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['__pool_bar_0'] = { o: [0,0,0], s: [1,1,1],\n"
+            "  a: [0,0,0], sz: [4,4], v: false };\n"
+            "_layerInitStates['__pool_bar_1'] = { o: [0,0,0], s: [1,1,1],\n"
+            "  a: [0,0,0], sz: [4,4], v: false };\n"
+            "_layerInitStates['__pool_bar_2'] = { o: [0,0,0], s: [1,1,1],\n"
+            "  a: [0,0,0], sz: [4,4], v: false };\n"
+            "var b0 = thisScene.getLayer('__pool_bar_0');\n"
+            "var b1 = thisScene.getLayer('__pool_bar_1');\n"
+            "var b2 = thisScene.getLayer('__pool_bar_2');\n"
+            "var origin = Vec3(0, 100, 0);\n"
+            "origin.x = 30; b0.origin = origin;\n"
+            "origin.x = 60; b1.origin = origin;\n"
+            "origin.x = 90; b2.origin = origin;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('__pool_bar_0').origin.x").toNumber() ==
+              doctest::Approx(30));
+        CHECK(env.engine.evaluate("thisScene.getLayer('__pool_bar_1').origin.x").toNumber() ==
+              doctest::Approx(60));
+        CHECK(env.engine.evaluate("thisScene.getLayer('__pool_bar_2').origin.x").toNumber() ==
+              doctest::Approx(90));
+    }
+
+    TEST_CASE("pool layer scale/angles also copy on assign") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['__pool_z_0'] = { o: [0,0,0], s: [1,1,1],\n"
+            "  a: [0,0,0], sz: [4,4], v: false };\n"
+            "_layerInitStates['__pool_z_1'] = { o: [0,0,0], s: [1,1,1],\n"
+            "  a: [0,0,0], sz: [4,4], v: false };\n"
+            "var z0 = thisScene.getLayer('__pool_z_0');\n"
+            "var z1 = thisScene.getLayer('__pool_z_1');\n"
+            "var s = Vec3(2, 3, 4);\n"
+            "z0.scale = s;\n"
+            "s.y = 99;\n"
+            "z1.scale = s;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('__pool_z_0').scale.y").toNumber() ==
+              doctest::Approx(3));
+        CHECK(env.engine.evaluate("thisScene.getLayer('__pool_z_1').scale.y").toNumber() ==
+              doctest::Approx(99));
     }
 
     TEST_CASE("destroyLayer returns slot to pool and hides it") {

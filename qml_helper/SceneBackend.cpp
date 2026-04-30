@@ -863,6 +863,15 @@ void SceneObject::setLayerParent(int childId, int parentId) {
     m_scene->queueParentChange(childId, parentId);
 }
 
+// thisScene.sortLayer(layer, index) bridge — reorders the child within
+// its current parent's children list.  targetIndex clamps to
+// [0, parent->children.size()-1].  Drained at CMD_DRAW alongside the
+// parent-change queue (see Scene::ApplyPendingChildSorts).
+void SceneObject::sortLayer(int childId, int targetIndex) {
+    if (! m_scene) return;
+    m_scene->queueChildSort(childId, targetIndex);
+}
+
 // -------- engine.openUserShortcut bridge --------
 // Routes a named user-shortcut from SceneScript to (a) the main plugin via
 // the userShortcutRequested signal (mapped to MPRIS by Scene.qml) and
@@ -1861,12 +1870,16 @@ void SceneObject::setupTextScripts() {
         // 1200-slot trail scenes like 3body.
         "function _makePoolLayerProxy(name) {\n"
         "  var init = _layerInitStates[name];\n"
+        // Vec3 storage held privately; defineProperty getters/setters below
+        // give origin/scale/angles copy-on-assign semantics so scripts that
+        // share a single Vec3 across many bars (Blue Archive 2764537029
+        // visualizer pattern) get independent values per layer.
+        "  var _origin = init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0);\n"
+        "  var _scale  = init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1);\n"
+        "  var _angles = init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0);\n"
         "  var p = {\n"
         "    _pool: true,\n"
         "    name: name,\n"
-        "    origin: init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0),\n"
-        "    scale:  init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1),\n"
-        "    angles: init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0),\n"
         "    alpha: 1.0, visible: init ? init.v : true,\n"
         "    color: Vec3(1,1,1), text: '', pointsize: 0,\n"
         "    __asset: null,\n"
@@ -1890,6 +1903,26 @@ void SceneObject::setupTextScripts() {
         "      };\n"
         "    }\n"
         "  };\n"
+        // origin/scale/angles defined after `p` so we can close over the
+        // private _origin/_scale/_angles vars.  Same copy-on-assign +
+        // copy-on-get semantics as _makeLayerProxy: getter returns a fresh
+        // Vec3, setter copies by component.  Breaks script-side aliasing
+        // (Blue Archive visualizer assigns one Vec3 to 64 bars).
+        "  Object.defineProperty(p, 'origin', {\n"
+        "    get: function(){ return Vec3(_origin.x, _origin.y, _origin.z); },\n"
+        "    set: function(v){\n"
+        "      _origin = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(0,0,0);\n"
+        "    }, enumerable: true, configurable: true });\n"
+        "  Object.defineProperty(p, 'scale', {\n"
+        "    get: function(){ return Vec3(_scale.x, _scale.y, _scale.z); },\n"
+        "    set: function(v){\n"
+        "      _scale = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(1,1,1);\n"
+        "    }, enumerable: true, configurable: true });\n"
+        "  Object.defineProperty(p, 'angles', {\n"
+        "    get: function(){ return Vec3(_angles.x, _angles.y, _angles.z); },\n"
+        "    set: function(v){\n"
+        "      _angles = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(0,0,0);\n"
+        "    }, enumerable: true, configurable: true });\n"
         // Snapshot used by _collectDirtyLayers to detect changes.
         "  p._prev = { ox: p.origin.x, oy: p.origin.y, oz: p.origin.z,\n"
         "              sx: p.scale.x, sy: p.scale.y, sz: p.scale.z,\n"
@@ -1945,16 +1978,19 @@ void SceneObject::setupTextScripts() {
         // mutation to one affects the other.  See the proxy-aliasing
         // gotcha note in dynamic-asset-pool.md.
         "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
-        // Setter: skip the defensive Vec3 copy.  Scripts overwhelmingly do
-        //   thisLayer.origin = Vec3(x, y, z)
-        // with a fresh allocation — the old impl then allocated ANOTHER Vec3
-        // to copy from that one, an alloc storm in hot paths like 3body's
-        // 1200-trail updateTrailAppearance.  Stored value is what the script
-        // passed; if it later mutates that reference, that's scripts-own
-        // aliasing behavior (matches WE).
-        "        set: function(v){ _s[prop] = v ? (v instanceof Vec3 ? v : Vec3(v.x||0, v.y||0, "
-        "v.z||0)) : Vec3(0,0,0);\n"
-        "                          _s._dirty[prop] = true; },\n"
+        // Setter ALWAYS copies by component.  WE copies on assign — the
+        // Blue Archive (2764537029) audio visualizer relies on this:
+        //   var origin = baseOrigin.copy();
+        //   for (i = 0; i < 64; i++) { origin.x += 30; bar.origin = origin; }
+        // Without copy-on-set, all 64 bars end up sharing the same Vec3 ref
+        // and pile up at the last iteration's x value.  The component copy
+        // costs one Vec3 allocation per assign — hot scripts that already
+        // construct a fresh `Vec3(x, y, z)` per call (e.g. 3body trails)
+        // pay one extra alloc per setter — measurable but tolerable.
+        "        set: function(v){\n"
+        "          if (!v) { _s[prop] = Vec3(0,0,0); }\n"
+        "          else    { _s[prop] = Vec3(v.x||0, v.y||0, v.z||0); }\n"
+        "          _s._dirty[prop] = true; },\n"
         "        enumerable: true\n"
         "      });\n"
         "    })(vec3Props[i]);\n"
@@ -2408,7 +2444,19 @@ void SceneObject::setupTextScripts() {
         "  if (engine._assetPools[path] && layer.name)\n"
         "    engine._assetPools[path].push(layer.name);\n"
         "};\n"
-        "thisScene.sortLayer    = function(layer, index) { /* noop */ };\n"
+        // thisScene.sortLayer(layer, index) — moves the layer to slot `index`
+        // in its current parent's children list.  Routes through __sceneBridge
+        // to the render thread, which applies the reorder at the start of
+        // the next draw.  No-op when the layer has no id (placeholder /
+        // already-destroyed) or when the bridge is missing.
+        "thisScene.sortLayer    = function(layer, index) {\n"
+        "  if (!layer || layer._destroyed) return;\n"
+        "  var id = (typeof layer === 'number') ? layer : layer.id;\n"
+        "  if (typeof id !== 'number') return;\n"
+        "  if (typeof index !== 'number') return;\n"
+        "  if (typeof __sceneBridge !== 'undefined' && __sceneBridge.sortLayer)\n"
+        "    __sceneBridge.sortLayer(id|0, index|0);\n"
+        "};\n"
         "thisScene.getLayerIndex = function(name) {\n"
         "  var l = thisScene.getLayer(name);\n"
         "  return l && typeof l._index === 'number' ? l._index : 0;\n"
@@ -2714,8 +2762,16 @@ void SceneObject::setupTextScripts() {
                                "};\n"
                                // Override the earlier stub (which read a
                                // never-set _index) with a real id lookup.
-                               "thisScene.getLayerIndex = function(name) {\n"
-                               "  var id = _layerNameToId[name];\n"
+                               // Accepts either a name string or a layer
+                               // proxy (Blue Archive 2764537029 visualizer
+                               // calls `getLayerIndex(thisLayer)` with the
+                               // proxy directly).
+                               "thisScene.getLayerIndex = function(arg) {\n"
+                               "  var key = arg;\n"
+                               "  if (arg && typeof arg === 'object' && typeof arg.name === 'string')\n"
+                               "    key = arg.name;\n"
+                               "  if (typeof key !== 'string') return -1;\n"
+                               "  var id = _layerNameToId[key];\n"
                                "  return (typeof id === 'number') ? id : -1;\n"
                                "};\n");
     }
