@@ -149,8 +149,26 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
     std::string            output;
     std::string::size_type linePos = std::string::npos;
 
+    // Helper: is the `#include` token on this line preceded by `//`
+    // earlier in the same line?  Wallpaper shader 2317494988
+    // (Cyberpunk 2077, crt_scan_line) keeps a `//#include "common.hlsli"`
+    // dead-line that previously triggered a spurious VFS miss.
+    auto includeIsCommented = [&](std::string::size_type incPos) {
+        auto lineStart = input.rfind('\n', incPos);
+        lineStart = (lineStart == std::string::npos) ? 0 : lineStart + 1;
+        auto cmt = input.find("//", lineStart);
+        return cmt != std::string::npos && cmt < incPos;
+    };
+
     while (linePos = input.find("#include", pos), linePos != std::string::npos) {
         auto lineEnd  = input.find_first_of('\n', linePos);
+        if (includeIsCommented(linePos)) {
+            // Copy verbatim through the rest of this line and keep scanning.
+            auto next = (lineEnd == std::string::npos) ? input.size() : lineEnd;
+            output.append(input.substr(pos, next - pos));
+            pos = next;
+            continue;
+        }
         auto lineSize = lineEnd - linePos;
         auto lineStr  = input.substr(linePos, lineSize);
         output.append(input.substr(pos, linePos - pos));
@@ -774,7 +792,24 @@ std::string WPShaderParser::PreShaderSrc(fs::VFS& vfs, const std::string& src,
     std::string            newsrc(src);
     std::string::size_type pos = 0;
     std::string            include;
+    // Helper: is the `#include` at incPos commented out (preceded by `//`
+    // earlier on the same line)?  Driver: Cyberpunk 2077 (2317494988)
+    // ships `//#include "common.hlsli"` in crt_scan_line.frag — without
+    // this guard the dead-line still triggers a VFS lookup + miss.
+    auto includeIsCommented = [&src](std::string::size_type incPos) {
+        auto lineStart = src.rfind('\n', incPos);
+        lineStart = (lineStart == std::string::npos) ? 0 : lineStart + 1;
+        auto cmt = src.find("//", lineStart);
+        return cmt != std::string::npos && cmt < incPos;
+    };
     while (pos = src.find("#include", pos), pos != std::string::npos) {
+        if (includeIsCommented(pos)) {
+            // Step past this token so the next find scans the rest of the
+            // shader; leave newsrc untouched (the dead-line stays a comment).
+            pos = src.find_first_of('\n', pos);
+            if (pos == std::string::npos) break;
+            continue;
+        }
         auto begin = pos;
         pos        = src.find_first_of('\n', pos);
         newsrc.replace(begin, pos - begin, pos - begin, ' ');
