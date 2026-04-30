@@ -29,11 +29,11 @@ to a valid fragment shader will render. Known working:
 - [x] **Animation**: Scroll, Spin, Shake, Pulse, Water Flow, Water Ripple, Water Waves, Foliage Sway, Swing, Twirl, Cloud Motion
 - [x] **Blur**: Blur, Blur Precise, Motion Blur, Radial Blur
 - [x] **Interactive**: Cursor Ripple, Depth Parallax, X-Ray
-- [x] **Color**: Blend, Blend Gradient, Chromatic Aberration, Color Key, Film Grain, Shimmer, Glitter, Tint, Opacity, VHS, Fire, Light Shafts, Nitro, Reflection, Water Caustics
+- [x] **Color**: Blend, Blend Gradient, Chromatic Aberration, Clouds, Color Key, Film Grain, Shimmer, Glitter, Tint, Opacity, VHS, Fire, Light Shafts, Nitro, Reflection, Water Caustics
 - [x] **Distortion**: Fisheye, Perspective, Refraction, Skew, Transform
 - [x] **Enhancement**: Edge Detection, God Rays, Local Contrast, Shine
 - [ ] **Simulation**: Advanced Fluid Simulation
-- [ ] **Other**: Iris Movement (needs eye tracking data), Clouds (procedural generation)
+- [ ] **Other**: Iris Movement (needs eye tracking data)
 - [x] ColorBlendMode (effectpassthrough for complex blend modes)
 - [x] Mouse position with delay (`g_PointerPosition`)
 - [x] Parallax (mouse-reactive layer offset)
@@ -276,9 +276,6 @@ ordered by scope (smallest → largest).
   shader path that ignores `SceneLight`s. Add a per-particle sample of
   nearby point lights (vertex or fragment), broadcast positions via a small
   uniform array, and reuse the PBR shader prelude.
-- **Procedural Clouds effect** — multi-octave 3D noise (or a 3D noise LUT)
-  + a custom-binding for cloud uniforms (cover, density, speed). One new
-  shader stage.
 - **Spot lights** — extend `SceneLight.hpp` with cone angle, inner/outer
   falloff, and direction; add cone culling in shaders; integrate with the
   PBR prelude alongside point lights and skylight.
