@@ -26,14 +26,13 @@ Open source Vulkan scene renderer for Wallpaper Engine wallpapers on Linux.
 Built-in effects work via the same shader pipeline — any effect that compiles
 to a valid fragment shader will render. Known working:
 
-- [x] **Animation**: Scroll, Spin, Shake, Pulse, Water Flow, Water Ripple, Water Waves, Foliage Sway, Swing, Twirl, Cloud Motion
+- [x] **Animation**: Scroll, Spin, Shake, Pulse, Water Flow, Water Ripple, Water Waves, Foliage Sway, Swing, Twirl, Cloud Motion, Iris Movement
 - [x] **Blur**: Blur, Blur Precise, Motion Blur, Radial Blur
 - [x] **Interactive**: Cursor Ripple, Depth Parallax, X-Ray
 - [x] **Color**: Blend, Blend Gradient, Chromatic Aberration, Clouds, Color Key, Film Grain, Shimmer, Glitter, Tint, Opacity, VHS, Fire, Light Shafts, Nitro, Reflection, Water Caustics
 - [x] **Distortion**: Fisheye, Perspective, Refraction, Skew, Transform
 - [x] **Enhancement**: Edge Detection, God Rays, Local Contrast, Shine
 - [ ] **Simulation**: Advanced Fluid Simulation
-- [ ] **Other**: Iris Movement (needs eye tracking data)
 - [x] ColorBlendMode (effectpassthrough for complex blend modes)
 - [x] Mouse position with delay (`g_PointerPosition`)
 - [x] Parallax (mouse-reactive layer offset)
@@ -304,9 +303,6 @@ ordered by scope (smallest → largest).
 - **Volumetric lighting** — ray-march from camera through participating
   media; needs depth-buffer access, per-pixel scattering integration, and
   per-light volume bounds. Pairs naturally with shadow mapping.
-- **Iris Movement effect** — depends on external eye/face tracking input
-  (webcam + tracker daemon). IPC bridge + driver + mapping to layer
-  transform. Out of scope until that stack exists.
 - **Advanced Fluid Simulation effect** — the renderer has no compute
   pipeline today. Would need `VkComputePipeline` plumbing, pressure /
   velocity field textures, and a Navier-Stokes solver (advect → divergence
