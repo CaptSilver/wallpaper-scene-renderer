@@ -6,6 +6,7 @@ namespace wallpaper
 namespace audio
 {
 class SoundManager;
+class SoundStream;
 }
 namespace fs
 {
@@ -13,7 +14,7 @@ class VFS;
 }
 namespace wpscene
 {
-class WPSoundObject;
+struct WPSoundObject;
 }
 class WPSoundStream; // forward declare
 class WPSoundParser {
@@ -27,5 +28,10 @@ public:
     static void StreamStop(void* stream);
     static void StreamPause(void* stream);
     static bool StreamIsPlaying(void* stream);
+
+    // Internal: testing accessor exposing the audio-thread base interface.
+    // Tests use this to drive NextPcmData / PassDesc directly without bringing
+    // up a real audio device.  Production callers must not use this.
+    static audio::SoundStream* AsSoundStreamForTest(void* stream);
 };
 } // namespace wallpaper

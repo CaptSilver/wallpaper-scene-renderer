@@ -268,4 +268,10 @@ bool WPSoundParser::StreamIsPlaying(void* stream) {
     return false;
 }
 
+audio::SoundStream* WPSoundParser::AsSoundStreamForTest(void* stream) {
+    // Single-inheritance from audio::SoundStream means a static_cast is well-defined.
+    // Used by test_WPSoundParser to exercise NextPcmData / PassDesc directly.
+    return static_cast<WPSoundStream*>(stream);
+}
+
 } // namespace wallpaper
