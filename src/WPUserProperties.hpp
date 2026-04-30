@@ -29,8 +29,10 @@ public:
                         m_defaults[name]   = prop["value"];
                         if (prop.contains("type") && prop["type"].is_string())
                             m_types[name] = prop["type"].get<std::string>();
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
                         LOG_INFO(
                             "User property: %s = %s", name.c_str(), prop["value"].dump().c_str());
+#endif
                     }
                 }
                 return true;

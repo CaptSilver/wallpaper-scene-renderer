@@ -308,8 +308,14 @@ int main(int argc, char** argv) {
                     }
                 });
                 poll->start(20);
-                // hard cap: exit even if the backend never flips the flag
-                QTimer::singleShot(5000, &app, [&app]() {
+                // Hard cap: exit even if the backend never flips the flag.
+                // Bumped to 30s so heavy scenes (~80 effects, ~200 shaders —
+                // SAO, Cyberpunk Lucy, NieR 2B) have time to finish parsing
+                // before main unwinds.  Otherwise the parser thread is still
+                // mid-Parse when atexit handlers fire and tear down glslang's
+                // static keyword unordered_set, producing a teardown UAF in
+                // tokenizeIdentifier.  See glslang-thread-safety.md.
+                QTimer::singleShot(30000, &app, [&app]() {
                     app.quit();
                 });
             });

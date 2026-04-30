@@ -36,6 +36,12 @@ using namespace wallpaper;
 namespace
 {
 
+// Serialises every glslang/regex-heavy entry point in this file so concurrent
+// shader compilations don't race on glslang's static keyword hashtable or
+// libstdc++'s shared regex NFA state.  Held across Preprocessor + the
+// CompileShaderUnits chain (Finalprocessor + FixImplicitConversions + glslang).
+std::mutex g_glslangSerialiseMtx;
+
 #include "WPShaderTransforms.h"
 
 static constexpr const char* pre_shader_code = R"(#version 330
@@ -597,8 +603,22 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
 }
 
 // Standalone compile function: runs Finalprocessor + FixImplicitConversions + glslang.
-// Thread-safe — each call operates on its own copy of units.
+//
+// Serialized across threads via WPShaderParser::g_glslangSerialiseMtx (declared at
+// the parser entry points).  Two third-party / standard-library races would
+// otherwise fire under parallel async compilation:
+//
+//   1. libstdc++ std::regex_search with a `static const std::regex` shared between
+//      threads can read freed NFA state in `_NFA_base::_M_sub_count`.  This is
+//      observable in WPShaderTransforms.h's FixImplicitConversions.
+//   2. glslang's keyword scanner uses an internal `unordered_set<const char*>` that
+//      is not thread-safe; concurrent `tokenizeIdentifier` calls UAF on its
+//      hashtable buckets.
+//
+// Caching dedupes by SHA1 so the same shader still only compiles once total —
+// the lock just serializes the per-shader work across threads.
 static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<ShaderCode>& codes) {
+    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
     std::vector<vulkan::ShaderCompUnit> vunits(units.size());
     for (usize i = 0; i < units.size(); i++) {
         auto&               unit     = units[i];
@@ -843,8 +863,14 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
     return header + src;
 }
 
-void WPShaderParser::InitGlslang() { glslang::InitializeProcess(); }
-void WPShaderParser::FinalGlslang() { glslang::FinalizeProcess(); }
+void WPShaderParser::InitGlslang() {
+    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+    glslang::InitializeProcess();
+}
+void WPShaderParser::FinalGlslang() {
+    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+    glslang::FinalizeProcess();
+}
 
 bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderUnit> units,
                                   std::vector<ShaderCode>& codes, fs::VFS& vfs,
@@ -860,9 +886,16 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         }
     }
 
-    std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
-        unit.src = Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
-    });
+    {
+        // Preprocessor() ultimately invokes glslang::TShader::preprocess, which
+        // holds non-thread-safe static keyword tables.  See g_glslangSerialiseMtx
+        // declaration above.
+        std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+        std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
+            unit.src =
+                Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
+        });
+    }
 
     // Post-preprocessing: inject GS layout declarations with evaluated max_vertices.
     for (auto& unit : units) {
@@ -906,17 +939,27 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
             return true;
         }
 
-        // Cache miss — launch async compilation (deferred until FlushPendingCompilations)
+        // Cache miss — defer compilation until FlushPendingCompilations.
+        //
+        // Originally compilation ran in a std::async(std::launch::async) thread per
+        // SHA1.  glslang's keyword scanner caches `const char*` keys in a process-
+        // global hash table that is not safe under concurrent reads — concurrent
+        // tokenizeIdentifier triggers UAF on hashtable buckets even when individual
+        // calls are externally serialised, because glslang's per-stage symbol-
+        // table init still races against other threads' thread-local pools.
+        // We instead defer the work as a no-arg packaged_task and run it
+        // synchronously inside FlushPendingCompilations on the calling thread.
+        // Cache dedupe is preserved (one task per SHA1).
         {
             std::lock_guard<std::mutex> lock(s_compileMtx);
             if (s_asyncCompilations.find(sha1) == s_asyncCompilations.end()) {
-                // First time seeing this SHA1 — copy units and launch async
                 auto units_copy = std::vector<WPShaderUnit>(units.begin(), units.end());
-                auto future = std::async(std::launch::async, [u = std::move(units_copy)]() mutable {
-                    std::vector<ShaderCode> result;
-                    CompileShaderUnits(u, result);
-                    return result;
-                });
+                auto future = std::async(std::launch::deferred,
+                                         [u = std::move(units_copy)]() mutable {
+                                             std::vector<ShaderCode> result;
+                                             CompileShaderUnits(u, result);
+                                             return result;
+                                         });
                 s_asyncCompilations[sha1] = future.share();
             }
             s_pendingOutputs.push_back({ sha1, cache_file_path, &codes });

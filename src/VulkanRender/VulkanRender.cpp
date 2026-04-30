@@ -10,6 +10,7 @@
 #include "Utils/Algorism.h"
 
 #include <glslang/Public/ShaderLang.h>
+#include "WPShaderParser.hpp"
 #include <unordered_set>
 #include <chrono>
 #include <cstdio>
@@ -957,8 +958,9 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 
     if (! initRes()) return false;
 
-    // Initialize glslang once at startup
-    glslang::InitializeProcess();
+    // Initialize glslang once at startup.  Routed through WPShaderParser so it
+    // serialises against any concurrent shader compilation on the parser thread.
+    WPShaderParser::InitGlslang();
 
     m_inited = true;
     return m_inited;
@@ -1018,8 +1020,9 @@ bool VulkanRender::Impl::initRes() {
 void VulkanRender::Impl::destroy() {
     if (! m_inited) return;
 
-    // Finalize glslang (paired with InitializeProcess in init)
-    glslang::FinalizeProcess();
+    // Finalize glslang (paired with InitializeProcess in init).  Routed via
+    // WPShaderParser so it shares the parser-side glslang serialisation lock.
+    WPShaderParser::FinalGlslang();
 
     if (m_device && m_device->handle()) {
         VVK_CHECK(m_device->handle().WaitIdle());
