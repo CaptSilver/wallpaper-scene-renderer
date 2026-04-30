@@ -279,9 +279,9 @@ ordered by scope (smallest → largest).
   falloff, and direction; add cone culling in shaders; integrate with the
   PBR prelude alongside point lights and skylight.
 - **HDR bloom post-process** — the `combine_hdr` postprocessing variant
-  exists (see `blend-tonemap-audit.md` A2), but the per-mip bloom
-  convolution chain that feeds it isn't built. Add the down/up sample
-  pyramid and feed mips into the combine pass.
+  exists, but the per-mip bloom convolution chain that feeds it isn't
+  built. Add the down/up sample pyramid and feed mips into the combine
+  pass.
 - **Puppet: blend shapes** — linear morph-target blending. Adds vertex
   streams for shape deltas and per-shape weight uniforms.
 - **Puppet: 3D perspective extrusion** — synthesize Z + normals on a 2D
