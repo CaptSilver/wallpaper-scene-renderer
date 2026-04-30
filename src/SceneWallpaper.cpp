@@ -2140,10 +2140,49 @@ void MainHandler::loadScene() {
     std::string pkgDir   = pkgDir_fs.native();
     std::string scene_id = pkgDir_fs.filename().native();
 
-    // load pkgfile
-    if (! vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(pkgPath))) {
-        LOG_INFO("load pkg file %s failed, fallback to use dir", pkgPath.c_str());
-        // load pkg dir
+    // load pkgfile.  Most wallpapers ship `scene.pkg`; gifscene-type
+    // wallpapers (Aesthetic City 843532366) ship `gifscene.pkg` instead,
+    // with project.json's "file" field naming `gifscene.json` (inside
+    // the pkg, not at the dir root).  Try the project.json-named .pkg
+    // before falling back to a physical-dir mount.
+    bool pkg_mounted = vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(pkgPath));
+    if (! pkg_mounted) {
+        LOG_INFO("load pkg file %s failed, trying alternate pkg names",
+                 pkgPath.c_str());
+        // Read project.json to discover the wallpaper's declared `file`
+        // (e.g. "gifscene.json"); use its stem as <stem>.pkg.
+        std::filesystem::path projPath = pkgDir_fs / "project.json";
+        if (std::filesystem::exists(projPath)) {
+            std::ifstream ifs(projPath);
+            if (ifs.good()) {
+                std::string body { std::istreambuf_iterator<char>(ifs),
+                                   std::istreambuf_iterator<char>() };
+                try {
+                    auto proj = nlohmann::json::parse(body);
+                    auto it = proj.find("file");
+                    if (it != proj.end() && it->is_string()) {
+                        std::filesystem::path f { it->get<std::string>() };
+                        f.replace_extension("pkg");
+                        std::filesystem::path altPath = pkgDir_fs / f.filename();
+                        if (std::filesystem::exists(altPath) &&
+                            altPath.native() != pkgPath) {
+                            LOG_INFO("trying alternate pkg: %s",
+                                     altPath.native().c_str());
+                            if (vfs.Mount("/assets",
+                                          fs::WPPkgFs::CreatePkgFs(altPath.native()))) {
+                                pkg_mounted = true;
+                                pkgPath = altPath.native();
+                            }
+                        }
+                    }
+                } catch (const nlohmann::json::exception&) {
+                    // malformed project.json — drop through to physical-dir fallback
+                }
+            }
+        }
+    }
+    if (! pkg_mounted) {
+        LOG_INFO("falling back to physical dir: %s", pkgDir.c_str());
         if (! vfs.Mount("/assets", fs::CreatePhysicalFs(pkgDir))) {
             LOG_ERROR("can't load pkg directory: %s", pkgDir.c_str());
             return;
