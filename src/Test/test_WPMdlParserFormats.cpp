@@ -1475,4 +1475,123 @@ TEST_SUITE("WPMdlParser.Gen") {
         CHECK(info.combos["BONECOUNT"] == "7");
     }
 
+    // ---------------------------------------------------------------------------
+    // Long-tail mutation killers — assert distinct data on vertex[1] so the
+    // `i++` → `i--` mutations on the per-vertex copy loops produce observable
+    // differences (with `i--`, vertex[1] is never written and reads as zero).
+    // ---------------------------------------------------------------------------
+
+    TEST_CASE("GenPuppetMesh writes vertex[1] (kills i++ → i-- on puppet copy loop)") {
+        // 2 vertices with distinct positions; the second is non-zero so a
+        // truncated loop leaves the second slot at zero.
+        WPMdl mdl                    = makePuppetMdl(2, 1, 4);
+        mdl.vertexs[1].position      = { 11.5f, 22.5f, 33.5f };
+        mdl.vertexs[1].blend_indices = { 0u, 1u, 2u, 3u };
+        mdl.vertexs[1].weight        = { 0.4f, 0.3f, 0.2f, 0.1f };
+        mdl.vertexs[1].texcoord      = { 0.6f, 0.8f };
+
+        SceneMesh mesh;
+        WPMdlParser::GenPuppetMesh(mesh, mdl);
+        const auto* data = mesh.GetVertexArray(0).Data();
+        REQUIRE(data != nullptr);
+        // Stride = 16 floats per vertex; vertex[1] starts at data + 16.
+        CHECK(data[16] == doctest::Approx(11.5f));
+        CHECK(data[17] == doctest::Approx(22.5f));
+        CHECK(data[18] == doctest::Approx(33.5f));
+        const uint32_t* bi = reinterpret_cast<const uint32_t*>(data + 16 + 4);
+        CHECK(bi[0] == 0u);
+        CHECK(bi[1] == 1u);
+        CHECK(bi[2] == 2u);
+        CHECK(bi[3] == 3u);
+        CHECK(data[16 + 8] == doctest::Approx(0.4f));
+        CHECK(data[16 + 12] == doctest::Approx(0.6f));
+        CHECK(data[16 + 13] == doctest::Approx(0.8f));
+    }
+
+    TEST_CASE("GenModelMesh flag-9 writes vertex[1] (kills i++ → i--)") {
+        auto sub                = makeSubmesh(2, false, false, false);
+        sub.vertexs[1].position = { 7.5f, 8.5f, 9.5f };
+        sub.vertexs[1].texcoord = { 0.55f, 0.65f };
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, sub);
+        const auto* data = mesh.GetVertexArray(0).Data();
+        // flag9 stride = 5 floats; vertex[1] starts at data + 5.
+        CHECK(data[5] == doctest::Approx(7.5f));
+        CHECK(data[6] == doctest::Approx(8.5f));
+        CHECK(data[7] == doctest::Approx(9.5f));
+        CHECK(data[8] == doctest::Approx(0.55f));
+        CHECK(data[9] == doctest::Approx(0.65f));
+    }
+
+    TEST_CASE("GenModelMesh flag-11 writes vertex[1] (kills i++ → i--)") {
+        auto sub                = makeSubmesh(2, true, false, false);
+        sub.vertexs[1].position = { 4.5f, 5.5f, 6.5f };
+        sub.vertexs[1].normal   = { 0.7f, 0.8f, 0.9f };
+        sub.vertexs[1].texcoord = { 0.21f, 0.34f };
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, sub);
+        const auto* data = mesh.GetVertexArray(0).Data();
+        // flag11 stride = 8 floats; vertex[1] at data + 8.
+        CHECK(data[8] == doctest::Approx(4.5f));
+        CHECK(data[8 + 3] == doctest::Approx(0.7f));
+        CHECK(data[8 + 6] == doctest::Approx(0.21f));
+    }
+
+    TEST_CASE("GenModelMesh flag-15 writes vertex[1] (kills i++ → i--)") {
+        auto sub                = makeSubmesh(2, true, true, false);
+        sub.vertexs[1].position = { 2.5f, 3.5f, 4.5f };
+        sub.vertexs[1].normal   = { 0.11f, 0.22f, 0.33f };
+        sub.vertexs[1].tangent  = { 0.44f, 0.55f, 0.66f, 0.77f };
+        sub.vertexs[1].texcoord = { 0.88f, 0.99f };
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, sub);
+        const auto* data = mesh.GetVertexArray(0).Data();
+        // flag15 stride = 12 floats; vertex[1] at data + 12.
+        CHECK(data[12] == doctest::Approx(2.5f));
+        CHECK(data[12 + 3] == doctest::Approx(0.11f));
+        CHECK(data[12 + 6] == doctest::Approx(0.44f));
+        CHECK(data[12 + 9] == doctest::Approx(0.77f));
+        CHECK(data[12 + 10] == doctest::Approx(0.88f));
+        CHECK(data[12 + 11] == doctest::Approx(0.99f));
+    }
+
+    TEST_CASE("GenModelMesh flag-39 writes vertex[1] (kills i++ → i--)") {
+        auto sub                 = makeSubmesh(2, true, true, true);
+        sub.vertexs[1].position  = { 1.1f, 2.2f, 3.3f };
+        sub.vertexs[1].normal    = { 0.4f, 0.5f, 0.6f };
+        sub.vertexs[1].tangent   = { 0.7f, 0.8f, 0.9f, 1.0f };
+        sub.vertexs[1].texcoord  = { 0.31f, 0.41f };
+        sub.vertexs[1].texcoord1 = { 0.51f, 0.61f };
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, sub);
+        const auto* data = mesh.GetVertexArray(0).Data();
+        // flag39 stride = 14 floats; vertex[1] at data + 14.
+        CHECK(data[14] == doctest::Approx(1.1f));
+        CHECK(data[14 + 3] == doctest::Approx(0.4f));
+        CHECK(data[14 + 6] == doctest::Approx(0.7f));
+        CHECK(data[14 + 10] == doctest::Approx(0.31f));
+        CHECK(data[14 + 11] == doctest::Approx(0.41f));
+        CHECK(data[14 + 12] == doctest::Approx(0.51f));
+        CHECK(data[14 + 13] == doctest::Approx(0.61f));
+    }
+
+    // GenPuppetMesh's blend_indices clamp uses `< bone_count` (line 627).  If
+    // mutated to `<=`, blend_index == bone_count would pass through (still
+    // out-of-range from the GPU's perspective).  This test pins the strict
+    // `<` boundary by setting one slot to exactly bone_count.
+    TEST_CASE("GenPuppetMesh clamps blend_indices == bone_count to 0 (boundary)") {
+        WPMdl mdl                    = makePuppetMdl(1, 1, 3);
+        // bone_count=3: index 3 is out of range (valid range is [0..2]).
+        mdl.vertexs[0].blend_indices = { 2u, 3u, 0u, 99u };
+
+        SceneMesh mesh;
+        WPMdlParser::GenPuppetMesh(mesh, mdl);
+        const auto*     data = mesh.GetVertexArray(0).Data();
+        const uint32_t* bi   = reinterpret_cast<const uint32_t*>(data + 4);
+        CHECK(bi[0] == 2u); // 2 < 3 → kept
+        CHECK(bi[1] == 0u); // 3 == 3 → clamped under strict `<`
+        CHECK(bi[2] == 0u); // 0 < 3 → kept
+        CHECK(bi[3] == 0u); // 99 ≫ 3 → clamped
+    }
+
 } // Gen

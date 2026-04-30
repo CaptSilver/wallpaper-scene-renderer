@@ -249,4 +249,21 @@ TEST_SUITE("WPPropertyAnimation_Evaluate") {
         CHECK(EvaluatePropertyAnimation(a, 0.0) == doctest::Approx(0.0f));
     }
 
+    // fps==0 AND length==0 boundary: kf.front() return path under the
+    // `fps <= 0.0f` guard.  Without the guard (cxx_le_to_lt makes it `< 0`),
+    // length/fps becomes 0/0 = NaN, fmod(t, NaN) = NaN, and the comparisons
+    // around `frame >= kf.front().frame` collapse so the function returns
+    // kf.back().value instead of kf.front().value — observable difference.
+    TEST_CASE("zero fps AND zero length forces kf.front() (kills fps<=0 → fps<0 mutant)") {
+        PropertyAnimation a;
+        a.mode      = PropertyAnimMode::Loop;
+        a.fps       = 0.0f; // boundary: fps == 0
+        a.length    = 0.0f; // both zero — exposes the `<= 0` vs `< 0` boundary
+        a.keyframes = { { 0, 0.25f }, { 10, 0.75f } };
+        // Original returns kf.front().value = 0.25.  Mutated lets fps=0
+        // through to length/fps = 0/0 = NaN; downstream NaN compares all
+        // false, so the function falls to `return kf.back().value` = 0.75.
+        CHECK(EvaluatePropertyAnimation(a, 5.0) == doctest::Approx(0.25f));
+    }
+
 } // TEST_SUITE

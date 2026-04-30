@@ -164,4 +164,48 @@ TEST_SUITE("ParticleTrailHistory") {
         CHECK(h.ActiveCount() == 3u);
     }
 
+    TEST_CASE("ActiveCount: max_age==0 with differing timestamps still returns full count") {
+        // Pins the `m_max_age <= 0.0f` guard:  if the comparison were `<` instead
+        // of `<=`, exact zero would fall through to the scan loop, where every
+        // non-newest point is stale (newest - any > 0 with max_age=0) and the
+        // scan returns 2 at i=2.  Strict `<=` keeps the early return so we
+        // observe the unchanged Count().
+        ParticleTrailHistory h;
+        h.Init(5, 0.0f);
+        for (int i = 0; i < 5; i++) {
+            ParticleTrailPoint p {};
+            p.timestamp = (float)i; // 0, 1, 2, 3, 4 — newest=4
+            h.Push(p);
+        }
+        CHECK(h.ActiveCount() == 5u);
+    }
+
+    TEST_CASE("ActiveCount: empty trail returns 0 even when max_age is set") {
+        // Tests the `m_count == 0` guard.  Mutating `==` to `!=` would call
+        // At(0) on an empty trail (assert/UB).  Original returns 0 cleanly.
+        ParticleTrailHistory h;
+        h.Init(4, 1.0f);
+        CHECK(h.ActiveCount() == 0u);
+    }
+
+    TEST_CASE("ActiveCount: middle stale point bisects forward — kills `i--` mutation") {
+        // Tests the `i++` mutation (cxx_post_inc_to_post_dec).  With 4 points
+        // pushed at timestamps 0, 1, 2, 3 and max_age=2:
+        //   newest = At(0).timestamp = 3
+        //   At(1) = 2, At(2) = 1, At(3) = 0
+        //   At(2):   3 - 1 = 2  NOT > 2 (strict)  → fresh, scan continues
+        //   At(3):   3 - 0 = 3  > 2               → stale, return 3.
+        // With `i--` mutated, the loop runs i=2 (fresh), i=1 (fresh), i=0
+        // (newest, fresh), then i wraps to UINT32_MAX which is NOT < m_count,
+        // so the loop exits and returns m_count=4 — observably different.
+        ParticleTrailHistory h;
+        h.Init(4, 2.0f);
+        for (int i = 0; i < 4; i++) {
+            ParticleTrailPoint p {};
+            p.timestamp = (float)i;
+            h.Push(p);
+        }
+        CHECK(h.ActiveCount() == 3u);
+    }
+
 } // ParticleTrailHistory

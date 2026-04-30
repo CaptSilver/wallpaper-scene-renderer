@@ -246,4 +246,115 @@ TEST_SUITE("AudioRateMultiplier.weShape") {
         auto r = computeRateMultiplier(loud, loud, 1.0, 0.016, p);
         CHECK(r.multiplier == doctest::Approx(2.0));
     }
+
+    // ---------------------------------------------------------------------------
+    // Long-tail mutation killers — pin down boundary semantics that survive
+    // against the existing "happy-path" suite.
+    // ---------------------------------------------------------------------------
+
+    // smoothstep degenerate: edge1 == edge0 with x exactly on the edge.  Original
+    // takes the early-return branch (`x >= edge1 ? 1 : 0`) and returns 1.  Under
+    // cxx_le_to_lt the guard becomes `<` and the function falls through to the
+    // (x-edge0)/(edge1-edge0) formula → 0/0 → NaN → multiplier=NaN, killed by
+    // an Approx(1.0) check (NaN != 1).
+    TEST_CASE("WE-shape with bounds collapsed and mean == bounds returns 1.0 (kills smoothstep <= mutants)") {
+        std::array<float, 16> loud {};
+        for (int i = 0; i < 4; i++) loud[i] = 0.5f; // mean(bass) = 0.5
+        auto p       = weShape();
+        p.boundsLow  = 0.5f;
+        p.boundsHigh = 0.5f; // degenerate
+        p.amount     = 1.0f;
+        // dt=0 anchors smoothed=prev=0.5, so the smoothstep input is exactly 0.5.
+        auto r = computeRateMultiplier(loud, loud, 0.5, 0.0, p);
+        CHECK(r.multiplier == doctest::Approx(1.0));
+    }
+
+    // Same degenerate bounds but mean strictly below.  Original returns 0 via the
+    // ternary; mutated `>` (cxx_ge_to_gt) returns 0 (since 0.3 > 0.5 false), still
+    // 0.  Mutated `<` (cxx_ge_to_lt) returns 0 either way.  The case where
+    // original=1 but mutated=0 is killed by the test above.
+    TEST_CASE("WE-shape with bounds collapsed and mean below returns 0.0") {
+        std::array<float, 16> low {};
+        for (int i = 0; i < 4; i++) low[i] = 0.3f;
+        auto p       = weShape();
+        p.boundsLow  = 0.5f;
+        p.boundsHigh = 0.5f;
+        auto r = computeRateMultiplier(low, low, 0.3, 0.0, p);
+        CHECK(r.multiplier == doctest::Approx(0.0));
+    }
+
+    // Non-unit bounds span exposes div→mul and sub→add mutations on the
+    // smoothstep formula.  edge0=0, edge1=2 with x=0.5: original t=0.25,
+    // smoothstep≈0.156.  Under div→mul: 0.5*2=1.0, smoothstep=1, mult=1.
+    TEST_CASE("WE-shape bounds=[0, 2] (clamped span) verifies smoothstep division") {
+        std::array<float, 16> spec {};
+        // mean(0..3) = 0.5
+        for (int i = 0; i < 4; i++) spec[i] = 0.5f;
+        auto p       = weShape();
+        p.boundsLow  = 0.0f;
+        p.boundsHigh = 2.0f; // edge1-edge0 = 2 (non-unit)
+        // dt=0 → smoothed = prev = 0.5
+        auto r = computeRateMultiplier(spec, spec, 0.5, 0.0, p);
+        // t = clamp(0.5/2, 0, 1) = 0.25; smoothstep = 0.25^2*(3-0.5) = 0.15625
+        CHECK(r.multiplier == doctest::Approx(0.15625));
+    }
+
+    // Off-zero edge0 exposes the (edge1-edge0) subtraction.  edge0=0.2,
+    // edge1=1.0: original (x-0.2)/0.8.  Under sub→add: (x-0.2)/1.2.
+    TEST_CASE("WE-shape bounds=[0.2, 1.0] verifies edge1-edge0 subtraction") {
+        std::array<float, 16> spec {};
+        for (int i = 0; i < 4; i++) spec[i] = 0.6f; // mean = 0.6
+        auto p       = weShape();
+        p.boundsLow  = 0.2f;
+        p.boundsHigh = 1.0f; // span 0.8
+        // dt=0 anchors smoothed = prev = 0.6
+        auto r = computeRateMultiplier(spec, spec, 0.6, 0.0, p);
+        // t = (0.6-0.2)/(1.0-0.2) = 0.4/0.8 = 0.5; smoothstep = 0.5
+        CHECK(r.multiplier == doctest::Approx(0.5));
+    }
+
+    // bandMean degenerate hi==lo (freqStart == freqEnd) — original returns 0
+    // via the `if (hi <= lo) return 0.0` guard.  Under cxx_le_to_lt the guard
+    // becomes `< lo` and falls through to a 0/0 division → NaN.
+    TEST_CASE("WE-shape with freqStart == freqEnd returns 0 mean (kills hi<=lo guard mutant)") {
+        std::array<float, 16> loud {};
+        for (int i = 0; i < 4; i++) loud[i] = 1.0f;
+        auto p      = weShape();
+        p.freqStart = 2;
+        p.freqEnd   = 2; // empty band
+        auto r = computeRateMultiplier(loud, loud, 0.0, 0.016, p);
+        // smoothstep(0,1,0) = 0 → mult = 0 (not NaN)
+        CHECK(r.multiplier == doctest::Approx(0.0));
+        CHECK(r.newSmoothed == doctest::Approx(0.0));
+    }
+
+    // bandMean with non-zero `lo` exposes the `hi - lo` subtraction in the
+    // average computation.  Setting freqStart=2, freqEnd=4 with two non-zero
+    // bins of value 1 each: original sum/(4-2)=2/2=1; under sub→add we'd
+    // get sum/(4+2)=2/6≈0.333.
+    TEST_CASE("bandMean with offset window verifies (hi-lo) division (kills sub→add mutant)") {
+        std::array<float, 16> spec {};
+        // bins 2..3 are non-zero (other bins zero).
+        spec[2] = 1.0f;
+        spec[3] = 1.0f;
+        auto p      = weShape();
+        p.freqStart = 2;
+        p.freqEnd   = 4; // window = bins 2,3 → mean = 1.0
+        // dt=0 anchors smoothed = prev = 1.0
+        auto r = computeRateMultiplier(spec, spec, 1.0, 0.0, p);
+        // smoothstep(0,1,1)=1, exponent=1, amount=1 → mult=1.
+        CHECK(r.multiplier == doctest::Approx(1.0));
+    }
+
+    // mode==2 with empty right channel must trigger the noData guard and
+    // return 1.0 (hold).  Under cxx_eq_to_ne on `params.mode == 2`, the
+    // noData clause becomes `mode != 2 && noRight` — false for mode=2 — so
+    // the function continues and produces a smoothed/legacy output.
+    TEST_CASE("mode=2 with empty right span holds prev (kills mode==2 → !=2 mutant)") {
+        std::array<float, 16> loud {};
+        for (int i = 0; i < 4; i++) loud[i] = 1.0f;
+        auto r = computeRateMultiplier(loud, {}, 0.5, 0.016, legacy(2));
+        CHECK(r.multiplier == doctest::Approx(1.0));
+        CHECK(r.newSmoothed == doctest::Approx(0.5));
+    }
 }

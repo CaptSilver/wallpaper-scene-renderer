@@ -138,6 +138,48 @@ TEST_SUITE("WPMdlParser_EOF_safety") {
         CHECK(r.completed);
     }
 
+    // Anim-padding scan EOF test — line 500 `Tell() >= Size()` mutates to `>`.
+    // Trailing-zero MDLA section means the scan loop reads past end-of-stream
+    // looking for a non-zero byte that never comes.  The fixed code returns
+    // cleanly at EOF; the mutated version hangs.
+    TEST_CASE("MDLA with all-zero padding scan does not hang at EOF") {
+        // Build minimal puppet header up through the MDLA tag, then write
+        // anim_num=1 followed by infinite-zero padding (which exhausts the
+        // stream without ever finding a non-zero byte).
+        std::vector<uint8_t> data = mdlvHeader(13);
+        appendInt32(data, 0); // mdl_flag = 0 → puppet path
+        appendInt32(data, 1);
+        appendInt32(data, 1);
+        data.push_back(0);
+        appendInt32(data, 0);
+        appendInt32(data, 0x01800009); // std herald
+        appendInt32(data, 0);          // vertex_size = 0
+        appendInt32(data, 0);          // indices_size = 0
+
+        const char mdls_tag[9] = "MDLS0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdls_tag[i]));
+        appendInt32(data, 0); // bones_file_end
+        data.push_back(0);
+        data.push_back(0); // bones_num=0
+        data.push_back(0);
+        data.push_back(0); // unk
+
+        // MDLA0001 with anim_num=1 then all-zero padding through EOF.
+        const char mdla_tag[9] = "MDLA0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdla_tag[i]));
+        appendInt32(data, 0); // end_size
+        appendInt32(data, 1); // anim_num = 1 → enters the scan loop
+        // 64 bytes of zero padding — no non-zero anim id ever appears.
+        for (int i = 0; i < 64; i++) data.push_back(0);
+
+        fs::MemBinaryStream f(std::move(data));
+        WPMdl               mdl;
+        auto                r = parseWithWatchdog(f, "anim_padding_eof.mdl", mdl);
+        REQUIRE(r.completed);
+        // ParseStream must report failure (no non-zero byte found).
+        CHECK_FALSE(r.ok);
+    }
+
 } // TEST_SUITE
 
 TEST_SUITE("WPMdl_IndexPacking") {

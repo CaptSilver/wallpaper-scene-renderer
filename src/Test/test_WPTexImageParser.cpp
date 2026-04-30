@@ -1158,4 +1158,170 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(mip.size == (int32_t)sizeof(kRedPixelTga));
     }
 
+    // -----------------------------------------------------------------------
+    // Long-tail mutation killers
+    // -----------------------------------------------------------------------
+
+    // src_size==8 with non-MP4 payload exposes the `src_size > 8` boundary.
+    // Original lets size==8 fall through to memcmp (which fails, so we hit the
+    // raw-copy path).  Under cxx_gt_to_ge: still enters memcmp branch (matches
+    // original).  Under cxx_gt_to_le: NEVER enters MP4 branch — also still
+    // raw-copy path.  Together with the second clause `result.size() >= 8`,
+    // they require an 8-byte non-"ftyp" payload to discriminate.  Use a buffer
+    // that DOES have "ftyp" at offset 4 — under cxx_gt_to_ge or cxx_gt_to_le
+    // the MP4 detection at size==8 must fire (or not) consistently, and the
+    // behavior must match.
+    TEST_CASE("MP4 detection requires src_size > 8 (boundary at 8 bytes)") {
+        // src_size = 8 exactly with "ftyp" at offset 4 — boundary: original
+        // `> 8` is false → raw-copy path → size = 8.  Under `>= 8` the MP4
+        // branch fires, sets isVideoTexture=true, and overwrites size with
+        // Rgba8ByteSize(w, h) = 4*4*4 = 64.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);                                          // mipmap_count
+        appendInt32(buf, 4);                                          // mip width
+        appendInt32(buf, 4);                                          // mip height
+        appendInt32(buf, 0);                                          // LZ4_compressed = false
+        appendInt32(buf, 0);                                          // decompressed_size
+        appendInt32(buf, 8);                                          // src_size = 8
+        // 8 raw bytes: 4 bytes pad + "ftyp"
+        const uint8_t fake[8] = { 0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p' };
+        for (uint8_t b : fake) buf.push_back(b);
+
+        VFS vfs;
+        mountTex(vfs, "mp4_boundary", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("mp4_boundary");
+        REQUIRE(img != nullptr);
+        // MP4 branch must NOT fire at size==8 (original `> 8` is false).
+        CHECK_FALSE(img->header.isVideoTexture);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        // Raw-copy path keeps src_size=8.
+        CHECK(img->slots[0].mipmaps[0].size == 8);
+    }
+
+    // src_size > 8 with "ftyp" at offset 4 must trigger the MP4 path.  Pairs
+    // with the above to pin down the boundary in both directions.  Without
+    // this, cxx_gt_to_le (which makes the guard `<= 8`) wouldn't be detected.
+    TEST_CASE("MP4 detection fires at src_size > 8 with ftyp signature") {
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 4);
+        appendInt32(buf, 4);
+        appendInt32(buf, 0);  // LZ4 false
+        appendInt32(buf, 0);  // decompressed_size
+        appendInt32(buf, 12); // src_size = 12 (>8)
+        // 12 bytes: 4 bytes pad + "ftyp" + 4 trailing bytes
+        const uint8_t fake[12] = {
+            0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'
+        };
+        for (uint8_t b : fake) buf.push_back(b);
+
+        VFS vfs;
+        mountTex(vfs, "mp4_detect", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("mp4_detect");
+        REQUIRE(img != nullptr);
+        // MP4 branch fires → isVideoTexture true, size set to RGBA placeholder.
+        CHECK(img->header.isVideoTexture);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        // RGBA placeholder of 4x4 = 64 bytes.
+        CHECK(img->slots[0].mipmaps[0].size == 64);
+    }
+
+    // ParseHeader with count==0 in the non-sprite path must read the trailing
+    // mipmap_count + width + height and call SetHeaderPow2 — kills the
+    // cxx_lt_to_le mutation on `header.count < 0` (which would convert it to
+    // `<= 0` and early-return at count==0, leaving mipmap_pow2 unset).
+    TEST_CASE("ParseHeader with count==0 still reads trailing mipmap_pow2 size") {
+        auto buf = makeTexHeader(1, 1, 1, /*type*/ 0, /*flags*/ 0,
+                                 /*tex_w*/ 4, /*tex_h*/ 4,
+                                 /*map_w*/ 4, /*map_h*/ 4,
+                                 /*count*/ 0);
+        // Non-sprite trailing: mipmap_count, width, height
+        appendInt32(buf, 1);
+        appendInt32(buf, 8); // width = 8 (pow2)
+        appendInt32(buf, 8); // height = 8
+
+        VFS vfs;
+        mountTex(vfs, "header_count_zero", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("header_count_zero");
+        // SetHeaderPow2 sets mipmap_pow2 from one of (8, 8) → both pow2 → true.
+        CHECK(header.mipmap_pow2 == true);
+        CHECK(header.count == 0);
+    }
+
+    // Multi-image .tex: parser must iterate i_image until image_count.  Under
+    // cxx_post_inc_to_post_dec on the i_image loop, only image[0] is written
+    // and slots[1] stays default-constructed (width/height=0).
+    TEST_CASE("Multiple images with distinct sizes verifies image-loop ++ (kills i++ → i--)") {
+        // count=2: two images with distinct dimensions.
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 2);
+        // image 0: 4x4
+        appendInt32(buf, 1);
+        std::vector<uint8_t> p0(4 * 4 * 4, 0xAA);
+        appendMipmapV1(buf, 4, 4, p0);
+        // image 1: 8x2 (distinct dimensions from image 0)
+        appendInt32(buf, 1);
+        std::vector<uint8_t> p1(8 * 2 * 4, 0xBB);
+        appendMipmapV1(buf, 8, 2, p1);
+
+        VFS vfs;
+        mountTex(vfs, "multi_distinct", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("multi_distinct");
+        REQUIRE(img != nullptr);
+        REQUIRE(img->slots.size() == 2);
+        // image[1] must be parsed — under i-- mutation it'd remain default.
+        CHECK(img->slots[1].width == 8);
+        CHECK(img->slots[1].height == 2);
+        REQUIRE(img->slots[1].mipmaps.size() == 1);
+        CHECK(img->slots[1].mipmaps[0].width == 8);
+        CHECK(img->slots[1].mipmaps[0].height == 2);
+        CHECK(img->slots[1].mipmaps[0].data.get()[0] == 0xBB);
+    }
+
+    // Sprite header parser branches on `texb > 1` to consume two extra
+    // int32 fields per mipmap (LZ4_compressed + decompressed_size).  Under
+    // cxx_gt_to_ge (`>= 1`), texb=1 sprites also try to consume those — the
+    // stream then misaligns and the sprite section fails to parse.  Test pins
+    // texb=1 sprite parsing.  Note: texb v1 sprites are rare but the parse
+    // must remain stable.
+    TEST_CASE("Sprite with texb=1 parses without consuming LZ4 fields (kills texb val>1 → val>=1)") {
+        // Build a sprite with texb=1 (NO LZ4 fields between width/height and
+        // src_size).  The sprite section that follows the mipmap data must be
+        // parseable; under the mutation, the parser would consume 8 extra
+        // bytes per mipmap and corrupt the stream.
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 1, 0, spriteFlag, 16, 16, 16, 16, 1);
+        // Image 0: 1 mipmap, texb=1 layout (no LZ4 fields)
+        appendInt32(buf, 1); // mipmap_count
+        std::vector<uint8_t> pixels(16 * 16 * 4, 0xCD);
+        appendMipmapV1(buf, 16, 16, pixels); // texb=1: w, h, size, pixels — no LZ4 fields
+
+        // Sprite section
+        appendTexVersion(buf, 2); // texs version
+        appendInt32(buf, 1);      // framecount
+        appendInt32(buf, 0);      // imageId = 0 (valid)
+        appendFloat(buf, 0.5f);   // frametime
+        appendFloat(buf, 0.0f);   // x
+        appendFloat(buf, 0.0f);   // y
+        appendFloat(buf, 16.0f);  // xAxis[0]
+        appendFloat(buf, 0.0f);   // xAxis[1]
+        appendFloat(buf, 0.0f);   // yAxis[0]
+        appendFloat(buf, 16.0f);  // yAxis[1]
+
+        VFS vfs;
+        mountTex(vfs, "sprite_texb1", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_texb1");
+        // Sprite must parse cleanly.  Under the mutation the framecount /
+        // imageId reads garbage and the sprite is disabled.
+        CHECK(header.isSprite == true);
+        CHECK(header.spriteAnim.numFrames() == 1);
+        auto& frame = header.spriteAnim.GetCurFrame();
+        CHECK(frame.imageId == 0);
+        CHECK(frame.frametime == doctest::Approx(0.5f));
+    }
+
 } // TEST_SUITE

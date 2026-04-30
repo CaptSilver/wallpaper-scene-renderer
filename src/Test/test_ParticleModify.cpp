@@ -942,3 +942,59 @@ TEST_SUITE("ParticleInstance_Refresh") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// Three-double overloads (dispatch wrappers — kept thin to maximise inlining)
+// ===========================================================================
+
+TEST_SUITE("ParticleModify_3DoubleOverloads") {
+    TEST_CASE("MoveTo(p, x, y, z) dispatches to the vec3 overload") {
+        Particle p;
+        p.position = Eigen::Vector3f(0, 0, 0);
+        ParticleModify::MoveTo(p, 1.0, 2.0, 3.0);
+        CHECK(p.position.x() == doctest::Approx(1.0f));
+        CHECK(p.position.y() == doctest::Approx(2.0f));
+        CHECK(p.position.z() == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("MoveMultiply(p, x, y, z) component-wise scales") {
+        Particle p;
+        p.position = Eigen::Vector3f(2, 4, 8);
+        ParticleModify::MoveMultiply(p, 0.5, 0.25, 0.125);
+        CHECK(p.position.x() == doctest::Approx(1.0f));
+        CHECK(p.position.y() == doctest::Approx(1.0f));
+        CHECK(p.position.z() == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("ChangeColor(p, r, g, b) dispatches to the vec3 overload") {
+        Particle p;
+        p.color = Eigen::Vector3f(0.1f, 0.1f, 0.1f);
+        ParticleModify::ChangeColor(p, 0.4, 0.5, 0.6);
+        CHECK(p.color.x() == doctest::Approx(0.5f).epsilon(0.01));
+        CHECK(p.color.y() == doctest::Approx(0.6f).epsilon(0.01));
+        CHECK(p.color.z() == doctest::Approx(0.7f).epsilon(0.01));
+    }
+
+    TEST_CASE("Rotate(p, x, y, z) advances rotation") {
+        Particle p;
+        p.rotation = Eigen::Vector3f(0, 0, 0);
+        ParticleModify::Rotate(p, 0.5, 0.25, 0.125);
+        CHECK(p.rotation.x() == doctest::Approx(0.5f).epsilon(0.01));
+        CHECK(p.rotation.y() == doctest::Approx(0.25f).epsilon(0.01));
+        CHECK(p.rotation.z() == doctest::Approx(0.125f).epsilon(0.01));
+    }
+
+    TEST_CASE("RotatePos rotates p.position around X/Y/Z axes") {
+        Particle p;
+        p.position = Eigen::Vector3f(1, 0, 0);
+        ParticleModify::RotatePos(p, 0.0, M_PI_2, 0.0);
+        CHECK(std::abs(p.position.z()) == doctest::Approx(1.0f).epsilon(0.01));
+    }
+
+    TEST_CASE("SphereDirectOffset rotates particle around perpendicular axis") {
+        Particle p;
+        p.position = Eigen::Vector3f(1, 0, 0);
+        ParticleModify::SphereDirectOffset(p, Eigen::Vector3d(0, 1, 0), M_PI_2);
+        CHECK(p.position.norm() == doctest::Approx(1.0f).epsilon(0.01));
+    }
+}

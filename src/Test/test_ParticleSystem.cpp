@@ -958,5 +958,198 @@ TEST_SUITE("ParticleSystem.StartTime") {
                                                  ParticleSubSystem::SpawnType::STATIC, 0.7f));
         CHECK(fx.psys->MaxStartTime() == doctest::Approx(0.7));
     }
+
+    // Lifecycle paths (Refresh / Reset / death-state cascades)
+    TEST_CASE("Reset() rearms every instance via Refresh") {
+        ParticleFixture fx;
+        auto            sub  = fx.makeSub();
+        auto* inst = sub->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+        inst->ParticlesVec().emplace_back();
+        inst->SetDeath(true);
+        inst->SetNoLiveParticle(true);
+        REQUIRE(inst->Particles().size() == 1);
+
+        sub->Reset();
+
+        CHECK_FALSE(inst->IsDeath());
+        CHECK_FALSE(inst->IsNoLiveParticle());
+        CHECK(inst->Particles().size() == 0);
+    }
+
+    TEST_CASE("Reset() also rearms child subsystems") {
+        ParticleFixture fx;
+        auto            sub      = fx.makeSub();
+        auto            child    = fx.makeSub();
+        auto*           c_raw    = child.get();
+        sub->AddChild(std::move(child));
+        auto* c_inst = c_raw->QueryNewInstance();
+        REQUIRE(c_inst != nullptr);
+        c_inst->SetDeath(true);
+        c_inst->SetNoLiveParticle(true);
+
+        sub->Reset();
+
+        CHECK_FALSE(c_inst->IsDeath());
+        CHECK_FALSE(c_inst->IsNoLiveParticle());
+    }
+
+    TEST_CASE("Reset() resets m_burst_done and m_any_alive_since_reset") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        // Sanity — fresh sub starts not-burst-done.
+        CHECK_FALSE(sub->IsBurstDone());
+        // A Reset() on a fresh sub keeps the same state (no crash on m_instances=empty).
+        sub->Reset();
+        CHECK_FALSE(sub->IsBurstDone());
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: follow_parent_particle without parent → falls back") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].follow_parent_particle = true;
+        sub->Controlpoints()[0].offset                 = Eigen::Vector3d(11, 22, 33);
+
+        // No parent / no bound particle attached → CP stays at offset.
+        sub->ResolveControlpointsForInstance(nullptr);
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(11.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(22.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(33.0));
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: worldspace honours offset and ignores parent") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].worldspace = true;
+        sub->Controlpoints()[0].offset     = Eigen::Vector3d(1, 2, 3);
+        sub->ResolveControlpointsForInstance(nullptr);
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(1.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(2.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(3.0));
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: per-frame velocity calc") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        // First call seeds prev_resolved → velocity zero.
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(0, 0, 0);
+        fx.scene.frameTime             = 0.5; // dt
+        sub->ResolveControlpointsForInstance(nullptr);
+        CHECK(sub->Controlpoints()[0].velocity.norm() == doctest::Approx(0.0));
+
+        // Move CP and call again — velocity = (10,0,0) / 0.5 = (20,0,0).
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(10, 0, 0);
+        sub->ResolveControlpointsForInstance(nullptr);
+        CHECK(sub->Controlpoints()[0].velocity.x() == doctest::Approx(20.0));
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: dt=0 keeps velocity at zero") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(0, 0, 0);
+        fx.scene.frameTime             = 0.0;
+        sub->ResolveControlpointsForInstance(nullptr);
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(100, 0, 0);
+        sub->ResolveControlpointsForInstance(nullptr);
+        CHECK(sub->Controlpoints()[0].velocity.norm() == doctest::Approx(0.0));
+    }
+
+    // Bound-particle CP-resolution paths (lines 154 + 169-170 of ParticleSystem.cpp).
+    // These are the hot paths for NieR thunderbolt rope subsystems: a child
+    // ParticleSubSystem inherits a parent particle binding via BoundedData and
+    // its CPs follow the bolt particle's position.
+    TEST_CASE("ResolveControlpointsForInstance with bound particle + follow_parent_particle "
+              "snaps CP to parent particle pos") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].follow_parent_particle = true;
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(0, 0, 0);
+
+        // Build a bound-particle context: a parent ParticleInstance with one
+        // particle, plus a child ParticleInstance whose BoundedData links to
+        // the parent at index 0 with a non-zero pos.
+        ParticleInstance parent_inst;
+        parent_inst.ParticlesVec().resize(1);
+        parent_inst.ParticlesVec()[0].lifetime = 1.0f;
+
+        ParticleInstance child_inst;
+        child_inst.GetBoundedData().parent       = &parent_inst;
+        child_inst.GetBoundedData().particle_idx = 0;
+        child_inst.GetBoundedData().pos          = Eigen::Vector3f(7.0f, -5.0f, 2.5f);
+
+        sub->ResolveControlpointsForInstance(&child_inst);
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(7.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(-5.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(2.5));
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: null-offset CP with bound particle "
+              "substitutes the parent particle pos") {
+        // is_null_offset comes from JSON `offset: null` — we set it directly.
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].offset         = Eigen::Vector3d(99, 99, 99);
+        sub->Controlpoints()[0].is_null_offset = true;
+
+        ParticleInstance parent_inst;
+        parent_inst.ParticlesVec().resize(1);
+        parent_inst.ParticlesVec()[0].lifetime = 1.0f;
+
+        ParticleInstance child_inst;
+        child_inst.GetBoundedData().parent       = &parent_inst;
+        child_inst.GetBoundedData().particle_idx = 0;
+        child_inst.GetBoundedData().pos          = Eigen::Vector3f(11.0f, 22.0f, 33.0f);
+
+        sub->ResolveControlpointsForInstance(&child_inst);
+        // is_null_offset path → fell through to default (line 165 takes offset),
+        // then post-substitution (lines 168-170) writes bound_pos.
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(11.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(22.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(33.0));
+        CHECK(sub->Controlpoints()[0].is_null_resolved == true);
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: bound particle + worldspace CP keeps offset "
+              "(worldspace ignores parent particle)") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].worldspace             = true;
+        sub->Controlpoints()[0].follow_parent_particle = true; // ignored due to worldspace
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(99, 0, 0);
+
+        ParticleInstance parent_inst;
+        parent_inst.ParticlesVec().resize(1);
+        parent_inst.ParticlesVec()[0].lifetime = 1.0f;
+
+        ParticleInstance child_inst;
+        child_inst.GetBoundedData().parent       = &parent_inst;
+        child_inst.GetBoundedData().particle_idx = 0;
+        child_inst.GetBoundedData().pos          = Eigen::Vector3f(11.0f, 22.0f, 33.0f);
+
+        sub->ResolveControlpointsForInstance(&child_inst);
+        // worldspace branch wins; resolved == offset, NOT bound_pos.
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(99.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("ResolveControlpointsForInstance: dead parent particle is treated as no-bind "
+              "(particle_idx not >= 0 path)") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub();
+        sub->Controlpoints()[0].follow_parent_particle = true;
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(5, 5, 5);
+
+        ParticleInstance parent_inst;
+        ParticleInstance child_inst;
+        // parent set but particle_idx = -1 → has_bound_particle false
+        child_inst.GetBoundedData().parent       = &parent_inst;
+        child_inst.GetBoundedData().particle_idx = -1;
+        child_inst.GetBoundedData().pos          = Eigen::Vector3f(7.0f, -5.0f, 2.5f);
+
+        sub->ResolveControlpointsForInstance(&child_inst);
+        // has_bound_particle=false → falls through to default branch → resolved = offset.
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(5.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(5.0));
+    }
 }
 

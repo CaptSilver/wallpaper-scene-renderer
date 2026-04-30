@@ -1,10 +1,13 @@
 #include <doctest.h>
 
 #include "wpscene/WPMaterial.h"
+#include "WPUserProperties.hpp"
 
 #include <nlohmann/json.hpp>
 
 using namespace wallpaper::wpscene;
+using wallpaper::WPUserProperties;
+using wallpaper::UserPropertiesScope;
 
 namespace
 {
@@ -243,5 +246,283 @@ TEST_SUITE("WPMaterial::MergePass") {
         CHECK(m.combos.at("X") == 5);
         CHECK(m.combos.at("Y") == 7);
         CHECK(m.constantshadervalues.at("g_New")[0] == doctest::Approx(0.25f));
+    }
+}
+
+// =====================================================================
+// usershadervalues + g_currentUserProperties hookup (lines 135-154 in WPMaterial.cpp)
+// Material exposes "usershadervalues": {"<userPropName>": "<shaderConstName>"} and
+// when a thread-local g_currentUserProperties is active, it should resolve the
+// user property's value into constantshadervalues[shaderConstName] as a float vector.
+// =====================================================================
+TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperties") {
+    TEST_CASE("string property: whitespace-separated floats are parsed into a vector") {
+        WPUserProperties props;
+        // Color-style 4-float string (typical for g_Color)
+        props.SetProperty("tint", nlohmann::json("0.25 0.5 0.75 1.0"));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"tint": "g_Color"}
+            }]
+        })");
+        // Binding always recorded
+        CHECK(m.userShaderBindings.at("tint") == "g_Color");
+        // Value resolved into constantshadervalues by user property hookup
+        REQUIRE(m.constantshadervalues.count("g_Color") == 1u);
+        const auto& v = m.constantshadervalues.at("g_Color");
+        REQUIRE(v.size() == 4u);
+        CHECK(v[0] == doctest::Approx(0.25f));
+        CHECK(v[1] == doctest::Approx(0.5f));
+        CHECK(v[2] == doctest::Approx(0.75f));
+        CHECK(v[3] == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("string property: single-token value parses to one-element vector") {
+        WPUserProperties props;
+        props.SetProperty("opacity", nlohmann::json("0.42"));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"opacity": "g_Alpha"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.count("g_Alpha") == 1u);
+        const auto& v = m.constantshadervalues.at("g_Alpha");
+        REQUIRE(v.size() == 1u);
+        CHECK(v[0] == doctest::Approx(0.42f));
+    }
+
+    TEST_CASE("string property: empty string yields no constant entry (floatVec stays empty)") {
+        WPUserProperties props;
+        props.SetProperty("nothing", nlohmann::json(""));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"nothing": "g_Empty"}
+            }]
+        })");
+        // Binding still recorded
+        CHECK(m.userShaderBindings.at("nothing") == "g_Empty");
+        // But no value parsed, so no constantshadervalues entry
+        CHECK(m.constantshadervalues.count("g_Empty") == 0u);
+    }
+
+    TEST_CASE("string property: non-numeric tokens parse zero floats, no constant emitted") {
+        WPUserProperties props;
+        props.SetProperty("garbage", nlohmann::json("not a number"));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"garbage": "g_Junk"}
+            }]
+        })");
+        CHECK(m.userShaderBindings.at("garbage") == "g_Junk");
+        CHECK(m.constantshadervalues.count("g_Junk") == 0u);
+    }
+
+    TEST_CASE("number property: scalar resolves to single-element vector") {
+        WPUserProperties props;
+        props.SetProperty("brightness", nlohmann::json(1.75));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"brightness": "g_Bright"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.count("g_Bright") == 1u);
+        const auto& v = m.constantshadervalues.at("g_Bright");
+        REQUIRE(v.size() == 1u);
+        CHECK(v[0] == doctest::Approx(1.75f));
+    }
+
+    TEST_CASE("number property: integer is also accepted (is_number is true for ints)") {
+        WPUserProperties props;
+        props.SetProperty("count", nlohmann::json(7));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"count": "g_Count"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.count("g_Count") == 1u);
+        const auto& v = m.constantshadervalues.at("g_Count");
+        REQUIRE(v.size() == 1u);
+        CHECK(v[0] == doctest::Approx(7.0f));
+    }
+
+    TEST_CASE("array property: numeric elements are pushed into the vector") {
+        WPUserProperties props;
+        // Array of numbers — typical for vec3/vec4 properties
+        props.SetProperty("color", nlohmann::json({0.1, 0.2, 0.3}));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"color": "g_TintRGB"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.count("g_TintRGB") == 1u);
+        const auto& v = m.constantshadervalues.at("g_TintRGB");
+        REQUIRE(v.size() == 3u);
+        CHECK(v[0] == doctest::Approx(0.1f));
+        CHECK(v[1] == doctest::Approx(0.2f));
+        CHECK(v[2] == doctest::Approx(0.3f));
+    }
+
+    TEST_CASE("array property: non-numeric elements are silently skipped") {
+        WPUserProperties props;
+        // Mixed array — only numeric entries should land in floatVec
+        props.SetProperty("mixed", nlohmann::json::parse(R"([1.0, "skip", 2.0, null, true, 3.0])"));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"mixed": "g_Mixed"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.count("g_Mixed") == 1u);
+        const auto& v = m.constantshadervalues.at("g_Mixed");
+        REQUIRE(v.size() == 3u);
+        CHECK(v[0] == doctest::Approx(1.0f));
+        CHECK(v[1] == doctest::Approx(2.0f));
+        CHECK(v[2] == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("array property: empty array yields no constant entry") {
+        WPUserProperties props;
+        props.SetProperty("empty", nlohmann::json::array());
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"empty": "g_Nope"}
+            }]
+        })");
+        CHECK(m.userShaderBindings.at("empty") == "g_Nope");
+        CHECK(m.constantshadervalues.count("g_Nope") == 0u);
+    }
+
+    TEST_CASE("array property: all-non-numeric array yields no constant entry") {
+        WPUserProperties props;
+        props.SetProperty("strs", nlohmann::json::parse(R"(["a", "b", "c"])"));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"strs": "g_Strs"}
+            }]
+        })");
+        CHECK(m.userShaderBindings.at("strs") == "g_Strs");
+        CHECK(m.constantshadervalues.count("g_Strs") == 0u);
+    }
+
+    TEST_CASE("missing property: g_currentUserProperties active but key absent → continue") {
+        WPUserProperties props;
+        props.SetProperty("other", nlohmann::json(1.0));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"unknown": "g_Missing"}
+            }]
+        })");
+        // Binding still recorded for the unknown key
+        CHECK(m.userShaderBindings.at("unknown") == "g_Missing");
+        // No value in props → propVal has no value → continue → no constant entry
+        CHECK(m.constantshadervalues.count("g_Missing") == 0u);
+    }
+
+    TEST_CASE("unsupported value type (bool) yields no constant entry") {
+        WPUserProperties props;
+        // Bool is neither string nor number nor array — none of the three branches fire,
+        // floatVec stays empty, no constantshadervalues entry written.
+        props.SetProperty("flag", nlohmann::json(true));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"flag": "g_Flag"}
+            }]
+        })");
+        CHECK(m.userShaderBindings.at("flag") == "g_Flag");
+        CHECK(m.constantshadervalues.count("g_Flag") == 0u);
+    }
+
+    TEST_CASE("unsupported value type (null) yields no constant entry") {
+        WPUserProperties props;
+        props.SetProperty("nothing", nlohmann::json(nullptr));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {"nothing": "g_Null"}
+            }]
+        })");
+        CHECK(m.userShaderBindings.at("nothing") == "g_Null");
+        CHECK(m.constantshadervalues.count("g_Null") == 0u);
+    }
+
+    TEST_CASE("multiple usershadervalues entries each resolve independently") {
+        WPUserProperties props;
+        props.SetProperty("a", nlohmann::json("0.5"));
+        props.SetProperty("b", nlohmann::json(2.0));
+        props.SetProperty("c", nlohmann::json({0.1, 0.2}));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "usershadervalues": {
+                    "a": "g_A",
+                    "b": "g_B",
+                    "c": "g_C"
+                }
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.at("g_A").size() == 1u);
+        CHECK(m.constantshadervalues.at("g_A")[0] == doctest::Approx(0.5f));
+        REQUIRE(m.constantshadervalues.at("g_B").size() == 1u);
+        CHECK(m.constantshadervalues.at("g_B")[0] == doctest::Approx(2.0f));
+        REQUIRE(m.constantshadervalues.at("g_C").size() == 2u);
+        CHECK(m.constantshadervalues.at("g_C")[0] == doctest::Approx(0.1f));
+        CHECK(m.constantshadervalues.at("g_C")[1] == doctest::Approx(0.2f));
+    }
+
+    TEST_CASE("usershadervalues entry may overwrite an existing constantshadervalues entry") {
+        // If both constantshadervalues AND usershadervalues mention the same shader name,
+        // the usershadervalues hookup runs after, so the user-prop value wins when active.
+        WPUserProperties props;
+        props.SetProperty("override", nlohmann::json(9.99));
+        UserPropertiesScope scope(&props);
+
+        auto m = Parse(R"({
+            "passes": [{
+                "shader": "flat",
+                "constantshadervalues": {"g_X": 1.0},
+                "usershadervalues":     {"override": "g_X"}
+            }]
+        })");
+        REQUIRE(m.constantshadervalues.at("g_X").size() == 1u);
+        CHECK(m.constantshadervalues.at("g_X")[0] == doctest::Approx(9.99f));
     }
 }

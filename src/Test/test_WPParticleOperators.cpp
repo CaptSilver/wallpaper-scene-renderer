@@ -141,6 +141,71 @@ TEST_SUITE("BlendWindow") {
         // life=0.7 (end):   factor = 0
         CHECK(bw.Factor(0.7) == doctest::Approx(0.0));
     }
+
+    // The next three tests pin the epsilon-comparison boundaries inside
+    // `FromJson` to specific outcomes, so mutations on
+    //   `blendin_end > blendin_start + 1e-6f`
+    //   `blendout_end > blendout_start + 1e-6f`
+    //   `blendout_start < 1.0f - 1e-6f`
+    // (`>` ↔ `>=`, `+` ↔ `-`, `<` ↔ `<=`) all flip the resulting `Has()`.
+
+    TEST_CASE("blendin_end == blendin_start + 1e-6 exactly → still trivial") {
+        // Tests `>` mutation on `blendin_end > blendin_start + 1e-6f`.  At the
+        // exact epsilon boundary, `>` is false (no fade); `>=` would gate on
+        // a degenerate 1e-6 window and Has() would flip to true.
+        const float start_v = 0.4f;
+        const float end_v   = 0.4f + 1e-6f;
+        json        j;
+        j["blendinstart"] = start_v;
+        j["blendinend"]   = end_v;
+        auto bw = BlendWindow::FromJson(j);
+        CHECK_FALSE(bw.Has());
+        CHECK_FALSE(bw.has_fade_in);
+    }
+
+    TEST_CASE("blendout_end == blendout_start + 1e-6 exactly → still trivial") {
+        // Same epsilon-boundary test for the fade-out window.  Pin `start <
+        // 1.0 - 1e-6` to true so the mutation under inspection is the `>` on
+        // (end > start + epsilon), not the upper-bound gate.
+        const float start_v = 0.5f;
+        const float end_v   = 0.5f + 1e-6f;
+        json        j;
+        j["blendoutstart"] = start_v;
+        j["blendoutend"]   = end_v;
+        auto bw = BlendWindow::FromJson(j);
+        CHECK_FALSE(bw.Has());
+        CHECK_FALSE(bw.has_fade_out);
+    }
+
+    TEST_CASE("blendout_end == blendout_start exactly → still trivial (no NaN factor)") {
+        // Tests `+` mutation on `blendin_start + 1e-6f` and
+        // `blendout_start + 1e-6f`.  When `end == start`, original `>` is
+        // false; mutated `+ → -` makes it `start > start - 1e-6` which is
+        // true and would gate on a 0-width window producing NaN factors.
+        json j  = { { "blendinstart", 0.4 }, { "blendinend", 0.4 },
+                    { "blendoutstart", 0.5 }, { "blendoutend", 0.5 } };
+        auto bw = BlendWindow::FromJson(j);
+        CHECK_FALSE(bw.Has());
+        CHECK_FALSE(bw.has_fade_in);
+        CHECK_FALSE(bw.has_fade_out);
+        CHECK(bw.Factor(0.5) == doctest::Approx(1.0));  // not NaN
+    }
+
+    TEST_CASE("blendout_start == 1.0 - 1e-6 exactly → still trivial (upper-bound gate)") {
+        // Tests `<` mutation on `blendout_start < 1.0f - 1e-6f` (the
+        // upper-bound gate).  Original keeps the gate strict; mutated `<=`
+        // would let a near-1.0 fade-out window slip through.  Use an end
+        // strictly larger than start + 1e-6 so the OTHER gate is true and
+        // the upper-bound gate is what flips Has().
+        const float start_v = 1.0f - 1e-6f;
+        const float end_v   = 1.0f + 5e-6f;  // strictly past start + 1e-6
+        json        j;
+        j["blendoutstart"] = start_v;
+        j["blendoutend"]   = end_v;
+        auto bw = BlendWindow::FromJson(j);
+        CHECK_FALSE(bw.Has());
+        CHECK_FALSE(bw.has_fade_out);
+    }
 }
 
 // ===========================================================================
@@ -193,6 +258,204 @@ TEST_SUITE("HsvColor") {
     TEST_CASE("clamps over-bright value") {
         auto rgb = HsvToRgb(0.0, 1.0, 2.0); // v > 1 → clamps to 1
         CHECK(rgb.x() == doctest::Approx(1.0));
+    }
+
+    // The next six tests pick a hue strictly inside each sextant (where
+    // `c != x` so the two adjacent branches produce DISTINCT RGBs) and
+    // pin every coordinate.  Mutating any single `case` label or its
+    // body is observable as a different RGB triple.
+    //
+    // Sextant 0 (h=30, R-Y):    expected (1, 0.5, 0)
+    // Sextant 1 (h=90, Y-G):    expected (0.5, 1, 0)
+    // Sextant 2 (h=150, G-C):   expected (0, 1, 0.5)
+    // Sextant 3 (h=210, C-B):   expected (0, 0.5, 1)
+    // Sextant 4 (h=270, B-M):   expected (0.5, 0, 1)
+    // Sextant 5 (h=330, M-R):   expected (1, 0, 0.5)
+
+    TEST_CASE("HsvToRgb sextant 0 (R→Y)") {
+        auto rgb = HsvToRgb(30.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(1.0));
+        CHECK(rgb.y() == doctest::Approx(0.5));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+    TEST_CASE("HsvToRgb sextant 1 (Y→G)") {
+        auto rgb = HsvToRgb(90.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(0.5));
+        CHECK(rgb.y() == doctest::Approx(1.0));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+    TEST_CASE("HsvToRgb sextant 2 (G→C)") {
+        auto rgb = HsvToRgb(150.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(0.0));
+        CHECK(rgb.y() == doctest::Approx(1.0));
+        CHECK(rgb.z() == doctest::Approx(0.5));
+    }
+    TEST_CASE("HsvToRgb sextant 3 (C→B)") {
+        auto rgb = HsvToRgb(210.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(0.0));
+        CHECK(rgb.y() == doctest::Approx(0.5));
+        CHECK(rgb.z() == doctest::Approx(1.0));
+    }
+    TEST_CASE("HsvToRgb sextant 4 (B→M)") {
+        auto rgb = HsvToRgb(270.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(0.5));
+        CHECK(rgb.y() == doctest::Approx(0.0));
+        CHECK(rgb.z() == doctest::Approx(1.0));
+    }
+    TEST_CASE("HsvToRgb sextant 5 (M→R)") {
+        auto rgb = HsvToRgb(330.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(1.0));
+        CHECK(rgb.y() == doctest::Approx(0.0));
+        CHECK(rgb.z() == doctest::Approx(0.5));
+    }
+
+    TEST_CASE("HsvToRgb negative-hue path: -30 wraps to 330 (sextant 5)") {
+        // Forces the `if (h < 0.0) h += 360.0` branch to fire.  Without it,
+        // sextant=-0.5 → idx=-1 → switch default takes case 5 (overshoot)
+        // but `x` and `c` are based on h<0 fmod which is wrong.  The
+        // negative branch must wrap to keep the computed (c, 0, x) right.
+        auto wrapped = HsvToRgb(-30.0, 1.0, 1.0);
+        auto direct  = HsvToRgb(330.0, 1.0, 1.0);
+        CHECK(wrapped.isApprox(direct, 1e-9));
+        CHECK(wrapped.x() == doctest::Approx(1.0));
+        CHECK(wrapped.y() == doctest::Approx(0.0));
+        CHECK(wrapped.z() == doctest::Approx(0.5));
+    }
+
+    TEST_CASE("HsvToRgb at h=0 returns red, not the case-5 magenta-mix") {
+        // `if (h < 0.0)` mutated to `<= 0.0` would push h=0 to 360, then
+        // sextant=6, switch default → case 5 → r=c, g=0, b=x.
+        // At sextant=6, x = c*(1 - |fmod(6,2)-1|) = 0, so the result is
+        // (c+m, m, m) = (1, 0, 0) which is also red — so this case is
+        // equivalent for s=v=1.  Use s=0.5, v=1: m=0.5, c=0.5, x=0; the
+        // sextant-0 branch gives (c+m, x+m, m) = (1, 0.5, 0.5) (orange-ish);
+        // the case-5 branch gives (c+m, m, x+m) = (1, 0.5, 0.5) — STILL
+        // equivalent because at exact boundary x=0 and the formulas agree.
+        // We can't kill this with an HsvToRgb fixture; the test instead
+        // exercises a near-zero h that exercises the sextant-0 case
+        // (idx=0) so the switch's case-0 arm IS reached.
+        auto rgb = HsvToRgb(0.0, 1.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(1.0));
+        CHECK(rgb.y() == doctest::Approx(0.0));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("HsvToRgb saturation clamping: s=-0.5 maps to gray (s=0)") {
+        // Tests `std::clamp(s, 0.0, 1.0)` for the lower bound; if it were
+        // `std::clamp(s, 1e-9, 1.0)` (a `<` ↔ `<=` shifted variant) the
+        // outputs would still be gray, but with `(s, 0, 1)` swapped to
+        // `(0, 0, 1)` the gray would shift slightly.  The simpler check
+        // is that negative s produces gray rather than negative RGB.
+        auto rgb = HsvToRgb(60.0, -0.5, 0.5);
+        CHECK(rgb.x() == doctest::Approx(0.5));
+        CHECK(rgb.y() == doctest::Approx(0.5));
+        CHECK(rgb.z() == doctest::Approx(0.5));
+    }
+
+    TEST_CASE("HsvToRgb saturation clamping: s=2 maps to fully saturated (s=1)") {
+        // s > 1 → clamped to 1.  At h=120 with v=1, expected pure green.
+        auto rgb = HsvToRgb(120.0, 2.0, 1.0);
+        CHECK(rgb.x() == doctest::Approx(0.0));
+        CHECK(rgb.y() == doctest::Approx(1.0));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("HsvToRgb value clamping: v=-0.5 maps to black (v=0)") {
+        auto rgb = HsvToRgb(120.0, 1.0, -0.5);
+        CHECK(rgb.x() == doctest::Approx(0.0));
+        CHECK(rgb.y() == doctest::Approx(0.0));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("HsvToRgb value clamping: v=2 maps to v=1 (over-bright wraps)") {
+        auto rgb = HsvToRgb(0.0, 1.0, 2.0);
+        CHECK(rgb.x() == doctest::Approx(1.0));
+        CHECK(rgb.y() == doctest::Approx(0.0));
+        CHECK(rgb.z() == doctest::Approx(0.0));
+    }
+
+    // RgbToHsv: the `if (h < 0.0) h += 360.0` line guards the
+    // r-channel branch where (g - b) can yield a negative result via fmod.
+    // The differing case for `<` ↔ `<=` mutations is exactly h=0; at h=0
+    // the original leaves it alone (returns 0 — pure red), the mutated
+    // pushes to 360 violating the documented [0, 360) contract.
+
+    TEST_CASE("RgbToHsv pure red returns h strictly less than 360") {
+        auto hsv = RgbToHsv(1.0, 0.0, 0.0);
+        CHECK(hsv.x() == doctest::Approx(0.0));
+        CHECK(hsv.x() < 360.0);  // critical: NOT 360
+        CHECK(hsv.y() == doctest::Approx(1.0));
+        CHECK(hsv.z() == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("RgbToHsv pure green: h=120, in-range") {
+        auto hsv = RgbToHsv(0.0, 1.0, 0.0);
+        CHECK(hsv.x() == doctest::Approx(120.0));
+        CHECK(hsv.x() < 360.0);
+    }
+
+    TEST_CASE("RgbToHsv pure blue: h=240, in-range") {
+        auto hsv = RgbToHsv(0.0, 0.0, 1.0);
+        CHECK(hsv.x() == doctest::Approx(240.0));
+        CHECK(hsv.x() < 360.0);
+    }
+
+    TEST_CASE("RgbToHsv: r-max with g<b wraps via h+=360 to magenta range") {
+        // r=1, g=0, b=0.5 — r is max; (g-b)/delta = -0.5; fmod(-0.5, 6) = -0.5
+        // → h = -30, then wrapped to 330.  Without the `if (h<0)` branch
+        // (or with the mutated `<= 0` path that flips it on h==0 specifically)
+        // this still wraps correctly here because h is strictly negative.
+        auto hsv = RgbToHsv(1.0, 0.0, 0.5);
+        CHECK(hsv.x() == doctest::Approx(330.0));
+        CHECK(hsv.x() >= 0.0);
+        CHECK(hsv.x() < 360.0);
+    }
+
+    TEST_CASE("RgbToHsv pure black returns h=0, s=0, v=0 (delta gate)") {
+        // Tests `if (delta > 0.0)`: at delta==0 (gray), mutated `>= 0.0`
+        // would fall through and divide by zero.  Verify s and h are 0
+        // and not NaN.
+        auto hsv = RgbToHsv(0.0, 0.0, 0.0);
+        CHECK(hsv.x() == doctest::Approx(0.0));
+        CHECK(hsv.y() == doctest::Approx(0.0));
+        CHECK(hsv.z() == doctest::Approx(0.0));
+        // Sanity: not NaN (a NaN slipping through would fail equality and
+        // also fail this self-check):
+        CHECK(hsv.x() == hsv.x());
+        CHECK(hsv.y() == hsv.y());
+    }
+
+    TEST_CASE("RgbToHsv pure mid-gray: h=0, s=0, v=0.5 (mx>0 but delta=0)") {
+        // Pins the `(mx > 0.0)` saturation guard: at delta=0 with mx>0,
+        // delta/mx = 0/0.5 = 0; the guard still resolves to s=0 because
+        // `mx > 0` is true and delta is 0.  A `>` ↔ `>=` mutation here
+        // makes no difference at mx>0, but a mutation that flips the
+        // ternary branches would take the s=0 fallback for true mx and
+        // produce s=0/0=NaN inside the ternary.
+        auto hsv = RgbToHsv(0.5, 0.5, 0.5);
+        CHECK(hsv.x() == doctest::Approx(0.0));
+        CHECK(hsv.y() == doctest::Approx(0.0));  // saturation 0
+        CHECK(hsv.z() == doctest::Approx(0.5));  // value 0.5
+        CHECK(hsv.x() == hsv.x()); // not NaN
+        CHECK(hsv.y() == hsv.y());
+    }
+
+    TEST_CASE("HsvToRgb hue normalized via floored modulo: h=720 == h=0") {
+        // The floored-modulo `h - floor(h/360)*360` normalizes 720 → 0
+        // and 360 → 0.  An arithmetic mutation on this expression
+        // (`*` ↔ `/`, `-` ↔ `+`) flips the wrap and produces nonsense.
+        auto a = HsvToRgb(0.0, 1.0, 1.0);
+        auto b = HsvToRgb(720.0, 1.0, 1.0);
+        auto c = HsvToRgb(-360.0, 1.0, 1.0);
+        CHECK(a.isApprox(b));
+        CHECK(a.isApprox(c));
+        // Pin a non-trivial hue too: 60 (sextant 1 boundary, but with v=0.5
+        // the boundary is non-equivalent because c != x):
+        auto h60a = HsvToRgb(60.0, 1.0, 1.0);
+        auto h60b = HsvToRgb(420.0, 1.0, 1.0);  // 420 mod 360 = 60
+        auto h60c = HsvToRgb(-300.0, 1.0, 1.0); // -300 mod 360 = 60
+        CHECK(h60a.isApprox(h60b));
+        CHECK(h60a.isApprox(h60c));
     }
 }
 

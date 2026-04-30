@@ -1,7 +1,10 @@
 #include <doctest.h>
 
 #include "Scene/SceneCamera.h"
+#include "Scene/SceneNode.h"
 #include "Utils/Eigen.h"
+
+#include <memory>
 
 #include <cmath>
 
@@ -790,3 +793,70 @@ TEST_SUITE("SceneCamera_Boundaries") {
     }
 
 } // TEST_SUITE SceneCamera_Boundaries
+
+// ===========================================================================
+// SceneCamera with attached SceneNode (node-driven camera, no direct lookat)
+// ===========================================================================
+
+TEST_SUITE("SceneCamera_NodeAttached") {
+    TEST_CASE("AttatchNode(nullptr) leaves camera unattached and logs error") {
+        auto cam = makePerspCamera();
+        cam.AttatchNode(nullptr);
+        // Without an attached node and without direct lookat, GetPosition returns origin.
+        CHECK(cam.GetPosition().norm() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("AttatchNode + GetPosition reflects node's local transform") {
+        auto cam  = makePerspCamera();
+        auto node = std::make_shared<SceneNode>();
+        node->SetTranslate(Eigen::Vector3f(5.0f, 7.0f, 9.0f));
+        node->UpdateTrans();
+        cam.AttatchNode(node);
+        auto pos = cam.GetPosition();
+        CHECK(pos.x() == doctest::Approx(5.0).epsilon(0.05));
+        CHECK(pos.y() == doctest::Approx(7.0).epsilon(0.05));
+        CHECK(pos.z() == doctest::Approx(9.0).epsilon(0.05));
+    }
+
+    TEST_CASE("GetDirection without direct lookat and without node returns -Z") {
+        SceneCamera cam(1.0f, 0.1f, 100.0f, 60.0f);
+        auto dir = cam.GetDirection();
+        CHECK(dir.z() == doctest::Approx(-1.0).epsilon(0.01));
+    }
+
+    TEST_CASE("GetDirection with attached node reflects node orientation") {
+        auto cam  = makePerspCamera();
+        auto node = std::make_shared<SceneNode>();
+        // Identity transform: looking down -Z at world origin.
+        node->UpdateTrans();
+        cam.AttatchNode(node);
+        auto dir = cam.GetDirection();
+        // Identity → -Z forward.
+        CHECK(dir.z() == doctest::Approx(-1.0).epsilon(0.05));
+    }
+
+    TEST_CASE("GetViewMatrix returns the cached view matrix after Update") {
+        auto cam = makePerspCamera();
+        cam.SetDirectLookAt(Eigen::Vector3d(0, 0, 5),
+                            Eigen::Vector3d(0, 0, 0),
+                            Eigen::Vector3d(0, 1, 0));
+        Eigen::Matrix4d view = cam.GetViewMatrix();
+        // LookAt at (0,0,5) → translation -5 along Z (world →  view).
+        // The 4th column has the translation.
+        CHECK(std::isfinite(view(0, 3)));
+        CHECK(std::isfinite(view(1, 3)));
+        CHECK(std::isfinite(view(2, 3)));
+    }
+
+    TEST_CASE("CalculateViewProjectionMatrix node path uses node's transform") {
+        auto cam  = makePerspCamera();
+        auto node = std::make_shared<SceneNode>();
+        node->SetTranslate(Eigen::Vector3f(0.0f, 0.0f, 5.0f));
+        node->UpdateTrans();
+        cam.AttatchNode(node); // calls Update internally
+        auto vp = cam.GetViewProjectionMatrix();
+        CHECK(std::isfinite(vp(0, 0)));
+        CHECK(std::isfinite(vp(3, 3)));
+    }
+}
+
