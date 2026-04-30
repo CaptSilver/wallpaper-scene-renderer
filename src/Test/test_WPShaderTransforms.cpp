@@ -1746,3 +1746,91 @@ TEST_SUITE("ClampAudioReactiveShift") {
     }
 
 } // TEST_SUITE("ClampAudioReactiveShift")
+
+// ===========================================================================
+// FixImplicitConversions — HLSL→GLSL implicit-truncation patterns surfaced
+// by the 2026-04-29 library audit (Naruto family + Outset Island).
+// ===========================================================================
+
+TEST_SUITE("FixImplicitConversions.libraryAudit") {
+
+    TEST_CASE("float = vec2_expr wraps RHS with .x") {
+        // Lens Flare Sun (workshop 2487531853, 5 wallpapers):
+        // `float pointer = g_PointerPosition.xy * u_pointerSpeed;`
+        std::string in =
+            "uniform vec2 g_PointerPosition;\n"
+            "uniform float u_pointerSpeed;\n"
+            "void main() {\n"
+            "  float pointer = g_PointerPosition.xy * u_pointerSpeed;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("(g_PointerPosition.xy * u_pointerSpeed).x") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("float = scalar function call NOT wrapped (Cyberpunk Lucy regression)") {
+        // 2866203962 color_key effect:
+        // `float delta = _wedot(abs(g_KeyColor - albedo.rgb), vec3(1, 1, 1));`
+        // _wedot returns float — wrapping with .x errors as scalar swizzle.
+        std::string in =
+            "void main() {\n"
+            "  vec3 g_KeyColor;\n"
+            "  vec4 albedo;\n"
+            "  float delta = _wedot(abs(g_KeyColor - albedo.rgb), vec3(1, 1, 1));\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // No `.x` appended after the closing paren of _wedot.
+        CHECK(result.find("_wedot(abs(g_KeyColor - albedo.rgb), vec3(1, 1, 1)).x") ==
+              std::string::npos);
+    }
+
+    TEST_CASE("varying shadowed by local float skips wider-varying truncation") {
+        // Lens Flare Sun: `varying vec4 timer; float timer = sin(...);`
+        // `rotation + timer * timer2` should NOT get `.xy` swizzles —
+        // bare `timer` resolves to the float local.
+        std::string in =
+            "in vec4 timer;\n"
+            "in vec4 timer2;\n"
+            "in vec2 rotation;\n"
+            "void main() {\n"
+            "  float timer = 1.0;\n"
+            "  float timer2 = 2.0;\n"
+            "  vec2 result = rotation + timer * timer2;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // No `timer.xy` / `timer.xyz` should have been injected.
+        CHECK(result.find("timer.xy") == std::string::npos);
+        CHECK(result.find("timer.xyz") == std::string::npos);
+    }
+
+    TEST_CASE("vec3 varying minus vec2() constructor gets .xy swizzle") {
+        // Cutout Vignette (workshop 2138904733, Outset Island):
+        // `length(abs(v_TexCoord - vec2(u_offset)) * 1.0)` where
+        // v_TexCoord is `in vec3`.  Expect `v_TexCoord.xy - vec2(...)`.
+        std::string in =
+            "in vec3 v_TexCoord;\n"
+            "uniform vec2 u_offset;\n"
+            "void main() {\n"
+            "  float scale = length(abs(v_TexCoord - vec2(u_offset)) * 1.0);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy - vec2(u_offset)") != std::string::npos);
+    }
+
+    TEST_CASE("scalar swizzle on shadowed varying rewrites to vecN()") {
+        // If `float NAME = ...` shadows `varying vec4 NAME` and someone
+        // writes `NAME.xy`, GLSL rejects the scalar swizzle.  Rewrite to
+        // `vec2(NAME)` so HLSL's broadcast semantics keep working.
+        std::string in =
+            "in vec4 timer;\n"
+            "void main() {\n"
+            "  float timer = 1.0;\n"
+            "  vec2 broadcast = timer.xy;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2(timer)") != std::string::npos);
+        // The bare `timer.xy` should have been replaced.
+        CHECK(result.find("= timer.xy") == std::string::npos);
+    }
+
+} // TEST_SUITE("FixImplicitConversions.libraryAudit")

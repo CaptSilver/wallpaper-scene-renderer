@@ -755,6 +755,18 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // with a single-component swizzle (`.x`, `.y`, …), wrap the RHS in
     // parentheses and append `.x`.  Skip pure assignments that already
     // produce a scalar (e.g. `float a = b.x;`) so we don't double-wrap.
+    //
+    // Collect user-defined functions whose return type is `float` so we
+    // can skip wrapping `float NAME = userFloatFn(args.with.swizzles);` —
+    // Voyager Light Pillar (3697335780, workshop 3647838840) has
+    // `float noise(vec2 coord) {...}` and uses `float rnd = noise(gl_Position.xy);`.
+    std::set<std::string> user_float_fns;
+    {
+        std::regex re_fn(R"(\bfloat\s+(\w+)\s*\([^)]*\)\s*\{)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
+             it != std::sregex_iterator(); ++it)
+            user_float_fns.insert((*it)[1].str());
+    }
     {
         std::regex re(R"(\bfloat\s+(\w+)\s*=\s*([^;]+);)");
         std::string out;
@@ -788,6 +800,19 @@ inline std::string FixImplicitConversions(const std::string& src) {
             std::regex scalar_call(
                 R"(^\s*(length|dot|distance|_wedot|_wep|_wemx|_wemn|abs|min|max|clamp|saturate|smoothstep|step|sign|floor|ceil|fract|mod|sin|cos|tan|asin|acos|atan|exp|log|log10|sqrt|inversesqrt|trunc|round)\s*\()");
             if (std::regex_search(rhs, scalar_call)) continue;
+            // Skip when the RHS starts with a user-defined float-returning
+            // function (collected above).
+            {
+                bool is_user_float_call = false;
+                for (const auto& fn : user_float_fns) {
+                    std::regex re(R"(^\s*)" + fn + R"(\s*\()");
+                    if (std::regex_search(rhs, re)) {
+                        is_user_float_call = true;
+                        break;
+                    }
+                }
+                if (is_user_float_call) continue;
+            }
 
             out.append(result, lastPos, m.position() - lastPos);
             out.append("float ").append(m[1].str()).append(" = (")
