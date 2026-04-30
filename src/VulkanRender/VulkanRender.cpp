@@ -1386,7 +1386,16 @@ void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) 
     for (auto& item : scene.renderTargets) {
         auto& rt = item.second;
         if (! item.first.empty() && (rt.width * rt.height <= 4)) {
-            LOG_ERROR("wrong size for render target: %s", item.first.c_str());
+            // Pre-existing diagnostic — RT was never given a real size.
+            // Common for SceneScript-effect text layers whose initial body
+            // is empty/placeholder so texW/texH stay tiny (Cyberpunk Lucy
+            // 2866203962 spawns 4 such ping-pongs from its media-player
+            // text effect chain).  The render-graph pass cache treats them
+            // as no-ops so behavior is correct; only the log noise was the
+            // problem.  Demoted from ERROR to INFO.
+            LOG_INFO("render target %s left at placeholder size — effect "
+                     "chain skipped",
+                     item.first.c_str());
         } else if (rt.has_mipmap) {
             rt.mipmap_level =
                 std::max(3u,
