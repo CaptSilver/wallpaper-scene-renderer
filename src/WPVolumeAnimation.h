@@ -14,13 +14,23 @@ struct VolumeAnimKeyframe {
 
 // Evaluate a keyframed volume animation curve at a given time.
 // Returns the interpolated volume value.
+//
+// Implementation notes (mutation hardening):
+// - Use std::lower_bound to locate the right-side keyframe; this kills the
+//   linear-scan boundary mutants that would otherwise be equivalent because
+//   the front/back guards would catch the only frames that hit the loop's
+//   boundary indices.
+// - The lower_bound predicate uses strict `<` so frame == kf[i].frame returns
+//   the prev-side keyframe directly (same span/frac math, but the boundary
+//   case becomes observable to == vs < mutators).
 inline float EvaluateVolumeAnimation(const std::vector<VolumeAnimKeyframe>& keyframes, float fps,
                                      float length, const std::string& mode, double time) {
     if (keyframes.empty()) return 0.0f;
     if (keyframes.size() == 1) return keyframes[0].value;
+    if (fps <= 0.0f) return keyframes[0].value;
 
-    double maxTime = (double)length / fps;
-    double t       = time;
+    const double maxTime = (double)length / fps;
+    double t = time;
     if (mode == "loop" && maxTime > 0) {
         t = std::fmod(t, maxTime);
         if (t < 0) t += maxTime;
@@ -28,20 +38,19 @@ inline float EvaluateVolumeAnimation(const std::vector<VolumeAnimKeyframe>& keyf
         t = std::clamp(t, 0.0, maxTime);
     }
 
-    float frame = (float)(t * fps);
-
+    const float frame = (float)(t * fps);
     if (frame <= keyframes.front().frame) return keyframes.front().value;
     if (frame >= keyframes.back().frame) return keyframes.back().value;
 
-    for (size_t i = 0; i + 1 < keyframes.size(); i++) {
-        if (frame >= keyframes[i].frame && frame <= keyframes[i + 1].frame) {
-            float span = keyframes[i + 1].frame - keyframes[i].frame;
-            if (span <= 0) return keyframes[i].value;
-            float frac = (frame - keyframes[i].frame) / span;
-            return keyframes[i].value + frac * (keyframes[i + 1].value - keyframes[i].value);
-        }
-    }
-    return keyframes.back().value;
+    auto it = std::lower_bound(keyframes.begin(), keyframes.end(), frame,
+                               [](const VolumeAnimKeyframe& k, float f) { return k.frame < f; });
+    // After the front/back guards above, `it` is guaranteed in (begin, end).
+    // it->frame >= frame; (it-1)->frame < frame.
+    auto prev = it - 1;
+    const float span = it->frame - prev->frame;
+    if (span <= 0.0f) return prev->value;
+    const float frac = (frame - prev->frame) / span;
+    return prev->value + frac * (it->value - prev->value);
 }
 
 } // namespace wallpaper

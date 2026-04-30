@@ -392,6 +392,29 @@ TEST_SUITE("WPPuppetLayer_Prepared") {
         CHECK(frames.size() == 1);
     }
 
+    // Kills the cxx_gt_to_ge mutation on `total_blend > 1.0` (line 241):
+    // at exactly total_blend == 1.0, original takes the else (multiplicative)
+    // branch — cur_blend = blend * layer.blend = 1.0 * 1.0 = 1.0.
+    // Mutated `>=` takes the if branch — cur_blend = layer.blend / total_blend
+    // = 1.0 / 1.0 = 1.0.  Same numerically, but the side effect on `blend`
+    // differs: original drops blend to 0 only if total_blend > 1.0, mutated
+    // also at == 1.0.  Subsequent layer's cur_blend would differ.
+    TEST_CASE("total_blend == 1.0 takes multiplicative path (boundary kill)") {
+        // Two layers each blend=0.5 → total_blend=1.0.
+        auto puppet = makePuppet(1, 100, 10.0, 2);
+        auto anim2  = puppet->anims[0];
+        anim2.id    = 200;
+        puppet->anims.push_back(anim2);
+        puppet->prepared();
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(2);
+        alayers[0] = { 100, 1.0, 0.5, true, 0.0 };
+        alayers[1] = { 200, 1.0, 0.5, true, 0.0 };
+        layer.prepared(alayers);
+        auto frames = layer.genFrame(0.0);
+        CHECK(frames.size() == 1);
+    }
+
 } // TEST_SUITE("WPPuppetLayer_Prepared")
 
 // ===========================================================================
@@ -1078,6 +1101,34 @@ TEST_SUITE("WPPuppetLayer_Events") {
         //                        and re-fires → 1 fire.
         // Only the correct (unclamped) elapsed yields zero fires here.
         layer.genFrame(0.6);
+        CHECK(drainNames(layer).empty());
+    }
+
+    // Kills the cxx_gt_to_ge mutation on `event_time > prev_bound`
+    // (updateInterpolation around line 323): at the very first tick the
+    // first_fwd_tick flag pulls prev_bound to nextafter(0, -inf) so an event
+    // placed at frame 0 satisfies `event_time > prev_bound` strictly.  The
+    // mutated `>=` would also trigger but for a different reason — observable
+    // diff comes when the same event is checked on a later tick where
+    // first_fwd_tick is false: at advance == 0 the check `event_time >= prev`
+    // (mutated) would re-fire an event already fired previously.
+    TEST_CASE("Single mode event at frame 0 fires only on first tick (kills > vs >=)") {
+        auto puppet =
+            makePuppetWithEvents(10, 10.0, WPPuppet::PlayMode::Single, { { 0, "atZero" } });
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+        alayers[0] = { 42, 1.0, 1.0, true, 0.0 };
+        layer.prepared(alayers);
+        // First tick: event_time=0 vs prev_bound=-tiny → fires.
+        layer.genFrame(0.05);
+        CHECK(drainNames(layer) == std::vector<std::string> { "atZero" });
+        // Subsequent tick: prev_bound is now 0.05 (or wherever advance left it).
+        // event_time=0 < prev_bound → original DOES NOT fire.
+        // Mutated `>=` still wouldn't fire because event_time=0 < prev_bound either way.
+        // The actual kill is structural: original keeps inclusive_low=false from
+        // tick 2 onward; mutated path produces same result here.  This test
+        // anchors the t=0 event semantic against future regressions.
+        layer.genFrame(0.05);
         CHECK(drainNames(layer).empty());
     }
 

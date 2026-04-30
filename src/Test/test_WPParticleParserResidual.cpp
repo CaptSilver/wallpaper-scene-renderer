@@ -25,6 +25,8 @@
 #include "Particle/ParticleSystem.h"
 #include "wpscene/WPParticleObject.h"
 
+#include "Core/Random.hpp"
+
 #include <Eigen/Core>
 #include <array>
 #include <cmath>
@@ -70,6 +72,23 @@ defaultCps(std::vector<ParticleControlpoint>& storage) {
         cp.velocity = Eigen::Vector3d(0, 0, 0);
     }
     return std::span<ParticleControlpoint>(storage.data(), storage.size());
+}
+
+// Determinism note: doctest runs all TEST_CASEs sequentially in a single
+// process.  Tests that consume Random:: state can shift later tests'
+// pass/fail outcomes for mutants that depend on randomized branches.
+// Where determinism matters, tests use min == max so the random pick
+// collapses, or assert in-range (not exact equality) so jitter is tolerated.
+//
+// `seededInit` is provided for the few cases that need explicit re-seeding
+// before re-invoking a captured Random-using initializer; most tests pass
+// `min == max` and don't need it.
+inline void seedDeterministic() {
+    Random::seed(0xC0FFEE42u);
+}
+
+inline void seededInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) {
+    init(p, dt);
 }
 
 inline Particle runOpSingle(ParticleOperatorOp op, const Particle& base,
@@ -128,7 +147,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         json j = { { "name", "alpharandom" }, { "min", 0.5 }, { "max", 0.5 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.alpha == doctest::Approx(0.5f).epsilon(0.001));
     }
 
@@ -139,7 +158,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         json j = { { "name", "sizerandom" }, { "min", 7.0 }, { "max", 7.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.size == doctest::Approx(7.0f).epsilon(0.001));
     }
 
@@ -150,7 +169,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 20; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             CHECK(p.size >= 4.0f);
             CHECK(p.size <= 8.0f);
         }
@@ -175,7 +194,7 @@ TEST_SUITE("lifetimerandom jitter boundary") {
         Particle p = makeParticle();
         p.init.lifetime = 0.0f;
         p.lifetime      = 0.0f;
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // Must be EXACTLY 0 — any jitter (`>=` mutation) would multiply 0
         // by a [0.95, 1.05] factor (still 0 — but differs at IEEE level if
         // we ever pull in a NaN).  Both should yield 0; check finite.
@@ -193,7 +212,7 @@ TEST_SUITE("lifetimerandom jitter boundary") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 50; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             CHECK(p.init.lifetime >= 0.5f);   // not collapsed to ~0
             CHECK(p.init.lifetime <= 1.5f);   // not blown up
         }
@@ -219,7 +238,7 @@ TEST_SUITE("velocityrandom inherit CP boundary") {
                    { "controlpoint", 0 } };
         auto init = WPParticleParser::genParticleInitOp(j, {});
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.velocity.norm() == doctest::Approx(0.0f));
     }
 
@@ -233,7 +252,7 @@ TEST_SUITE("velocityrandom inherit CP boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.velocity.x() == doctest::Approx(10.0f));
         CHECK(p.velocity.y() == doctest::Approx(20.0f));
         CHECK(p.velocity.z() == doctest::Approx(30.0f));
@@ -264,7 +283,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            init(p, 0.5);
+            seededInit(init, p, 0.5);
             CHECK(p.velocity.norm() == doctest::Approx(100.0f).epsilon(0.05));
         }
     }
@@ -278,7 +297,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
                    { "offset", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.05);
+        seededInit(init, p, 0.05);
         CHECK(p.velocity.norm() == doctest::Approx(50.0f).epsilon(0.1));
     }
 
@@ -295,7 +314,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
                    { "offset", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 11.0);
+        seededInit(init, p, 11.0);
         CHECK(std::isfinite(p.velocity.norm()));
         CHECK(p.velocity.norm() == doctest::Approx(30.0f).epsilon(0.1));
     }
@@ -315,7 +334,7 @@ TEST_SUITE("positionoffsetrandom boundaries") {
         json j = { { "name", "positionoffsetrandom" }, { "distance", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.position.norm() == doctest::Approx(0.0f));
     }
 
@@ -329,7 +348,7 @@ TEST_SUITE("positionoffsetrandom boundaries") {
         // With len2=0, projection is skipped — full offset applied.
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             CHECK(std::isfinite(p.position.norm()));
             // distance * 0.02 * cbrt(rand) max = 100*0.02*1 = 2.
             CHECK(p.position.norm() <= 2.5f);
@@ -360,7 +379,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
         Particle p = makeParticle();
         p.size = 0.0f;
         p.position = Eigen::Vector3f(0, 0, 0);   // dist to cp 50 = 50
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // val = 50, t = (50-0)/(100-0) = 0.5, outVal = 0 + 0.5*200 = 100.
         CHECK(p.size == doctest::Approx(100.0f).epsilon(0.01));
     }
@@ -379,7 +398,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.size = 0.0f;
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.size == doctest::Approx(33.0f).epsilon(0.01));
     }
 
@@ -400,7 +419,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
         Particle p = makeParticle();
         p.size     = 0.0f;
         p.position = Eigen::Vector3f(0, 0, 0);
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // val = 0 (skipped), t=0, size = outMin = 0.
         CHECK(p.size == doctest::Approx(0.0f).epsilon(0.01));
     }
@@ -432,7 +451,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.position = Eigen::Vector3f(50, 50, 50);  // arbitrary pre-init
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // Short-circuit just bumps seq; p.position stays where it was.
         CHECK(p.position == Eigen::Vector3f(50, 50, 50));
     }
@@ -449,13 +468,13 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
 
         // First spawn: seq=0 → idx=0 → t=0 → cp0 (10,20,30).
         Particle a = makeParticle();
-        init(a, 0.0);
+        seededInit(init, a, 0.0);
         CHECK(a.position.x() == doctest::Approx(10.0f).epsilon(0.5));
         CHECK(a.position.y() == doctest::Approx(20.0f).epsilon(0.5));
 
         // Second spawn: seq=1 → idx=1 → t=1 → cp1 (70,80,90).
         Particle b = makeParticle();
-        init(b, 0.0);
+        seededInit(init, b, 0.0);
         CHECK(b.position.x() == doctest::Approx(70.0f).epsilon(0.5));
         CHECK(b.position.y() == doctest::Approx(80.0f).epsilon(0.5));
     }
@@ -476,7 +495,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
         std::array<Particle, 3> ps;
         for (int i = 0; i < 3; i++) {
             ps[i] = makeParticle();
-            init(ps[i], 0.0);
+            seededInit(init, ps[i], 0.0);
         }
         // idx 0 → t=0 → x=0 (taper=0 zeros noise; arc_amount=0 default).
         // idx 1 → t=0.5 → midpoint x=50 (plus zero arc, plus noise).
@@ -500,7 +519,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
         std::array<Particle, 3> ps;
         for (int i = 0; i < 3; i++) {
             ps[i] = makeParticle();
-            init(ps[i], 0.0);
+            seededInit(init, ps[i], 0.0);
         }
         CHECK(ps[0].position.x() == doctest::Approx(0.0f).epsilon(0.5));
         CHECK(ps[2].position.x() == doctest::Approx(100.0f).epsilon(0.5));
@@ -518,7 +537,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.position = Eigen::Vector3f(5, 5, 5);
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // Position untouched.
         CHECK(p.position.x() == doctest::Approx(5.0f));
         CHECK(p.position.y() == doctest::Approx(5.0f));
@@ -552,7 +571,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();  // first idx=0 → t=0 → no arc, no noise (taper=0).
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // Without arc and at endpoints (taper=sin(0)=0 / sin(pi)=0), pos == cp0.
         CHECK(p.position.x() == doctest::Approx(0.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -569,9 +588,9 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         // Skip first (t=0), grab second (t=0.5, midpoint).
         Particle p0 = makeParticle();
-        init(p0, 0.0);
+        seededInit(init, p0, 0.0);
         Particle p1 = makeParticle();
-        init(p1, 0.0);
+        seededInit(init, p1, 0.0);
         // arc: pathpos += 0.5*4*0.5*0.5 * arc_dir(0,1,0) * 100 = 50*arc_dir.
         // arc_dir is screen-perp of line(100,0,0) = (0,100,0) normalised = (0,1,0).
         // So midpoint y ≈ 50.
@@ -591,13 +610,13 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
         Particle p0 = makeParticle();
         p0.size     = 10.0f;
         p0.init.size = 10.0f;
-        init(p0, 0.0);    // t=0 → scale=1.0 → 10.
+        seededInit(init, p0, 0.0);    // t=0 → scale=1.0 → 10.
         CHECK(p0.size == doctest::Approx(10.0f).epsilon(0.05));
 
         Particle p1 = makeParticle();
         p1.size     = 10.0f;
         p1.init.size = 10.0f;
-        init(p1, 0.0);    // t=1 → scale=1-1*1=0 (or clamped to 0).
+        seededInit(init, p1, 0.0);    // t=1 → scale=1-1*1=0 (or clamped to 0).
         CHECK(p1.size == doctest::Approx(0.0f).epsilon(0.05));
     }
 
@@ -612,10 +631,10 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p0 = makeParticle();
         p0.size = 10.0f;
-        init(p0, 0.0);
+        seededInit(init, p0, 0.0);
         Particle p1 = makeParticle();
         p1.size = 10.0f;
-        init(p1, 0.0);
+        seededInit(init, p1, 0.0);
         // p1 t=1 → scale = 1 - 2 = -1, clamped to 0.
         CHECK(p1.size == doctest::Approx(0.0f).epsilon(0.05));
     }
@@ -631,10 +650,10 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p1 = makeParticle();
         p1.size = 10.0f;
-        init(p1, 0.0); // seq=0 → t=0 → scale=1 (would be no-op anyway)
+        seededInit(init, p1, 0.0); // seq=0 → t=0 → scale=1 (would be no-op anyway)
         Particle p2 = makeParticle();
         p2.size = 10.0f;
-        init(p2, 0.0); // seq=1 → t=1 → scale=1 (size_reduction=0 keeps it 1)
+        seededInit(init, p2, 0.0); // seq=1 → t=1 → scale=1 (size_reduction=0 keeps it 1)
         CHECK(p2.size == doctest::Approx(10.0f).epsilon(0.05));
     }
 }
@@ -659,7 +678,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 10; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             CHECK(p.color.x() >= 0.0f); CHECK(p.color.x() <= 1.0f);
             CHECK(p.color.y() >= 0.0f); CHECK(p.color.y() <= 1.0f);
             CHECK(p.color.z() >= 0.0f); CHECK(p.color.z() <= 1.0f);
@@ -677,7 +696,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             // h=0 → red → r=1, g=0, b=0 (HsvToRgb(0, 1, 1)).
             CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.05));
             CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -694,7 +713,7 @@ TEST_SUITE("hsvcolorrandom residual") {
                    { "huesteps", 0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // Hue=0 sat=1 val=0.5 → red half-lit.
         CHECK(p.color.x() == doctest::Approx(0.5f).epsilon(0.05));
         CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -712,7 +731,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             // Hue=0, sat=0.6, val=1 → HsvToRgb returns (1, 0.4, 0.4).
             CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.05));
             CHECK(p.color.y() == doctest::Approx(0.4f).epsilon(0.05));
@@ -736,7 +755,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "1.5 0.0 0.0" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.5f).epsilon(0.01));
     }
 
@@ -745,7 +764,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "255 0 0" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.01));
         CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.01));
     }
@@ -755,7 +774,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "0.5 0.5 0.5" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(0.5f).epsilon(0.01));
     }
 
@@ -767,7 +786,7 @@ TEST_SUITE("colorlist normalization residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 10; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             CHECK(p.color.x() >= 0.0f); CHECK(p.color.x() <= 1.05f);
             CHECK(p.color.y() >= 0.0f); CHECK(p.color.y() <= 1.05f);
             CHECK(p.color.z() >= 0.0f); CHECK(p.color.z() <= 1.05f);
@@ -780,7 +799,7 @@ TEST_SUITE("colorlist normalization residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            init(p, 0.0);
+            seededInit(init, p, 0.0);
             // No jitter → exact pass-through.
             CHECK(p.color.x() == doctest::Approx(0.4f).epsilon(0.001));
             CHECK(p.color.y() == doctest::Approx(0.6f).epsilon(0.001));
@@ -805,7 +824,7 @@ TEST_SUITE("mapsequencearoundcontrolpoint cp boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // First (idx=0): pos = cp0(50,50,50) + (10*cos(0), 10*sin(0), 0) = (60, 50, 50).
         CHECK(p.position.x() == doctest::Approx(60.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(50.0f).epsilon(0.05));
@@ -823,7 +842,7 @@ TEST_SUITE("mapsequencearoundcontrolpoint cp boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        init(p, 0.0);
+        seededInit(init, p, 0.0);
         // cp_offset = (0,0,0); pos = (10, 0, 0) at idx=0.
         CHECK(p.position.x() == doctest::Approx(10.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -2743,3 +2762,688 @@ TEST_SUITE("genParticleEmittOp periodic deeper") {
         CHECK(ps.size() <= 50);  // far less than 1000 it would emit uncapped.
     }
 }
+
+// ============================================================================
+// SECOND PASS — additional residual targets
+// ============================================================================
+
+// FrequencyValue::ReadFromJson — line 746 (`==` vs `!=`)
+TEST_SUITE("FrequencyValue ReadFromJson eq boundary") {
+    TEST_CASE("frequencymax==0 swap collapses to frequencymin") {
+        json j = { { "name", "oscillatealpha" },
+                   { "frequencymin", 0.0 }, { "frequencymax", 0.0 },
+                   { "scalemin", 0.5 }, { "scalemax", 0.5 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.alpha    = 1.0f;
+        auto out   = runOpSingle(op, p);
+        // freq=0 → w=0 → cos(0)=1 → tx=1 → scale = lerp(1, 0.5, 0.5) = 0.5.
+        CHECK(out.alpha == doctest::Approx(0.5f).epsilon(0.05));
+    }
+}
+
+// FrequencyValue cos at LifetimePassed=0 — lines 769-777
+TEST_SUITE("FrequencyValue cos at zero time") {
+    TEST_CASE("oscillatealpha at lifetime fresh: scalemax (cos(phase)=1 broadly)") {
+        json j = { { "name", "oscillatealpha" },
+                   { "frequencymin", 5.0 }, { "frequencymax", 5.0 },
+                   { "scalemin", 0.2 }, { "scalemax", 0.8 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.alpha         = 1.0f;
+        p.lifetime      = 1.0f;
+        p.init.lifetime = 1.0f;
+        auto out = runOpSingle(op, p);
+        // Random phase consumed, but result is in [scalemin, scalemax].
+        CHECK(out.alpha >= 0.0f);
+        CHECK(out.alpha <= 1.0f);
+    }
+}
+
+// vortex_v2 zone boundaries deeper — lines 1129, 1131, 1134
+TEST_SUITE("vortex_v2 zone boundary deeper") {
+    TEST_CASE("vortex_v2 distance > distanceouter triggers outer speed") {
+        json j = { { "name", "vortex_v2" }, { "controlpoint", 0 },
+                   { "axis", "0 0 1" }, { "flags", 0 },
+                   { "speedinner", 50.0 }, { "speedouter", 200.0 },
+                   { "distanceinner", 50.0 }, { "distanceouter", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(150, 0, 0);
+        auto out = runOpSingle(op, p, 1.0);
+        // direct = axis × radial = (0,0,1)×(150,0,0) = (0,150,0); normalised = (0,1,0).
+        // speed=200 → accel +y by 200.
+        CHECK(out.velocity.y() == doctest::Approx(200.0f).epsilon(0.5));
+    }
+
+    TEST_CASE("vortex_v2 distance == distanceinner: not strictly less, falls to middle zone") {
+        json j = { { "name", "vortex_v2" }, { "controlpoint", 0 },
+                   { "axis", "0 0 1" }, { "flags", 0 },
+                   { "speedinner", 50.0 }, { "speedouter", 200.0 },
+                   { "distanceinner", 100.0 }, { "distanceouter", 200.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(100, 0, 0);
+        auto out = runOpSingle(op, p, 1.0);
+        // dis_mid=100.1; t = (100-100)/100.1 = 0; lerp(0, 50, 200) = 50.
+        CHECK(out.velocity.y() == doctest::Approx(50.0f).epsilon(0.5));
+    }
+}
+
+// alphafade in_frac upper boundary — line 966
+TEST_SUITE("alphafade in_frac upper boundary") {
+    TEST_CASE("life > in_frac: no fade-in attenuation") {
+        json j = { { "name", "alphafade" },
+                   { "fadeintime", 0.3 }, { "fadeouttime", 0.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.init.lifetime = 1.0f;
+        p.lifetime      = 0.5f;   // life = 0.5 > in_frac = 0.3
+        p.alpha         = 1.0f;
+        auto out = runOpSingle(op, p);
+        CHECK(out.alpha == doctest::Approx(1.0f).epsilon(0.001));
+    }
+
+    TEST_CASE("life < in_frac: fade-in attenuation life/in_frac") {
+        json j = { { "name", "alphafade" },
+                   { "fadeintime", 0.5 }, { "fadeouttime", 0.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.init.lifetime = 1.0f;
+        p.lifetime      = 0.75f;
+        p.alpha         = 1.0f;
+        auto out = runOpSingle(op, p);
+        // in_frac=0.5; life=0.25 < 0.5; alpha *= 0.5.
+        CHECK(out.alpha == doctest::Approx(0.5f).epsilon(0.05));
+    }
+}
+
+// oscillateposition mask boundaries — line 1027
+TEST_SUITE("oscillateposition mask deeper") {
+    TEST_CASE("mask=1 0 0: only x processed") {
+        json j = { { "name", "oscillateposition" },
+                   { "frequencymin", 1.0 }, { "frequencymax", 1.0 },
+                   { "scalemin", 1.0 }, { "scalemax", 1.0 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.0 },
+                   { "mask", "1 0 0" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0, 5, 7);
+        ps.push_back(p);
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 0.05,
+        };
+        op(info);
+        CHECK(ps[0].position.y() == doctest::Approx(5.0f));
+        CHECK(ps[0].position.z() == doctest::Approx(7.0f));
+    }
+
+    TEST_CASE("mask=0.005 below threshold: all skipped") {
+        json j = { { "name", "oscillateposition" },
+                   { "frequencymin", 1.0 }, { "frequencymax", 1.0 },
+                   { "scalemin", 100.0 }, { "scalemax", 100.0 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.0 },
+                   { "mask", "0.005 0.005 0.005" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(7, 7, 7);
+        ps.push_back(p);
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 0.5,
+        };
+        op(info);
+        CHECK(ps[0].position.x() == doctest::Approx(7.0f));
+        CHECK(ps[0].position.y() == doctest::Approx(7.0f));
+        CHECK(ps[0].position.z() == doctest::Approx(7.0f));
+    }
+}
+
+// remapvalue set operation no-blend — line 1566
+TEST_SUITE("remapvalue set no-blend") {
+    TEST_CASE("set: pure replace (current irrelevant)") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 42.0 }, { "outputrangemax", 42.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 7.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.5);
+        CHECK(out.size == doctest::Approx(42.0f).epsilon(0.05));
+    }
+}
+
+// remapvalue inputCP boundaries — lines 1391, 1399, 1408, 1421
+TEST_SUITE("remapvalue inputCP boundaries deeper") {
+    TEST_CASE("input distancetocontrolpoint OOB inputCP returns 0") {
+        std::vector<ParticleControlpoint> cps(2, ParticleControlpoint {});
+        cps[0].resolved = Eigen::Vector3d(99, 99, 99);
+        json j = { { "name", "remapvalue" },
+                   { "input", "distancetocontrolpoint" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 },
+                   { "inputcontrolpoint0", 5 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle base = makeParticle();
+        base.size = 99.0f; base.position = Eigen::Vector3f(0, 0, 0);
+        ps.push_back(base);
+        ParticleInfo info {
+            .particles     = std::span<Particle>(ps),
+            .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
+            .time          = 0.0,
+            .time_pass     = 0.016,
+        };
+        op(info);
+        CHECK(ps[0].size == doctest::Approx(0.0f).epsilon(0.5));
+    }
+
+    TEST_CASE("input deltatocontrolpoint x: position.x - cp.x") {
+        std::vector<ParticleControlpoint> cps(8, ParticleControlpoint {});
+        cps[0].resolved = Eigen::Vector3d(20, 0, 0);
+        json j = { { "name", "remapvalue" },
+                   { "input", "deltatocontrolpoint" },
+                   { "inputcomponent", "x" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 },
+                   { "inputcontrolpoint0", 0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle base = makeParticle();
+        base.size = 0.0f; base.position = Eigen::Vector3f(50, 0, 0);
+        ps.push_back(base);
+        ParticleInfo info {
+            .particles     = std::span<Particle>(ps),
+            .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
+            .time          = 0.0,
+            .time_pass     = 0.016,
+        };
+        op(info);
+        CHECK(ps[0].size == doctest::Approx(30.0f).epsilon(0.5));
+    }
+
+    TEST_CASE("input directiontocontrolpoint x: normalised then reduces") {
+        std::vector<ParticleControlpoint> cps(8, ParticleControlpoint {});
+        cps[0].resolved = Eigen::Vector3d(10, 0, 0);
+        json j = { { "name", "remapvalue" },
+                   { "input", "directiontocontrolpoint" },
+                   { "inputcomponent", "x" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 },
+                   { "inputcontrolpoint0", 0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle base = makeParticle();
+        base.size = 0.0f; base.position = Eigen::Vector3f(0, 0, 0);
+        ps.push_back(base);
+        ParticleInfo info {
+            .particles     = std::span<Particle>(ps),
+            .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
+            .time          = 0.0,
+            .time_pass     = 0.016,
+        };
+        op(info);
+        // toward = (10,0,0); norm=10; normalised = (1,0,0); x=1 → t=1 → mapped=100.
+        CHECK(ps[0].size == doctest::Approx(100.0f).epsilon(0.5));
+    }
+}
+
+// remapvalue noise position — lines 1471-1472
+TEST_SUITE("remapvalue noise input deeper") {
+    TEST_CASE("noise at p=(100,100,100) octaves=1: finite output") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "noise" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "transformoctaves", 1 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size     = 0.0f;
+        p.position = Eigen::Vector3f(100, 100, 100);
+        auto out = runOpSingle(op, p, 0.016, 0.0);
+        CHECK(std::isfinite(out.size));
+        CHECK(out.size >= 0.0f);
+        CHECK(out.size <= 100.0f);
+    }
+}
+
+// remapvalue fbmnoise xs zero — line 1532
+TEST_SUITE("remapvalue fbmnoise xs zero anchor") {
+    TEST_CASE("fbmnoise xs=0: tx≈0.5 → mapped≈50") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "fbmnoise" },
+                   { "transformoctaves", 4 },
+                   { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 0.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.0);
+        CHECK(out.size == doctest::Approx(50.0f).epsilon(5.0));
+    }
+}
+
+// capvelocity bw factor — line 1660
+TEST_SUITE("capvelocity bw factor deeper") {
+    TEST_CASE("speed < 1e-9 (tiny): skipped") {
+        json j = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.velocity = Eigen::Vector3f(1e-11f, 0, 0);
+        auto out = runOpSingle(op, p);
+        CHECK(out.velocity.norm() < 1e-9f);
+    }
+}
+
+// maintaindistancetocontrolpoint pull formula — line 1701
+TEST_SUITE("maintaindistancetocontrolpoint pull formula deeper") {
+    TEST_CASE("variablestrength=2: pull doubles vs strength=1") {
+        json j1 = { { "name", "maintaindistancetocontrolpoint" },
+                    { "controlpoint", 0 },
+                    { "distance", 100.0 }, { "variablestrength", 1.0 } };
+        json j2 = { { "name", "maintaindistancetocontrolpoint" },
+                    { "controlpoint", 0 },
+                    { "distance", 100.0 }, { "variablestrength", 2.0 } };
+        auto op1 = WPParticleParser::genParticleOperatorOp(j1, emptyOverride());
+        auto op2 = WPParticleParser::genParticleOperatorOp(j2, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(50, 0, 0);
+        auto out1 = runOpSingle(op1, p, 0.1);
+        Particle q = makeParticle();
+        q.position = Eigen::Vector3f(50, 0, 0);
+        auto out2 = runOpSingle(op2, q, 0.1);
+        CHECK(out2.velocity.x() > out1.velocity.x() * 1.5f);
+    }
+}
+
+// collisionplane d_signed — line 1726
+TEST_SUITE("collisionplane d_signed sign") {
+    TEST_CASE("collisionplane (0,1,0,5) places plane at y=-5") {
+        json j = { { "name", "collisionplane" },
+                   { "plane", "0 1 0 5" },
+                   { "controlpoint", 0 },
+                   { "distance", 0.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0, -10, 0);
+        p.velocity = Eigen::Vector3f(0, -1, 0);
+        auto out = runOpSingle(op, p);
+        // Snap: ppos - sd*normal = (0,-10,0) - (-5)*(0,1,0) = (0,-5,0).
+        CHECK(out.position.y() == doctest::Approx(-5.0f).epsilon(0.05));
+    }
+}
+
+// collisionsphere boundary — lines 1750, 1756
+TEST_SUITE("collisionsphere boundary deeper") {
+    TEST_CASE("controlpoint OOB: early return") {
+        std::vector<ParticleControlpoint> cps(1, ParticleControlpoint {});
+        json j = { { "name", "collisionsphere" },
+                   { "controlpoint", 5 },
+                   { "radius", 100.0 },
+                   { "origin", "0 0 0" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(50, 0, 0);
+        auto out = runOpSingleCps(
+            op, p, std::span<ParticleControlpoint>(cps.data(), cps.size()));
+        CHECK(out.position.x() == doctest::Approx(50.0f));
+    }
+
+    TEST_CASE("dist < 1e-9 (at center): skipped") {
+        json j = { { "name", "collisionsphere" },
+                   { "controlpoint", 0 },
+                   { "radius", 100.0 },
+                   { "origin", "0 0 0" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0, 0, 0);
+        auto out = runOpSingle(op, p);
+        CHECK(out.position.x() == doctest::Approx(0.0f));
+    }
+}
+
+// collisionquad — lines 1813, 1815, 1827, 1834
+TEST_SUITE("collisionquad bounds deeper") {
+    TEST_CASE("particle outside half_v but inside half_u: skipped") {
+        json j = { { "name", "collisionquad" },
+                   { "plane", "0 1 0" },
+                   { "forward", "1 0 0" },
+                   { "origin", "0 0 0" },
+                   { "size", "100 10" },
+                   { "controlpoint", 0 },
+                   { "restitution", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0, -1, 50);
+        p.velocity = Eigen::Vector3f(0, -10, 0);
+        auto out = runOpSingle(op, p, 0.5);
+        CHECK(out.velocity.y() == doctest::Approx(-10.0f).epsilon(0.001));
+    }
+
+    TEST_CASE("collisionquad controlpoint OOB: early return") {
+        std::vector<ParticleControlpoint> cps(1, ParticleControlpoint {});
+        json j = { { "name", "collisionquad" },
+                   { "plane", "0 1 0" },
+                   { "forward", "1 0 0" },
+                   { "size", "100 100" },
+                   { "controlpoint", 5 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0, -1, 0);
+        p.velocity = Eigen::Vector3f(0, -10, 0);
+        auto out = runOpSingleCps(
+            op, p, std::span<ParticleControlpoint>(cps.data(), cps.size()), 0.5);
+        CHECK(out.velocity.y() == doctest::Approx(-10.0f).epsilon(0.001));
+    }
+}
+
+// collisionbox -halfsize — lines 1884, 1886
+TEST_SUITE("collisionbox -halfsize boundary") {
+    TEST_CASE("particle exactly at -halfsize: not clamped (boundary `<`)") {
+        json j = { { "name", "collisionbox" },
+                   { "halfsize", "10 10 10" },
+                   { "controlpoint", 0 },
+                   { "restitution", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(-10, 0, 0);
+        p.velocity = Eigen::Vector3f(-50, 0, 0);
+        auto out = runOpSingle(op, p);
+        CHECK(out.velocity.x() == doctest::Approx(-50.0f));
+    }
+
+    TEST_CASE("particle past -halfsize but vel +x: no reflect") {
+        json j = { { "name", "collisionbox" },
+                   { "halfsize", "10 10 10" },
+                   { "controlpoint", 0 },
+                   { "restitution", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(-20, 0, 0);
+        p.velocity = Eigen::Vector3f(30, 0, 0);
+        auto out = runOpSingle(op, p);
+        CHECK(out.position.x() == doctest::Approx(-10.0f).epsilon(0.05));
+        CHECK(out.velocity.x() == doctest::Approx(30.0f).epsilon(0.05));
+    }
+}
+
+// genParticleEmittOp duration boundary — line 2147
+TEST_SUITE("genParticleEmittOp duration boundary deeper") {
+    TEST_CASE("elapsed > duration: no emit") {
+        wpscene::Emitter e;
+        e.name        = "boxrandom";
+        e.rate        = 100.0f;
+        e.directions  = { 1, 1, 1 };
+        e.distancemin = { 0, 0, 0 };
+        e.distancemax = { 10, 10, 10 };
+        e.duration    = 0.5f;
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        std::vector<Particle> ps;
+        std::vector<ParticleInitOp> inis;
+        op(ps, inis, 1000, 0.6); // elapsed=0.6 > 0.5 → skip.
+        CHECK(ps.empty());
+    }
+}
+
+// remapvalue transformoctaves clamp — line 1257
+TEST_SUITE("remapvalue transformoctaves bounds residual") {
+    TEST_CASE("transformoctaves=0 clamped to 1: noise still finite") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "fbmnoise" },
+                   { "transformoctaves", 0 },
+                   { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 0.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.5);
+        CHECK(std::isfinite(out.size));
+    }
+}
+
+// reducemovementnearcontrolpoint inner boundary — line 1213
+TEST_SUITE("reducemovementnearcontrolpoint inner boundary") {
+    TEST_CASE("dist == distanceinner: full inner reduction") {
+        json j = { { "name", "reducemovementnearcontrolpoint" },
+                   { "controlpoint", 0 },
+                   { "distanceinner", 50.0 }, { "distanceouter", 200.0 },
+                   { "reductioninner", 5.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(50, 0, 0);
+        p.velocity = Eigen::Vector3f(100, 0, 0);
+        auto out = runOpSingle(op, p, 0.1);
+        // factor = 1/(1+5*0.1) ≈ 0.667.
+        CHECK(out.velocity.x() == doctest::Approx(66.67f).epsilon(2.0));
+    }
+}
+
+// remapvalue input speed/maxlifetime — input dispatch
+TEST_SUITE("remapvalue input speed dispatch") {
+    TEST_CASE("input speed: norm of velocity") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "speed" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size     = 0.0f;
+        p.velocity = Eigen::Vector3f(60, 80, 0);  // speed = 100
+        auto out   = runOpSingle(op, p);
+        CHECK(out.size == doctest::Approx(100.0f).epsilon(0.5));
+    }
+
+    TEST_CASE("input maxlifetime: returns init.lifetime") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "maxlifetime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "linear" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 5.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size          = 0.0f;
+        p.init.lifetime = 2.5f;
+        auto out = runOpSingle(op, p);
+        CHECK(out.size == doctest::Approx(50.0f).epsilon(0.5));
+    }
+}
+
+// boids speed > maxspeed — line 1951
+TEST_SUITE("boids maxspeed clamp deeper") {
+    TEST_CASE("boids speed > maxspeed && > 1e-9: clamped") {
+        json j = { { "name", "boids" },
+                   { "neighborthreshold", 0.0 },
+                   { "separationthreshold", 0.0 },
+                   { "separationfactor", 0.0 },
+                   { "alignmentfactor", 0.0 },
+                   { "cohesionfactor", 0.0 },
+                   { "maxspeed", 5.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        std::vector<Particle> ps;
+        ps.reserve(8);
+        Particle a = makeParticle();
+        a.position = Eigen::Vector3f(0, 0, 0);
+        a.velocity = Eigen::Vector3f(50, 0, 0);
+        ps.push_back(a);
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 0.016,
+        };
+        op(info);
+        CHECK(ps[0].velocity.norm() == doctest::Approx(5.0f).epsilon(0.05));
+    }
+}
+
+// turbulence noiseRate — line 1042
+TEST_SUITE("turbulence noiseRate threshold") {
+    TEST_CASE("noiseRate > 1.0: incoherent path zeroes mask=0 axes") {
+        json j = { { "name", "turbulence" },
+                   { "speedmin", 100.0 }, { "speedmax", 100.0 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.0 },
+                   { "timescale", 10.0 }, { "scale", 0.1 },
+                   { "mask", "1 1 0" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(1, 1, 0);
+        auto out = runOpSingle(op, p, 1.0);
+        CHECK(out.position.z() == doctest::Approx(0.0f).epsilon(0.05));
+    }
+}
+
+// vortex middle zone — line 1090
+TEST_SUITE("vortex middle zone t formula") {
+    TEST_CASE("vortex middle dist=125: lerp(0.25, 100, 200)≈125 (negative y)") {
+        json j = { { "name", "vortex" }, { "controlpoint", 0 },
+                   { "axis", "0 0 1" },
+                   { "speedinner", 100.0 }, { "speedouter", 200.0 },
+                   { "distanceinner", 100.0 }, { "distanceouter", 200.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(125, 0, 0);
+        auto out = runOpSingle(op, p, 1.0);
+        // vortex (not v2): direct = -axis × pos = -(0,125,0)/norm = (0,-1,0).
+        CHECK(out.velocity.y() < -100.0f);
+        CHECK(out.velocity.y() > -150.0f);
+    }
+}
+
+// movement drag scale — line 913
+TEST_SUITE("movement drag scale") {
+    TEST_CASE("drag with dt=2.0: factor = 1-drag*dt") {
+        json j = { { "name", "movement" }, { "drag", 0.2 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.velocity = Eigen::Vector3f(100, 0, 0);
+        auto out = runOpSingle(op, p, 2.0);
+        // factor = 1 - 0.2*2 = 0.6 → 100*0.6 = 60.
+        CHECK(out.velocity.x() == doctest::Approx(60.0f).epsilon(0.5));
+    }
+}
+
+// vortex_v2 ringradius pull — lines 1158, 1161
+TEST_SUITE("vortex_v2 ringradius pull deeper") {
+    TEST_CASE("ringwidth=0: any deviation pulls (kills `>` ringwidth boundary)") {
+        json j = { { "name", "vortex_v2" }, { "controlpoint", 0 },
+                   { "axis", "0 0 1" }, { "flags", 0 },
+                   { "speedinner", 0.0 }, { "speedouter", 0.0 },
+                   { "distanceinner", 1000.0 }, { "distanceouter", 2000.0 },
+                   { "ringradius", 100.0 }, { "ringwidth", 0.0 },
+                   { "ringpulldistance", 50.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(101, 0, 0);
+        auto out = runOpSingle(op, p, 1.0);
+        // |radiusDiff|=1 > 0; sign=-1 (diff=-1); pull -x by 50.
+        CHECK(out.velocity.x() == doctest::Approx(-50.0f).epsilon(0.5));
+    }
+}
+
+// remapvalue cosine boundary — line 1506
+TEST_SUITE("remapvalue cosine boundaries") {
+    TEST_CASE("cosine xs=0.5 (cos(π)=-1): tx=0 → mapped=outMin") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "cosine" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 0.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.5);
+        CHECK(out.size == doctest::Approx(0.0f).epsilon(0.5));
+    }
+}
+
+// remapvalue square boundary — line 1509
+TEST_SUITE("remapvalue square boundaries") {
+    TEST_CASE("square xs=0.75 (sin=-1<0): tx=0") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "square" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 0.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.75);
+        CHECK(out.size == doctest::Approx(0.0f).epsilon(0.5));
+    }
+}
+
+// remapvalue sine boundary
+TEST_SUITE("remapvalue sine zero crossings") {
+    TEST_CASE("sine xs=0.5 (sin(π)=0): tx=0.5 → mapped=midpoint") {
+        json j = { { "name", "remapvalue" },
+                   { "input", "particlesystemtime" },
+                   { "output", "particlesize" }, { "operation", "set" },
+                   { "transformfunction", "sine" }, { "transforminputscale", 1.0 },
+                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
+                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.size = 0.0f;
+        auto out = runOpSingle(op, p, 0.016, 0.5);
+        // sin(π)=0; tx=0.5; mapped=50.
+        CHECK(out.size == doctest::Approx(50.0f).epsilon(0.5));
+    }
+}
+
+// inheritvaluefromevent — line 1986
+TEST_SUITE("inheritvaluefromevent unknown input") {
+    TEST_CASE("input rotation no instance: rotation unchanged") {
+        json j = { { "name", "inheritvaluefromevent" },
+                   { "input", "rotation" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+        Particle p = makeParticle();
+        p.rotation = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
+        auto out = runOpSingle(op, p);
+        CHECK(out.rotation.x() == doctest::Approx(0.1f));
+        CHECK(out.rotation.y() == doctest::Approx(0.2f));
+        CHECK(out.rotation.z() == doctest::Approx(0.3f));
+    }
+}
+

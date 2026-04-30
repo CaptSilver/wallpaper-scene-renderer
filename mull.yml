@@ -6,7 +6,10 @@ mutators:
   - cxx_comparison
   - cxx_logical
 
-timeout: 10000  # 10 seconds per mutant (test suite runs in ~1s)
+timeout: 60000  # 60 seconds per mutant — keeps audio-thread tests (WAV decoder
+                # loop in WPSoundParser) and compute-heavy ops (PassCacheAlias)
+                # from bucketing as spurious Timeout instead of measuring kill
+                # rate.  Default 10s buckets ~40 of those incorrectly.
 
 excludePaths:
   - .*/third_party/.*
