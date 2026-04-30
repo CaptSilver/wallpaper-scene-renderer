@@ -27,14 +27,18 @@ constexpr float    MIN_FREQ         = 20.0f;
 constexpr float    MAX_FREQ         = 20000.0f;
 // Gain applied to raw FFT magnitudes to bring them into a useful [0,1] range.
 // Raw FFT gives ~0.01-0.05 for typical music; WE expects ~0.3-0.8 peaks.
-// We previously used 15.0 with a hard min()-clamp to 1.0, which saturated on
-// louder tracks and pinned bands at 1.0.  Wallpaper 2866203962 stacks two
-// chromatic_aberration passes on its VHS Time/Date text; with saturated bands
-// the audio-reactive shift pushed the RGB channels so far apart that the
-// glyphs looked corrupted / disappeared.  Dropping gain + using a smooth
-// saturation keeps peaks around 0.3–0.6 on louder music (never hits 1.0) so
-// audio-reactive effects stay musical without shredding text layers.
-constexpr float SPECTRUM_GAIN = 4.0f;
+// History:
+//   - 15.0 with hard min()-clamp to 1.0 — saturated on louder tracks and
+//     pinned bands at 1.0; broke wallpaper 2866203962's stacked chromatic-
+//     aberration text shake (RGB channels separated until glyphs vanished).
+//   - 4.0 with soft saturation x/(1+0.4x) — peaks ~0.3–0.6, kept text
+//     intact but audio visualizers (Blue Archive 2764537029, similar) felt
+//     visibly under-pumped: bars topped out at ~30px instead of the
+//     ~60–80px the wallpapers visually aim for.
+//   - 8.0 with the same soft saturation — peaks land around 0.5–0.7 (still
+//     well below 1.0 thanks to the asymptote), giving visualizers more
+//     amplitude without re-introducing the text-shake saturation problem.
+constexpr float SPECTRUM_GAIN = 8.0f;
 
 // Precompute Hanning window coefficients
 struct HanningWindow {
