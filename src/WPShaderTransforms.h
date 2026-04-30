@@ -702,6 +702,104 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "float $1 = $2;");
     }
 
+    // Fix: HLSL scalar swizzle `float_var.xy / .xyz / .xyzw` for broadcast.
+    // Driver: workshop effect 2487531853 "Lens Flare Sun" (5 wallpapers —
+    // Naruto family) uses `timer.xy * timer2.xyz` where timer and timer2
+    // are floats; HLSL silently broadcasts `s.xy` to `vec2(s, s)`.  GLSL
+    // rejects scalar swizzles.
+    //
+    // Collect known-float local variable names, then rewrite `name.xy`
+    // (or `.xyz`/`.xyzw`/`.rg`/`.rgb`/`.rgba`) to `vecN(name)`.
+    //
+    // NOTE: when a varying or uniform `vec4 NAME` is shadowed by a local
+    // `float NAME` (Lens Flare Sun: `varying vec4 timer; ... float timer = ...`)
+    // we still rewrite all `NAME.xy/.xyz/.xyzw` since GLSL rejects swizzling
+    // even on the vec4 reference if the local re-declaration is in scope —
+    // glslang takes the FLOAT and rejects.  The wallpaper author's HLSL
+    // pattern is "use the local float, broadcast via `.xy`" so the rewrite
+    // is what they intended.
+    {
+        std::set<std::string> float_locals;
+        std::regex            re_decl(R"(\bfloat\s+(\w+)\s*[=;])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
+             it != std::sregex_iterator(); ++it)
+            float_locals.insert((*it)[1].str());
+        // Also collect uniforms/varyings declared `float NAME`
+        std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_qual);
+             it != std::sregex_iterator(); ++it)
+            float_locals.insert((*it)[1].str());
+        // Per-name swizzle expansion
+        for (const auto& name : float_locals) {
+            // `name.xy` / `.rg` → vec2(name)
+            std::regex r2(R"(\b)" + name + R"(\.(?:xy|rg)\b)");
+            result = std::regex_replace(result, r2, "vec2(" + name + ")");
+            // `name.xyz` / `.rgb` → vec3(name)
+            std::regex r3(R"(\b)" + name + R"(\.(?:xyz|rgb)\b)");
+            result = std::regex_replace(result, r3, "vec3(" + name + ")");
+            // `name.xyzw` / `.rgba` → vec4(name)
+            std::regex r4(R"(\b)" + name + R"(\.(?:xyzw|rgba)\b)");
+            result = std::regex_replace(result, r4, "vec4(" + name + ")");
+        }
+    }
+
+    // Fix: HLSL implicit vector→scalar truncation in `float VAR = vecN_expr;`.
+    // Driver: workshop effect 2487531853 "Lens Flare Sun" (5 wallpapers —
+    // Naruto family) ships
+    //   `float pointer = g_PointerPosition.xy * u_pointerSpeed;`
+    // — the RHS is vec2 but the author wrote `float`.  HLSL silently
+    // truncates to .x; glslang rejects.
+    //
+    // Heuristic: if the RHS contains a multi-component swizzle access
+    // (`.xy`, `.xyz`, `.xyzw`, or `.rg/.rgb/.rgba`) and does NOT already end
+    // with a single-component swizzle (`.x`, `.y`, …), wrap the RHS in
+    // parentheses and append `.x`.  Skip pure assignments that already
+    // produce a scalar (e.g. `float a = b.x;`) so we don't double-wrap.
+    {
+        std::regex re(R"(\bfloat\s+(\w+)\s*=\s*([^;]+);)");
+        std::string out;
+        std::string::size_type lastPos = 0;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+             it != std::sregex_iterator(); ++it) {
+            const auto& m = *it;
+            const std::string rhs = m[2].str();
+            // Skip if RHS is a simple scalar pattern (no multi-component
+            // swizzle).  Look for `.xy`/`.xyz`/`.xyzw`/`.rg`/`.rgb`/`.rgba`
+            // — note `.x`/`.y`/etc. alone are scalar and ignored by this
+            // regex (negative-lookahead-like via length match).
+            std::regex multi_sw(R"(\.(xy|xyz|xyzw|rg|rgb|rgba)\b)");
+            if (! std::regex_search(rhs, multi_sw)) continue;
+            // Skip if RHS already ends with .x/.y/.z/.w/.r/.g/.b/.a
+            // (already-truncated forms like `(...).x`).
+            std::regex trailing_scalar(R"(\.[xyzwrgba]\s*$)");
+            if (std::regex_search(rhs, trailing_scalar)) continue;
+            // Skip texture() calls (already handled by an earlier rule).
+            if (rhs.find("texture") != std::string::npos &&
+                rhs.find("texture") < 6) continue;
+            // Skip vec*() / float() constructor (already explicit cast).
+            std::regex ctor_only(R"(^\s*(vec[234]|float)\s*\()");
+            if (std::regex_search(rhs, ctor_only)) continue;
+            // Skip when the RHS starts with a known scalar-returning
+            // function call (length/dot/distance/_wedot/_wep, etc.) —
+            // appending `.x` to a scalar is a glslang error.  Cyberpunk
+            // Lucy 2866203962 color_key effect: `float delta = _wedot(...);`
+            // — the multi-component swizzle is inside _wedot's args, not
+            // the outer expression.
+            std::regex scalar_call(
+                R"(^\s*(length|dot|distance|_wedot|_wep|_wemx|_wemn|abs|min|max|clamp|saturate|smoothstep|step|sign|floor|ceil|fract|mod|sin|cos|tan|asin|acos|atan|exp|log|log10|sqrt|inversesqrt|trunc|round)\s*\()");
+            if (std::regex_search(rhs, scalar_call)) continue;
+
+            out.append(result, lastPos, m.position() - lastPos);
+            out.append("float ").append(m[1].str()).append(" = (")
+                .append(rhs).append(").x;");
+            lastPos = m.position() + m.length();
+        }
+        if (lastPos > 0) {
+            out.append(result, lastPos, std::string::npos);
+            result = std::move(out);
+        }
+    }
+
     // Fix: texture(sampler2D, VEC4_VAR) → texture(sampler2D, VEC4_VAR.xy)
     // HLSL varyings may be declared as vec4 (float4 semantics) and used bare as texture
     // coordinates. sampler2D texture() requires vec2.  Add .xy for any vec4/vec3 varying
@@ -830,6 +928,20 @@ inline std::string FixImplicitConversions(const std::string& src) {
                  ++it)
                 wider_varyings[(*it)[2].str()] = std::stoi((*it)[1].str());
         }
+        // Skip varyings whose name is also declared as a local float — the
+        // local shadows the varying so adding a swizzle to bare uses
+        // produces "scalar swizzle: not supported" (Lens Flare Sun ships
+        // `varying vec4 timer; float timer = sin(...);`).  In that case the
+        // bare `timer` resolves to the float local, not the varying — no
+        // truncation needed.
+        {
+            std::set<std::string> shadowed;
+            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+                 it != std::sregex_iterator(); ++it)
+                shadowed.insert((*it)[1].str());
+            for (const auto& s : shadowed) wider_varyings.erase(s);
+        }
         auto collectByWidth = [&](int width) {
             std::set<std::string> names;
             std::regex re(std::string(R"(\b(?:uniform|in|varying)\s+vec)") + std::to_string(width) +
@@ -865,6 +977,32 @@ inline std::string FixImplicitConversions(const std::string& src) {
             if (wwidth == 4) applyTrunc(wname, vec2_names, "xy");
             applyTrunc(wname, vec3_names, "xyz");
         }
+
+        // Same idea, but for a `vecN(...)` constructor literal as the
+        // narrower operand.  Driver: workshop effect 2138904733
+        // "Cutout Vignette" (Outset Island 2979524338) does
+        //     length(abs(v_TexCoord - vec2(u_offset)) * 1.0)
+        // with v_TexCoord as `in vec3` — HLSL truncates to vec2; GLSL
+        // errors on `vec3 - vec2`.  Inject `.xy` after `wname` when an
+        // arithmetic operator is followed (after optional `(`) by
+        // `vec2(`/`vec3(`/`vec4(`.
+        auto applyTruncVecCtor = [&](const std::string& wname,
+                                     int                 ctorWidth,
+                                     const char*         swizzle) {
+            const std::string ctor = "vec" + std::to_string(ctorWidth);
+            // wname OP <optional whitespace, optional `(`, optional whitespace> vec2(
+            std::regex re(R"(\b)" + wname + R"(\b(?=\s*[+\-*/]\s*\(?\s*)" + ctor +
+                          R"(\s*\())");
+            result = std::regex_replace(result, re, wname + "." + swizzle);
+        };
+        for (const auto& [wname, wwidth] : wider_varyings) {
+            if (wwidth == 4) {
+                applyTruncVecCtor(wname, 2, "xy");
+                applyTruncVecCtor(wname, 3, "xyz");
+            } else if (wwidth == 3) {
+                applyTruncVecCtor(wname, 2, "xy");
+            }
+        }
     }
 
     // Fix: wider `in` varying used bare in a narrower vec2/vec3 assignment arithmetic.
@@ -881,6 +1019,18 @@ inline std::string FixImplicitConversions(const std::string& src) {
                  it != std::sregex_iterator();
                  ++it)
                 varying_widths[(*it)[2].str()] = std::stoi((*it)[1].str());
+        }
+        // Skip varyings shadowed by a local float — see comment on the
+        // earlier wider-varying transform.  Lens Flare Sun ships
+        // `varying vec4 timer; float timer = sin(...);` — bare `timer`
+        // resolves to the float local, swizzling it errors.
+        {
+            std::set<std::string> shadowed;
+            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+                 it != std::sregex_iterator(); ++it)
+                shadowed.insert((*it)[1].str());
+            for (const auto& s : shadowed) varying_widths.erase(s);
         }
 
         auto processAssign =
