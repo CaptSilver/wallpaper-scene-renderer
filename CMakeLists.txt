@@ -14,6 +14,7 @@ link_libraries(Eigen3::Eigen)
 
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
 option(BUILD_TOOLS "Build pkg inspection / extraction tools (wp-pkg)" OFF)
+option(BUILD_FUZZERS "Build libFuzzer harnesses (requires Clang + sanitizers)" OFF)
 option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires Clang)" OFF)
 option(COVERAGE "Enable Clang source-based coverage instrumentation (requires Clang)" OFF)
 option(PROFILING "Enable lightweight scoped-timer profiler (SceneProfiler.h)" OFF)
@@ -44,6 +45,10 @@ endif()
 
 if(MUTATION_TESTING AND NOT BUILD_TESTS)
     message(FATAL_ERROR "MUTATION_TESTING requires BUILD_TESTS=ON")
+endif()
+
+if(BUILD_FUZZERS AND NOT BUILD_TESTS)
+    message(FATAL_ERROR "BUILD_FUZZERS requires BUILD_TESTS=ON")
 endif()
 
 if(MUTATION_TESTING)

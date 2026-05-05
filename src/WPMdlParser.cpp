@@ -74,6 +74,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         f.ReadInt32(); // unk, always 1
         uint32_t submesh_count = f.ReadUint32();
 
+        if (! CountFitsStream(f, submesh_count)) {
+            LOG_ERROR("mdl: submesh_count %u exceeds stream", submesh_count);
+            return false;
+        }
         mdl.is_puppet = false;
         mdl.submeshes.resize(submesh_count);
 
@@ -122,6 +126,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             }
 
             uint32_t vertex_num = vertex_size / vert_stride;
+            if (! CountFitsStream(f, vertex_num)) {
+                LOG_ERROR("mdl: vertex_num %u exceeds stream submesh=%d", vertex_num, si);
+                return false;
+            }
             sub.vertexs.resize(vertex_num);
 
             if (mdl_flag == 39) {
@@ -165,6 +173,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             }
 
             uint32_t indices_num = indices_size / singile_indices;
+            if (! CountFitsStream(f, indices_num)) {
+                LOG_ERROR("mdl: indices_num %u exceeds stream submesh=%d", indices_num, si);
+                return false;
+            }
             sub.indices.resize(indices_num);
             for (auto& id : sub.indices) {
                 for (auto& v : id) v = f.ReadUint16();
@@ -236,6 +248,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     // if using the alternative MDL format, vertexes contain 7 extra 32-bit chunks between
     // position and blend indices
     uint32_t vertex_num = vertex_size / (alt_mdl_format ? alt_singile_vertex : singile_vertex);
+    if (! CountFitsStream(f, vertex_num)) {
+        LOG_ERROR("mdl: puppet vertex_num %u exceeds stream", vertex_num);
+        return false;
+    }
     mdl.vertexs.resize(vertex_num);
     for (auto& vert : mdl.vertexs) {
         for (auto& v : vert.position) v = f.ReadFloat();
@@ -289,6 +305,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     }
 
     uint32_t indices_num = indices_size / singile_indices;
+    if (! CountFitsStream(f, indices_num)) {
+        LOG_ERROR("mdl: puppet indices_num %u exceeds stream", indices_num);
+        return false;
+    }
     mdl.indices.resize(indices_num);
     for (auto& id : mdl.indices) {
         for (auto& v : id) v = f.ReadUint16();
@@ -328,6 +348,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     auto& bones = mdl.puppet->bones;
     auto& anims = mdl.puppet->anims;
 
+    if (! CountFitsStream(f, bones_num)) {
+        LOG_ERROR("mdl: bones_num %u exceeds stream", (unsigned)bones_num);
+        return false;
+    }
     bones.resize(bones_num);
     LOG_INFO("  mdl '%.*s': reading %u bones", (int)path.size(), path.data(), (unsigned)bones_num);
     for (uint i = 0; i < bones_num; i++) {
@@ -478,12 +502,26 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     if (reached_eof_without_mdla) {
         LOG_INFO("mdl: no animation section in '%s' (static skinned puppet)", path.data());
     } else if (mdType == "MDLA" && mdVersion.length() > 0) {
-        mdl.mdla = std::stoi(mdVersion);
+        // std::stoi throws on non-numeric input; the MDLA tag's 4-digit
+        // suffix can be arbitrary bytes from a hostile stream, so use the
+        // non-throwing from_chars (matches ReadVersion's pattern in WPCommon.hpp).
+        int  mdla_v = 0;
+        auto [ptr, ec] =
+            std::from_chars(mdVersion.data(), mdVersion.data() + mdVersion.size(), mdla_v);
+        if (ec != std::errc()) {
+            LOG_ERROR("mdl: invalid MDLA version '%s'", mdVersion.c_str());
+            return false;
+        }
+        mdl.mdla = mdla_v;
         if (mdl.mdla != 0) {
             uint end_size = f.ReadUint32();
             (void)end_size;
 
             uint anim_num = f.ReadUint32();
+            if (! CountFitsStream(f, anim_num)) {
+                LOG_ERROR("mdl: anim_num %u exceeds stream", anim_num);
+                return false;
+            }
             anims.resize(anim_num);
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
             int anim_idx = 0; // only read by LOG_INFO below
@@ -532,6 +570,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                 f.ReadInt32();
 
                 uint32_t b_num = f.ReadUint32();
+                if (! CountFitsStream(f, b_num)) {
+                    LOG_ERROR("mdl: b_num %u exceeds stream", b_num);
+                    return false;
+                }
                 anim.bframes_array.resize(b_num);
                 for (auto& bframes : anim.bframes_array) {
                     f.ReadInt32();
@@ -539,6 +581,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     uint32_t num       = byte_size / singile_bone_frame;
                     if (byte_size % singile_bone_frame != 0) {
                         LOG_ERROR("wrong bone frame size %d", byte_size);
+                        return false;
+                    }
+                    if (! CountFitsStream(f, num)) {
+                        LOG_ERROR("mdl: bone frame num %u exceeds stream", num);
                         return false;
                     }
                     bframes.frames.resize(num);

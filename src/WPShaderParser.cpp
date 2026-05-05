@@ -213,20 +213,28 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
         }
         */
         if (line.find("// [COMBO]") != std::string::npos) {
-            nlohmann::json combo_json;
-            if (PARSE_JSON(line.substr(line.find_first_of('{')), combo_json)) {
-                if (combo_json.contains("combo")) {
-                    std::string name;
-                    int32_t     value = 0;
-                    GET_JSON_NAME_VALUE(combo_json, "combo", name);
-                    GET_JSON_NAME_VALUE(combo_json, "default", value);
-                    combos[name] = std::to_string(value);
+            // A hostile shader can have "// [COMBO]" without a '{' on the same
+            // line; substr(npos) throws out_of_range.  Skip the JSON parse if
+            // there's no opening brace — using `continue` here would skip the
+            // pos update at the bottom of the outer loop and infinite-loop.
+            auto brace = line.find_first_of('{');
+            if (brace != std::string::npos) {
+                nlohmann::json combo_json;
+                if (PARSE_JSON(line.substr(brace), combo_json)) {
+                    if (combo_json.contains("combo")) {
+                        std::string name;
+                        int32_t     value = 0;
+                        GET_JSON_NAME_VALUE(combo_json, "combo", name);
+                        GET_JSON_NAME_VALUE(combo_json, "default", value);
+                        combos[name] = std::to_string(value);
+                    }
                 }
             }
         } else if (line.find("uniform ") != std::string::npos) {
-            if (line.find("// {") != std::string::npos) {
+            auto brace = line.find_first_of('{');
+            if (line.find("// {") != std::string::npos && brace != std::string::npos) {
                 nlohmann::json sv_json;
-                if (PARSE_JSON(line.substr(line.find_first_of('{')), sv_json)) {
+                if (PARSE_JSON(line.substr(brace), sv_json)) {
                     std::vector<std::string> defines =
                         utils::SpliteString(line.substr(0, line.find_first_of(';')), ' ');
 
@@ -832,8 +840,13 @@ std::string WPShaderParser::PreShaderSrc(fs::VFS& vfs, const std::string& src,
         }
         auto begin = pos;
         pos        = src.find_first_of('\n', pos);
-        newsrc.replace(begin, pos - begin, pos - begin, ' ');
-        include.append(src.substr(begin, pos - begin) + "\n");
+        // Hostile shader without a trailing newline after #include — treat
+        // the rest of src as the include line. Without this, pos==npos
+        // makes (pos - begin) wrap to SIZE_MAX and replace/substr abort.
+        auto len = (pos == std::string::npos) ? src.size() - begin : pos - begin;
+        newsrc.replace(begin, len, len, ' ');
+        include.append(src.substr(begin, len) + "\n");
+        if (pos == std::string::npos) break;
     }
     include = LoadGlslInclude(vfs, include);
 

@@ -164,4 +164,22 @@ TEST_SUITE("Rgba8ByteSize") {
         CHECK(Rgba8ByteSize(1024, 1024) == 4'194'304);
         CHECK(Rgba8ByteSize(256, 256) == 262'144);
     }
+    TEST_CASE("negative input returns -1 sentinel") {
+        // Fuzz-found: a hostile mipmap header passes (w>0,h>0) but a later
+        // path could feed negatives in. Defense-in-depth: explicit reject.
+        CHECK(Rgba8ByteSize(-1, 16) == -1);
+        CHECK(Rgba8ByteSize(16, -1) == -1);
+    }
+    TEST_CASE("absurdly large dims return -1 sentinel") {
+        // Fuzz-found: w=h=INT32_MAX overflowed i32 product (UBSAN trip)
+        // and led to a 4 GB allocation in WPTexImageParser. 64K cap kills
+        // the input class without affecting any real texture.
+        CHECK(Rgba8ByteSize(70000, 1) == -1);
+        CHECK(Rgba8ByteSize(1, 70000) == -1);
+        CHECK(Rgba8ByteSize(0x7fffffff, 0x7fffffff) == -1);
+    }
+    TEST_CASE("largest accepted dimensions don't overflow i64") {
+        // Just under the cap: 65536 * 65536 * 4 = 17,179,869,184. Fits in i64.
+        CHECK(Rgba8ByteSize(65536, 65536) == static_cast<i64>(65536) * 65536 * 4);
+    }
 }

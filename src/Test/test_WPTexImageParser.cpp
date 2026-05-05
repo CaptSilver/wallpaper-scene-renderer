@@ -1324,4 +1324,18 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(frame.frametime == doctest::Approx(0.5f));
     }
 
+    TEST_CASE("Hostile image_count does not OOM-resize") {
+        // Fuzz-found regression. img.header.count came straight from the .tex
+        // header into img.slots.resize(image_count) with no upper bound — a
+        // count near INT32_MAX requested ~80 GB. CountFitsStream now bounds
+        // it against bytes-remaining; Parse should return nullptr cleanly.
+        auto buf = makeTexHeader(1, 1, 1, /*type=RGBA8*/ 0, /*flags=*/0, 4, 4, 4, 4,
+                                 /*count=*/0x10000000);
+        VFS vfs;
+        mountTex(vfs, "hostile_count", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("hostile_count");
+        CHECK(img == nullptr);
+    }
+
 } // TEST_SUITE

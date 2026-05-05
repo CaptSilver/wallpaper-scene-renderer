@@ -173,12 +173,20 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     if (_image_count < 0) return nullptr;
     usize image_count = (usize)_image_count;
 
+    if (! CountFitsStream(file, image_count)) {
+        LOG_ERROR("tex '%s': image_count %zu exceeds stream", name.c_str(), image_count);
+        return nullptr;
+    }
     img.slots.resize(image_count);
     for (usize i_image = 0; i_image < image_count; i_image++) {
         auto& img_slot = img.slots[i_image];
         auto& mipmaps  = img_slot.mipmaps;
 
         usize mipmap_count = (usize)std::max<i32>(file.ReadInt32(), 0);
+        if (! CountFitsStream(file, mipmap_count)) {
+            LOG_ERROR("tex '%s': mipmap_count %zu exceeds stream", name.c_str(), mipmap_count);
+            return nullptr;
+        }
         mipmaps.resize(mipmap_count);
         // load image
         for (usize i_mipmap = 0; i_mipmap < mipmap_count; i_mipmap++) {
@@ -203,6 +211,10 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             if (src_size <= 0 || mipmap.width <= 0 || mipmap.height <= 0 || decompressed_size < 0)
                 return nullptr;
 
+            if (! CountFitsStream(file, (usize)src_size)) {
+                LOG_ERROR("tex '%s': src_size %d exceeds stream", name.c_str(), src_size);
+                return nullptr;
+            }
             std::vector<char> result((usize)src_size);
             file.Read(result.data(), (usize)src_size);
 
@@ -250,8 +262,13 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 img.header.videoFilePath  = videoPath;
 
                 // Use black placeholder for initial texture upload
-                i32  raw_size = Rgba8ByteSize(mipmap.width, mipmap.height);
-                auto buf      = std::make_unique<uint8_t[]>((usize)raw_size);
+                i64 raw_size = Rgba8ByteSize(mipmap.width, mipmap.height);
+                if (raw_size < 0) {
+                    LOG_ERROR("tex '%s': mipmap dimensions %dx%d unsupported",
+                              name.c_str(), mipmap.width, mipmap.height);
+                    return nullptr;
+                }
+                auto buf = std::make_unique<uint8_t[]>((usize)raw_size);
                 std::memset(buf.get(), 0, (usize)raw_size);
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
                     delete[] p;

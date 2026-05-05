@@ -50,7 +50,10 @@ inline bool IsAliasTexture(const std::string& name) {
 
 inline void SetHeaderPow2(ImageHeader& header, i32 mip_0_w, i32 mip_0_h) {
     header.mipmap_pow2   = algorism::IsPowOfTwo((u32)mip_0_w) || algorism::IsPowOfTwo((u32)mip_0_h);
-    header.mipmap_larger = mip_0_w * mip_0_h > header.mapWidth * header.mapHeight;
+    // Promote to i64 before multiplying — a hostile .tex with INT32_MAX
+    // dimensions otherwise overflows the i32 product (UBSAN trip).
+    header.mipmap_larger = static_cast<i64>(mip_0_w) * mip_0_h
+                         > static_cast<i64>(header.mapWidth) * header.mapHeight;
 }
 
 // Replace characters that would break path assembly when the tex name becomes
@@ -66,7 +69,16 @@ inline char SanitizePathSeparatorChar(char c) {
 // pixels.  Pulled out so a direct unit test can pin down the arithmetic
 // (`w * h * 4`) and kill `*`→`/` mutants that otherwise survive in the
 // inline MP4-fallback path.
-inline i32 Rgba8ByteSize(i32 w, i32 h) { return w * h * 4; }
+//
+// Returns -1 if w/h are negative or larger than 64K (which already exceeds
+// every realistic texture and prevents the i32-product UBSAN trip on
+// hostile inputs near INT32_MAX). Caller must check the sentinel.
+inline i64 Rgba8ByteSize(i32 w, i32 h) {
+    if (w < 0 || h < 0) return -1;
+    constexpr i64 kMaxDim = 65536;
+    if (w > kMaxDim || h > kMaxDim) return -1;
+    return static_cast<i64>(w) * h * 4;
+}
 
 } // namespace teximage_helpers
 } // namespace wallpaper

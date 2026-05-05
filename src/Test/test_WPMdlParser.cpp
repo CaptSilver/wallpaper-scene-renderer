@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "Fs/MemBinaryStream.h"
+#include "WPCommon.hpp"
 #include "WPMdlParser.hpp"
 
 using namespace wallpaper;
@@ -80,6 +81,73 @@ TEST_SUITE("WPMdlParser_EOF_safety") {
         WPMdl                mdl;
         auto                 r = parseWithWatchdog(f, "trunc.mdl", mdl);
         CHECK(r.completed);
+    }
+
+    TEST_CASE("9-byte non-null-terminated header does not OOB read") {
+        // Fuzz-found regression. ReadVersion in WPCommon.hpp reads exactly 9
+        // bytes into a char[9]; with no in-buffer null, the implicit
+        // string_view(const char*) ctor inside sstart_with strlen'd past the
+        // stack array. ASAN trip in 15s on the first libFuzzer run.
+        std::vector<uint8_t> data(9, 0xff);
+        fs::MemBinaryStream  f(std::move(data));
+        WPMdl                mdl;
+        auto                 r = parseWithWatchdog(f, "fuzz.mdl", mdl);
+        CHECK(r.completed);
+        CHECK(! r.ok);
+    }
+
+    TEST_CASE("Non-numeric MDLA version does not throw") {
+        // Fuzz-found regression. The MDLA-section parser called std::stoi
+        // on bytes 4-7 of the tag — for hostile inputs those aren't digits,
+        // so stoi threw std::invalid_argument and abort()ed the process.
+        // Now uses std::from_chars (non-throwing) like the rest of the parser.
+        std::vector<uint8_t> data = mdlvHeader(13);
+        appendInt32(data, 0);              // mdl_flag = 0 → puppet
+        appendInt32(data, 1);
+        appendInt32(data, 1);
+        data.push_back(0);                 // empty mat_json_file
+        appendInt32(data, 0);
+        appendInt32(data, 0);              // first u32 = 0 → standard path
+        appendInt32(data, 0);              // vertex_size = 0
+        appendInt32(data, 0);              // indices_size = 0
+        // MDLS skeleton tag (consumed by the alt-format scan).
+        const char mdls_tag[9] = "MDLS0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdls_tag[i]));
+        appendInt32(data, 0); // bones_file_end
+        data.push_back(0); data.push_back(0); // bones_num = 0
+        data.push_back(0); data.push_back(0); // unk
+        // MDLA tag with non-numeric 4-byte version (hostile bytes).
+        const char mdla_bad[8] = { 'M', 'D', 'L', 'A', 'X', 'Y', 'Z', 'W' };
+        for (int i = 0; i < 8; i++) data.push_back(static_cast<uint8_t>(mdla_bad[i]));
+        data.push_back('\0'); // null terminator for ReadStr
+
+        fs::MemBinaryStream f(std::move(data));
+        WPMdl               mdl;
+        auto                r = parseWithWatchdog(f, "bad_mdla.mdl", mdl);
+        CHECK(r.completed);
+        CHECK(! r.ok);
+    }
+
+    TEST_CASE("Hostile indices_size does not OOM-resize") {
+        // Fuzz-found regression #2. Puppet path: a u32 indices_size near
+        // UINT32_MAX divided by singile_indices (6) still left ~715M as
+        // indices_num, then mdl.indices.resize(indices_num) requested ~4 GB
+        // and tripped libFuzzer's malloc limit. CountFitsStream now bounds
+        // the count against bytes-remaining; parse should bail out cleanly.
+        std::vector<uint8_t> data = mdlvHeader(13);
+        appendInt32(data, 0);                      // mdl_flag = 0 → puppet
+        appendInt32(data, 1);
+        appendInt32(data, 1);
+        data.push_back(0);                         // empty mat_json_file
+        appendInt32(data, 0);
+        appendInt32(data, 0);                      // first u32 = 0 → standard path
+        appendInt32(data, 0);                      // vertex_size = 0
+        appendInt32(data, 0xFFFFFFFC);             // indices_size hostile (multiple of 6)
+        fs::MemBinaryStream f(std::move(data));
+        WPMdl               mdl;
+        auto                r = parseWithWatchdog(f, "hostile.mdl", mdl);
+        CHECK(r.completed);
+        CHECK(! r.ok);
     }
 
     TEST_CASE("Puppet MDL with no MDLA section parses as static skinned puppet") {
@@ -220,5 +288,39 @@ TEST_SUITE("WPMdl_IndexPacking") {
         CHECK(U16BytesForTriangles(5) == 30);
         CHECK(U16BytesForTriangles(10) == 60);
         CHECK(U16BytesForTriangles(20) == 120);
+    }
+}
+
+TEST_SUITE("WPCommon_CountFitsStream") {
+    TEST_CASE("Count <= remaining bytes accepted") {
+        std::vector<uint8_t> data(100, 0);
+        fs::MemBinaryStream  f(std::move(data));
+        CHECK(CountFitsStream(f, 100));
+        CHECK(CountFitsStream(f, 0));
+    }
+    TEST_CASE("Count > remaining bytes rejected") {
+        std::vector<uint8_t> data(50, 0);
+        fs::MemBinaryStream  f(std::move(data));
+        CHECK(! CountFitsStream(f, 51));
+        CHECK(! CountFitsStream(f, 0xFFFFFFFFu));
+    }
+    TEST_CASE("Stride scales the bound") {
+        std::vector<uint8_t> data(60, 0);
+        fs::MemBinaryStream  f(std::move(data));
+        CHECK(CountFitsStream(f, 10, 6));      // 10*6 = 60 fits
+        CHECK(! CountFitsStream(f, 11, 6));    // 11*6 = 66 doesn't
+    }
+    TEST_CASE("Stride 0 rejected (degenerate)") {
+        std::vector<uint8_t> data(100, 0);
+        fs::MemBinaryStream  f(std::move(data));
+        CHECK(! CountFitsStream(f, 1, 0));
+    }
+    TEST_CASE("After consuming bytes, remaining shrinks") {
+        std::vector<uint8_t> data(100, 0);
+        fs::MemBinaryStream  f(std::move(data));
+        char buf[40];
+        f.Read(buf, 40);
+        CHECK(CountFitsStream(f, 60));
+        CHECK(! CountFitsStream(f, 61));
     }
 }
