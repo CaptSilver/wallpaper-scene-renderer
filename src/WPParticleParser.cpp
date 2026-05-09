@@ -2084,6 +2084,7 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         float minDur   = wpe.minperiodicduration;
         float maxDur   = wpe.maxperiodicduration;
         u32   maxPer   = wpe.maxtoemitperperiod;
+        float rate     = wpe.rate;
 
         double phaseDur = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
         // Random initial phase offset so different instances don't fire simultaneously
@@ -2119,8 +2120,12 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
                 // For non-rope periodic emitters with maxtoemitperperiod, burst at start.
                 // For ropes: let them grow naturally (1 per frame via baseOp).
                 double effectiveTime = timepass;
-                if (justActivated && maxPer > 0 && batch_size <= 1) {
-                    effectiveTime = 1000.0; // Force immediate burst of maxPer
+                if (justActivated && maxPer > 0 && batch_size <= 1 && rate > 0.0f) {
+                    // Time to emit exactly maxPer at the configured rate. baseOp doesn't
+                    // know about maxPer, so a too-large effectiveTime would overshoot the
+                    // pool (post-emit cap only blocks subsequent ticks, not the overshoot).
+                    double burstTime = (double)maxPer / rate;
+                    if (burstTime > effectiveTime) effectiveTime = burstTime;
                 }
 
                 baseOp(ps, inis, maxcount, effectiveTime);

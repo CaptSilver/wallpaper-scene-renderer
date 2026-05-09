@@ -2761,6 +2761,28 @@ TEST_SUITE("genParticleEmittOp periodic deeper") {
         for (int i = 0; i < 10; i++) op(ps, inis, 1000, 0.01);
         CHECK(ps.size() <= 50);  // far less than 1000 it would emit uncapped.
     }
+
+    TEST_CASE("burst-at-start respects maxPer (no `effectiveTime=1000` overshoot)") {
+        // Regression: the justActivated burst path used to set effectiveTime=1000.0
+        // unconditionally, which made baseOp emit up to maxcount particles ignoring
+        // maxPer entirely (the post-emit cap can only block subsequent ticks, not
+        // undo the overshoot).  With totalCycle=1.0 the random initial timer hit
+        // the flip range ~10% of runs, producing a flaky failure.
+        //
+        // Run >2× totalCycle so a flip-into-active is guaranteed regardless of the
+        // initial random timer phase, and verify the cap holds across multiple
+        // active periods.
+        auto e = make_emitter(0.5f, 0.5f, 0.5f, 0.5f, 2);
+        e.rate = 1000.0f;
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        std::vector<Particle> ps;
+        std::vector<ParticleInitOp> inis;
+        for (int i = 0; i < 200; i++) op(ps, inis, 1000, 0.01);
+        // Each active period emits ~rate*timepass=10 before cap triggers; over 2s
+        // that's ~3 active flips × 10 ≤ 100 particles.  Old code: 1000 (pool-full).
+        CHECK(ps.size() <= 100);
+    }
+
 }
 
 // ============================================================================
