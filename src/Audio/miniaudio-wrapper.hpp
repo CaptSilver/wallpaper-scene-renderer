@@ -17,13 +17,20 @@
 #define MA_NO_WINMM
 #define MA_NO_COREAUDIO
 #define MA_NO_ENCODING
-#define STB_VORBIS_HEADER_ONLY
-#include <miniaudio/extras/stb_vorbis.c> /* Enables Vorbis decoding. */
-#define MINIAUDIO_IMPLEMENTATION
-#include <miniaudio/miniaudio.h>
-/* stb_vorbis implementation must come after the implementation of miniaudio. */
-#undef STB_VORBIS_HEADER_ONLY
-#include <miniaudio/extras/stb_vorbis.c> /* Enables Vorbis decoding. */
+// The miniaudio + stb_vorbis implementations must live in exactly one
+// translation unit (SoundManager.cpp).  Other TUs that need the types
+// (e.g. unit tests for ProcessFrame) include this header without the
+// _IMPL macro, getting only declarations.
+#ifdef WEK_MINIAUDIO_IMPL
+#  define STB_VORBIS_HEADER_ONLY
+#  include <miniaudio/extras/stb_vorbis.c> /* header form */
+#  define MINIAUDIO_IMPLEMENTATION
+#  include <miniaudio/miniaudio.h>
+#  undef STB_VORBIS_HEADER_ONLY
+#  include <miniaudio/extras/stb_vorbis.c> /* implementation */
+#else
+#  include <miniaudio/miniaudio.h>
+#endif
 
 namespace miniaudio
 {
@@ -203,36 +210,37 @@ public:
                             .sampleRate  = m_device.sampleRate };
     }
 
-private:
-    static void data_callback(ma_device* pMaDevice, void* pOutput, const void* pInput,
-                              ma_uint32 frameCount) {
-        Device* pDevice = static_cast<Device*>(pMaDevice->pUserData);
-        if (! pDevice->IsInited()) return;
-        pDevice->data_callback(pOutput, pInput, frameCount);
-    }
-    void data_callback(void* pOutput, const void* pInput, ma_uint32 frameCount) {
-        (void)pInput;
-        if (! m_running || m_muted) return;
-        const auto phyChannels    = m_device.playback.channels;
+public:
+    // Public for testing.  Drives one frame of mixing + spectrum dispatch +
+    // mute-aware output writing, using the same logic the real ma_device
+    // data callback runs.  Tests can feed synthetic channels and observe
+    // both the output buffer and the spectrum callback without standing up
+    // a real audio backend.
+    void ProcessFrame(void* pOutput, ma_uint32 frameCount, ma_uint32 phyChannels) {
+        if (! m_running) return;
         const auto framesSize     = frameCount * phyChannels;
         const auto framesByteSize = framesSize * sizeof(float);
         {
             if (m_frameBuffer.size() < framesByteSize) m_frameBuffer.resize(framesByteSize);
-            // std::memset(pOutput, 0, framesByteSize);
+            if (m_mixBuffer.size() < framesSize) m_mixBuffer.resize(framesSize);
+            std::memset(m_mixBuffer.data(), 0, m_mixBuffer.size() * sizeof(float));
         }
+        // Always decode channels into a private mix buffer so the spectrum
+        // callback gets fresh PCM even when muted — wallpapers like Cyberpunk
+        // Lucy (2866203962) drive UI fades from `engine.registerAudioBuffers`,
+        // and reactivity must outlive the user's mute toggle.
         {
             std::unique_lock<std::mutex> lock { m_mutex };
 
-            float* pOutput_float = static_cast<float*>(pOutput);
             float* pBuffer_float = reinterpret_cast<float*>(m_frameBuffer.data());
-            for (ma_uint32 i = 0; i < m_channels.size(); i++) {
+            for (size_t i = 0; i < m_channels.size(); i++) {
                 ma_uint64 framesReaded =
                     m_channels[i].chn->NextPcmData(m_frameBuffer.data(), frameCount);
                 if (framesReaded == 0) {
                     m_channels[i].end = true;
                 } else {
-                    for (size_t i = 0; i < framesSize; i++)
-                        pOutput_float[i] += m_volume * pBuffer_float[i];
+                    for (size_t s = 0; s < framesSize; s++)
+                        m_mixBuffer[s] += m_volume * pBuffer_float[s];
                 }
             }
             m_channels.erase(std::remove_if(m_channels.begin(),
@@ -242,11 +250,26 @@ private:
                                             }),
                              m_channels.end());
         }
-        // Feed mixed output to spectrum analyzer (lock-free callback)
-        if (m_spectrum_callback) {
-            float* pOutput_float = static_cast<float*>(pOutput);
-            m_spectrum_callback(pOutput_float, frameCount, m_device.playback.channels);
+        if (m_muted) {
+            std::memset(pOutput, 0, framesByteSize);
+        } else {
+            std::memcpy(pOutput, m_mixBuffer.data(), framesByteSize);
         }
+        if (m_spectrum_callback) {
+            m_spectrum_callback(m_mixBuffer.data(), frameCount, phyChannels);
+        }
+    }
+    // Test-only: force-running so ProcessFrame won't bail.  Real devices
+    // flip this via Start() in the Init path.
+    void TestSetRunning(bool v) { m_running = v; }
+
+private:
+    static void data_callback(ma_device* pMaDevice, void* pOutput, const void* pInput,
+                              ma_uint32 frameCount) {
+        Device* pDevice = static_cast<Device*>(pMaDevice->pUserData);
+        if (! pDevice->IsInited()) return;
+        (void)pInput;
+        pDevice->ProcessFrame(pOutput, frameCount, pMaDevice->playback.channels);
     }
     ma_device_config GenMaDeviceConfig(const DeviceDesc& d) {
         ma_device_config config  = ma_device_config_init(ma_device_type_playback);
@@ -272,6 +295,7 @@ private:
 
     std::vector<ChannelWrap> m_channels;
     std::vector<uint8_t>     m_frameBuffer;
+    std::vector<float>       m_mixBuffer;
     SpectrumCallback         m_spectrum_callback;
 };
 

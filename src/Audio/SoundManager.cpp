@@ -1,5 +1,6 @@
 #include "Audio/SoundManager.h"
 #include "Audio/AudioAnalyzer.h"
+#define WEK_MINIAUDIO_IMPL
 #include "miniaudio-wrapper.hpp"
 #include "Fs/IBinaryStream.h"
 #include "Core/Literals.hpp"
@@ -101,10 +102,9 @@ void SoundManager::Test(std::shared_ptr<fs::IBinaryStream> stream) {
     auto           decoder = std::make_unique<miniaudio::Decoder<BStreamWrapper>>(std::move(sw));
 }
 bool SoundManager::Init() {
-    if (Muted()) {
-        LOG_INFO("muted, not init sound device");
-        return false;
-    }
+    // Init unconditionally — even when muted we need the device alive so
+    // the data callback runs and feeds the spectrum analyzer.  The mute
+    // flag is honored at output-mix time inside miniaudio::Device.
     return pImpl->device.Init({});
 }
 bool SoundManager::IsInited() const { return pImpl->device.IsInited(); }
@@ -116,12 +116,15 @@ float SoundManager::Volume() const { return pImpl->device.Volume(); }
 
 bool SoundManager::Muted() const { return pImpl->device.Muted(); }
 void SoundManager::SetMuted(bool v) {
+    // Keep the device alive across mute toggles so the spectrum-callback
+    // path (audio-reactive scripts) keeps receiving PCM frames.  The
+    // miniaudio data callback now always decodes channels into a private
+    // mix buffer and feeds it to the analyzer; only the speaker output
+    // is silenced when muted.  Init lazily on the first un-mute so we
+    // don't open an audio device on a brand-new wallpaper that's still
+    // being configured.
     pImpl->device.SetMuted(v);
-    if (! Muted()) {
-        Init();
-    } else {
-        pImpl->device.UnInit();
-    }
+    if (! IsInited()) Init();
 }
 void SoundManager::SetVolume(float v) { pImpl->device.SetVolume(v); }
 void SoundManager::SetAudioAnalyzer(std::shared_ptr<AudioAnalyzer> analyzer) {
