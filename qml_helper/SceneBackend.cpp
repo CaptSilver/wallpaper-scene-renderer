@@ -1713,10 +1713,15 @@ void SceneObject::setupTextScripts() {
         "WEMath.smoothStep = WEMath.smoothstep;\n"
         "WEMath.deg2rad = Math.PI / 180;\n"
         "WEMath.rad2deg = 180 / Math.PI;\n"
-        // WEVector module: 2D angle↔vector conversion
+        // WEVector module: 2D angle↔vector conversion.
+        // Matches WE's bundled jsmodules/wevector.js: angles are in DEGREES on
+        // both sides — angleVector2(deg) and vectorAngle2 returns degrees.
+        // Author scripts (e.g. Naruto Shippuden 2800255344) compute `angle =
+        // 360 * (i / N)` and feed that to angleVector2; treating it as radians
+        // scrambles the spectrum-ring layout.
         "var WEVector = {\n"
-        "  angleVector2: function(angle) { return Vec2(Math.cos(angle), Math.sin(angle)); },\n"
-        "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x); }\n"
+        "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return Vec2(Math.cos(r), Math.sin(r)); },\n"
+        "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x) * WEMath.rad2deg; }\n"
         "};\n");
 
     // engine.colorScheme: a Vec3 (= primary) with four additional Vec3

@@ -1066,8 +1066,8 @@ static const char* JS_WEMATH =
     "WEMath.deg2rad = Math.PI / 180;\n"
     "WEMath.rad2deg = 180 / Math.PI;\n"
     "var WEVector = {\n"
-    "  angleVector2: function(angle) { return Vec2(Math.cos(angle), Math.sin(angle)); },\n"
-    "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x); }\n"
+    "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return Vec2(Math.cos(r), Math.sin(r)); },\n"
+    "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x) * WEMath.rad2deg; }\n"
     "};\n";
 
 static const char* JS_WECOLOR =
@@ -2634,38 +2634,100 @@ TEST_SUITE("WEColor") {
 // ------------------------------------------------------------------
 // WEVector
 // ------------------------------------------------------------------
+// WEVector — degrees on both sides, matching WE's bundled
+// jsmodules/wevector.js (multiplies input by deg2rad, output by rad2deg).
 TEST_SUITE("WEVector") {
-    TEST_CASE("angleVector2 at 0 returns (1,0)") {
+    TEST_CASE("angleVector2 at 0deg returns (1,0)") {
         MathEnv  env;
         QJSValue v = env.engine.evaluate("WEVector.angleVector2(0)");
         CHECK(v.property("x").toNumber() == doctest::Approx(1.0));
         CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
     }
 
-    TEST_CASE("angleVector2 at PI/2 returns (0,1)") {
+    TEST_CASE("angleVector2 at 90deg returns (0,1)") {
         MathEnv  env;
-        QJSValue v = env.engine.evaluate("WEVector.angleVector2(Math.PI/2)");
+        QJSValue v = env.engine.evaluate("WEVector.angleVector2(90)");
         CHECK(v.property("x").toNumber() == doctest::Approx(0.0).epsilon(0.001));
         CHECK(v.property("y").toNumber() == doctest::Approx(1.0));
     }
 
-    TEST_CASE("vectorAngle2 of (1,0) returns 0") {
+    TEST_CASE("angleVector2 at 180deg returns (-1,0)") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("WEVector.angleVector2(180)");
+        CHECK(v.property("x").toNumber() == doctest::Approx(-1.0));
+        CHECK(v.property("y").toNumber() == doctest::Approx(0.0).epsilon(0.001));
+    }
+
+    TEST_CASE("angleVector2 at 270deg returns (0,-1)") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("WEVector.angleVector2(270)");
+        CHECK(v.property("x").toNumber() == doctest::Approx(0.0).epsilon(0.001));
+        CHECK(v.property("y").toNumber() == doctest::Approx(-1.0));
+    }
+
+    TEST_CASE("angleVector2 at 45deg returns (sqrt2/2, sqrt2/2)") {
+        MathEnv  env;
+        QJSValue v = env.engine.evaluate("WEVector.angleVector2(45)");
+        CHECK(v.property("x").toNumber() == doctest::Approx(M_SQRT1_2));
+        CHECK(v.property("y").toNumber() == doctest::Approx(M_SQRT1_2));
+    }
+
+    TEST_CASE("vectorAngle2 of (1,0) returns 0deg") {
         MathEnv env;
         CHECK(env.engine.evaluate("WEVector.vectorAngle2(Vec2(1,0))").toNumber() ==
               doctest::Approx(0.0));
     }
 
-    TEST_CASE("vectorAngle2 of (0,1) returns PI/2") {
+    TEST_CASE("vectorAngle2 of (0,1) returns 90deg") {
         MathEnv env;
         CHECK(env.engine.evaluate("WEVector.vectorAngle2(Vec2(0,1))").toNumber() ==
-              doctest::Approx(M_PI / 2.0));
+              doctest::Approx(90.0));
     }
 
-    TEST_CASE("round-trip angle to vector to angle") {
+    TEST_CASE("vectorAngle2 of (-1,0) returns 180deg") {
+        MathEnv env;
+        CHECK(env.engine.evaluate("WEVector.vectorAngle2(Vec2(-1,0))").toNumber() ==
+              doctest::Approx(180.0));
+    }
+
+    TEST_CASE("round-trip angle->vector->angle preserves degrees") {
         MathEnv env;
         double  angle =
-            env.engine.evaluate("WEVector.vectorAngle2(WEVector.angleVector2(1.23))").toNumber();
-        CHECK(angle == doctest::Approx(1.23));
+            env.engine.evaluate("WEVector.vectorAngle2(WEVector.angleVector2(73.5))").toNumber();
+        CHECK(angle == doctest::Approx(73.5));
+    }
+
+    // Naruto-style spectrum-ring regression: 64-bar circle. Each bar's
+    // position must land on a clean ring of radius `r` and adjacent bars
+    // must lie at the expected angular increment.  With degrees-vs-radians
+    // confusion these spread chaotically — pin the WE-correct math.
+    TEST_CASE("64-bar ring uses 5.625deg increments at radius 265") {
+        MathEnv env;
+        env.engine.evaluate(
+            "var pts = [];"
+            "for (var i = 0; i < 64; ++i) {"
+            "  var a = 360 * (i / 64);"
+            "  var v = WEVector.angleVector2(a);"
+            "  pts.push({ x: v.x * 265, y: v.y * 265 });"
+            "}");
+        // All points lie on the radius-265 circle.
+        for (int i = 0; i < 64; ++i) {
+            QString  expr = QString("Math.sqrt(pts[%1].x*pts[%1].x + pts[%1].y*pts[%1].y)").arg(i);
+            double   r    = env.engine.evaluate(expr).toNumber();
+            CHECK(r == doctest::Approx(265.0).epsilon(1e-6));
+        }
+        // pts[0] is on +X.
+        CHECK(env.engine.evaluate("pts[0].x").toNumber() == doctest::Approx(265.0));
+        CHECK(env.engine.evaluate("pts[0].y").toNumber() == doctest::Approx(0.0));
+        // pts[16] (i=16 → 90deg) is on +Y.
+        CHECK(env.engine.evaluate("pts[16].x").toNumber() == doctest::Approx(0.0).epsilon(1e-6));
+        CHECK(env.engine.evaluate("pts[16].y").toNumber() == doctest::Approx(265.0));
+        // pts[32] (i=32 → 180deg) is on -X.
+        CHECK(env.engine.evaluate("pts[32].x").toNumber() == doctest::Approx(-265.0));
+        CHECK(env.engine.evaluate("pts[32].y").toNumber() == doctest::Approx(0.0).epsilon(1e-6));
+        // pts[48] (i=48 → 270deg) is on -Y.
+        CHECK(env.engine.evaluate("pts[48].x").toNumber() == doctest::Approx(0.0).epsilon(1e-6));
+        CHECK(env.engine.evaluate("pts[48].y").toNumber() == doctest::Approx(-265.0));
     }
 
 } // TEST_SUITE WEVector
