@@ -457,6 +457,13 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
 
             float trail_length = (float)active;
 
+            // Trail follows the particle's CURRENT alpha — when the head fades
+            // out (alphafade end-of-life ramp), the trail dims with it.  Without
+            // this multiplier each trail sample renders at its captured push-time
+            // alpha, leaving a bright trail visible after the head has faded to
+            // invisible (Portal shooting-star "lingering streak" report).
+            const float live_alpha = p.alpha;
+
             for (u32 ti = 1; ti < active; ti++) {
                 const auto& tp_new = trail.At(ti - 1); // newer
                 const auto& tp_old = trail.At(ti);     // older
@@ -501,12 +508,12 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
                                       std::array { ecp[0], ecp[1], ecp[2], size_end },
                                       4);
                     offset += 4;
-                    // a_TexCoordVec4C3: color_end (ancestor-alpha inherit)
+                    // a_TexCoordVec4C3: color_end (live_alpha + ancestor-alpha inherit)
                     AssignVertexTimes({ data + offset, totle_size },
                                       std::array { tp_old.color[0],
                                                    tp_old.color[1],
                                                    tp_old.color[2],
-                                                   tp_old.alpha * anc_alpha },
+                                                   tp_old.alpha * live_alpha * anc_alpha },
                                       4);
                     offset += 4;
                     // a_TexCoordC4: UV seam
@@ -526,12 +533,12 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
                     offset += 4;
                 }
 
-                // a_Color (ancestor-alpha inherit)
+                // a_Color (live_alpha + ancestor-alpha inherit)
                 AssignVertexTimes({ data + offset, totle_size },
                                   std::array { tp_new.color[0],
                                                tp_new.color[1],
                                                tp_new.color[2],
-                                               tp_new.alpha * anc_alpha },
+                                               tp_new.alpha * live_alpha * anc_alpha },
                                   4);
 
                 sv.SetVertexs(total_segs * 4, { data, totle_size });
@@ -578,6 +585,12 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
             // uniformly bright line that just vanishes at the tail — matches WE
             // Windows behaviour, which fades the per-vertex alpha along trail index.
             const float fade_denom = active > 1 ? (float)(active - 1) : 1.0f;
+            // Trail follows the particle's CURRENT alpha — when the head fades
+            // out (alphafade end-of-life ramp), the trail dims with it.  Without
+            // this multiplier each trail sample renders at its captured push-time
+            // alpha, leaving a bright trail visible after the head has faded to
+            // invisible (Portal shooting-star "lingering streak" report).
+            const float live_alpha = p.alpha;
 
             for (u32 ti = 1; ti < active; ti++) {
                 const auto& tp_new = trail.At(ti - 1);
@@ -625,11 +638,11 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                         std::array { ecp[0], ecp[1], ecp[2], size_end }.data(), 4, data + offset);
                     offset += 4;
                     // a_TexCoordVec4C3: color_end (older endpoint, fades toward tail;
-                    // ancestor-alpha inherit)
+                    // live_alpha + ancestor-alpha inherit)
                     std::copy_n(std::array { tp_old.color[0],
                                              tp_old.color[1],
                                              tp_old.color[2],
-                                             tp_old.alpha * fade_old * anc_alpha }
+                                             tp_old.alpha * fade_old * live_alpha * anc_alpha }
                                     .data(),
                                 4,
                                 data + offset);
@@ -642,11 +655,11 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                 }
 
                 // a_Color (newer endpoint, fades toward head but stays brightest;
-                // ancestor-alpha inherit)
+                // live_alpha + ancestor-alpha inherit)
                 std::copy_n(std::array { tp_new.color[0],
                                          tp_new.color[1],
                                          tp_new.color[2],
-                                         tp_new.alpha * fade_new * anc_alpha }
+                                         tp_new.alpha * fade_new * live_alpha * anc_alpha }
                                 .data(),
                             4,
                             data + offset);
