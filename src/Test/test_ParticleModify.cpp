@@ -824,46 +824,56 @@ TEST_SUITE("ParticleInstance_Refresh") {
         CHECK(child.GetBoundedData().particle_idx == -1);
     }
 
-    TEST_CASE("ApplyLifetimeOverride — sprite path: absolute seconds (replaces preset)") {
-        // Sprite/halo presets that ship a non-zero `lifetime` in their
-        // instanceoverride mean the absolute lifetime (NieR 2B halo
-        // magic_vortex_1: lifetime=0.9 = "0.9s trails").
-        Particle p = makeParticle();
-        p.lifetime      = 1.5f;
-        p.init.lifetime = 1.5f;
-        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.9f, /*is_rope=*/false);
-        CHECK(p.lifetime == doctest::Approx(0.9f));
-        CHECK(p.init.lifetime == doctest::Approx(0.9f));
-    }
-
-    TEST_CASE("ApplyLifetimeOverride — rope path: multiplies preset lifetime") {
-        // Rope subsystems treat the same field as a multiplier on the
-        // preset's randomized lifetime so the per-segment timing scales
-        // proportionally instead of being clamped to a flat constant.
+    TEST_CASE("ApplyLifetimeOverride — uniform multiplier across renderer kinds") {
+        // The runtime applies instanceoverride.lifetime as a multiplier on the
+        // preset's randomized lifetime via a single per-particle init record;
+        // there is no renderer-type dispatch.  Same call, same result, whether
+        // the subsystem renders sprites, halos, ropes, or ropetrails.
         Particle p = makeParticle();
         p.lifetime      = 2.0f;
         p.init.lifetime = 2.0f;
-        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.5f, /*is_rope=*/true);
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.5f);
         CHECK(p.lifetime == doctest::Approx(1.0f));
         CHECK(p.init.lifetime == doctest::Approx(1.0f));
     }
 
-    TEST_CASE("ApplyLifetimeOverride — over <= 0 leaves the preset alone (sprite)") {
+    TEST_CASE("ApplyLifetimeOverride — Portal to a New World shooting-star (>1 multiplier)") {
+        // Driver case from wallpaper 2349470260 — shooting-star override
+        // ships lifetime=1.1 against preset lifetimerandom=3.  The runtime
+        // produces 3.3s trails (multiplier), the previous absolute-seconds
+        // misinterpretation produced 1.1s trails.
+        Particle p = makeParticle();
+        p.lifetime      = 3.0f;
+        p.init.lifetime = 3.0f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/1.1f);
+        CHECK(p.lifetime == doctest::Approx(3.3f));
+        CHECK(p.init.lifetime == doctest::Approx(3.3f));
+    }
+
+    TEST_CASE("ApplyLifetimeOverride — identity (over=1.0) is a no-op") {
+        // Default override value is 1.0; absent JSON entries must leave the
+        // preset's lifetime untouched.
         Particle p = makeParticle();
         p.lifetime      = 1.5f;
         p.init.lifetime = 1.5f;
-        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.0f, /*is_rope=*/false);
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/1.0f);
         CHECK(p.lifetime == doctest::Approx(1.5f));
         CHECK(p.init.lifetime == doctest::Approx(1.5f));
     }
 
-    TEST_CASE("ApplyLifetimeOverride — over <= 0 leaves the preset alone (rope)") {
+    TEST_CASE("ApplyLifetimeOverride — over <= 0 is treated as no-override (safety)") {
+        // Degenerate authored values (0, negative) are treated as no-override
+        // rather than producing zero-lifetime particles.
         Particle p = makeParticle();
-        p.lifetime      = 2.0f;
-        p.init.lifetime = 2.0f;
-        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.0f, /*is_rope=*/true);
-        CHECK(p.lifetime == doctest::Approx(2.0f));
-        CHECK(p.init.lifetime == doctest::Approx(2.0f));
+        p.lifetime      = 1.5f;
+        p.init.lifetime = 1.5f;
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/0.0f);
+        CHECK(p.lifetime == doctest::Approx(1.5f));
+        CHECK(p.init.lifetime == doctest::Approx(1.5f));
+
+        ParticleModify::ApplyLifetimeOverride(p, /*over=*/-0.5f);
+        CHECK(p.lifetime == doctest::Approx(1.5f));
+        CHECK(p.init.lifetime == doctest::Approx(1.5f));
     }
 
     TEST_CASE("ApplyColorOverride — colorn replaces the preset color (NieR 2B halo)") {

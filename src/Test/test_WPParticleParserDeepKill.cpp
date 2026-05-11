@@ -1472,7 +1472,7 @@ TEST_SUITE("genOverrideInitOp deep") {
         wpscene::ParticleInstanceoverride o;
         o.enabled    = true;
         o.brightness = 4.0f;
-        auto init = WPParticleParser::genOverrideInitOp(o, false);
+        auto init = WPParticleParser::genOverrideInitOp(o);
         Particle p = makeParticle();
         init(p, 0.0);
         CHECK(p.alpha == doctest::Approx(0.5f).epsilon(0.01));
@@ -1483,7 +1483,7 @@ TEST_SUITE("genOverrideInitOp deep") {
         wpscene::ParticleInstanceoverride o;
         o.enabled    = true;
         o.brightness = 0.5f;
-        auto init = WPParticleParser::genOverrideInitOp(o, false);
+        auto init = WPParticleParser::genOverrideInitOp(o);
         Particle p = makeParticle();
         init(p, 0.0);
         CHECK(p.alpha == doctest::Approx(1.0f).epsilon(0.01));
@@ -1494,7 +1494,7 @@ TEST_SUITE("genOverrideInitOp deep") {
         wpscene::ParticleInstanceoverride o;
         o.enabled    = true;
         o.brightness = 1.0f;
-        auto init = WPParticleParser::genOverrideInitOp(o, false);
+        auto init = WPParticleParser::genOverrideInitOp(o);
         Particle p = makeParticle();
         init(p, 0.0);
         CHECK(p.init.color.x() == doctest::Approx(1.0f).epsilon(0.01));

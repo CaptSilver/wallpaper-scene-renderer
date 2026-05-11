@@ -383,7 +383,7 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
 }
 void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                      const wpscene::ParticleInstanceoverride& over, u32 rope_count = 0,
-                     int /*cp_start*/ = 0, bool is_rope = false) {
+                     int /*cp_start*/ = 0) {
     // cp_start is intentionally unused here.  The child-container `controlpointstartindex`
     // is stored on the subsystem (see LoadControlPoint → SetCpStartShift) and applied at
     // chain-resolve time, so injecting it into per-initializer JSON would double-shift.
@@ -397,7 +397,7 @@ void LoadInitializer(ParticleSubSystem& pSys, const wpscene::Particle& wp,
         for (int32_t cp : CollectCpReferences(iniCopy)) pSys.MarkCpReferenced(cp);
         pSys.AddInitializer(WPParticleParser::genParticleInitOp(iniCopy, pSys.Controlpoints()));
     }
-    if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over, is_rope));
+    if (over.enabled) pSys.AddInitializer(WPParticleParser::genOverrideInitOp(over));
 }
 void LoadOperator(ParticleSubSystem& pSys, const wpscene::Particle& wp,
                   const wpscene::ParticleInstanceoverride& over) {
@@ -2191,13 +2191,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                  particle_obj.children.size());
 
         // Minimal setup: no mesh/material, just particle subsystem for children
-        u32 maxcount = std::min(particle_obj.maxcount, 20000u);
-        // instanceoverride.rate = time-dilation factor: system clock runs at
-        // 1/rate of scene time (rate=5.0 → 5x slower).  Applied to the subsystem
-        // as m_rate, it scales particleTime, which naturally slows emit timing,
-        // lifetime decrement, and movement operators in lockstep.
-        const double time_scale =
-            override.enabled && override.rate > 0.0f ? 1.0 / (double) override.rate : 1.0;
+        u32          maxcount   = std::min(particle_obj.maxcount, 20000u);
+        const double time_scale = wpscene::OverrideTimeScale(override);
         auto spMesh      = std::make_shared<SceneMesh>(true);
         auto particleSub = std::make_unique<ParticleSubSystem>(
             *context.scene->paritileSys,
@@ -2402,14 +2397,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
     }
 
-    // instanceoverride.rate = time-dilation factor (rate=5.0 → 5x slower).  See
-    // the spawner-only branch above for detailed rationale.
-    // instanceoverride.rate = playback-speed multiplier: rate=5.0 → system
-    // runs 5× faster (emit timing, lifetime decrement, movement all accelerate).
-    // We apply it to the subsystem's m_rate, which multiplies particleTime
-    // passed to the emitter + operators.
-    const double time_scale =
-        override.enabled && override.rate > 0.0f ? (double) override.rate : 1.0;
+    const double time_scale = wpscene::OverrideTimeScale(override);
     auto particleSub = std::make_unique<ParticleSubSystem>(
         *context.scene->paritileSys,
         spMesh,
@@ -2507,8 +2495,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                     particle_obj,
                     override,
                     rope_init_count,
-                    child_data.controlpointstartindex,
-                    /*is_rope=*/render_rope);
+                    child_data.controlpointstartindex);
     LoadOperator(*particleSub, particle_obj, override);
 
     mesh.AddMaterial(std::move(material));

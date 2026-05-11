@@ -175,17 +175,13 @@ public:
     float                alpha { 1.0f };
     float                brightness { 1.0f };
     float                count { 1.0f };
-    // `lifetime` is the only field whose default differs from the others'
-    // multiplicative identity (1.0).  The override dispatches through
-    // `ApplyLifetimeOverride`, which on sprite/halo subsystems treats the
-    // value as an ABSOLUTE per-particle duration (`SetInitLifeTime`) — not a
-    // multiplier.  Default 1.0 would unconditionally stomp every authored
-    // `lifetimerandom` range to "1 second" whenever any wallpaper authored
-    // any instanceoverride block (because `enabled=true` flips on the entire
-    // override-init function), even for fields the author didn't touch.
-    // Default 0.0 routes through the `<= 0` short-circuit in
-    // `ApplyLifetimeOverride` so absent-from-JSON means "no override".
-    float                lifetime { 0.0f };
+    // All scalar overrides default to 1.0 — the multiplicative identity.  The
+    // runtime treats every override as a multiplier on the preset's per-
+    // particle init field, so an absent JSON entry (default 1.0) is a no-op.
+    // `lifetime` previously defaulted to 0.0 to short-circuit an absolute-
+    // seconds dispatch path that has since been removed; identity-default
+    // matches the runtime's behaviour and avoids a special-case sentinel.
+    float                lifetime { 1.0f };
     float                rate { 1.0f };
     float                speed { 1.0f };
     float                size { 1.0f };
@@ -207,6 +203,16 @@ public:
     };
     std::array<ControlPointOverride, 8> controlpointOverrides;
 };
+
+// instanceoverride.rate = playback-speed multiplier on the subsystem clock:
+// rate=5.0 → particleTime advances 5× faster, so emit timing, lifetime
+// decrement, and movement operators all accelerate in lockstep.  Direction
+// is uniform across renderable and spawner-only subsystems — the runtime
+// has no special-case branch for child-only emitters.  Returns 1.0 (identity)
+// when the override is absent or rate is non-positive.
+inline double OverrideTimeScale(const ParticleInstanceoverride& over) {
+    return over.enabled && over.rate > 0.0f ? (double) over.rate : 1.0;
+}
 
 class WPParticleObject {
 public:

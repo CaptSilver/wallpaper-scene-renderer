@@ -869,7 +869,7 @@ TEST_SUITE("genOverrideInitOp brightness boundary") {
         over.lifetime   = 0.0f;  // multiplier path
         over.overColor  = false;
         over.overColorn = false;
-        auto op = WPParticleParser::genOverrideInitOp(over, false);
+        auto op = WPParticleParser::genOverrideInitOp(over);
         Particle p = makeParticle();
         p.alpha       = 1.0f;
         p.init.alpha  = 1.0f;
@@ -888,7 +888,7 @@ TEST_SUITE("genOverrideInitOp brightness boundary") {
         over.speed      = 1.0f;
         over.overColor  = false;
         over.overColorn = false;
-        auto op = WPParticleParser::genOverrideInitOp(over, false);
+        auto op = WPParticleParser::genOverrideInitOp(over);
         Particle p = makeParticle();
         p.alpha       = 1.0f;
         p.init.alpha  = 1.0f;

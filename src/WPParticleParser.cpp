@@ -631,18 +631,13 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
     };
 }
 
-ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over,
-                                                   bool is_rope) {
+ParticleInitOp WPParticleParser::genOverrideInitOp(const wpscene::ParticleInstanceoverride& over) {
     return [=](Particle& p, double) {
-        // instanceoverride.lifetime semantic depends on renderer kind: sprites
-        // and halos take it as absolute seconds (NieR 2B halo magic_vortex_1
-        // ships lifetime=0.9 = "0.9s trails"); ropes take it as a multiplier
-        // on the preset's randomized lifetime so per-segment timing scales
-        // proportionally instead of collapsing to a flat constant.  See
-        // ApplyLifetimeOverride for the dispatch and test_ParticleModify.cpp
-        // for the pinned cases.
+        // instanceoverride.lifetime is a uniform multiplier on the preset's
+        // randomized lifetime — same semantic across every renderer kind in
+        // the runtime.  Default 1.0 makes an absent JSON entry a no-op.
         if (over.enabled) {
-            PM::ApplyLifetimeOverride(p, over.lifetime, is_rope);
+            PM::ApplyLifetimeOverride(p, over.lifetime);
         }
         PM::MutiplyInitAlpha(p, over.alpha);
         PM::MutiplyInitSize(p, over.size);

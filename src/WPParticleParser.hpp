@@ -13,7 +13,6 @@ public:
                                                     const wpscene::ParticleInstanceoverride&);
     static ParticleEmittOp    genParticleEmittOp(const wpscene::Emitter&, bool sort = false,
                                                  u32 batch_size = 1, float burst_rate = 0.0f);
-    static ParticleInitOp     genOverrideInitOp(const wpscene::ParticleInstanceoverride&,
-                                                bool is_rope = false);
+    static ParticleInitOp     genOverrideInitOp(const wpscene::ParticleInstanceoverride&);
 };
 } // namespace wallpaper

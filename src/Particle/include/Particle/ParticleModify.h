@@ -159,27 +159,17 @@ inline void MutiplyInitLifeTime(Particle& p, double m) {
     p.lifetime *= m;
     p.init.lifetime = p.lifetime;
 }
-// Set the particle's lifetime to an absolute number of seconds and snapshot the
-// init value so per-particle progress math (`p.lifetime / p.init.lifetime`) remains
-// consistent.  Used by instanceoverride.lifetime on sprite/halo subsystems —
-// authors set absolute durations there ("0.9-second trails").
-inline void SetInitLifeTime(Particle& p, double sec) {
-    p.lifetime      = (float)sec;
-    p.init.lifetime = p.lifetime;
-}
 
-// Dispatch instanceoverride.lifetime to the right semantic.  Sprite/halo
-// subsystems get absolute-seconds replacement; rope subsystems get a
-// multiplier on the preset's randomized lifetime so per-segment timing
-// scales proportionally instead of collapsing to a flat constant (which
-// shrinks the rope's apparent length and breaks the bolt geometry).
-// `over <= 0` is treated as "no override" in either path.
-inline void ApplyLifetimeOverride(Particle& p, double over, bool is_rope) {
+// instanceoverride.lifetime is a uniform multiplier on the preset's randomized
+// lifetime across every renderer kind (sprite, halo, rope, ropetrail).  The
+// runtime's per-particle init dispatcher applies it as
+// `init.lifetime_min = jsonMin * over`, `init.lifetime_range = (jsonMax-jsonMin)
+// * over`; default override is 1.0 (identity), so an absent JSON entry leaves
+// the preset values untouched.  `over <= 0` is treated as "no override" as a
+// safety against degenerate authored values.
+inline void ApplyLifetimeOverride(Particle& p, double over) {
     if (over <= 0.0) return;
-    if (is_rope)
-        MutiplyInitLifeTime(p, over);
-    else
-        SetInitLifeTime(p, over);
+    MutiplyInitLifeTime(p, over);
 }
 
 // Dispatch instanceoverride.color / instanceoverride.colorn to the right

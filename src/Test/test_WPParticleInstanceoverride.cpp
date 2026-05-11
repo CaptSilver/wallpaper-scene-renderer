@@ -76,27 +76,25 @@ TEST_SUITE("ParticleInstanceoverride") {
         }
     }
 
-    TEST_CASE("absent lifetime defaults to 0 (no-override sentinel)") {
-        // Regression: `lifetime` previously defaulted to 1.0, so any JSON with
-        // an `instanceoverride` block — even authoring only `colorn` /
-        // `brightness` — would flip `enabled=true` and the override-init
-        // function would unconditionally `SetInitLifeTime(p, over.lifetime)`,
-        // stomping every authored `lifetimerandom` range to "1 second".
-        // ApplyLifetimeOverride short-circuits on `<= 0.0`, so default 0.0 is
-        // the correct sentinel for absent.
+    TEST_CASE("absent lifetime defaults to identity multiplier (1.0)") {
+        // Wallpapers commonly author an instanceoverride block for `colorn`
+        // or `brightness` alone, leaving every other field absent.  Since
+        // `enabled=true` lights up the entire override-init function, the
+        // default for unauthored scalars MUST be the identity for whatever
+        // semantic the runtime uses — and the runtime treats lifetime as a
+        // multiplier on the preset.  Identity multiplier = 1.0.
         njson j;
         j["colorn"]     = "1.0 0.0 0.0";
         j["brightness"] = 2.0f;
         ParticleInstanceoverride over;
         REQUIRE(over.FromJosn(j));
         CHECK(over.enabled);
-        CHECK(over.lifetime == doctest::Approx(0.0f));
+        CHECK(over.lifetime == doctest::Approx(1.0f));
     }
 
-    TEST_CASE("explicit lifetime: 0.9 still parses verbatim (NieR 2B halo)") {
-        // Driver case for the "absolute seconds on sprite/halo subsystems"
-        // semantic — the regression-default fix must not affect explicitly
-        // authored values.
+    TEST_CASE("explicit lifetime: 0.9 still parses verbatim") {
+        // Sub-1.0 multipliers must round-trip through the parser unchanged so
+        // the per-particle init step receives the authored value directly.
         njson j;
         j["lifetime"] = 0.9f;
         ParticleInstanceoverride over;
@@ -123,5 +121,55 @@ TEST_SUITE("ParticleInstanceoverride") {
             CHECK(over.overColor == true);
             CHECK(over.overColorn == false);
         }
+    }
+}
+
+TEST_SUITE("OverrideTimeScale") {
+    using wallpaper::wpscene::OverrideTimeScale;
+
+    TEST_CASE("rate=5 yields 5x time-dilation (renderable + spawner-only must agree)") {
+        // Regression: WPSceneParser previously had an inverted formula
+        // (`1.0 / rate`) in the spawner-only branch while the renderable
+        // branch used `rate` directly.  The runtime applies the same
+        // `dt *= rate` integration to every subsystem regardless of
+        // renderer presence, so both code paths must produce the same
+        // time_scale for the same override.
+        ParticleInstanceoverride over;
+        over.enabled = true;
+        over.rate    = 5.0f;
+        CHECK(OverrideTimeScale(over) == doctest::Approx(5.0));
+    }
+
+    TEST_CASE("disabled override returns identity (1.0)") {
+        ParticleInstanceoverride over;
+        over.enabled = false;
+        over.rate    = 5.0f;
+        CHECK(OverrideTimeScale(over) == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("rate=0 returns identity (no division-by-zero, no inversion)") {
+        // Authored rate=0 is a degenerate value — fall back to identity rather
+        // than freezing the subsystem's clock.
+        ParticleInstanceoverride over;
+        over.enabled = true;
+        over.rate    = 0.0f;
+        CHECK(OverrideTimeScale(over) == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("negative rate returns identity") {
+        ParticleInstanceoverride over;
+        over.enabled = true;
+        over.rate    = -2.0f;
+        CHECK(OverrideTimeScale(over) == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("Portal to a New World shooting-star case (rate=5.0 → 5x)") {
+        // Driver case from wallpaper 2349470260 — shooting-star particles
+        // override `rate: 5.0` for time-dilated emission and motion.  The
+        // engine's `m_rate` must receive 5.0, not 0.2 (the inverted value).
+        ParticleInstanceoverride over;
+        over.enabled = true;
+        over.rate    = 5.0f;
+        CHECK(OverrideTimeScale(over) > 1.0);
     }
 }

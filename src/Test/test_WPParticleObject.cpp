@@ -258,7 +258,7 @@ TEST_SUITE("ParticleInstanceoverride::FromJosn") {
         CHECK(o.alpha == doctest::Approx(1.0f));
         CHECK(o.brightness == doctest::Approx(1.0f));
         CHECK(o.size == doctest::Approx(1.0f));
-        CHECK(o.lifetime == doctest::Approx(0.0f)); // defaults to 0 (no override)
+        CHECK(o.lifetime == doctest::Approx(1.0f)); // identity multiplier (matches runtime default)
         CHECK(o.rate == doctest::Approx(1.0f));
         CHECK(o.speed == doctest::Approx(1.0f));
         CHECK(o.count == doctest::Approx(1.0f));
