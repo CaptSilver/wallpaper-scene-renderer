@@ -2,6 +2,7 @@
 #include "WPJson.hpp"
 #include "WPPropertyScriptExtract.hpp"
 #include "WPRopeCombos.hpp"
+#include "WPSceneGroupParse.hpp"
 #include "WPUserProperties.hpp"
 
 #include "Utils/String.h"
@@ -3431,35 +3432,20 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         } else if (obj.contains("id")) {
             // Group node — no content, just a transform container
             try {
-                i32 gid = 0;
-                GET_JSON_NAME_VALUE(obj, "id", gid);
+                auto g                  = ParseGroupNode(obj);
+                context.node_map[g.id]  = g.node;
+                group_infos.push_back({ g.id, g.parent_id });
 
-                std::array<float, 3> origin { 0, 0, 0 };
-                std::array<float, 3> scale { 1, 1, 1 };
-                std::array<float, 3> angles { 0, 0, 0 };
-                GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
-                GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
-                GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
-
-                auto node = std::make_shared<SceneNode>(
-                    Vector3f(origin.data()), Vector3f(scale.data()), Vector3f(angles.data()));
-                node->ID() = gid;
-
-                context.node_map[gid] = node;
-
-                i32 parent_id = -1;
-                GET_JSON_NAME_VALUE_NOWARN(obj, "parent", parent_id);
-                group_infos.push_back({ gid, parent_id });
-
-                LOG_INFO(
-                    "created group node id=%d origin=(%.1f, %.1f, %.1f) scale=(%.1f, %.1f, %.1f)",
-                    gid,
-                    origin[0],
-                    origin[1],
-                    origin[2],
-                    scale[0],
-                    scale[1],
-                    scale[2]);
+                LOG_INFO("created group node id=%d origin=(%.1f, %.1f, %.1f) scale=(%.1f, %.1f, "
+                         "%.1f) visible=%d",
+                         g.id,
+                         g.node->Translate().x(),
+                         g.node->Translate().y(),
+                         g.node->Translate().z(),
+                         g.node->Scale().x(),
+                         g.node->Scale().y(),
+                         g.node->Scale().z(),
+                         g.visible);
             } catch (const std::exception& e) {
                 LOG_ERROR("failed to parse group node: %s", e.what());
             }
