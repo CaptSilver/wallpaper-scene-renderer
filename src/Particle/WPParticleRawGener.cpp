@@ -457,11 +457,13 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
 
             float trail_length = (float)active;
 
-            // Trail follows the particle's CURRENT alpha — when the head fades
-            // out (alphafade end-of-life ramp), the trail dims with it.  Without
-            // this multiplier each trail sample renders at its captured push-time
-            // alpha, leaving a bright trail visible after the head has faded to
-            // invisible (Portal shooting-star "lingering streak" report).
+            // Trail vertex alpha = current head alpha × ancestor alpha (no
+            // per-segment captured alpha multiplier).  Captured tp.alpha was
+            // ~p.alpha at trail-push time, so `tp.alpha * live_alpha` squared
+            // the dim for any particle whose peak alpha is < 1.0 (NieR 2B
+            // magic_vortex_1 halo: peak alpha 0.12 squared to 0.014 ≈
+            // invisible).  Using live_alpha alone makes the trail follow the
+            // head's current alpha uniformly while still dying with the head.
             const float live_alpha = p.alpha;
 
             for (u32 ti = 1; ti < active; ti++) {
@@ -513,7 +515,7 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
                                       std::array { tp_old.color[0],
                                                    tp_old.color[1],
                                                    tp_old.color[2],
-                                                   tp_old.alpha * live_alpha * anc_alpha },
+                                                   live_alpha * anc_alpha },
                                       4);
                     offset += 4;
                     // a_TexCoordC4: UV seam
@@ -538,7 +540,7 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
                                   std::array { tp_new.color[0],
                                                tp_new.color[1],
                                                tp_new.color[2],
-                                               tp_new.alpha * live_alpha * anc_alpha },
+                                               live_alpha * anc_alpha },
                                   4);
 
                 sv.SetVertexs(total_segs * 4, { data, totle_size });
@@ -585,11 +587,13 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
             // uniformly bright line that just vanishes at the tail — matches WE
             // Windows behaviour, which fades the per-vertex alpha along trail index.
             const float fade_denom = active > 1 ? (float)(active - 1) : 1.0f;
-            // Trail follows the particle's CURRENT alpha — when the head fades
-            // out (alphafade end-of-life ramp), the trail dims with it.  Without
-            // this multiplier each trail sample renders at its captured push-time
-            // alpha, leaving a bright trail visible after the head has faded to
-            // invisible (Portal shooting-star "lingering streak" report).
+            // Trail vertex alpha = current head alpha × per-segment spatial
+            // fade × ancestor alpha (no per-segment captured alpha multiplier).
+            // Captured tp.alpha was ~p.alpha at trail-push time, so
+            // `tp.alpha * live_alpha` squared the dim for any particle whose
+            // peak alpha is < 1.0 (NieR 2B magic_vortex_1 halo: peak alpha
+            // 0.12 squared to 0.014 ≈ invisible).  Using live_alpha alone
+            // keeps the head bright and the trail dies with it.
             const float live_alpha = p.alpha;
 
             for (u32 ti = 1; ti < active; ti++) {
@@ -642,7 +646,7 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                     std::copy_n(std::array { tp_old.color[0],
                                              tp_old.color[1],
                                              tp_old.color[2],
-                                             tp_old.alpha * fade_old * live_alpha * anc_alpha }
+                                             fade_old * live_alpha * anc_alpha }
                                     .data(),
                                 4,
                                 data + offset);
@@ -659,7 +663,7 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
                 std::copy_n(std::array { tp_new.color[0],
                                          tp_new.color[1],
                                          tp_new.color[2],
-                                         tp_new.alpha * fade_new * live_alpha * anc_alpha }
+                                         fade_new * live_alpha * anc_alpha }
                                 .data(),
                             4,
                             data + offset);
