@@ -118,6 +118,7 @@ public:
 
 private:
     std::vector<Eigen::Affine3f> m_final_affines;
+    bool                         m_logged_bones_frame0 { false };
 };
 
 class WPPuppetLayer {

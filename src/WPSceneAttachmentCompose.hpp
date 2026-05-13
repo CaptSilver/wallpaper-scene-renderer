@@ -7,14 +7,20 @@
 // has a single home and can be unit-tested without spinning up a full
 // scene.
 //
-// Algorithm:
+// Algorithm (uniform at every depth):
 //   - When the child's `attachment` name resolves on `parent_puppet`'s
 //     MDAT to an attachment whose `bone_index` is a valid index into
-//     the parent's bones array, the child anchors at the attachment
-//     slot.  The child's authored translation is dropped (it's
-//     editor-baked, not a runtime offset), but its scale/rotation
-//     basis is kept:
-//         world = parent_world * attachment.transform * (R*S of local)
+//     the parent's bones array:
+//         world = parent_world
+//               * bones[bone_index].world_transform
+//               * attachment.transform
+//               * local
+//     The bone's `world_transform` is the cumulative bind-pose world
+//     populated by `WPPuppet::prepared()`.  For attachments rigged to
+//     bone[0] of a flat skeleton it reduces to identity and the rule
+//     collapses to `parent * att * local`; for attachments rigged to
+//     non-root bones (head/hand/etc.) it lifts the child to the bone's
+//     bind-pose position.
 //   - Otherwise the standard scene-graph chain applies:
 //         world = parent_world * local
 //
@@ -38,8 +44,8 @@ struct AttachComposeResult {
     Eigen::Matrix4d world;             // The composed world transform.
     bool            attachment_resolved = false;
     // True when the named attachment was found AND its bone_index is in
-    // range — i.e. the "drop translation" branch fired.  Useful in tests
-    // and for diagnostic logs.
+    // range — i.e. the bone-anchored branch fired.  Useful in tests and
+    // for diagnostic logs.
 };
 
 /// Drop only the translation column of a 4x4, keep the upper-3x3 (R*S).
@@ -71,11 +77,15 @@ inline AttachComposeResult composeAttachedChildWorld(
         if (auto* att = parent_puppet->findAttachment(attachment_name)) {
             if (att->bone_index < parent_puppet->bones.size()) {
                 result.attachment_resolved = true;
+                Eigen::Matrix4d bone_world =
+                    parent_puppet->bones[att->bone_index]
+                        .world_transform.matrix().cast<double>();
                 Eigen::Matrix4d att_mat =
                     att->transform.matrix().cast<double>();
-                Eigen::Matrix4d parent_chain = parent_world * att_mat;
-                // Drop translation column from local; scale/rotation kept.
-                result.world = parent_chain * dropTranslation(local);
+                // Uniform composition at every depth — keep child.local intact,
+                // include the bone's cumulative bind-pose world.
+                result.world =
+                    parent_world * bone_world * att_mat * local;
                 return result;
             }
         }

@@ -104,49 +104,47 @@ TEST_SUITE("WPSceneAttachmentCompose") {
         CHECK(r.world(1, 3) == doctest::Approx(205.0));
     }
 
-    TEST_CASE("resolved attachment drops local translation, anchors at slot") {
+    TEST_CASE("resolved attachment anchors at slot, full local kept") {
+        // Uniform rule: world = parent * bone[0].world * att * local.
+        // bone[0] of a single-bone flat puppet is at the origin, so the
+        // factor reduces to parent * att * local.
         auto puppet = makeFlatPuppet({ { 0.0f, 0.0f, 0.0f } });
         addAttachment(*puppet, "head", 0, 50.0f, 60.0f, 0.0f);
         Eigen::Matrix4d parent = translation(100.0, 200.0, 0.0);
-        // Authored local has a large negative translation — represents
-        // the editor-baked metadata pattern that needs to be neutralized.
-        Eigen::Matrix4d local = translation(-72.0, -475.79, 0.0);
+        Eigen::Matrix4d local  = translation(-72.0, -475.79, 0.0);
         auto r = composeAttachedChildWorld(parent, puppet, "head", local);
         CHECK(r.attachment_resolved);
-        // World should be parent + attachment, with local translation
-        // discarded.
-        CHECK(r.world(0, 3) == doctest::Approx(150.0));
-        CHECK(r.world(1, 3) == doctest::Approx(260.0));
+        // 100 + 50 + (-72) = 78,  200 + 60 + (-475.79) = -215.79
+        CHECK(r.world(0, 3) == doctest::Approx(78.0));
+        CHECK(r.world(1, 3) == doctest::Approx(-215.79));
     }
 
     TEST_CASE("resolved attachment preserves scale and rotation in local") {
         auto puppet = makeFlatPuppet({ { 0.0f, 0.0f, 0.0f } });
         addAttachment(*puppet, "head", 0, 50.0f, 60.0f, 0.0f);
-        // Local: rotate 90° around Z, scale 0.5, translate (999, 999) — the
-        // translation should be dropped, the rotation+scale kept.
+        // Local: translate(999, 999) × rotate(90° Z) × scale(0.5).  Under
+        // the uniform rule the full local is composed in, so the world
+        // translation reflects all three contributions (translation only
+        // for translation-only premultiplied parents).
         Eigen::Affine3d local = Eigen::Affine3d::Identity();
         local.prescale(Eigen::Vector3d(0.5, 0.5, 0.5));
         local.prerotate(Eigen::AngleAxisd(M_PI / 2.0, Eigen::Vector3d::UnitZ()));
-        local.pretranslate(Eigen::Vector3d(999.0, 999.0, 0.0)); // dropped
+        local.pretranslate(Eigen::Vector3d(999.0, 999.0, 0.0));
         Eigen::Matrix4d parent = translation(100.0, 200.0, 0.0);
         auto r = composeAttachedChildWorld(parent, puppet, "head", local.matrix());
         CHECK(r.attachment_resolved);
-        // Translation: parent + attachment (no contribution from local.translation)
-        CHECK(r.world(0, 3) == doctest::Approx(150.0));
-        CHECK(r.world(1, 3) == doctest::Approx(260.0));
-        // Rotation column 0 should reflect the 90° Z rotation × scale 0.5:
-        // R*S col0 = (0, 0.5, 0) for Z-90.  parent has no rotation, so the
-        // composed result preserves this.
+        // Translation: 100 + 50 + 999, 200 + 60 + 999 (all linears are I).
+        CHECK(r.world(0, 3) == doctest::Approx(1149.0));
+        CHECK(r.world(1, 3) == doctest::Approx(1259.0));
+        // Rotation × scale preserved: Z-90 takes (1,0,0) → (0,1,0); scale 0.5.
         CHECK(r.world(0, 0) == doctest::Approx(0.0).epsilon(1e-6));
         CHECK(r.world(1, 0) == doctest::Approx(0.5).epsilon(1e-6));
     }
 
-    TEST_CASE("two children sharing one attachment slot land at same anchor") {
-        // When two children share the same attachment slot on the same
-        // parent, the drop-translation rule places them at exactly the
-        // slot's world position even though their authored locals differ.
-        // Their texture content is what differentiates the two layers
-        // visually.
+    TEST_CASE("two children sharing one attachment slot fan out by their locals") {
+        // Under the uniform rule the children differentiate via their
+        // authored local offsets — each lands at slot + local.  (Multiple
+        // hair strands on one head slot do not pile up at the same point.)
         auto puppet = makeFlatPuppet({ { 0.0f, 0.0f, 0.0f } });
         addAttachment(*puppet, "hair back", 0, 8.66f, 677.02f, 0.0f);
         Eigen::Matrix4d parent = translation(2170.0, 955.0, 0.0);
@@ -158,20 +156,47 @@ TEST_SUITE("WPSceneAttachmentCompose") {
         auto b = composeAttachedChildWorld(parent, puppet, "hair back", local_b);
         CHECK(a.attachment_resolved);
         CHECK(b.attachment_resolved);
-        CHECK(a.world(0, 3) == doctest::Approx(b.world(0, 3)));
-        CHECK(a.world(1, 3) == doctest::Approx(b.world(1, 3)));
-        CHECK(a.world(0, 3) == doctest::Approx(2178.66));
-        CHECK(a.world(1, 3) == doctest::Approx(1632.02));
+        // a: 2170 + 8.66 + (-186.2) = 1992.46,  955 + 677.02 + (-303.4) = 1328.62
+        CHECK(a.world(0, 3) == doctest::Approx(1992.46));
+        CHECK(a.world(1, 3) == doctest::Approx(1328.62));
+        // b: 2170 + 8.66 + (-266.3) = 1912.36,  955 + 677.02 + (-265.8) = 1366.22
+        CHECK(b.world(0, 3) == doctest::Approx(1912.36));
+        CHECK(b.world(1, 3) == doctest::Approx(1366.22));
     }
 
-    TEST_CASE("3-deep nested chain") {
+    TEST_CASE("bone[N>0].world_transform lifts attached child by bind-pose offset") {
+        // The big new-rule case: when the named attachment rigs to a
+        // non-root bone, the child inherits the bone's bind-pose
+        // cumulative world transform.  Mirrors SAO's hair-c1 chain
+        // where 'head' on asuna body's puppet is bone[2] with a large
+        // positive Y offset from bone[0].
+        Eigen::Vector3f bone0 { 0.0f, 0.0f, 0.0f };
+        Eigen::Vector3f bone1 { 12.5f, -185.0f, 0.0f };
+        Eigen::Vector3f bone2 { 77.5f, 252.5f, 0.0f }; // head bone
+        auto puppet = makeFlatPuppet({ bone0, bone1, bone2 });
+        addAttachment(*puppet, "head", /*bone_index*/ 2, -32.51f, 116.41f, 0.0f);
+
+        Eigen::Matrix4d parent    = translation(2172.5, 1062.4, 0.0);
+        Eigen::Matrix4d hairLocal = translation(-72.0, -475.79, 0.0);
+        auto r = composeAttachedChildWorld(parent, puppet, "head", hairLocal);
+        CHECK(r.attachment_resolved);
+        // X: 2172.5 + 77.5 + (-32.51) + (-72.0) = 2145.49
+        // Y: 1062.4 + 252.5 + 116.41 + (-475.79) = 955.52
+        CHECK(r.world(0, 3) == doctest::Approx(2145.49));
+        CHECK(r.world(1, 3) == doctest::Approx(955.52));
+    }
+
+    TEST_CASE("3-deep nested chain (SAO Asuna shape, flat skeletons)") {
         // root puppet at scene origin (2170, 955)
         // → child puppet 1 attached to root via 'Attachment'
         //   → child puppet 2 attached to bottom via 'Attachment bottom'
         //     → leaf card attached to body via 'head'
         //
-        // We compose top-down and verify each step's world matches the
-        // documented rule.
+        // All puppets here use single-bone flat skeletons (bone[0]
+        // at the origin) — bones[0].world_transform == identity — so
+        // the uniform formula reduces to parent × att × local at
+        // every step, equivalent to the documented WE pipeline for
+        // the bind-pose case.
 
         auto root       = makeFlatPuppet({ { 0.0f, 0.0f, 0.0f } });
         addAttachment(*root, "Attachment", 0, -0.15f, -0.10f, 0.0f);
@@ -184,39 +209,35 @@ TEST_SUITE("WPSceneAttachmentCompose") {
 
         Eigen::Matrix4d rootWorld = translation(2170.0, 955.0, 0.0);
 
-        // step 1: body_bottom attaches to root@'Attachment', authored local (-216, -209)
+        // step 1: body_bottom = root × bones_root[0] × att × bbLocal
         Eigen::Matrix4d bbLocal = translation(-216.0, -209.0, 0.0);
         auto            bb      = composeAttachedChildWorld(rootWorld, root, "Attachment", bbLocal);
         CHECK(bb.attachment_resolved);
-        // Drop-translation rule: world = root + att, no contribution from bbLocal.
-        CHECK(bb.world(0, 3) == doctest::Approx(2169.85));
-        CHECK(bb.world(1, 3) == doctest::Approx(954.90));
+        // 2170 + 0 + (-0.15) + (-216) = 1953.85,  955 + 0 + (-0.10) + (-209) = 745.90
+        CHECK(bb.world(0, 3) == doctest::Approx(1953.85));
+        CHECK(bb.world(1, 3) == doctest::Approx(745.90));
 
-        // step 2: body attaches to body_bottom@'Attachment bottom'
+        // step 2: body = bb × bones_bb[0] × att × bLocal
         Eigen::Matrix4d bLocal = translation(-22.3, 192.3, 0.0);
         auto bd = composeAttachedChildWorld(bb.world, bodyBottom, "Attachment bottom", bLocal);
         CHECK(bd.attachment_resolved);
-        CHECK(bd.world(0, 3) == doctest::Approx(2172.62));
-        CHECK(bd.world(1, 3) == doctest::Approx(1057.90));
+        // 1953.85 + 2.77 + (-22.3) = 1934.32,  745.90 + 103.0 + 192.3 = 1041.20
+        CHECK(bd.world(0, 3) == doctest::Approx(1934.32));
+        CHECK(bd.world(1, 3) == doctest::Approx(1041.20));
 
-        // step 3: hair card attaches to body@'head'.  Authored local Y is a
-        // huge negative (-475.79) — would drop the card to the feet under
-        // a naive `parent × att × local` composition.  Drop-translation
-        // pins it to the head slot.
+        // step 3: hair = bd × bones_body[0] × att × hairLocal
         Eigen::Matrix4d hairLocal = translation(-72.0, -475.79, 0.0);
         auto h = composeAttachedChildWorld(bd.world, body, "head", hairLocal);
         CHECK(h.attachment_resolved);
-        CHECK(h.world(0, 3) == doctest::Approx(2140.11));
-        CHECK(h.world(1, 3) == doctest::Approx(1174.31));
+        // 1934.32 + (-32.51) + (-72.0) = 1829.81,  1041.20 + 116.41 + (-475.79) = 681.82
+        CHECK(h.world(0, 3) == doctest::Approx(1829.81));
+        CHECK(h.world(1, 3) == doctest::Approx(681.82));
     }
 
     TEST_CASE("1-level-deep card on root puppet with zero-offset slot") {
-        // Direct child of root puppet (no nesting).  The puppet has a
-        // single 'Attachment' slot with zero offset.  Under drop-
-        // translation, the child anchors at the puppet origin — its
-        // authored local translation is dropped.  This is regression-
-        // shaped: pins current behavior so future changes that intend
-        // to honor local must explicitly update this expectation.
+        // Direct child of root puppet (no nesting), bone[0] at origin,
+        // attachment at (0,0).  Under the uniform rule the child anchors
+        // at puppet + local — its authored offset is fully honored.
         auto root = makeFlatPuppet({ { 0.0f, 0.0f, 0.0f } });
         addAttachment(*root, "Attachment", 0, 0.0f, 0.0f, 0.0f);
 
@@ -225,11 +246,14 @@ TEST_SUITE("WPSceneAttachmentCompose") {
 
         auto r = composeAttachedChildWorld(puppetWorld, root, "Attachment", childLocal);
         CHECK(r.attachment_resolved);
-        CHECK(r.world(0, 3) == doctest::Approx(2581.0));
-        CHECK(r.world(1, 3) == doctest::Approx(1113.0));
+        // 2581 + 0 + 24.35 = 2605.35,  1113 + 0 + 723.65 = 1836.65
+        CHECK(r.world(0, 3) == doctest::Approx(2605.35));
+        CHECK(r.world(1, 3) == doctest::Approx(1836.65));
     }
 
     TEST_CASE("dropTranslation helper preserves rotation/scale, zeroes translation") {
+        // Helper kept for diagnostic callers even though the compose path
+        // no longer drops translation.
         Eigen::Affine3d a = Eigen::Affine3d::Identity();
         a.prescale(Eigen::Vector3d(2.0, 0.5, 1.0));
         a.prerotate(Eigen::AngleAxisd(M_PI / 4.0, Eigen::Vector3d::UnitZ()));

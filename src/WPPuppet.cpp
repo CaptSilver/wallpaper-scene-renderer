@@ -48,23 +48,6 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
     double global_blend = puppet_layer.m_global_blend;
     double total_blend  = puppet_layer.m_total_blend;
 
-#ifndef WP_SUPPRESS_DEBUG_LOGGING
-    static int _debug_frame_count = 0;
-    if (_debug_frame_count == 0) {
-        LOG_INFO("genFrame: global_blend=%.4f total_blend=%.4f layers=%zu bones=%zu",
-                 global_blend,
-                 total_blend,
-                 puppet_layer.m_layers.size(),
-                 bones.size());
-        int matched = 0;
-        for (auto& l : puppet_layer.m_layers)
-            if (l.anim != nullptr) matched++;
-        LOG_INFO("genFrame: %d/%zu layers have matched animations",
-                 matched,
-                 puppet_layer.m_layers.size());
-    }
-#endif
-
     puppet_layer.updateInterpolation(time);
 
     for (uint i = 0; i < m_final_affines.size(); i++) {
@@ -130,20 +113,33 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
     }
 
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
-    if (_debug_frame_count == 0 && ! m_final_affines.empty()) {
-        auto bone0_trans = m_final_affines[0].translation();
-        LOG_INFO("genFrame bone[0]: trans=(%.3f,%.3f,%.3f)",
-                 bone0_trans.x(),
-                 bone0_trans.y(),
-                 bone0_trans.z());
-        Eigen::Matrix4f t0 = (m_final_affines[0] * bones[0].offset_trans.matrix()).matrix();
-        LOG_INFO("genFrame final bone[0] matrix diagonal: (%.4f, %.4f, %.4f, %.4f)",
-                 t0(0, 0),
-                 t0(1, 1),
-                 t0(2, 2),
-                 t0(3, 3));
+    if (! m_logged_bones_frame0 && ! m_final_affines.empty()) {
+        // One-shot per-puppet frame-0 diagnostic.  Reports bone count,
+        // blend state, matched animations, and whether the animated bone
+        // world (m_final_affines[i], pre-offset_trans) diverges from
+        // bind pose bones[i].world_transform.  For static puppets these
+        // agree (max_dY ≈ 0); a non-zero max_dY suggests an animation is
+        // shifting bones at frame 0 and that shift may need to propagate
+        // to attachment composition for accurate child placement.
+        double max_dY = 0.0;
+        for (uint i = 0; i < bones.size(); i++) {
+            double dY = m_final_affines[i].translation().y() -
+                        bones[i].world_transform.translation().y();
+            if (std::abs(dY) > std::abs(max_dY)) max_dY = dY;
+        }
+        int matched = 0;
+        for (auto& l : puppet_layer.m_layers)
+            if (l.anim != nullptr) matched++;
+        LOG_INFO("genFrame frame0: bones=%zu global_blend=%.2f total_blend=%.2f "
+                 "matched_anims=%d/%zu max_dY=%.2f",
+                 bones.size(),
+                 global_blend,
+                 total_blend,
+                 matched,
+                 puppet_layer.m_layers.size(),
+                 max_dY);
+        m_logged_bones_frame0 = true;
     }
-    _debug_frame_count++;
 #endif
 
     for (uint i = 0; i < m_final_affines.size(); i++) {

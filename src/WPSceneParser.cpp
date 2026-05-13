@@ -1688,6 +1688,38 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             auto compose_result = composeAttachedChildWorld(
                 parent_chain, parent_puppet, wpimgobj.attachment, local);
             context.original_world_transforms[wpimgobj.id] = compose_result.world;
+
+            // ATT diagnostic — one line per attached child whose attachment
+            // resolves on the parent puppet.  Logs the bone index and the
+            // bone's bind-pose world translation alongside the composed
+            // world.  Grep "ATT compose " for puppet/attachment debugging
+            // on future wallpapers.
+            if (compose_result.attachment_resolved && parent_puppet) {
+                if (auto* att =
+                        parent_puppet->findAttachment(wpimgobj.attachment)) {
+                    if (att->bone_index < parent_puppet->bones.size()) {
+                        auto bone_wt =
+                            parent_puppet->bones[att->bone_index]
+                                .world_transform.translation();
+                        LOG_INFO(
+                            "ATT compose id=%d name='%s' attach='%s' bone=%u "
+                            "boneW=(%.1f,%.1f) att=(%.1f,%.1f) local=(%.1f,%.1f) "
+                            "-> world=(%.1f,%.1f)",
+                            wpimgobj.id,
+                            wpimgobj.name.c_str(),
+                            wpimgobj.attachment.c_str(),
+                            att->bone_index,
+                            bone_wt.x(),
+                            bone_wt.y(),
+                            att->transform.translation().x(),
+                            att->transform.translation().y(),
+                            local(0, 3),
+                            local(1, 3),
+                            compose_result.world(0, 3),
+                            compose_result.world(1, 3));
+                    }
+                }
+            }
         } else {
             context.original_world_transforms[wpimgobj.id] = local;
         }
@@ -1793,7 +1825,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                     auto pit = context.node_puppet.find(wpimgobj.parent_id);
                     if (pit != context.node_puppet.end() && pit->second) {
                         if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
-                            parent_chain = parent_chain * att->transform.matrix().cast<double>();
+                            if (att->bone_index < pit->second->bones.size()) {
+                                Eigen::Matrix4d bone_world =
+                                    pit->second->bones[att->bone_index]
+                                        .world_transform.matrix().cast<double>();
+                                parent_chain = parent_chain * bone_world *
+                                               att->transform.matrix().cast<double>();
+                            }
                         }
                     }
                 }
