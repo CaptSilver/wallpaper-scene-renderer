@@ -1590,9 +1590,14 @@ TEST_SUITE("FadeValueChange deep") {
 // ============================================================================
 
 TEST_SUITE("alphafade deep") {
-    TEST_CASE("life=0: full fade-in attenuation") {
+    // makeParticle() defaults: init.lifetime=1, p.lifetime=1, alpha=1.
+    // LifetimePos = 1 - p.lifetime/init.lifetime; tests vary p.lifetime to
+    // sweep age01.
+
+    TEST_CASE("age01=0 with fadeintime=0.5: full fade-in attenuation") {
+        // p.lifetime=1.0 → age01=0; age01 < fadeintime → a = 0/0.5 = 0.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.5f }, { "fadeouttime", 0.0f } };
+                   { "fadeintime", 0.5f }, { "fadeouttime", 0.5f } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         auto p = makeParticle();
         p.lifetime = 1.0f;
@@ -1601,7 +1606,8 @@ TEST_SUITE("alphafade deep") {
         CHECK(out.alpha == doctest::Approx(0.0f));
     }
 
-    TEST_CASE("life >> out_start: fade-out ramps alpha to 0") {
+    TEST_CASE("age01 near 1 with fadeouttime=0.5: fade-out ramps to 0") {
+        // p.lifetime=0.001 → age01≈0.999; a = (1-0.999)/(1-0.5) ≈ 0.002.
         json j = { { "name", "alphafade" },
                    { "fadeintime", 0.0f }, { "fadeouttime", 0.5f } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
@@ -1612,7 +1618,9 @@ TEST_SUITE("alphafade deep") {
         CHECK(out.alpha == doctest::Approx(0.0f).epsilon(0.05));
     }
 
-    TEST_CASE("life mid-window with no fade: alpha unchanged") {
+    TEST_CASE("age01=0.5, fadeintime=0, fadeouttime=0: midlife fade-out") {
+        // WE semantic foot-gun: fadeouttime=0 means fade-out STARTS at age=0,
+        // so alpha ramps 1.0 → 0 across the entire life.  At midlife: 0.5.
         json j = { { "name", "alphafade" },
                    { "fadeintime", 0.0f }, { "fadeouttime", 0.0f } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
@@ -1620,10 +1628,11 @@ TEST_SUITE("alphafade deep") {
         p.lifetime = 0.5f;
         p.alpha = 1.0f;
         auto out = runOpSingle(op, p);
-        CHECK(out.alpha == doctest::Approx(1.0f));
+        CHECK(out.alpha == doctest::Approx(0.5f));
     }
 
     TEST_CASE("init.lifetime <= epsilon → particle skipped") {
+        // Defensive guard keeps the operator from dividing by ~0.
         json j = { { "name", "alphafade" },
                    { "fadeintime", 0.5f }, { "fadeouttime", 0.5f } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
@@ -1635,9 +1644,10 @@ TEST_SUITE("alphafade deep") {
         CHECK(out.alpha == doctest::Approx(1.0f));
     }
 
-    TEST_CASE("life beyond fade-in window: no attenuation") {
+    TEST_CASE("age01=0.5 inside plateau (fadeintime=0.2, fadeouttime=0.8): no fade") {
+        // 0.2 ≤ age01 ≤ 0.8 → middle plateau → alpha unchanged.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.2f }, { "fadeouttime", 0.0f } };
+                   { "fadeintime", 0.2f }, { "fadeouttime", 0.8f } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         auto p = makeParticle();
         p.lifetime = 0.5f;

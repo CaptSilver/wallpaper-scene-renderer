@@ -1099,9 +1099,9 @@ TEST_SUITE("movement drag residual") {
 // alphafade window comparisons — lines 961, 966, 970
 // ============================================================================
 //
-// L961: `if (L <= 1e-6f) continue;`
-// L966: `if (in_frac > 1e-6f && life < in_frac) ...`
-// L970: `const float out_start = 1.0f - out_frac;` (followed by `life > out_start`)
+// Defensive guard: `if (p.init.lifetime <= 1e-6f) continue;`
+// Fade-in branch: `if (age01 < fadeintime) a = age01 / fadeintime;`
+// Fade-out branch: `else if (age01 > fadeouttime) a = (1-age01)/(1-fadeouttime);`
 
 TEST_SUITE("alphafade boundary") {
     TEST_CASE("very small init.lifetime (<= 1e-6) skips particle") {
@@ -1117,40 +1117,43 @@ TEST_SUITE("alphafade boundary") {
         CHECK(out.alpha == doctest::Approx(0.7f).epsilon(0.001));
     }
 
-    TEST_CASE("life exactly at in_frac boundary: not multiplied (kills `<` boundary)") {
-        // fadeintime=0.5, lifetime=1.0 → in_frac=0.5.  life=0.5 → not less than.
+    TEST_CASE("age01 exactly at fadeintime boundary: plateau, not fade-in (kills `<` boundary)") {
+        // fadeintime=fadeouttime=0.5 → tent peak at age01=0.5.  At the exact
+        // boundary `age01 < 0.5` is false, so the fade-in branch is skipped;
+        // `age01 > 0.5` is also false, so fade-out skipped → a=1.0.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.5 }, { "fadeouttime", 0.0 } };
+                   { "fadeintime", 0.5 }, { "fadeouttime", 0.5 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         Particle p = makeParticle();
         p.init.lifetime = 1.0f;
-        p.lifetime      = 0.5f;   // life = 1 - 0.5 = 0.5
+        p.lifetime      = 0.5f;   // age01 = 1 - 0.5 = 0.5
         p.alpha         = 1.0f;
         auto out = runOpSingle(op, p);
         CHECK(out.alpha == doctest::Approx(1.0f).epsilon(0.001));
     }
 
-    TEST_CASE("fadeintime=0 disables fade-in (in_frac=0 short-circuits `> 1e-6`)") {
+    TEST_CASE("fadeintime=0, fadeouttime=1: no fade in either direction") {
+        // Edge: fade-in ends at 0 → fade-in window empty; fade-out starts at 1
+        // → fade-out window empty.  Alpha unchanged for any age01.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.0 }, { "fadeouttime", 0.0 } };
+                   { "fadeintime", 0.0 }, { "fadeouttime", 1.0 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         Particle p = makeParticle();
         p.init.lifetime = 1.0f;
-        p.lifetime      = 0.999f;   // very early in life
+        p.lifetime      = 0.999f;   // age01 ~ 0.001
         p.alpha         = 1.0f;
         auto out = runOpSingle(op, p);
         CHECK(out.alpha == doctest::Approx(1.0f).epsilon(0.001));
     }
 
-    TEST_CASE("fade-out window beyond out_start scales alpha down (kills `>` boundary)") {
-        // fadeouttime=0.5, lifetime=1 → out_frac=0.5, out_start=0.5.
-        // Particle at life=0.75 → 0.75 > 0.5 → alpha *= 1 - (0.75-0.5)/0.5 = 1 - 0.5 = 0.5.
+    TEST_CASE("age01 past fadeouttime scales alpha down (kills `>` boundary)") {
+        // fadeouttime=0.5.  age01=0.75 > 0.5 → a = (1-0.75)/(1-0.5) = 0.5.
         json j = { { "name", "alphafade" },
                    { "fadeintime", 0.0 }, { "fadeouttime", 0.5 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         Particle p = makeParticle();
         p.init.lifetime = 1.0f;
-        p.lifetime      = 0.25f;   // life = 1 - 0.25 = 0.75
+        p.lifetime      = 0.25f;   // age01 = 1 - 0.25 = 0.75
         p.alpha         = 1.0f;
         auto out = runOpSingle(op, p);
         CHECK(out.alpha == doctest::Approx(0.5f).epsilon(0.05));
@@ -2854,30 +2857,33 @@ TEST_SUITE("vortex_v2 zone boundary deeper") {
     }
 }
 
-// alphafade in_frac upper boundary — line 966
-TEST_SUITE("alphafade in_frac upper boundary") {
-    TEST_CASE("life > in_frac: no fade-in attenuation") {
+// alphafade fadeintime upper boundary
+TEST_SUITE("alphafade fadeintime upper boundary") {
+    TEST_CASE("age01 > fadeintime: no fade-in attenuation (with no fade-out)") {
+        // fadeintime=0.3, fadeouttime=1.0 → no fade-out, fade-in ends at 0.3.
+        // age01=0.5 > 0.3 → plateau → alpha unchanged.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.3 }, { "fadeouttime", 0.0 } };
+                   { "fadeintime", 0.3 }, { "fadeouttime", 1.0 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         Particle p = makeParticle();
         p.init.lifetime = 1.0f;
-        p.lifetime      = 0.5f;   // life = 0.5 > in_frac = 0.3
+        p.lifetime      = 0.5f;   // age01 = 0.5 > fadeintime = 0.3
         p.alpha         = 1.0f;
         auto out = runOpSingle(op, p);
         CHECK(out.alpha == doctest::Approx(1.0f).epsilon(0.001));
     }
 
-    TEST_CASE("life < in_frac: fade-in attenuation life/in_frac") {
+    TEST_CASE("age01 < fadeintime: fade-in attenuation age01/fadeintime") {
+        // fadeintime=0.5, fadeouttime=1.0 (no fade-out).
+        // age01=0.25 < 0.5 → alpha = 0.25/0.5 = 0.5.
         json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.5 }, { "fadeouttime", 0.0 } };
+                   { "fadeintime", 0.5 }, { "fadeouttime", 1.0 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
         Particle p = makeParticle();
         p.init.lifetime = 1.0f;
-        p.lifetime      = 0.75f;
+        p.lifetime      = 0.75f;   // age01 = 1 - 0.75 = 0.25
         p.alpha         = 1.0f;
         auto out = runOpSingle(op, p);
-        // in_frac=0.5; life=0.25 < 0.5; alpha *= 0.5.
         CHECK(out.alpha == doctest::Approx(0.5f).epsilon(0.05));
     }
 }
