@@ -1527,10 +1527,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                  isCompose,
                  isCompose && wpimgobj.config.passthrough);
     }
-    // disable img material blend, as it's the first effect node now
-    if (hasEffect) {
-        material.blenmode = BlendMode::Normal;
-    }
+    // Base material keeps its declared blend (typically Translucent) even
+    // when it's the first node of an effect chain.  Combined with the
+    // CLEAR-on-first-write logic in CustomShaderPass.cpp (which initialises
+    // each effect pingpong to (0,0,0,0) before the base render), Translucent
+    // resolves alpha=0 source pixels to (0,0,0,0) instead of leaking the
+    // texture's underlying RGB into the pingpong.  Without this, the eye
+    // texture on Naruto Shippuden 2800255344 (orange RGB at alpha=0 corners)
+    // bled an orange halo through bilinear filtering at the alpha boundary.
+    // See test_BlendModeFactors "Blend math — pingpong initialization" for
+    // the property pin.
     mesh.AddMaterial(std::move(material));
     spImgNode->AddMesh(spMesh);
 
@@ -1884,6 +1890,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 .width      = (uint16_t)wpimgobj.size[0],
                 .height     = (uint16_t)wpimgobj.size[1],
                 .allowReuse = true,
+                // Mip chain on pingpongs is NOT enabled.  Tried for halo
+                // softening on Naruto 2800255344's spin compose; the GPU's
+                // anisotropic-derivative LOD selection at the rotated quad
+                // produced visible stairstep pixelation worse than the halo
+                // it was meant to soften.  Other wallpapers (Lucy, NieR 2B,
+                // Itachi, SAO, Portal, Cyberpunk Lucy) showed no visible
+                // softening either since their compose passes don't downsample.
+                // The mip0_view / split-view infrastructure in Vulkan/Parameters
+                // and TextureCache::CreateImage stays in place — required if a
+                // future RT path ever enables multi-mip — but the per-pingpong
+                // opt-in here is off.
             };
             if (wpimgobj.fullscreen) {
                 scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };

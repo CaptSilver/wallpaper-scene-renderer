@@ -37,7 +37,11 @@ struct BufferParameters {
 
 struct VmaImageParameters : NoCopy {
     vvk::VmaImage  handle;
-    vvk::ImageView view;
+    vvk::ImageView view;       // multi-mip view (covers all levels) — for sampling
+    vvk::ImageView mip0_view;  // single-mip view at level 0 — for render attachment.
+                               // Only populated when mipmap_level > 1; for single-mip
+                               // images `view` already covers exactly mip 0 and the
+                               // ImageParameters wrapper falls back to it.
     vvk::Sampler   sampler;
     VkExtent3D     extent;
     uint           mipmap_level { 1 };
@@ -67,7 +71,10 @@ struct ExImageParameters : NoCopy {
 
 struct ImageParameters {
     VkImage     handle;
-    VkImageView view;
+    VkImageView view;        // multi-mip view — for sampler binding
+    VkImageView mip0_view;   // single-mip-level-0 view — for render attachment.
+                             // Equals `view` when the source image is single-mip
+                             // (mipmap_level == 1) so callers can use unconditionally.
     VkSampler   sampler;
     VkExtent3D  extent;
     uint        mipmap_level { 1 };
@@ -77,12 +84,14 @@ struct ImageParameters {
     ImageParameters(const VmaImageParameters& o) noexcept
         : handle(*o.handle),
           view(*o.view),
+          mip0_view(o.mipmap_level > 1 ? *o.mip0_view : *o.view),
           sampler(*o.sampler),
           extent(o.extent),
           mipmap_level(o.mipmap_level) {}
     ImageParameters(const ExImageParameters& o) noexcept
         : handle(*o.handle),
           view(*o.view),
+          mip0_view(*o.view),
           sampler(*o.sampler),
           extent(o.extent),
           mipmap_level(o.mipmap_level) {}

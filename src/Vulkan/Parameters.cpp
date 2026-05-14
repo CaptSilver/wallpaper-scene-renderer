@@ -20,12 +20,14 @@ VmaImageParameters::~VmaImageParameters() = default;
 VmaImageParameters::VmaImageParameters(VmaImageParameters&& o) noexcept
     : handle(std::move(o.handle)),
       view(std::move(o.view)),
+      mip0_view(std::move(o.mip0_view)),
       sampler(std::move(o.sampler)),
       extent(o.extent),
       mipmap_level(o.mipmap_level) {}
 VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexcept {
     handle       = std::move(o.handle);
     view         = std::move(o.view);
+    mip0_view    = std::move(o.mip0_view);
     sampler      = std::move(o.sampler);
     extent       = o.extent;
     mipmap_level = o.mipmap_level;

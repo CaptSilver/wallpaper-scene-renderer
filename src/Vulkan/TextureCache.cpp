@@ -5,6 +5,8 @@
 #include "Device.hpp"
 #include "Util.hpp"
 
+#include <algorithm>
+
 #include "Image.hpp"
 #include "Core/MapSet.hpp"
 #include "Core/ArrayHelper.hpp"
@@ -69,6 +71,16 @@ VkSamplerCreateInfo GenSamplerInfo(TextureKey key, float deviceMaxAnisotropy) {
 
     bool useAniso = (sam.magFilter == TextureFilter::LINEAR) && deviceMaxAnisotropy > 1.0f;
 
+    // maxLod gates the highest mip the hardware sampler may pick.  Set to
+    // the key's actual mip count so trilinear can pick lower mips when the
+    // image has them.  When mipmap_level == 1 (the normal case for current
+    // pingpongs and _rt_default), maxLod is 1.0 — equivalent to the prior
+    // hardcoded value.  When multi-mip RTs are ever re-enabled, this lifts
+    // the artificial clamp without exposing the rotated-quad pixelation we
+    // hit while experimenting with mip-gen for halo softening (see
+    // naruto-shippuden-scenescript.md "Path-not-taken: pingpong mip chain").
+    const float maxLod = std::max(1.0f, (float)key.mipmap_level);
+
     VkSamplerCreateInfo sampler_info { .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
                                        .pNext            = nullptr,
                                        .magFilter        = ToVkType(sam.magFilter),
@@ -82,7 +94,7 @@ VkSamplerCreateInfo GenSamplerInfo(TextureKey key, float deviceMaxAnisotropy) {
                                        .compareEnable    = (false),
                                        .compareOp        = VK_COMPARE_OP_NEVER,
                                        .minLod           = (0.0f),
-                                       .maxLod           = (1.0f),
+                                       .maxLod           = maxLod,
                                        .borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
                                        .unnormalizedCoordinates = (false) };
     return sampler_info;
@@ -264,6 +276,8 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
 
         image.mipmap_level = miplevel;
         {
+            // Multi-mip view for sampler binding — covers all levels so the
+            // hardware sampler can pick lower mips via LOD selection.
             VkImageViewCreateInfo createinfo {
                 .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                 .pNext    = nullptr,
@@ -280,6 +294,29 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
                     },
             };
             VVK_CHECK_ACT(break, device.handle().CreateImageView(createinfo, image.view));
+        }
+        if (miplevel > 1) {
+            // Separate single-mip view for render attachments — Vulkan requires
+            // a color attachment view to cover exactly one mip level.  When
+            // miplevel == 1, the ImageParameters wrapper aliases mip0_view to
+            // view so callers don't need a branch.
+            VkImageViewCreateInfo createinfo {
+                .sType    = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+                .pNext    = nullptr,
+                .image    = *image.handle,
+                .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                .format   = format,
+                .subresourceRange =
+                    VkImageSubresourceRange {
+                        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .baseMipLevel   = 0,
+                        .levelCount     = 1,
+                        .baseArrayLayer = 0,
+                        .layerCount     = 1,
+                    },
+            };
+            VVK_CHECK_ACT(break,
+                          device.handle().CreateImageView(createinfo, image.mip0_view));
         }
         VVK_CHECK_ACT(break, device.handle().CreateSampler(sampler_info, image.sampler));
         return image;

@@ -662,10 +662,21 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             SetBlend(blendmode, color_blend);
             m_desc.blending = color_blend.blendEnable;
 
-            // First write to any RT each frame CLEARs it; subsequent writes LOAD.
-            // This prevents alpha corruption from accumulating across frames
-            // (compose layers capture _rt_default including alpha, process through
-            // effects, and write back — without CLEAR, corrupted alpha persists).
+            // First pass to write an RT in the prepared graph CLEARs it on
+            // entry; subsequent writers LOAD.  Each pass's loadOp is baked in
+            // here at prepare-time and reused every frame.  Two properties
+            // depend on the CLEAR semantics being available to first writers:
+            //   1. Alpha-correctness for compose layers (without CLEAR, the
+            //      corrupted alpha captured into the pingpong on prior frames
+            //      compounds, eventually saturating to 1).
+            //   2. Premultiplication of effect-chain base materials.  The
+            //      base material renders translucent into pingpong_a; with a
+            //      cleared (0,0,0,0) destination, alpha=0 source pixels
+            //      resolve to (0,0,0,0) — bilinear at the alpha boundary then
+            //      composites correctly without leaking source RGB.  Without
+            //      this, the eye.tex on Naruto Shippuden 2800255344 (orange
+            //      RGB at alpha=0 corners) produced an orange halo around
+            //      the sun.  See test_BlendModeFactors "Blend math".
             if (scene.clearedRTs.count(m_desc.output) == 0) {
                 loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
                 scene.clearedRTs.insert(m_desc.output);
@@ -825,13 +836,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
         VkImageView fb_attachments[3];
         uint32_t    fb_count;
+        // Render attachments must be single-mip-level image views (Vulkan spec).
+        // ImageParameters::mip0_view aliases ::view when the source image is
+        // single-mip, so this works for plain RTs and multi-mip pingpongs alike.
         if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-            fb_attachments[0] = m_desc.msaaColorView;  // multisampled color
-            fb_attachments[1] = m_desc.vk_output.view; // resolve target (original RT)
-            fb_attachments[2] = m_desc.depthView;      // multisampled depth
+            fb_attachments[0] = m_desc.msaaColorView;       // multisampled color
+            fb_attachments[1] = m_desc.vk_output.mip0_view; // resolve target (mip 0 only)
+            fb_attachments[2] = m_desc.depthView;           // multisampled depth
             fb_count          = m_desc.hasDepth ? 3u : 2u;
         } else {
-            fb_attachments[0] = m_desc.vk_output.view;
+            fb_attachments[0] = m_desc.vk_output.mip0_view;
             fb_attachments[1] = m_desc.depthView;
             fb_count          = m_desc.hasDepth ? 2u : 1u;
         }
@@ -984,7 +998,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     setPrepared();
 }
 
-void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
+void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::execute");
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
     // uniforms, AND is the last writer of its output VkImage (see
@@ -1316,6 +1330,16 @@ void CustomShaderPass::execute(const Device&, RenderingResources& rr) {
     }
 
     cmd.EndRenderPass();
+
+    // Mip-chain refresh: when this pass wrote to an RT with mips enabled
+    // (pingpongs allocated with has_mipmap=true by WPSceneParser), blit
+    // mip 0 down through mip N-1 via VK_FILTER_LINEAR.  Next pass sampling
+    // at high minification gets a pre-AA'd mip via trilinear LOD selection.
+    // RecGenerateMipmaps handles layout transitions; no-op when mipmap_level == 1.
+    if (m_desc.vk_output.mipmap_level > 1 &&
+        m_desc.vk_output.handle != VK_NULL_HANDLE) {
+        device.tex_cache().RecGenerateMipmaps(cmd, m_desc.vk_output);
+    }
 
     // Per-pass RT dump (debug).  When active, record a copy of our output
     // image into a pre-allocated staging buffer BEFORE any later pass
