@@ -35,20 +35,50 @@ std::string Scene::SerializeLayerInitialStates() const {
         if (idit != nodeNameToId.end()) {
             entry["id"] = idit->second;
             // Parent layer name (for deferred linkup of _parent / _children).
-            // Resolve via nodeById → SceneNode → Parent() → reverse-lookup
-            // the parent's name in nodeNameToId.  Skip the unnamed scene
-            // root and any parent that isn't itself a named layer
-            // (effect-RT internal nodes are filtered this way).
-            auto nbit = nodeById.find(idit->second);
-            if (nbit != nodeById.end() && nbit->second) {
-                SceneNode* parent_raw = nbit->second->Parent();
-                if (parent_raw && parent_raw != sceneGraph.get()) {
-                    for (const auto& [pname, pid] : nodeNameToId) {
-                        auto pnit = nodeById.find(pid);
-                        if (pnit != nodeById.end() && pnit->second == parent_raw) {
-                            entry["pn"] = pname;
-                            break;
+            //
+            // PREFERRED PATH: JSON-declared parent ID (scene.json's `parent`
+            // field).  Set at parse time and untouched by effect-RT or
+            // composelayer node rewiring.  Floating Cat (3367988661) ships
+            //   "Background"        parent=169 (Text Container)
+            //   "Settings Container" parent=169
+            // but the runtime SceneNode for Background lives under several
+            // effect-RT wrappers and `SceneNode::Parent()` walks straight up
+            // to the scene root — `Background.pn` resolved to nothing and
+            // scripts crashed on `parent.scale.x`.
+            //
+            // FALLBACK: live SceneNode parent walk, skipping unnamed
+            // intermediate nodes.  Used when the JSON didn't declare a
+            // `parent` (script-created layers, dynamic-pool slots,
+            // effect-chain roots).
+            bool        pn_resolved = false;
+            const auto& nodeId      = idit->second;
+            auto        jpit        = jsonParentId.find(nodeId);
+            if (jpit != jsonParentId.end()) {
+                // Find the parent ID's name.
+                for (const auto& [pname, pid] : nodeNameToId) {
+                    if (pid == jpit->second) {
+                        entry["pn"] = pname;
+                        pn_resolved = true;
+                        break;
+                    }
+                }
+            }
+            if (! pn_resolved) {
+                auto nbit = nodeById.find(nodeId);
+                if (nbit != nodeById.end() && nbit->second) {
+                    SceneNode* parent_raw = nbit->second->Parent();
+                    while (parent_raw && parent_raw != sceneGraph.get()) {
+                        bool resolved = false;
+                        for (const auto& [pname, pid] : nodeNameToId) {
+                            auto pnit = nodeById.find(pid);
+                            if (pnit != nodeById.end() && pnit->second == parent_raw) {
+                                entry["pn"] = pname;
+                                resolved = true;
+                                break;
+                            }
                         }
+                        if (resolved) break;
+                        parent_raw = parent_raw->Parent();
                     }
                 }
             }

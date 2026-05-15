@@ -202,6 +202,15 @@ public:
     std::unordered_map<i32, std::shared_ptr<WPPuppet>> nodePuppetMap;
     // Layer name → node ID mapping for thisScene.getLayer()
     std::unordered_map<std::string, i32> nodeNameToId;
+    // JSON-authored parent for each object ID — populated at parse time
+    // straight from scene.json's `parent` field.  Used by
+    // SerializeLayerInitialStates to emit `pn` (parent name) when the
+    // runtime SceneNode hierarchy has been rewired through effect-RT
+    // wrappers and no longer reflects the JSON parent.  Background under
+    // `Text Container` in Floating Cat (3367988661) is the driver: the
+    // runtime SceneNode.Parent() walks up the effect-RT chain to the scene
+    // root, while the script-visible parent should still be `Text Container`.
+    std::unordered_map<i32, i32> jsonParentId;
     // Layer name → initial transform state for JS proxy initialization
     struct LayerInitialState {
         std::array<float, 3> origin { 0, 0, 0 };

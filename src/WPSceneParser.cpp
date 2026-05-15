@@ -3918,6 +3918,13 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // Register node in ID lookup table
         context.scene->nodeById[id] = node_it->second.get();
 
+        // Capture JSON-declared parent ID for hierarchy resolution that survives
+        // effect-RT/composelayer node rewiring.  See Scene.h jsonParentId comment.
+        if (obj.contains("parent") && obj.at("parent").is_number_integer()) {
+            i32 pid = obj.at("parent").get<i32>();
+            if (pid >= 0) context.scene->jsonParentId[id] = pid;
+        }
+
         // Register name → id mapping and initial state for thisScene.getLayer()
         if (obj.contains("name") && obj.at("name").is_string()) {
             std::string name = obj.at("name").get<std::string>();

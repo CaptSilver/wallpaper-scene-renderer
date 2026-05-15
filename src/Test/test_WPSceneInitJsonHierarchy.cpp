@@ -87,4 +87,70 @@ TEST_SUITE("WPSceneInitJson.Hierarchy") {
         CHECK(j["a"]["id"].get<int>() == 1);
         CHECK(j["b"]["id"].get<int>() == 2);
     }
+
+    TEST_CASE("jsonParentId resolves pn when runtime SceneNode hierarchy is rewired") {
+        // Regression for Floating Cat (3367988661): `Background` and
+        // `Settings Container` declared `parent: 169` (Text Container) in
+        // scene.json, but effect-RT/composelayer node rewiring moved their
+        // runtime SceneNode parents up to the scene root.  Pre-fix, the
+        // serializer walked SceneNode::Parent() up to the root and never
+        // emitted `pn`, so SceneScript's `parent.scale.x` accesses crashed
+        // with "Cannot read property 'scale' of null".  Post-fix, the
+        // JSON-authored parent ID wins over the live SceneNode hierarchy.
+        Scene s;
+        // Build three nodes; "parent" is at the scene root, "child" lives
+        // under an unnamed intermediate (mimicking effect-RT wrapper).
+        auto unnamed_intermediate = std::make_shared<SceneNode>();
+        auto parent_node          = std::make_shared<SceneNode>();
+        auto child_node           = std::make_shared<SceneNode>();
+        parent_node->ID() = 100;
+        child_node->ID()  = 200;
+        s.nodeNameToId["parent"] = 100;
+        s.nodeNameToId["child"]  = 200;
+        s.nodeById[100]          = parent_node.get();
+        s.nodeById[200]          = child_node.get();
+        s.layerInitialStates["parent"] = Scene::LayerInitialState {};
+        s.layerInitialStates["child"]  = Scene::LayerInitialState {};
+        // Live hierarchy: child → unnamed_intermediate → sceneGraph.  Parent
+        // sits separately at the scene root with no live connection to child.
+        s.sceneGraph->AppendChild(parent_node);
+        s.sceneGraph->AppendChild(unnamed_intermediate);
+        unnamed_intermediate->AppendChild(child_node);
+        // But the JSON authored child's parent as 100 (parent).
+        s.jsonParentId[200] = 100;
+
+        auto j = json::parse(s.SerializeLayerInitialStates());
+        REQUIRE(j.contains("child"));
+        REQUIRE(j["child"].contains("pn"));
+        CHECK(j["child"]["pn"].get<std::string>() == "parent");
+    }
+
+    TEST_CASE("SceneNode walk fallback finds named parent through unnamed intermediates") {
+        // When the JSON didn't declare a parent (dynamic-pool / script-
+        // created layer), the serializer falls back to walking SceneNode::
+        // Parent() upward, skipping unnamed intermediates to find the
+        // nearest named ancestor.
+        Scene s;
+        auto wrapper      = std::make_shared<SceneNode>();
+        auto named_parent = std::make_shared<SceneNode>();
+        auto child        = std::make_shared<SceneNode>();
+        named_parent->ID() = 11;
+        child->ID()        = 22;
+        s.nodeNameToId["namedParent"] = 11;
+        s.nodeNameToId["child"]       = 22;
+        s.nodeById[11]                = named_parent.get();
+        s.nodeById[22]                = child.get();
+        s.layerInitialStates["namedParent"] = Scene::LayerInitialState {};
+        s.layerInitialStates["child"]       = Scene::LayerInitialState {};
+        // child → wrapper → named_parent → sceneGraph
+        s.sceneGraph->AppendChild(named_parent);
+        named_parent->AppendChild(wrapper);
+        wrapper->AppendChild(child);
+        // No jsonParentId entry — fallback must walk past `wrapper`.
+
+        auto j = json::parse(s.SerializeLayerInitialStates());
+        REQUIRE(j.contains("child"));
+        REQUIRE(j["child"].contains("pn"));
+        CHECK(j["child"]["pn"].get<std::string>() == "namedParent");
+    }
 }
