@@ -1,5 +1,6 @@
 #include "WPSceneParser.hpp"
 #include "WPJson.hpp"
+#include "WPCommon.hpp"
 #include "WPPropertyScriptExtract.hpp"
 #include "WPRopeCombos.hpp"
 #include "WPSceneGroupParse.hpp"
@@ -974,12 +975,13 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
             scene.activeCamera->SetFadeEnabled(sc.general.camerafade);
         }
     } else {
-        // 2D orthographic scene (existing path)
+        // 2D orthographic scene.  WPCommon.hpp::ComputeOrthoCameraSize encodes
+        // the WE zoom semantics with a guard against div-by-zero — see the
+        // helper's comment for the original SIGFPE bug context.
+        auto [cam_w, cam_h] =
+            ComputeOrthoCameraSize(context.ortho_w, context.ortho_h, general.zoom);
         scene.cameras["global"] =
-            std::make_shared<SceneCamera>((context.ortho_w / (i32)general.zoom),
-                                          (context.ortho_h / (i32)general.zoom),
-                                          -5000.0f,
-                                          5000.0f);
+            std::make_shared<SceneCamera>(cam_w, cam_h, -5000.0f, 5000.0f);
         scene.activeCamera = scene.cameras.at("global").get();
         Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
             cscale { 1.0f, 1.0f, 1.0f }, cangle(Vector3f::Zero());
@@ -987,9 +989,9 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         context.global_camera_node = std::make_shared<SceneNode>(cori, cscale, cangle);
         scene.activeCamera->AttatchNode(context.global_camera_node);
         scene.sceneGraph->AppendChild(context.global_camera_node);
-        LOG_INFO("Global camera: %dx%d at (%.1f, %.1f) zoom=%.1f",
-                 context.ortho_w / (i32)general.zoom,
-                 context.ortho_h / (i32)general.zoom,
+        LOG_INFO("Global camera: %dx%d at (%.1f, %.1f) zoom=%.3f",
+                 cam_w,
+                 cam_h,
                  cori.x(),
                  cori.y(),
                  general.zoom);

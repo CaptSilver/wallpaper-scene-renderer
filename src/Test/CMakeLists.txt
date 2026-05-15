@@ -33,6 +33,7 @@ add_executable(backend_scene_tests
     test_SceneIndexArray.cpp
     test_SceneVertexArray.cpp
     test_WPJson.cpp
+    test_WPCommon_OrthoCameraSize.cpp
     test_WPSoundHelpers.cpp
     test_WPSoundParser.cpp
     test_SceneTickHelpers.cpp
