@@ -47,6 +47,14 @@ bool ParseJson(const char* file, const char* func, int line, const std::string& 
 // ParseJson so every call site benefits; also exposed for direct testing.
 std::string StripTrailingCommas(std::string_view source);
 
+// Strip leading zeros from number literals (`[0,01]` → `[0,1]`), preserving
+// `0.x` decimals and `0` itself.  nlohmann::json (correctly per RFC 8259)
+// rejects leading-zero integers; WE accepts them as the workshop publish
+// pipeline occasionally writes ranges like `"range":[0,01]` (Astronaut
+// 2530355779 ships this in its u_userSpeed annotation).  Applied automatically
+// inside ParseJson alongside the other recoveries.
+std::string StripLeadingZeros(std::string_view source);
+
 // Quote first-key-missing-opening-quote object members like `{Foo":0,"Bar":1}`,
 // rewriting to `{"Foo":0,"Bar":1}`.  WE workshop shader source occasionally
 // ships a [COMBO] line where the first key inside an inline `"options":{...}`

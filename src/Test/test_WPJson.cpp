@@ -344,6 +344,48 @@ TEST_SUITE("WPJson.GetJsonValue.UserProps") {
 
 } // UserProps
 
+TEST_SUITE("WPJson.StripLeadingZeros") {
+    // Driver: Astronaut (2530355779) workshop shader has
+    //   uniform float u_userSpeed; // {"material":"Speed","default":1,"range":[0,01]}
+    // — `01` is invalid JSON (leading zeros forbidden by RFC 8259) but WE's
+    // parser tolerates it.  Without the strip, nlohmann::json bails with
+    // "syntax error while parsing array - unexpected number literal" and the
+    // entire uniform annotation is lost.
+
+    TEST_CASE("passes well-formed numbers unchanged") {
+        CHECK(StripLeadingZeros(R"([0,1,2,3])") == R"([0,1,2,3])");
+        CHECK(StripLeadingZeros(R"({"range":[0.5, 10.0]})") == R"({"range":[0.5, 10.0]})");
+        CHECK(StripLeadingZeros(R"(0)") == R"(0)");           // standalone zero kept
+        CHECK(StripLeadingZeros(R"({"x":0})") == R"({"x":0})");
+        CHECK(StripLeadingZeros(R"([0])") == R"([0])");
+    }
+
+    TEST_CASE("strips leading zero from non-decimal integer") {
+        CHECK(StripLeadingZeros(R"([0,01])") == R"([0,1])");
+        CHECK(StripLeadingZeros(R"([01, 02, 03])") == R"([1, 2, 3])");
+        CHECK(StripLeadingZeros(R"({"a":007})") == R"({"a":7})");
+    }
+
+    TEST_CASE("preserves 0.x decimals (the leading zero is significant)") {
+        CHECK(StripLeadingZeros(R"([0.5, 0.25])") == R"([0.5, 0.25])");
+        CHECK(StripLeadingZeros(R"([0.01])") == R"([0.01])");
+    }
+
+    TEST_CASE("inside strings the digits are preserved verbatim") {
+        CHECK(StripLeadingZeros(R"({"x":"01:02:03"})") == R"({"x":"01:02:03"})");
+    }
+
+    TEST_CASE("end-to-end recovery: Astronaut's [0,01] parses") {
+        const std::string in =
+            R"({"material":"Speed","default":1,"range":[0,01]})";
+        njson result;
+        REQUIRE(PARSE_JSON(in, result));
+        REQUIRE(result.at("range").is_array());
+        CHECK(result.at("range").at(0).get<int>() == 0);
+        CHECK(result.at("range").at(1).get<int>() == 1);
+    }
+}
+
 TEST_SUITE("WPJson.QuoteFirstKey") {
     // Pattern produced by a quirky Workshop serializer: an inline `options`
     // block's first key drops its opening `"`, leaving `{Foo":0,"Bar":1}`.

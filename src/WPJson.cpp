@@ -132,12 +132,64 @@ std::string QuoteFirstKey(std::string_view source) {
     return out;
 }
 
+std::string StripLeadingZeros(std::string_view source) {
+    // Walk source; outside string literals, scan for number literals that
+    // start with `0` immediately followed by another digit — those are
+    // workshop publish artifacts (`[0,01]`) and not valid JSON.  Strip the
+    // leading zero so the runtime keeps the rest of the digits.
+    //
+    // The "start of a number" position is identified by the preceding char
+    // being one of `[`, `,`, `:`, `(`, `+`, `-`, or whitespace.  Anywhere
+    // else, `0` followed by a digit is part of a longer token we shouldn't
+    // touch (e.g. inside an identifier).
+    std::string out;
+    out.reserve(source.size());
+    bool in_string = false;
+    bool escape    = false;
+    auto can_start_number = [](char c) {
+        return c == '[' || c == ',' || c == ':' || c == '(' || c == '+' ||
+               c == '-' || std::isspace(static_cast<unsigned char>(c));
+    };
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        char c = source[i];
+        if (in_string) {
+            out += c;
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            out += c;
+            continue;
+        }
+        // At number-start boundary, look for `0` followed by another digit.
+        // Skip the leading zero in that case, but keep `0`, `0.x`, `0e…`.
+        if (c == '0' && i + 1 < source.size() &&
+            std::isdigit(static_cast<unsigned char>(source[i + 1])) &&
+            (out.empty() || can_start_number(out.back()))) {
+            // Drop this leading zero — the next iteration will emit the
+            // following digit naturally.
+            continue;
+        }
+        out += c;
+    }
+    return out;
+}
+
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
     try {
         // Pre-strip trailing commas; quote any first-key-missing-opening-quote
-        // members ({Foo":0 → {"Foo":0); then let nlohmann handle comments.
-        const std::string cleaned = QuoteFirstKey(StripTrailingCommas(source));
+        // members ({Foo":0 → {"Foo":0); strip illegal leading zeros from
+        // numeric literals ([0,01] → [0,1]); then let nlohmann handle comments.
+        const std::string cleaned =
+            StripLeadingZeros(QuoteFirstKey(StripTrailingCommas(source)));
         result                    = nlohmann::json::parse(cleaned, nullptr, true, true);
     } catch (nlohmann::json::parse_error& e) {
         WallpaperLog(LOGLEVEL_ERROR, file, line, "parse json(%s), %s", func, e.what());
