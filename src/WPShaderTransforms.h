@@ -463,6 +463,15 @@ inline std::string FixImplicitConversions(const std::string& src) {
                                   const std::set<std::string>& src,
                                   const char*                  swizzle) {
             for (const auto& d : dst) {
+                // Skip names that appear in BOTH width-sets (e.g. `cursor` is a
+                // vec2 function parameter elsewhere but a vec4 local here).
+                // Without scope tracking we can't tell which declaration the
+                // current assignment refers to; refuse to truncate rather than
+                // risk damaging the wider declaration's assignment.
+                // Driver: Game Of Life canvas_paint.frag — `vec4 cursor =
+                // u_mousePos;` in main(), with `vec2 cursor` parameter in
+                // calcStrokeInfluence.
+                if (src.count(d)) continue;
                 for (const auto& s : src) {
                     if (d == s) continue;
                     std::regex re("\\b(" + d + ")\\s*=\\s*(" + s + ")\\s*;");
@@ -662,6 +671,374 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"(([\=\(,]\s*)(\d+)(\s*\?))");
         result = std::regex_replace(result, re, "$1bool($2)$3");
+    }
+
+    // Fix: if (<float-expression>) → if (bool(<float-expression>))
+    // HLSL accepts any nonzero numeric in `if`/`while`; GLSL requires bool.
+    // Heuristic: wrap when the top-level expression contains NO comparison
+    // (<, >, ==, !=, <=, >=) and NO logical operator (&&, ||) — those already
+    // produce a bool.  Already-wrapped `if (bool(...))` is left alone.
+    // Driver: Game Of Life (3453251764) canvas chain — `if(u_mouseDown.x *
+    // NOT(u_mouseDown.y))`, `if(u_enablePreview)`, `if(useLastAsNewUndoFrame)`.
+    {
+        std::string out;
+        out.reserve(result.size());
+        size_t i = 0;
+        while (i < result.size()) {
+            bool word_boundary = (i == 0) ||
+                                 (! std::isalnum((unsigned char)result[i - 1]) &&
+                                  result[i - 1] != '_' && result[i - 1] != '#');
+            bool keyword_if = word_boundary && i + 2 <= result.size() &&
+                              result[i] == 'i' && result[i + 1] == 'f' &&
+                              (i + 2 == result.size() ||
+                               (! std::isalnum((unsigned char)result[i + 2]) &&
+                                result[i + 2] != '_'));
+            if (! keyword_if) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t j = i + 2;
+            while (j < result.size() && std::isspace((unsigned char)result[j])) ++j;
+            if (j >= result.size() || result[j] != '(') {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t close = findMatchingParen(result, j);
+            if (close == std::string::npos || close <= j + 1) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Inner range is (j+1, close-1) since close is one PAST ')'
+            size_t innerBeg = j + 1;
+            size_t innerEnd = close - 1; // exclusive: position of ')'
+            // Trim whitespace
+            while (innerBeg < innerEnd && std::isspace((unsigned char)result[innerBeg]))
+                ++innerBeg;
+            while (innerEnd > innerBeg && std::isspace((unsigned char)result[innerEnd - 1]))
+                --innerEnd;
+            if (innerBeg >= innerEnd) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Already wrapped: starts with "bool(" and the matching paren
+            // closes at innerEnd.
+            bool already_bool = false;
+            if (innerEnd - innerBeg >= 6 && result.compare(innerBeg, 5, "bool(") == 0) {
+                size_t inner_close = findMatchingParen(result, innerBeg + 4);
+                if (inner_close == innerEnd) already_bool = true;
+            }
+            // Top-level boolean operator scan
+            auto has_top_level_bool_op = [&]() -> bool {
+                int depth = 0;
+                for (size_t k = innerBeg; k < innerEnd; ++k) {
+                    char c = result[k];
+                    if (c == '(')
+                        ++depth;
+                    else if (c == ')')
+                        --depth;
+                    else if (depth == 0) {
+                        if (c == '<' || c == '>') return true;
+                        if (k + 1 < innerEnd) {
+                            char n = result[k + 1];
+                            if ((c == '=' && n == '=') || (c == '!' && n == '=')) return true;
+                            if ((c == '&' && n == '&') || (c == '|' && n == '|')) return true;
+                        }
+                    }
+                }
+                return false;
+            };
+            if (already_bool || has_top_level_bool_op()) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Emit:  "if (bool(" + inner + "))" — preserve the user's spacing
+            // between `if` and `(` so output reads naturally.
+            out.append(result, i, j - i + 1); // "if (" up to and including '('
+            out.append("bool(");
+            out.append(result, innerBeg, innerEnd - innerBeg);
+            out.append(")");
+            out.push_back(')');
+            i = close;
+        }
+        result = std::move(out);
+    }
+
+    // Fix: mix(<vec>, <vec>, <bool>) → mix(<vec>, <vec>, float(<bool>))
+    // HLSL `lerp(a, b, bool)` implicitly converts; GLSL has no scalar-bool
+    // overload — only the per-component `bvec` form, which would still need
+    // explicit construction.  Wrap with float() instead.
+    // Driver: Game Of Life canvas_paint.frag —
+    //   `mix(mask, vec2(mask.r, 1.-mask.g), isMode(u_command, CMD_STEP_BLUEPRINT))`
+    // where `isMode` returns `bool`.
+    {
+        // Collect user-defined bool-returning functions and bool locals.
+        std::set<std::string> bool_fns;
+        std::regex            re_fn(R"(\bbool\s+(\w+)\s*\([^)]*\)\s*\{)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
+             it != std::sregex_iterator();
+             ++it)
+            bool_fns.insert((*it)[1].str());
+        std::set<std::string> bool_vars;
+        std::regex            re_bv(R"(\bbool\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_bv);
+             it != std::sregex_iterator();
+             ++it)
+            bool_vars.insert((*it)[1].str());
+
+        std::string out;
+        out.reserve(result.size());
+        size_t i = 0;
+        while (i < result.size()) {
+            bool word_boundary = (i == 0) ||
+                                 (! std::isalnum((unsigned char)result[i - 1]) &&
+                                  result[i - 1] != '_');
+            if (! (word_boundary && i + 3 <= result.size() &&
+                   result.compare(i, 3, "mix") == 0 &&
+                   (i + 3 == result.size() ||
+                    (! std::isalnum((unsigned char)result[i + 3]) &&
+                     result[i + 3] != '_')))) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t j = i + 3;
+            while (j < result.size() && std::isspace((unsigned char)result[j])) ++j;
+            if (j >= result.size() || result[j] != '(') {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t close = findMatchingParen(result, j);
+            if (close == std::string::npos) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            std::vector<std::pair<size_t, size_t>> args;
+            int                                    depth     = 0;
+            size_t                                 arg_start = j + 1;
+            for (size_t k = j + 1; k + 1 < close; ++k) {
+                char c = result[k];
+                if (c == '(')
+                    ++depth;
+                else if (c == ')')
+                    --depth;
+                else if (c == ',' && depth == 0) {
+                    args.push_back({ arg_start, k });
+                    arg_start = k + 1;
+                }
+            }
+            args.push_back({ arg_start, close - 1 });
+            if (args.size() != 3) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Inspect arg2 (third arg)
+            size_t a2s = args[2].first;
+            size_t a2e = args[2].second;
+            while (a2s < a2e && std::isspace((unsigned char)result[a2s])) ++a2s;
+            while (a2e > a2s && std::isspace((unsigned char)result[a2e - 1])) --a2e;
+            std::string a2 = (a2e > a2s) ? result.substr(a2s, a2e - a2s) : "";
+            bool        is_bool = false;
+            if (! a2.empty()) {
+                // Bare identifier matching a known bool local
+                if (std::regex_match(a2, std::regex(R"(\w+)")) && bool_vars.count(a2))
+                    is_bool = true;
+                // Call to a known bool-returning function: IDENT(...)
+                if (! is_bool) {
+                    std::smatch m;
+                    if (std::regex_match(a2, m, std::regex(R"((\w+)\s*\([\s\S]*\))"))) {
+                        if (bool_fns.count(m[1].str())) is_bool = true;
+                    }
+                }
+                // Already wrapped with float() — leave alone
+                if (a2.compare(0, 6, "float(") == 0) is_bool = false;
+            }
+            if (! is_bool) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Emit: "mix(<arg0>,<arg1>, float(<arg2>))"
+            out.append("mix(");
+            out.append(result, args[0].first, args[0].second - args[0].first);
+            out.append(",");
+            out.append(result, args[1].first, args[1].second - args[1].first);
+            out.append(", float(");
+            out.append(a2);
+            out.append("))");
+            i = close;
+        }
+        result = std::move(out);
+    }
+
+    // Fix: mix(vecN(...), <scalar_float>, ...) with mismatched ranks.
+    // HLSL's lerp() broadcasts scalar→vector; GLSL's mix requires matching ranks.
+    // The right rewrite depends on the assignment LHS type:
+    //   * LHS is `float`        → truncate first arg to scalar: `vecN(...).x`
+    //                             (matches WE's HLSL→GLSL behavior where the
+    //                              vec result is truncated on assign to float).
+    //   * LHS is `vec[234]` (matching N) → broadcast scalar: `vecN(scalar)`.
+    //   * Unknown LHS           → leave alone (conservative).
+    // Driver: Game Of Life (3453251764) canvas_pen_influence.frag —
+    // `float influence = ...; influence = mix(vec2(0.,1.), influence, sameUiPart);`
+    {
+        // Collect known typed identifiers: locals, function params, uniforms.
+        std::set<std::string> float_idents;
+        std::set<std::string> vec_idents; // any vec2/vec3/vec4
+        std::regex            re_float(R"(\bfloat\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+             it != std::sregex_iterator();
+             ++it)
+            float_idents.insert((*it)[1].str());
+        std::regex re_uniform_float(R"(\buniform\s+float\s+(\w+))");
+        for (auto it =
+                 std::sregex_iterator(result.begin(), result.end(), re_uniform_float);
+             it != std::sregex_iterator();
+             ++it)
+            float_idents.insert((*it)[1].str());
+        std::regex re_vec(R"(\bvec[234]\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vec);
+             it != std::sregex_iterator();
+             ++it)
+            vec_idents.insert((*it)[1].str());
+        std::regex re_uniform_vec(R"(\buniform\s+vec[234]\s+(\w+))");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uniform_vec);
+             it != std::sregex_iterator();
+             ++it)
+            vec_idents.insert((*it)[1].str());
+
+        std::string out;
+        out.reserve(result.size());
+        size_t i = 0;
+        while (i < result.size()) {
+            bool word_boundary = (i == 0) ||
+                                 (! std::isalnum((unsigned char)result[i - 1]) &&
+                                  result[i - 1] != '_');
+            if (! (word_boundary && i + 3 <= result.size() &&
+                   result.compare(i, 3, "mix") == 0 &&
+                   (i + 3 == result.size() ||
+                    (! std::isalnum((unsigned char)result[i + 3]) &&
+                     result[i + 3] != '_')))) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t j = i + 3;
+            while (j < result.size() && std::isspace((unsigned char)result[j])) ++j;
+            if (j >= result.size() || result[j] != '(') {
+                out.push_back(result[i++]);
+                continue;
+            }
+            size_t close = findMatchingParen(result, j);
+            if (close == std::string::npos) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Split into 3 args at top-level commas
+            std::vector<std::pair<size_t, size_t>> args;
+            int                                    depth     = 0;
+            size_t                                 arg_start = j + 1;
+            for (size_t k = j + 1; k + 1 < close; ++k) {
+                char c = result[k];
+                if (c == '(')
+                    ++depth;
+                else if (c == ')')
+                    --depth;
+                else if (c == ',' && depth == 0) {
+                    args.push_back({ arg_start, k });
+                    arg_start = k + 1;
+                }
+            }
+            args.push_back({ arg_start, close - 1 });
+            if (args.size() != 3) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Detect arg0 starts with "vec[234](" after whitespace
+            size_t a0s = args[0].first;
+            size_t a0e = args[0].second;
+            while (a0s < a0e && std::isspace((unsigned char)result[a0s])) ++a0s;
+            char N = 0;
+            if (a0e - a0s >= 5 && result.compare(a0s, 3, "vec") == 0 &&
+                (result[a0s + 3] == '2' || result[a0s + 3] == '3' ||
+                 result[a0s + 3] == '4')) {
+                size_t p = a0s + 4;
+                while (p < a0e && std::isspace((unsigned char)result[p])) ++p;
+                if (p < a0e && result[p] == '(') N = result[a0s + 3];
+            }
+            if (! N) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Trim arg1, require it to be a single identifier that is known-float
+            size_t a1s = args[1].first;
+            size_t a1e = args[1].second;
+            while (a1s < a1e && std::isspace((unsigned char)result[a1s])) ++a1s;
+            while (a1e > a1s && std::isspace((unsigned char)result[a1e - 1])) --a1e;
+            bool ident_only = (a1e > a1s);
+            for (size_t k = a1s; k < a1e && ident_only; ++k) {
+                char c = result[k];
+                if (! std::isalnum((unsigned char)c) && c != '_') ident_only = false;
+            }
+            std::string a1_name = ident_only ? result.substr(a1s, a1e - a1s) : "";
+            if (! ident_only || ! float_idents.count(a1_name)) {
+                out.push_back(result[i++]);
+                continue;
+            }
+            // Look backward over whitespace to find an assignment of the
+            // form  IDENT = mix(...)  or  IDENT = ... mix(...)
+            // We accept it only when an `=` (single) sits between mix and an
+            // identifier, with no other tokens — i.e. the simple case
+            // `LHS = mix(...)`.
+            auto lhsType = [&]() -> char { // 'f' float, 'v' vec, '2'/'3'/'4' rank when known vec, 0 unknown
+                ssize_t k = (ssize_t)i - 1;
+                while (k >= 0 && (result[k] == ' ' || result[k] == '\t')) --k;
+                if (k < 0 || result[k] != '=') return 0;
+                // Reject ==, !=, <=, >= (any of these can precede mix in an
+                // expression context where mix is not directly assigned).
+                if (k > 0 && (result[k - 1] == '=' || result[k - 1] == '!' ||
+                              result[k - 1] == '<' || result[k - 1] == '>'))
+                    return 0;
+                --k;
+                while (k >= 0 && std::isspace((unsigned char)result[k])) --k;
+                ssize_t id_end = k + 1;
+                while (k >= 0 &&
+                       (std::isalnum((unsigned char)result[k]) || result[k] == '_'))
+                    --k;
+                ssize_t id_beg = k + 1;
+                if (id_end <= id_beg) return 0;
+                std::string ident = result.substr((size_t)id_beg, (size_t)(id_end - id_beg));
+                if (float_idents.count(ident) && ! vec_idents.count(ident)) return 'f';
+                if (vec_idents.count(ident)) return 'v';
+                return 0;
+            }();
+            std::string Ns(1, N);
+            if (lhsType == 'f') {
+                // LHS is float — truncate first arg to scalar.
+                // Emit: "mix(<arg0>.x,<arg1>,<arg2>)"
+                out.append("mix(");
+                out.append(result, args[0].first, args[0].second - args[0].first);
+                out.append(".x,");
+                out.append(result, args[1].first, args[1].second - args[1].first);
+                out.append(",");
+                out.append(result, args[2].first, args[2].second - args[2].first);
+                out.push_back(')');
+                i = close;
+            } else if (lhsType == 'v') {
+                // LHS is vec — broadcast scalar to vecN.
+                // Emit: "mix(<arg0>, vecN(<arg1>),<arg2>)"
+                out.append("mix(");
+                out.append(result, args[0].first, args[0].second - args[0].first);
+                out.append(", vec");
+                out.append(Ns);
+                out.append("(");
+                out.append(a1_name);
+                out.append("),");
+                out.append(result, args[2].first, args[2].second - args[2].first);
+                out.push_back(')');
+                i = close;
+            } else {
+                // Unknown context — leave the call alone.
+                out.push_back(result[i++]);
+            }
+        }
+        result = std::move(out);
     }
 
     // Fix: (expr CMP expr) in arithmetic → float(expr CMP expr)

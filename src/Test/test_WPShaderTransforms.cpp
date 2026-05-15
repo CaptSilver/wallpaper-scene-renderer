@@ -611,6 +611,238 @@ TEST_SUITE("FixImplicitConversions") {
         CHECK(result.find("bool(") == std::string::npos);
     }
 
+    // --- Pattern 11b: if(<float-expr>) → if(bool(<expr>)) ---
+    // Driver: Game Of Life (3453251764) canvas chain — `if(u_mouseDown.x *
+    // NOT(u_mouseDown.y))`, `if(u_enablePreview)`, `if(useLastAsNewUndoFrame)`.
+    // HLSL accepts any nonzero numeric in `if`; GLSL requires bool.
+
+    TEST_CASE("if(float_local) gets bool() wrap") {
+        std::string in =
+            "void main() {\n"
+            "  float useLast = 1.0;\n"
+            "  if (useLast) { }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("if (bool(useLast))") != std::string::npos);
+    }
+
+    TEST_CASE("if(uniform_float) gets bool() wrap") {
+        std::string in =
+            "uniform float u_enablePreview;\n"
+            "void main() {\n"
+            "  if (u_enablePreview) { x = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("if (bool(u_enablePreview))") != std::string::npos);
+    }
+
+    TEST_CASE("if(float_arith_expression) gets bool() wrap") {
+        std::string in =
+            "void main() {\n"
+            "  if (u_mouseDown.x * NOT(u_mouseDown.y)) { x = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("if (bool(u_mouseDown.x * NOT(u_mouseDown.y)))") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("if(comparison) left untouched") {
+        std::string in =
+            "void main() {\n"
+            "  if (x > 0.5) { y = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(x > 0.5)") == std::string::npos);
+        CHECK(result.find("if (x > 0.5)") != std::string::npos);
+    }
+
+    TEST_CASE("if(logical_and) left untouched") {
+        std::string in =
+            "void main() {\n"
+            "  if (a < 1.0 && b > 0.0) { z = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(a < 1.0 && b > 0.0)") == std::string::npos);
+    }
+
+    TEST_CASE("if(equality) left untouched") {
+        std::string in =
+            "void main() {\n"
+            "  if (mode == 1) { z = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(mode == 1)") == std::string::npos);
+    }
+
+    TEST_CASE("else if(float) gets bool() wrap") {
+        std::string in =
+            "void main() {\n"
+            "  if (a > 0.0) { x = 1.0; }\n"
+            "  else if (mask) { x = 2.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("else if (bool(mask))") != std::string::npos);
+    }
+
+    TEST_CASE("identifier ending in 'if' not matched") {
+        std::string in =
+            "void main() {\n"
+            "  float endif_val = 1.0;\n"
+            "  float y = endif_val + 1.0;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(") == std::string::npos);
+    }
+
+    TEST_CASE("preprocessor #if left untouched") {
+        std::string in =
+            "#if MODIFIED_CURSOR_POS == 1\n"
+            "vec4 cursor = u_mousePos;\n"
+            "#endif\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(") == std::string::npos);
+        CHECK(result.find("#if MODIFIED_CURSOR_POS == 1") != std::string::npos);
+    }
+
+    TEST_CASE("already-wrapped if(bool(...)) not double-wrapped") {
+        std::string in =
+            "void main() {\n"
+            "  if (bool(x)) { y = 1.0; }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("bool(bool(x))") == std::string::npos);
+    }
+
+    // --- Pattern 11c: mix(vecN, scalar_float, ...) broadcast ---
+    // Driver: Game Of Life canvas_pen_influence.frag —
+    // `mix(vec2(0.,1.), influence, sameUiPart)` where `influence` is float.
+    // HLSL's lerp() broadcasts scalars; GLSL's mix requires matching ranks.
+
+    TEST_CASE("mix(vec2-literal, float-local, float) → vec LHS gets broadcast") {
+        std::string in =
+            "void main() {\n"
+            "  float influence = 0.;\n"
+            "  float sameUiPart = 1.0;\n"
+            "  vec2 r;\n"
+            "  r = mix(vec2(0., 1.), influence, sameUiPart);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("mix(vec2(0., 1.), vec2(influence),") != std::string::npos);
+    }
+
+    TEST_CASE("mix(vec2-literal, float-local, float) → float LHS truncates arg0") {
+        // Game Of Life canvas_pen_influence pattern: `influence` is float,
+        // assigned the result of mix() whose first arg is vec2.  WE's HLSL
+        // truncates the vec result on assignment to float; we mimic by taking
+        // `.x` of the vec2 literal.
+        std::string in =
+            "void main() {\n"
+            "  float influence = 0.;\n"
+            "  float sameUiPart = 1.0;\n"
+            "  influence = mix(vec2(0., 1.), influence, sameUiPart);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("mix(vec2(0., 1.).x, influence,") != std::string::npos);
+        CHECK(result.find("vec2(influence)") == std::string::npos);
+    }
+
+    TEST_CASE("mix(vec3-literal, float-local, float) → vec3 LHS broadcast to vec3") {
+        std::string in =
+            "void main() {\n"
+            "  float gray = 0.5;\n"
+            "  float t = 0.5;\n"
+            "  vec3 r;\n"
+            "  r = mix(vec3(0., 1., 0.), gray, t);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("mix(vec3(0., 1., 0.), vec3(gray),") != std::string::npos);
+    }
+
+    TEST_CASE("mix(vec2-literal, vec2-local, float) NOT broadcast") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 brushInfluence = vec2(1.0, 0.0);\n"
+            "  float t = 0.5;\n"
+            "  vec2 r = mix(vec2(0., 1.), brushInfluence, t);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // Second arg is vec2 → broadcast must not fire
+        CHECK(result.find("vec2(brushInfluence)") == std::string::npos);
+    }
+
+    TEST_CASE("mix(vec2-literal, unknown-ident, float) NOT broadcast") {
+        // Defensive: if we can't prove the local is float, leave it alone.
+        std::string in =
+            "void main() {\n"
+            "  vec2 r = mix(vec2(0., 1.), unknownVar, t);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2(unknownVar)") == std::string::npos);
+    }
+
+    // --- Pattern 11d: mix(vec, vec, bool) → mix(..., ..., float(bool)) ---
+
+    TEST_CASE("mix(vec, vec, bool_fn_call) wraps third arg with float()") {
+        std::string in =
+            "bool isMode(float a, float b) { return abs(a-b) < 0.5; }\n"
+            "void main() {\n"
+            "  vec2 mask = vec2(0., 0.);\n"
+            "  vec2 r = mix(mask, vec2(1.0, 0.0), isMode(2., 2.));\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("float(isMode(2., 2.))") != std::string::npos);
+    }
+
+    TEST_CASE("mix(vec, vec, bool_local) wraps with float()") {
+        std::string in =
+            "void main() {\n"
+            "  bool flag = true;\n"
+            "  vec2 r = mix(vec2(0.), vec2(1.), flag);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("float(flag)") != std::string::npos);
+    }
+
+    TEST_CASE("mix(vec, vec, float_var) left alone") {
+        std::string in =
+            "void main() {\n"
+            "  float t = 0.5;\n"
+            "  vec2 r = mix(vec2(0.), vec2(1.), t);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("float(t)") == std::string::npos);
+    }
+
+    // --- Pattern 4 scope-ambiguity guard ---
+
+    TEST_CASE("fixTrunc skips ambiguous names declared as both vec2 and vec4") {
+        // Driver: Game Of Life canvas_paint.frag — `cursor` is a vec2 parameter
+        // in calcStrokeInfluence AND a vec4 local in main(); the truncation
+        // rewrite must not damage `vec4 cursor = u_mousePos;` in main().
+        std::string in =
+            "uniform vec4 u_mousePos;\n"
+            "void calcStrokeInfluence(vec2 cursor) { float x = cursor.x; }\n"
+            "void main() {\n"
+            "  vec4 cursor = u_mousePos;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec4 cursor = u_mousePos;") != std::string::npos);
+        CHECK(result.find("u_mousePos.xy") == std::string::npos);
+    }
+
+    TEST_CASE("fixTrunc still fires when name is unambiguously vec2") {
+        // Sanity: a true `vec2 = vec4` truncation in a single-scope shader
+        // still gets the .xy swizzle.
+        std::string in =
+            "uniform vec4 u_pos;\n"
+            "void main() {\n"
+            "  vec2 narrow;\n"
+            "  narrow = u_pos;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("narrow = u_pos.xy;") != std::string::npos);
+    }
+
     // --- Pattern 12: comparison in arithmetic → float() ---
 
     TEST_CASE("parenthesized comparison in arithmetic gets float() wrap") {
