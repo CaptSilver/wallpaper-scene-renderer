@@ -1,5 +1,6 @@
 #include <doctest.h>
 #include "WPShaderTransforms.h"
+#include "WPShaderPreamble.hpp"
 
 // ===========================================================================
 // regexTransformAll
@@ -2066,3 +2067,185 @@ TEST_SUITE("FixImplicitConversions.libraryAudit") {
     }
 
 } // TEST_SUITE("FixImplicitConversions.libraryAudit")
+
+// ===========================================================================
+// Preamble extensions — regression for 2026-05-15 audit log spam
+// ===========================================================================
+TEST_SUITE("FixImplicitConversions.scalarBroadcast") {
+    // Pattern from Girl Error System Arona (3341577331) / Daisies (3501635854)
+    // bokeh / chromatic-aberration shaders.
+    TEST_CASE("vec2 VAR = scalar literal broadcasts to vec2") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 radial = 0.0;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2 radial = vec2(0.0);") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 / vec4 broadcast from scalar literal") {
+        std::string in =
+            "void main() {\n"
+            "  vec3 a = 1.0;\n"
+            "  vec4 b = 0.5;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec3 a = vec3(1.0)") != std::string::npos);
+        CHECK(result.find("vec4 b = vec4(0.5)") != std::string::npos);
+    }
+
+    TEST_CASE("mixed comma list: scalar + vector inits in one declaration") {
+        // The Arona / Daisies bokeh shader writes
+        //   `vec2 radial = 0.0, tangential = 0.0, center = (1.0 - u_center - 0.5) * u_general;`
+        // Where u_center is `uniform vec2` and u_general is `uniform float`.
+        // The scalar literals must broadcast; the third initialiser already
+        // produces a vec2 (vec2 - vec2 - vec2) and must NOT be touched.
+        std::string in =
+            "uniform vec2 u_center;\n"
+            "uniform float u_general;\n"
+            "void main() {\n"
+            "  vec2 radial = 0.0, tangential = 0.0, center = (1.0 - u_center - 0.5) * u_general;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("radial = vec2(0.0)") != std::string::npos);
+        CHECK(result.find("tangential = vec2(0.0)") != std::string::npos);
+        // The vector initialiser must be preserved verbatim (no double-wrap).
+        CHECK(result.find("vec2((1.0 - u_center") == std::string::npos);
+        CHECK(result.find("center = (1.0 - u_center - 0.5) * u_general") != std::string::npos);
+    }
+
+    TEST_CASE("does not double-wrap an already-vec initialiser") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 a = vec2(0.5);\n"
+            "  vec3 b = vec3(1.0, 0.0, 0.0);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // No vec2(vec2(...)) anywhere.
+        CHECK(result.find("vec2(vec2(") == std::string::npos);
+        CHECK(result.find("vec3(vec3(") == std::string::npos);
+    }
+
+    TEST_CASE("texture() RHS is recognised as vector") {
+        std::string in =
+            "uniform sampler2D s;\n"
+            "void main() {\n"
+            "  vec4 c = texture(s, vec2(0.0, 0.0));\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // Texture call must not be wrapped.
+        CHECK(result.find("vec4(texture(") == std::string::npos);
+    }
+
+    TEST_CASE("function parameter list is not mistaken for a decl with init") {
+        // `vec2 foo(int x)` has no `=` in its body, so the regex shouldn't
+        // even consider it.  Verifies non-init declarations are untouched.
+        std::string in = "vec2 foo(int x) { return vec2(0); }\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result == in);
+    }
+
+    TEST_CASE("vec2 VAR = vec4_varying narrows to .xy") {
+        // Pattern from Arona's chromatic_aberration: `vec2 _m_v_TexCoord = v_TexCoord;`
+        std::string in =
+            "in vec4 v_TexCoord;\n"
+            "void main() {\n"
+            "  vec2 _m_v_TexCoord = v_TexCoord;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2 _m_v_TexCoord = v_TexCoord.xy;") != std::string::npos);
+    }
+
+    TEST_CASE("vec3 VAR = vec4_uniform narrows to .xyz") {
+        std::string in =
+            "uniform vec4 u_color;\n"
+            "void main() {\n"
+            "  vec3 col = u_color;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec3 col = u_color.xyz;") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 VAR = vec3_varying narrows to .xy") {
+        std::string in =
+            "in vec3 v_PointerUV;\n"
+            "void main() {\n"
+            "  vec2 da = v_PointerUV;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2 da = v_PointerUV.xy;") != std::string::npos);
+    }
+
+    TEST_CASE("identical-width assignment is left untouched") {
+        std::string in =
+            "in vec4 v_TexCoord;\n"
+            "void main() {\n"
+            "  vec4 copy = v_TexCoord;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // No swizzle added.
+        CHECK(result.find("v_TexCoord.") == std::string::npos);
+    }
+
+    TEST_CASE("RHS with member access is left untouched") {
+        // Already explicit narrowing — don't double up.
+        std::string in =
+            "in vec4 v_TexCoord;\n"
+            "void main() {\n"
+            "  vec2 t = v_TexCoord.xy;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
+    }
+
+    TEST_CASE("function body's first `= scalar; ` is not absorbed into the return type") {
+        // Regression: the original `vec[234] (\w+\s*=[^;]+);` guard caught
+        // function declarations like `vec3 NAME(args) { ... ; const float
+        // AvgLumR = 0.5; }` — the regex spanned from `vec3` (the return type)
+        // to the first `;` inside the body, and is_scalar_expr saw a scalar
+        // RHS, so we emitted `vec3 NAME(args) { ... ; const float AvgLumR =
+        // vec3(0.5); }`.  Found in Daisies' ContrastSaturationBrightness.
+        std::string in =
+            "vec3 ContrastSaturationBrightness(vec3 color, float brt, float sat, float con)\n"
+            "{\n"
+            "    const float AvgLumR = 0.5;\n"
+            "    return color;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("const float AvgLumR = 0.5;") != std::string::npos);
+        // Must NOT have broadcast the float scalar to vec3.
+        CHECK(result.find("AvgLumR = vec3(0.5)") == std::string::npos);
+    }
+}
+
+TEST_SUITE("WPShaderPreamble.extensions") {
+    using namespace wallpaper;
+
+    TEST_CASE("common preamble enables GL_EXT_spec_constant_composites") {
+        // Many WE shaders declare const-initialised vec4 tables at file scope
+        // (colour palettes, coefficient tables).  glslang classifies those as
+        // candidate spec-constant aggregates and warns until the extension is
+        // enabled.  Without enable, every wallpaper using such tables spammed
+        // 60+ warnings into the audit log (Daisies 3501635854 alone hit ~50).
+        const std::string preamble = kPreShaderCodeCommon;
+        CHECK(preamble.find("#extension GL_EXT_spec_constant_composites : enable") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("preamble keeps #version 330 ahead of #extension") {
+        // GLSL parser rejects #extension above #version, so order matters.
+        const std::string preamble = kPreShaderCodeCommon;
+        auto              vpos     = preamble.find("#version 330");
+        auto              epos     = preamble.find("#extension GL_EXT_spec_constant_composites");
+        REQUIRE(vpos != std::string::npos);
+        REQUIRE(epos != std::string::npos);
+        CHECK(vpos < epos);
+    }
+
+    TEST_CASE("preamble retains the __SHADER_PLACEHOLD__ marker") {
+        // WPShaderParser appends combo #defines after the placeholder line;
+        // dropping it would break the preprocessor chain.
+        const std::string preamble = kPreShaderCodeCommon;
+        CHECK(preamble.find("__SHADER_PLACEHOLD__") != std::string::npos);
+    }
+}

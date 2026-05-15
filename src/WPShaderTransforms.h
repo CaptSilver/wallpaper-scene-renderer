@@ -1294,6 +1294,187 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "vec3 $1 = $2.xyz;");
     }
 
+    // Fix: "vec<narrow> VAR = wider_var;" — HLSL narrowing assignment.
+    // Driver: 2026-05-15 audit found vec4-varying-to-vec2-local patterns in
+    // multiple wallpapers:
+    //   * NieR 2B-ish chromatic_aberration: `vec2 _m_v_TexCoord = v_TexCoord;`
+    //     where `in vec4 v_TexCoord;` lives.
+    //   * Generic FBO compose: `vec3 col = some_vec4_uniform;`.
+    // Plain `=` doesn't go through the existing arithmetic-truncation pass
+    // (which requires an operator).  Detect the LHS rank from the
+    // declaration, look up the RHS identifier in the vec3/vec4 uniform/in
+    // sets, and inject `.xy` / `.xyz` accordingly.
+    {
+        auto collectByQual = [&](int width) {
+            std::set<std::string> names;
+            // Match `uniform vecN NAME;` / `in vecN NAME;` / `varying vecN NAME;`
+            // and local `vecN NAME` declarations.
+            std::regex re(std::string(R"(\b(?:uniform|in|out|varying)\s+vec)") +
+                          std::to_string(width) + R"(\s+(\w+)\s*[;\[])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator(); ++it)
+                names.insert((*it)[1].str());
+            return names;
+        };
+        const auto vec3_named = collectByQual(3);
+        const auto vec4_named = collectByQual(4);
+
+        auto rewriteAssign = [&](int lhsW, int rhsW, const char* swizzle,
+                                 const std::set<std::string>& rhsNames) {
+            const std::string lhsT = "vec" + std::to_string(lhsW);
+            for (const auto& rname : rhsNames) {
+                // `vecN VAR = rname;` (with optional whitespace) — match exact
+                // bare identifier as RHS, not followed by `.` or `[` or `(`.
+                std::regex re(R"(\b)" + lhsT + R"(\s+(\w+)\s*=\s*)" + rname +
+                              R"(\b(?![.\[(\w])\s*;)");
+                result = std::regex_replace(result, re,
+                                            lhsT + " $1 = " + rname + "." + swizzle + ";");
+            }
+            (void)rhsW;
+        };
+        // vec2 X = vec3_var; → .xy ; vec2 X = vec4_var; → .xy
+        rewriteAssign(2, 3, "xy",  vec3_named);
+        rewriteAssign(2, 4, "xy",  vec4_named);
+        // vec3 X = vec4_var; → .xyz
+        rewriteAssign(3, 4, "xyz", vec4_named);
+    }
+
+    // Fix: HLSL scalar→vector broadcast in `vecN VAR = <scalar>;` declarations.
+    // Driver: Girl Error System Arona (3341577331) / Daisies (3501635854) /
+    // multiple others ship workshop bokeh / chromatic-aberration shaders with
+    //   `vec2 radial = 0.0, tangential = 0.0, center = (1.0 - u_center - 0.5) * u_general;`
+    // — three vec2 variables initialised from a scalar `0.0` literal.  HLSL
+    // broadcasts `0.0` → `float2(0,0)` implicitly; GLSL rejects (`= ' const
+    // float' to ' temp highp 2-component vector of float'`).
+    //
+    // Strategy: split the comma-separated declarator list and wrap each
+    // initialiser whose RHS doesn't already look vector-typed.  Conservative:
+    // we only touch initialisers whose RHS is composed entirely of
+    // scalar-looking tokens (numeric literals + arithmetic + known-scalar
+    // identifiers from earlier `uniform float NAME` / `in float NAME` /
+    // `float NAME` declarations).  Anything containing `vec[234](`,
+    // `texture(`, `.xy/.xyz/.xyzw`, or `.rg/.rgb/.rgba` is left alone — the
+    // RHS already produces a vector.
+    {
+        // Collect known scalar (float) variables from declarations / uniforms.
+        // Re-using the same set the swizzle-broadcast pass collects, but locally
+        // so this block can run independently.
+        std::set<std::string> scalar_vars;
+        {
+            std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*[\[;])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_qual);
+                 it != std::sregex_iterator(); ++it)
+                scalar_vars.insert((*it)[1].str());
+            std::regex re_local(R"(\bfloat\s+(\w+)\s*[=;])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_local);
+                 it != std::sregex_iterator(); ++it)
+                scalar_vars.insert((*it)[1].str());
+        }
+        auto is_scalar_expr = [&](const std::string& expr) -> bool {
+            // Reject anything that looks like a vector producer.
+            if (expr.find("vec2(") != std::string::npos) return false;
+            if (expr.find("vec3(") != std::string::npos) return false;
+            if (expr.find("vec4(") != std::string::npos) return false;
+            if (expr.find("texture") != std::string::npos) return false;
+            // Multi-component swizzles indicate vector access (foo.xy, foo.rgba, etc.)
+            std::regex multi_sw(R"(\.(?:xy|xyz|xyzw|rg|rgb|rgba)\b)");
+            if (std::regex_search(expr, multi_sw)) return false;
+            // Identifiers in the expression — if any unknown identifier appears,
+            // we don't know its type, so be conservative and skip.
+            std::regex id_re(R"([A-Za-z_]\w*)");
+            for (auto it = std::sregex_iterator(expr.begin(), expr.end(), id_re);
+                 it != std::sregex_iterator(); ++it) {
+                std::string id = (*it).str();
+                // Recognised scalar built-ins / keywords are fine.
+                static const std::set<std::string> scalar_kw = {
+                    "true", "false", "abs", "min", "max", "_wemn", "_wemx", "_wep",
+                    "sqrt", "pow", "exp", "log", "log2", "sin", "cos", "tan",
+                    "asin", "acos", "atan", "floor", "ceil", "round", "fract",
+                    "sign", "mod", "step", "smoothstep", "clamp", "mix", "length",
+                    "distance", "dot", "_wedot", "saturate", "u_general",
+                };
+                if (scalar_kw.count(id)) continue;
+                if (scalar_vars.count(id)) continue;
+                return false;
+            }
+            return true;
+        };
+        // Match a declaration starting `vecN NAME = ...;` where vecN is vec2/3/4.
+        // The `\w+\s*=` between type and the rest excludes function declarations
+        // like `vec3 fnName(args) { ...; }` whose first token after the return
+        // type is `(` not `=` — without this guard we wrapped innocent `float
+        // AvgLumR = 0.5;` inside the function body in `vec3(0.5)`, because the
+        // regex spanned from the return-type vec3 all the way to the first `;`
+        // inside the function body.
+        std::regex re_decl(R"(\b(vec[234])\s+(\w+\s*=[^;]+);)");
+        std::string                out;
+        std::string::size_type     lastPos = 0;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
+             it != std::sregex_iterator(); ++it) {
+            const auto& m       = *it;
+            const std::string vecT = m[1].str();
+            const std::string body = m[2].str();
+            // Skip when the line is the function-parameter-list opening or a
+            // typedef-like return-type (no `=` in body) — this regex only
+            // catches statements that contain an initialiser anyway.
+            if (body.find('=') == std::string::npos) continue;
+
+            // Walk comma-separated declarators; rebuild only those whose RHS
+            // is scalar-only, wrapping with `vecN(...)`.
+            std::string              rebuilt;
+            std::string::size_type   pos = 0;
+            bool                     changed = false;
+            int                      depth   = 0;
+            std::string::size_type   start   = 0;
+            std::vector<std::string> parts;
+            for (std::string::size_type i = 0; i < body.size(); ++i) {
+                char c = body[i];
+                if (c == '(' || c == '[' || c == '{') ++depth;
+                else if (c == ')' || c == ']' || c == '}') --depth;
+                else if (c == ',' && depth == 0) {
+                    parts.push_back(body.substr(start, i - start));
+                    start = i + 1;
+                }
+                (void)pos;
+            }
+            parts.push_back(body.substr(start));
+
+            for (auto& part : parts) {
+                // Each `part` is `NAME = EXPR` (or just `NAME` — no init).
+                auto eq = part.find('=');
+                if (eq == std::string::npos) continue;
+                std::string lhs = part.substr(0, eq);
+                std::string rhs = part.substr(eq + 1);
+                // Trim ASCII whitespace
+                auto trim = [](std::string& s) {
+                    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.erase(s.begin());
+                    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.pop_back();
+                };
+                std::string rhs_t = rhs;
+                trim(rhs_t);
+                if (rhs_t.empty()) continue;
+                if (! is_scalar_expr(rhs_t)) continue;
+                // Wrap
+                std::string wrapped = " " + vecT + "(" + rhs_t + ")";
+                part = lhs + "=" + wrapped;
+                changed = true;
+            }
+            if (! changed) continue;
+            // Reassemble
+            std::string new_body;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                if (i) new_body += ",";
+                new_body += parts[i];
+            }
+            std::string new_decl = vecT + " " + new_body + ";";
+            out.append(result, lastPos, (std::string::size_type)m.position() - lastPos);
+            out += new_decl;
+            lastPos = (std::string::size_type)m.position() + (std::string::size_type)m.length();
+        }
+        out.append(result, lastPos, std::string::npos);
+        result = std::move(out);
+    }
+
     // Fix: "float VAR = VEC_EXPR" → "float VAR = (VEC_EXPR).x"
     // HLSL implicitly takes the first component; GLSL requires explicit swizzle.
     // Detect known vec2/vec3/vec4 variables used in a float assignment.

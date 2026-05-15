@@ -31,6 +31,14 @@ static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 #define SHADER_DIR    "spvs01"
 #define SHADER_SUFFIX "spvs"
 
+// Header inclusions must precede `using namespace wallpaper;` and the
+// surrounding anonymous namespace below — otherwise headers that declare
+// `namespace wallpaper { ... }` end up nesting inside the anonymous
+// namespace and their symbols become `<anon>::wallpaper::X` rather than
+// `::wallpaper::X`.
+#include "WPShaderTransforms.h"
+#include "WPShaderPreamble.hpp"
+
 using namespace wallpaper;
 
 namespace
@@ -42,113 +50,11 @@ namespace
 // CompileShaderUnits chain (Finalprocessor + FixImplicitConversions + glslang).
 std::mutex g_glslangSerialiseMtx;
 
-#include "WPShaderTransforms.h"
-
-static constexpr const char* pre_shader_code = R"(#version 330
-#define GLSL 1
-#define HLSL 0
-#define highp
-
-#define CAST2(x) (vec2(x))
-#define CAST3(x) (vec3(x))
-#define CAST4(x) (vec4(x))
-#define CAST3X3(x) (mat3(x))
-
-#define texSample2D texture
-#define texSample2DLod textureLod
-#define mul(x, y) ((y) * (x))
-#define frac fract
-#define atan2 atan
-#define fmod(x, y) (x-y*trunc(x/y))
-#define ddx dFdx
-#define ddy(x) dFdy(-(x))
-#define saturate(x) (clamp(x, 0.0, 1.0))
-#define log10(x) (log(x) / log(10.0))
-
-// HLSL built-ins broadcast scalar to vector; GLSL requires matching genType.
-// Overloads must be defined BEFORE the #define so their bodies call the
-// real built-in, while all subsequent shader code gets redirected.
-//
-// Additionally: GLSL says pow(x, y) is UNDEFINED for x < 0 (spec §8.2).
-// HLSL's pow(x, 2) with negative x just does x*x and returns a positive
-// result, so wallpapers routinely write `sign(x) * pow(x, 2.0)` meaning
-// "signed square".  Under RADV (and other GLSL drivers) the undefined
-// branch can return large or NaN values that then multiply into g_Time
-// in motion shaders (scroll, cloudmotion) — clouds visibly blur / alias /
-// "disappear" after minutes as v_Scroll drifts far out of [0,1].
-// Wrap x with abs() so negative inputs take the positive-definite path;
-// for the even-exponent case (the common `pow(x, 2.0)`) this yields the
-// same magnitude HLSL does, and callers who need the sign keep their
-// own `sign(x) *` prefix intact.
-float _wep(float x, float y) { return pow(abs(x), y); }
-vec2 _wep(vec2 x, float y) { return pow(abs(x), vec2(y)); }
-vec3 _wep(vec3 x, float y) { return pow(abs(x), vec3(y)); }
-vec4 _wep(vec4 x, float y) { return pow(abs(x), vec4(y)); }
-vec2 _wep(float x, vec2 y) { return pow(vec2(abs(x)), y); }
-vec3 _wep(float x, vec3 y) { return pow(vec3(abs(x)), y); }
-vec4 _wep(float x, vec4 y) { return pow(vec4(abs(x)), y); }
-vec2 _wep(vec2 x, vec2 y) { return pow(abs(x), y); }
-vec3 _wep(vec3 x, vec3 y) { return pow(abs(x), y); }
-vec4 _wep(vec4 x, vec4 y) { return pow(abs(x), y); }
-#define pow _wep
-vec2 _wemx(float x, vec2 y) { return max(vec2(x), y); }
-vec3 _wemx(float x, vec3 y) { return max(vec3(x), y); }
-vec4 _wemx(float x, vec4 y) { return max(vec4(x), y); }
-vec2 _wemx(vec2 x, float y) { return max(x, vec2(y)); }
-vec3 _wemx(vec3 x, float y) { return max(x, vec3(y)); }
-vec4 _wemx(vec4 x, float y) { return max(x, vec4(y)); }
-float _wemx(float x, float y) { return max(x, y); }
-vec2 _wemx(vec2 x, vec2 y) { return max(x, y); }
-vec3 _wemx(vec3 x, vec3 y) { return max(x, y); }
-vec4 _wemx(vec4 x, vec4 y) { return max(x, y); }
-#define max _wemx
-vec2 _wemn(float x, vec2 y) { return min(vec2(x), y); }
-vec3 _wemn(float x, vec3 y) { return min(vec3(x), y); }
-vec4 _wemn(float x, vec4 y) { return min(vec4(x), y); }
-vec2 _wemn(vec2 x, float y) { return min(x, vec2(y)); }
-vec3 _wemn(vec3 x, float y) { return min(x, vec3(y)); }
-vec4 _wemn(vec4 x, float y) { return min(x, vec4(y)); }
-float _wemn(float x, float y) { return min(x, y); }
-vec2 _wemn(vec2 x, vec2 y) { return min(x, y); }
-vec3 _wemn(vec3 x, vec3 y) { return min(x, y); }
-vec4 _wemn(vec4 x, vec4 y) { return min(x, y); }
-#define min _wemn
-float _wedot(vec4 x, vec3 y) { return dot(x.xyz, y); }
-float _wedot(vec3 x, vec4 y) { return dot(x, y.xyz); }
-float _wedot(vec4 x, vec2 y) { return dot(x.xy, y); }
-float _wedot(vec2 x, vec4 y) { return dot(x, y.xy); }
-float _wedot(vec3 x, vec2 y) { return dot(x.xy, y); }
-float _wedot(vec2 x, vec3 y) { return dot(x, y.xy); }
-float _wedot(vec2 x, vec2 y) { return dot(x, y); }
-float _wedot(vec3 x, vec3 y) { return dot(x, y); }
-float _wedot(vec4 x, vec4 y) { return dot(x, y); }
-#define dot _wedot
-
-#define float1 float
-#define float2 vec2
-#define float3 vec3
-#define float4 vec4
-#define lerp mix
-
-__SHADER_PLACEHOLD__
-
-)";
-
-static constexpr const char* pre_shader_code_vert = R"(
-#define attribute in
-#define varying out
-
-)";
-static constexpr const char* pre_shader_code_frag = R"(
-#define varying in
-#define gl_FragColor glOutColor
-out vec4 glOutColor;
-
-)";
-// Geometry shader: no attribute/varying defines needed.
-// Layout declarations are injected by TranslateGeometryShader based on [maxvertexcount].
-static constexpr const char* pre_shader_code_geom = R"(
-)";
+// Re-bound here for readability of the call sites below.
+static constexpr const char* pre_shader_code      = ::wallpaper::kPreShaderCodeCommon;
+static constexpr const char* pre_shader_code_vert = ::wallpaper::kPreShaderCodeVert;
+static constexpr const char* pre_shader_code_frag = ::wallpaper::kPreShaderCodeFrag;
+static constexpr const char* pre_shader_code_geom = ::wallpaper::kPreShaderCodeGeom;
 
 inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
     std::string::size_type pos = 0;
@@ -358,7 +264,19 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
 
     usize pos;
     {
-        const std::regex reAfters(R"(\n(attribute|varying|uniform|struct) )");
+        // Match attribute/varying/uniform — NOT struct.  Anchoring on `\nstruct `
+        // led to includes being pasted INSIDE multi-line struct bodies (the
+        // regex finds the LAST struct keyword and the next-line insertion
+        // lands between `struct Grid {` and the closing `};`, splitting the
+        // struct and producing a glslang "syntax error, unexpected LEFT_PAREN"
+        // at the first function definition that follows it).  Discovered via
+        // Daisies (3501635854): `struct Grid { vec2 cuv; vec2 puv; vec2 id; }`
+        // got rewritten to `struct Grid {` + ~280 lines of `common_blending.h`
+        // + the original `vec2 cuv; vec2 puv; vec2 id; };` at the bottom.  The
+        // include can sit before the struct just as safely as after it — its
+        // contents (helper functions, blend ops, etc.) don't depend on the
+        // shader's local structs.
+        const std::regex reAfters(R"(\n(attribute|varying|uniform) )");
         usize            afterPos = searchLast(src, reAfters);
         if (afterPos != std::string::npos) {
             afterPos = nextLinePos(src, afterPos + 1);
