@@ -1428,8 +1428,6 @@ inline std::string FixImplicitConversions(const std::string& src) {
                                  const std::set<std::string>& rhsNames) {
             const std::string lhsT = "vec" + std::to_string(lhsW);
             for (const auto& rname : rhsNames) {
-                // `vecN VAR = rname;` (with optional whitespace) — match exact
-                // bare identifier as RHS, not followed by `.` or `[` or `(`.
                 std::regex re(R"(\b)" + lhsT + R"(\s+(\w+)\s*=\s*)" + rname +
                               R"(\b(?![.\[(\w])\s*;)");
                 result = std::regex_replace(result, re,
@@ -1575,6 +1573,111 @@ inline std::string FixImplicitConversions(const std::string& src) {
             out.append(result, lastPos, (std::string::size_type)m.position() - lastPos);
             out += new_decl;
             lastPos = (std::string::size_type)m.position() + (std::string::size_type)m.length();
+        }
+        out.append(result, lastPos, std::string::npos);
+        result = std::move(out);
+    }
+
+    // Fix: `vecN VAR = … wider_var …;` (arithmetic context) — inject swizzle on
+    // wider_var to match the LHS rank.  HLSL truncates implicitly; GLSL errors.
+    //
+    // Driver: Arona (3341577331) chromatic_aberration vertex shader:
+    //   out vec4 v_PointerUV;
+    //   vec2 da = v_PointerUV * (g_Scale * g_Scale_FollowCursor_Multiplier) * 0.001;
+    // The existing wider-varying transform (line ~1500) only handles bare
+    // adjacency (`wname OP nn` or `wname OP vecN(...)`) — parenthesized
+    // expressions like `(g_Scale * …)` aren't matched.  But once we know the
+    // declaration is `vec2 da = …`, anything inside RHS at the same scope
+    // must be vec2.  Walking the RHS, we can blindly swizzle known wider
+    // varyings to LHS rank because HLSL's implicit truncation would do the
+    // same thing.
+    //
+    // Restrictions:
+    //   * Only triggers when wider_var appears bare (no `.x`/`.xy`/`[`/`(`).
+    //   * Skips when wider_var is the SUB-EXPRESSION of a function arg whose
+    //     parameter is known wider (no introspection — so this is an
+    //     uncertain case).  Mitigated by only inspecting straight assignment
+    //     RHS, never inside function-call args.
+    {
+        std::map<std::string, int> wider_named;  // name → rank (3 or 4)
+        std::regex re_wider(R"(\b(?:uniform|in|out|varying)\s+vec([34])\s+(\w+)\s*[;\[])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_wider);
+             it != std::sregex_iterator(); ++it)
+            wider_named[(*it)[2].str()] = std::stoi((*it)[1].str());
+        // Also locals: `vec3 NAME = …;` and `vec4 NAME = …;`.
+        std::regex re_local_wider(R"(\bvec([34])\s+(\w+)\s*[=;])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_local_wider);
+             it != std::sregex_iterator(); ++it)
+            wider_named[(*it)[2].str()] = std::stoi((*it)[1].str());
+
+        // Drop varyings that are SHADOWED by a local float — bare `name`
+        // resolves to the float, so swizzling produces scalar-swizzle errors.
+        // Mirrors the existing wider-varying transform.  Driver: Lens Flare
+        // Sun (`varying vec4 timer; float timer = sin(...);`).
+        {
+            std::set<std::string> shadowed;
+            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+                 it != std::sregex_iterator(); ++it)
+                shadowed.insert((*it)[1].str());
+            for (const auto& s : shadowed) wider_named.erase(s);
+        }
+
+        // For each `vec[23] VAR = RHS;` declaration, scan RHS for wider names.
+        std::regex re_narrow_decl(R"(\bvec([23])\s+\w+\s*=\s*([^;]+);)");
+        std::string out;
+        out.reserve(result.size());
+        size_t lastPos = 0;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_narrow_decl);
+             it != std::sregex_iterator(); ++it) {
+            const auto& m       = *it;
+            int         lhs_n   = std::stoi(m[1].str());
+            std::string rhs     = m[2].str();
+            std::string new_rhs = rhs;
+            bool        any     = false;
+            for (const auto& [wname, wrank] : wider_named) {
+                if (wrank <= lhs_n) continue;
+                std::string sw = (lhs_n == 2) ? "xy" : "xyz";
+                // Only inject swizzle when `wname` is adjacent to an
+                // arithmetic operator (i.e. participates in arithmetic).
+                // Skip bare uses (e.g. passed as a function arg) — the
+                // callee may need the wider value, and the existing test
+                // suite contract guards "vec4 varying NOT truncated when
+                // passed bare to function".
+                //
+                // Pattern: `[*+/-]\s*wname\b` (RHS of an op) or
+                //          `\bwname\s*[*+/-]` (LHS of an op).
+                std::regex re_use_rhs(R"(([+\-*/]\s*))" + wname +
+                                      R"(\b(?![.\[(\w]))");
+                std::string after = std::regex_replace(new_rhs, re_use_rhs,
+                                                       "$1" + wname + "." + sw);
+                std::regex re_use_lhs(R"(\b)" + wname +
+                                      R"(\b(?![.\[(\w])(\s*[+\-*/]))");
+                after = std::regex_replace(after, re_use_lhs,
+                                           wname + "." + sw + "$1");
+                if (after != new_rhs) {
+                    new_rhs = std::move(after);
+                    any     = true;
+                }
+            }
+            if (! any) continue;
+            // Find LHS prefix (before the captured RHS).  We reconstruct the
+            // declaration by inserting the new RHS in place of the old one.
+            std::string lhs_text(result, m.position(), m.position(1) + m.length(1) +
+                                                            (m.position(2) - m.position(1) -
+                                                             m.length(1)));
+            // Simpler: replace the whole match using the captured pieces.
+            out.append(result, lastPos,
+                       (std::string::size_type)m.position() - lastPos);
+            // Recompose: vec<lhs_n> NAME = NEW_RHS;
+            std::string vec_t = "vec" + std::to_string(lhs_n);
+            // Recover the original NAME by stripping vec[23] + ws + then up to '='.
+            std::string match_str = m.str();
+            auto eq = match_str.find('=');
+            std::string name_part(match_str, 0, eq);
+            // name_part still starts with "vecN " — keep as-is, just swap RHS.
+            out += name_part + "= " + new_rhs + ";";
+            lastPos = (std::string::size_type)m.position() + m.length();
         }
         out.append(result, lastPos, std::string::npos);
         result = std::move(out);
@@ -1760,6 +1863,31 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"(for\s*\(\s*int\s+(\w+)\s*=\s*(-\s*\w+\s*\*\s*\d+))");
         result = std::regex_replace(result, re, "for (int $1 = int($2)");
+    }
+
+    // Fix: "for (int VAR = <float_uniform>; …)" — bare-uniform float init.
+    // HLSL allows implicit float→int in for-loop initializers; GLSL does not.
+    // Driver: workshop spectrum/audio effects with a `uniform float
+    // u_MinFreqRange` etc. wired into a for-loop bound, hit on multiple
+    // wallpapers in the 2026-05-15 audit (3034862641, 3036962127,
+    // 3496072356).  Same idea for the loop-condition comparison.
+    {
+        std::set<std::string> float_uniforms;
+        std::regex            re_uf(R"(\buniform\s+float\s+(\w+))");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uf);
+             it != std::sregex_iterator(); ++it)
+            float_uniforms.insert((*it)[1].str());
+        for (const auto& uf : float_uniforms) {
+            // `for (int X = uf` → `for (int X = int(uf)`
+            std::regex re_init(R"((for\s*\(\s*int\s+\w+\s*=\s*))" + uf +
+                               R"(\b(?![.(\w]))");
+            result = std::regex_replace(result, re_init, "$1int(" + uf + ")");
+            // `; X </<=/>=/> uf` (loop condition) → wrap rhs in int().  The
+            // captured comparator and the LHS variable are kept verbatim.
+            std::regex re_cond(R"((;\s*\w+\s*(?:<=|>=|<|>)\s*))" + uf +
+                               R"(\b(?![.(\w]))");
+            result = std::regex_replace(result, re_cond, "$1int(" + uf + ")");
+        }
     }
     // Also fix the loop condition: "VAR <= FLOAT_EXPR * N" → "VAR <= int(FLOAT_EXPR * N)"
     {

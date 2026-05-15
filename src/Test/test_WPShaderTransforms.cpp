@@ -2198,6 +2198,92 @@ TEST_SUITE("FixImplicitConversions.scalarBroadcast") {
         CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
     }
 
+    TEST_CASE("for-loop bare float uniform init/cond gets int() wrapped") {
+        // Workshop audio-spectrum effects (3034862641 / 3036962127 / 3496072356):
+        //   uniform float u_MinFreqRange;
+        //   uniform float u_MaxFreqRange;
+        //   for (int i = u_MinFreqRange; i < u_MaxFreqRange; i++) { … }
+        // HLSL silently casts float→int in the loop bounds; GLSL rejects.
+        std::string in =
+            "uniform float u_MinFreqRange;\n"
+            "uniform float u_MaxFreqRange;\n"
+            "void main() {\n"
+            "  float left = 0.0;\n"
+            "  for (int i = u_MinFreqRange; i < u_MaxFreqRange; i++) {\n"
+            "    left += 1.0;\n"
+            "  }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("for (int i = int(u_MinFreqRange)") != std::string::npos);
+        CHECK(result.find("; i < int(u_MaxFreqRange);") != std::string::npos);
+    }
+
+    TEST_CASE("for-loop float-uniform wrap does not double-wrap or touch non-uniform") {
+        // Don't wrap a local float (only matches `uniform float`), and don't
+        // re-wrap if already in int(...).
+        std::string in =
+            "uniform float u_lim;\n"
+            "void main() {\n"
+            "  float local = 0.0;\n"
+            "  for (int i = local; i < int(u_lim); i++) {\n"
+            "    local += 1.0;\n"
+            "  }\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // local stays alone (no int() wrap — it's not a uniform).
+        CHECK(result.find("for (int i = local;") != std::string::npos);
+        // u_lim already int-wrapped — must not nest.
+        CHECK(result.find("int(int(u_lim))") == std::string::npos);
+    }
+
+    TEST_CASE("vec2 LHS truncates wider varying on the LHS of an arithmetic op") {
+        // Arona (3341577331) chromatic_aberration vertex shader:
+        //   out vec4 v_PointerUV;
+        //   vec2 da = v_PointerUV * (g_Scale * g_Scale_FollowCursor_Multiplier) * 0.001;
+        // Existing wider-varying pass only catches bare adjacency
+        // (`wname OP nn` or `wname OP vecN(...)`) — parenthesized
+        // expressions like `(g_Scale * …)` weren't matched.  The new
+        // LHS-rank-aware pass detects the `vec2 da = …` declaration and
+        // injects `.xy` after the wider name when adjacent to an
+        // arithmetic operator.
+        std::string in =
+            "uniform vec2 g_Scale;\n"
+            "out vec4 v_PointerUV;\n"
+            "void main() {\n"
+            "  vec2 da = v_PointerUV * (g_Scale * 2.0) * 0.001;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_PointerUV.xy *") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 LHS leaves wider varying alone when passed bare to function") {
+        // Same contract as the existing wider-varying tests: bare argument
+        // to a function call shouldn't get .xy because the callee may
+        // legitimately accept the wider type.
+        std::string in =
+            "in vec4 v_TexCoord;\n"
+            "void main() {\n"
+            "  vec2 r = someFunc(v_TexCoord);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_TexCoord.xy") == std::string::npos);
+        CHECK(result.find("someFunc(v_TexCoord)") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 LHS skips shadowed varying") {
+        // `varying vec4 timer; float timer = …;` — bare `timer` in vec2 LHS
+        // RHS resolves to the float local, not the varying.  Must not add .xy.
+        std::string in =
+            "in vec4 timer;\n"
+            "in vec2 rotation;\n"
+            "void main() {\n"
+            "  float timer = 1.0;\n"
+            "  vec2 r = rotation + timer * 2.0;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("timer.xy") == std::string::npos);
+    }
+
     TEST_CASE("mix(named_vec, scalar.x, mask) broadcasts the dot-access") {
         // 2k+ Retro Cyber Sunset (1117550117) / Perfect View (1235913324) /
         // Moon (2157202681) all share workshop effect 2079712247
