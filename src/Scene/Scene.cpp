@@ -52,6 +52,17 @@ std::string Scene::SerializeLayerInitialStates() const {
                     }
                 }
             }
+            // Text-layer style seeds for SceneScript thisLayer.font /
+            // .horizontalalign / .verticalalign / .alignment reads before any
+            // assignment.  Only emitted for layers that actually have a text
+            // info entry.
+            for (const auto& tl : textLayers) {
+                if (tl.id != idit->second) continue;
+                if (! tl.halign.empty())   entry["halign"] = tl.halign;
+                if (! tl.valign.empty())   entry["valign"] = tl.valign;
+                if (! tl.fontName.empty()) entry["font"]   = tl.fontName;
+                break;
+            }
         }
         j[name] = std::move(entry);
     }

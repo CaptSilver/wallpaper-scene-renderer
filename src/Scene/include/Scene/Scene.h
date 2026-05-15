@@ -21,6 +21,7 @@ class ParticleSubSystem;
 class IShaderValueUpdater;
 class IImageParser;
 class SceneImageEffectLayer;
+class WPPuppet; // forward — see WPPuppet.hpp; held by shared_ptr below.
 
 namespace audio
 {
@@ -35,6 +36,9 @@ class VFS;
 struct TextLayerInfo {
     i32         id;
     std::string fontData; // cached raw font bytes
+    std::string fontName; // font filename / VFS key (e.g. "Heavy.otf") — needed for
+                          // SceneScript thisLayer.font round-trip and for VFS re-resolution
+                          // when the JS proxy swaps the font at runtime.
     float       pointsize;
     i32         texWidth;
     i32         texHeight;
@@ -47,6 +51,10 @@ struct TextLayerInfo {
     std::string scriptProperties;         // JSON string of script properties
     std::string pointsizeUserProp;        // user property name controlling pointsize
     bool        pointsizeDirty { false }; // set when pointsize changes at runtime
+    // Forces a re-rasterization with the current text when halign/valign/fontData
+    // change at runtime (SceneScript thisLayer.horizontalalign/verticalalign/font/alignment).
+    // Cleared after the next successful RenderText call in SceneWallpaper::CMD_DRAW.
+    bool        textStyleDirty { false };
 };
 
 struct SceneColorScript {
@@ -188,6 +196,10 @@ public:
     // Nodes with effect chains need transforms applied to the final composite
     // node rather than the world node (which stays at identity for base render).
     std::unordered_map<i32, SceneImageEffectLayer*> nodeEffectLayerMap;
+    // Node ID → puppet for SceneScript thisLayer.getBoneIndex(name) lookups.
+    // Mirrors WPSceneParser's transient context.node_puppet so the runtime can
+    // resolve attachment names to bone indices for cross-puppet rigging.
+    std::unordered_map<i32, std::shared_ptr<WPPuppet>> nodePuppetMap;
     // Layer name → node ID mapping for thisScene.getLayer()
     std::unordered_map<std::string, i32> nodeNameToId;
     // Layer name → initial transform state for JS proxy initialization

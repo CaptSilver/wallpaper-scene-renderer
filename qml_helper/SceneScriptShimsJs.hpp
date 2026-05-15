@@ -420,24 +420,75 @@ function _packMaterialValue(v) {
   }
   return null;
 }
-function _makeMaterialProxy(layerName) {
-  return {
+// Property-name → shader-uniform alias map for direct-property writes
+// (material.color = ..., material.channelMask = ..., etc.).  WE authors use
+// these short names instead of `setValue("g_Color", ...)`.  Add new aliases
+// here as wallpapers surface them.
+var _materialPropertyAliases = {
+  color:        'g_Color',
+  channelMask:  'g_ChannelMask',
+  channelmask:  'g_ChannelMask',
+  alpha:        'g_Alpha',
+  tint:         'g_Tint'
+};
+function _makeMaterialProxy(layerName, effectIdx) {
+  // effectIdx === undefined or -1 means "main layer material".  Non-negative
+  // values route through __sceneBridge.effectMaterialSetValue so the render
+  // thread targets the effect chain's per-effect material instead.
+  var efx = (typeof effectIdx === 'number' && effectIdx >= 0) ? effectIdx : -1;
+  var cacheKey = function(name) {
+    return layerName + '|' + (efx < 0 ? '' : ('eff' + efx + '|')) + name;
+  };
+  var dispatch = function(name, arr) {
+    if (efx < 0) {
+      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.materialSetValue)
+        __sceneBridge.materialSetValue(layerName, name, arr);
+    } else {
+      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.effectMaterialSetValue)
+        __sceneBridge.effectMaterialSetValue(layerName, efx, name, arr);
+    }
+  };
+  var proxy = {
     setValue: function(uName, v) {
       var name = String(uName || '');
       if (!name) return;
       var arr = _packMaterialValue(v);
       if (!arr) return;
-      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.materialSetValue)
-        __sceneBridge.materialSetValue(layerName, name, arr);
-      _materialValueCache[layerName + '|' + name] = arr;
+      dispatch(name, arr);
+      _materialValueCache[cacheKey(name)] = arr;
     },
     getValue: function(uName) {
       var name = String(uName || '');
-      var key = layerName + '|' + name;
+      var key = cacheKey(name);
       return Object.prototype.hasOwnProperty.call(_materialValueCache, key)
         ? _materialValueCache[key] : null;
     }
   };
+  // Direct property accessors for known uniform aliases.  WE wallpapers
+  // (Game Of Life 3453251764 et al.) assign `mat.color = Vec3(...)` rather
+  // than going through setValue().  Each alias defines a getter/setter that
+  // reads/writes through the same dispatch path as setValue, so cache and
+  // render thread stay consistent regardless of which spelling the author
+  // chose.
+  Object.keys(_materialPropertyAliases).forEach(function(prop) {
+    var uniformName = _materialPropertyAliases[prop];
+    Object.defineProperty(proxy, prop, {
+      get: function() {
+        var key = cacheKey(uniformName);
+        return Object.prototype.hasOwnProperty.call(_materialValueCache, key)
+          ? _materialValueCache[key] : null;
+      },
+      set: function(v) {
+        var arr = _packMaterialValue(v);
+        if (!arr) return;
+        dispatch(uniformName, arr);
+        _materialValueCache[cacheKey(uniformName)] = arr;
+      },
+      enumerable: true,
+      configurable: true
+    });
+  });
+  return proxy;
 }
 function _makeNullMaterialProxy() {
   return {

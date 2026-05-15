@@ -178,6 +178,35 @@ public:
                              std::string        name,
                              std::vector<float> floats);
 
+    // Per-effect material write (effect chain index, not main material).
+    // Render thread resolves nodeId → SceneImageEffectLayer → m_effects[effectIdx]
+    // → first effect-node material; writes constValues + sets constValuesDirty.
+    void updateEffectMaterialValue(int32_t            nodeId,
+                                   int32_t            effectIdx,
+                                   std::string        name,
+                                   std::vector<float> floats);
+
+    // SceneScript thisLayer.{horizontalalign,verticalalign,alignment,font} bridge.
+    // Each string is "" to leave that field unchanged.  Font name is resolved to
+    // bytes on the render thread (VFS access lives there).  Forces a re-rasterize
+    // of the layer's text texture with the current text when any field changes.
+    void updateTextStyle(int32_t     nodeId,
+                         std::string halign,
+                         std::string valign,
+                         std::string fontName);
+
+    // SceneScript thisLayer.getTransformMatrix() bridge.  Returns the layer's
+    // world transform as a 16-float column-major matrix, snapshotted at the
+    // end of the most recent drawFrame.  Identity for unknown ids.
+    std::array<float, 16> getLayerWorldMatrix(int32_t nodeId) const;
+
+    // SceneScript thisLayer.getBoneIndex(name) bridge.  Resolves the named
+    // MDAT attachment in the layer's puppet (or this layer's parent's puppet,
+    // matching WE rigging semantics) and returns its bone_index, or 0 when
+    // not found (matches WE's "0 = origin" sentinel that authoring scripts
+    // treat as a missing attachment).
+    int32_t getLayerBoneIndex(int32_t nodeId, const std::string& boneName) const;
+
     // Layer-hierarchy bridge — thisLayer.setParent() JS path enqueues
     // a (childId, parentId) pair into Scene::m_pending_parent_changes,
     // which is drained at the start of RenderHandler::CMD_DRAW.  parentId

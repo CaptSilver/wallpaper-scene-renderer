@@ -186,7 +186,14 @@ TEST_SUITE("SceneScript Timers JS API") {
                             "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
                             "delay || 0, true); }\n"
                             "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
-                            "function clearInterval(id) { _timerBridge.clearTimer(id); }\n");
+                            "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
+                            // Mirror production: aliases on `engine` so wallpapers
+                            // calling `engine.setTimeout(...)` resolve to the same bridge.
+                            "var engine = {};\n"
+                            "engine.setTimeout    = setTimeout;\n"
+                            "engine.setInterval   = setInterval;\n"
+                            "engine.clearTimeout  = clearTimeout;\n"
+                            "engine.clearInterval = clearInterval;\n");
         }
 
         ~TimerEnv() {
@@ -255,6 +262,61 @@ TEST_SUITE("SceneScript Timers JS API") {
         processEventsFor(200);
         CHECK(env.engine.evaluate("a").toBool());
         CHECK(env.engine.evaluate("b").toBool());
+    }
+
+    // ---- engine.* namespace aliases ----
+    // Many WE wallpapers (Summer Vibes 3293999899 alone calls
+    // engine.setTimeout 29 times) call timers through the engine namespace.
+    // These tests verify the aliases route to the same _timerBridge and share
+    // IDs with the top-level forms.
+
+    TEST_CASE("engine.setTimeout fires the callback") {
+        TimerEnv env;
+        env.engine.evaluate("var fired = false;"
+                            "engine.setTimeout(function(){ fired = true; }, 10);");
+        processEventsFor(200);
+        CHECK(env.engine.evaluate("fired").toBool());
+    }
+
+    TEST_CASE("engine.setInterval fires repeatedly") {
+        TimerEnv env;
+        env.engine.evaluate("var n = 0;"
+                            "engine.setInterval(function(){ n++; }, 15);");
+        processEventsFor(200);
+        CHECK(env.engine.evaluate("n").toInt() >= 3);
+        env.bridge->clearAll();
+    }
+
+    TEST_CASE("engine.clearTimeout cancels a setTimeout-created timer") {
+        // Cross-spelling cancellation matters because authors mix the two
+        // forms; the cancel must reach the same registry.
+        TimerEnv env;
+        env.engine.evaluate("var fired = false;"
+                            "var id = setTimeout(function(){ fired = true; }, 50);"
+                            "engine.clearTimeout(id);");
+        processEventsFor(200);
+        CHECK_FALSE(env.engine.evaluate("fired").toBool());
+    }
+
+    TEST_CASE("clearTimeout cancels an engine.setTimeout-created timer") {
+        TimerEnv env;
+        env.engine.evaluate("var fired = false;"
+                            "var id = engine.setTimeout(function(){ fired = true; }, 50);"
+                            "clearTimeout(id);");
+        processEventsFor(200);
+        CHECK_FALSE(env.engine.evaluate("fired").toBool());
+    }
+
+    TEST_CASE("engine.clearInterval stops the engine.setInterval") {
+        TimerEnv env;
+        env.engine.evaluate("var n = 0;"
+                            "var id = engine.setInterval(function(){ n++; }, 15);");
+        processEventsFor(100);
+        env.engine.evaluate("engine.clearInterval(id);");
+        int countAfterClear = env.engine.evaluate("n").toInt();
+        CHECK(countAfterClear >= 1);
+        processEventsFor(200);
+        CHECK(env.engine.evaluate("n").toInt() == countAfterClear);
     }
 
 } // TEST_SUITE SceneScript Timers JS API
@@ -541,6 +603,391 @@ TEST_SUITE("SceneScript Video Texture") {
 } // TEST_SUITE SceneScript Video Texture
 
 // ------------------------------------------------------------------
+// thisLayer.horizontalalign / verticalalign / alignment / font (JS shim)
+// ------------------------------------------------------------------
+// These are runtime mutators for text-layer style.  The JS proxy parses
+// `alignment` into h+v components before delegating, so we only carry two
+// axes plus a font name through __sceneBridge.setTextStyle.  Render-side
+// VFS font resolution is exercised separately by the integration build —
+// here we just verify the shim posts the right bridge calls.
+TEST_SUITE("SceneScript Text Style") {
+    struct TextStyleEnv {
+        QJSEngine engine;
+        TextStyleEnv() {
+            // Mock bridge that records every setTextStyle call.
+            engine.evaluate(R"JS(
+                var __sceneBridge = {
+                    _calls: [],
+                    setTextStyle: function(name, h, v, f) {
+                        this._calls.push([name, h, v, f]);
+                    }
+                };
+            )JS");
+            // Vec3 stub (the production shim doesn't depend on it for text-style,
+            // but other layer-proxy callers do; keep tests self-contained).
+            engine.evaluate("function Vec3(x,y,z){ return {x:x||0, y:y||0, z:z||0}; }");
+            // Minimal layer proxy that mirrors SceneBackend.cpp's _makeLayerProxy
+            // ONLY for the text-style properties.  Keep this in sync with the
+            // production shim — the regex `Object.defineProperty(p, '...'` block
+            // around horizontalalign/verticalalign/font/alignment is the source.
+            engine.evaluate(R"JS(
+                function makeTextLayer(name, init) {
+                    var _s = { name: name };
+                    if (init && init.halign) _s.halign = init.halign;
+                    if (init && init.valign) _s.valign = init.valign;
+                    if (init && init.font)   _s.font   = init.font;
+                    var p = {};
+                    Object.defineProperty(p, 'horizontalalign', {
+                        get: function(){ return _s.halign || 'center'; },
+                        set: function(v){ _s.halign = String(v == null ? 'center' : v);
+                                          __sceneBridge.setTextStyle(name, _s.halign, '', ''); },
+                        enumerable: true
+                    });
+                    Object.defineProperty(p, 'verticalalign', {
+                        get: function(){ return _s.valign || 'center'; },
+                        set: function(v){ _s.valign = String(v == null ? 'center' : v);
+                                          __sceneBridge.setTextStyle(name, '', _s.valign, ''); },
+                        enumerable: true
+                    });
+                    Object.defineProperty(p, 'font', {
+                        get: function(){ return _s.font || ''; },
+                        set: function(v){ _s.font = String(v == null ? '' : v);
+                                          __sceneBridge.setTextStyle(name, '', '', _s.font); },
+                        enumerable: true
+                    });
+                    Object.defineProperty(p, 'alignment', {
+                        get: function(){
+                            var h = _s.halign || 'center', v = _s.valign || 'center';
+                            if (h === 'center' && v === 'center') return 'center';
+                            return (v === 'center' ? '' : v) + (h === 'center' ? '' : h);
+                        },
+                        set: function(v){
+                            var s = String(v == null ? '' : v).toLowerCase();
+                            var nh = '', nv = '';
+                            if (s.indexOf('left')   >= 0) nh = 'left';
+                            else if (s.indexOf('right')  >= 0) nh = 'right';
+                            if (s.indexOf('top')    >= 0) nv = 'top';
+                            else if (s.indexOf('bottom') >= 0) nv = 'bottom';
+                            if (s === 'center' || (s.indexOf('center') >= 0 && !nh && !nv)) {
+                                nh = 'center'; nv = 'center';
+                            }
+                            if (nh) _s.halign = nh;
+                            if (nv) _s.valign = nv;
+                            __sceneBridge.setTextStyle(name, nh, nv, '');
+                        },
+                        enumerable: true
+                    });
+                    return p;
+                }
+            )JS");
+        }
+    };
+
+    TEST_CASE("horizontalalign writes through to bridge and is readable back") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('clockLabel');");
+        env.engine.evaluate("t.horizontalalign = 'right';");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "right");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][0]").toString() == "clockLabel");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][1]").toString() == "right");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][2]").toString() == "");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][3]").toString() == "");
+    }
+
+    TEST_CASE("verticalalign writes through to bridge") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.verticalalign = 'top';");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "top");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][2]").toString() == "top");
+    }
+
+    TEST_CASE("default halign/valign are 'center' before any assignment") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "center");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "center");
+    }
+
+    TEST_CASE("init state seeds halign/valign/font for round-trip reads") {
+        TextStyleEnv env;
+        env.engine.evaluate(
+            "var t = makeTextLayer('label', {halign:'right', valign:'top', font:'Heavy.otf'});");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "right");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "top");
+        CHECK(env.engine.evaluate("t.font").toString() == "Heavy.otf");
+        // No bridge calls because nothing was set after construction.
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+    }
+
+    TEST_CASE("font setter posts only the font field, leaving h/v empty") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.font = 'BRUSH.ttf';");
+        CHECK(env.engine.evaluate("t.font").toString() == "BRUSH.ttf");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][1]").toString() == "");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][2]").toString() == "");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][3]").toString() == "BRUSH.ttf");
+    }
+
+    TEST_CASE("alignment splits composite 'topleft' into h+v") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.alignment = 'topleft';");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "left");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "top");
+        // One bridge call carrying BOTH axes.
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][1]").toString() == "left");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0][2]").toString() == "top");
+    }
+
+    TEST_CASE("alignment 'centerright' yields h=right v=center") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.alignment = 'centerright';");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "right");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "center");
+    }
+
+    TEST_CASE("alignment 'left' sets only halign") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.alignment = 'left';");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "left");
+        // valign untouched → still default 'center'
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "center");
+    }
+
+    TEST_CASE("alignment 'center' sets both axes to center") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label', {halign:'left', valign:'top'});");
+        env.engine.evaluate("t.alignment = 'center';");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "center");
+        CHECK(env.engine.evaluate("t.verticalalign").toString() == "center");
+    }
+
+    TEST_CASE("alignment getter reconstructs composite from h+v") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label', {halign:'right', valign:'top'});");
+        CHECK(env.engine.evaluate("t.alignment").toString() == "topright");
+    }
+
+    TEST_CASE("alignment getter returns 'center' when both axes center") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        CHECK(env.engine.evaluate("t.alignment").toString() == "center");
+    }
+
+    TEST_CASE("non-string values coerce safely (number, null)") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        // WE authors sometimes assign computed values; coercion shouldn't crash.
+        env.engine.evaluate("t.horizontalalign = 5;");
+        CHECK(env.engine.evaluate("t.horizontalalign").toString() == "5");
+        env.engine.evaluate("t.font = null;");
+        CHECK(env.engine.evaluate("t.font").toString() == "");
+    }
+
+    TEST_CASE("sequential writes produce one bridge call per assignment") {
+        TextStyleEnv env;
+        env.engine.evaluate("var t = makeTextLayer('label');");
+        env.engine.evaluate("t.horizontalalign = 'left';");
+        env.engine.evaluate("t.verticalalign = 'top';");
+        env.engine.evaluate("t.font = 'Heavy.otf';");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 3);
+    }
+} // TEST_SUITE SceneScript Text Style
+
+// ------------------------------------------------------------------
+// thisLayer.getTransformMatrix() (JS shim — bridge passthrough into Mat4)
+// ------------------------------------------------------------------
+// Scripts read `.m[12]` / `.m[13]` for world X/Y to compare against
+// engine.canvasSize halves.  Test that the shim wraps the bridge's 16-float
+// array into a Mat4 instance, defaults to identity on bridge miss, and
+// preserves Mat4's prototype methods (.translation()).
+TEST_SUITE("SceneScript Layer Transform Matrix") {
+    struct TransformEnv {
+        QJSEngine engine;
+        TransformEnv() {
+            // Vec2/Vec3 needed by Mat4.translation() return path.
+            engine.evaluate(wek::qml_helper::kVecClassesJs);
+            engine.evaluate(wek::qml_helper::kMatricesJs);
+            engine.evaluate(R"JS(
+                var __sceneBridge = {
+                    _table: {},
+                    getLayerWorldTransform: function(name) {
+                        return this._table[name] || null;
+                    }
+                };
+            )JS");
+            engine.evaluate(R"JS(
+                function makeLayer(name) {
+                    var _s = { name: name };
+                    var p = {};
+                    p.getTransformMatrix = function() {
+                        var arr = __sceneBridge.getLayerWorldTransform(_s.name);
+                        var mm = new Mat4();
+                        if (arr && arr.length === 16) {
+                            for (var i = 0; i < 16; i++) mm.m[i] = +arr[i] || 0;
+                        }
+                        return mm;
+                    };
+                    return p;
+                }
+            )JS");
+        }
+    };
+
+    TEST_CASE("returns identity Mat4 when bridge has no data for the layer") {
+        TransformEnv env;
+        env.engine.evaluate("var L = makeLayer('unknown'); var m = L.getTransformMatrix();");
+        // Mat4() constructor initializes to identity.
+        CHECK(env.engine.evaluate("m.m[0]").toNumber()  == doctest::Approx(1));
+        CHECK(env.engine.evaluate("m.m[5]").toNumber()  == doctest::Approx(1));
+        CHECK(env.engine.evaluate("m.m[10]").toNumber() == doctest::Approx(1));
+        CHECK(env.engine.evaluate("m.m[15]").toNumber() == doctest::Approx(1));
+        CHECK(env.engine.evaluate("m.m[12]").toNumber() == doctest::Approx(0));
+    }
+
+    TEST_CASE("populates Mat4 from bridge 16-float array") {
+        TransformEnv env;
+        // Identity matrix with a translation of (200, 50, 0).
+        env.engine.evaluate(
+            "__sceneBridge._table['bg'] = "
+            "[1,0,0,0, 0,1,0,0, 0,0,1,0, 200,50,0,1];");
+        env.engine.evaluate("var L = makeLayer('bg'); var m = L.getTransformMatrix();");
+        CHECK(env.engine.evaluate("m.m[12]").toNumber() == doctest::Approx(200.0));
+        CHECK(env.engine.evaluate("m.m[13]").toNumber() == doctest::Approx(50.0));
+        CHECK(env.engine.evaluate("m.m[14]").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("preserves Mat4 prototype methods (translation())") {
+        TransformEnv env;
+        env.engine.evaluate(
+            "__sceneBridge._table['bg'] = "
+            "[1,0,0,0, 0,1,0,0, 0,0,1,0, 7,11,13,1];");
+        env.engine.evaluate("var v = makeLayer('bg').getTransformMatrix().translation();");
+        // Mat4.translation() with no arg returns Vec3(m[12], m[13], m[14]).
+        CHECK(env.engine.evaluate("v.x").toNumber() == doctest::Approx(7.0));
+        CHECK(env.engine.evaluate("v.y").toNumber() == doctest::Approx(11.0));
+        CHECK(env.engine.evaluate("v.z").toNumber() == doctest::Approx(13.0));
+    }
+
+    TEST_CASE("corpus pattern: world X compared to canvas midpoint") {
+        TransformEnv env;
+        // Simulate canvas width 1920, layer's world X at 1300 → past midpoint.
+        env.engine.evaluate(
+            "__sceneBridge._table['heart'] = "
+            "[1,0,0,0, 0,1,0,0, 0,0,1,0, 1300,400,0,1];");
+        env.engine.evaluate("var canvasW = 1920;");
+        env.engine.evaluate(
+            "var past = makeLayer('heart').getTransformMatrix().m[12] > canvasW / 2;");
+        CHECK(env.engine.evaluate("past").toBool() == true);
+    }
+
+    TEST_CASE("non-array bridge result falls through to identity") {
+        TransformEnv env;
+        env.engine.evaluate("__sceneBridge._table['bad'] = 'not-an-array';");
+        env.engine.evaluate("var m = makeLayer('bad').getTransformMatrix();");
+        CHECK(env.engine.evaluate("m.m[12]").toNumber() == doctest::Approx(0));
+        CHECK(env.engine.evaluate("m.m[0]").toNumber()  == doctest::Approx(1));
+    }
+} // TEST_SUITE SceneScript Layer Transform Matrix
+
+// ------------------------------------------------------------------
+// thisLayer.getBoneIndex(name) (JS shim → bridge passthrough)
+// ------------------------------------------------------------------
+// Music Player (2992803622) calls `thisLayer.getBoneIndex(bone[i][1])` to
+// validate that a configured attachment name resolves on the rigged puppet.
+// 0 = "not found" (matches WE's origin sentinel).
+TEST_SUITE("SceneScript Layer Bone Index") {
+    struct BoneEnv {
+        QJSEngine engine;
+        BoneEnv() {
+            engine.evaluate(R"JS(
+                var __sceneBridge = {
+                    _table: {},
+                    _lastQuery: null,
+                    getBoneIndex: function(layer, name) {
+                        this._lastQuery = [layer, name];
+                        var row = this._table[layer];
+                        if (!row) return 0;
+                        return row[name] || 0;
+                    }
+                };
+            )JS");
+            engine.evaluate(R"JS(
+                function makeLayer(name) {
+                    var _s = { name: name };
+                    return {
+                        getBoneIndex: function(bname) {
+                            return __sceneBridge.getBoneIndex(
+                                _s.name, String(bname == null ? '' : bname)) | 0;
+                        }
+                    };
+                }
+            )JS");
+        }
+    };
+
+    TEST_CASE("returns 0 when bridge has no entry for the layer") {
+        BoneEnv env;
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        CHECK(env.engine.evaluate("L.getBoneIndex('head')").toInt() == 0);
+    }
+
+    TEST_CASE("returns the bone index for a known attachment") {
+        BoneEnv env;
+        env.engine.evaluate("__sceneBridge._table['puppet1'] = "
+                            "{ head: 3, hand_left: 7, hand_right: 8 };");
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        CHECK(env.engine.evaluate("L.getBoneIndex('head')").toInt() == 3);
+        CHECK(env.engine.evaluate("L.getBoneIndex('hand_right')").toInt() == 8);
+    }
+
+    TEST_CASE("returns 0 for missing attachment name") {
+        BoneEnv env;
+        env.engine.evaluate(
+            "__sceneBridge._table['puppet1'] = { head: 3 };");
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        CHECK(env.engine.evaluate("L.getBoneIndex('foot')").toInt() == 0);
+    }
+
+    TEST_CASE("coerces non-string argument and forwards the string to bridge") {
+        BoneEnv env;
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        env.engine.evaluate("L.getBoneIndex(undefined);");
+        CHECK(env.engine.evaluate("__sceneBridge._lastQuery[1]").toString() == "");
+        env.engine.evaluate("L.getBoneIndex(null);");
+        CHECK(env.engine.evaluate("__sceneBridge._lastQuery[1]").toString() == "");
+    }
+
+    TEST_CASE("integer coercion guards against bridge returning non-numeric") {
+        BoneEnv env;
+        // Cap-out: bridge returns a string-encoded number; |0 normalizes to int.
+        env.engine.evaluate(
+            "__sceneBridge.getBoneIndex = function(){ return '5'; };");
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        CHECK(env.engine.evaluate("L.getBoneIndex('head')").toInt() == 5);
+    }
+
+    TEST_CASE("corpus pattern: 0 result triggers throw-error path") {
+        // Mirrors the Music Player rigger script — the guard `=== 0` short-
+        // circuits to a config-error before binding.  Make sure 0 propagates
+        // through the shim cleanly.
+        BoneEnv env;
+        env.engine.evaluate("__sceneBridge._table['puppet1'] = { head: 1 };");
+        env.engine.evaluate("var L = makeLayer('puppet1');");
+        env.engine.evaluate(
+            "var raised = false;"
+            "if (L.getBoneIndex('not_a_bone') === 0) raised = true;");
+        CHECK(env.engine.evaluate("raised").toBool());
+    }
+} // TEST_SUITE SceneScript Layer Bone Index
+
+// ------------------------------------------------------------------
 // getMaterial() proxy (JS side)
 // ------------------------------------------------------------------
 TEST_SUITE("SceneScript Material") {
@@ -665,6 +1112,96 @@ TEST_SUITE("SceneScript Material") {
         CHECK(arr.property("length").toInt() == 3);
         CHECK(arr.property(0).toNumber() == doctest::Approx(1));
         CHECK(arr.property(2).toNumber() == doctest::Approx(3));
+    }
+
+    // ---- Direct property accessors (color, channelMask, alpha, tint) ----
+    // WE wallpapers assign `mat.color = Vec3(...)` etc. as shorthand for
+    // setValue("g_Color", ...).  Verify the aliases map correctly and that
+    // writes/reads round-trip the same as explicit setValue calls.
+
+    TEST_CASE("material.color setter routes to g_Color uniform") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate(
+            "var m = _makeMaterialProxy('bg'); m.color = Vec3(0.5, 0.25, 1);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_Color");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[0]").toNumber()
+              == doctest::Approx(0.5));
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[2]").toNumber()
+              == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("material.color getter reads cached value") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.color = Vec3(0.1, 0.2, 0.3);");
+        CHECK(env.engine.evaluate("m.color[0]").toNumber() == doctest::Approx(0.1));
+        CHECK(env.engine.evaluate("m.color[1]").toNumber() == doctest::Approx(0.2));
+        CHECK(env.engine.evaluate("m.color[2]").toNumber() == doctest::Approx(0.3));
+    }
+
+    TEST_CASE("material.channelMask alias routes to g_ChannelMask") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.channelMask = [1, 0, 1, 0];");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_ChannelMask");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 4);
+    }
+
+    TEST_CASE("setValue and direct property share the same cache") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("var m = _makeMaterialProxy('bg');"
+                            "m.setValue('g_Color', [0.4, 0.5, 0.6]);");
+        CHECK(env.engine.evaluate("m.color[0]").toNumber() == doctest::Approx(0.4));
+        env.engine.evaluate("m.color = Vec3(0.7, 0.8, 0.9);");
+        CHECK(env.engine.evaluate("m.getValue('g_Color')[2]").toNumber() == doctest::Approx(0.9));
+    }
+
+    TEST_CASE("direct property writes with invalid value are silently ignored") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate(
+            "var m = _makeMaterialProxy('bg'); m.color = 'not-a-vec';");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+        CHECK(env.engine.evaluate("m.color === null").toBool());
+    }
+
+    // ---- Effect material (via getEffect().getMaterial()) ----
+
+    TEST_CASE("effect material routes setValue through effectMaterialSetValue") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate(
+            "__sceneBridge.effectMaterialSetValue = function(layer, idx, name, arr) {\n"
+            "  var copy = []; for (var i = 0; i < arr.length; i++) copy.push(arr[i]);\n"
+            "  this._calls.push({ layer: layer, effectIdx: idx, name: name, arr: copy });\n"
+            "};");
+        env.engine.evaluate(
+            "var m = _makeMaterialProxy('canvas', 2); m.setValue('g_Color', Vec3(0.8, 0, 0));");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].effectIdx").toInt() == 2);
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_Color");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[0]").toNumber()
+              == doctest::Approx(0.8));
+    }
+
+    TEST_CASE("effect material proxy has independent cache per effect index") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("__sceneBridge.effectMaterialSetValue = function(){};");
+        env.engine.evaluate("var m0 = _makeMaterialProxy('bg', 0);"
+                            "var m1 = _makeMaterialProxy('bg', 1);"
+                            "m0.color = Vec3(1, 0, 0);"
+                            "m1.color = Vec3(0, 1, 0);");
+        CHECK(env.engine.evaluate("m0.color[0]").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("m1.color[1]").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("m1.color[0]").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("effect material is distinct from main layer material on same name") {
+        MaterialBridgeEnv env;
+        env.engine.evaluate("__sceneBridge.effectMaterialSetValue = function(){};");
+        env.engine.evaluate("var main = _makeMaterialProxy('bg');"
+                            "var eff  = _makeMaterialProxy('bg', 0);"
+                            "main.color = Vec3(1, 1, 1);"
+                            "eff.color  = Vec3(0, 0, 0);");
+        CHECK(env.engine.evaluate("main.color[0]").toNumber() == doctest::Approx(1.0));
+        CHECK(env.engine.evaluate("eff.color[0]").toNumber()  == doctest::Approx(0.0));
     }
 }
 

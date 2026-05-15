@@ -1598,6 +1598,10 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         // "attachment" field against this puppet's MDAT attachment table.
         if (puppet && puppet->puppet) {
             context.node_puppet[wpimgobj.id] = puppet->puppet;
+            // Persist into Scene so SceneScript thisLayer.getBoneIndex() can
+            // resolve attachment-name → bone index at runtime.  The parser's
+            // own node_puppet map is transient; this is the runtime mirror.
+            context.scene->nodePuppetMap[wpimgobj.id] = puppet->puppet;
         }
 
         if (wpimgobj.parent_id >= 0) {
@@ -3243,6 +3247,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         TextLayerInfo tli;
         tli.id                = textObj.id;
         tli.fontData          = fontData;
+        tli.fontName          = textObj.font;
         tli.pointsize         = textObj.pointsize;
         tli.texWidth          = texW;
         tli.texHeight         = texH;

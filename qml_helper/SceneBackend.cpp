@@ -576,7 +576,8 @@ void SceneObject::mediaPlaybackChanged(int state) {
 
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
                                          const QString& albumTitle, const QString& albumArtist,
-                                         const QString& genres) {
+                                         const QString& genres,
+                                         double         duration) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("title", title);
@@ -585,6 +586,9 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
     event.setProperty("albumArtist", albumArtist);
     event.setProperty("genres", genres);
     event.setProperty("contentType", QJSValue("media"));
+    // 8 corpus scripts (in 3155776049, 3662790108, others) read .duration from
+    // this event — easier than waiting for the next timelineChanged tick.
+    event.setProperty("duration", duration);
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaPropertiesChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
@@ -622,11 +626,15 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
     fireSceneEventListeners("mediaThumbnailChanged", { event });
 }
 
-void SceneObject::mediaTimelineChanged(double position, double duration) {
+void SceneObject::mediaTimelineChanged(double position, double duration, int state) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("position", position);
     event.setProperty("duration", duration);
+    // `state` mirrors MediaPlaybackEvent constants (0=stopped 1=playing 2=paused);
+    // 13 corpus scripts read event.state from this event so they can react to
+    // play/pause transitions without a separate playbackStateChanged subscriber.
+    event.setProperty("state", state);
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaTimelineChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
@@ -860,6 +868,78 @@ void SceneObject::materialSetValue(const QString&  layerName,
     }
     if (floats.empty()) return;
     m_scene->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
+}
+
+// Effect-material bridge — same shape as materialSetValue but carries an
+// effect index so the render thread can target the per-effect material.
+// JS pre-validates numerics (same _packMaterialValue guards as materialSetValue);
+// we still defensively skip empty/oversized arrays and non-finite entries.
+void SceneObject::effectMaterialSetValue(const QString&  layerName,
+                                         int             effectIdx,
+                                         const QString&  name,
+                                         const QJSValue& value) {
+    if (! m_scene) return;
+    if (name.isEmpty()) return;
+    if (effectIdx < 0) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    if (! value.isArray()) return;
+    int n = value.property("length").toInt();
+    if (n <= 0 || n > 16) return;
+    std::vector<float> floats;
+    floats.reserve(n);
+    for (int i = 0; i < n; i++) {
+        QJSValue elem = value.property(i);
+        if (! elem.isNumber()) continue;
+        double d = elem.toNumber();
+        if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
+    }
+    if (floats.empty()) return;
+    m_scene->updateEffectMaterialValue(
+        it->second, effectIdx, name.toStdString(), std::move(floats));
+}
+
+// thisLayer.getBoneIndex(name) bridge — resolves the named MDAT attachment
+// in the puppet rigged to this layer (or its parent's puppet for child-rigged
+// layers).  Empty names short-circuit to 0; unknown layers and missing
+// attachments also return 0.
+int SceneObject::getBoneIndex(const QString& layerName, const QString& boneName) const {
+    if (! m_scene) return 0;
+    if (boneName.isEmpty()) return 0;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return 0;
+    return m_scene->getLayerBoneIndex(it->second, boneName.toStdString());
+}
+
+// World-transform readback for thisLayer.getTransformMatrix().  Returns the
+// 16-float column-major matrix snapshotted at the end of the most recent
+// drawFrame.  Identity for unknown layers.  Wrapped in a Mat4 instance JS-side
+// so scripts get the same `.m[i]` accessor shape as the standalone Mat4().
+QJSValue SceneObject::getLayerWorldTransform(const QString& layerName) const {
+    QJSValue arr = m_jsEngine ? m_jsEngine->newArray(16) : QJSValue();
+    if (! m_scene || ! m_jsEngine) return arr;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    int32_t nodeId = (it == m_nodeNameToId.end()) ? -1 : it->second;
+    auto m = m_scene->getLayerWorldMatrix(nodeId);
+    for (int i = 0; i < 16; ++i) arr.setProperty(i, m[i]);
+    return arr;
+}
+
+// Text-style bridge — thisLayer.{horizontalalign,verticalalign,alignment,font}.
+// JS shim parses `alignment` into h+v before calling, so we only carry two
+// axis strings + a font name.  Empty strings = no change.  Font resolution
+// (name → VFS bytes) happens render-side so the VFS-owning thread does I/O.
+void SceneObject::setTextStyle(const QString& layerName,
+                               const QString& halign,
+                               const QString& valign,
+                               const QString& fontName) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->updateTextStyle(it->second,
+                             halign.toStdString(),
+                             valign.toStdString(),
+                             fontName.toStdString());
 }
 
 // Layer-hierarchy bridge — enqueues (childId, parentId) for the render
@@ -1543,7 +1623,15 @@ void SceneObject::setupTextScripts() {
                          "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
                          "delay || 0, true); }\n"
                          "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
-                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n");
+                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
+                         // WE scripts call these as engine-namespaced too — most commonly
+                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
+                         // Vibes 3293999899 fires this 29 times).  Alias to the same
+                         // _timerBridge so cancellation IDs interoperate across spellings.
+                         "engine.setTimeout    = setTimeout;\n"
+                         "engine.setInterval   = setInterval;\n"
+                         "engine.clearTimeout  = clearTimeout;\n"
+                         "engine.clearInterval = clearInterval;\n");
 
     // Engine method stubs
     m_jsEngine->evaluate("engine.isDesktopDevice = function() { return true; };\n"
@@ -2070,6 +2158,59 @@ void SceneObject::setupTextScripts() {
         "    get: function(){ return _s.size; },\n"
         "    enumerable: true\n"
         "  });\n"
+        // Text-style props: horizontalalign / verticalalign / font are stored
+        // on _s and pushed to the render thread via __sceneBridge.setTextStyle.
+        // `alignment` is WE's combined form — parsed JS-side into h/v components.
+        // Initial values come from _s.halign/_s.valign/_s.font which seed from
+        // _layerInitStates (parser-supplied) so reads return parse-time defaults
+        // before any assignment.
+        "  if (init && init.halign && _s.halign === undefined) _s.halign = init.halign;\n"
+        "  if (init && init.valign && _s.valign === undefined) _s.valign = init.valign;\n"
+        "  if (init && init.font   && _s.font   === undefined) _s.font   = init.font;\n"
+        "  Object.defineProperty(p, 'horizontalalign', {\n"
+        "    get: function(){ return _s.halign || 'center'; },\n"
+        "    set: function(v){ _s.halign = String(v == null ? 'center' : v);\n"
+        "                      __sceneBridge.setTextStyle(name, _s.halign, '', ''); },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        "  Object.defineProperty(p, 'verticalalign', {\n"
+        "    get: function(){ return _s.valign || 'center'; },\n"
+        "    set: function(v){ _s.valign = String(v == null ? 'center' : v);\n"
+        "                      __sceneBridge.setTextStyle(name, '', _s.valign, ''); },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        "  Object.defineProperty(p, 'font', {\n"
+        "    get: function(){ return _s.font || ''; },\n"
+        "    set: function(v){ _s.font = String(v == null ? '' : v);\n"
+        "                      __sceneBridge.setTextStyle(name, '', '', _s.font); },\n"
+        "    enumerable: true\n"
+        "  });\n"
+        // `alignment` accepts WE's composite strings (e.g. 'topleft',\n"
+        // 'centerright', 'center') and splits into h+v.  Tokens that don't\n"
+        // match either axis fall back to dual-set so a single-axis value like\n"
+        // 'left' propagates as horizontalalign only.
+        "  Object.defineProperty(p, 'alignment', {\n"
+        "    get: function(){\n"
+        "      var h = _s.halign || 'center', v = _s.valign || 'center';\n"
+        "      if (h === 'center' && v === 'center') return 'center';\n"
+        "      return (v === 'center' ? '' : v) + (h === 'center' ? '' : h);\n"
+        "    },\n"
+        "    set: function(v){\n"
+        "      var s = String(v == null ? '' : v).toLowerCase();\n"
+        "      var nh = '', nv = '';\n"
+        "      if (s.indexOf('left')   >= 0) nh = 'left';\n"
+        "      else if (s.indexOf('right')  >= 0) nh = 'right';\n"
+        "      if (s.indexOf('top')    >= 0) nv = 'top';\n"
+        "      else if (s.indexOf('bottom') >= 0) nv = 'bottom';\n"
+        "      if (s === 'center' || (s.indexOf('center') >= 0 && !nh && !nv)) {\n"
+        "        nh = 'center'; nv = 'center';\n"
+        "      }\n"
+        "      if (nh) _s.halign = nh;\n"
+        "      if (nv) _s.valign = nv;\n"
+        "      __sceneBridge.setTextStyle(name, nh, nv, '');\n"
+        "    },\n"
+        "    enumerable: true\n"
+        "  });\n"
         // opacity: WE alias for alpha.  Used by wallpaper 2866203962's
         // playervolume.cursorUp script to hide the '100%' percentage text
         // via `percentageLayer.opacity = 0`; without this alias the assign
@@ -2133,6 +2274,26 @@ void SceneObject::setupTextScripts() {
         // a JS-side cache so it never crosses threads.  See
         // SceneScriptShimsJs.hpp::kMaterialProxyJs for the implementation.
         "  p.getMaterial = function() { return _makeMaterialProxy(_s.name); };\n"
+        // getTransformMatrix(): returns a Mat4 populated with the layer's world
+        // transform from the render-thread snapshot.  Scripts mainly read
+        // .m[12] / .m[13] for world X/Y position (compared against
+        // engine.canvasSize.x/2 for "past midpoint?" checks).  Returns identity
+        // for unknown / not-yet-drawn layers.
+        "  p.getTransformMatrix = function() {\n"
+        "    var arr = __sceneBridge.getLayerWorldTransform(_s.name);\n"
+        "    var mm = new Mat4();\n"
+        "    if (arr && arr.length === 16) {\n"
+        "      for (var i = 0; i < 16; i++) mm.m[i] = +arr[i] || 0;\n"
+        "    }\n"
+        "    return mm;\n"
+        "  };\n"
+        // getBoneIndex(name): resolves an MDAT attachment name to its bone
+        // index on the puppet rigged to this layer (or its parent's puppet).
+        // Returns 0 if not found — Music Player (2992803622) treats 0 as the
+        // "attachment missing" signal and throws a config error.
+        "  p.getBoneIndex = function(bname) {\n"
+        "    return __sceneBridge.getBoneIndex(_s.name, String(bname == null ? '' : bname)) | 0;\n"
+        "  };\n"
         // Animation layer stub: getAnimationLayer(index|name) returns an IAnimationLayer proxy.
         // Scripts control puppet animation layers (play, pause, rate, blend, frame).
         "  if (!_s._aniLayers) _s._aniLayers = {};\n"
@@ -2193,6 +2354,15 @@ void SceneObject::setupTextScripts() {
         "        _s._efxDirty.push(idx, v ? 1 : 0); },\n"
         "      enumerable: true\n"
         "    });\n"
+        // getMaterial(): returns an IMaterial proxy bound to this specific
+        // effect (per-effect material, not the layer's main material).  Routes
+        // through __sceneBridge.effectMaterialSetValue with the effect index,
+        // so writes target effects/dqss2/<material> etc.  Game Of Life
+        // (3453251764) uses this to paint cells via
+        // `thisLayer.getEffect('paint').getMaterial().color = Vec3(...)`.
+        "    ep.getMaterial = function() {\n"
+        "      return _makeMaterialProxy(_s.name, idx);\n"
+        "    };\n"
         "    _s._effCache[ename] = ep;\n"
         "    return ep;\n"
         "  };\n"
@@ -3258,10 +3428,18 @@ void SceneObject::setupTextScripts() {
                 "exports.mediaPlaybackChanged :\n"
                 "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged "
                 ": null);\n"
+                // Two corpus scripts export `propertiesChanged` instead of
+                // `mediaPropertiesChanged` — fall back to that spelling so the
+                // hook still fires.  Production sites should still prefer the
+                // full name; this is purely an author-typo accommodation.
                 "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
                 "exports.mediaPropertiesChanged :\n"
                 "              (typeof mediaPropertiesChanged === 'function' ? "
-                "mediaPropertiesChanged : null);\n"
+                "mediaPropertiesChanged :\n"
+                "              (typeof exports.propertiesChanged === 'function' ? "
+                "exports.propertiesChanged :\n"
+                "              (typeof propertiesChanged === 'function' ? "
+                "propertiesChanged : null)));\n"
                 "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
                 "exports.mediaThumbnailChanged :\n"
                 "              (typeof mediaThumbnailChanged === 'function' ? "

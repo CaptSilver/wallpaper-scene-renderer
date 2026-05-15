@@ -119,9 +119,10 @@ public:
     Q_INVOKABLE void mediaPlaybackChanged(int state);
     Q_INVOKABLE void mediaPropertiesChanged(const QString& title, const QString& artist,
                                             const QString& albumTitle, const QString& albumArtist,
-                                            const QString& genres);
+                                            const QString& genres,
+                                            double         duration = 0.0);
     Q_INVOKABLE void mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors);
-    Q_INVOKABLE void mediaTimelineChanged(double position, double duration);
+    Q_INVOKABLE void mediaTimelineChanged(double position, double duration, int state = 0);
     Q_INVOKABLE void mediaStatusChanged(bool enabled);
 
     // Video texture control — bridge for thisLayer.getVideoTexture().
@@ -143,6 +144,38 @@ public:
     Q_INVOKABLE void materialSetValue(const QString& layerName,
                                       const QString& name,
                                       const QJSValue& value);
+
+    // Per-effect material bridge — thisLayer.getEffect(name).getMaterial()
+    // returns an IMaterial proxy whose writes route through this call instead
+    // of materialSetValue.  effectIdx is the 0-based index into the layer's
+    // effect chain (matches the order parsed from scene.json `effects[]`).
+    // Render thread resolves effectIdx → SceneImageEffect → first-pass material.
+    Q_INVOKABLE void effectMaterialSetValue(const QString&  layerName,
+                                            int             effectIdx,
+                                            const QString&  name,
+                                            const QJSValue& value);
+
+    // Text-style bridge — thisLayer.{horizontalalign,verticalalign,alignment,font}.
+    // Each string is "" to leave that field unchanged.  Font name is resolved
+    // to bytes on the render thread.  The JS shim parses `alignment` into its
+    // h/v components before calling this so we only deal with two axes here.
+    Q_INVOKABLE void setTextStyle(const QString& layerName,
+                                  const QString& halign,
+                                  const QString& valign,
+                                  const QString& fontName);
+
+    // World-transform readback for thisLayer.getTransformMatrix().  Returns a
+    // 16-element flat array (column-major) snapshotted at the end of the most
+    // recent drawFrame.  Identity for unknown layers.  Scripts mainly read
+    // [12]/[13] for world X/Y translation.
+    Q_INVOKABLE QJSValue getLayerWorldTransform(const QString& layerName) const;
+
+    // thisLayer.getBoneIndex(name) — resolves the named MDAT attachment in the
+    // layer's puppet (or its parent's puppet, mirroring WE rigging semantics)
+    // and returns the attachment's bone_index.  Returns 0 when not found,
+    // matching WE's "origin / missing" sentinel that authoring scripts treat
+    // as the absence signal.
+    Q_INVOKABLE int getBoneIndex(const QString& layerName, const QString& boneName) const;
 
     // Layer-hierarchy bridge — thisLayer.setParent(other) JS path enqueues
     // a (childId, parentId) pair into Scene::m_pending_parent_changes,

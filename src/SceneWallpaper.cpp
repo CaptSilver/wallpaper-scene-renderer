@@ -34,6 +34,7 @@
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/VulkanRender.hpp"
 #include "WPTextRenderer.hpp"
+#include "WPPuppet.hpp" // for getLayerBoneIndex attachment lookup
 
 #include "WPUserProperties.hpp"
 #include "WPSceneFileResolver.hpp"
@@ -364,6 +365,66 @@ public:
         m_pending_pointsize_updates[id] = pointsize;
     }
 
+    // Merge-style queue: subsequent calls for the same id within one tick
+    // overwrite earlier values per-field (empty string = "leave unchanged").
+    // SceneScript users typically write each property independently
+    // (`thisLayer.horizontalalign = 'right'; thisLayer.font = 'Heavy.otf';`),
+    // so each setter posts only the field it touches.
+    void setTextStyle(i32 id, std::string halign, std::string valign,
+                      std::string fontName) {
+        std::lock_guard<std::mutex> lock(m_text_update_mutex);
+        auto& cur = m_pending_text_style_updates[id];
+        if (! halign.empty())   cur.halign   = std::move(halign);
+        if (! valign.empty())   cur.valign   = std::move(valign);
+        if (! fontName.empty()) cur.fontName = std::move(fontName);
+    }
+
+    // World-matrix cache populated at end of each drawFrame.  SceneScript
+    // thisLayer.getTransformMatrix() reads from here via SceneWallpaper.
+    // Returns identity if the id is unknown (e.g. layer not yet visible /
+    // node destroyed); identity is a safe fallback because scripts mainly
+    // inspect translation indices [12,13] which read as 0 from identity.
+    std::array<float, 16> getLayerWorldMatrix(i32 id) const {
+        std::lock_guard<std::mutex> lk(m_world_cache_mutex);
+        auto it = m_layer_world_cache.find(id);
+        if (it != m_layer_world_cache.end()) return it->second;
+        return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    }
+
+    // SceneScript thisLayer.getBoneIndex(name) — resolves a named MDAT
+    // attachment in the puppet rigged to this layer (or its parent's puppet
+    // for child-rigged layers).  No locking: nodePuppetMap is populated at
+    // parse time and never mutated thereafter; WPPuppet attachments are
+    // likewise immutable.  Returns 0 ("origin") if not found — matches
+    // WE's sentinel that authoring scripts treat as a missing attachment.
+    i32 getLayerBoneIndex(i32 nodeId, const std::string& boneName) const {
+        if (! m_scene || boneName.empty()) return 0;
+        auto try_lookup = [&](i32 id) -> i32 {
+            if (id < 0) return -1;
+            auto it = m_scene->nodePuppetMap.find(id);
+            if (it == m_scene->nodePuppetMap.end() || ! it->second) return -1;
+            auto* att = it->second->findAttachment(boneName);
+            if (! att) return -1;
+            return static_cast<i32>(att->bone_index);
+        };
+        i32 r = try_lookup(nodeId);
+        if (r >= 0) return r;
+        auto nit = m_scene->nodeById.find(nodeId);
+        if (nit != m_scene->nodeById.end() && nit->second) {
+            SceneNode* parent = nit->second->Parent();
+            if (parent) {
+                for (auto& [pid, pnode] : m_scene->nodeById) {
+                    if (pnode == parent) {
+                        r = try_lookup(pid);
+                        if (r >= 0) return r;
+                        break;
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+
     void setColorUpdate(i32 id, float r, float g, float b) {
         std::lock_guard<std::mutex> lock(m_color_update_mutex);
         m_pending_color_updates[id] = { r, g, b };
@@ -421,6 +482,13 @@ public:
     void setMaterialValue(i32 nodeId, std::string name, std::vector<float> floats) {
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_material_values.emplace_back(nodeId, std::move(name), std::move(floats));
+    }
+
+    void setEffectMaterialValue(i32 nodeId, i32 effectIdx, std::string name,
+                                std::vector<float> floats) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_effect_material_values.emplace_back(
+            nodeId, effectIdx, std::move(name), std::move(floats));
     }
 
     void queueParentChange(i32 childId, i32 parentId) {
@@ -660,11 +728,53 @@ private:
                         break;
                     }
                 }
+                // Style updates (halign/valign/font) — applied before text
+                // updates so a write-through bundle ('thisLayer.font = X;
+                // thisLayer.text = Y;') uses the new font for rasterization.
+                // Font name → bytes is resolved here on the render thread
+                // because the VFS lives on the scene struct we already own.
+                for (auto& [id, style] : m_pending_text_style_updates) {
+                    for (auto& tl : m_scene->textLayers) {
+                        if (tl.id != id) continue;
+                        bool anyChange = false;
+                        if (! style.halign.empty() && style.halign != tl.halign) {
+                            tl.halign = style.halign;
+                            anyChange = true;
+                        }
+                        if (! style.valign.empty() && style.valign != tl.valign) {
+                            tl.valign = style.valign;
+                            anyChange = true;
+                        }
+                        if (! style.fontName.empty() && style.fontName != tl.fontName) {
+                            std::string newBytes;
+                            if (m_scene->vfs) {
+                                if (m_scene->vfs->Contains("/assets/" + style.fontName))
+                                    newBytes = fs::GetFileContent(
+                                        *m_scene->vfs, "/assets/" + style.fontName);
+                                else if (m_scene->vfs->Contains("/" + style.fontName))
+                                    newBytes = fs::GetFileContent(
+                                        *m_scene->vfs, "/" + style.fontName);
+                            }
+                            if (! newBytes.empty()) {
+                                tl.fontName = style.fontName;
+                                tl.fontData = std::move(newBytes);
+                                anyChange   = true;
+                            } else {
+                                LOG_ERROR("setTextStyle: font '%s' not found in VFS",
+                                          style.fontName.c_str());
+                            }
+                        }
+                        if (anyChange) tl.textStyleDirty = true;
+                        break;
+                    }
+                }
                 for (auto& [id, newText] : m_pending_text_updates) {
                     for (auto& tl : m_scene->textLayers) {
                         if (tl.id != id) continue;
-                        // Re-rasterize if text or pointsize changed
-                        if (tl.currentText == newText && ! tl.pointsizeDirty) break;
+                        // Re-rasterize if text, pointsize, or style changed
+                        if (tl.currentText == newText && ! tl.pointsizeDirty
+                            && ! tl.textStyleDirty)
+                            break;
                         auto img = WPTextRenderer::RenderText(tl.fontData,
                                                               tl.pointsize,
                                                               newText,
@@ -678,12 +788,38 @@ private:
                             m_render->reuploadTexture(tl.textureKey, *img);
                             tl.currentText    = newText;
                             tl.pointsizeDirty = false;
+                            tl.textStyleDirty = false;
                         }
                         break;
                     }
                 }
+                // Style-only updates: layers whose style changed but had no
+                // pending text update still need a re-render against the
+                // existing currentText.  (Without this pass, halign/font
+                // changes wouldn't manifest until the next text mutation.)
+                for (auto& tl : m_scene->textLayers) {
+                    if (! tl.textStyleDirty) continue;
+                    if (tl.currentText.empty()) {
+                        tl.textStyleDirty = false;
+                        continue;
+                    }
+                    auto img = WPTextRenderer::RenderText(tl.fontData,
+                                                          tl.pointsize,
+                                                          tl.currentText,
+                                                          tl.texWidth,
+                                                          tl.texHeight,
+                                                          tl.halign,
+                                                          tl.valign,
+                                                          tl.padding);
+                    if (img) {
+                        img->key = tl.textureKey;
+                        m_render->reuploadTexture(tl.textureKey, *img);
+                        tl.textStyleDirty = false;
+                    }
+                }
                 m_pending_text_updates.clear();
                 m_pending_pointsize_updates.clear();
+                m_pending_text_style_updates.clear();
             }
 
             // Process video texture frame updates — only decode visible videos
@@ -937,6 +1073,26 @@ private:
                     mat->customShader.constValuesDirty = true;
                 }
                 m_pending_material_values.clear();
+                // Per-effect material writes — same shape, but address the
+                // effect chain's nth effect's first node material so scripts
+                // like Game Of Life (3453251764) can paint cells via
+                // thisLayer.getEffect('paint').getMaterial().color = Vec3(...)
+                for (auto& [nodeId, effectIdx, uName, floats] : m_pending_effect_material_values) {
+                    auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
+                    if (eit == m_scene->nodeEffectLayerMap.end() || ! eit->second) continue;
+                    auto* layer = eit->second;
+                    if (effectIdx < 0 || effectIdx >= (i32)layer->EffectCount()) continue;
+                    auto& eff = layer->GetEffect(effectIdx);
+                    if (! eff || eff->nodes.empty()) continue;
+                    auto& fn = eff->nodes.front();
+                    if (! fn.sceneNode || ! fn.sceneNode->HasMaterial()) continue;
+                    auto* mat = fn.sceneNode->Mesh()->Material();
+                    if (! mat) continue;
+                    mat->customShader.constValues[uName] =
+                        ShaderValue(floats.data(), floats.size());
+                    mat->customShader.constValuesDirty = true;
+                }
+                m_pending_effect_material_values.clear();
                 if (logDiag) {
                     LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d "
                              "miss=%d, alpha=%zu",
@@ -1078,6 +1234,28 @@ private:
             tickPropertyAnimations(dt_scene);
 
             m_render->drawFrame(*m_scene);
+
+            // Snapshot each named layer's world transform after the per-frame
+            // UpdateTrans walk (driven from drawFrame).  SceneScript
+            // thisLayer.getTransformMatrix() reads from this cache off the
+            // GUI thread; populating it here keeps the read path lock-light.
+            {
+                std::lock_guard<std::mutex> lk(m_world_cache_mutex);
+                m_layer_world_cache.clear();
+                m_layer_world_cache.reserve(m_scene->nodeNameToId.size());
+                for (auto& [name, id] : m_scene->nodeNameToId) {
+                    auto it = m_scene->nodeById.find(id);
+                    if (it == m_scene->nodeById.end() || ! it->second) continue;
+                    Eigen::Matrix4d wt = it->second->ModelTrans();
+                    std::array<float, 16> arr;
+                    // Column-major flat layout matches Eigen's default storage
+                    // and WE/GLSL conventions; matrix.m[12..14] are translation.
+                    for (int c = 0; c < 4; ++c)
+                        for (int r = 0; r < 4; ++r)
+                            arr[c * 4 + r] = static_cast<float>(wt(r, c));
+                    m_layer_world_cache.emplace(id, arr);
+                }
+            }
 
             // Check for device lost after draw
             if (m_render->deviceLost()) {
@@ -1418,6 +1596,21 @@ private:
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
     std::unordered_map<i32, float>       m_pending_pointsize_updates;
+    // Per-id queue for thisLayer.horizontalalign/verticalalign/font/alignment.
+    // Empty-string fields mean "no change" so each property setter can post
+    // independently without clobbering siblings.
+    struct PendingTextStyleUpdate {
+        std::string halign;
+        std::string valign;
+        std::string fontName;
+    };
+    std::unordered_map<i32, PendingTextStyleUpdate> m_pending_text_style_updates;
+
+    // World-transform cache for SceneScript thisLayer.getTransformMatrix().
+    // Populated at the end of every drawFrame; keyed by node id; column-major
+    // 16-float matrices.  Mutable so const accessors can lock it.
+    mutable std::mutex                                       m_world_cache_mutex;
+    std::unordered_map<i32, std::array<float, 16>>           m_layer_world_cache;
 
     std::mutex                                    m_color_update_mutex;
     std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
@@ -1438,6 +1631,12 @@ private:
     // constValuesDirty so CustomShaderPass re-uploads on the next frame.
     std::vector<std::tuple<i32, std::string, std::vector<float>>>
         m_pending_material_values;
+    // (nodeId, effectIdx, uniformName, floats) — IMaterial.setValue from
+    // SceneScript via thisLayer.getEffect(name).getMaterial().setValue(...).
+    // Drained alongside m_pending_material_values; targets the effect chain's
+    // m_effects[effectIdx]'s first node material instead of the main mesh.
+    std::vector<std::tuple<i32, i32, std::string, std::vector<float>>>
+        m_pending_effect_material_values;
 
     // Scene-level pending updates (under m_property_update_mutex)
     std::optional<std::array<float, 3>> m_pending_clear_color;
@@ -1637,6 +1836,35 @@ void SceneWallpaper::updateMaterialValue(int32_t            nodeId,
                                          std::vector<float> floats) {
     m_main_handler->renderHandler()->setMaterialValue(
         nodeId, std::move(name), std::move(floats));
+}
+
+void SceneWallpaper::updateEffectMaterialValue(int32_t            nodeId,
+                                               int32_t            effectIdx,
+                                               std::string        name,
+                                               std::vector<float> floats) {
+    m_main_handler->renderHandler()->setEffectMaterialValue(
+        nodeId, effectIdx, std::move(name), std::move(floats));
+}
+
+void SceneWallpaper::updateTextStyle(int32_t     nodeId,
+                                     std::string halign,
+                                     std::string valign,
+                                     std::string fontName) {
+    m_main_handler->renderHandler()->setTextStyle(
+        nodeId, std::move(halign), std::move(valign), std::move(fontName));
+}
+
+std::array<float, 16> SceneWallpaper::getLayerWorldMatrix(int32_t nodeId) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+    return rh->getLayerWorldMatrix(nodeId);
+}
+
+int32_t SceneWallpaper::getLayerBoneIndex(int32_t            nodeId,
+                                          const std::string& boneName) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return 0;
+    return rh->getLayerBoneIndex(nodeId, boneName);
 }
 
 void SceneWallpaper::queueParentChange(int32_t childId, int32_t parentId) {
