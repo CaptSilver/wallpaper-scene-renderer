@@ -2198,6 +2198,80 @@ TEST_SUITE("FixImplicitConversions.scalarBroadcast") {
         CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
     }
 
+    TEST_CASE("mix(named_vec, scalar.x, mask) broadcasts the dot-access") {
+        // 2k+ Retro Cyber Sunset (1117550117) / Perfect View (1235913324) /
+        // Moon (2157202681) all share workshop effect 2079712247
+        // reflection.frag which writes
+        //   glOutColor = vec4(mix(mix(albedo, reflected.x, mask), …))
+        // where `albedo` and `reflected` are local vec4.  glslang rejected
+        // `mix(vec4, float, float)` with "no matching overloaded function".
+        // The transform should detect arg0 is a known vec4 and arg1 is a
+        // single-component swizzle on a known vec, then broadcast arg1.
+        std::string in =
+            "uniform float mask;\n"
+            "void main() {\n"
+            "  vec4 albedo = vec4(1.0);\n"
+            "  vec4 reflected = vec4(0.5);\n"
+            "  vec4 c = mix(albedo, reflected.x, mask);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("mix(albedo, vec4(reflected.x)") != std::string::npos);
+    }
+
+    TEST_CASE("mix(named_vec, float_ident, float_ident) broadcasts arg1") {
+        std::string in =
+            "uniform float gray;\n"
+            "uniform float t;\n"
+            "void main() {\n"
+            "  vec3 col = vec3(0.0);\n"
+            "  col = mix(col, gray, t);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("mix(col, vec3(gray),") != std::string::npos);
+    }
+
+    TEST_CASE("paren-cmp-arith does not glue float onto preceding keyword") {
+        // Mikey Tokyo Revengers (2622312893) dot_matrix shader:
+        //   float in01(float f) { return (f >=0) * (f < 1); }
+        // glslang's preprocessor dropped the space between `return` and the
+        // open-paren, leaving `return(f >= 0) * ...`.  Pre-fix, the cmp→float
+        // transform turned `(f >= 0) *` into `float(f >= 0) *` without
+        // accounting for the preceding token, emitting `returnfloat(f >= 0)`
+        // — an undefined identifier glslang flagged with
+        //   'returnfloat' : no matching overloaded function found.
+        std::string in =
+            "float in01(float f) {\n"
+            "  return(f >= 0) * (f < 1);\n"   // simulate preprocessor-glued case
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        // Must keep `return` separate from `float`.
+        CHECK(result.find("returnfloat") == std::string::npos);
+        CHECK(result.find("return float(f >= 0)") != std::string::npos);
+    }
+
+    TEST_CASE("paren-cmp-arith still wraps the standalone case") {
+        std::string in =
+            "void main() {\n"
+            "  float x = (a > 0) * b;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("float(a > 0) * b") != std::string::npos);
+    }
+
+    TEST_CASE("out vec4 varying multiplied by narrower vec gets .xy/.xyz") {
+        // Arona (3341577331) vertex shader: `out vec4 v_PointerUV;` then
+        // `vec2 da = v_PointerUV * (g_Scale * g_Scale_FollowCursor_Multiplier) * 0.001;`
+        // — needs `.xy` injected because g_Scale is uniform vec2.
+        std::string in =
+            "uniform vec2 g_Scale;\n"
+            "out vec4 v_PointerUV;\n"
+            "void main() {\n"
+            "  vec2 da = v_PointerUV * g_Scale * 0.001;\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("v_PointerUV.xy * g_Scale") != std::string::npos);
+    }
+
     TEST_CASE("function body's first `= scalar; ` is not absorbed into the return type") {
         // Regression: the original `vec[234] (\w+\s*=[^;]+);` guard caught
         // function declarations like `vec3 NAME(args) { ... ; const float

@@ -950,10 +950,23 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 out.push_back(result[i++]);
                 continue;
             }
-            // Detect arg0 starts with "vec[234](" after whitespace
+            // Detect arg0's vector rank N from one of these shapes:
+            //   * `vec[234](...)` constructor.
+            //   * Bare named identifier whose declared type is `uniform/in/out
+            //     vec[234]` or local `vec[234] NAME`.  Driver: 2k+ Retro
+            //     Cyber Sunset (1117550117) and others share workshop effect
+            //     2079712247 reflection.frag:
+            //       glOutColor = vec4(mix(mix(albedo, reflected.x, mask), ...))
+            //     where `albedo` is a local `vec4 albedo = texture(...)`.
+            //     glslang rejects `mix(vec4, float, float)` with
+            //     "'mix' : no matching overloaded function found".
             size_t a0s = args[0].first;
             size_t a0e = args[0].second;
             while (a0s < a0e && std::isspace((unsigned char)result[a0s])) ++a0s;
+            // Trim trailing whitespace too so the named-identifier match is exact.
+            size_t a0e_trim = a0e;
+            while (a0e_trim > a0s && std::isspace((unsigned char)result[a0e_trim - 1]))
+                --a0e_trim;
             char N = 0;
             if (a0e - a0s >= 5 && result.compare(a0s, 3, "vec") == 0 &&
                 (result[a0s + 3] == '2' || result[a0s + 3] == '3' ||
@@ -962,22 +975,82 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 while (p < a0e && std::isspace((unsigned char)result[p])) ++p;
                 if (p < a0e && result[p] == '(') N = result[a0s + 3];
             }
+            if (! N && a0e_trim > a0s) {
+                // Try named-identifier match.  Identifier characters only —
+                // anything else (`.`, `[`, math ops, parens) means the arg is
+                // a sub-expression we can't classify cheaply; bail.
+                bool plain = true;
+                for (size_t p = a0s; p < a0e_trim; ++p) {
+                    char c = result[p];
+                    if (! (std::isalnum((unsigned char)c) || c == '_')) {
+                        plain = false;
+                        break;
+                    }
+                }
+                if (plain) {
+                    std::string nm(result, a0s, a0e_trim - a0s);
+                    // vec_idents tracks vec2/3/4; we need the specific rank.
+                    static const std::regex re_vec_named_n(
+                        R"(\b(?:uniform|in|out|varying)?\s*vec([234])\s+(\w+))");
+                    auto it_n = std::sregex_iterator(result.begin(), result.end(),
+                                                     re_vec_named_n);
+                    for (; it_n != std::sregex_iterator(); ++it_n) {
+                        if ((*it_n)[2].str() == nm) { N = (*it_n)[1].str()[0]; break; }
+                    }
+                }
+            }
             if (! N) {
                 out.push_back(result[i++]);
                 continue;
             }
-            // Trim arg1, require it to be a single identifier that is known-float
+            // Trim arg1.  Accept either:
+            //   * A single identifier in float_idents (the original case).
+            //   * `<known_vec>.<single_component>` access — a vec-projection
+            //     that yields a scalar.  Driver: workshop reflection
+            //     effect 2079712247 used by 2k+ Retro Cyber Sunset
+            //     (1117550117), Perfect View (1235913324), Moon (2157202681)
+            //     etc. — writes `mix(albedo, reflected.x, mask)` where
+            //     `albedo` is local vec4 and `reflected` is local vec4.
             size_t a1s = args[1].first;
             size_t a1e = args[1].second;
             while (a1s < a1e && std::isspace((unsigned char)result[a1s])) ++a1s;
             while (a1e > a1s && std::isspace((unsigned char)result[a1e - 1])) --a1e;
-            bool ident_only = (a1e > a1s);
-            for (size_t k = a1s; k < a1e && ident_only; ++k) {
-                char c = result[k];
-                if (! std::isalnum((unsigned char)c) && c != '_') ident_only = false;
+            std::string a1_str;
+            if (a1e > a1s) a1_str.assign(result, a1s, a1e - a1s);
+            bool a1_is_scalar = false;
+            std::string a1_emit = a1_str;
+            if (! a1_str.empty()) {
+                // Plain identifier?
+                bool plain_id = true;
+                for (char c : a1_str) {
+                    if (! std::isalnum((unsigned char)c) && c != '_') { plain_id = false; break; }
+                }
+                if (plain_id && float_idents.count(a1_str)) {
+                    a1_is_scalar = true;
+                } else {
+                    // ident.<single component>
+                    auto dot = a1_str.find('.');
+                    if (dot != std::string::npos && dot + 2 == a1_str.size()) {
+                        char comp = a1_str[dot + 1];
+                        if (comp == 'x' || comp == 'y' || comp == 'z' || comp == 'w' ||
+                            comp == 'r' || comp == 'g' || comp == 'b' || comp == 'a') {
+                            std::string base(a1_str, 0, dot);
+                            bool plain_base = ! base.empty();
+                            for (char c : base) {
+                                if (! std::isalnum((unsigned char)c) && c != '_') {
+                                    plain_base = false; break;
+                                }
+                            }
+                            if (plain_base &&
+                                (vec_idents.count(base) || float_idents.count(base))) {
+                                a1_is_scalar = true;
+                            }
+                        }
+                    }
+                }
             }
-            std::string a1_name = ident_only ? result.substr(a1s, a1e - a1s) : "";
-            if (! ident_only || ! float_idents.count(a1_name)) {
+            std::string a1_name = a1_emit;
+            if (! a1_is_scalar) {
                 out.push_back(result[i++]);
                 continue;
             }
@@ -1034,8 +1107,23 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 out.push_back(')');
                 i = close;
             } else {
-                // Unknown context — leave the call alone.
-                out.push_back(result[i++]);
+                // Unknown LHS context.  When arg0 is a known vecN AND arg1 is a
+                // known float identifier, HLSL's `lerp` would broadcast arg1
+                // up to vecN.  Default to that behavior — it matches the
+                // common nested-mix pattern (e.g. `vec4(mix(mix(albedo,
+                // reflected.x, mask), …))` in workshop reflection effects)
+                // and never loses information vs. the rejected
+                // "no matching overloaded mix" alternative.
+                out.append("mix(");
+                out.append(result, args[0].first, args[0].second - args[0].first);
+                out.append(", vec");
+                out.append(Ns);
+                out.append("(");
+                out.append(a1_name);
+                out.append("),");
+                out.append(result, args[2].first, args[2].second - args[2].first);
+                out.push_back(')');
+                i = close;
             }
         }
         result = std::move(out);
@@ -1044,9 +1132,26 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Fix: (expr CMP expr) in arithmetic → float(expr CMP expr)
     // HLSL allows bool in arithmetic (true=1.0, false=0.0); GLSL does not.
     // Matches parenthesized comparison followed by arithmetic operator.
+    //
+    // Pre-step: ensure a space between control-flow keywords and an
+    // open-paren.  glslang's preprocessor sometimes drops the space —
+    // Mikey Tokyo Revengers (2622312893) ships `return (f >=0)` in source
+    // and the preprocessor output reads `return(f >= 0)`.  Without the
+    // space, the leading-context guard below either rejects the wrap
+    // (leaving the bool-in-arith error) or — historically — glued
+    // `float` onto `return`, emitting `returnfloat(f >= 0)`.
+    //
+    // The leading-context guard `[\s,({=+\-*/]` then ensures we only
+    // wrap stand-alone parenthesized comparisons, not function-call
+    // argument lists.  Without the guard, `foo(x > 0) * y` would have
+    // been mis-transformed into `foofloat(x > 0) * y`.
     {
-        std::regex re(R"(\(([^()]*(?:<=|>=|==|!=|<|>)[^()]*)\)(\s*[*+/\-]))");
-        result = std::regex_replace(result, re, "float($1)$2");
+        std::regex re_kw(R"(\b(return|if|while|for|do|switch)\()");
+        result = std::regex_replace(result, re_kw, "$1 (");
+    }
+    {
+        std::regex re(R"((^|[\s,({=+\-*/])\(([^()]*(?:<=|>=|==|!=|<|>)[^()]*)\)(\s*[*+/\-]))");
+        result = std::regex_replace(result, re, "$1float($2)$3");
     }
 
     // Fix: "float_var *= bool_var" → "float_var *= float(bool_var)"
@@ -1498,14 +1603,22 @@ inline std::string FixImplicitConversions(const std::string& src) {
         }
     }
 
-    // Fix: wider `in` varying arithmetically adjacent to a known narrower vec var.
+    // Fix: wider `in`/`out` varying arithmetically adjacent to a known narrower vec var.
     // HLSL auto-truncates vec4→vec2 silently; GLSL errors on vec4 + vec2.
     // Works everywhere (inside texture() calls, nested expressions, etc.) because
     // the heuristic requires the narrower operand to be named and adjacent.
+    //
+    // `out` is included for vertex shaders that compute partial-component
+    // output then re-use the varying as a temp source.  Driver: Arona
+    // (3341577331) chromatic_aberration vertex shader does
+    //     v_PointerUV.xyz = …; v_PointerUV.xy *= 0.5; v_PointerUV.xy /= v_PointerUV.z;
+    //     vec2 da = v_PointerUV * (g_Scale * g_Scale_FollowCursor_Multiplier) * 0.001;
+    // where v_PointerUV is `out vec4`.  HLSL truncates `v_PointerUV` to vec2
+    // when multiplying by a vec2; GLSL rejects.
     {
         std::map<std::string, int> wider_varyings;
         {
-            std::regex re_wide(R"(\bin\s+vec([34])\s+(\w+)\s*;)");
+            std::regex re_wide(R"(\b(?:in|out)\s+vec([34])\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_wide);
                  it != std::sregex_iterator();
                  ++it)
