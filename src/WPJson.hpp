@@ -46,4 +46,15 @@ bool ParseJson(const char* file, const char* func, int line, const std::string& 
 // trailing commas before a closing bracket.  Applied automatically inside
 // ParseJson so every call site benefits; also exposed for direct testing.
 std::string StripTrailingCommas(std::string_view source);
+
+// Quote first-key-missing-opening-quote object members like `{Foo":0,"Bar":1}`,
+// rewriting to `{"Foo":0,"Bar":1}`.  WE workshop shader source occasionally
+// ships a [COMBO] line where the first key inside an inline `"options":{...}`
+// block dropped its opening quote (apparently a serializer artifact in some
+// Workshop publish pipelines).  Found across multiple shaders in the 2026-05-15
+// audit (Falling Deeper 3061226599, Floating Ducks 3377132665, Lost Cat. 2
+// 3356678415, The Blur 3562086244, Final Demons 3216242451, etc.).
+// Only fixes the unambiguous `<bracketOrComma><word>"` shape; keys that look
+// like other JSON syntax are left untouched.
+std::string QuoteFirstKey(std::string_view source);
 } // namespace wallpaper

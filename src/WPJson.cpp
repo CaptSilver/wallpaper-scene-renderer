@@ -68,11 +68,76 @@ std::string StripTrailingCommas(std::string_view source) {
     return out;
 }
 
+std::string QuoteFirstKey(std::string_view source) {
+    // Walk source; outside string literals, when we see `{` or `,`, check whether
+    // the next non-whitespace run of identifier characters is followed by `"` (the
+    // close-quote of an unquoted first key).  If so, inject the missing leading
+    // `"` before that identifier run.  Identifier chars accepted match what WE's
+    // workshop publish pipeline observed to produce: letters, digits, `_`, ` `,
+    // and `+` (e.g. "Noise + mirrored").  Anything else terminates the candidate
+    // run and we leave the source untouched.
+    std::string out;
+    out.reserve(source.size() + 16);
+    bool in_string = false;
+    bool escape    = false;
+    const auto is_ident = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == ' ' || c == '+';
+    };
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        char c = source[i];
+        if (in_string) {
+            out += c;
+            if (escape) {
+                escape = false;
+            } else if (c == '\\') {
+                escape = true;
+            } else if (c == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (c == '"') {
+            in_string = true;
+            out += c;
+            continue;
+        }
+        out += c;
+        if (c == '{' || c == ',') {
+            // Skip whitespace
+            std::size_t j = i + 1;
+            while (j < source.size()
+                   && std::isspace(static_cast<unsigned char>(source[j]))) {
+                ++j;
+            }
+            // Identifier must start with a letter or underscore (not a digit,
+            // not `+`/space — those are only allowed mid-identifier).
+            if (j < source.size()
+                && (std::isalpha(static_cast<unsigned char>(source[j])) || source[j] == '_')) {
+                std::size_t k = j;
+                while (k < source.size() && is_ident(source[k])) ++k;
+                // Pattern matches only when the identifier run is followed by
+                // a closing `"` (the recovered other half of the key quote).
+                if (k < source.size() && source[k] == '"') {
+                    // Emit whitespace verbatim, then injected `"`, then the identifier
+                    // run as-is.  The closing `"` in source is preserved as we keep
+                    // walking from `i+1` after returning.
+                    for (std::size_t w = i + 1; w < j; ++w) out += source[w];
+                    out += '"';
+                    for (std::size_t w = j; w < k; ++w) out += source[w];
+                    i = k - 1; // outer loop will i++ to put us at the closing `"`
+                }
+            }
+        }
+    }
+    return out;
+}
+
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
     try {
-        // Pre-strip trailing commas; then let nlohmann handle comments.
-        const std::string cleaned = StripTrailingCommas(source);
+        // Pre-strip trailing commas; quote any first-key-missing-opening-quote
+        // members ({Foo":0 → {"Foo":0); then let nlohmann handle comments.
+        const std::string cleaned = QuoteFirstKey(StripTrailingCommas(source));
         result                    = nlohmann::json::parse(cleaned, nullptr, true, true);
     } catch (nlohmann::json::parse_error& e) {
         WallpaperLog(LOGLEVEL_ERROR, file, line, "parse json(%s), %s", func, e.what());

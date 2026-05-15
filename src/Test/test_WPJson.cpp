@@ -343,3 +343,70 @@ TEST_SUITE("WPJson.GetJsonValue.UserProps") {
     }
 
 } // UserProps
+
+TEST_SUITE("WPJson.QuoteFirstKey") {
+    // Pattern produced by a quirky Workshop serializer: an inline `options`
+    // block's first key drops its opening `"`, leaving `{Foo":0,"Bar":1}`.
+    // Found across 5+ wallpapers (Falling Deeper 3061226599, Floating Ducks
+    // 3377132665, Lost Cat. 2 3356678415, The Blur 3562086244, Final Demons
+    // 3216242451) in the 2026-05-15 mass audit.  Without recovery the entire
+    // shader uniform/COMBO line fails to parse, the affected uniform never
+    // registers, and downstream shader compilation breaks.
+
+    TEST_CASE("passes well-formed JSON unchanged") {
+        CHECK(QuoteFirstKey(R"({"a":1,"b":2})") == R"({"a":1,"b":2})");
+        CHECK(QuoteFirstKey(R"({"options":{"Color":0,"UV":1}})") ==
+              R"({"options":{"Color":0,"UV":1}})");
+        CHECK(QuoteFirstKey(R"([1,2,3])") == R"([1,2,3])");
+    }
+
+    TEST_CASE("quotes first key missing leading \" after {") {
+        CHECK(QuoteFirstKey(R"({Color":0,"UV":1})") == R"({"Color":0,"UV":1})");
+    }
+
+    TEST_CASE("recovers WE Workshop options blocks") {
+        // Real bytes lifted from procedural_noise.frag in Falling Deeper's pkg.
+        const std::string in =
+            R"({"material":"Noise category","combo":"AA_CATEGORY","type":"options","default":0,"options":{Color":0,"UV":1}})";
+        const std::string expected =
+            R"({"material":"Noise category","combo":"AA_CATEGORY","type":"options","default":0,"options":{"Color":0,"UV":1}})";
+        CHECK(QuoteFirstKey(in) == expected);
+    }
+
+    TEST_CASE("handles identifier with spaces and +") {
+        // WE allows multi-word labels like "Noise + mirrored" as option keys.
+        const std::string in       = R"({Noise + mirrored":2,"Noise + opacity mask":3})";
+        const std::string expected = R"({"Noise + mirrored":2,"Noise + opacity mask":3})";
+        CHECK(QuoteFirstKey(in) == expected);
+    }
+
+    TEST_CASE("does not touch identifiers inside string literals") {
+        // A barewordish sequence appearing inside a string value must be preserved
+        // exactly; the fixup only fires outside string context.
+        const std::string in = R"({"name":"{Foo\":bar"})";
+        CHECK(QuoteFirstKey(in) == in);
+    }
+
+    TEST_CASE("does not touch unquoted blocks that aren't `{ident\"` shape") {
+        // Object with unquoted keys but no closing `"` — not our pattern, keep as-is.
+        CHECK(QuoteFirstKey(R"({Color:0,UV:1})") == R"({Color:0,UV:1})");
+        // Empty object
+        CHECK(QuoteFirstKey(R"({})") == R"({})");
+        // Object opening followed by a number (array-like)
+        CHECK(QuoteFirstKey(R"({1:"a"})") == R"({1:"a"})");
+    }
+
+    TEST_CASE("end-to-end: shipped Workshop shader COMBO line parses") {
+        // Verifies the full ParseJson pipeline (strip + quote + nlohmann)
+        // accepts the broken-but-recoverable JSON shape.
+        const std::string in =
+            R"({"material":"Noise category","combo":"AA_CATEGORY","type":"options","default":0,"options":{Color":0,"UV":1}})";
+        njson result;
+        REQUIRE(PARSE_JSON(in, result));
+        CHECK(result.at("combo").get<std::string>() == "AA_CATEGORY");
+        REQUIRE(result.at("options").is_object());
+        CHECK(result.at("options").at("Color").get<int>() == 0);
+        CHECK(result.at("options").at("UV").get<int>() == 1);
+    }
+
+} // QuoteFirstKey
