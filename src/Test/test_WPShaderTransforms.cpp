@@ -2198,6 +2198,52 @@ TEST_SUITE("FixImplicitConversions.scalarBroadcast") {
         CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
     }
 
+    TEST_CASE("global const vecN init referencing uniform drops const qualifier") {
+        // Jett × Jinx (3031735486) ships
+        //   const vec2 type = vec2(g_Texture0Resolution.x / g_Texture0Resolution.y, 1.0)
+        //                     * vec2(g_ratio, 1.0);
+        // — both factors involve uniforms.  Glslang errors: "global const
+        // initializers must be constant 2-component vector of float".
+        std::string in =
+            "uniform vec4 g_Texture0Resolution;\n"
+            "uniform float g_ratio;\n"
+            "const vec2 type = vec2(g_Texture0Resolution.x, 1.0) * vec2(g_ratio, 1.0);\n";
+        auto result = FixImplicitConversions(in);
+        // const qualifier dropped:
+        CHECK(result.find("const vec2 type") == std::string::npos);
+        CHECK(result.find("vec2 type = vec2(") != std::string::npos);
+    }
+
+    TEST_CASE("global const vecN with literal initializer keeps const") {
+        // The strip is only when the RHS references a uniform.  Pure literal
+        // initializers stay const.
+        std::string in = "const vec3 K = vec3(0.299, 0.587, 0.114);\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("const vec3 K = vec3(0.299, 0.587, 0.114);") != std::string::npos);
+    }
+
+    TEST_CASE("vec2 = (_wedot(...) * scalar) broadcasts even with nested vec2() args") {
+        // Workshop noise function commonly written as:
+        //   float rand_1_05(in vec2 uv) {
+        //       vec2 noise = (fract(sin(_wedot(uv.yx, vec2(12.9898, 78.233) * 2.0)) * 43758.5453));
+        //       return abs(noise.x + noise.y) * 10. * -1.;
+        //   }
+        // The `_wedot(...)` (our `dot` override) ALWAYS returns float, so the
+        // outer chain (`fract(sin(scalar) * scalar)`) is scalar.  Pre-fix the
+        // is_scalar_expr heuristic bailed on ANY `vec2(` anywhere.  Now it
+        // walks at depth 0 and treats `_wedot/dot/length/distance` calls as
+        // scalar producers, ignoring vec[234]() that appears nested as their
+        // arguments.  Hits Moon (2157202681), Bocchi PA-san (2896906752),
+        // Bocchi すっからかん (2899677910), and others.
+        std::string in =
+            "void main() {\n"
+            "  vec2 uv = vec2(0.0);\n"
+            "  vec2 noise = (fract(sin(_wedot(uv.yx, vec2(12.9898, 78.233) * 2.0)) * 43758.5453));\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("vec2 noise = vec2(") != std::string::npos);
+    }
+
     TEST_CASE("for-loop bare float uniform init/cond gets int() wrapped") {
         // Workshop audio-spectrum effects (3034862641 / 3036962127 / 3496072356):
         //   uniform float u_MinFreqRange;

@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <regex>
 #include <set>
@@ -1333,6 +1334,46 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::regex_replace(result, re, "$1 $2 = $3");
     }
 
+    // Fix: "const vecN VAR = …<uniform_name>…;" — drop const when the
+    // initializer references any `uniform` identifier.  GLSL only allows
+    // compile-time-constant initializers for global const; HLSL was lax.
+    // Driver: Jett × Jinx (3031735486) ships
+    //   const vec2 type = vec2(g_Texture0Resolution.x/g_Texture0Resolution.y, 1.0)
+    //                     * vec2(g_ratio, 1.0);
+    // — both factors involve uniforms.  Pre-fix glslang reported
+    //   "global const initializers must be constant 2-component vector of float"
+    // and the renderer SEGV'd downstream.
+    {
+        std::set<std::string> uniform_names;
+        std::regex            re_uni(R"(\buniform\s+(?:\w+\s+)?(\w+)\s*(?:\[[^\]]*\])?\s*;)");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uni);
+             it != std::sregex_iterator(); ++it)
+            uniform_names.insert((*it)[1].str());
+
+        // Walk const-vec[234] decls and drop `const` if RHS mentions any uniform.
+        std::regex re_const_vec(R"(\bconst\s+(vec[234])\s+(\w+)\s*=\s*([^;]+);)");
+        std::string out;
+        size_t lastPos = 0;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_const_vec);
+             it != std::sregex_iterator(); ++it) {
+            const auto& m   = *it;
+            std::string rhs = m[3].str();
+            bool        uses_uniform = false;
+            for (const auto& un : uniform_names) {
+                std::regex re_use(R"(\b)" + un + R"(\b)");
+                if (std::regex_search(rhs, re_use)) { uses_uniform = true; break; }
+            }
+            if (! uses_uniform) continue;
+            out.append(result, lastPos, m.position() - lastPos);
+            out += m[1].str() + " " + m[2].str() + " = " + rhs + ";";
+            lastPos = m.position() + m.length();
+        }
+        if (lastPos > 0) {
+            out.append(result, lastPos, std::string::npos);
+            result = std::move(out);
+        }
+    }
+
     // Fix: writing to 'in' varying — HLSL allows mutable inputs; GLSL doesn't.
     // Create a mutable copy for any 'in' variable that is assigned to (plain or compound).
     // Skip varyings that are *shadowed* by a local declaration (e.g.
@@ -1473,12 +1514,140 @@ inline std::string FixImplicitConversions(const std::string& src) {
                  it != std::sregex_iterator(); ++it)
                 scalar_vars.insert((*it)[1].str());
         }
+        // Strip a single layer of matching outer parens.  Workshop authors
+        // routinely wrap the RHS in redundant `(...)` (e.g.
+        // `vec2 noise = (fract(sin(_wedot(...)) * 43758.5453));`).  The outer
+        // pair encloses one expression and analytically equivalent to the
+        // inner — so peel it before classifying the outer scope.
+        auto strip_outer_parens = [](std::string s) {
+            for (;;) {
+                size_t a = 0, b = s.size();
+                while (a < b && std::isspace((unsigned char)s[a])) ++a;
+                while (b > a && std::isspace((unsigned char)s[b - 1])) --b;
+                if (b - a < 2 || s[a] != '(' || s[b - 1] != ')') break;
+                // Check that the outer parens are actually matching (the first
+                // '(' matches the last ')' at depth 0).
+                int depth = 0;
+                bool ok = true;
+                for (size_t i = a; i < b; ++i) {
+                    if (s[i] == '(') ++depth;
+                    else if (s[i] == ')') {
+                        --depth;
+                        if (depth == 0 && i + 1 < b) { ok = false; break; }
+                    }
+                }
+                if (! ok) break;
+                s = s.substr(a + 1, b - a - 2);
+            }
+            return s;
+        };
+        // Helper: scan the expression at the OUTER scope (depth 0 relative to
+        // expr boundaries — entries into `(...)` increase depth, exits decrease).
+        // Returns whether `expr` contains a top-level invocation of any of the
+        // always-scalar-returning functions, and (separately) whether any
+        // depth-0 vec[234] constructor / texture call appears at the outer
+        // scope.  Nested calls (vec2 inside _wedot's args) don't count as
+        // vector producers because they're consumed by the scalar wrapper.
+        auto scan_depth0 = [&](const std::string& expr) {
+            struct Info { bool has_scalar_fn = false; bool has_vec_producer = false; };
+            Info info {};
+            int  depth = 0;
+            static const std::set<std::string> always_scalar = {
+                "_wedot", "dot", "length", "distance",
+            };
+            for (size_t i = 0; i < expr.size(); ++i) {
+                char c = expr[i];
+                if (c == '(') {
+                    // If preceding token is an identifier, classify this call.
+                    if (depth == 0) {
+                        size_t j = i;
+                        while (j > 0 && std::isspace((unsigned char)expr[j - 1])) --j;
+                        size_t end = j;
+                        while (j > 0 &&
+                               (std::isalnum((unsigned char)expr[j - 1]) || expr[j - 1] == '_'))
+                            --j;
+                        if (end > j) {
+                            std::string fn(expr, j, end - j);
+                            if (always_scalar.count(fn)) info.has_scalar_fn = true;
+                            if ((fn == "vec2" || fn == "vec3" || fn == "vec4") ||
+                                fn.compare(0, 7, "texture") == 0)
+                                info.has_vec_producer = true;
+                        }
+                    }
+                    ++depth;
+                } else if (c == ')') {
+                    --depth;
+                }
+            }
+            return info;
+        };
+        // Returns true when `expr` (after stripping outer parens) is shaped
+        // like `<scalar-yielding-call>(...)` — either directly (e.g. _wedot)
+        // or via a chain of rank-preserving wrappers (fract/sin/abs/etc.).
+        // Falls back to false for ambiguous shapes; callers go to the broader
+        // identifier-scan fallback below.
+        std::function<bool(const std::string&)> outermost_scalar_call;
+        outermost_scalar_call = [&](const std::string& e) -> bool {
+            std::string s = strip_outer_parens(e);
+            // Trim
+            size_t a = 0, b = s.size();
+            while (a < b && std::isspace((unsigned char)s[a])) ++a;
+            while (b > a && std::isspace((unsigned char)s[b - 1])) --b;
+            if (b - a < 3) return false;
+            // Find the first identifier at depth 0 followed by `(`.
+            static const std::set<std::string> always_scalar = {
+                "_wedot", "dot", "length", "distance",
+            };
+            static const std::set<std::string> rank_preserving = {
+                "fract", "sin", "cos", "tan", "asin", "acos", "atan", "abs",
+                "sqrt", "exp", "log", "log2", "floor", "ceil", "round",
+                "sign", "negate",
+            };
+            // First word at start of stripped expression
+            size_t p = a;
+            while (p < b && (std::isalnum((unsigned char)s[p]) || s[p] == '_')) ++p;
+            if (p == a || p == b || s[p] != '(') return false;
+            std::string fn(s, a, p - a);
+            if (always_scalar.count(fn)) return true;
+            if (! rank_preserving.count(fn)) return false;
+            // Find matching close-paren for the call.
+            int depth = 1;
+            size_t arg_start = p + 1, q = p + 1;
+            for (; q < b; ++q) {
+                if (s[q] == '(') ++depth;
+                else if (s[q] == ')') {
+                    --depth;
+                    if (depth == 0) break;
+                }
+            }
+            if (depth != 0 || q >= b) return false;
+            std::string inner(s, arg_start, q - arg_start);
+            // Recurse on the arg's "scalar shape".  Arg may include `,` —
+            // for our purposes, the first comma-separated piece is the input
+            // whose rank propagates.
+            int depth2 = 0;
+            size_t comma = std::string::npos;
+            for (size_t k = 0; k < inner.size(); ++k) {
+                if (inner[k] == '(') ++depth2;
+                else if (inner[k] == ')') --depth2;
+                else if (inner[k] == ',' && depth2 == 0) { comma = k; break; }
+            }
+            std::string first_arg = (comma == std::string::npos) ? inner : inner.substr(0, comma);
+            return outermost_scalar_call(first_arg);
+        };
+
         auto is_scalar_expr = [&](const std::string& expr) -> bool {
-            // Reject anything that looks like a vector producer.
-            if (expr.find("vec2(") != std::string::npos) return false;
-            if (expr.find("vec3(") != std::string::npos) return false;
-            if (expr.find("vec4(") != std::string::npos) return false;
-            if (expr.find("texture") != std::string::npos) return false;
+            std::string stripped = strip_outer_parens(expr);
+            auto info = scan_depth0(stripped);
+            // If a definitively-scalar function dominates the outer scope and
+            // no other depth-0 vector producer is present, treat the result as
+            // scalar even if nested args contain vec[234] constructors.
+            if (info.has_scalar_fn && ! info.has_vec_producer) return true;
+            // Also check rank-preserving chains via recursion (e.g.
+            // `fract(sin(_wedot(...)))` → scalar).
+            if (outermost_scalar_call(expr)) return true;
+            if (info.has_vec_producer) return false;
+
             // Multi-component swizzles indicate vector access (foo.xy, foo.rgba, etc.)
             std::regex multi_sw(R"(\.(?:xy|xyz|xyzw|rg|rgb|rgba)\b)");
             if (std::regex_search(expr, multi_sw)) return false;
