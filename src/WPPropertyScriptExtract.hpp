@@ -95,11 +95,19 @@ inline void extractParticleInstanceOverrideScripts(i32 id, const std::string& la
         if (! io.contains(sub)) continue;
         const auto& val = io.at(sub);
         if (! val.is_object() || ! val.contains("script")) continue;
+        // Workshop wallpapers occasionally serialize a present-but-null script
+        // (`{"script": null}`) when the WE editor cleared one. Treat that as
+        // absent rather than throwing — `.get<std::string>()` on a null node
+        // raises nlohmann type_error 302 and aborts scene parsing. Found via
+        // mass-audit crashes in Toyota Supra (2162986216) and DOOM ETERNAL
+        // (1777578078).
+        const auto& scriptVal = val.at("script");
+        if (! scriptVal.is_string()) continue;
 
         ScenePropertyScript sps;
         sps.id                  = id;
         sps.property            = std::string("instanceoverride.") + sub;
-        sps.script              = val.at("script").get<std::string>();
+        sps.script              = scriptVal.get<std::string>();
         sps.layerName           = layerName;
         sps.attachment          = attachment;
         sps.animationLayerIndex = animationLayerIndex;

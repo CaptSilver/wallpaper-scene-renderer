@@ -236,6 +236,29 @@ TEST_SUITE("WPPropertyScriptExtract") {
         CHECK(out.empty());
     }
 
+    TEST_CASE("instanceoverride.rate with script=null → skipped (no throw)") {
+        // Workshop wallpapers Toyota Supra (2162986216) and DOOM ETERNAL
+        // (1777578078) ship `{"script": null}` in their instanceoverride.rate
+        // block — apparently the WE editor leaves the key behind after a
+        // user clears the script. Pre-fix, `.get<std::string>()` raised
+        // nlohmann type_error 302 and aborted scene loading mid-parse.
+        std::vector<ScenePropertyScript> out;
+        njson                            obj = njson {
+                                       { "id", 12 },
+                                       { "instanceoverride",
+                                         njson {
+                                             { "rate",
+                                               njson {
+                                                   { "value", 1.0 },
+                                                   { "script", nullptr },
+                    } },
+              } },
+        };
+        CHECK_NOTHROW(wek::extractParticleInstanceOverrideScripts(
+            12, "p", obj, Attachment::Object, -1, out));
+        CHECK(out.empty());
+    }
+
     TEST_CASE("instanceoverride missing → no output, no throw") {
         std::vector<ScenePropertyScript> out;
         njson                            obj = njson { { "id", 7 } };
