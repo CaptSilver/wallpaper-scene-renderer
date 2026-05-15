@@ -2595,6 +2595,19 @@ void SceneObject::setupTextScripts() {
         "  }\n"
         // Pool never registered for this path — pre-scan missed it.  Loudly
         // report so the caller can extend the scan (see feedback_no_stubs).
+        // Exception: if the caller passed `undefined`/`null`/empty string —
+        // that's a wallpaper-side bug (Lazarus 2881607945 ships a script that
+        // calls createLayer with an undefined variable) and not something
+        // our pre-scan could ever catch.  Skip the loud report quietly.
+        "  if (path === undefined || path === null || path === '') {\n"
+        "    return { __stub: true, __asset: '',\n"
+        "      origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
+        "      alpha: 1.0, visible: true, text: '',\n"
+        "      isObjectValid: function() { return false; },\n"
+        "      getAnimation: function(n) {\n"
+        "        return { play:function(){}, stop:function(){}, pause:function(){},\n"
+        "                 isPlaying:function(){ return false; } }; } };\n"
+        "  }\n"
         "  console.log('createLayer NO-POOL: path=' + path +\n"
         "              ' (pre-scan did not register this asset)');\n"
         "  return { __stub: true, __asset: path,\n"

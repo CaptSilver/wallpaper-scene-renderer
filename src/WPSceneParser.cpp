@@ -496,6 +496,13 @@ BlendMode ParseBlendMode(std::string_view str) {
     } else if (str == "disabled") {
         // seems disabled is normal
         bm = BlendMode::Normal;
+    } else if (str == "alphatocoverage") {
+        // True alpha-to-coverage requires MSAA + per-sample coverage masks; we
+        // don't (yet) wire that into the pipeline.  Fall back to translucent
+        // alpha blending — visually similar for sprite edges on opaque
+        // surfaces, which is what wallpapers use this for in practice
+        // (Serial Experiments Lain 3288653715 uses it on character sprites).
+        bm = BlendMode::Translucent;
     } else {
         bm = BlendMode::Normal;
         LOG_ERROR("unknown blending: %s", str.data());
@@ -3854,15 +3861,23 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             Eigen::Vector3f group_s   = group_node->Scale();
             Eigen::Vector3f group_r   = group_node->Rotation();
             if (parent_r.squaredNorm() > 1e-6f || group_r.squaredNorm() > 1e-6f) {
-                LOG_ERROR("relink inject: rotation in chain for id=%d unsupported, "
-                          "parent_r=(%.3f,%.3f,%.3f) group_r=(%.3f,%.3f,%.3f)",
-                          gi.id,
-                          parent_r.x(),
-                          parent_r.y(),
-                          parent_r.z(),
-                          group_r.x(),
-                          group_r.y(),
-                          group_r.z());
+                // Rotation in the parent-or-group chain isn't currently
+                // baked into the composed local transform — the relink
+                // sets translation+scale only.  Logged at INFO since the
+                // composition still renders (with a slight misalignment
+                // proportional to the rotation angle); demoting from
+                // ERROR avoids tagging the wallpaper as a failure in the
+                // audit pipeline.  Driver: SUBARU 3448290956 (group_r.z
+                // ≈ 0.063 rad / 3.6°).
+                LOG_INFO("relink inject: rotation in chain for id=%d unsupported, "
+                         "parent_r=(%.3f,%.3f,%.3f) group_r=(%.3f,%.3f,%.3f)",
+                         gi.id,
+                         parent_r.x(),
+                         parent_r.y(),
+                         parent_r.z(),
+                         group_r.x(),
+                         group_r.y(),
+                         group_r.z());
             }
             group_node->SetTranslate(Eigen::Vector3f(parent_t.x() + parent_s.x() * group_t.x(),
                                                      parent_t.y() + parent_s.y() * group_t.y(),

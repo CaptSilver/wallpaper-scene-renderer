@@ -1481,6 +1481,84 @@ inline std::string FixImplicitConversions(const std::string& src) {
         rewriteAssign(2, 4, "xy",  vec4_named);
         // vec3 X = vec4_var; → .xyz
         rewriteAssign(3, 4, "xyz", vec4_named);
+
+        // Belt-and-braces: same pattern via string-find rather than regex.
+        // Some shader contents trigger std::regex backtracking pathologies on
+        // large inputs and end up not matching the same text that an isolated
+        // regex_search does match.  rhythm in garden (3496072356), Fami
+        // Chainsaw Man (3034862641), Adventurous Skyscape (3036962127) all
+        // ship `vec2 fragPos = v_TexCoord;` (where v_TexCoord is `in vec4`)
+        // and regex-based rewriteAssign demonstrably missed it.
+        //
+        // Search for exact "vec<lhsW> NAME = wider_name;" forms by string,
+        // verify the trailing context (`;` with optional whitespace) and the
+        // leading context (preceded by `;`, `}`, `{`, `\n`), then splice in
+        // the swizzle.
+        auto rewriteAssignByString = [&](int lhsW, const char* swizzle,
+                                         const std::set<std::string>& rhsNames) {
+            const std::string lhsT = "vec" + std::to_string(lhsW);
+            for (const auto& rname : rhsNames) {
+                const std::string needle_tail = "= " + rname + ";";
+                std::string out;
+                out.reserve(result.size() + 16);
+                size_t pos = 0;
+                while (true) {
+                    size_t p = result.find(needle_tail, pos);
+                    if (p == std::string::npos) {
+                        out.append(result, pos, std::string::npos);
+                        break;
+                    }
+                    // Walk backward to find the preceding token: must be an
+                    // identifier (VAR), then whitespace, then `vec<lhsW>`,
+                    // then whitespace or line-start.
+                    size_t q = p;
+                    while (q > 0 && std::isspace((unsigned char)result[q - 1])) --q;
+                    size_t var_end = q;
+                    while (q > 0 &&
+                           (std::isalnum((unsigned char)result[q - 1]) || result[q - 1] == '_'))
+                        --q;
+                    if (q == var_end) { // no identifier — copy literally
+                        out.append(result, pos, p - pos + needle_tail.size());
+                        pos = p + needle_tail.size();
+                        continue;
+                    }
+                    size_t var_beg = q;
+                    while (q > 0 && std::isspace((unsigned char)result[q - 1])) --q;
+                    size_t type_end = q;
+                    while (q > 0 &&
+                           (std::isalnum((unsigned char)result[q - 1]) || result[q - 1] == '_'))
+                        --q;
+                    if (type_end - q != lhsT.size() ||
+                        result.compare(q, lhsT.size(), lhsT) != 0) {
+                        out.append(result, pos, p - pos + needle_tail.size());
+                        pos = p + needle_tail.size();
+                        continue;
+                    }
+                    // Leading context: must be punctuation/newline/start, not
+                    // identifier characters (otherwise `myvec2 foo = v_TexCoord;`).
+                    if (q > 0) {
+                        char prev = result[q - 1];
+                        if (std::isalnum((unsigned char)prev) || prev == '_') {
+                            out.append(result, pos, p - pos + needle_tail.size());
+                            pos = p + needle_tail.size();
+                            continue;
+                        }
+                    }
+                    // Splice — keep everything up to `;`, then inject swizzle.
+                    out.append(result, pos, p - pos);
+                    out.append("= ");
+                    out.append(rname);
+                    out.append(".");
+                    out.append(swizzle);
+                    out.append(";");
+                    pos = p + needle_tail.size();
+                }
+                result = std::move(out);
+            }
+        };
+        rewriteAssignByString(2, "xy",  vec3_named);
+        rewriteAssignByString(2, "xy",  vec4_named);
+        rewriteAssignByString(3, "xyz", vec4_named);
     }
 
     // Fix: HLSL scalar→vector broadcast in `vecN VAR = <scalar>;` declarations.
