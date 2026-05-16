@@ -53,24 +53,28 @@ constexpr uint32_t model_vertex_flag39 = 4 * (3 + 3 + 4 + 2 + 2);
 
 constexpr uint32_t singile_bone_frame = 4 * 9;
 
-bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl) {
+bool WPMdlParser::Parse(std::string_view path, fs::VFS& vfs, WPMdl& mdl, bool force_puppet) {
     WEK_PROFILE_SCOPE("WPMdlParser::Parse");
     auto str_path = std::string(path);
     auto pfile    = vfs.Open("/assets/" + str_path);
     if (! pfile) return false;
     auto memfile = fs::MemBinaryStream(*pfile);
-    return ParseStream(memfile, path, mdl);
+    return ParseStream(memfile, path, mdl, force_puppet);
 }
 
-bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl& mdl) {
+bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl& mdl,
+                              bool force_puppet) {
     mdl.mdlv = ReadMDLVesion(f);
 
     int32_t mdl_flag = f.ReadInt32();
 
-    // Non-puppet model formats: simple mesh data, no skeleton
+    // Non-puppet model formats: simple mesh data, no skeleton.
     // Flag is a bitmask: bit0=position, bit1=normal, bit2=tangent4, bit3=texcoord,
-    // bit5=texcoord1 (lightmap UVs)
-    if (mdl_flag == 9 || mdl_flag == 11 || mdl_flag == 15 || mdl_flag == 39) {
+    // bit5=texcoord1 (lightmap UVs).  v23+ puppets also store flag=9 at byte 9
+    // even though the layout is puppet-shaped — callers that know the file is
+    // a puppet (via `force_puppet=true`) skip this branch.
+    if (! force_puppet &&
+        (mdl_flag == 9 || mdl_flag == 11 || mdl_flag == 15 || mdl_flag == 39)) {
         f.ReadInt32(); // unk, always 1
         uint32_t submesh_count = f.ReadUint32();
 
@@ -81,21 +85,25 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         mdl.is_puppet = false;
         mdl.submeshes.resize(submesh_count);
 
-        // MDLV0023+ adds per-submesh bounding box and flags before vertex data
-        // (bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes) and 6
-        // bytes padding after index data.  Older mdlv (<=16, e.g. 3body's
-        // Hollow Cylinder.mdl) only has the flags_repeat uint32 before
-        // vertex_size — no bbox.  Reading the flags_repeat as vertex_size
-        // would produce vertex_size=15 which fails the stride check.
+        // Versions 17+ add per-submesh bounding box and flags before vertex
+        // data (bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes).
+        // V23+ also has 6 bytes padding after index data.  V16 only has the
+        // flags_repeat uint32 before vertex_size — no bbox.  Reading the
+        // flags_repeat as vertex_size would produce vertex_size=15 which fails
+        // the stride check.
+        // Drivers: Starscape (3047596375, v17), Falling Deeper (3061226599,
+        // v19) — bbox before vertex_size, NO trailing pad.  3body's Hollow
+        // Cylinder.mdl (v16) is flags-only.
+        const bool has_bbox     = (mdl.mdlv >= 17);
         const bool v23          = (mdl.mdlv >= 23);
-        const bool v_flags_only = (mdl.mdlv >= 16 && mdl.mdlv < 23);
+        const bool v_flags_only = (mdl.mdlv == 16);
 
         for (uint32_t si = 0; si < submesh_count; si++) {
             auto& sub         = mdl.submeshes[si];
             sub.mat_json_file = f.ReadStr();
             f.ReadInt32(); // 0
 
-            if (v23) {
+            if (has_bbox) {
                 // Skip bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes.
                 // Byte-skip via SeekCur avoids a loop of discarded ReadFloat() calls
                 // that Mull would mutate without observable effect.
@@ -211,8 +219,14 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
     // 0
     f.ReadInt32();
 
-    // MDLV0023+ inserts bbox (bbox_min 3f + bbox_max 3f = 24 bytes)
-    if (mdl.mdlv >= 23) {
+    // Puppet pre-vertex-size skip:
+    //   v16 :  0 bytes (no bbox).  Chill Time (2925278995).
+    //   v17+:  24 bytes (bbox only).  Totoro (2891663007, v19), Hatsune Miku
+    //          test fixture v23.
+    // NOTE: Real-world v23 puppets with flag=9 (e.g. Hatsune Miku 3354366708)
+    // are actually model-shaped and never enter this branch — they are caught
+    // by the non-puppet `(flag in {9,11,15,39})` dispatch above.
+    if (mdl.mdlv >= 17) {
         f.SeekCur(24);
     }
 

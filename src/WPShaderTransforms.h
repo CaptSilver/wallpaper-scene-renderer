@@ -527,8 +527,26 @@ inline std::string FixImplicitConversions(const std::string& src) {
         };
         const auto local_vec2 = collectLocal("vec2");
         const auto local_vec3 = collectLocal("vec3");
-        fixArithSwizzleTrunc(local_vec2, 2);
-        fixArithSwizzleTrunc(local_vec3, 3);
+        // Skip shadowed names from Trunc: if a name is declared at multiple
+        // widths in different scopes, truncating its swizzle for one scope
+        // can break the other.  Daisies (3501635854) ships `vec3 p` in
+        // hsv2rgb AND `vec2 p` in main; the main scope's `p + e.xyy` needs
+        // the swizzle truncated to `e.xy`, but the hsv2rgb scope's
+        // `p - K.xx` needs `K.xx` expanded to `K.xxx`.  Letting Trunc fire
+        // for both `p` interpretations corrupts one.  Skip — my vec2-to-
+        // vec3 broadcast pass (further down) handles the main-scope case
+        // by wrapping the vec2 in `vec3(p, 0.0)`.
+        auto withoutShadowed = [](const std::set<std::string>& src,
+                                  const std::set<std::string>& shadow) {
+            std::set<std::string> out;
+            for (const auto& s : src)
+                if (! shadow.count(s)) out.insert(s);
+            return out;
+        };
+        const auto trunc_vec2 = withoutShadowed(local_vec2, local_vec3);
+        const auto trunc_vec3 = withoutShadowed(local_vec3, local_vec2);
+        fixArithSwizzleTrunc(trunc_vec2, 2);
+        fixArithSwizzleTrunc(trunc_vec3, 3);
 
         // Fix: HLSL implicit vector truncation — larger variable OP smaller swizzle.
         // Instead of truncating the variable (which cascades mismatches downstream),
@@ -570,6 +588,12 @@ inline std::string FixImplicitConversions(const std::string& src) {
             }
         };
         const auto local_vec4 = collectLocal("vec4");
+        // Expand runs for ALL names — including those shadowed at narrower
+        // widths.  The Trunc pass above already skipped shadowed names, so
+        // Expand and Trunc don't conflict.  For genuinely-shadowed names,
+        // Expand handles the wider-scope case (e.g. hsv2rgb's vec3 p) and
+        // the broadcast pass (further down) handles the narrower-scope case
+        // (e.g. main's vec2 p).
         // vec3 var OP 2-component swizzle → expand swizzle to 3
         fixArithSwizzleExpand(local_vec3, 3, 2);
         // vec4 var OP 2-component swizzle → expand swizzle to 4
@@ -672,6 +696,26 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"(([\=\(,]\s*)(\d+)(\s*\?))");
         result = std::regex_replace(result, re, "$1bool($2)$3");
+    }
+
+    // Fix: float identifier as ternary condition → bool()
+    // HLSL accepts any nonzero numeric in ternary cond; GLSL requires bool.
+    // Driver: The Blur (3562086244) ships
+    //   float outside = 1.0; … vec4 final = outside ? inSmooth : outSmooth;
+    {
+        std::set<std::string> float_locals_for_ternary;
+        std::regex            re_floc(R"(\bfloat\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_floc);
+             it != std::sregex_iterator(); ++it)
+            float_locals_for_ternary.insert((*it)[1].str());
+        for (const auto& f : float_locals_for_ternary) {
+            // Match `<leading_punct> <whitespace> f <whitespace> ?` —
+            // leading punct rules out `foo.f`, `myF` etc.  The same f could
+            // appear in other contexts (e.g. `a.f`, `*f`); we only catch
+            // ternary-cond shape.
+            std::regex re_t(R"(([\=\(,;]\s*))" + f + R"((\s*\?))");
+            result = std::regex_replace(result, re_t, "$1bool(" + f + ")$2");
+        }
     }
 
     // Fix: if (<float-expression>) → if (bool(<float-expression>))
@@ -1130,6 +1174,277 @@ inline std::string FixImplicitConversions(const std::string& src) {
         result = std::move(out);
     }
 
+    // Fix: mix(<scalar_ident>, <vec_ident>, <scalar>) — broadcast arg0 to
+    // match arg1's vector rank.  HLSL's lerp() broadcasts scalar→vec; GLSL's
+    // mix expects matching ranks for arg0 and arg1.
+    //
+    // Driver: jake. (3353695150) workshop effect ships
+    //   vec3 vibrance(vec3 color, float luma) {
+    //       …
+    //       return mix(luma, color, (1.0 + (u_vibrance * (…))));
+    //   }
+    // luma is float, color is vec3 → arg0/arg1 rank mismatch.  Wrap as
+    // `mix(vec3(luma), color, …)`.
+    {
+        // Re-collect identifier types (same source might have been edited
+        // since the earlier mix pass).
+        std::set<std::string> float_idents2;
+        std::map<std::string, int> vec_idents2;
+        {
+            std::regex re_float(R"(\b(?:float|in\s+float|uniform\s+float)\s+(\w+)\s*[=;,)])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
+                 it != std::sregex_iterator(); ++it)
+                float_idents2.insert((*it)[1].str());
+            std::regex re_vecn(
+                R"(\b(?:uniform|in|out|varying)?\s*vec([234])\s+(\w+)\s*[=;,)])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vecn);
+                 it != std::sregex_iterator(); ++it)
+                vec_idents2[(*it)[2].str()] = (*it)[1].str()[0] - '0';
+        }
+        // Match `mix(<ident>, <ident>, ...)` exactly — both args are
+        // single identifiers, comma-separated at depth 0.
+        std::string out2;
+        out2.reserve(result.size());
+        size_t i2 = 0;
+        while (i2 < result.size()) {
+            bool word_boundary2 =
+                (i2 == 0) || (! std::isalnum((unsigned char)result[i2 - 1]) &&
+                              result[i2 - 1] != '_');
+            if (! (word_boundary2 && i2 + 3 <= result.size() &&
+                   result.compare(i2, 3, "mix") == 0 &&
+                   (i2 + 3 == result.size() ||
+                    (! std::isalnum((unsigned char)result[i2 + 3]) &&
+                     result[i2 + 3] != '_')))) {
+                out2.push_back(result[i2++]);
+                continue;
+            }
+            size_t j = i2 + 3;
+            while (j < result.size() && std::isspace((unsigned char)result[j])) ++j;
+            if (j >= result.size() || result[j] != '(') {
+                out2.push_back(result[i2++]);
+                continue;
+            }
+            size_t close = findMatchingParen(result, j);
+            if (close == std::string::npos) {
+                out2.push_back(result[i2++]);
+                continue;
+            }
+            std::vector<std::pair<size_t, size_t>> a;
+            int                                    d  = 0;
+            size_t                                 sa = j + 1;
+            for (size_t k = j + 1; k + 1 < close; ++k) {
+                char c = result[k];
+                if (c == '(' || c == '[') ++d;
+                else if (c == ')' || c == ']') --d;
+                else if (c == ',' && d == 0) { a.push_back({ sa, k }); sa = k + 1; }
+            }
+            a.push_back({ sa, close - 1 });
+            if (a.size() != 3) { out2.push_back(result[i2++]); continue; }
+
+            auto trimid = [&](size_t s, size_t e) {
+                while (s < e && std::isspace((unsigned char)result[s])) ++s;
+                while (e > s && std::isspace((unsigned char)result[e - 1])) --e;
+                std::string id;
+                bool        plain = (e > s);
+                for (size_t k = s; k < e && plain; ++k) {
+                    char c = result[k];
+                    if (! (std::isalnum((unsigned char)c) || c == '_')) plain = false;
+                }
+                return plain ? std::string(result, s, e - s) : std::string();
+            };
+            std::string a0 = trimid(a[0].first, a[0].second);
+            std::string a1 = trimid(a[1].first, a[1].second);
+            auto vit = vec_idents2.find(a1);
+            if (a0.empty() || a1.empty() || ! float_idents2.count(a0) ||
+                vit == vec_idents2.end()) {
+                out2.push_back(result[i2++]);
+                continue;
+            }
+            // Wrap arg0 in vecN(...) matching arg1's rank.
+            std::string Ns(1, char('0' + vit->second));
+            out2.append("mix(vec").append(Ns).append("(").append(a0).append(")");
+            out2.append(",");
+            out2.append(result, a[1].first, a[1].second - a[1].first);
+            out2.append(",");
+            out2.append(result, a[2].first, a[2].second - a[2].first);
+            out2.push_back(')');
+            i2 = close;
+        }
+        result = std::move(out2);
+    }
+
+    // Fix: GLSL builtins reject `int` arg when overload expects `float`.
+    // HLSL silently promotes; GLSL doesn't.  Driver: Cybering (2326102392)
+    // ships `step(0, uv) * step(uv, 1)` — `0` and `1` are integer literals,
+    // `uv` is vec2.  glslang reports "step: no matching overloaded function".
+    // Rewrite bare integer literals adjacent to `,` or `(` inside the args of
+    // these builtins to float form (`0` → `0.0`, `1` → `1.0`).
+    {
+        // Match `<builtin>(<args>)` and convert `<int_literal>` arg tokens.
+        // Recursive: descends into nested calls so cases like
+        //   step(0.99, _wedot(step(0, uv) * step(uv, 1), …))
+        // also promote the inner `step(0,…)`/`step(…,1)` literals.
+        static const std::set<std::string> int_to_float_builtins = {
+            "step", "smoothstep", "mix", "clamp", "min", "max",
+            "_wemn", "_wemx", "pow", "_wep", "atan", "mod"
+        };
+        // Try to promote `result[arg_pos..end)` if it's an int-literal token.
+        // On success, emit the promoted form and advance `arg_pos`.
+        auto try_promote = [&](const std::string& src, size_t& arg_pos, size_t end,
+                               std::string& out_buf) -> bool {
+            size_t p = arg_pos;
+            while (p < end && std::isspace((unsigned char)src[p])) ++p;
+            size_t sign_end = p;
+            if (p < end && (src[p] == '+' || src[p] == '-')) ++p;
+            while (p < end && std::isspace((unsigned char)src[p])) ++p;
+            size_t num_start = p;
+            while (p < end && std::isdigit((unsigned char)src[p])) ++p;
+            if (p == num_start) return false;
+            char next = (p < end) ? src[p] : ')';
+            bool is_int = (next != '.' && next != 'e' && next != 'E' &&
+                           next != 'x' && next != 'X' && next != 'b' && next != 'B');
+            if (! (is_int && (next == ',' || next == ')' ||
+                              std::isspace((unsigned char)next) ||
+                              next == '+' || next == '-' || next == '*' || next == '/')))
+                return false;
+            // Also reject if the digits are preceded by `_` or alnum (would be
+            // part of an identifier).  We've already walked back through
+            // whitespace and at most one sign char, so check `sign_end - 1`.
+            if (sign_end > arg_pos) {
+                // We have leading whitespace at arg_pos..sign_end-1 — no issue.
+            }
+            for (size_t q = arg_pos; q < p; ++q) out_buf.push_back(src[q]);
+            out_buf.append(".0");
+            arg_pos = p;
+            return true;
+        };
+        std::function<std::string(const std::string&)> promote;
+        promote = [&](const std::string& src) -> std::string {
+            std::string out;
+            out.reserve(src.size() + 32);
+            size_t i = 0;
+            while (i < src.size()) {
+                bool word_start = (i == 0) || (! std::isalnum((unsigned char)src[i - 1]) &&
+                                                src[i - 1] != '_');
+                if (! word_start) { out.push_back(src[i++]); continue; }
+                // Read identifier
+                size_t j = i;
+                while (j < src.size() &&
+                       (std::isalnum((unsigned char)src[j]) || src[j] == '_')) ++j;
+                if (j == i) { out.push_back(src[i++]); continue; }
+                std::string id(src, i, j - i);
+                // Skip whitespace, expect `(`
+                size_t k = j;
+                while (k < src.size() && std::isspace((unsigned char)src[k])) ++k;
+                if (k >= src.size() || src[k] != '(' ||
+                    ! int_to_float_builtins.count(id)) {
+                    // Not our function — emit identifier as-is.  Do NOT skip
+                    // past it; the outer loop will pick up at `j`.
+                    out.append(src, i, j - i);
+                    i = j;
+                    continue;
+                }
+                size_t close = findMatchingParen(src, k);
+                if (close == std::string::npos) {
+                    out.append(src, i, j - i);
+                    i = j;
+                    continue;
+                }
+                // Recurse on the args so nested builtin calls are promoted too.
+                std::string inner = promote(std::string(src, k + 1, (close - 1) - (k + 1)));
+                // Emit identifier + `(`
+                out.append(src, i, j - i);
+                for (size_t w = j; w <= k; ++w) out.push_back(src[w]);
+                // Walk `inner` and promote bare int literals at depth 0.
+                size_t arg_pos = 0;
+                int    depth   = 0;
+                // First arg has no preceding separator — check up front.
+                try_promote(inner, arg_pos, inner.size(), out);
+                while (arg_pos < inner.size()) {
+                    char c = inner[arg_pos];
+                    if (c == '(') ++depth;
+                    else if (c == ')') --depth;
+                    if (depth == 0 && (c == ',' || c == '(' ||
+                                       std::isspace((unsigned char)c) ||
+                                       c == '+' || c == '-' || c == '*' || c == '/')) {
+                        // Exponent-sign guard: `1e-6` must not become `1e-6.0`.
+                        // If `+/-` is preceded by `e/E` after a digit, this is
+                        // part of a float literal — emit it and skip promote.
+                        bool exponent_sign = false;
+                        if ((c == '+' || c == '-') && arg_pos > 0) {
+                            char prev = inner[arg_pos - 1];
+                            if (prev == 'e' || prev == 'E') {
+                                if (arg_pos > 1 &&
+                                    std::isdigit((unsigned char)inner[arg_pos - 2]))
+                                    exponent_sign = true;
+                            }
+                        }
+                        out.push_back(c);
+                        ++arg_pos;
+                        if (! exponent_sign)
+                            try_promote(inner, arg_pos, inner.size(), out);
+                        continue;
+                    }
+                    out.push_back(c);
+                    ++arg_pos;
+                }
+                out.push_back(')');
+                i = close;
+            }
+            return out;
+        };
+        result = promote(result);
+    }
+
+    // Fix: `vecN VAR = mix(<numeric_literal>, …, …);` — LHS-aware arg0
+    // broadcast.  Driver: Retro Island (2270319656) ships
+    //   vec3 shadows = mix(0.5, c_Stint * (…), 1.0 - t);
+    // HLSL broadcasts the `0.5` literal up to vec3; GLSL errors with "mix:
+    // no matching overloaded".  Wrap arg0 in `vecN(literal)` matching LHS.
+    {
+        std::regex re(
+            R"(\b(vec[234])(\s+\w+\s*=\s*mix\s*\()(\s*\d+(?:\.\d*)?(?:e[-+]?\d+)?\s*),)");
+        result = std::regex_replace(result, re, "$1$2$1($3),");
+    }
+
+    // Fix: `mix(<float_ident>, vec[234](<float_ident>), <scalar>)` — unwrap
+    // when BOTH args 0 and 1's inner are float scalars in the same context.
+    // Driver: The Blur (3562086244) ships
+    //   float BlendTransparency(float base, float blend, float opacity) {
+    //       …
+    //       return mix(base, vec3(transparency), opacity);
+    //   }
+    // Both `base` and `transparency` are float params.  The vec3(...) wrap
+    // around `transparency` is a wallpaper-author artifact; unwrap to
+    // `mix(base, transparency, opacity)` (all float).
+    //
+    // Only fire when BOTH arg0 and arg1's inner identifier are known floats
+    // (so we don't accidentally unwrap `mix(vec3_col, vec3(scalar), t)`
+    // which the broadcast pass deliberately produces).
+    {
+        std::set<std::string> float_idents_u;
+        std::regex re_fid(R"(\b(?:in\s+|out\s+|uniform\s+)?float\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fid);
+             it != std::sregex_iterator(); ++it)
+            float_idents_u.insert((*it)[1].str());
+
+        std::regex re(R"(\bmix\s*\(\s*(\w+)\s*,\s*vec[234]\s*\(\s*(\w+)\s*\)\s*,)");
+        std::string out_u;
+        out_u.reserve(result.size());
+        size_t lastPos = 0;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+             it != std::sregex_iterator(); ++it) {
+            std::string a0 = (*it)[1].str();
+            std::string a1 = (*it)[2].str();
+            if (! float_idents_u.count(a0) || ! float_idents_u.count(a1)) continue;
+            out_u.append(result, lastPos, it->position() - lastPos);
+            out_u.append("mix(").append(a0).append(", ").append(a1).append(",");
+            lastPos = it->position() + it->length();
+        }
+        out_u.append(result, lastPos, std::string::npos);
+        result = std::move(out_u);
+    }
+
     // Fix: (expr CMP expr) in arithmetic → float(expr CMP expr)
     // HLSL allows bool in arithmetic (true=1.0, false=0.0); GLSL does not.
     // Matches parenthesized comparison followed by arithmetic operator.
@@ -1438,6 +1753,158 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::regex re(R"(\bvec3\s+(\w+)\s*=\s*((?:vec4|texture\w*)\s*\([^;]*?\))\s*;)");
         result = std::regex_replace(result, re, "vec3 $1 = $2.xyz;");
+    }
+
+    // Fix: vec2_named OP <expr_with_3_swizzle> — HLSL broadcasts vec2 to vec3
+    // by appending 0.  GLSL rejects vec2+vec3 directly.  Driver: workshop
+    // effect 2892816289 dot_matrix_mobile_fix.frag (used by Daisies
+    // 3501635854, Bush N' Hydrangea 3411135006, Bush N' Roses 3335022037,
+    // Chill Time 2925278995, Into the Starfield 3028310305) ships
+    //   vec2 p = …, e = vec2(thickness, 0.0);
+    //   tetraNoise(p + e.xyy);  // e.xyy is vec3 → vec2+vec3 mismatch
+    // We rewrite `p + e.xyy` to `vec3(p, 0.0) + e.xyy`.  Same for `-`/`*`/`/`.
+    {
+        std::set<std::string> vec2_names;
+        std::regex re_v2(R"(\bvec2\s+(\w+)\s*[=;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_v2);
+             it != std::sregex_iterator(); ++it)
+            vec2_names.insert((*it)[1].str());
+        // Drop function/keyword names so we don't accidentally treat them as
+        // variable references (`vec2 max(...)` would put `max` in this set).
+        // Function declarations: `vec2 NAME(...)` — exclude names followed by `(`.
+        {
+            std::set<std::string> drop;
+            for (const auto& n : vec2_names) {
+                std::regex re_fn(R"(\bvec2\s+)" + n + R"(\s*\()");
+                if (std::regex_search(result, re_fn)) drop.insert(n);
+            }
+            for (const auto& d : drop) vec2_names.erase(d);
+        }
+
+        // Scope-aware: for each occurrence of `vname OP 3-swizzle`, walk
+        // backward to find the nearest preceding `vec[234] vname` decl.
+        // Only rewrite when that nearest decl is vec2.  Daisies (3501635854)
+        // shows the canonical shadowed-name case: `vec3 p` in hsv2rgb and
+        // `vec2 p` in main(); we want to wrap p in main but leave it alone
+        // in hsv2rgb.
+        auto nearest_decl_width = [&](size_t match_pos, const std::string& vname) -> int {
+            std::regex re_any(R"(\b(vec[234])\s+)" + vname + R"(\b)");
+            int        best_w = 0;
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_any);
+                 it != std::sregex_iterator(); ++it) {
+                size_t p = (size_t)it->position();
+                if (p >= match_pos) break;
+                std::string typ = (*it)[1].str();
+                if (typ == "vec2") best_w = 2;
+                else if (typ == "vec3") best_w = 3;
+                else if (typ == "vec4") best_w = 4;
+            }
+            return best_w;
+        };
+
+        // Function signature awareness: if the match site is the FIRST arg of
+        // a user function that takes a vec2 (e.g. Daisies' tetraNoise),
+        // truncate the 3-swizzle to 2 instead of broadcasting.  Walk forward
+        // from `vname` looking for a function name preceding a `(`.
+        std::map<std::string, int> user_fn_arg1_width;
+        {
+            std::regex re_fn(
+                R"(\b(?:float|int|uint|bool|void|vec[234])\s+(\w+)\s*\(\s*(?:in\s+)?(vec[234])\s+\w+)");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
+                 it != std::sregex_iterator(); ++it) {
+                std::string typ  = (*it)[2].str();
+                int         w    = (typ == "vec2") ? 2 : (typ == "vec3" ? 3 : 4);
+                user_fn_arg1_width[(*it)[1].str()] = w;
+            }
+        }
+        // Returns the function name whose call we're inside at `pos`, if any.
+        auto enclosing_call = [&](size_t pos) -> std::string {
+            // Walk backwards: track depth, find `name(` whose depth at pos is 1.
+            // For simplicity, find the nearest preceding `(` that's not yet
+            // closed at pos, then read the identifier before it.
+            int    depth = 0;
+            ssize_t open = -1;
+            for (ssize_t i = (ssize_t)pos - 1; i >= 0; --i) {
+                char c = result[i];
+                if (c == ')') ++depth;
+                else if (c == '(') {
+                    if (depth == 0) { open = i; break; }
+                    --depth;
+                }
+            }
+            if (open < 0) return {};
+            ssize_t e = open;
+            while (e > 0 && std::isspace((unsigned char)result[e - 1])) --e;
+            ssize_t s = e;
+            while (s > 0 && (std::isalnum((unsigned char)result[s - 1]) ||
+                             result[s - 1] == '_'))
+                --s;
+            if (s == e) return {};
+            return result.substr((size_t)s, (size_t)(e - s));
+        };
+
+        for (const auto& vname : vec2_names) {
+            // LHS form
+            std::regex re_lhs(R"(\b)" + vname +
+                              R"(\b(\s*[+\-*/]\s*)(\w+)\.([xyzwrgba]{3})\b)");
+            std::string out;
+            out.reserve(result.size());
+            size_t lastPos = 0;
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_lhs);
+                 it != std::sregex_iterator(); ++it) {
+                size_t pos = (size_t)it->position();
+                if (nearest_decl_width(pos, vname) != 2) continue;
+                std::string op       = (*it)[1].str();
+                std::string other    = (*it)[2].str();
+                std::string swiz     = (*it)[3].str();
+                std::string fn       = enclosing_call(pos);
+                auto        fit      = user_fn_arg1_width.find(fn);
+                bool        callee2  = (fit != user_fn_arg1_width.end() && fit->second == 2);
+                out.append(result, lastPos, pos - lastPos);
+                if (callee2) {
+                    // Function expects vec2 — truncate swizzle to 2.
+                    out.append(vname).append(op).append(other)
+                       .append(".").append(swiz.substr(0, 2));
+                } else {
+                    // Broadcast vec2 to vec3 to match the swizzle.
+                    out.append("vec3(").append(vname).append(", 0.0)")
+                       .append(op).append(other).append(".").append(swiz);
+                }
+                lastPos = pos + (size_t)it->length();
+            }
+            out.append(result, lastPos, std::string::npos);
+            result = std::move(out);
+            // RHS form
+            std::regex re_rhs(R"((\w+)\.([xyzwrgba]{3})(\s*[+\-*/]\s*)\b)" + vname +
+                              R"(\b)");
+            out.clear();
+            out.reserve(result.size());
+            lastPos = 0;
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_rhs);
+                 it != std::sregex_iterator(); ++it) {
+                size_t pos = (size_t)it->position();
+                size_t vpos = pos + (size_t)((*it)[1].length() + 1 + (*it)[2].length() +
+                                              (*it)[3].length());
+                if (nearest_decl_width(vpos, vname) != 2) continue;
+                std::string other    = (*it)[1].str();
+                std::string swiz     = (*it)[2].str();
+                std::string op       = (*it)[3].str();
+                std::string fn       = enclosing_call(pos);
+                auto        fit      = user_fn_arg1_width.find(fn);
+                bool        callee2  = (fit != user_fn_arg1_width.end() && fit->second == 2);
+                out.append(result, lastPos, pos - lastPos);
+                if (callee2) {
+                    out.append(other).append(".").append(swiz.substr(0, 2))
+                       .append(op).append(vname);
+                } else {
+                    out.append(other).append(".").append(swiz).append(op)
+                       .append("vec3(").append(vname).append(", 0.0)");
+                }
+                lastPos = pos + (size_t)it->length();
+            }
+            out.append(result, lastPos, std::string::npos);
+            result = std::move(out);
+        }
     }
 
     // Fix: "vec<narrow> VAR = wider_var;" — HLSL narrowing assignment.
@@ -2228,6 +2695,172 @@ inline std::string FixImplicitConversions(const std::string& src) {
                               R"(\s*([,\)]))");
                 result = std::regex_replace(result, re, fname + "(" + vname + "." + swiz + "$1");
             }
+        }
+    }
+
+    // Fix: HLSL-style brace-list constructors `vec4({1,2,3,4})` are accepted
+    // by HLSL but rejected by GLSL ("syntax error, unexpected LEFT_BRACE").
+    // Driver: Now Playing (2883312700) ships
+    //   vec4 albedo = vec4({ 1.0, 1.0, 1.0, 0.0 });
+    // Strip the inner braces so the constructor is `vec4(1.0,1.0,1.0,0.0)`.
+    {
+        std::regex re(R"((vec[234])\s*\(\s*\{([^{}]*)\}\s*\))");
+        result = std::regex_replace(result, re, "$1($2)");
+    }
+
+    // Fix: HLSL implicit bool→float in arithmetic.  GLSL has no operator for
+    // `float * bool` or `bool * float`; the comparison must be wrapped in
+    // `float()`.  Driver: Mikey Tokyo Revengers (2622312893) ships
+    //   return float(f >= 0) * (f < 1);
+    // We detect `<lhs> * ( <bool_expr> )` and `( <bool_expr> ) * <rhs>` at
+    // depth 0 and wrap the bool expression in `float(...)`.  Bool expressions
+    // are recognised by the presence of `<`, `>`, `<=`, `>=`, `==`, `!=`.
+    {
+        // Right-hand bool: `* ( ... CMP ... )`
+        std::regex re1(R"(\*\s*\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\))");
+        result = std::regex_replace(result, re1, "* float($1)");
+        // Left-hand bool: `( ... CMP ... ) *` — only when not already wrapped
+        // in a float(/vec[234]( cast.
+        std::regex re2(R"(([^A-Za-z0-9_])\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\)\s*\*)");
+        result = std::regex_replace(result, re2, "$1float($2) *");
+    }
+
+    // Fix: `float NAME = step(scalar, vec_var);` — step propagates the wider
+    // arg's dimension, returning a vec.  GLSL refuses vec→float init.
+    // Driver: cyberpunk edgerunners (2885492021):
+    //   float r = step(1.0, albedo);   // albedo is vec4
+    // Append `.x` to the call.  Restricted to `step`/`_westep`: other builtins
+    // either accept scalar-broadcast (min/max/clamp) and stay scalar, or have
+    // less-clear propagation rules that produce false positives (e.g.
+    // `_wemx(_wedot(N, H), 0.0)` returns float despite N,H being vec3).
+    {
+        // Re-collect vec[234] vars at this point (declarations may have been
+        // rewritten by earlier passes).
+        auto collectV = [&](const char* type) {
+            std::set<std::string> v;
+            std::regex re(std::string(R"(\b)") + type + R"(\s+(\w+)\s*[;=,)\[])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator(); ++it)
+                v.insert((*it)[1].str());
+            return v;
+        };
+        std::set<std::string> vec_vars;
+        for (const char* t : { "vec2", "vec3", "vec4" }) {
+            auto s = collectV(t);
+            vec_vars.insert(s.begin(), s.end());
+        }
+        for (const char* fn : { "step", "_westep" }) {
+            std::regex re(std::string(R"(\bfloat\s+(\w+)\s*=\s*)") + fn +
+                          R"(\s*\(([^()]+),\s*([^()]+)\)\s*;)");
+            regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+                // step's result is vec only when an arg is a BARE vec (no
+                // narrowing swizzle).  `v_TexCoord.z` is float, `albedo` is
+                // vec4.  Require a vec_var without trailing `.x/.y/.z/.w` etc.,
+                // OR a `vec[234](...)` constructor, OR `texture(...)` (vec4).
+                auto is_vec_arg = [&](const std::string& a) {
+                    if (a.find("texture(") != std::string::npos ||
+                        a.find("vec2(") != std::string::npos ||
+                        a.find("vec3(") != std::string::npos ||
+                        a.find("vec4(") != std::string::npos)
+                        return true;
+                    for (const auto& v : vec_vars) {
+                        std::regex re_v(std::string(R"(\b)") + v + R"(\b(?!\.))");
+                        if (std::regex_search(a, re_v)) return true;
+                    }
+                    return false;
+                };
+                if (! is_vec_arg(m[2].str()) && ! is_vec_arg(m[3].str()))
+                    return m[0].str();
+                return std::string("float ") + m[1].str() + " = " + fn + "(" +
+                       m[2].str() + ", " + m[3].str() + ").x;";
+            });
+        }
+    }
+
+    // Fix: `const TYPE NAME = EXPR;` where EXPR is not a compile-time
+    // constant is rejected by GLSL 330 ("non-constant initializer").  HLSL
+    // accepts.  Drivers:
+    //   发光少女 (3287715210): `const float cosAngle = cos(radians(u_hueShift));`
+    //   cyberpunk edgerunners (2885492021): `const vec4 __vec4 = vec4(albedo.rgb, 0.0);`
+    // Drop `const` when the initializer contains:
+    //   - A uniform reference (`u_`/`g_`),
+    //   - A non-constructor function call (`cos(`, `mix(`, ...),
+    //   - Member access (`.<word>`) on a local — almost always non-const.
+    // Keep `const` only when the initializer is a literal or a `vec[234](`/
+    // `mat[234](`/`float(`/`int(` constructor wrapping literals.
+    {
+        std::regex re(R"(\bconst\s+(float|vec[234]|mat[234])\s+(\w+)\s*=\s*([^;]+);)");
+        regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+            std::string init = m[3].str();
+            bool non_const = false;
+            if (init.find("u_") != std::string::npos ||
+                init.find("g_") != std::string::npos)
+                non_const = true;
+            if (! non_const) {
+                std::regex re_dot(R"(\.\s*[A-Za-z_])");
+                if (std::regex_search(init, re_dot)) non_const = true;
+            }
+            if (! non_const) {
+                std::regex re_fn(R"(\b([A-Za-z_]\w*)\s*\()");
+                for (auto it = std::sregex_iterator(init.begin(), init.end(), re_fn);
+                     it != std::sregex_iterator(); ++it) {
+                    std::string name = (*it)[1].str();
+                    if (name == "vec2" || name == "vec3" || name == "vec4" ||
+                        name == "mat2" || name == "mat3" || name == "mat4" ||
+                        name == "float" || name == "int")
+                        continue;
+                    non_const = true;
+                    break;
+                }
+            }
+            if (! non_const) return m[0].str();
+            return m[1].str() + " " + m[2].str() + " = " + init + ";";
+        });
+    }
+
+    // Fix: `int NAME = step/_westep/etc(...)` — these builtins return float;
+    // GLSL refuses float→int implicit narrowing.  Driver: Chill Time
+    // (2925278995):
+    //   int bar = _westep(1 - shapeCoord.y, barHeight);
+    // Re-declare as float; the usage sites (multiplication with float, etc.)
+    // accept the wider type without further change.
+    {
+        std::regex re(R"(\bint\s+(\w+)\s*=\s*(step|_westep|smoothstep|mix|min|max|clamp|_wemn|_wemx|abs|sign|floor|ceil|fract|sin|cos|tan|exp|log|sqrt|pow|_wep|mod|atan|asin|acos)\s*\()");
+        result = std::regex_replace(result, re, "float $1 = $2(");
+    }
+
+    // Fix: `smoothstep(VEC_VAR, VEC_VAR OP SCALAR, SCALAR)` — GLSL refuses
+    // mixed-width smoothstep.  HLSL author intent was likely all-scalar.
+    // Driver: Mikey Tokyo Revengers (2622312893):
+    //   vec2 dist = vec2(length(g.cuv + o));
+    //   fragLV += smoothstep(dist, dist + smoothing, thresh);
+    // dist was `vec2(scalar)` — both components equal.  Narrow first two args
+    // to `.x` so smoothstep(float, float, float) → float.
+    {
+        // Collect vec[234] vars from declarations (any scope).
+        auto collectV2 = [&](const char* type) {
+            std::set<std::string> v;
+            std::regex re(std::string(R"(\b)") + type +
+                          R"(\s+(\w+)\s*[;=,)\[])");
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
+                 it != std::sregex_iterator(); ++it)
+                v.insert((*it)[1].str());
+            return v;
+        };
+        std::set<std::string> vec_vars;
+        for (const char* t : { "vec2", "vec3", "vec4" }) {
+            auto s = collectV2(t);
+            vec_vars.insert(s.begin(), s.end());
+        }
+        if (! vec_vars.empty()) {
+            std::regex re(R"(\bsmoothstep\s*\(\s*(\w+)\s*,\s*(\w+)\s*([+\-*/])\s*(\w+)\s*,\s*(\w+)\s*\))");
+            regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+                std::string a1 = m[1].str();
+                std::string a2 = m[2].str();
+                if (a1 != a2 || ! vec_vars.count(a1)) return m[0].str();
+                return std::string("smoothstep(") + a1 + ".x, " + a2 + ".x " +
+                       m[3].str() + " " + m[4].str() + ", " + m[5].str() + ")";
+            });
         }
     }
 

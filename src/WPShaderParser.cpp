@@ -608,6 +608,45 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
                                      "\\s*\\()[^;]+);");
                 src =
                     std::regex_replace(src, re_assign, name + "$1" + new_type + "($2" + pad + ");");
+            } else if (std::string(io_kw) == "in") {
+                // After widening fragment's `in vec2 v_TexCoord;` → `vec4`,
+                // any bare reference to v_TexCoord that expected the OLD
+                // narrower type (assignments, function args, texture coords)
+                // becomes a type mismatch.  FixImplicitConversions already
+                // ran for this stage and recorded v_TexCoord as vec2.
+                //
+                // Rather than patching specific sinks (texture(), assignment,
+                // user fn args, etc.), append the original-width swizzle to
+                // EVERY bare reference of `name` that isn't already swizzled
+                // and isn't part of the declaration.  This restores the
+                // original-width semantics throughout, matching what would
+                // have happened if FixImplicitConversions had seen the upgrade.
+                //
+                // Drivers: Fami (3034862641), Adventurous (3036962127),
+                // rhythm in garden (3496072356); Jett × Jinx (3031735486).
+                int od = dim(old_type), nd = dim(new_type);
+                if (nd > od) {
+                    const char* swz_old =
+                        (od == 1) ? ".x" : (od == 2) ? ".xy" : ".xyz";
+                    // Bare name → name.<swz_old>.  Skip names already followed
+                    // by `.` (already swizzled) or `(` (function call shadow).
+                    std::regex re_use(std::string("\\b") + name +
+                                      R"(\b(?![\.\(]))");
+                    src = std::regex_replace(src, re_use, name + swz_old);
+                    // Repair the declaration which got over-swizzled by the
+                    // pass above: `in NEWTYPE name.<swz>;` → `in NEWTYPE name;`.
+                    std::regex re_decl_swz(std::string("\\bin\\s+") + new_type +
+                                           R"(\s+)" + name + R"(\.\w+\s*;)");
+                    src = std::regex_replace(
+                        src, re_decl_swz, "in " + new_type + " " + name + ";");
+                    // Also repair if author used `varying NEWTYPE name.<swz>;`.
+                    std::regex re_decl_var(std::string("\\bvarying\\s+") +
+                                           new_type + R"(\s+)" + name +
+                                           R"(\.\w+\s*;)");
+                    src = std::regex_replace(src, re_decl_var,
+                                             "varying " + new_type + " " +
+                                                 name + ";");
+                }
             }
         };
 
@@ -630,6 +669,49 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
                     in_changed = true;
                 }
             }
+
+            // Reconcile uniforms with mismatched types across stages.  Driver:
+            // The Blur (3562086244) — `uniform vec2 u_refResolution` in vert
+            // but `uniform float u_refResolution` in frag.  GLSL linker errors
+            // with "Types must match".  We widen the narrower stage's
+            // declaration to match the wider, and rewrite bare references in
+            // that stage to swizzle to the original width.
+            auto vertUniforms = parseVaryings(units[pair].src, "uniform");
+            auto fragUniforms = parseVaryings(units[pair + 1].src, "uniform");
+            auto reconcileUniform = [&dim](std::string&       src,
+                                           const std::string& name,
+                                           const std::string& old_type,
+                                           const std::string& new_type) {
+                int od = dim(old_type), nd = dim(new_type);
+                if (od == 0 || nd == 0 || nd <= od) return;
+                // Rewrite every bare `name` reference to `name.<swz>` first.
+                // This includes the declaration, which we'll fix in step 2.
+                // The original-type-width swizzle preserves arithmetic
+                // semantics (e.g. `name * 0.05` stays a scalar via `.x`).
+                const char* swz = (od == 1) ? ".x" : (od == 2) ? ".xy" : ".xyz";
+                std::regex re_use(R"(\b)" + name + R"(\b(?!\.))");
+                src = std::regex_replace(src, re_use, name + swz);
+                // Now repair the declaration: `uniform OLD name.<swz>;` →
+                // `uniform NEW name;`.
+                std::regex re_decl(R"(\buniform\s+)" + old_type + R"(\s+)" +
+                                   name + R"(\.\w+\s*;)");
+                src = std::regex_replace(
+                    src, re_decl, "uniform " + new_type + " " + name + ";");
+            };
+            for (auto& [name, vtype] : vertUniforms) {
+                auto it = fragUniforms.find(name);
+                if (it == fragUniforms.end() || it->second == vtype) continue;
+                int vd = dim(vtype), fd = dim(it->second);
+                if (vd == 0 || fd == 0) continue;
+                if (vd > fd) {
+                    reconcileUniform(units[pair + 1].src, name, it->second, vtype);
+                    in_changed = true;
+                } else {
+                    reconcileUniform(units[pair].src, name, vtype, it->second);
+                    out_changed = true;
+                }
+            }
+
             if (out_changed) vunits[pair].src = units[pair].src;
             if (in_changed) vunits[pair + 1].src = units[pair + 1].src;
         }

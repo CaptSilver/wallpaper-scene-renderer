@@ -2198,6 +2198,82 @@ TEST_SUITE("FixImplicitConversions.scalarBroadcast") {
         CHECK(result.find("v_TexCoord.xy.xy") == std::string::npos);
     }
 
+    TEST_CASE("vec2 + vec3-swizzle is fixed (either truncated or broadcast)") {
+        // Workshop effect 2892816289 (Daisies / Bush / Chill / Into-the-
+        // Starfield share it) ships `tetraNoise(p + e.xyy)` where p is vec2
+        // and e.xyy is vec3.  Existing fixArithSwizzleTrunc truncates
+        // `e.xyy` → `e.xy` (since tetraNoise actually takes vec2 here).  When
+        // the function expects vec3 instead, my new broadcast wraps p in
+        // `vec3(p, 0.0)`.  Either resolves the vec2+vec3 mismatch.
+        std::string in =
+            "void main() {\n"
+            "  vec2 p = vec2(0.0);\n"
+            "  vec2 e = vec2(0.0);\n"
+            "  float r = tetraNoise(p + e.xyy);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        bool ok = result.find("e.xy)") != std::string::npos ||
+                  result.find("vec3(p, 0.0) + e.xyy") != std::string::npos;
+        CHECK(ok);
+    }
+
+    TEST_CASE("shadowed-name vec2+3-swizzle is handled by scope-aware broadcast") {
+        // Daisies (3501635854) and Bush family share workshop effect
+        // 2892816289 which declares `vec3 p` inside hsv2rgb AND `vec2 p` in
+        // main() — both scopes coexist in the dumped shader.
+        //
+        // fixArithSwizzleTrunc skips shadowed names (otherwise truncating
+        // `e.xyy` to `e.xy` in main scope would be re-expanded by
+        // fixArithSwizzleExpand when it iterates vec3-named `p`).  The
+        // scope-aware broadcast pass walks backward from each `p OP 3swiz`
+        // match to find the nearest preceding `vec[234] p` declaration; only
+        // rewrites when that nearest decl is vec2.  Output in main scope:
+        // `vec3(p, 0.0) + e.xyy` (valid vec3+vec3).  hsv2rgb's `p - K.xx`
+        // gets a 3-swizzle expansion via fixArithSwizzleExpand → `p - K.xxx`.
+        std::string in =
+            "vec3 hsv2rgb(vec3 c) {\n"
+            "  vec3 p = c.xyz;\n"
+            "  return p;\n"
+            "}\n"
+            "void main() {\n"
+            "  vec2 p = vec2(0.0);\n"
+            "  vec2 e = vec2(0.0);\n"
+            "  float r = tetraNoise(p + e.xyy);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        auto pos = result.find("void main()");
+        REQUIRE(pos != std::string::npos);
+        std::string main_body = result.substr(pos);
+        // main scope: `p` wrapped as vec3
+        CHECK(main_body.find("vec3(p, 0.0) + e.xyy") != std::string::npos);
+        // hsv2rgb scope: `p` left alone (it's vec3 there)
+        std::string hsv_body = result.substr(0, pos);
+        CHECK(hsv_body.find("vec3(p, 0.0)") == std::string::npos);
+    }
+
+    TEST_CASE("vec2 + 3-swizzle with vec3-shadow: only main-scope vec2 gets wrapped") {
+        // `v` declared as vec3 in myFunc AND vec2 in main.  Scope-aware
+        // broadcast wraps `v` in main but not in myFunc.
+        std::string in =
+            "vec3 myFunc(vec3 v) {\n"
+            "  vec3 v = vec3(0.0);\n"
+            "  return v;\n"
+            "}\n"
+            "void main() {\n"
+            "  vec2 v = vec2(0.0);\n"
+            "  vec2 e = vec2(0.0);\n"
+            "  float r = tetraNoise(v + e.xyy);\n"
+            "}\n";
+        auto result = FixImplicitConversions(in);
+        auto pos = result.find("void main()");
+        REQUIRE(pos != std::string::npos);
+        // Wrap appears only in main body (vec2 scope)
+        std::string main_body = result.substr(pos);
+        std::string func_body = result.substr(0, pos);
+        CHECK(main_body.find("vec3(v, 0.0)") != std::string::npos);
+        CHECK(func_body.find("vec3(v, 0.0)") == std::string::npos);
+    }
+
     TEST_CASE("global const vecN init referencing uniform drops const qualifier") {
         // Jett × Jinx (3031735486) ships
         //   const vec2 type = vec2(g_Texture0Resolution.x / g_Texture0Resolution.y, 1.0)
@@ -2453,5 +2529,181 @@ TEST_SUITE("WPShaderPreamble.extensions") {
         // dropping it would break the preprocessor chain.
         const std::string preamble = kPreShaderCodeCommon;
         CHECK(preamble.find("__SHADER_PLACEHOLD__") != std::string::npos);
+    }
+}
+
+TEST_SUITE("FixImplicitConversions.intPromotion") {
+    TEST_CASE("recurses into nested builtin args (Cybering 2326102392)") {
+        // Cybering ships:
+        //   step(0.99, _wedot(step(0, uv) * step(uv, 1), (vec2(0.5))))
+        // Outer `step(0.99,…)` parses cleanly, but the inner `step(0, uv)`
+        // and `step(uv, 1)` use bare integer literals.  GLSL rejects them.
+        // The int-promotion pass must descend INTO the outer call to fix them.
+        std::string in =
+            "float f(vec2 uv){\n"
+            " return step(0.99, _wedot(step(0, uv) * step(uv, 1), vec2(0.5)));\n"
+            "}";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("step(0,") == std::string::npos);
+        CHECK(out.find(", 1)") == std::string::npos);
+        CHECK(out.find("step(0.0,") != std::string::npos);
+        CHECK(out.find(", 1.0)") != std::string::npos);
+    }
+
+    TEST_CASE("first arg of step (no preceding separator)") {
+        // The first argument has no preceding `,` — verify the up-front
+        // check promotes it.  Regression for the leading-arg blind spot.
+        std::string in  = "void g(vec2 uv){ float a = step(2, uv); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("step(2,") == std::string::npos);
+        CHECK(out.find("step(2.0,") != std::string::npos);
+    }
+
+    TEST_CASE("does NOT corrupt floats with exponent") {
+        // 1e3 is already a float — must not become 1.0e3.
+        std::string in  = "void h(vec2 x){ float a = step(1e3, x); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("step(1.0e3") == std::string::npos);
+        CHECK(out.find("step(1e3") != std::string::npos);
+    }
+
+    TEST_CASE("does NOT corrupt negative-exponent literals (The Blur)") {
+        // The Blur (3562086244) ships `_wemx(1e-6, u_NotchSize * ...)`.
+        // The `-` in `1e-6` must not be treated as a separator that triggers
+        // int promotion of `6` → `6.0` (which would yield `1e-6.0`).
+        std::string in  = "void k(){ float a = _wemx(1e-6, b); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("1e-6.0") == std::string::npos);
+        CHECK(out.find("1e-6") != std::string::npos);
+    }
+}
+
+TEST_SUITE("FixImplicitConversions.assorted") {
+    TEST_CASE("brace-list vec4 ctor (Now Playing) gets braces stripped") {
+        // HLSL allows `vec4({1,2,3,4})`; GLSL rejects with "unexpected
+        // LEFT_BRACE".  Driver: Now Playing (2883312700).
+        std::string in =
+            "void m(){ vec4 albedo = vec4({ 1.0, 1.0, 1.0, 0.0 }); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("vec4({") == std::string::npos);
+        CHECK(out.find("vec4( 1.0, 1.0, 1.0, 0.0 )") != std::string::npos);
+    }
+
+    TEST_CASE("bool * float (Mikey) wraps comparison with float()") {
+        // HLSL implicit bool→float; GLSL has no `float * bool`.
+        // Driver: Mikey Tokyo Revengers (2622312893).
+        std::string in =
+            "float in01(float f){ return float(f >= 0) * (f < 1); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("* (f < 1)") == std::string::npos);
+        CHECK(out.find("* float(f < 1)") != std::string::npos);
+    }
+
+    TEST_CASE("float = step(scalar, vec4_var) appends .x (cyberpunk)") {
+        // Driver: cyberpunk edgerunners (2885492021):
+        //   float r = step(1.0, albedo);   // albedo declared vec4 above
+        // step(float, vec4) returns vec4 — GLSL refuses to init float.
+        std::string in =
+            "void m(){ vec4 albedo = vec4(0.0); float r = step(1.0, albedo); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("step(1.0, albedo);") == std::string::npos);
+        CHECK(out.find("step(1.0, albedo).x;") != std::string::npos);
+    }
+
+    TEST_CASE("float = step(scalar, vec_var.swizzle) leaves call alone") {
+        // The .z extracts a scalar — call returns float — no narrowing.
+        // Driver: 发光少女 (3287715210) — `_westep(0.0, v_TexCoordFx.z)`.
+        std::string in =
+            "in vec4 v_TexCoordFx;\n"
+            "void m(){ float mask = step(0.0, v_TexCoordFx.z); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("step(0.0, v_TexCoordFx.z);") != std::string::npos);
+        CHECK(out.find(".z).x;") == std::string::npos);
+    }
+
+    TEST_CASE("const drop: uniform initializer (发光少女)") {
+        std::string in =
+            "uniform float u_hueShift;\n"
+            "void m(){ const float cos_a = cos(radians(u_hueShift)); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("const float cos_a") == std::string::npos);
+        CHECK(out.find("float cos_a = cos") != std::string::npos);
+    }
+
+    TEST_CASE("const drop: member access (cyberpunk)") {
+        std::string in =
+            "void m(){ vec4 albedo = vec4(0.0);\n"
+            " const vec4 __vec4 = vec4(albedo.rgb, 0.0); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("const vec4 __vec4") == std::string::npos);
+        CHECK(out.find("vec4 __vec4 = vec4(albedo.rgb, 0.0);") != std::string::npos);
+    }
+
+    TEST_CASE("const drop: keeps const on literal-only initializer") {
+        // `const vec3 k = vec3(0.57735);` is compile-time constant — keep it.
+        std::string in =
+            "void m(){ const vec3 k = vec3(0.57735); }";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("const vec3 k") != std::string::npos);
+    }
+}
+
+TEST_SUITE("WPShaderParser.crossStageVaryingNarrowing") {
+    // Cross-stage varying upgrade widens fragment's `in vec2 v_TexCoord;`
+    // to `in vec4` to match the vertex stage's wider output.  After this
+    // upgrade, bare `vec2 X = v_TexCoord;` becomes a type mismatch.  The
+    // upgrade pass must also rewrite those initializers.
+    //
+    // We can't easily test the full cross-stage pass here because it
+    // requires multi-unit input.  This is covered end-to-end by
+    // Fami/Adventurous/rhythm-in-garden audits.  Placeholder marker so we
+    // know to refresh the audit if the upgrade logic changes.
+    TEST_CASE("marker: see wp-audit for Fami/Adventurous/rhythm in garden") {
+        CHECK(true);
+    }
+}
+
+TEST_SUITE("FixImplicitConversions.smoothstep_narrow") {
+    TEST_CASE("smoothstep(vec, vec OP scalar, scalar) → narrow to .x (Mikey)") {
+        // Mikey Tokyo Revengers (2622312893):
+        //   vec2 dist = vec2(length(p));
+        //   fragLV += smoothstep(dist, dist + smoothing, thresh);
+        // Without narrowing, glslang reports "no matching overloaded
+        // smoothstep" because no overload accepts (vec2, vec2, float).
+        std::string in =
+            "void m(){\n"
+            " vec2 dist = vec2(1.0);\n"
+            " float smoothing = 0.5;\n"
+            " float thresh = 0.5;\n"
+            " float v = smoothstep(dist, dist + smoothing, thresh);\n"
+            "}";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("smoothstep(dist.x, dist.x + smoothing, thresh)") != std::string::npos);
+    }
+
+    TEST_CASE("smoothstep with non-vec first arg unchanged") {
+        std::string in =
+            "void m(){\n"
+            " float a = 0.5;\n"
+            " float v = smoothstep(a, a + 0.1, 0.7);\n"
+            "}";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("smoothstep(a, a + 0.1, 0.7)") != std::string::npos);
+    }
+}
+
+TEST_SUITE("FixImplicitConversions.intToFloat") {
+    TEST_CASE("int = _westep(...) → float = _westep(...) (Chill Time)") {
+        // Chill Time (2925278995):
+        //   int bar = _westep(1 - shapeCoord.y, barHeight);
+        // _westep returns float; GLSL refuses float→int implicit narrowing.
+        std::string in =
+            "void m(vec2 shapeCoord){\n"
+            " float barHeight = 0.5;\n"
+            " int bar = _westep(1.0 - shapeCoord.y, barHeight);\n"
+            "}";
+        std::string out = FixImplicitConversions(in);
+        CHECK(out.find("int bar = _westep") == std::string::npos);
+        CHECK(out.find("float bar = _westep") != std::string::npos);
     }
 }

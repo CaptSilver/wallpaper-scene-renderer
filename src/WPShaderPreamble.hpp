@@ -103,6 +103,20 @@ float _wedot(vec2 x, vec2 y) { return dot(x, y); }
 float _wedot(vec3 x, vec3 y) { return dot(x, y); }
 float _wedot(vec4 x, vec4 y) { return dot(x, y); }
 #define dot _wedot
+// GLSL has no `step(vec edge, float x)` overload (HLSL broadcasts x).
+// `_westep` adds the missing combinations.  Driver: Cybering (2326102392)
+// ships `step(uv, 1)` where `uv` is vec2.
+float _westep(float e, float x) { return step(e, x); }
+vec2  _westep(float e, vec2  x) { return step(e, x); }
+vec3  _westep(float e, vec3  x) { return step(e, x); }
+vec4  _westep(float e, vec4  x) { return step(e, x); }
+vec2  _westep(vec2  e, vec2  x) { return step(e, x); }
+vec3  _westep(vec3  e, vec3  x) { return step(e, x); }
+vec4  _westep(vec4  e, vec4  x) { return step(e, x); }
+vec2  _westep(vec2  e, float x) { return step(e, vec2(x)); }
+vec3  _westep(vec3  e, float x) { return step(e, vec3(x)); }
+vec4  _westep(vec4  e, float x) { return step(e, vec4(x)); }
+#define step _westep
 
 #define float1 float
 #define float2 vec2

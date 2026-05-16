@@ -90,9 +90,10 @@ inline std::size_t U16BytesForTriangles(std::size_t triangle_count) noexcept {
 
 class WPMdlParser {
 public:
-    static bool Parse(std::string_view path, fs::VFS&, WPMdl&);
+    static bool Parse(std::string_view path, fs::VFS&, WPMdl&, bool force_puppet = false);
     // Parse from an already-loaded binary stream (exposed for tests).
-    static bool ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl&);
+    static bool ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl&,
+                            bool force_puppet = false);
 
     static void AddPuppetShaderInfo(WPShaderInfo& info, const WPMdl& mdl);
     static void AddPuppetMatInfo(wpscene::WPMaterial& mat, const WPMdl& mdl);
