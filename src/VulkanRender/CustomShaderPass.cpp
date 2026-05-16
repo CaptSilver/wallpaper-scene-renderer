@@ -416,7 +416,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     }
                 }
             } else {
-                LOG_ERROR("parse tex \"%s\" failed", tex_name.c_str());
+                // Downgraded from LOG_ERROR: a missing user-bundled texture
+                // is recoverable — the 1x1 dummy fallback below makes the
+                // shader binding valid; the wallpaper renders with a 1x1
+                // fill where the texture should be.  Author-side bundling
+                // errors (Summer Vibes 3293999899 ships a `gradient/
+                // blend_gradient_copy1` reference but doesn't include the
+                // .tex file) shouldn't fail-classify the whole wallpaper.
+                LOG_INFO("parse tex \"%s\" failed (using 1x1 fallback)",
+                         tex_name.c_str());
             }
         }
         m_desc.vk_textures[i] = img_slots;

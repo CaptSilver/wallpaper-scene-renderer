@@ -1264,7 +1264,18 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     if (! wpimgobj.puppet.empty()) {
         puppet = std::make_unique<WPMdl>();
         if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
-            LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
+            // Downgrade when the file is simply missing from the pkg
+            // (author bundling error).  The image-object renders as a
+            // regular quad without the puppet skeleton.  Driver: Persona
+            // 5 (2955378002) ships `models/1x1_puppet.mdl` references but
+            // doesn't include the file.
+            bool missing = ! vfs.Contains("/assets/" + wpimgobj.puppet);
+            if (missing) {
+                LOG_INFO("puppet file missing, treating as plain image: %s",
+                         wpimgobj.puppet.c_str());
+            } else {
+                LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
+            }
             puppet = nullptr;
         } else if (! puppet->is_puppet || ! puppet->puppet) {
             // scene.json declared this file under "puppet:" but the MDL parsed
@@ -3290,6 +3301,20 @@ template<typename T>
 void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj, fs::VFS& vfs) {
     T wpobj;
     if (! wpobj.FromJson(json_obj, vfs)) {
+        // Font-extension `image` references are author-side schema bugs.
+        // WPImageObject::FromJson already logs INFO + skips; don't escalate
+        // back to ERROR here.  Driver: Uncle Panda (3544533690).
+        std::string image_field;
+        if (json_obj.contains("image") && json_obj.at("image").is_string())
+            image_field = json_obj.at("image").get<std::string>();
+        auto is_font_path = [](const std::string& p) {
+            for (const char* ext : { ".ttf", ".otf", ".TTF", ".OTF" })
+                if (p.size() >= 4 &&
+                    p.compare(p.size() - 4, 4, ext) == 0)
+                    return true;
+            return false;
+        };
+        if (is_font_path(image_field)) return;
         LOG_ERROR("parse scene object failed, name: %s", wpobj.name.c_str());
         return;
     }

@@ -166,6 +166,35 @@ inline constexpr const char* kCreateScriptPropertiesShadowJs =
     "        initial = sp;\n"
     "      }\n"
     "    } else { initial = def.value; }\n"
+    // Wrap Vec3/Vec2-typed initials so scripts can call `.subtract()` /
+    // `.multiply()` etc. on `scriptProperties.X` without first re-wrapping.
+    // Driver: Summer Vibes (3293999899) ships
+    //   value = newColor.subtract(oldColor).multiply(ratio).add(oldColor);
+    // where newColor came from `addColor({value: new Vec3(...)})` but the
+    // stored override (`sp.value`) is a plain object {x,y,z} → `.subtract`
+    // throws \"is not a function\".  We can't see the `addColor` name
+    // (all `add*` methods funnel through `ap`); use def.value's runtime
+    // class as the type signal instead.
+    "    if (typeof Vec3 !== 'undefined' && def.value instanceof Vec3) {\n"
+    "      if (typeof initial === 'string') {\n"
+    "        var _pp = initial.split(/\\s+/);\n"
+    "        initial = new Vec3(parseFloat(_pp[0])||0,\n"
+    "                           parseFloat(_pp[1])||0,\n"
+    "                           parseFloat(_pp[2])||0);\n"
+    "      } else if (initial && typeof initial === 'object' &&\n"
+    "                 !(initial instanceof Vec3)) {\n"
+    "        initial = new Vec3(initial.x||0, initial.y||0, initial.z||0);\n"
+    "      }\n"
+    "    } else if (typeof Vec2 !== 'undefined' && def.value instanceof Vec2) {\n"
+    "      if (typeof initial === 'string') {\n"
+    "        var _pp2 = initial.split(/\\s+/);\n"
+    "        initial = new Vec2(parseFloat(_pp2[0])||0,\n"
+    "                           parseFloat(_pp2[1])||0);\n"
+    "      } else if (initial && typeof initial === 'object' &&\n"
+    "                 !(initial instanceof Vec2)) {\n"
+    "        initial = new Vec2(initial.x||0, initial.y||0);\n"
+    "      }\n"
+    "    }\n"
     "    _values[n] = initial;\n"
     "    if (def.onChange && typeof def.onChange === 'function') {\n"
     "      _onChange[n] = def.onChange;\n"

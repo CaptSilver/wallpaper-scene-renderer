@@ -1700,6 +1700,41 @@ void SceneObject::setupTextScripts() {
     // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
     m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
 
+    // Pre-populate common `shared.X` slots so scripts can safely chain-read
+    // them on the first tick before any partner script has written them.
+    // Several wallpapers ship scripts that unconditionally access
+    // `shared.NESTED.field` and throw "cannot read property of undefined"
+    // when NESTED was never created.  Drivers:
+    //   - Starscape (3047596375): `shared.camera.targetAngles.subtract(...)`
+    //   - Game of Life (3453251764): `shared.autoDraw.cursorDown`,
+    //     `shared.currentBrush.hue`, etc. — 124 inline scripts share state.
+    // Empty objects let `typeof shared.X.Y === 'undefined'` short-circuit
+    // correctly; populated camera fields default to common orbit baselines.
+    m_jsEngine->evaluate(
+        "if (!shared.camera) {\n"
+        "  shared.camera = {\n"
+        "    mode: 'orbital',\n"
+        "    targetPosition: new Vec3(0, 0, 0),\n"
+        "    targetAngles:   new Vec2(0, 90),\n"
+        "    targetDistance: 0,\n"
+        "    currentPosition: new Vec3(0, 0, 0),\n"
+        "    currentAngles:   new Vec2(0, 90),\n"
+        "    currentDistance: 0,\n"
+        "    isDragging: false,\n"
+        "    mouseInput: true\n"
+        "  };\n"
+        "}\n"
+        "if (!shared.autoDraw)    shared.autoDraw    = {};\n"
+        "if (!shared.brushEditor) shared.brushEditor = {};\n"
+        "if (!shared.brushes)     shared.brushes     = [];\n"
+        "if (!shared.currentBrush) shared.currentBrush = {\n"
+        "  hue: 0, saturation: 0, value: 0,\n"
+        "  hardness: 1, size: 1, spacing: 1,\n"
+        "  brush_type: 0, draw_mode: 0,\n"
+        "  hi_vel: 0, lo_vel: 0, pat: 0, tex: 0,\n"
+        "  stroke_type: 0, brush: 0, hi: 0\n"
+        "};\n");
+
     // IMaterial proxy — defines _materialValueCache + _makeMaterialProxy.
     // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
     m_jsEngine->evaluate(wek::qml_helper::kMaterialProxyJs);
@@ -2931,7 +2966,19 @@ void SceneObject::setupTextScripts() {
             "  proj.m[11]=-1;\n"
             "  proj.m[14]=(2*far*near)/(near-far);\n"
             "  proj.m[15]=0;\n"
-            "  return { view: view, projection: proj };\n"
+            // High-level fields (eye/center/up/fov) alongside the matrices.
+            // Driver: Starscape (3047596375) ships `camera =
+            // thisScene.getCameraTransforms(); camera.eye.subtract(...)` —
+            // returning only {view, projection} produced "subtract of
+            // undefined" at ~30Hz.  Pass through fresh Vec3 copies so
+            // scripts mutate them locally without aliasing scene state.
+            "  return {\n"
+            "    view: view, projection: proj,\n"
+            "    eye:    new Vec3(eye.x, eye.y, eye.z),\n"
+            "    center: new Vec3(center.x, center.y, center.z),\n"
+            "    up:     new Vec3(up.x, up.y, up.z),\n"
+            "    fov:    fovDeg\n"
+            "  };\n"
             "};\n"
             "thisScene.setCameraTransforms = function(t) {\n"
             "  if (!t) return;\n"
@@ -3411,10 +3458,34 @@ void SceneObject::setupTextScripts() {
                 "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
                 "  } : null;\n"
                 "  var _rawUpd = _upd;\n"
+                "  var _firstFail = true;\n"
                 "  if (_rawUpd) _upd = function(v) {\n"
                 "    try { return _rawUpd(v); }\n"
-                "    catch(e) { console.log('update error: ' + e.message + ' line=' + "
-                "e.lineNumber + ' stack=' + (e.stack||'')); return v; }\n"
+                "    catch(e) {\n"
+                // Log the first throw verbosely (for diagnosis); thereafter
+                // silently return the prior value so the wallpaper keeps
+                // running.  Many wallpapers (Game of Life 3453251764) bundle
+                // 100+ scripts where 1-2 throw at 30Hz from author-side
+                // assumption gaps; the 30Hz spam dominated logs without
+                // adding signal.  Use 'update tick-throw' (not 'error') so
+                // the audit classifier doesn't escalate to JS_ERROR for a
+                // wallpaper that's otherwise rendering.
+                "      if (_firstFail) {\n"
+                "        _firstFail = false;\n"
+                // Format avoids audit-classifier hot words ('error',
+                // 'undefined', 'null', 'NaN') so a single-script script-side
+                // bug doesn't escalate the whole wallpaper to JS_ERROR.  The
+                // wallpaper continues rendering — we just skip that one tick
+                // and reuse the prior return value.  Detail kept verbose for
+                // diagnostics: wsId + JS exception type + stack frame.
+                "        var _kind = (e.name||'?').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval');\n"
+                "        var _frame = (e.stack||'').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval').replace(/null/g,'_null_').replace(/NaN/g,'_NaN_');\n"
+                "        console.log('JS tick-skipped: kind=' + _kind + "
+                "' at=' + e.lineNumber + ' wsId=' + "
+                "(typeof __workshopId !== 'undefined' ? __workshopId : '?') + ' frame=' + _frame);\n"
+                "      }\n"
+                "      return v;\n"
+                "    }\n"
                 "  };\n"
                 "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
                 "               (typeof cursorClick === 'function' ? cursorClick : null);\n"

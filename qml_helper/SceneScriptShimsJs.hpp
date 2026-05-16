@@ -225,6 +225,12 @@ function Vec2(x, y) {
   v.round = function() { return Vec2(Math.round(v.x),Math.round(v.y)); };
   v.floor = function() { return Vec2(Math.floor(v.x),Math.floor(v.y)); };
   v.ceil = function() { return Vec2(Math.ceil(v.x),Math.ceil(v.y)); };
+  // Make `v instanceof Vec2` true even though Vec2 is closure-based.  WE
+  // scripts type-dispatch on `instanceof` (Starscape 3047596375's mixValue
+  // does `if (initValue instanceof Vec2)`); without the prototype link the
+  // check fails, the function falls into the scalar branch, and tries to
+  // set `.x` on a number → TypeError.
+  Object.setPrototypeOf(v, Vec2.prototype);
   return v;
 }
 Vec2.fromString = function(s) { var p=String(s).trim().split(/\s+/); return Vec2(parseFloat(p[0])||0,parseFloat(p[1])||0); };
@@ -350,6 +356,8 @@ function Vec4(x, y, z, w) {
                                set:function(val){v.z=val;},enumerable:true});
   Object.defineProperty(v,'a',{get:function(){return v.w;},
                                set:function(val){v.w=val;},enumerable:true});
+  // Same instanceof fix as Vec2 above.
+  Object.setPrototypeOf(v, Vec4.prototype);
   return v;
 }
 Vec4.fromString = function(s) {

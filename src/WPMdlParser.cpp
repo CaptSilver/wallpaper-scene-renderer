@@ -103,11 +103,22 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             sub.mat_json_file = f.ReadStr();
             f.ReadInt32(); // 0
 
+            // The byte at +9 is `mdl_flag` (entry-point dispatch flag).
+            // The byte AFTER bbox is `flags_repeat` — the actual vertex
+            // stride flag.  These are usually equal (Starscape v17:
+            // 15/15), but for v23 puppets misclassified as models the
+            // entry flag is 9 while flags_repeat is 15 (Hatsune Miku
+            // 3354366708).  Read flags_repeat and prefer it over the
+            // entry flag when sane.
+            uint32_t effective_flag = (uint32_t)mdl_flag;
             if (has_bbox) {
-                // Skip bbox_min(3f) + bbox_max(3f) + flags_repeat(u32) = 28 bytes.
-                // Byte-skip via SeekCur avoids a loop of discarded ReadFloat() calls
-                // that Mull would mutate without observable effect.
-                f.SeekCur(28);
+                // Skip bbox_min(3f) + bbox_max(3f) = 24 bytes; read
+                // flags_repeat explicitly so we can switch stride mid-stream.
+                f.SeekCur(24);
+                uint32_t flags_repeat = f.ReadUint32();
+                if (flags_repeat == 9 || flags_repeat == 11 ||
+                    flags_repeat == 15 || flags_repeat == 39)
+                    effective_flag = flags_repeat;
             } else if (v_flags_only) {
                 // Older format: just skip the 4-byte flags_repeat.
                 f.SeekCur(4);
@@ -116,11 +127,11 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             uint32_t vertex_size = f.ReadUint32();
 
             uint32_t vert_stride;
-            if (mdl_flag == 39)
+            if (effective_flag == 39)
                 vert_stride = model_vertex_flag39;
-            else if (mdl_flag == 15)
+            else if (effective_flag == 15)
                 vert_stride = model_vertex_flag15;
-            else if (mdl_flag == 11)
+            else if (effective_flag == 11)
                 vert_stride = model_vertex_flag11;
             else
                 vert_stride = model_vertex_flag9;
@@ -140,7 +151,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             }
             sub.vertexs.resize(vertex_num);
 
-            if (mdl_flag == 39) {
+            if (effective_flag == 39) {
                 sub.has_normals   = true;
                 sub.has_tangents  = true;
                 sub.has_texcoord1 = true;
@@ -151,7 +162,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     for (auto& v : vert.texcoord) v = f.ReadFloat();
                     for (auto& v : vert.texcoord1) v = f.ReadFloat();
                 }
-            } else if (mdl_flag == 15) {
+            } else if (effective_flag == 15) {
                 sub.has_normals  = true;
                 sub.has_tangents = true;
                 for (auto& vert : sub.vertexs) {
@@ -160,7 +171,7 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     for (auto& v : vert.tangent) v = f.ReadFloat();
                     for (auto& v : vert.texcoord) v = f.ReadFloat();
                 }
-            } else if (mdl_flag == 11) {
+            } else if (effective_flag == 11) {
                 sub.has_normals = true;
                 for (auto& vert : sub.vertexs) {
                     for (auto& v : vert.position) v = f.ReadFloat();
@@ -585,8 +596,16 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
 
                 uint32_t b_num = f.ReadUint32();
                 if (! CountFitsStream(f, b_num)) {
-                    LOG_ERROR("mdl: b_num %u exceeds stream", b_num);
-                    return false;
+                    // Downgraded from LOG_ERROR: a b_num overrun in MDLA
+                    // animation parsing usually means the upstream bone /
+                    // attachment / MDAT layout has a version-specific
+                    // variant we don't model exactly.  The puppet's static
+                    // mesh + bones still loaded successfully; we just lose
+                    // the animation track.  Drivers: Totoro (2891663007),
+                    // Chill Time (2925278995), Persona 5 (2955378002).
+                    LOG_INFO("mdl: b_num %u exceeds stream (skipping animations)",
+                             b_num);
+                    return true;
                 }
                 anim.bframes_array.resize(b_num);
                 for (auto& bframes : anim.bframes_array) {

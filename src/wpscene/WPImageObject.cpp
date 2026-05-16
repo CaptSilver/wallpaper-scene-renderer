@@ -293,6 +293,26 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "perspective", perspective);
     GET_JSON_NAME_VALUE_NOWARN(json, "alignment", alignment);
     GET_JSON_NAME_VALUE_NOWARN(json, "attachment", attachment);
+    // Font-extension files (.ttf / .otf) referenced via the `image` slot
+    // are an author-side schema bug — fonts should be referenced as text-
+    // layer attributes, not image-object materials.  Driver: Uncle Panda
+    // (3544533690) ships 20+ such mis-references.  Skip silently before
+    // PARSE_JSON so its own ERROR log doesn't fire either; the wallpaper
+    // stays renderable for everything that ISN'T a stray font object.
+    {
+        auto is_font_path = [](const std::string& p) {
+            for (const char* ext : { ".ttf", ".otf", ".TTF", ".OTF" })
+                if (p.size() >= 4 &&
+                    p.compare(p.size() - 4, 4, ext) == 0)
+                    return true;
+            return false;
+        };
+        if (is_font_path(image)) {
+            LOG_INFO("skipping font-as-image reference: %s (author schema bug)",
+                     image.c_str());
+            return false;
+        }
+    }
     nlohmann::json jImage;
     if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + image), jImage)) {
         LOG_ERROR("Can't load image json: %s", image.c_str());

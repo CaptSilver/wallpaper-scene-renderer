@@ -70,7 +70,14 @@ public:
             });
         if (find_it != std::rend(m_mountedFss))
             return find_it->fs->Open(MountedFs::GetPathInMount(find_it->mountPoint, path));
-        LOG_ERROR("not found \"%s\" in vfs", path.data());
+        // Downgraded from LOG_ERROR: VFS misses are recoverable at every
+        // caller (Open returns nullptr, callers either log a context-rich
+        // error of their own or use a fallback).  The bare ERROR here
+        // duplicated those upstream logs and false-flagged wallpapers with
+        // author-side missing-asset references (e.g. Summer Vibes
+        // 3293999899's `gradient/blend_gradient_copy1.tex`).  Callers that
+        // genuinely require the file still report ERROR upstream.
+        LOG_INFO("not found \"%s\" in vfs", path.data());
         return nullptr;
     }
     std::shared_ptr<IBinaryStreamW> OpenW(std::string_view path) {
@@ -87,7 +94,14 @@ public:
         }
         if (find_it != std::rend(m_mountedFss))
             return find_it->fs->OpenW(MountedFs::GetPathInMount(find_it->mountPoint, path));
-        LOG_ERROR("not found \"%s\" in vfs", path.data());
+        // Downgraded from LOG_ERROR: VFS misses are recoverable at every
+        // caller (Open returns nullptr, callers either log a context-rich
+        // error of their own or use a fallback).  The bare ERROR here
+        // duplicated those upstream logs and false-flagged wallpapers with
+        // author-side missing-asset references (e.g. Summer Vibes
+        // 3293999899's `gradient/blend_gradient_copy1.tex`).  Callers that
+        // genuinely require the file still report ERROR upstream.
+        LOG_INFO("not found \"%s\" in vfs", path.data());
         return nullptr;
     }
     bool Contains(std::string_view path) const {
