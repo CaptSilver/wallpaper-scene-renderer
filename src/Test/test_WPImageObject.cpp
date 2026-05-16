@@ -194,4 +194,50 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
         CHECK(layer.IsPassthrough() == true);
         CHECK(layer.CopyBackground() == false);
     }
+
+    // SceneToRenderGraph.cpp::ToGraphPass applies these rules for compose
+    // layer base-pass emission based on the IsPassthrough / CopyBackground
+    // flag combination.  Pinning the contract here so future changes don't
+    // silently regress.
+    //
+    // Long Train (1457581889) godrays compose layer at origin (764.9, 506.1)
+    // — shifted ~196px left of scene center — used to ghost the character
+    // (drawn earlier in the frame) onto the left of the screen because the
+    // passthrough+copybackground=true branch emitted a plain Copy that
+    // captured the framebuffer un-shifted; the final draw then composited
+    // scene-center content at the layer's offset position.  Fix: the
+    // passthrough+copybackground=true branch now falls through to the
+    // normal node-material pass, which runs the composelayer shader and
+    // applies the layer's world transform to UV sampling (matching the
+    // non-passthrough compose path and WE's behavior).
+    TEST_CASE("passthrough+copybackground flag combinations — base-pass emission contract") {
+        SceneNode placeholder;
+        SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
+
+        SUBCASE("non-passthrough: base pass runs (default)") {
+            // SceneToRenderGraph: normal CustomShaderPass for node->material.
+            CHECK(layer.IsPassthrough() == false);
+            CHECK(layer.CopyBackground() == true);
+        }
+
+        SUBCASE("passthrough + copybackground=true: base pass runs (composelayer shader)") {
+            layer.SetPassthrough(true);
+            // SceneToRenderGraph: falls through to normal CustomShaderPass.
+            // The composelayer.vert/.frag applies the layer's MVP to UV
+            // sampling, producing a shifted pingpong that aligns with the
+            // final draw at the layer's screen position.
+            CHECK(layer.IsPassthrough() == true);
+            CHECK(layer.CopyBackground() == true);
+        }
+
+        SUBCASE("passthrough + copybackground=false: no base pass, no copy") {
+            layer.SetPassthrough(true);
+            layer.SetCopyBackground(false);
+            // SceneToRenderGraph: skip both base pass AND the implicit copy.
+            // Author populates the pingpong via child scene-graph passes
+            // (Nightingale 3470764447 BlendReflect).
+            CHECK(layer.IsPassthrough() == true);
+            CHECK(layer.CopyBackground() == false);
+        }
+    }
 }

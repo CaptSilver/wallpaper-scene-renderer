@@ -163,30 +163,37 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
         }
     }
 
-    // Passthrough compose layers copy _rt_default → pingpong then run their
-    // effect chain.  Process inline at the compose layer's natural Z-order
-    // so foreground elements (e.g. Lucy) render ON TOP of the compose result.
-    // At this point _rt_default contains background content rendered before
-    // this node in the scene graph — exactly what the compose needs.
+    // Passthrough compose layers capture _rt_default into the layer's first
+    // pingpong, then run the effect chain.  The capture must apply the layer's
+    // world transform to UV sampling — the composelayer shader does exactly
+    // this (samples _rt_FullFrameBuffer at the layer vertex's world-NDC
+    // position), producing a pingpong whose center maps to the layer ORIGIN
+    // in framebuffer space.  When the final effect draw renders at the layer's
+    // screen position, the shifted-sample and shifted-draw cancel: pixel at
+    // layer-origin shows framebuffer at layer-origin (identity).
     //
-    // Honor scene.json "copybackground": false — wallpapers that author the
-    // pingpong via children scene-graph passes (or expect a clean black
-    // baseline) suppress the implicit screen capture.  Without this gate,
-    // every passthrough compose layer overwrites whatever the scene already
-    // wrote into the pingpong.
-    if (imgeff != nullptr && imgeff->IsPassthrough()) {
-        if (imgeff->CopyBackground()) {
-            LOG_INFO("passthrough compose: inline copy _rt_default → '%.*s'",
-                     (int)output.size(),
-                     output.data());
-            rg::addCopyPass(rgraph,
-                            rg::createTexDesc(std::string(SpecTex_Default)),
-                            rg::createTexDesc(std::string(output)));
-        } else {
-            LOG_INFO("passthrough compose: skipping screen copy (copybackground=false) for '%.*s'",
-                     (int)output.size(),
-                     output.data());
-        }
+    // A plain Copy here leaves the pingpong un-shifted (center = framebuffer
+    // center).  The final draw then composites scene-center content at the
+    // layer's origin — visible as a CHARACTER GHOST when the layer is
+    // off-center.  Long Train (1457581889) godrays compose layer at origin
+    // (764.9, 506.1) — shifted ~196px left of scene center — ghosts the
+    // character (drawn before the compose) onto the left of the screen.
+    //
+    // Falling through to the normal CustomShaderPass path below executes the
+    // layer's own composelayer-shader material, which produces the correctly
+    // shifted pingpong.  Z-order is preserved (the pass is still added at the
+    // compose layer's scene-graph traversal point) so foreground elements
+    // drawn after the compose still render on top.
+    //
+    // Exception: copybackground=false suppresses BOTH the screen capture and
+    // the base pass.  Authors set this when they populate the pingpong via
+    // child scene-graph passes (e.g. Nightingale 3470764447 id=249 with
+    // colorBlendMode=21 BlendReflect, where capturing the screen amplifies
+    // the day-character's blue TV-glow into a hard-edged rectangle).
+    if (imgeff != nullptr && imgeff->IsPassthrough() && ! imgeff->CopyBackground()) {
+        LOG_INFO("passthrough compose: skipping base+copy (copybackground=false) for '%.*s'",
+                 (int)output.size(),
+                 output.data());
         loadEffect(imgeff);
         return;
     }
