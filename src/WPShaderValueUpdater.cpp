@@ -385,6 +385,29 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(G_PARALLAXPOSITION, std::array { para[0], para[1] });
     }
 
+    // Apply SceneScript-driven sprite frame pinning before the per-frame
+    // GetAnimateFrame call.  Each pass holds its own copy of the sprite
+    // animation (sprites_map is by value), so the pin must be applied
+    // every frame for every pass that renders this node.  See
+    // Scene::nodeSpriteFrame for the source-of-truth map populated by
+    // SceneScript writes through SceneWallpaper::setLayerSpriteFrame.
+    if (pNode) {
+        auto sfit = m_scene->nodeSpriteFrame.find(pNode->ID());
+        if (sfit != m_scene->nodeSpriteFrame.end()) {
+            const auto& [wantsManual, frameIdx] = sfit->second;
+            for (auto& [i, sp] : sprites) {
+                if (wantsManual)
+                    sp.SetManualFrame(frameIdx);
+                else if (sp.isManualFrame())
+                    sp.ClearManualFrame();
+            }
+        } else {
+            // No override entry — make sure any prior manual pin is released.
+            for (auto& [i, sp] : sprites) {
+                if (sp.isManualFrame()) sp.ClearManualFrame();
+            }
+        }
+    }
     for (auto& [i, sp] : sprites) {
         const auto& f      = sp.GetAnimateFrame(m_scene->frameTime);
         auto        grot   = WE_GLTEX_ROTATION_NAMES[i];

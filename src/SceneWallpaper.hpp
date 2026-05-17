@@ -33,6 +33,19 @@ struct ColorScriptInfo {
     std::array<float, 3> initialColor;
 };
 
+// Wire-transfer mirror of SceneShaderValueScript for the cross-thread
+// SceneWallpaper::getShaderValueScripts() handoff.  Game of Life
+// (3453251764) Canvas drives ~50 per-frame uniform writes through these.
+struct ShaderValueScriptInfo {
+    int32_t            id { -1 };
+    int32_t            effectIdx { 0 };
+    std::string        uniformName;
+    std::string        script;
+    std::string        scriptProperties;
+    std::vector<float> initialValue;
+    int                argShape { 1 };
+};
+
 struct PropertyScriptInfo {
     // Where the script is attached.  Object-attached scripts bind thisObject
     // to thisLayer; AnimationLayer-attached scripts bind thisObject to the
@@ -132,6 +145,7 @@ public:
     void                                     updateColor(int32_t id, float r, float g, float b);
     std::vector<TextScriptInfo>              getTextScripts() const;
     std::vector<ColorScriptInfo>             getColorScripts() const;
+    std::vector<ShaderValueScriptInfo>       getShaderValueScripts() const;
     std::vector<PropertyScriptInfo>          getPropertyScripts() const;
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
     std::string                              getLayerInitialStatesJson() const;
@@ -185,6 +199,16 @@ public:
                                    int32_t            effectIdx,
                                    std::string        name,
                                    std::vector<float> floats);
+
+    // SceneScript thisLayer.getTextureAnimation().setFrame(N) bridge.
+    // Records a per-node sprite-frame pin in Scene::nodeSpriteFrame; the
+    // per-frame uniform updater applies it to every sprite belonging to
+    // any pass that renders the node, suppressing the texture's authored
+    // auto-advance.  Pass `wantsManual=false` to release the pin and
+    // restore time-driven playback.  Solves Game of Life (3453251764)
+    // tinted button sheets cycling through their idle/hover/selected
+    // frames at the texture's authored rate.
+    void setLayerSpriteFrame(int32_t nodeId, bool wantsManual, int32_t frameIdx);
 
     // SceneScript thisLayer.{horizontalalign,verticalalign,alignment,font} bridge.
     // Each string is "" to leave that field unchanged.  Font name is resolved to

@@ -428,16 +428,20 @@ function _packMaterialValue(v) {
   }
   return null;
 }
-// Property-name → shader-uniform alias map for direct-property writes
-// (material.color = ..., material.channelMask = ..., etc.).  WE authors use
-// these short names instead of `setValue("g_Color", ...)`.  Add new aliases
-// here as wallpapers surface them.
+// Property-name → author-facing shader-uniform alias map for direct-
+// property writes (material.color = ..., material.channelMask = ..., etc.).
+// WE authors use these short names instead of `setValue("g_Color", ...)`.
+// Values are author-facing names (no g_ prefix); the C++ drain resolves
+// to the actual GLSL uniform per material via SceneMaterialCustomShader::alias
+// — that's per-shader so tint.frag's `material.color` lands in g_TintColor
+// while other shaders see g_Color.  Pre-this-fix the hardcoded g_Color
+// mapping silently dropped on tint/glow/colorize-family shaders.
 var _materialPropertyAliases = {
-  color:        'g_Color',
-  channelMask:  'g_ChannelMask',
-  channelmask:  'g_ChannelMask',
-  alpha:        'g_Alpha',
-  tint:         'g_Tint'
+  color:        'color',
+  channelMask:  'channelMask',
+  channelmask:  'channelMask',
+  alpha:        'alpha',
+  tint:         'tint'
 };
 function _makeMaterialProxy(layerName, effectIdx) {
   // effectIdx === undefined or -1 means "main layer material".  Non-negative

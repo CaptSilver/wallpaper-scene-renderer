@@ -1119,12 +1119,17 @@ TEST_SUITE("SceneScript Material") {
     // setValue("g_Color", ...).  Verify the aliases map correctly and that
     // writes/reads round-trip the same as explicit setValue calls.
 
-    TEST_CASE("material.color setter routes to g_Color uniform") {
+    TEST_CASE("material.color setter routes author-facing 'color' uniform") {
+        // The JS proxy sends the author-facing name ("color"); the C++ drain
+        // resolves it per material via SceneMaterialCustomShader::alias to
+        // the bound shader's actual GLSL uniform (g_Color for genericimage,
+        // g_TintColor for tint.frag, etc.).  Pre-this-fix the proxy hard-
+        // coded "g_Color" and silently dropped on shaders using other names.
         MaterialBridgeEnv env;
         env.engine.evaluate(
             "var m = _makeMaterialProxy('bg'); m.color = Vec3(0.5, 0.25, 1);");
         CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
-        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_Color");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "color");
         CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[0]").toNumber()
               == doctest::Approx(0.5));
         CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr[2]").toNumber()
@@ -1139,20 +1144,25 @@ TEST_SUITE("SceneScript Material") {
         CHECK(env.engine.evaluate("m.color[2]").toNumber() == doctest::Approx(0.3));
     }
 
-    TEST_CASE("material.channelMask alias routes to g_ChannelMask") {
+    TEST_CASE("material.channelMask alias routes author-facing 'channelMask'") {
         MaterialBridgeEnv env;
         env.engine.evaluate("var m = _makeMaterialProxy('bg'); m.channelMask = [1, 0, 1, 0];");
-        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "g_ChannelMask");
+        CHECK(env.engine.evaluate("__sceneBridge._calls[0].name").toString() == "channelMask");
         CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 4);
     }
 
-    TEST_CASE("setValue and direct property share the same cache") {
+    TEST_CASE("setValue and direct property share the same cache via author name") {
+        // Author-facing keys: setValue('color', ...) and m.color = ... both
+        // cache under 'color' (the JS-side normalized name) so getValue('color')
+        // and m.color round-trip consistently regardless of which spelling the
+        // author chose.  The C++ drain does the GLSL-uniform resolution per
+        // material — JS side keeps a single canonical key.
         MaterialBridgeEnv env;
         env.engine.evaluate("var m = _makeMaterialProxy('bg');"
-                            "m.setValue('g_Color', [0.4, 0.5, 0.6]);");
+                            "m.setValue('color', [0.4, 0.5, 0.6]);");
         CHECK(env.engine.evaluate("m.color[0]").toNumber() == doctest::Approx(0.4));
         env.engine.evaluate("m.color = Vec3(0.7, 0.8, 0.9);");
-        CHECK(env.engine.evaluate("m.getValue('g_Color')[2]").toNumber() == doctest::Approx(0.9));
+        CHECK(env.engine.evaluate("m.getValue('color')[2]").toNumber() == doctest::Approx(0.9));
     }
 
     TEST_CASE("direct property writes with invalid value are silently ignored") {

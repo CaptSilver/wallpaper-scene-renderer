@@ -82,6 +82,12 @@ struct ParseContext {
     // child placement.
     std::map<i32, Eigen::Matrix4d> original_world_transforms;
 
+    // Authored local transform per scene-object id, plus the id's
+    // declared parent (-1 = scene root).  Built once from raw JSON
+    // before ParseImageObj runs so group OWT walks can include
+    // image-object ancestors without depending on parse order.
+    std::unordered_map<i32, std::pair<i32, Eigen::Matrix4d>> id_authored_local;
+
     // Child-attachment world transform for puppet nodes: equals the node's own
     // world * puppet.bone[0].transform (legacy — kept for fallback when a
     // child doesn't name a specific attachment).  For nodes without a
@@ -804,6 +810,13 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         materialShader.constValues[el.first] = el.second;
     }
     material.customShader = materialShader;
+    // Mirror the shader's author-facing → GLSL alias map so the runtime
+    // drain can resolve a SceneScript `material.color = ...` write to the
+    // shader's actual uniform name (g_TintColor for tint.frag, g_Color for
+    // others, etc.).  See SceneMaterialCustomShader::alias.
+    for (const auto& el : pWPShaderInfo->alias) {
+        material.customShader.alias[el.first] = el.second;
+    }
     material.name         = wpmat.shader;
 
     return true;
@@ -2851,7 +2864,16 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     i32         texW                  = static_cast<i32>(textObj.size[0]);
     i32         texH                  = static_cast<i32>(textObj.size[1]);
     const i32   placeholder_threshold = 8;
-    const bool  autosize_canvas = (texW <= placeholder_threshold || texH <= placeholder_threshold);
+    // Promote to autosize when the declared maxwidth dwarfs the canvas size —
+    // Game of Life (3453251764) Tooltip is size 18×18 (just above the
+    // 8-pixel placeholder threshold) but declares maxwidth=500, signaling
+    // the author wants the canvas to grow to fit the text.  Without this
+    // branch, the 18×18 (at 2× DPI = 36×36) texture clipped runtime-set
+    // tooltips like "Stamp" to ~3 visible characters.
+    const bool  maxwidth_dwarfs_size =
+        (textObj.maxwidth > 0.0f && textObj.maxwidth > std::max(texW, texH) * 4.0f);
+    const bool  autosize_canvas =
+        (texW <= placeholder_threshold || texH <= placeholder_threshold || maxwidth_dwarfs_size);
     if (autosize_canvas) {
         // Matches WPTextRenderer's DPI multiplier — see WPTextRenderer.cpp
         // rationale (scene ortho targets Retina-scale 4K, not 96 DPI viewer).
@@ -3614,14 +3636,54 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // Compute original world transforms for group nodes so image-object
     // children can look up the correct parent transform even when the
     // parent's world node has been reset to identity for effect rendering.
-    for (auto& gi : group_infos) {
-        auto& node  = context.node_map.at(gi.id);
-        auto  local = node->GetLocalTrans();
-        if (gi.parent_id >= 0 && context.original_world_transforms.count(gi.parent_id)) {
-            context.original_world_transforms[gi.id] =
-                context.original_world_transforms[gi.parent_id] * local;
-        } else {
-            context.original_world_transforms[gi.id] = local;
+    //
+    // Walk the raw-JSON parent chain (works for both group ancestors AND
+    // image ancestors).  An earlier group-only walk dropped image-ancestor
+    // transforms — Game of Life (3453251764) UI_Bg image at (1280,720)*8
+    // contains four group children whose effect-having descendants
+    // (PenBtn / RedBtn / BlueprintStampBtn) read OWT[group] as the parent
+    // proxy for their FinalNode and rendered at world (-8..400, ±8) —
+    // bottom-left of the scene — instead of the right-side panel.  This
+    // pass must precede ParseImageObj (called via the wp_objs visitor
+    // below) since that's where image objects bake parent_proxy from OWT.
+    {
+        auto& id_local = context.id_authored_local;
+        id_local.clear();
+        for (auto& obj : json.at("objects")) {
+            if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
+            i32 id  = obj.at("id").get<i32>();
+            i32 pid = -1;
+            if (obj.contains("parent") && obj.at("parent").is_number_integer())
+                pid = obj.at("parent").get<i32>();
+            std::array<float, 3> origin { 0, 0, 0 };
+            std::array<float, 3> scale { 1, 1, 1 };
+            std::array<float, 3> angles { 0, 0, 0 };
+            GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
+            GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
+            GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
+            Eigen::Affine3d t = Eigen::Affine3d::Identity();
+            t.prescale(Eigen::Vector3d(scale[0], scale[1], scale[2]));
+            t.prerotate(Eigen::AngleAxisd(angles[0], Eigen::Vector3d::UnitX()));
+            t.prerotate(Eigen::AngleAxisd(angles[1], Eigen::Vector3d::UnitY()));
+            t.prerotate(Eigen::AngleAxisd(angles[2], Eigen::Vector3d::UnitZ()));
+            t.pretranslate(Eigen::Vector3d(origin[0], origin[1], origin[2]));
+            id_local[id] = { pid, t.matrix() };
+        }
+        for (auto& gi : group_infos) {
+            std::vector<i32> chain;
+            i32              c = gi.id;
+            for (int depth = 0; depth < 64 && c >= 0; ++depth) {
+                chain.push_back(c);
+                auto it = id_local.find(c);
+                if (it == id_local.end()) break;
+                c = it->second.first;
+            }
+            Eigen::Matrix4d w = Eigen::Matrix4d::Identity();
+            for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
+                auto lit = id_local.find(*rit);
+                if (lit != id_local.end()) w = w * lit->second.second;
+            }
+            context.original_world_transforms[gi.id] = w;
         }
     }
 
@@ -3934,21 +3996,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                  gi.parent_id);
     }
 
-    // Recompute original_world_transforms for groups whose links were deferred.
-    // The initial pass at group-link time used stale parent OWT (the parent
-    // image wasn't parsed yet), so any image child of a deferred group saw
-    // an incomplete parent chain.  Walk the group_infos list in insertion
-    // order; OWT for a parent group always precedes its children.
-    for (auto& gi : group_infos) {
-        auto& node  = context.node_map.at(gi.id);
-        auto  local = node->GetLocalTrans();
-        if (gi.parent_id >= 0 && context.original_world_transforms.count(gi.parent_id)) {
-            context.original_world_transforms[gi.id] =
-                context.original_world_transforms[gi.parent_id] * local;
-        } else {
-            context.original_world_transforms[gi.id] = local;
-        }
-    }
+    // OWT for groups was computed before wp_objs parsing via the raw-JSON
+    // walk above (context.id_authored_local) — it already includes
+    // image-object ancestors, so no recompute needed here.  ParseImageObj
+    // (called between the two points) only writes OWT for image objects
+    // it owns; group OWT entries are stable.
 
     // Record user property → visibility bindings by scanning raw JSON
     for (auto& obj : json.at("objects")) {
@@ -3992,6 +4044,34 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                                     node->Rotation().y(),
                                     node->Rotation().z() };
                     lis.visible = node->IsVisible();
+                }
+                // Bake world origin + scale.  Prefer context.original_world_
+                // transforms (set per-image at ParseImageObj line 1720/1754,
+                // per-group via the id_authored_local walk above) — these
+                // compose the full authored parent chain even for effect-
+                // having layers whose SceneNode chain has been disconnected
+                // for per-image effect-RT rendering.  For nodes without an
+                // OWT entry (group nodes that weren't in the early walk,
+                // pure model/light objects), fall back to the live SceneNode
+                // ModelTrans, which has alignment + parent baked in.
+                {
+                    auto owt = context.original_world_transforms.find(id);
+                    Eigen::Matrix4d w;
+                    if (owt != context.original_world_transforms.end()) {
+                        w = owt->second;
+                    } else {
+                        auto* leaf = node_it->second.get();
+                        leaf->UpdateTrans();
+                        w = leaf->ModelTrans();
+                    }
+                    lis.worldOrigin = { (float)w(0, 3), (float)w(1, 3), (float)w(2, 3) };
+                    float sx = (float)std::sqrt(w(0, 0) * w(0, 0) + w(1, 0) * w(1, 0) +
+                                                w(2, 0) * w(2, 0));
+                    float sy = (float)std::sqrt(w(0, 1) * w(0, 1) + w(1, 1) * w(1, 1) +
+                                                w(2, 1) * w(2, 1));
+                    float sz = (float)std::sqrt(w(0, 2) * w(0, 2) + w(1, 2) * w(1, 2) +
+                                                w(2, 2) * w(2, 2));
+                    lis.worldScale = { sx, sy, sz };
                 }
                 context.scene->layerInitialStates[name] = lis;
             }
@@ -4154,6 +4234,60 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // Per-animation-layer scripts (puppet rigs).  Used by Lucy
         // (3521337568) to offset start frames per rigged animation track.
         wek::extractAnimationLayerScripts(id, layerName, obj, context.scene->propertyScripts);
+
+        // Shader-value scripts on each effect's pass uniforms.  WE attaches
+        // these via `effects[N].passes[M].constantshadervalues[X] =
+        // {script, scriptproperties, value}` and runs each per frame; the
+        // return value writes into the named uniform on that pass material.
+        // Game of Life (3453251764) Canvas drives ~50 such scripts —
+        // mouseDown / mousePos / cmd / drawRadius / birthSurvive etc. —
+        // and without dispatch the cell-paint shader has no input.
+        if (obj.contains("effects") && obj.at("effects").is_array()) {
+            const auto& effects = obj.at("effects");
+            for (size_t ei = 0; ei < effects.size(); ++ei) {
+                const auto& eff = effects[ei];
+                if (! eff.contains("passes") || ! eff.at("passes").is_array()) continue;
+                for (const auto& pass : eff.at("passes")) {
+                    if (! pass.contains("constantshadervalues") ||
+                        ! pass.at("constantshadervalues").is_object())
+                        continue;
+                    for (const auto& [uName, val] : pass.at("constantshadervalues").items()) {
+                        if (! val.is_object() || ! val.contains("script")) continue;
+                        const auto& scriptVal = val.at("script");
+                        if (! scriptVal.is_string()) continue;
+                        SceneShaderValueScript sv;
+                        sv.id          = id;
+                        sv.effectIdx   = (i32)ei;
+                        sv.uniformName = uName;
+                        sv.script      = scriptVal.get<std::string>();
+                        if (val.contains("scriptproperties"))
+                            sv.scriptProperties = val.at("scriptproperties").dump();
+                        // Parse `value` into a float vector if present.  WE
+                        // accepts scalars, strings ("x y" / "x y z"), and
+                        // numeric arrays.  Unrecognized shapes default to
+                        // {0}; the dispatch loop falls back to 0 args.
+                        if (val.contains("value")) {
+                            const auto& v = val.at("value");
+                            if (v.is_number()) {
+                                sv.initialValue.push_back((float)v.get<double>());
+                            } else if (v.is_string()) {
+                                std::istringstream iss(v.get<std::string>());
+                                float              f;
+                                while (iss >> f) sv.initialValue.push_back(f);
+                            } else if (v.is_array()) {
+                                for (const auto& el : v) {
+                                    if (el.is_number())
+                                        sv.initialValue.push_back((float)el.get<double>());
+                                }
+                            }
+                        }
+                        if (sv.initialValue.empty()) sv.initialValue.push_back(0.0f);
+                        sv.argShape = std::min<int>((int)sv.initialValue.size(), 4);
+                        context.scene->shaderValueScripts.push_back(std::move(sv));
+                    }
+                }
+            }
+        }
     }
 
     // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:

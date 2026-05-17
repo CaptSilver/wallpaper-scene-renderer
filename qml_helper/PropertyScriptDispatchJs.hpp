@@ -92,11 +92,19 @@ inline constexpr const char* kPropertyScriptDispatchJs =
     "      continue;\n"
     "    }\n"
     "    if (typeof r.x !== 'number') continue;\n"
-    "    if (Math.abs(r.x - s.cx) < 0.0001 &&\n"
-    "        Math.abs(r.y - s.cy) < 0.0001 &&\n"
-    "        Math.abs(r.z - s.cz) < 0.0001) continue;\n"
-    "    s.cx = r.x; s.cy = r.y; s.cz = r.z;\n"
-    "    out.push(i, r.x, r.y, r.z);\n"
+    // Vec2 returns leave .z undefined — coerce to 0 so the C++ side doesn't
+    // see NaN on toNumber() and propagate it into updateNodeTransform.
+    // Game of Life (3453251764) Tooltip origin script returns
+    // `input.cursorWorldPosition.add(new Vec2(offX, offY))` (Vec2) every
+    // tick; without this, origin.z was NaN and the layer collapsed to
+    // world origin.
+    "    var rx = r.x, ry = (typeof r.y === 'number') ? r.y : 0,\n"
+    "        rz = (typeof r.z === 'number') ? r.z : 0;\n"
+    "    if (Math.abs(rx - s.cx) < 0.0001 &&\n"
+    "        Math.abs(ry - s.cy) < 0.0001 &&\n"
+    "        Math.abs(rz - s.cz) < 0.0001) continue;\n"
+    "    s.cx = rx; s.cy = ry; s.cz = rz;\n"
+    "    out.push(i, rx, ry, rz);\n"
     "  }\n"
     "  for (i = xe; i < N; i++) {\n"
     "    s = scripts[i];\n"

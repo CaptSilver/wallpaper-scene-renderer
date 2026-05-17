@@ -155,6 +155,14 @@ public:
                                             const QString&  name,
                                             const QJSValue& value);
 
+    // thisLayer.getTextureAnimation().setFrame(N) / .play() / .pause() bridge.
+    // wantsManual=true pins the sprite to frameIdx; false restores
+    // time-driven auto-advance.  Applied per-pass each render tick in
+    // WPShaderValueUpdater::UpdateUniforms.
+    Q_INVOKABLE void setLayerSpriteFrame(const QString& layerName,
+                                         bool           wantsManual,
+                                         int            frameIdx);
+
     // Text-style bridge — thisLayer.{horizontalalign,verticalalign,alignment,font}.
     // Each string is "" to leave that field unchanged.  Font name is resolved
     // to bytes on the render thread.  The JS shim parses `alignment` into its
@@ -297,9 +305,45 @@ private:
         QString  currentText;
     };
     // Color script evaluation
+    // Shader-value script state — drives per-effect uniform updates from
+    // inline scripts attached to `effects[N].passes[M].constantshadervalues[X]`.
+    // Game of Life (3453251764) Canvas: ~50 scripts per scene driving
+    // mouseDown/mousePos/cmd/drawRadius/birthSurvive into the cell shader.
+    struct ShaderValueScriptState {
+        int32_t            id { -1 };
+        int32_t            effectIdx { 0 };
+        std::string        uniformName;
+        std::string        layerName;
+        QJSValue           updateFn;
+        QJSValue           thisLayerProxy;
+        QJSValue           thisObjectProxy;
+        QJSValue           cursorEnterFn;
+        QJSValue           cursorLeaveFn;
+        QJSValue           cursorUpFn;
+        QJSValue           cursorDownFn;
+        QJSValue           cursorClickFn;
+        QJSValue           cursorMoveFn;
+        int                argShape { 1 };
+        std::vector<float> cachedValue;
+    };
+
     struct ColorScriptState {
         int32_t              id;
+        std::string          layerName;       // resolved from id via nodeNameToId
         QJSValue             updateFn;
+        QJSValue             thisLayerProxy;
+        QJSValue             thisObjectProxy;
+        // Cursor handlers exported by the color script.  Game of Life
+        // (3453251764) buttons attach their hover/click logic to the
+        // layer's `color` property script (not a top-level property
+        // script), so the cursor-target collection has to walk these
+        // alongside m_propertyScriptStates or the buttons stay inert.
+        QJSValue             cursorEnterFn;
+        QJSValue             cursorLeaveFn;
+        QJSValue             cursorUpFn;
+        QJSValue             cursorDownFn;
+        QJSValue             cursorClickFn;
+        QJSValue             cursorMoveFn;
         std::array<float, 3> currentColor;
     };
     // Property script evaluation
@@ -400,6 +444,7 @@ private:
     qint64                                   m_propFrameCount { 0 };
     std::vector<TextScriptState>             m_textScriptStates;
     std::vector<ColorScriptState>            m_colorScriptStates;
+    std::vector<ShaderValueScriptState>      m_shaderValueScriptStates;
     std::vector<PropertyScriptState>         m_propertyScriptStates;
     std::vector<SoundVolumeScriptState>      m_soundVolumeScriptStates;
     std::unordered_map<std::string, int32_t> m_nodeNameToId;

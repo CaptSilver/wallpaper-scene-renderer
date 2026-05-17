@@ -127,6 +127,11 @@ public:
         return m_color_scripts;
     }
 
+    std::vector<ShaderValueScriptInfo> getShaderValueScripts() const {
+        std::lock_guard<std::mutex> lock(m_shader_value_scripts_mutex);
+        return m_shader_value_scripts;
+    }
+
     std::vector<PropertyScriptInfo> getPropertyScripts() const {
         std::lock_guard<std::mutex> lock(m_property_scripts_mutex);
         return m_property_scripts;
@@ -271,6 +276,8 @@ private:
     std::vector<TextScriptInfo>              m_text_scripts;
     mutable std::mutex                       m_color_scripts_mutex;
     std::vector<ColorScriptInfo>             m_color_scripts;
+    mutable std::mutex                       m_shader_value_scripts_mutex;
+    std::vector<ShaderValueScriptInfo>       m_shader_value_scripts;
     mutable std::mutex                       m_property_scripts_mutex;
     std::vector<PropertyScriptInfo>          m_property_scripts;
     mutable std::mutex                       m_sound_volume_scripts_mutex;
@@ -489,6 +496,11 @@ public:
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_effect_material_values.emplace_back(
             nodeId, effectIdx, std::move(name), std::move(floats));
+    }
+
+    void setLayerSpriteFrame(i32 nodeId, bool wantsManual, i32 frameIdx) {
+        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        m_pending_sprite_frame[nodeId] = { wantsManual, frameIdx };
     }
 
     void queueParentChange(i32 childId, i32 parentId) {
@@ -1060,7 +1072,12 @@ private:
                     }
                 }
                 m_pending_effect_visible.clear();
-                // Apply material uniform updates from SceneScript.
+                // Apply material uniform updates from SceneScript.  Resolve
+                // the uniform name through the shader's alias map: scripts
+                // write author-facing names ("color", "alpha") via the proxy's
+                // _materialPropertyAliases, but the GLSL uniform may be
+                // shader-specific (g_Color, g_TintColor, etc.).  Without
+                // resolution the write lands in an unused constValues slot.
                 for (auto& [nodeId, uName, floats] : m_pending_material_values) {
                     auto nit = m_scene->nodeById.find(nodeId);
                     if (nit == m_scene->nodeById.end()) continue;
@@ -1068,7 +1085,10 @@ private:
                     if (! mesh) continue;
                     auto* mat = mesh->Material();
                     if (! mat) continue;
-                    mat->customShader.constValues[uName] =
+                    auto&             aliasMap = mat->customShader.alias;
+                    const std::string resolved =
+                        aliasMap.count(uName) ? aliasMap.at(uName) : uName;
+                    mat->customShader.constValues[resolved] =
                         ShaderValue(floats.data(), floats.size());
                     mat->customShader.constValuesDirty = true;
                 }
@@ -1088,11 +1108,21 @@ private:
                     if (! fn.sceneNode || ! fn.sceneNode->HasMaterial()) continue;
                     auto* mat = fn.sceneNode->Mesh()->Material();
                     if (! mat) continue;
-                    mat->customShader.constValues[uName] =
+                    auto&             aliasMap = mat->customShader.alias;
+                    const std::string resolved =
+                        aliasMap.count(uName) ? aliasMap.at(uName) : uName;
+                    mat->customShader.constValues[resolved] =
                         ShaderValue(floats.data(), floats.size());
                     mat->customShader.constValuesDirty = true;
                 }
                 m_pending_effect_material_values.clear();
+                // Sprite-frame pins from SceneScript setFrame() — drained
+                // into Scene::nodeSpriteFrame for per-pass consumption in
+                // WPShaderValueUpdater (see SetManualFrame loop there).
+                for (auto& [nodeId, pin] : m_pending_sprite_frame) {
+                    m_scene->nodeSpriteFrame[nodeId] = pin;
+                }
+                m_pending_sprite_frame.clear();
                 if (logDiag) {
                     LOG_INFO("DRAW: transform hit=%d miss=%d effectRedirects=%d, visible hit=%d "
                              "miss=%d, alpha=%zu",
@@ -1237,8 +1267,18 @@ private:
 
             // Snapshot each named layer's world transform after the per-frame
             // UpdateTrans walk (driven from drawFrame).  SceneScript
-            // thisLayer.getTransformMatrix() reads from this cache off the
-            // GUI thread; populating it here keeps the read path lock-light.
+            // thisLayer.getTransformMatrix() and hit-test read from this
+            // cache off the GUI thread; populating it here keeps the read
+            // path lock-light.
+            //
+            // For effect-having layers spImgNode's parent was disconnected
+            // for base-pass rendering (its ModelTrans returns local only),
+            // so prefer imgEffectLayer.FinalNode().ModelTrans() when an
+            // effect chain exists — that's the node the layer actually
+            // renders at on screen, and what hit-test should match.  Game
+            // of Life Tool Selection / Color / Stamp buttons all fall in
+            // this category, and the previous local-only snapshot put
+            // their hit rects at the wrong world position.
             {
                 std::lock_guard<std::mutex> lk(m_world_cache_mutex);
                 m_layer_world_cache.clear();
@@ -1246,7 +1286,21 @@ private:
                 for (auto& [name, id] : m_scene->nodeNameToId) {
                     auto it = m_scene->nodeById.find(id);
                     if (it == m_scene->nodeById.end() || ! it->second) continue;
-                    Eigen::Matrix4d wt = it->second->ModelTrans();
+                    Eigen::Matrix4d wt;
+                    auto            eit = m_scene->nodeEffectLayerMap.find(id);
+                    SceneNode*      live = nullptr;
+                    if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+                        // Prefer the resolved last-output node — its parent is
+                        // wired to the parent_proxy (which holds the authored
+                        // world transform), so its ModelTrans gives the on-
+                        // screen world position.  FinalNode itself only carries
+                        // the local transform; spImgNode's parent was cleared
+                        // for base-pass rendering.
+                        live = eit->second->ResolvedLastOutput();
+                    }
+                    if (! live) live = it->second;
+                    live->UpdateTrans();
+                    wt = live->ModelTrans();
                     std::array<float, 16> arr;
                     // Column-major flat layout matches Eigen's default storage
                     // and WE/GLSL conventions; matrix.m[12..14] are translation.
@@ -1637,6 +1691,12 @@ private:
     // m_effects[effectIdx]'s first node material instead of the main mesh.
     std::vector<std::tuple<i32, i32, std::string, std::vector<float>>>
         m_pending_effect_material_values;
+    // nodeId → (wantsManual, frameIdx) from
+    // thisLayer.getTextureAnimation().setFrame(N) SceneScript writes.
+    // Drained at the start of the render tick into Scene::nodeSpriteFrame;
+    // WPShaderValueUpdater consults the Scene-side map per pass since
+    // sprites_map copies are scattered across CustomShaderPass instances.
+    std::unordered_map<i32, std::pair<bool, i32>> m_pending_sprite_frame;
 
     // Scene-level pending updates (under m_property_update_mutex)
     std::optional<std::array<float, 3>> m_pending_clear_color;
@@ -1790,6 +1850,10 @@ std::vector<ColorScriptInfo> SceneWallpaper::getColorScripts() const {
     return m_main_handler->getColorScripts();
 }
 
+std::vector<ShaderValueScriptInfo> SceneWallpaper::getShaderValueScripts() const {
+    return m_main_handler->getShaderValueScripts();
+}
+
 std::vector<PropertyScriptInfo> SceneWallpaper::getPropertyScripts() const {
     return m_main_handler->getPropertyScripts();
 }
@@ -1844,6 +1908,10 @@ void SceneWallpaper::updateEffectMaterialValue(int32_t            nodeId,
                                                std::vector<float> floats) {
     m_main_handler->renderHandler()->setEffectMaterialValue(
         nodeId, effectIdx, std::move(name), std::move(floats));
+}
+
+void SceneWallpaper::setLayerSpriteFrame(int32_t nodeId, bool wantsManual, int32_t frameIdx) {
+    m_main_handler->renderHandler()->setLayerSpriteFrame(nodeId, wantsManual, frameIdx);
 }
 
 void SceneWallpaper::updateTextStyle(int32_t     nodeId,
@@ -2581,6 +2649,26 @@ void MainHandler::loadScene() {
         }
         if (! m_color_scripts.empty()) {
             LOG_INFO("loadScene: %zu color scripts", m_color_scripts.size());
+        }
+    }
+
+    // Extract shader-value scripts.
+    {
+        std::lock_guard<std::mutex> lock(m_shader_value_scripts_mutex);
+        m_shader_value_scripts.clear();
+        for (const auto& sv : scene->shaderValueScripts) {
+            ShaderValueScriptInfo svi;
+            svi.id               = sv.id;
+            svi.effectIdx        = sv.effectIdx;
+            svi.uniformName      = sv.uniformName;
+            svi.script           = sv.script;
+            svi.scriptProperties = sv.scriptProperties;
+            svi.initialValue     = sv.initialValue;
+            svi.argShape         = sv.argShape;
+            m_shader_value_scripts.push_back(std::move(svi));
+        }
+        if (! m_shader_value_scripts.empty()) {
+            LOG_INFO("loadScene: %zu shader-value scripts", m_shader_value_scripts.size());
         }
     }
 

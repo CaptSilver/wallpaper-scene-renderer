@@ -57,9 +57,26 @@ inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy, float sceneX, floa
     QJSValue solid = state.property("solid");
     if (solid.isBool() && solid.toBool() == false) return false;
 
-    QJSValue origin = state.property("origin");
-    QJSValue scale  = state.property("scale");
-    QJSValue size   = state.property("size");
+    // Prefer parse-time-baked worldOrigin / worldScale when present.  Those
+    // compose the full authored parent chain (image AND group ancestors),
+    // so the world-space cursor compares against the world-space layer rect.
+    // The local `origin`/`scale` properties are still authoritative for
+    // unparented layers (top-level scene objects, dynamic-pool slots, and
+    // layers whose script has rewritten `.origin = ...` at runtime), so
+    // fall back to them when worldOrigin is missing.
+    QJSValue size = state.property("size");
+    QJSValue origin, scale;
+    bool     usedWorld = false;
+    QJSValue wo        = state.property("worldOrigin");
+    QJSValue ws        = state.property("worldScale");
+    if (wo.isObject() && ws.isObject()) {
+        origin    = wo;
+        scale     = ws;
+        usedWorld = true;
+    } else {
+        origin = state.property("origin");
+        scale  = state.property("scale");
+    }
 
     float ox = (float)origin.property("x").toNumber();
     float oy = (float)origin.property("y").toNumber();
@@ -68,6 +85,7 @@ inline bool hitTestLayerProxy(const QJSValue& thisLayerProxy, float sceneX, floa
     float sw = (float)size.property("x").toNumber();
     float sh = (float)size.property("y").toNumber();
     if (sw <= 0 || sh <= 0) return false;
+    (void)usedWorld;
 
     // Apply parallax shift so the hit-test matches the rendered visual.
     // Mirrors WPShaderValueUpdater.cpp's MVP branch.

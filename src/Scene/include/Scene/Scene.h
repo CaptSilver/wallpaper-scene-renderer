@@ -65,6 +65,30 @@ struct SceneColorScript {
     std::array<float, 3> initialColor;
 };
 
+// Per-frame inline script attached to an effect-pass uniform via
+// `effects[N].passes[M].constantshadervalues[X] = {script, scriptproperties, value}`.
+// Game of Life (3453251764) Canvas object carries ~50 of these driving
+// `mouseDown`, `mousePos`, `cmd`, `drawRadius`, `birthSurvive` etc. into
+// the cell-paint shader; without dispatch the canvas was inert.
+//
+// The dispatch reuses the existing m_pending_effect_material_values drain
+// in SceneWallpaper.cpp — script update() return values get packed into
+// the same (nodeId, effectIdx, uniformName, floats) wire as
+// thisLayer.getEffect(...).getMaterial().setValue(...).
+struct SceneShaderValueScript {
+    i32                id { -1 };         // owning layer id (Scene::nodeNameToId)
+    i32                effectIdx { 0 };   // index into effects[] (0-based)
+    std::string        uniformName;       // author-facing name (alias-resolved at drain)
+    std::string        script;            // JavaScript source
+    std::string        scriptProperties;  // JSON-serialized initial scriptProperties
+    std::vector<float> initialValue;      // parsed scene.json `value` (scalar or vec)
+    // Hint to the dispatch loop: the script's update(value) wants its arg
+    // shaped as scalar (1), Vec2 (2), Vec3 (3), or Vec4 (4).  Inferred from
+    // initialValue size; lets the dispatch present `update` with the right
+    // typed arg without authors having to manually coerce.
+    int                argShape { 1 };
+};
+
 struct VideoTextureInfo {
     std::string textureKey;    // key in Scene::textures / tex_cache
     std::string videoFilePath; // extracted MP4 temp file path
@@ -172,10 +196,11 @@ public:
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer;
 
-    std::vector<TextLayerInfo>       textLayers;
-    std::vector<SceneColorScript>    colorScripts;
-    std::vector<ScenePropertyScript> propertyScripts;
-    std::vector<VideoTextureInfo>    videoTextures;
+    std::vector<TextLayerInfo>         textLayers;
+    std::vector<SceneColorScript>      colorScripts;
+    std::vector<ScenePropertyScript>   propertyScripts;
+    std::vector<SceneShaderValueScript> shaderValueScripts;
+    std::vector<VideoTextureInfo>      videoTextures;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {
@@ -211,6 +236,19 @@ public:
     // runtime SceneNode.Parent() walks up the effect-RT chain to the scene
     // root, while the script-visible parent should still be `Text Container`.
     std::unordered_map<i32, i32> jsonParentId;
+
+    // Per-node SceneScript-driven sprite frame override.  Populated by
+    // SceneWallpaper::setLayerSpriteFrame when JS writes
+    // `thisLayer.getTextureAnimation().setFrame(N)`.  The per-frame uniform
+    // updater (WPShaderValueUpdater::UpdateUniforms) consults this map for
+    // each sprite it processes — when an entry exists for the owning node,
+    // the sprite is pinned to that frame via SpriteAnimation::SetManualFrame
+    // (suppressing auto-advance); absent entries restore auto-advance.
+    // Solves Game of Life (3453251764) color/tool buttons cycling through
+    // their 3-frame sprite sheets at the texture's authored rate.
+    // The bool is a "wants-manual" toggle (false = explicit auto-advance
+    // restore), the i32 is the desired frame index when manual is true.
+    std::unordered_map<i32, std::pair<bool, i32>> nodeSpriteFrame;
     // Layer name → initial transform state for JS proxy initialization
     struct LayerInitialState {
         std::array<float, 3> origin { 0, 0, 0 };
@@ -222,6 +260,17 @@ public:
         // land where the parallax-shifted layer is actually rendered.
         std::array<float, 2> parallaxDepth { 0, 0 };
         bool                 visible { true };
+        // World-space origin and scale, baked at parse time from the full
+        // parent chain (including image-object ancestors).  Cursor hit-test
+        // uses these to compare against world-space cursor coordinates;
+        // without them the test compared a world cursor against a local
+        // origin and missed every parented button (Game of Life
+        // 3453251764 Tool Selection / Color / Blueprint buttons all clicked
+        // through to whatever was rendered behind them).  Stable for the
+        // lifetime of the scene — scripts that mutate origin/scale at
+        // runtime accept hit-test drift until next setSource.
+        std::array<float, 3> worldOrigin { 0, 0, 0 };
+        std::array<float, 3> worldScale { 1, 1, 1 };
     };
     std::unordered_map<std::string, LayerInitialState> layerInitialStates;
 

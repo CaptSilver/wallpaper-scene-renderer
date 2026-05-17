@@ -24,7 +24,12 @@ std::string Scene::SerializeLayerInitialStates() const {
                              { "a", { lis.angles[0], lis.angles[1], lis.angles[2] } },
                              { "v", lis.visible },
                              { "sz", { lis.size[0], lis.size[1] } },
-                             { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } } };
+                             { "pd", { lis.parallaxDepth[0], lis.parallaxDepth[1] } },
+                             // World origin/scale baked at parse time —
+                             // hit-test uses these so clicks on parented
+                             // buttons reach the right layer.
+                             { "wo", { lis.worldOrigin[0], lis.worldOrigin[1], lis.worldOrigin[2] } },
+                             { "ws", { lis.worldScale[0], lis.worldScale[1], lis.worldScale[2] } } };
         // Effects metadata for SceneScript getEffect()
         auto eit = layerEffectNames.find(name);
         if (eit != layerEffectNames.end()) {

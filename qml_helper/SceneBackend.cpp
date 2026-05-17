@@ -508,6 +508,17 @@ void SceneObject::setScriptIdentity() {
 void SceneObject::fireDestroyEvent() {
     if (! m_jsEngine || m_propertyScriptStates.empty()) return;
 
+    // Re-register __sceneBridge before firing destroy handlers.  By the time
+    // ~SceneObject runs, the QJSValue wrapper newQObject originally returned
+    // can have its underlying metaobject torn down — property access on the
+    // wrapper then surfaces as "Property 'lsSet' of object TypeError: Type
+    // error is not a function" (the wrapper's .toString() returns a wrapped
+    // error).  Re-newQObject(this) yields a fresh wrapper that still resolves
+    // against the live `this` pointer, so destroy handlers' lsSet calls
+    // (Game of Life 3453251764 brush persistence is the canonical driver)
+    // reach the C++ side and save state to disk.
+    m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
+
     for (auto& state : m_propertyScriptStates) {
         if (! state.destroyFn.isCallable()) continue;
 
@@ -899,6 +910,17 @@ void SceneObject::effectMaterialSetValue(const QString&  layerName,
         it->second, effectIdx, name.toStdString(), std::move(floats));
 }
 
+// thisLayer.getTextureAnimation().setFrame(N) / .play() / .pause() bridge.
+// Pins the sprite to frame N (manual mode) or restores auto-advance.  The
+// pin is applied per-pass in WPShaderValueUpdater since each CustomShaderPass
+// holds its own sprites_map copy.
+void SceneObject::setLayerSpriteFrame(const QString& layerName, bool wantsManual, int frameIdx) {
+    if (! m_scene) return;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return;
+    m_scene->setLayerSpriteFrame(it->second, wantsManual, frameIdx);
+}
+
 // thisLayer.getBoneIndex(name) bridge — resolves the named MDAT attachment
 // in the puppet rigged to this layer (or its parent's puppet for child-rigged
 // layers).  Empty names short-circuit to 0; unknown layers and missing
@@ -1243,17 +1265,28 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             downArea = area;
         }
     }
-    // Fire cursorDown on the smallest-hit layer with downFn.
+    // Fire cursorDown on every hit layer with downFn (WE convention — each
+    // geometrically-hit layer receives its own cursorDown).  Game of Life
+    // (3453251764) Canvas and Pattern Texture are both fullscreen with
+    // cursorDown handlers — Canvas's tracks the press state for the cell-
+    // paint shader; Pattern Texture's resets the motion-blur accumulation.
+    // Without fan-out, smallest-area selection ties on size and the first
+    // entry wins, starving the other.  cursorClick stays smallest-hit so a
+    // tiny button still beats a fullscreen toggle backdrop.
     int downFired = 0;
     if (downIdx >= 0) {
-        auto& target = m_cursorTargets[downIdx];
-        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        QJSValue r = target.downFn.call({ ev });
-        downFired  = 1;
-        if (r.isError())
-            LOG_INFO(
-                "cursorDown error on '%s': %s", target.layerName.c_str(), qPrintable(r.toString()));
+        for (int i = 0; i < (int)m_cursorTargets.size(); i++) {
+            auto& target = m_cursorTargets[i];
+            if (! target.downFn.isCallable()) continue;
+            if (! hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY, para)) continue;
+            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            QJSValue r = target.downFn.call({ ev });
+            downFired++;
+            if (r.isError())
+                LOG_INFO("cursorDown error on '%s': %s",
+                         target.layerName.c_str(), qPrintable(r.toString()));
+        }
     } else if (clickIdx < 0 && moveIdx < 0) {
         // Nothing hit-tested.  Fall back to global cursorDown fan-out for
         // "tap anywhere" game-control scripts (built-in dino_run's walking
@@ -1319,40 +1352,64 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     // AABB hit-testing both match layer origin convention.
     float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
 
-    // cursorUp: fire only on the drag target chosen at press (matches the
-    // layer that received cursorDown).  When there was no hit target at
-    // press (dino_run "tap anywhere" fallback), fan out to mirror whatever
-    // cursorDown did — otherwise game-control state machines get stuck.
+    // cursorUp dispatch priority:
+    //   1. m_dragTarget (set at press from cursorDown/Move/Click handlers)
+    //   2. Smallest layer whose hit-test contains the release point
+    //      (covers buttons that only expose cursorUp — the Game of Life
+    //      palette has 44 such buttons; without this Lock's unconditional
+    //      `cursorUp` toggle ran on every release regardless of where the
+    //      user actually released, and the other buttons' isVisible-gated
+    //      handlers fan-fired in arbitrary order, with the last setter
+    //      winning shared.currentBrush.)
+    //   3. Fan-out fallback for true "tap anywhere" patterns where no
+    //      cursor target was hit (dino_run-style controls).
     QJSValue ev      = makeCursorEvent(m_jsEngine, sceneX, sceneY);
     int      upFired = 0;
-    if (! m_dragTarget.empty()) {
-        for (auto& target : m_cursorTargets) {
-            if (target.layerName != m_dragTarget) continue;
-            if (! target.upFn.isCallable()) break;
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue r = target.upFn.call({ ev });
-            upFired    = 1;
-            if (r.isError())
-                LOG_INFO("cursorUp error on '%s': %s",
-                         target.layerName.c_str(),
-                         qPrintable(r.toString()));
-            break;
+    CursorParallax para = buildCursorParallax(this,
+                                              m_mouseNx,
+                                              m_mouseNy,
+                                              m_sceneOrthoW,
+                                              m_sceneOrthoH,
+                                              m_parallaxCache.enable,
+                                              m_parallaxCache.amount,
+                                              m_parallaxCache.mouseInfluence,
+                                              m_parallaxCache.camX,
+                                              m_parallaxCache.camY);
+    auto fire = [&](CursorTarget& target) {
+        if (! target.upFn.isCallable()) return;
+        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
+        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        QJSValue r = target.upFn.call({ ev });
+        upFired++;
+        if (r.isError())
+            LOG_INFO("cursorUp error on '%s': %s",
+                     target.layerName.c_str(),
+                     qPrintable(r.toString()));
+    };
+    // cursorUp fans out to every cursor target the cursor is currently over
+    // (WE convention — each geometrically-hit layer receives its own
+    // cursorUp).  Lock-toggle leakage from the earlier fan-out-to-all bug
+    // is now blocked at the hit-test step: Lock at top-right is only fired
+    // when the cursor was actually released over Lock.  Drag target is
+    // always included (releases its press state even if it's no longer
+    // under the cursor — the user might have dragged off).
+    {
+        bool firedDragTarget = false;
+        for (auto& t : m_cursorTargets) {
+            if (! t.upFn.isCallable()) continue;
+            bool isDrag = ! m_dragTarget.empty() && t.layerName == m_dragTarget;
+            bool isHit  = hitTestLayerProxy(t.thisLayerProxy, sceneX, sceneY, para);
+            if (! isDrag && ! isHit) continue;
+            if (isDrag) firedDragTarget = true;
+            fire(t);
         }
-    } else {
-        for (auto& target : m_cursorTargets) {
-            if (! target.upFn.isCallable()) continue;
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue r = target.upFn.call({ ev });
-            upFired++;
-            if (r.isError())
-                LOG_INFO("cursorUp error on '%s': %s",
-                         target.layerName.c_str(),
-                         qPrintable(r.toString()));
+        // Fallback: if no drag target and no hits, fan out to mirror what
+        // the legacy "tap anywhere" cursorDown fan-out did (game-control
+        // state machines that rely on every release firing).
+        if (m_dragTarget.empty() && upFired == 0) {
+            for (auto& t : m_cursorTargets) fire(t);
         }
+        (void)firedDragTarget;
     }
     LOG_INFO("release at scene=(%.1f,%.1f): cursorUp fired=%d, drag-target was '%s'",
              sceneX,
@@ -1662,8 +1719,15 @@ void SceneObject::setupTextScripts() {
     m_jsEngine->evaluate(wek::qml_helper::kVecClassesJs);
 
     m_jsEngine->evaluate(
-        "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
-        "  cursorScreenPosition: { x: 0, y: 0 },\n"
+        // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain
+        // objects) so wallpapers that compose them — Game of Life
+        // (3453251764) tooltip layer does
+        // `return input.cursorWorldPosition.add(new Vec2(offX, offY))`
+        // every tick — find the .add/.subtract/etc. methods.  The per-frame
+        // refresh below mutates .x/.y in place, which preserves the Vec2
+        // prototype link.
+        "var input = { cursorWorldPosition: Vec2(0, 0),\n"
+        "  cursorScreenPosition: Vec2(0, 0),\n"
         "  cursorLeftDown: false };\n"
         // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
         "var _origMatch = String.prototype.match;\n"
@@ -2085,15 +2149,61 @@ void SceneObject::setupTextScripts() {
         "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
         "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
         "    parallaxDepth: init.pd ? {x:init.pd[0], y:init.pd[1]} : {x:0, y:0},\n"
+        // Parse-time baked fallback for worldOrigin / worldScale — these
+        // remain authoritative when the live cache hasn't been populated
+        // yet (e.g. before the first drawFrame or for offscreen-only
+        // layers).  The live getters below preferentially read from the
+        // per-frame world cache so script-driven .origin/.scale mutations
+        // (Tool Options visible script repositions Color/Size/Stamp
+        // Selection groups based on shared.currentBrush) propagate to
+        // hit-test without a scene reload.
+        "    _woBaked: init.wo ? Vec3(init.wo[0], init.wo[1], init.wo[2]) : null,\n"
+        "    _wsBaked: init.ws ? Vec3(init.ws[0], init.ws[1], init.ws[2]) : null,\n"
         "    visible: init.v, alpha: 1.0,\n"
         "    text: '', pointsize: init.ps || 0,\n"
         "    name: name, _dirty: {}, _cmds: []\n"
         "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
         "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
         "        parallaxDepth: {x:0, y:0},\n"
+        "        _woBaked: null, _wsBaked: null,\n"
         "        visible: true, alpha: 1.0,\n"
         "        text: '', pointsize: 0,\n"
         "        name: name, _dirty: {}, _cmds: [] };\n"
+        // worldOrigin / worldScale: live getters that read from the per-
+        // frame world cache populated after each drawFrame (see
+        // SceneWallpaper::m_layer_world_cache).  hitTestLayerProxy reads
+        // these so the hit rect tracks any script-driven repositioning
+        // (Game of Life Tool Options moves Color/Size/Stamp groups
+        // dynamically; without live transforms the hit-test rect lagged a
+        // frame behind the rendered button position by tens of pixels).
+        // Falls back to the parse-time baked value when the live cache
+        // hasn't been populated (first tick / offscreen-only layers) so
+        // the hit-test remains stable from frame 0 instead of returning
+        // identity (0, 0).
+        "  Object.defineProperty(_s, 'worldOrigin', {\n"
+        "    get: function() {\n"
+        "      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.getLayerWorldTransform) {\n"
+        "        var m = __sceneBridge.getLayerWorldTransform(_s.name);\n"
+        "        if (m && m.length === 16 && Number.isFinite(+m[12]) && Number.isFinite(+m[13])) {\n"
+        "          var tx = +m[12], ty = +m[13];\n"
+        "          if (tx !== 0 || ty !== 0) return Vec3(tx, ty, +m[14]||0);\n"
+        "        }\n"
+        "      }\n"
+        "      return _s._woBaked;\n"
+        "    }, enumerable: true, configurable: true });\n"
+        "  Object.defineProperty(_s, 'worldScale', {\n"
+        "    get: function() {\n"
+        "      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.getLayerWorldTransform) {\n"
+        "        var m = __sceneBridge.getLayerWorldTransform(_s.name);\n"
+        "        if (m && m.length === 16 && Number.isFinite(+m[0]) && Number.isFinite(+m[5])) {\n"
+        "          var sx = Math.sqrt((+m[0])*(+m[0]) + (+m[1])*(+m[1]) + (+m[2])*(+m[2]));\n"
+        "          var sy = Math.sqrt((+m[4])*(+m[4]) + (+m[5])*(+m[5]) + (+m[6])*(+m[6]));\n"
+        "          var sz = Math.sqrt((+m[8])*(+m[8]) + (+m[9])*(+m[9]) + (+m[10])*(+m[10]));\n"
+        "          if (sx > 0 && sy > 0) return Vec3(sx, sy, sz);\n"
+        "        }\n"
+        "      }\n"
+        "      return _s._wsBaked;\n"
+        "    }, enumerable: true, configurable: true });\n"
         "  var p = {};\n"
         "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true "
         "});\n"
@@ -2269,14 +2379,32 @@ void SceneObject::setupTextScripts() {
         "  p.stop = function(){};\n"
         "  p.pause = function(){};\n"
         "  p.isPlaying = function(){ return false; };\n"
+        // getTextureAnimation(): proxy for the layer's sprite-sheet animation.
+        // setFrame(N) routes through __sceneBridge.setLayerSpriteFrame so the
+        // pin reaches every per-pass sprite copy via Scene::nodeSpriteFrame.
+        // play()/pause()/stop() flip auto-advance via the same bridge.
+        // Semantics match WE: a fresh proxy reports not-playing (rate=0) —
+        // authoring scripts opt into auto-advance with play(); setFrame
+        // implicitly pins (rate=0 + manual frame).  _frame and rate are
+        // cached JS-side so getFrame / isPlaying round-trip without IPC.
         "  p.getTextureAnimation = function(){\n"
-        "    return { rate: 0, frameCount: 1, _frame: 0,\n"
-        "      getFrame: function(){ return this._frame; },\n"
-        "      setFrame: function(f){ this._frame = f; },\n"
-        "      play: function(){ this.rate = 1; },\n"
-        "      pause: function(){ this.rate = 0; },\n"
-        "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
-        "      isPlaying: function(){ return this.rate > 0; }\n"
+        "    var _name = _s.name; var _frame = 0; var _rate = 0;\n"
+        "    return { frameCount: 1,\n"
+        "      get _frame() { return _frame; }, get rate() { return _rate; },\n"
+        "      getFrame: function(){ return _frame; },\n"
+        "      setFrame: function(f){ _frame = f|0; _rate = 0;\n"
+        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, true, _frame); },\n"
+        "      play: function(){ _rate = 1;\n"
+        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, false, 0); },\n"
+        "      pause: function(){ _rate = 0;\n"
+        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, true, _frame); },\n"
+        "      stop: function(){ _rate = 0; _frame = 0;\n"
+        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, true, 0); },\n"
+        "      isPlaying: function(){ return _rate > 0; }\n"
         "    };\n"
         "  };\n"
         // getVideoTexture(): returns IVideoTexture proxy bound to this layer.
@@ -2370,14 +2498,21 @@ void SceneObject::setupTextScripts() {
         // getEffect(name) — returns effect proxy with dirty-tracked visible property
         "  if (!_s._effCache) _s._effCache = {};\n"
         "  p.getEffect = function(ename) {\n"
-        "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
+        // WE's getEffect accepts either a string name or a numeric index.
+        // Game of Life (3453251764) Pattern Texture init and Color buttons
+        // both use `for (i=0; i < getEffectCount(); i++) getEffect(i)`.
         "    var efxList = init ? init.efx : null;\n"
         "    if (!efxList) return null;\n"
         "    var idx = -1;\n"
-        "    for (var i = 0; i < efxList.length; i++) {\n"
-        "      if (efxList[i] === ename) { idx = i; break; }\n"
+        "    if (typeof ename === 'number') {\n"
+        "      if (ename >= 0 && ename < efxList.length) { idx = ename|0; ename = efxList[idx]; }\n"
+        "    } else {\n"
+        "      for (var i = 0; i < efxList.length; i++) {\n"
+        "        if (efxList[i] === ename) { idx = i; break; }\n"
+        "      }\n"
         "    }\n"
         "    if (idx < 0) return null;\n"
+        "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
         "    var es = { visible: true, name: ename, _idx: idx };\n"
         "    var ep = {};\n"
         "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: "
@@ -2511,6 +2646,25 @@ void SceneObject::setupTextScripts() {
         "    _layerCache[name] = layer;\n"
         "    _layerList.push(layer);\n"
         "    return layer;\n"
+        "  },\n"
+        // WE's thisScene.getInitialLayerConfig(layer) variant — Game of
+        // Life Brush (3453251764) uses `thisScene.getInitialLayerConfig(thisLayer).effects`
+        // to iterate effect names.  Delegates to the per-layer proxy
+        // method, and adds an `effects: [{name}, ...]` array assembled
+        // from init.efx (the effect-name list serialized by Scene.cpp).
+        "  getInitialLayerConfig: function(layer) {\n"
+        "    if (!layer || typeof layer.getInitialLayerConfig !== 'function') return null;\n"
+        "    var cfg = layer.getInitialLayerConfig();\n"
+        "    var efx = layer._state && layer._state._initEfx;\n"
+        "    if (!efx) {\n"
+        "      var st = layer._state && layer._state.name && _layerInitStates[layer._state.name];\n"
+        "      if (st && st.efx) efx = st.efx;\n"
+        "    }\n"
+        "    if (efx && efx.length) {\n"
+        "      cfg.effects = [];\n"
+        "      for (var i = 0; i < efx.length; i++) cfg.effects.push({ name: efx[i] });\n"
+        "    } else { cfg.effects = []; }\n"
+        "    return cfg;\n"
         "  }\n"
         "};\n"
         "var _sceneListeners = {};\n"
@@ -3337,6 +3491,17 @@ void SceneObject::setupTextScripts() {
 
         stripESModuleSyntax(scriptSrc);
 
+        // Set thisLayer for compile-time init() — the per-IIFE shadow
+        // captures the global at evaluation, and color scripts (Game of
+        // Life 3453251764 buttons et al.) call thisLayer.getTextureAnimation()
+        // / thisLayer.getEffect() in init.  Without this `thisLayer` stayed
+        // pinned to whichever layer the prior property-script loop landed
+        // on, and init threw on the first method lookup.
+        m_jsEngine->globalObject().setProperty(
+            "thisLayer",
+            m_jsEngine->evaluate(
+                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(csi.id)));
+
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
         if (! csi.scriptProperties.empty()) {
@@ -3349,6 +3514,16 @@ void SceneObject::setupTextScripts() {
         // Wrap in IIFE.  `_tlo` carries the current global `thisLayer` into a
         // local shadow so the scriptProperties overlay below doesn't leak into
         // the global binding that the next script compile will inherit.
+        //
+        // Run the body's init(value) at compile time (if present) so module-
+        // level state populated only by init — Game of Life (3453251764)
+        // Color/Tool/Stamp buttons cache `anim = thisLayer.getTextureAnimation()`
+        // in init and dereference it from update — is available on the very
+        // first update tick.  Without this every color-script update threw
+        // TypeError on `anim.setFrame(...)` and the per-frame
+        // `material.color = scriptProperties['color']` assignment never ran,
+        // leaving the 8 color-palette buttons stuck on their JSON default
+        // (red).
         QString wrapped =
             QString("(function(_tlo) {\n"
                     "  'use strict';\n"
@@ -3360,10 +3535,37 @@ void SceneObject::setupTextScripts() {
                     // Must run after the body so scriptProperties is populated.
                     "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
                     "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                    "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                    "              (typeof init === 'function' ? init : null);\n"
+                    "  if (_init) {\n"
+                    "    try { _init(undefined); }\n"
+                    "    catch(e) { console.log('color script init err: ' + (e && e.message ? e.message : e)); }\n"
+                    "  }\n"
                     "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
                     "             (typeof update === 'function' ? update : null);\n"
+                    // Capture cursor handlers so the cursor-target collector
+                    // can wire them up.  WE attaches hover/click logic to
+                    // the layer's color script for tinted buttons (Game of
+                    // Life 3453251764 Pen/Stamp/Color etc.); without
+                    // surfacing them here the buttons render correctly but
+                    // never respond to clicks.
+                    "  var _ent  = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+                    "              (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+                    "  var _lv   = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+                    "              (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+                    "  var _up   = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+                    "              (typeof cursorUp === 'function' ? cursorUp : null);\n"
+                    "  var _dn   = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+                    "              (typeof cursorDown === 'function' ? cursorDown : null);\n"
+                    "  var _clk  = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+                    "              (typeof cursorClick === 'function' ? cursorClick : null);\n"
+                    "  var _mv   = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+                    "              (typeof cursorMove === 'function' ? cursorMove : null);\n"
                     "  if (!_upd) return null;\n"
-                    "  return { update: _upd };\n"
+                    "  return { update: _upd,\n"
+                    "           cursorEnter: _ent, cursorLeave: _lv,\n"
+                    "           cursorUp: _up, cursorDown: _dn,\n"
+                    "           cursorClick: _clk, cursorMove: _mv };\n"
                     "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
@@ -3388,11 +3590,129 @@ void SceneObject::setupTextScripts() {
         }
 
         ColorScriptState state;
-        state.id           = csi.id;
-        state.updateFn     = updateFn;
-        state.currentColor = csi.initialColor;
+        state.id              = csi.id;
+        state.updateFn        = updateFn;
+        state.thisLayerProxy  = m_jsEngine->globalObject().property("thisLayer");
+        state.thisObjectProxy = state.thisLayerProxy;
+        // Resolve layerName from id via reverse lookup of m_nodeNameToId.
+        // Empty if the id isn't named — color cursor handlers without a
+        // hittable layer can still update color/state on update() ticks.
+        for (const auto& [n, nid] : m_nodeNameToId) {
+            if (nid == csi.id) {
+                state.layerName = n;
+                break;
+            }
+        }
+        state.cursorEnterFn = result.property("cursorEnter");
+        state.cursorLeaveFn = result.property("cursorLeave");
+        state.cursorUpFn    = result.property("cursorUp");
+        state.cursorDownFn  = result.property("cursorDown");
+        state.cursorClickFn = result.property("cursorClick");
+        state.cursorMoveFn  = result.property("cursorMove");
+        state.currentColor  = csi.initialColor;
         m_colorScriptStates.push_back(std::move(state));
         qCInfo(wekdeScene, "Color script compiled for id=%d", csi.id);
+    }
+
+    // Load shader-value scripts.  Same compile path as color scripts —
+    // each gets the script body wrapped in an IIFE that captures init/
+    // update + cursor handlers.  Per-frame dispatch in
+    // evaluatePropertyScripts pushes update(value) returns into
+    // m_pending_effect_material_values via the existing alias-resolution
+    // drain so the renderer picks them up on the next tick.  Game of
+    // Life (3453251764) Canvas wallpaper exercises this with ~50 scripts.
+    auto shaderValueScripts = m_scene->getShaderValueScripts();
+    for (const auto& svi : shaderValueScripts) {
+        QString scriptSrc = QString::fromStdString(svi.script);
+        stripESModuleSyntax(scriptSrc);
+
+        // Resolve layer name from id for thisLayer binding + cursor target.
+        std::string layerName;
+        for (const auto& [n, nid] : m_nodeNameToId) {
+            if (nid == svi.id) {
+                layerName = n;
+                break;
+            }
+        }
+        m_jsEngine->globalObject().setProperty(
+            "thisLayer",
+            m_jsEngine->evaluate(
+                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(svi.id)));
+
+        QString propsInit;
+        if (! svi.scriptProperties.empty()) {
+            QString jsonStr = QString::fromStdString(svi.scriptProperties);
+            jsonStr.replace("\\", "\\\\");
+            jsonStr.replace("'", "\\'");
+            propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
+        }
+
+        QString wrapped =
+            QString("(function(_tlo) {\n"
+                    "  'use strict';\n"
+                    "  var exports = {};\n"
+                    "  var thisLayer = _tlo;\n"
+                    "  %1\n"  // scriptProperties override
+                    "  %2\n"  // script body
+                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                    "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                    "              (typeof init === 'function' ? init : null);\n"
+                    "  if (_init) {\n"
+                    "    try { _init(undefined); }\n"
+                    "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : e)); }\n"
+                    "  }\n"
+                    "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+                    "             (typeof update === 'function' ? update : null);\n"
+                    "  var _ent = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+                    "             (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+                    "  var _lv  = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+                    "             (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+                    "  var _up  = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+                    "             (typeof cursorUp === 'function' ? cursorUp : null);\n"
+                    "  var _dn  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+                    "             (typeof cursorDown === 'function' ? cursorDown : null);\n"
+                    "  var _clk = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+                    "             (typeof cursorClick === 'function' ? cursorClick : null);\n"
+                    "  var _mv  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+                    "             (typeof cursorMove === 'function' ? cursorMove : null);\n"
+                    "  return { update: _upd,\n"
+                    "           cursorEnter: _ent, cursorLeave: _lv,\n"
+                    "           cursorUp: _up, cursorDown: _dn,\n"
+                    "           cursorClick: _clk, cursorMove: _mv };\n"
+                    "})(thisLayer)\n")
+                .arg(propsInit, scriptSrc);
+
+        QJSValue result = m_jsEngine->evaluate(wrapped);
+        if (result.isError() || result.isNull() || result.isUndefined()) {
+            qCWarning(wekdeScene,
+                      "Shader-value script compile error id=%d effect=%d uniform=%s: %s",
+                      svi.id, svi.effectIdx, svi.uniformName.c_str(),
+                      result.isError() ? qPrintable(result.toString()) : "null");
+            continue;
+        }
+
+        ShaderValueScriptState state;
+        state.id              = svi.id;
+        state.effectIdx       = svi.effectIdx;
+        state.uniformName     = svi.uniformName;
+        state.layerName       = layerName;
+        state.updateFn        = result.property("update");
+        state.thisLayerProxy  = m_jsEngine->globalObject().property("thisLayer");
+        state.thisObjectProxy = state.thisLayerProxy;
+        state.cursorEnterFn   = result.property("cursorEnter");
+        state.cursorLeaveFn   = result.property("cursorLeave");
+        state.cursorUpFn      = result.property("cursorUp");
+        state.cursorDownFn    = result.property("cursorDown");
+        state.cursorClickFn   = result.property("cursorClick");
+        state.cursorMoveFn    = result.property("cursorMove");
+        state.argShape        = svi.argShape;
+        state.cachedValue     = svi.initialValue;
+        m_shaderValueScriptStates.push_back(std::move(state));
+    }
+    if (! m_shaderValueScriptStates.empty()) {
+        LOG_INFO("Compiled %zu shader-value scripts (of %zu total)",
+                 m_shaderValueScriptStates.size(), shaderValueScripts.size());
     }
 
     // Load property scripts (visible, origin, scale, angles, alpha)
@@ -3823,6 +4143,67 @@ void SceneObject::setupTextScripts() {
                 tgt->upFn = state.cursorUpFn;
             if (state.cursorMoveFn.isCallable() && ! tgt->moveFn.isCallable())
                 tgt->moveFn = state.cursorMoveFn;
+        }
+        // Also collect cursor handlers from color scripts.  Driver: Game
+        // of Life (3453251764) attaches button hover/click logic to the
+        // layer's `color` script (s85+ etc.).
+        for (const auto& state : m_colorScriptStates) {
+            bool hasCursor = state.cursorClickFn.isCallable() || state.cursorEnterFn.isCallable() ||
+                             state.cursorLeaveFn.isCallable() || state.cursorDownFn.isCallable() ||
+                             state.cursorUpFn.isCallable() || state.cursorMoveFn.isCallable();
+            if (! hasCursor || state.layerName.empty()) continue;
+
+            auto          it = targetIndex.find(state.layerName);
+            CursorTarget* tgt;
+            if (it == targetIndex.end()) {
+                targetIndex[state.layerName] = m_cursorTargets.size();
+                m_cursorTargets.push_back({});
+                tgt                  = &m_cursorTargets.back();
+                tgt->layerName       = state.layerName;
+                tgt->thisLayerProxy  = state.thisLayerProxy;
+                tgt->thisObjectProxy = state.thisObjectProxy;
+            } else {
+                tgt = &m_cursorTargets[it->second];
+            }
+            if (state.cursorClickFn.isCallable() && ! tgt->clickFn.isCallable())
+                tgt->clickFn = state.cursorClickFn;
+            if (state.cursorEnterFn.isCallable() && ! tgt->enterFn.isCallable())
+                tgt->enterFn = state.cursorEnterFn;
+            if (state.cursorLeaveFn.isCallable() && ! tgt->leaveFn.isCallable())
+                tgt->leaveFn = state.cursorLeaveFn;
+            if (state.cursorDownFn.isCallable() && ! tgt->downFn.isCallable())
+                tgt->downFn = state.cursorDownFn;
+            if (state.cursorUpFn.isCallable() && ! tgt->upFn.isCallable())
+                tgt->upFn = state.cursorUpFn;
+            if (state.cursorMoveFn.isCallable() && ! tgt->moveFn.isCallable())
+                tgt->moveFn = state.cursorMoveFn;
+        }
+        // Shader-value scripts can also bind cursor handlers.  Game of
+        // Life Canvas mouseDown shader-value uses cursorDown/cursorUp/
+        // cursorLeave to track the press state that the cell-paint shader
+        // reads as the per-pixel paint trigger.  Each shader-value script
+        // has its OWN closure (each pass has its own mouseDown variable),
+        // so we push a separate cursor-target entry per script — merging
+        // by layerName would only call the first script's handler and
+        // leave the other passes' closures unflipped, so the cell shader
+        // never saw the press on the passes that actually paint.
+        for (const auto& state : m_shaderValueScriptStates) {
+            bool hasCursor = state.cursorClickFn.isCallable() || state.cursorEnterFn.isCallable() ||
+                             state.cursorLeaveFn.isCallable() || state.cursorDownFn.isCallable() ||
+                             state.cursorUpFn.isCallable() || state.cursorMoveFn.isCallable();
+            if (! hasCursor || state.layerName.empty()) continue;
+
+            m_cursorTargets.push_back({});
+            CursorTarget& tgt    = m_cursorTargets.back();
+            tgt.layerName        = state.layerName;
+            tgt.thisLayerProxy   = state.thisLayerProxy;
+            tgt.thisObjectProxy  = state.thisObjectProxy;
+            tgt.clickFn          = state.cursorClickFn;
+            tgt.enterFn          = state.cursorEnterFn;
+            tgt.leaveFn          = state.cursorLeaveFn;
+            tgt.downFn           = state.cursorDownFn;
+            tgt.upFn             = state.cursorUpFn;
+            tgt.moveFn           = state.cursorMoveFn;
         }
         if (! m_cursorTargets.empty()) {
             LOG_INFO("cursor targets: %zu layers registered", m_cursorTargets.size());
@@ -4259,7 +4640,9 @@ void SceneObject::evaluateTextScripts() {
 }
 
 void SceneObject::evaluateColorScripts() {
-    if (! m_jsEngine || m_colorScriptStates.empty()) return;
+    if (! m_jsEngine ||
+        (m_colorScriptStates.empty() && m_shaderValueScriptStates.empty()))
+        return;
 
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
@@ -4331,6 +4714,90 @@ void SceneObject::evaluateColorScripts() {
             state.currentColor = { r, g, b };
             m_scene->updateColor(state.id, r, g, b);
         }
+    }
+
+    // Shader-value script dispatch.  Each iteration packs the script's
+    // last return value into the correct JS argument shape (scalar/Vec2/
+    // Vec3/Vec4), runs update(), and pushes the result into the effect-
+    // material drain so the renderer picks it up the next tick.  Errors
+    // are deduped per (id, effectIdx, uniform) tuple so a broken script
+    // doesn't flood the journal.
+    for (auto& state : m_shaderValueScriptStates) {
+        if (! state.updateFn.isCallable()) continue;
+        QJSValue arg;
+        if (state.argShape <= 1) {
+            arg = QJSValue(state.cachedValue.empty() ? 0.0 : (double)state.cachedValue[0]);
+        } else {
+            QString ctor;
+            if (state.argShape == 2)
+                ctor = QString("Vec2(%1,%2)")
+                           .arg((double)state.cachedValue[0], 0, 'g', 8)
+                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
+                                0, 'g', 8);
+            else if (state.argShape == 3)
+                ctor = QString("Vec3(%1,%2,%3)")
+                           .arg((double)state.cachedValue[0], 0, 'g', 8)
+                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
+                                0, 'g', 8)
+                           .arg(state.cachedValue.size() > 2 ? (double)state.cachedValue[2] : 0.0,
+                                0, 'g', 8);
+            else
+                ctor = QString("Vec4(%1,%2,%3,%4)")
+                           .arg((double)state.cachedValue[0], 0, 'g', 8)
+                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
+                                0, 'g', 8)
+                           .arg(state.cachedValue.size() > 2 ? (double)state.cachedValue[2] : 0.0,
+                                0, 'g', 8)
+                           .arg(state.cachedValue.size() > 3 ? (double)state.cachedValue[3] : 0.0,
+                                0, 'g', 8);
+            arg = m_jsEngine->evaluate(ctor);
+        }
+
+        QJSValue result = state.updateFn.call({ arg });
+        if (result.isError()) {
+            static std::unordered_set<int64_t> svErrored;
+            int64_t tag = ((int64_t)state.id << 32) ^
+                          ((int64_t)state.effectIdx << 24) ^
+                          (int64_t)std::hash<std::string>{}(state.uniformName);
+            if (svErrored.find(tag) == svErrored.end()) {
+                svErrored.insert(tag);
+                LOG_INFO("sv-script error id=%d effect=%d uniform=%s: %s",
+                         state.id, state.effectIdx, state.uniformName.c_str(),
+                         qPrintable(result.toString()));
+            }
+            continue;
+        }
+
+        // Pack result back into a float vector.  Accept scalars, Vec2/3/4
+        // objects, or plain arrays — same shape as
+        // SceneObject::effectMaterialSetValue.
+        std::vector<float> floats;
+        if (result.isNumber()) {
+            floats.push_back((float)result.toNumber());
+        } else if (result.isArray()) {
+            int n = result.property("length").toInt();
+            for (int i = 0; i < n && i < 16; ++i) {
+                QJSValue el = result.property(i);
+                if (el.isNumber()) floats.push_back((float)el.toNumber());
+            }
+        } else if (result.isObject()) {
+            const char* keys[] = { "x", "y", "z", "w" };
+            for (int k = 0; k < 4; ++k) {
+                QJSValue v = result.property(keys[k]);
+                if (! v.isNumber()) break;
+                floats.push_back((float)v.toNumber());
+            }
+        }
+        if (floats.empty()) continue;
+
+        // Compare-and-push: only dispatch when the value actually changed.
+        bool changed = floats.size() != state.cachedValue.size();
+        for (size_t i = 0; ! changed && i < floats.size(); ++i)
+            if (std::abs(floats[i] - state.cachedValue[i]) > 0.0001f) changed = true;
+        if (! changed) continue;
+        state.cachedValue = floats;
+        m_scene->updateEffectMaterialValue(state.id, state.effectIdx, state.uniformName,
+                                           std::move(floats));
     }
 }
 
@@ -5141,6 +5608,20 @@ void SceneObject::evaluatePropertyScripts() {
             }
         }
     }
+
+    // Chain color/shader-value evaluation into the same tick so transient
+    // signaling state (shared.brushEditor.hasChanged = true → consume → set
+    // false next property tick) doesn't race the separate color timer.
+    // Game of Life (3453251764) buttons set brushEditor.changed in cursorUp;
+    // Canvas's visible property script promotes it to hasChanged on the
+    // next property tick (and clears the next-next).  Buttons (color
+    // scripts) refresh their selected state when they see hasChanged=true
+    // — but with property at 8ms and color at 33ms cadence, color always
+    // lands after hasChanged has been cleared, and tool selection never
+    // visually updated.  Running color in the same tick removes the race.
+    if (! m_colorScriptStates.empty() || ! m_shaderValueScriptStates.empty()) {
+        evaluateColorScripts();
+    }
 }
 
 void SceneObject::cleanupTextScripts() {
@@ -5159,6 +5640,7 @@ void SceneObject::cleanupTextScripts() {
 
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
+    m_shaderValueScriptStates.clear();
     m_propertyScriptStates.clear();
     m_soundVolumeScriptStates.clear();
     m_nodeNameToId.clear();

@@ -111,4 +111,67 @@ TEST_SUITE("SpriteAnimation") {
         CHECK(anim.GetCurFrame().imageId == 0);
     }
 
+    // Manual-frame pin: SceneScript writes thisLayer.getTextureAnimation()
+    // .setFrame(N) end up here via SetManualFrame.  Game of Life
+    // (3453251764) tinted-button sheets cycled through 3 frames at the
+    // texture's authored rate ("constantly flashing") until this landed.
+    TEST_CASE("SetManualFrame pins frame index against auto-advance time") {
+        SpriteAnimation anim;
+        for (int i = 0; i < 3; i++) {
+            SpriteFrame f;
+            f.imageId   = i;
+            f.frametime = 0.1f;
+            anim.AppendFrame(f);
+        }
+        CHECK_FALSE(anim.isManualFrame());
+        anim.SetManualFrame(2);
+        CHECK(anim.isManualFrame());
+        CHECK(anim.curFrameIndex() == 2);
+        // Even after a long elapsed time, the pinned frame stays.
+        for (int i = 0; i < 10; i++) {
+            const auto& f = anim.GetAnimateFrame(1.0);
+            CHECK(f.imageId == 2);
+        }
+    }
+
+    TEST_CASE("SetManualFrame clamps out-of-range indices") {
+        SpriteAnimation anim;
+        for (int i = 0; i < 3; i++) {
+            SpriteFrame f;
+            f.imageId   = i;
+            f.frametime = 0.1f;
+            anim.AppendFrame(f);
+        }
+        anim.SetManualFrame(99);
+        CHECK(anim.curFrameIndex() == 2);
+        anim.SetManualFrame(-5);
+        CHECK(anim.curFrameIndex() == 0);
+    }
+
+    TEST_CASE("ClearManualFrame restores time-driven auto-advance") {
+        SpriteAnimation anim;
+        for (int i = 0; i < 3; i++) {
+            SpriteFrame f;
+            f.imageId   = i;
+            f.frametime = 0.1f;
+            anim.AppendFrame(f);
+        }
+        anim.SetManualFrame(1);
+        CHECK(anim.isManualFrame());
+        anim.ClearManualFrame();
+        CHECK_FALSE(anim.isManualFrame());
+        // After clearing, frametime budgeting resumes — single 0.2s tick
+        // advances past the budget into the next frame.
+        const auto& f = anim.GetAnimateFrame(0.2);
+        CHECK(f.imageId == 2);
+    }
+
+    TEST_CASE("SetManualFrame on an empty animation is a safe no-op") {
+        SpriteAnimation anim;
+        anim.SetManualFrame(5);
+        CHECK(anim.isManualFrame());
+        CHECK(anim.curFrameIndex() == 0);
+        CHECK(anim.numFrames() == 0);
+    }
+
 } // TEST_SUITE
