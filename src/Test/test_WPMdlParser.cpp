@@ -206,6 +206,93 @@ TEST_SUITE("WPMdlParser_EOF_safety") {
         CHECK(r.completed);
     }
 
+    // Regression from wallpaper 3363252053 (夜莺Night/Nightingale body+head).  The
+    // body's MDLV0023 puppet has MDLS v4, MDAT v1, MDLA v6 sections back-to-back.
+    // Between has_index and MDAT, the format inserts a per-bone u32 table guarded
+    // by a 1-byte flag — total 1 + bones_num*4 bytes.  Without consuming it, the
+    // parser entered the MDAT/MDLA scan loop with bytes still pending.  Most
+    // puppets survived because ReadStr() chunked through the table NUL-by-NUL and
+    // still landed on the tag; this one's last u32 ended in 0xFF, so ReadStr()
+    // swallowed the 'MDAT'/'MDLA' tags inside a longer non-NUL-terminated string
+    // and the parser ran to EOF reporting "static skinned puppet".  Result: 1
+    // attachment ('头' on bone 4) and 2 animations dropped, so the head decoupled
+    // from the body's bones.
+    TEST_CASE("MDLS v4 bone-table is consumed before MDAT/MDLA scan") {
+        std::vector<uint8_t> data = mdlvHeader(23);
+        appendInt32(data, 0); // mdl_flag = 0 → puppet path
+        appendInt32(data, 1);
+        appendInt32(data, 1);
+        data.push_back(0);                                 // empty mat_json_file
+        appendInt32(data, 0);                              // zero after mat
+        for (int i = 0; i < 24; i++) data.push_back(0);    // v17+ bbox padding
+        appendInt32(data, 0x01800009);                     // std-format vertex herald
+        appendInt32(data, 0);                              // vertex_size
+        appendInt32(data, 0);                              // indices_size
+
+        const char mdls_tag[9] = "MDLS0004";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdls_tag[i]));
+        appendInt32(data, 0); // bones_file_end (unused)
+        // Two bones so the bone-table block (bones_num*4) covers >1 entry.
+        data.push_back(2);
+        data.push_back(0); // bones_num = 2
+        data.push_back(0);
+        data.push_back(0); // unk
+
+        for (int b = 0; b < 2; b++) {
+            data.push_back(0);                                     // empty bone name
+            appendInt32(data, 1);                                  // unk
+            appendInt32(data, b == 0 ? (int32_t)0xFFFFFFFF : 0);   // parent
+            appendInt32(data, 64);                                 // matrix size
+            for (int i = 0; i < 16; i++) appendInt32(data, 0);     // identity-ish matrix
+            data.push_back(0);                                     // empty sim_json
+        }
+
+        // mdls > 1 extras block.
+        data.push_back(0);
+        data.push_back(0);                                         // unk16 = 0
+        data.push_back(0);                                         // has_trans = 0
+        appendInt32(data, 0);                                      // size_unk = 0
+        appendInt32(data, 0);                                      // unk
+        data.push_back(0);                                         // has_offset_trans = 0
+        data.push_back(0);                                         // has_index = 0
+
+        // NEW: per-bone u32 table guarded by a 1-byte flag.  Pin 0xFF as the
+        // very last byte before MDAT — exactly the failure mode that breaks the
+        // fallback ReadStr() scan: with no NUL between the table and the tag,
+        // an unfixed parser reads "...\xFFMDAT0001" as a 9+ char string and
+        // misses the section.
+        data.push_back(1);                                         // has_bone_table = 1
+        // 2 bones × 4 bytes; last byte must be 0xFF.
+        for (int i = 0; i < 7; i++) data.push_back(0);
+        data.push_back(0xFF);
+
+        // MDAT0001 with one attachment named "head" rigged to bone 0.
+        const char mdat_tag[9] = "MDAT0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdat_tag[i]));
+        appendInt32(data, 0);     // 4-byte skip
+        data.push_back(1);
+        data.push_back(0);        // num_attachments = 1 (u16)
+        data.push_back(0);
+        data.push_back(0);        // bone_index = 0 (u16)
+        const char head_name[] = "head";
+        for (char c : head_name) data.push_back(static_cast<uint8_t>(c));
+        for (int i = 0; i < 16; i++) appendInt32(data, 0); // identity-ish 4x4
+
+        fs::MemBinaryStream f(std::move(data));
+        WPMdl               mdl;
+        auto                r = parseWithWatchdog(f, "v4_bonetable.mdl", mdl);
+        REQUIRE(r.completed);
+        CHECK(r.ok);
+        REQUIRE(mdl.puppet != nullptr);
+        CHECK(mdl.mdlv == 23);
+        CHECK(mdl.mdls == 4);
+        // The attachment must be reachable — proving the parser found MDAT
+        // despite the 0xFF byte immediately before the tag.
+        REQUIRE(mdl.puppet->attachments.size() == 1);
+        CHECK(mdl.puppet->attachments[0].name == "head");
+        CHECK(mdl.puppet->attachments[0].bone_index == 0);
+    }
+
     // Anim-padding scan EOF test — line 500 `Tell() >= Size()` mutates to `>`.
     // Trailing-zero MDLA section means the scan loop reads past end-of-stream
     // looking for a non-zero byte that never comes.  The fixed code returns

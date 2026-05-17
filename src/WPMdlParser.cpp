@@ -448,6 +448,23 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         if (has_index) {
             f.SeekCur((isize)bones_num * 4);
         }
+
+        // MDLS v4 adds a second per-bone u32 table (purpose unknown — values
+        // are signed multiples of 100 in the wild; SAO's 1-bone puppet has 0).
+        // Missing this read leaves the cursor 1 + bones_num*4 bytes before
+        // the MDAT/MDLA tag.  In most v4 puppets the trailing ReadStr() scan
+        // walks past the gap one NUL-terminated chunk at a time and still
+        // lands on the tag; in 3363252053's body puppet the last u32 ends
+        // in 0xFF (no NUL before 'MDAT'), so ReadStr swallows the tag inside
+        // a longer string and the loop misses both MDAT and MDLA — the
+        // entire skeleton then renders as static with no attachments, so
+        // the head decouples from the body bone.
+        if (mdl.mdls >= 4) {
+            uint8_t has_bone_table = f.ReadUint8();
+            if (has_bone_table) {
+                f.SeekCur((isize)bones_num * 4);
+            }
+        }
     }
 
     // sometimes there can be one or more zero bytes and/or MDAT sections containing
