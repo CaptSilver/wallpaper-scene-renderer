@@ -921,6 +921,26 @@ void SceneObject::setLayerSpriteFrame(const QString& layerName, bool wantsManual
     m_scene->setLayerSpriteFrame(it->second, wantsManual, frameIdx);
 }
 
+// thisLayer.getTextureAnimation() read-back — returns frame count, current
+// frame, total duration (sum of frametimes, seconds), and the manual-pin
+// state captured in Scene::nodeSpriteSnapshot by WPShaderValueUpdater on
+// its most recent tick.  Empty object for unknown layer names; default-zero
+// snapshot for layers without sprites — the JS proxy treats both as "no
+// sprite", reporting frameCount:1, currentFrame:0, isPlaying:true so
+// callers stay defensive against null layers without special-casing.
+QJSValue SceneObject::getLayerSpriteInfo(const QString& layerName) const {
+    QJSValue obj = m_jsEngine ? m_jsEngine->newObject() : QJSValue();
+    if (! m_scene || ! m_jsEngine) return obj;
+    auto it = m_nodeNameToId.find(layerName.toStdString());
+    if (it == m_nodeNameToId.end()) return obj;
+    auto snap = m_scene->getLayerSpriteSnapshot(it->second);
+    obj.setProperty("frameCount", (int)snap.numFrames);
+    obj.setProperty("currentFrame", (int)snap.currentFrame);
+    obj.setProperty("duration", (double)snap.duration);
+    obj.setProperty("isManualPin", snap.isManualPin);
+    return obj;
+}
+
 // thisLayer.getBoneIndex(name) bridge — resolves the named MDAT attachment
 // in the puppet rigged to this layer (or its parent's puppet for child-rigged
 // layers).  Empty names short-circuit to 0; unknown layers and missing
@@ -2380,31 +2400,49 @@ void SceneObject::setupTextScripts() {
         "  p.pause = function(){};\n"
         "  p.isPlaying = function(){ return false; };\n"
         // getTextureAnimation(): proxy for the layer's sprite-sheet animation.
-        // setFrame(N) routes through __sceneBridge.setLayerSpriteFrame so the
-        // pin reaches every per-pass sprite copy via Scene::nodeSpriteFrame.
-        // play()/pause()/stop() flip auto-advance via the same bridge.
-        // Semantics match WE: a fresh proxy reports not-playing (rate=0) —
-        // authoring scripts opt into auto-advance with play(); setFrame
-        // implicitly pins (rate=0 + manual frame).  _frame and rate are
-        // cached JS-side so getFrame / isPlaying round-trip without IPC.
+        // frameCount / currentFrame / duration come from a live read-back of
+        // Scene::nodeSpriteSnapshot via __sceneBridge.getLayerSpriteInfo;
+        // setFrame(N) / play() / stop() / pause() write through
+        // __sceneBridge.setLayerSpriteFrame so the pin reaches every per-pass
+        // sprite copy.  Without the live read-back the proxy hardcoded
+        // frameCount=1, which made `frame === ani.frameCount - 1` (Rella
+        // firework 3363252053) fire every tick and tear through the pause
+        // loop.  Falls back to {1, 0, 0} when the bridge or layer is missing
+        // (so the script keeps running rather than touching `undefined`).
         "  p.getTextureAnimation = function(){\n"
-        "    var _name = _s.name; var _frame = 0; var _rate = 0;\n"
-        "    return { frameCount: 1,\n"
-        "      get _frame() { return _frame; }, get rate() { return _rate; },\n"
-        "      getFrame: function(){ return _frame; },\n"
-        "      setFrame: function(f){ _frame = f|0; _rate = 0;\n"
+        "    var _name = _s.name;\n"
+        "    var _readInfo = function() {\n"
+        "      var info = (typeof __sceneBridge !== 'undefined'\n"
+        "                  && __sceneBridge.getLayerSpriteInfo)\n"
+        "                 ? __sceneBridge.getLayerSpriteInfo(_name) : null;\n"
+        "      var fc = info && info.frameCount ? info.frameCount : 1;\n"
+        "      var cf = info && typeof info.currentFrame === 'number' "
+        "? info.currentFrame : 0;\n"
+        "      var dur = info && typeof info.duration === 'number' "
+        "? info.duration : 0;\n"
+        "      var mp = info ? !!info.isManualPin : false;\n"
+        "      return { frameCount: fc, currentFrame: cf, duration: dur, isManualPin: mp };\n"
+        "    };\n"
+        "    return {\n"
+        "      get frameCount(){ return _readInfo().frameCount; },\n"
+        "      get duration(){ return _readInfo().duration; },\n"
+        "      get rate(){ return _readInfo().isManualPin ? 0 : 1; },\n"
+        "      get _frame(){ return _readInfo().currentFrame; },\n"
+        "      getFrame: function(){ return _readInfo().currentFrame; },\n"
+        "      setFrame: function(f){\n"
         "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, true, _frame); },\n"
-        "      play: function(){ _rate = 1;\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, true, f|0); },\n"
+        "      play: function(){\n"
         "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
         "          __sceneBridge.setLayerSpriteFrame(_name, false, 0); },\n"
-        "      pause: function(){ _rate = 0;\n"
+        "      pause: function(){\n"
+        "        var cur = _readInfo().currentFrame;\n"
         "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, true, _frame); },\n"
-        "      stop: function(){ _rate = 0; _frame = 0;\n"
+        "          __sceneBridge.setLayerSpriteFrame(_name, true, cur); },\n"
+        "      stop: function(){\n"
         "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
         "          __sceneBridge.setLayerSpriteFrame(_name, true, 0); },\n"
-        "      isPlaying: function(){ return _rate > 0; }\n"
+        "      isPlaying: function(){ return !_readInfo().isManualPin; }\n"
         "    };\n"
         "  };\n"
         // getVideoTexture(): returns IVideoTexture proxy bound to this layer.

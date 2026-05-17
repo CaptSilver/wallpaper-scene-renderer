@@ -249,6 +249,26 @@ public:
     // The bool is a "wants-manual" toggle (false = explicit auto-advance
     // restore), the i32 is the desired frame index when manual is true.
     std::unordered_map<i32, std::pair<bool, i32>> nodeSpriteFrame;
+
+    // Per-node sprite playback snapshot, written each render tick by
+    // WPShaderValueUpdater after the sprite advances, read by the
+    // SceneScript bridge for `thisLayer.getTextureAnimation()`'s frameCount /
+    // duration / getFrame() / isPlaying().  Without a live read-back, the JS
+    // proxy hardcoded frameCount=1 and currentFrame=0, which made authoring
+    // patterns like `frame === ani.frameCount - 1` (Rella firework script
+    // 3363252053) fire every tick and tear through the pause/resume cycle.
+    // Populated from the first sprite of the first pass; multiple passes for
+    // the same node share authored frametimes, so the representative sprite
+    // is in sync with the rest within one tick.
+    struct NodeSpriteSnapshot {
+        u32   numFrames { 0 };
+        u32   currentFrame { 0 };
+        float duration { 0.0f }; // sum of authored frametimes, seconds
+        bool  isManualPin { false };
+    };
+    std::unordered_map<i32, NodeSpriteSnapshot> nodeSpriteSnapshot;
+    mutable std::mutex                          nodeSpriteSnapshotMutex;
+
     // Layer name → initial transform state for JS proxy initialization
     struct LayerInitialState {
         std::array<float, 3> origin { 0, 0, 0 };

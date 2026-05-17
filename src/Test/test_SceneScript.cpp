@@ -603,6 +603,203 @@ TEST_SUITE("SceneScript Video Texture") {
 } // TEST_SUITE SceneScript Video Texture
 
 // ------------------------------------------------------------------
+// thisLayer.getTextureAnimation() proxy with live snapshot read-back
+// ------------------------------------------------------------------
+// Production proxy queries __sceneBridge.getLayerSpriteInfo on each read so
+// scripts see real frameCount / currentFrame / duration / isManualPin from
+// the per-node sprite snapshot WPShaderValueUpdater publishes each tick.  We
+// mirror that here with a mock bridge so the Rella firework pattern
+// (`frame === ani.frameCount - 1` followed by setTimeout+stop+play) actually
+// observes meaningful frame numbers — without the live read-back the proxy
+// hardcoded frameCount=1 and the end-of-cycle branch fired every tick.
+TEST_SUITE("SceneScript Texture Animation Bridge") {
+    struct SpriteBridgeEnv {
+        QJSEngine engine;
+        SpriteBridgeEnv() {
+            engine.evaluate(R"JS(
+                var __sceneBridge = {
+                    _info: { frameCount: 7, currentFrame: 0, duration: 4.53,
+                             isManualPin: false },
+                    _setCalls: [],
+                    getLayerSpriteInfo: function(name) {
+                        this._lastInfoQuery = name;
+                        // Return a copy so the proxy can't mutate cached state.
+                        return { frameCount: this._info.frameCount,
+                                 currentFrame: this._info.currentFrame,
+                                 duration: this._info.duration,
+                                 isManualPin: this._info.isManualPin };
+                    },
+                    setLayerSpriteFrame: function(name, wantsManual, frameIdx) {
+                        this._setCalls.push([name, wantsManual, frameIdx]);
+                        // Production: pin updates the rendered frame so the
+                        // next snapshot reflects the pin.  Mirror that so the
+                        // proxy's pause()/setFrame() round-trip works.
+                        this._info.isManualPin = wantsManual;
+                        if (wantsManual) this._info.currentFrame = frameIdx;
+                    }
+                };
+            )JS");
+            // Mirror the production getTextureAnimation proxy: each read goes
+            // through the bridge; writes (setFrame/play/stop/pause) push pins.
+            engine.evaluate(R"JS(
+                function makeAnim(name) {
+                    var _name = name;
+                    var _readInfo = function() {
+                        var info = __sceneBridge.getLayerSpriteInfo(_name);
+                        var fc = info && info.frameCount ? info.frameCount : 1;
+                        var cf = info && typeof info.currentFrame === 'number'
+                                 ? info.currentFrame : 0;
+                        var dur = info && typeof info.duration === 'number'
+                                  ? info.duration : 0;
+                        var mp = info ? !!info.isManualPin : false;
+                        return { frameCount: fc, currentFrame: cf,
+                                 duration: dur, isManualPin: mp };
+                    };
+                    return {
+                        get frameCount(){ return _readInfo().frameCount; },
+                        get duration(){ return _readInfo().duration; },
+                        get rate(){ return _readInfo().isManualPin ? 0 : 1; },
+                        getFrame: function(){ return _readInfo().currentFrame; },
+                        setFrame: function(f){
+                            __sceneBridge.setLayerSpriteFrame(_name, true, f|0); },
+                        play: function(){
+                            __sceneBridge.setLayerSpriteFrame(_name, false, 0); },
+                        pause: function(){
+                            var cur = _readInfo().currentFrame;
+                            __sceneBridge.setLayerSpriteFrame(_name, true, cur); },
+                        stop: function(){
+                            __sceneBridge.setLayerSpriteFrame(_name, true, 0); },
+                        isPlaying: function(){ return !_readInfo().isManualPin; }
+                    };
+                }
+            )JS");
+        }
+    };
+
+    TEST_CASE("frameCount reflects live snapshot, not hardcoded 1") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('烟花1');");
+        CHECK(env.engine.evaluate("a.frameCount").toInt() == 7);
+        env.engine.evaluate("__sceneBridge._info.frameCount = 151;");
+        CHECK(env.engine.evaluate("a.frameCount").toInt() == 151);
+        CHECK(env.engine.evaluate("__sceneBridge._lastInfoQuery").toString() == "烟花1");
+    }
+
+    TEST_CASE("duration is the texture's authored cycle in seconds") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');");
+        CHECK(env.engine.evaluate("a.duration").toNumber() ==
+              doctest::Approx(4.53));
+        env.engine.evaluate("__sceneBridge._info.duration = 2.0;");
+        CHECK(env.engine.evaluate("a.duration").toNumber() ==
+              doctest::Approx(2.0));
+    }
+
+    TEST_CASE("getFrame returns the live current frame, never a stale 0") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');");
+        CHECK(env.engine.evaluate("a.getFrame()").toInt() == 0);
+        env.engine.evaluate("__sceneBridge._info.currentFrame = 133;");
+        CHECK(env.engine.evaluate("a.getFrame()").toInt() == 133);
+        // Reading twice should re-query the bridge — no caching.
+        env.engine.evaluate("__sceneBridge._info.currentFrame = 150;");
+        CHECK(env.engine.evaluate("a.getFrame()").toInt() == 150);
+    }
+
+    TEST_CASE("Rella firework end-of-cycle pattern: frame===frameCount-1") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('烟花1');");
+        env.engine.evaluate(
+            "__sceneBridge._info.frameCount = 151;\n"
+            "__sceneBridge._info.currentFrame = 0;\n");
+        CHECK_FALSE(env.engine.evaluate(
+                            "a.getFrame() === a.frameCount - 1")
+                        .toBool());
+        env.engine.evaluate("__sceneBridge._info.currentFrame = 150;");
+        CHECK(env.engine.evaluate("a.getFrame() === a.frameCount - 1").toBool());
+    }
+
+    TEST_CASE("setFrame pins through bridge") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');");
+        env.engine.evaluate("a.setFrame(42);");
+        CHECK(env.engine.evaluate("__sceneBridge._setCalls[0][0]").toString() ==
+              "fw");
+        CHECK(env.engine.evaluate("__sceneBridge._setCalls[0][1]").toBool() ==
+              true);
+        CHECK(env.engine.evaluate("__sceneBridge._setCalls[0][2]").toInt() ==
+              42);
+        // Pin reflected on next read.
+        CHECK(env.engine.evaluate("a.getFrame()").toInt() == 42);
+        CHECK_FALSE(env.engine.evaluate("a.isPlaying()").toBool());
+    }
+
+    TEST_CASE("play releases manual pin, isPlaying flips back to true") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');");
+        env.engine.evaluate("a.setFrame(10);");
+        CHECK_FALSE(env.engine.evaluate("a.isPlaying()").toBool());
+        env.engine.evaluate("a.play();");
+        CHECK(env.engine.evaluate("a.isPlaying()").toBool());
+        // The play() call passes wantsManual=false.
+        env.engine.evaluate(
+            "var last = __sceneBridge._setCalls[__sceneBridge._setCalls.length - 1];");
+        CHECK_FALSE(env.engine.evaluate("last[1]").toBool());
+    }
+
+    TEST_CASE("stop pins to frame 0 (Rella script's pause-before-replay)") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');\n"
+                            "__sceneBridge._info.currentFrame = 150;\n");
+        env.engine.evaluate("a.stop();");
+        env.engine.evaluate(
+            "var last = __sceneBridge._setCalls[__sceneBridge._setCalls.length - 1];");
+        CHECK(env.engine.evaluate("last[1]").toBool() == true);
+        CHECK(env.engine.evaluate("last[2]").toInt() == 0);
+        CHECK(env.engine.evaluate("a.getFrame()").toInt() == 0);
+    }
+
+    TEST_CASE("pause pins at current frame (preserves where the sprite was)") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate("var a = makeAnim('fw');\n"
+                            "__sceneBridge._info.currentFrame = 77;\n");
+        env.engine.evaluate("a.pause();");
+        env.engine.evaluate(
+            "var last = __sceneBridge._setCalls[__sceneBridge._setCalls.length - 1];");
+        CHECK(env.engine.evaluate("last[1]").toBool() == true);
+        CHECK(env.engine.evaluate("last[2]").toInt() == 77);
+    }
+
+    TEST_CASE("Rella firework update() pattern: pause loop fires only at "
+              "end-of-cycle, not every tick") {
+        SpriteBridgeEnv env;
+        env.engine.evaluate(
+            "var triggers = 0;\n"
+            "var playing = true;\n"
+            "var a = makeAnim('fw');\n"
+            "function tick() {\n"
+            "  var frame = a.getFrame();\n"
+            "  if (playing && frame === a.frameCount - 1) {\n"
+            "    triggers++; playing = false;\n"
+            "  }\n"
+            "}");
+        env.engine.evaluate("__sceneBridge._info.frameCount = 151;");
+        // 150 ticks at frame 0..149 — no trigger.
+        for (int i = 0; i < 150; ++i) {
+            QString s = QString("__sceneBridge._info.currentFrame = %1; tick();").arg(i);
+            env.engine.evaluate(s);
+        }
+        CHECK(env.engine.evaluate("triggers").toInt() == 0);
+        env.engine.evaluate("__sceneBridge._info.currentFrame = 150; tick();");
+        CHECK(env.engine.evaluate("triggers").toInt() == 1);
+        // Another tick at frame 150 must NOT re-trigger — playing latched off.
+        env.engine.evaluate("tick();");
+        CHECK(env.engine.evaluate("triggers").toInt() == 1);
+    }
+
+} // TEST_SUITE SceneScript Texture Animation Bridge
+
+// ------------------------------------------------------------------
 // thisLayer.horizontalalign / verticalalign / alignment / font (JS shim)
 // ------------------------------------------------------------------
 // These are runtime mutators for text-layer style.  The JS proxy parses

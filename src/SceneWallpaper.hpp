@@ -8,6 +8,7 @@
 #include "Type.hpp"
 #include "WPVolumeAnimation.h"
 #include "Swapchain/ExSwapchain.hpp"
+#include "Scene/include/Scene/Scene.h"
 
 namespace wallpaper::audio
 {
@@ -230,6 +231,16 @@ public:
     // not found (matches WE's "0 = origin" sentinel that authoring scripts
     // treat as a missing attachment).
     int32_t getLayerBoneIndex(int32_t nodeId, const std::string& boneName) const;
+
+    // SceneScript thisLayer.getTextureAnimation() read-back bridge.  Returns
+    // the per-node sprite snapshot (numFrames / currentFrame / duration /
+    // isManualPin) published each render tick by WPShaderValueUpdater.  All
+    // zero / not-pinned when the node has no sprite or hasn't been drawn yet.
+    // Lets the JS proxy expose live frameCount / duration / getFrame() /
+    // isPlaying() instead of the previous hardcoded placeholders (firework
+    // scripts like Rella 3363252053 depend on `frame === ani.frameCount - 1`
+    // ticking through real frames to pace their random-delay pause loop).
+    Scene::NodeSpriteSnapshot getLayerSpriteSnapshot(int32_t nodeId) const;
 
     // Layer-hierarchy bridge — thisLayer.setParent() JS path enqueues
     // a (childId, parentId) pair into Scene::m_pending_parent_changes,

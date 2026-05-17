@@ -416,6 +416,21 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         updateOp(gtrans, std::array { f.x, f.y });
     }
 
+    // Publish a per-node sprite snapshot for the SceneScript bridge
+    // (thisLayer.getTextureAnimation().frameCount / duration / getFrame() /
+    // isPlaying()).  Uses the first sprite as the representative — multiple
+    // sprites on the same layer share authored frametimes and advance in
+    // lock-step within a tick, so the first is faithful for read-back.
+    if (pNode && !sprites.empty()) {
+        const auto&                   first_sp = sprites.begin()->second;
+        std::lock_guard<std::mutex>   lock(m_scene->nodeSpriteSnapshotMutex);
+        auto&                         snap     = m_scene->nodeSpriteSnapshot[pNode->ID()];
+        snap.numFrames                         = (u32)first_sp.numFrames();
+        snap.currentFrame                      = (u32)first_sp.curFrameIndex();
+        snap.duration                          = first_sp.totalDuration();
+        snap.isManualPin                       = first_sp.isManualFrame();
+    }
+
     if (info.has_LP || info.has_LCR) {
         std::array<float, 16> lights { 0 };
         std::array<float, 16> lights_color_radius { 0 };

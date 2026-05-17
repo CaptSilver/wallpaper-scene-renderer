@@ -174,4 +174,39 @@ TEST_SUITE("SpriteAnimation") {
         CHECK(anim.numFrames() == 0);
     }
 
+    // SceneScript thisLayer.getTextureAnimation().duration reads this — the
+    // Rella firework script (3363252053) computes `ani.duration * 1000 /
+    // ani.frameCount` to wait one frame before pausing.  Without the sum the
+    // value was undefined, the wait timer fired NaN, and the inner pause/play
+    // chain ran every tick — the JS proxy used to hardcode frameCount=1 so the
+    // end-of-cycle branch fired immediately on every update().
+    TEST_CASE("totalDuration sums every frame's frametime in seconds") {
+        SpriteAnimation anim;
+        CHECK(anim.totalDuration() == 0.0f); // empty animation
+        SpriteFrame f1;
+        f1.frametime = 0.1f;
+        SpriteFrame f2;
+        f2.frametime = 0.25f;
+        SpriteFrame f3;
+        f3.frametime = 0.05f;
+        anim.AppendFrame(f1);
+        anim.AppendFrame(f2);
+        anim.AppendFrame(f3);
+        CHECK(anim.totalDuration() == doctest::Approx(0.4f));
+    }
+
+    TEST_CASE("totalDuration handles many uniform frames (Rella firework "
+              "≈151 frames @ 30ms)") {
+        SpriteAnimation anim;
+        for (int i = 0; i < 151; i++) {
+            SpriteFrame f;
+            f.frametime = 0.03f;
+            anim.AppendFrame(f);
+        }
+        CHECK(anim.numFrames() == 151);
+        // 151 * 0.03 = 4.53 seconds — matches the live read-back we observed
+        // for `materials/合成 1_00000` on wallpaper 3363252053.
+        CHECK(anim.totalDuration() == doctest::Approx(4.53f).epsilon(0.001f));
+    }
+
 } // TEST_SUITE

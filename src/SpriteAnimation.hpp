@@ -51,6 +51,15 @@ public:
     idx   curFrameIndex() const { return m_curFrame; }
     bool  isManualFrame() const { return m_manualFrame; }
 
+    // Sum of authored frametimes across every frame in the sheet, in seconds.
+    // Exposed to SceneScript via `thisLayer.getTextureAnimation().duration`
+    // (Rella firework script reads this to pace its random-delay pause loop).
+    float totalDuration() const {
+        float t = 0.0f;
+        for (const auto& f : m_frames) t += f.frametime;
+        return t;
+    }
+
     // Pin the sprite to frame `f`; clamps to [0, numFrames-1].  Auto-advance
     // is suppressed until ClearManualFrame() restores time-driven playback.
     void SetManualFrame(idx f) {

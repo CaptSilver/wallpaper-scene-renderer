@@ -398,6 +398,21 @@ public:
         return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
     }
 
+    // SceneScript thisLayer.getTextureAnimation() read-back — returns the
+    // per-node sprite playback snapshot published each render tick by
+    // WPShaderValueUpdater after the sprite advances.  All-zero / not-pinned
+    // when the node has no sprite or hasn't been drawn yet, which the JS
+    // proxy maps to `{frameCount: 0/1, currentFrame: 0, duration: 0,
+    // isPlaying: true}`.  Held under nodeSpriteSnapshotMutex so the
+    // render-thread writer and JS-thread reader don't race.
+    Scene::NodeSpriteSnapshot getLayerSpriteSnapshot(i32 nodeId) const {
+        if (! m_scene) return {};
+        std::lock_guard<std::mutex> lk(m_scene->nodeSpriteSnapshotMutex);
+        auto it = m_scene->nodeSpriteSnapshot.find(nodeId);
+        if (it == m_scene->nodeSpriteSnapshot.end()) return {};
+        return it->second;
+    }
+
     // SceneScript thisLayer.getBoneIndex(name) — resolves a named MDAT
     // attachment in the puppet rigged to this layer (or its parent's puppet
     // for child-rigged layers).  No locking: nodePuppetMap is populated at
@@ -1933,6 +1948,12 @@ int32_t SceneWallpaper::getLayerBoneIndex(int32_t            nodeId,
     auto rh = m_main_handler->renderHandler();
     if (! rh) return 0;
     return rh->getLayerBoneIndex(nodeId, boneName);
+}
+
+Scene::NodeSpriteSnapshot SceneWallpaper::getLayerSpriteSnapshot(int32_t nodeId) const {
+    auto rh = m_main_handler->renderHandler();
+    if (! rh) return {};
+    return rh->getLayerSpriteSnapshot(nodeId);
 }
 
 void SceneWallpaper::queueParentChange(int32_t childId, int32_t parentId) {

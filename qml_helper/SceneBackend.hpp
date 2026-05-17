@@ -163,6 +163,17 @@ public:
                                          bool           wantsManual,
                                          int            frameIdx);
 
+    // thisLayer.getTextureAnimation() read-back bridge.  Returns a JS object
+    // `{frameCount, currentFrame, duration, isManualPin}` populated from the
+    // per-node snapshot WPShaderValueUpdater publishes each render tick.
+    // Empty/zero fields when the layer has no sprite or hasn't drawn yet —
+    // the JS proxy maps that to `frameCount:1, currentFrame:0, duration:0,
+    // isPlaying:true` so scripts that touch missing-sprite layers don't crash.
+    // Lets authoring patterns like `frame === ani.frameCount - 1` (Rella
+    // firework 3363252053) observe real playback instead of a hardcoded `1`
+    // that fired the end-of-cycle branch on every tick.
+    Q_INVOKABLE QJSValue getLayerSpriteInfo(const QString& layerName) const;
+
     // Text-style bridge — thisLayer.{horizontalalign,verticalalign,alignment,font}.
     // Each string is "" to leave that field unchanged.  Font name is resolved
     // to bytes on the render thread.  The JS shim parses `alignment` into its
