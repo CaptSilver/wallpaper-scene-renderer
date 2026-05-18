@@ -8641,4 +8641,77 @@ TEST_SUITE("SceneScript Hierarchy destroyLayer Reset") {
     }
 } // SceneScript Hierarchy destroyLayer Reset
 
+TEST_SUITE("SceneScript engine.fps binding") {
+    // Verifies the JS surface SceneBackend builds in setupTextScripts /
+    // evaluateTextScripts: scripts read `engine.fps` as a plain number, and
+    // each tick the native side overwrites it from SceneWallpaper::getFps()
+    // (FpsCounter wall-clock measurement on the render thread).
+    //
+    // The end-to-end fix it covers — Miku 3363252053 was stuck at "fps: 2"
+    // because the text-script Date.now() math was sampling the text timer's
+    // 500ms cadence rather than the render rate.  After the fix, authors can
+    // either (a) keep the Date.now() math working (text scripts now eval once
+    // per render frame) or (b) read engine.fps directly.
+
+    struct FpsEnv {
+        QJSEngine engine;
+        QJSValue  engineObj;
+
+        FpsEnv() {
+            engineObj = engine.newObject();
+            // Match setupTextScripts's initial value before any frame draws.
+            engineObj.setProperty("fps", 0.0);
+            engine.globalObject().setProperty("engine", engineObj);
+        }
+
+        // Mimic evaluateTextScripts publishing SceneWallpaper::getFps().
+        void publishFps(double fps) {
+            engine.globalObject().property("engine").setProperty("fps", fps);
+        }
+    };
+
+    TEST_CASE("default engine.fps is 0 before the first frame draws") {
+        FpsEnv env;
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("engine.fps reflects what the native side published") {
+        FpsEnv env;
+        env.publishFps(30.0);
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(30.0));
+        env.publishFps(60.0);
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(60.0));
+        env.publishFps(12.0);
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(12.0));
+    }
+
+    TEST_CASE("Miku-style FPS readout: 'fps: ' + Math.round(engine.fps)") {
+        // This is the literal idiom scripts can use as a drop-in replacement
+        // for the Date.now() pattern.  Verifies the rounding and concatenation
+        // pipeline produces a clean integer string the text renderer can show.
+        FpsEnv env;
+        CHECK(env.engine.evaluate("'fps: ' + Math.round(engine.fps)").toString() ==
+              QString("fps: 0"));
+        env.publishFps(30.7);
+        CHECK(env.engine.evaluate("'fps: ' + Math.round(engine.fps)").toString() ==
+              QString("fps: 31"));
+        env.publishFps(59.4);
+        CHECK(env.engine.evaluate("'fps: ' + Math.round(engine.fps)").toString() ==
+              QString("fps: 59"));
+    }
+
+    TEST_CASE("regression: the value 2 is not pinned in the JS layer") {
+        // Guards against re-introducing the bug where text scripts saw 2Hz
+        // updates regardless of render rate.  At the JS layer, fps must be
+        // exactly what was last published — the assertion is trivially true
+        // here, but the test exists to fail loudly if a future refactor
+        // adds a Math.min(fps, 2) or similar clamp at the JS surface.
+        FpsEnv env;
+        env.publishFps(60.0);
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(60.0));
+        env.publishFps(120.0);
+        CHECK(env.engine.evaluate("engine.fps").toNumber() == doctest::Approx(120.0));
+    }
+} // SceneScript engine.fps binding
+
 

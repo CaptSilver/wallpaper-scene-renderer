@@ -801,6 +801,10 @@ void SceneObject::requestPassDump(const QString& dir) {
 
 bool SceneObject::passDumpDone() const { return m_scene ? m_scene->passDumpDone() : false; }
 
+void SceneObject::setHidePattern(const QString& pattern) {
+    if (m_scene) m_scene->setHidePattern(pattern.toStdString());
+}
+
 // Video texture bridge for thisLayer.getVideoTexture() — resolves a JS layer
 // name to a node id via m_nodeNameToId, then delegates to SceneWallpaper.
 // Returns safe defaults (0 / false / no-op) for unknown layers so scripts
@@ -1646,9 +1650,14 @@ void SceneObject::setupTextScripts() {
     // Provide a minimal 'engine' global with runtime and timeOfDay
     m_runtimeTimer.start();
     QJSValue engineObj = m_jsEngine->newObject();
-    engineObj.setProperty("frametime", 0.5); // ~500ms timer
+    engineObj.setProperty("frametime", 0.016); // overwritten per tick
     engineObj.setProperty("runtime", 0.0);
     engineObj.setProperty("timeOfDay", 0.0);
+    // Real render-thread FPS measured wall-clock by FpsCounter (rolling 500ms
+    // window).  0 until the first frame has been drawn.  Scripts wanting an
+    // accurate FPS readout should read this directly rather than measuring
+    // their own invocation cadence (which can drift from the render rate).
+    engineObj.setProperty("fps", 0.0);
     // Monotonic tick counter (incremented by evaluatePropertyScripts — see
     // m_propFrameCount).  Lets scripts branch on "first tick", count
     // intervals without accumulating runtime drift, etc.
@@ -4518,10 +4527,18 @@ void SceneObject::setupTextScripts() {
 
     if (! m_textScriptStates.empty()) {
         m_textTimer = new QTimer(this);
-        m_textTimer->setInterval(500); // evaluate twice per second
+        // 8ms poll → 125Hz max.  Eval is gated inside evaluateTextScripts on
+        // the render-thread frame index, so a text script never runs more
+        // often than the render thread renders.  This makes
+        // `1000/(Date.now()-last)` style FPS counters report the real render
+        // rate (Miku 3363252053 was stuck at "fps: 2" because the previous
+        // 500ms cadence is what the script was actually measuring).
+        m_textTimer->setTimerType(Qt::PreciseTimer);
+        m_textTimer->setInterval(8);
         connect(m_textTimer, &QTimer::timeout, this, &SceneObject::evaluateTextScripts);
         m_textTimer->start();
-        LOG_INFO("TextTimer started: %zu text scripts, interval=500ms", m_textScriptStates.size());
+        LOG_INFO("TextTimer started: %zu text scripts, interval=8ms (frame-gated)",
+                 m_textScriptStates.size());
 
         // Run once immediately
         evaluateTextScripts();
@@ -4576,17 +4593,31 @@ void SceneObject::refreshAudioBuffers() {
 void SceneObject::evaluateTextScripts() {
     if (! m_jsEngine || m_textScriptStates.empty()) return;
 
+    // Render-frame gate: only fire when the render thread has produced a new
+    // frame since the previous eval.  The timer ticks at 125Hz but actual
+    // eval rate is capped at the render rate, so `Date.now()` deltas between
+    // calls equal real frametime.  Always allow the first eval (frame_idx
+    // can be 0 if the render thread hasn't started yet, but the constructor
+    // calls evaluateTextScripts() once to seed text content immediately).
+    uint64_t curFrameIdx = m_scene->getFrameIdx();
+    if (m_lastTextFrameIdx != 0 && curFrameIdx == m_lastTextFrameIdx) return;
+    m_lastTextFrameIdx = curFrameIdx;
+
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
 
-    // Update engine globals (text timer fires every 500ms).
+    // Update engine globals.  `engine.frametime` reports the gated script-tick
+    // delta (close to real frametime).  `engine.fps` comes from the render
+    // thread's wall-clock FpsCounter and is the value scripts should poll for
+    // accurate FPS readouts.
     qint64 nowMs       = m_runtimeTimer.elapsed();
     double runtimeSecs = nowMs / 1000.0;
-    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.500, 2000);
+    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.016, 2000);
     m_lastTextTickMs   = nowMs;
     QJSValue engineObj = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
+    engineObj.setProperty("fps", m_scene->getFps());
     // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
@@ -4694,6 +4725,7 @@ void SceneObject::evaluateColorScripts() {
     QJSValue engineObj = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
+    engineObj.setProperty("fps", m_scene->getFps());
 
     QTime  now = QTime::currentTime();
     double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
@@ -4943,6 +4975,7 @@ void SceneObject::evaluatePropertyScripts() {
     QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
+    engineObj.setProperty("fps", m_scene->getFps());
     engineObj.setProperty("frameCount", (double)++m_propFrameCount);
 
     QTime  now = QTime::currentTime();

@@ -86,6 +86,16 @@ int main(int argc, char** argv) {
             sv->setProperty("postprocessingOverride", QString::fromStdString(pp));
         }
     }
+    // --hide-pattern must be set BEFORE source so it's applied at scene-parse time
+    {
+        std::string hide_pattern = program.get<std::string>("--hide-pattern");
+        if (! hide_pattern.empty()) {
+            std::cout << "--hide-pattern: " << hide_pattern << std::endl;
+            QMetaObject::invokeMethod(sv,
+                                      "setHidePattern",
+                                      Q_ARG(QString, QString::fromStdString(hide_pattern)));
+        }
+    }
     sv->setProperty("source", QUrl::fromLocalFile(program.get<std::string>(ARG_SCENE).c_str()));
     sv->setProperty("fps", program.get<int32_t>(OPT_FPS));
     sv->setProperty("hdrOutput", program.get<bool>(OPT_HDR));

@@ -1365,12 +1365,19 @@ private:
             }
 
             m_scene->shaderValueUpdater->FrameEnd();
-            // fps_counter.RegisterFrame();
+            fps_counter.RegisterFrame();
 
             if (! m_scene->first_frame_ok) {
                 m_scene->first_frame_ok = true;
                 main_handler.sendFirstFrameOk();
             }
+
+            // Bump after a frame is actually drawn (i.e. not the device-lost
+            // early-return above).  SceneBackend polls this counter to drive
+            // text-script eval once per render frame so wallpaper FPS-display
+            // scripts (Miku 3363252053 s13: `1000 / (Date.now() - last)`)
+            // measure the real render rate.
+            m_frame_idx.fetch_add(1, std::memory_order_release);
         }
         frame_timer.FrameEnd();
     }
@@ -1726,9 +1733,18 @@ private:
     std::optional<std::chrono::steady_clock::time_point> m_last_draw_wall_time;
 
 public:
-    double getSceneTime() const { return m_scene_time.load(std::memory_order_relaxed); }
+    double   getSceneTime() const { return m_scene_time.load(std::memory_order_relaxed); }
+    uint64_t getFrameIdx() const { return m_frame_idx.load(std::memory_order_acquire); }
 
 private:
+    // Monotonic frame counter — bumped at the end of every CMD_DRAW that
+    // produced a frame (after FrameEnd / shaderValueUpdater->FrameEnd).  Read
+    // by SceneBackend (main thread) so text scripts can be gated to fire once
+    // per real render frame, which makes WE's "fps = 1000 / (Date.now() - last)"
+    // pattern (e.g. Miku 3363252053 s13 frame-rate display script) measure the
+    // actual render rate instead of the QTimer cadence.
+    std::atomic<uint64_t> m_frame_idx { 0 };
+
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
     std::unordered_map<i32, float>       m_pending_pointsize_updates;
@@ -2050,6 +2066,16 @@ std::string SceneWallpaper::getUserPropertiesJson() const {
 double SceneWallpaper::getSceneTime() const {
     auto rh = m_main_handler->renderHandler();
     return rh ? rh->getSceneTime() : 0.0;
+}
+
+double SceneWallpaper::getFps() const {
+    auto rh = m_main_handler->renderHandler();
+    return rh ? (double)rh->fps_counter.Fps() : 0.0;
+}
+
+uint64_t SceneWallpaper::getFrameIdx() const {
+    auto rh = m_main_handler->renderHandler();
+    return rh ? rh->getFrameIdx() : 0ULL;
 }
 
 std::vector<int32_t> SceneWallpaper::getVideoTextureNodeIds() const {

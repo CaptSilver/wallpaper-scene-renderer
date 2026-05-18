@@ -108,6 +108,12 @@ public:
     Q_INVOKABLE bool screenshotDone() const;
     Q_INVOKABLE void requestPassDump(const QString& dir);
     Q_INVOKABLE bool passDumpDone() const;
+    // Debug: pass through to SceneWallpaper::setHidePattern so
+    // sceneviewer-script can isolate visual contributions of named layers
+    // (e.g. `--hide-pattern audio_bars` to confirm a layer is the source
+    // of an artifact).  Must be set before the scene loads — applied at
+    // CMD_SET_SCENE parse time, not retroactively.
+    Q_INVOKABLE void setHidePattern(const QString& pattern);
     // Debug hook — evaluate an arbitrary JS snippet in the SceneScript
     // QJSEngine.  Used by sceneviewer-script --js-eval to force state
     // machine transitions (e.g. `shared.rst=1` to trigger 3body's universe
@@ -449,6 +455,13 @@ private:
     qint64                                   m_lastPropertyTickMs { -1 };
     qint64                                   m_lastColorTickMs { -1 };
     qint64                                   m_lastTextTickMs { -1 };
+    // Last render-thread frame index seen by evaluateTextScripts.  The text
+    // timer polls SceneWallpaper::getFrameIdx() at ~125Hz; eval only fires
+    // when the index advances, so user scripts that compute FPS as
+    // `1000 / (Date.now() - prev)` measure the actual render rate instead of
+    // the QTimer cadence (was: 2Hz, hard-coded — Miku 3363252053 was stuck at
+    // "fps: 2" because of that).
+    uint64_t                                 m_lastTextFrameIdx { 0 };
     // Monotonic frame counter exposed to scripts as `engine.frameCount`.
     // Ticked once per property-script evaluation (the 120Hz/8ms pulse,
     // not the render FIF).

@@ -262,6 +262,16 @@ public:
     // cadence instead of wall-clock.
     double getSceneTime() const;
 
+    // Real render-thread FPS measured wall-clock by FpsCounter (rolling 500ms
+    // window).  0 until the first frame has been drawn.  This is what
+    // `engine.fps` exposes to SceneScripts.
+    double   getFps() const;
+    // Monotonic frame counter incremented at the end of every successful
+    // drawFrame.  Lets the main thread tell whether a render frame has elapsed
+    // since the last script tick, so text scripts using `Date.now()` math can
+    // be invoked once per render frame (matching WE's per-frame text eval).
+    uint64_t getFrameIdx() const;
+
     // Video texture control API for SceneScript thisLayer.getVideoTexture().
     // All operations take the nodeId of the layer owning the video texture.
     // Calls on unknown IDs are safe no-ops / return 0.
