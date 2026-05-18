@@ -10,19 +10,30 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "${DEFAULT_BUILD_TYPE}" CACHE STRING "Choose the type of build." FORCE)
 endif()
 
-option(BUILD_QML "Build qml scene viewer" ${BUILD_QML})
+# Build the qmlviewer (sceneviewer-script) in addition to the GLFW
+# binary. Default OFF — most users only want the lightweight GLFW
+# viewer; sceneviewer-script pulls in Qt + QJSEngine.
+# (Previously: `option(... ${BUILD_QML})` recursively expanded to itself,
+# producing a CMake warning and an effective-OFF default that wasn't
+# obviously OFF.)
+option(BUILD_QML "Build qml scene viewer (sceneviewer-script)" OFF)
+
+# AddressSanitizer-on-Debug used to be unconditional; opt-out lets
+# developers use a normal Debug build without pulling libasan into the
+# debug session (which complicates symbol resolution + can mask other
+# issues).
+option(SCENE_VIEWER_ASAN "Enable AddressSanitizer in Debug builds" ON)
 
 find_package(PkgConfig REQUIRED)
 
 add_compile_options(
     $<$<CONFIG:Debug>:-ggdb>
     $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
-    $<$<CONFIG:Debug>:-fsanitize=address>
 )
-
-add_link_options(
-    $<$<CONFIG:Debug>:-fsanitize=address>
-)
+if(SCENE_VIEWER_ASAN)
+    add_compile_options($<$<CONFIG:Debug>:-fsanitize=address>)
+    add_link_options($<$<CONFIG:Debug>:-fsanitize=address>)
+endif()
 
 include_directories(../third_party)
 add_subdirectory(.. scenebackend)

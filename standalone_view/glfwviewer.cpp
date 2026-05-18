@@ -34,6 +34,23 @@ struct UserData {
 extern "C" {
 void framebuffer_size_callback(GLFWwindow*, int width, int height) {}
 
+// Track scene file + assets path so R can reload the current scene.
+static std::string g_scene;
+static std::string g_assets;
+static bool        g_paused = false;
+
+static void print_help_overlay() {
+    std::cout << "\n=== sceneviewer keyboard shortcuts ===" << std::endl;
+    std::cout << "  Space   Pause / resume rendering" << std::endl;
+    std::cout << "  R       Reload current scene from disk" << std::endl;
+    std::cout << "  P       Dump profiler aggregates (requires -DPROFILING=ON)" << std::endl;
+    std::cout << "  Shift+P Reset profiler aggregates" << std::endl;
+    std::cout << "  1-9     Set lucyrebecca user-prop to the digit "
+              << "(Cyberpunk Lucy debug helper)" << std::endl;
+    std::cout << "  H / ?   Show this help" << std::endl;
+    std::cout << "  Q / Esc Quit" << std::endl << std::endl;
+}
+
 void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) {
     if (action != GLFW_PRESS) return;
     UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
@@ -54,6 +71,34 @@ void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) 
         } else {
             ::wallpaper::profiler::DumpToStderr();
         }
+    }
+    // Space → pause/resume. Pause stops the update tick; resume requests
+    // a redraw to recover from a stale framebuffer.
+    if (key == GLFW_KEY_SPACE) {
+        g_paused = ! g_paused;
+        std::cout << (g_paused ? "[PAUSED]" : "[RESUMED]") << std::endl;
+        if (! g_paused) updateCallback();
+    }
+    // R → reload current scene from disk. Useful when iterating on a
+    // wallpaper's project.json / shader files without restarting the
+    // viewer.
+    if (key == GLFW_KEY_R) {
+        if (! g_scene.empty() && ! g_assets.empty()) {
+            std::cout << "[RELOAD] " << g_scene << std::endl;
+            data->psw->setPropertyString(wallpaper::PROPERTY_SOURCE, g_scene);
+        } else {
+            std::cout << "[RELOAD] no scene/assets recorded — skipping"
+                      << std::endl;
+        }
+    }
+    // H / ? → help overlay (printed to stdout). Easier to discover than
+    // grep'ing the source for the per-key behaviors.
+    if (key == GLFW_KEY_H || key == GLFW_KEY_SLASH) {
+        print_help_overlay();
+    }
+    // Q / Esc → quit.
+    if (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE) {
+        glfwSetWindowShouldClose(win, GLFW_TRUE);
     }
 }
 
@@ -76,7 +121,7 @@ void updateCallback() {
 }
 
 int main(int argc, char** argv) {
-    argparse::ArgumentParser program("scene-viewer");
+    argparse::ArgumentParser program("sceneviewer");
     setAndParseArg(program, argc, argv);
     auto [w_width, w_height] = program.get<Resolution>(OPT_RESOLUTION);
 
@@ -121,8 +166,16 @@ int main(int argc, char** argv) {
 
     psw->init();
     psw->initVulkan(info);
-    psw->setPropertyString(wallpaper::PROPERTY_ASSETS, program.get<std::string>(ARG_ASSETS));
-    psw->setPropertyString(wallpaper::PROPERTY_SOURCE, program.get<std::string>(ARG_SCENE));
+    // Stash assets + scene paths so the R key can reload from disk later
+    // without re-parsing argv.
+    g_assets = program.get<std::string>(ARG_ASSETS);
+    g_scene  = program.get<std::string>(ARG_SCENE);
+    psw->setPropertyString(wallpaper::PROPERTY_ASSETS, g_assets);
+    psw->setPropertyString(wallpaper::PROPERTY_SOURCE, g_scene);
+    // Print a one-line discoverability hint so new users find the help
+    // overlay without spelunking the source.
+    std::cout << "sceneviewer running — press H for keyboard shortcuts."
+              << std::endl;
     psw->setPropertyBool(wallpaper::PROPERTY_GRAPHIVZ, program.get<bool>(OPT_GRAPHVIZ));
     auto fps_val = program.get<int32_t>(OPT_FPS);
     if (fps_val < 5) fps_val = 60; // default to 60fps

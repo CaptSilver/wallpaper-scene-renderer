@@ -65,7 +65,8 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .append();
 
     arg.add_argument("-C", OPT_CACHE_PATH)
-        .help("generate graphviz of render graph, output to 'graph.dot'")
+        .help("directory for the SPIR-V shader cache (defaults to in-memory; "
+              "persisting it across runs avoids re-compiling shaders)")
         .default_value(std::string())
         .nargs(1)
         .append();
@@ -189,12 +190,32 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .nargs(1)
         .scan<'g', double>();
 
+    arg.add_argument("--list-env-vars")
+        .help("print the WEKDE_* diagnostic environment variables and exit")
+        .default_value(false)
+        .implicit_value(true)
+        .nargs(0);
+
     try {
         arg.parse_args(argc, argv);
     } catch (const std::runtime_error& err) {
         std::cerr << err.what() << std::endl;
         std::cerr << arg;
         std::exit(1);
+    }
+
+    if (arg.get<bool>("--list-env-vars")) {
+        std::cout
+            << "WEKDE_* diagnostic environment variables:\n"
+            << "  WEKDE_PIPELINE_DIAG=1            per-pass Vulkan render-graph dump on reload\n"
+            << "  WEKDE_TIME_DIAG=1                per-frame CPU timing of major stages\n"
+            << "  WEKDE_SCRIPT_DIAG=1              verbose SceneScript JS engine logging\n"
+            << "  WEKDE_DEBUG_PARTICLE=1           particle-system per-emitter trace\n"
+            << "  WEKDE_TEXT_DUMP_DIR=<dir>        dump rasterized text glyph atlas to <dir>\n"
+            << "  WEKDE_PASS_DUMP_MEM_MB=<n>       cap --dump-passes-dir memory at <n> MB\n"
+            << "  WEKDE_SKIP_PARTICLE_CHILD_SUBSTR=<s>  skip particles whose name contains <s>\n"
+            << "  WEKDE_DISABLE_OVERBRIGHT_HDR=1   disable overbright clamp in HDR post-processing\n";
+        std::exit(0);
     }
 }
 

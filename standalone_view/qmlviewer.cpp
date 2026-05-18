@@ -42,7 +42,7 @@ static void              qmlviewer_sigint_handler(int) {
 }
 
 int main(int argc, char** argv) {
-    argparse::ArgumentParser program("scene-viewer");
+    argparse::ArgumentParser program("sceneviewer-script");
     setAndParseArg(program, argc, argv);
 
 #if (QT_VERSION < QT_VERSION_CHECK(6, 0, 0))
