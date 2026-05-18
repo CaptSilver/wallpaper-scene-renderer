@@ -100,6 +100,15 @@ struct ParseContext {
     // MDAT attachment table.
     std::map<i32, std::shared_ptr<WPPuppet>> node_puppet;
 
+    // Map of group id → group's authored parallaxDepth (per ParseGroupNode).
+    // Populated during the group-creation pass.  Used by ParseImageObj/
+    // ParseTextObj/ParseParticle to inherit parallax depth when the object
+    // itself doesn't set one — WE allows a group to declare a "depth plane"
+    // shared by all descendants.  Driver: 3363252053 audio-bars group
+    // (id 1115) sets parallaxDepth=(0.06, 0.06) and its solidlayer children
+    // (1208/4083/1078) inherit it.
+    std::map<i32, std::array<float, 2>> group_parallax_depths;
+
     // Diagnostic-only: parent's MDL vertex bounds and scene.json size, kept
     // so a child's attachment-resolution log can show what coordinate space
     // the MDAT attachment matrix is likely in (MDL pixel vs. scene-size).
@@ -3172,6 +3181,15 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
             scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
             // Register for property script transform redirection.
             scene.nodeEffectLayerMap[spNode->ID()] = imgEffectLayer.get();
+            // NOTE: text-effect layers do NOT use SetInheritParent /
+            // SetParentProxy like image-effect layers do.  The text origin
+            // script (driver: 3363252053 Date layer) computes ABSOLUTE
+            // scene-ortho coordinates (e.g. `value.x = scriptProperties.x *
+            // engine.canvasSize.x`), so the final composite's authored local
+            // is already in world space.  Re-applying parent_chain would
+            // double-shift the composite into the wrong position.  Only the
+            // base-pass mesh (below) needs parent-chain disconnected so it
+            // fills the pingpong at identity.
         }
         scene.renderTargets[effect_ppong_a] = {
             .width      = static_cast<uint16_t>(w),
@@ -3311,12 +3329,24 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     // Add to parent or root
     if (textObj.parent_id >= 0 && context.node_map.count(textObj.parent_id)) {
         context.node_map.at(textObj.parent_id)->AppendChild(spNode);
+        // Effect-layer base pass must render at identity into its per-layer
+        // pingpong RT — disconnect the parent transform chain so parent group
+        // translates/rotations don't displace the mesh into the pingpong's
+        // off-canvas region.  Authored parent transform is preserved on the
+        // FINAL composite via parent_proxy (set above).  Mirrors ParseImageObj
+        // (`disconnect_parent = isOffscreen || (hasEffect && !isCompose)`).
+        if (hasEffect) {
+            spNode->InheritParent(SceneNode());
+        }
     } else {
         context.scene->sceneGraph->AppendChild(spNode);
     }
     context.node_map[textObj.id] = spNode;
 
-    LOG_INFO("  ParseTextObj id=%d completed", textObj.id);
+    LOG_INFO("  ParseTextObj id=%d completed (parent_cleared=%d)",
+             textObj.id,
+             (int)(hasEffect && textObj.parent_id >= 0 &&
+                   context.node_map.count(textObj.parent_id) > 0));
 }
 
 template<typename T>
@@ -3551,6 +3581,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 auto g                  = ParseGroupNode(obj);
                 context.node_map[g.id]  = g.node;
                 group_infos.push_back({ g.id, g.parent_id });
+                if (g.hasParallaxDepth) {
+                    context.group_parallax_depths[g.id] = g.parallaxDepth;
+                }
 
                 LOG_INFO("created group node id=%d origin=(%.1f, %.1f, %.1f) scale=(%.1f, %.1f, "
                          "%.1f) visible=%d",

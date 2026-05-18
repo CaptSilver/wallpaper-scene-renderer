@@ -95,4 +95,46 @@ TEST_SUITE("WPSceneGroupParse") {
         REQUIRE(g.node);
         CHECK(g.node->ID() == 0);
     }
+
+    TEST_CASE("parallaxDepth: not set when key absent (hasParallaxDepth=false)") {
+        auto j = json::parse(R"({"id": 1})");
+        auto g = ParseGroupNode(j);
+        CHECK_FALSE(g.hasParallaxDepth);
+        CHECK(g.parallaxDepth[0] == doctest::Approx(0.0f));
+        CHECK(g.parallaxDepth[1] == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("parallaxDepth: parsed from string array form") {
+        // Driver: 3363252053 audio-bars group (id 1115).
+        auto j = json::parse(R"({"id": 1115, "parallaxDepth": "0.06 0.06"})");
+        auto g = ParseGroupNode(j);
+        CHECK(g.hasParallaxDepth);
+        CHECK(g.parallaxDepth[0] == doctest::Approx(0.06f));
+        CHECK(g.parallaxDepth[1] == doctest::Approx(0.06f));
+    }
+
+    TEST_CASE("parallaxDepth: parsed from user-property-bound form") {
+        // Driver: 3363252053 '组件' group (id 4995) — value bound to user
+        // property 'newproperty1' with default '0 0'.  Without per-user-prop
+        // resolution context the default-value branch in ResolveUserProperty
+        // returns the literal value string.
+        auto j = json::parse(R"({
+            "id": 4995,
+            "parallaxDepth": {"user": "newproperty1", "value": "0.5 0.25"}
+        })");
+        auto g = ParseGroupNode(j);
+        CHECK(g.hasParallaxDepth);
+        CHECK(g.parallaxDepth[0] == doctest::Approx(0.5f));
+        CHECK(g.parallaxDepth[1] == doctest::Approx(0.25f));
+    }
+
+    TEST_CASE("parallaxDepth: asymmetric X/Y values") {
+        // Body-like depths e.g. 3363252053 id 751 (-0.52, -0.16) — much
+        // stronger X parallax than Y, common for "moving forward" feel.
+        auto j = json::parse(R"({"id": 751, "parallaxDepth": "-0.52 -0.16"})");
+        auto g = ParseGroupNode(j);
+        CHECK(g.hasParallaxDepth);
+        CHECK(g.parallaxDepth[0] == doctest::Approx(-0.52f));
+        CHECK(g.parallaxDepth[1] == doctest::Approx(-0.16f));
+    }
 }

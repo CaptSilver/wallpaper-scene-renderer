@@ -5,6 +5,9 @@
 #include FT_FREETYPE_H
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -285,11 +288,43 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     slot.mipmaps.push_back(std::move(mipmap));
     img.slots.push_back(std::move(slot));
 
-    LOG_INFO("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f",
+    LOG_INFO("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f, text=\"%s\"",
              width,
              height,
              lines.size(),
-             pointsize);
+             pointsize,
+             text.c_str());
+
+    // Optional debug dump — set WEKDE_TEXT_DUMP_DIR=/tmp/foo to write each
+    // rasterized text bitmap to PPM for diagnosis.
+    if (const char* dumpDir = std::getenv("WEKDE_TEXT_DUMP_DIR")) {
+        static std::atomic<int> s_dumpSeq { 0 };
+        int                     n = s_dumpSeq.fetch_add(1) + 1;
+        char                    path[512];
+        std::snprintf(path,
+                      sizeof(path),
+                      "%s/text_%04d_%dx%d_p%d.ppm",
+                      dumpDir,
+                      n,
+                      width,
+                      height,
+                      (int)(pointsize + 0.5f));
+        FILE* fp = std::fopen(path, "wb");
+        if (fp) {
+            std::fprintf(fp, "P6\n%d %d\n255\n", width, height);
+            // RGBA → RGB with alpha as visible white-on-black
+            std::vector<uint8_t> rgb(static_cast<usize>(width) * static_cast<usize>(height) * 3);
+            for (usize i = 0; i < static_cast<usize>(width) * static_cast<usize>(height); ++i) {
+                uint8_t a    = buf[i * 4 + 3];
+                rgb[i * 3]   = a;
+                rgb[i*3 + 1] = a;
+                rgb[i*3 + 2] = a;
+            }
+            std::fwrite(rgb.data(), 1, rgb.size(), fp);
+            std::fclose(fp);
+        }
+    }
+
     return img_ptr;
 }
 

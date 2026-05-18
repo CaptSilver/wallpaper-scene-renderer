@@ -29,6 +29,13 @@ struct GroupParseResult {
     i32                        id        = 0;
     i32                        parent_id = -1;
     bool                       visible   = true;
+    // Authored parallaxDepth on the group itself.  Children that don't set
+    // their own parallaxDepth inherit this default (WE semantic: groups can
+    // declare a "depth plane" that all descendants share).  Driver:
+    // 3363252053 audio-bars group (id 1115) sets parallaxDepth=(0.06, 0.06)
+    // with three solidlayer children that don't set their own.
+    std::array<float, 2>       parallaxDepth { 0.0f, 0.0f };
+    bool                       hasParallaxDepth { false };
 };
 
 // Parse a single group JSON object into a SceneNode + linkage info.
@@ -47,6 +54,10 @@ inline GroupParseResult ParseGroupNode(const nlohmann::json& obj) {
     GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
     GET_JSON_NAME_VALUE_NOWARN(obj, "visible", r.visible);
     GET_JSON_NAME_VALUE_NOWARN(obj, "parent", r.parent_id);
+    if (obj.contains("parallaxDepth")) {
+        r.hasParallaxDepth =
+            GET_JSON_NAME_VALUE_NOWARN(obj, "parallaxDepth", r.parallaxDepth);
+    }
 
     r.node = std::make_shared<SceneNode>(
         Vector3f(origin.data()), Vector3f(scale.data()), Vector3f(angles.data()));

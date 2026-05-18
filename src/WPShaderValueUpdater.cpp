@@ -282,6 +282,14 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                     Scaling(1.0f, -1.0f) * (Vector2f { 0.5f, 0.5f } - Vector2f(&m_mousePos[0]));
                 mouseVec        = mouseVec.cwiseProduct(ortho) * m_parallax.mouseinfluence;
                 Vector3f camPos = camera->GetPosition().cast<float>();
+                // WE parallax: position-based + mouse-based shift, both
+                // scaled by per-layer parallaxDepth and scene amount.  The
+                // position-based term (nodePos - camPos) is intentional —
+                // WE's editor preview shows layers already at their shifted
+                // position (so authors place layers KNOWING about the
+                // parallax bake-in).  Removing it causes layers authored
+                // for the shifted position (e.g. 2866203962 'Cyberpunk' R
+                // below Lucy's chin) to render above their intended spot.
                 Vector2f paraVec =
                     (nodePos.head<2>() - camPos.head<2>() + mouseVec).cwiseProduct(depth) *
                     m_parallax.amount;
@@ -378,10 +386,22 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                      m_screen_size[0], m_screen_size[1], m_screen_size[0] / m_screen_size[1] });
 
     if (info.has_PARALLAXPOSITION) {
+        // g_ParallaxPosition is the mouse-driven [0,1] input that effect
+        // shaders (e.g. depthparallax) consume as "where is the viewer
+        // looking".  Mouse at screen center (0.5, 0.5) must produce (0.5,
+        // 0.5) so depth-based pixel displacement is zero — otherwise the
+        // depth map shifts foreground pixels relative to background even
+        // at rest, creating gaps between adjacent layers of differing
+        // depth (3363252053 dress (foreground) vs water/ground (background)
+        // showed a ~7-pixel horizontal seam because the prior formula
+        // `Scaling(1,-1) * mouseY - 0.5` evaluated to -1 at mouseY=0.5,
+        // giving g_ParallaxPosition.y = 0.5 + (-1) * 0.30 = 0.20).
+        //
+        // Correct Y-flip is `1 - mouseY` (mouse Y is 0-at-top while world
+        // Y is up), then offset from center scaled by mouseinfluence.
+        Vector2f mouseCentered { m_mousePos[0] - 0.5f, 0.5f - m_mousePos[1] };
         Vector2f para =
-            Vector2f { 0.5f, 0.5f } +
-            (Scaling(1.0f, -1.0f) * (Vector2f(&m_mousePos[0])) - Vector2f { 0.5f, 0.5f }) *
-                m_parallax.mouseinfluence;
+            Vector2f { 0.5f, 0.5f } + mouseCentered * m_parallax.mouseinfluence;
         updateOp(G_PARALLAXPOSITION, std::array { para[0], para[1] });
     }
 
