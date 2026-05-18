@@ -137,6 +137,16 @@ struct ParseContext {
     // jump sprite.
     std::unordered_set<std::string> script_referenced_layers;
 
+    // IDs of any image-object that appears in some compose layer's
+    // `dependencies` list.  These images are intended to be sampled by a
+    // parent compose blend via `_rt_imageLayerComposite_<id>_a` and must
+    // render offscreen — otherwise they also paint themselves onto
+    // _rt_default, and the compose blend (sampling `_rt_link_<id>` = full-FB
+    // snapshot instead of an isolated sprite) reduces to drawing a gray
+    // rectangle over the layer's world position.  Populated by a pre-pass in
+    // Parse before any ParseImageObj runs.
+    std::unordered_set<int32_t> compose_dependency_ids;
+
     // Asset paths that SceneScript registered via engine.registerAsset('path').
     // A pool of hidden scene nodes gets pre-allocated for each so that
     // thisScene.createLayer(asset) can instantiate them at runtime.
@@ -1184,6 +1194,25 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         ! wpimgobj.name.empty() && context.script_referenced_layers.count(wpimgobj.name) > 0;
     bool isOffscreen = ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector && ! isScriptedLayer;
 
+    // Any image referenced by some compose layer's `dependencies` list must
+    // render offscreen — the compose blend samples `_rt_imageLayerComposite_<id>_a`
+    // expecting an isolated sprite RT (the image's own content at its own
+    // dimensions).  If the dependent renders to _rt_default, the link RT
+    // becomes a full-FB snapshot, the compose blend samples it with the
+    // compose layer's local UVs (which map to the compose layer's world
+    // position, not the dependent's), and the result is the FB pixels under
+    // the compose layer's quad — typically a solid gray rectangle.  Driver:
+    // Clair Obscur Expedition 33 3498984739 had Calque CO33-Mx compose layers
+    // declaring character body-parts (M3A/B/C, M4A/B/C, M2/C/B/D, M5A/B/C/D)
+    // as dependencies, each producing a gray quad over its character.
+    if (! isOffscreen && context.compose_dependency_ids.count(wpimgobj.id) > 0
+        && ! isScriptedLayer && ! wpimgobj.visibleIsComboSelector) {
+        isOffscreen = true;
+        LOG_INFO("  image id=%d name='%s' forced offscreen (referenced as compose dependency)",
+                 wpimgobj.id,
+                 wpimgobj.name.c_str());
+    }
+
     // colorBlendMode: prefer hardware blend when a direct equivalent exists;
     // fall back to shader-based effectpassthrough for complex modes.
     // The override is applied after LoadMaterial (material not yet in scope).
@@ -1260,6 +1289,21 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // reference `_rt_imageLayerComposite_<id>_a` via their `dependencies` list
     // and `textures` slots.  Synthesize an effectpassthrough so the compose
     // layer runs its normal offscreen path and produces the expected RT.
+    //
+    // The synthesized passthrough must NOT blend onto _rt_default — its only
+    // purpose is to expose the captured pingpong as `_rt_imageLayerComposite_<id>_a`
+    // for dependents.  If it writes to _rt_default it (a) paints a gray quad
+    // (whatever the pingpong captured at the layer's world position) at the
+    // layer's screen position, and (b) the link RT becomes a full-FB snapshot
+    // instead of the layer-sized capture, so dependents that sample the link
+    // see FB content at their own world position rather than at the source
+    // layer's world position — typically producing saturated/double-exposed
+    // output (e.g. Clair Obscur Expedition 33 3498984739 character-shine
+    // compose layers showed solid white quads over the central characters).
+    // Route the synthesized passthrough through the offscreen path: writes
+    // into `_rt_offscreen_<id>` (sized to the layer's pingpong, e.g. 560x632),
+    // and the link RT becomes a 1:1 sprite-sized copy of the captured region.
+    bool synthesizedPassthroughOnly = false;
     if (! hasEffect && isCompose) {
         wpscene::WPImageEffect passEffect;
         wpscene::WPMaterial    passMat;
@@ -1273,14 +1317,20 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             wpimgobj.effects.push_back(std::move(passEffect));
             count_eff = 1;
             hasEffect = true;
+            synthesizedPassthroughOnly = true;
             LOG_INFO("  compose layer id=%d has no effect — synthesized effectpassthrough "
-                     "for dependent link RT",
+                     "for dependent link RT (routed offscreen)",
                      wpimgobj.id);
         } else {
             LOG_ERROR("compose layer id=%d: failed to load effectpassthrough.json", wpimgobj.id);
             return;
         }
     }
+    // Synthesized-passthrough-only layers behave as offscreen for routing
+    // purposes (so the final write lands in `_rt_offscreen_<id>` instead of
+    // `_rt_default`), but the worldNode itself must stay non-offscreen so the
+    // composelayer base-pass still runs and captures the FB into pingpong.
+    const bool effectOffscreen = isOffscreen || synthesizedPassthroughOnly;
 
     std::unique_ptr<WPMdl> puppet;
     if (! wpimgobj.puppet.empty()) {
@@ -1838,7 +1888,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
         {
             imgEffectLayer->SetFinalBlend(imgBlendMode);
-            imgEffectLayer->SetOffscreen(isOffscreen);
+            imgEffectLayer->SetOffscreen(effectOffscreen);
             // Compose layer with copybackground:false — author intent is "do
             // NOT capture _rt_default into the pingpong" (e.g. Nightingale
             // 3470764447 id=249 with colorBlendMode=21 BlendReflect, where
@@ -1858,13 +1908,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             // transform.  Offscreen dependency nodes render into their own
             // fixed-size RTs and must stay centered — applying the parent
             // group's position would displace their content out of frame.
-            imgEffectLayer->SetInheritParent(! isOffscreen && wpimgobj.parent_id >= 0 &&
+            // Synthesized-passthrough-only compose layers also use offscreen
+            // routing, so they shouldn't inherit parent transforms either.
+            imgEffectLayer->SetInheritParent(! effectOffscreen && wpimgobj.parent_id >= 0 &&
                                              context.node_map.count(wpimgobj.parent_id) > 0);
             // Create proxy node with parent's baked world transform.
             // Parent world nodes may have been reset to identity for their own
             // effect chains, so the live parent chain no longer carries the
             // correct transform.  The proxy preserves it.
-            if (! isOffscreen && wpimgobj.parent_id >= 0 &&
+            if (! effectOffscreen && wpimgobj.parent_id >= 0 &&
                 context.original_world_transforms.count(wpimgobj.parent_id)) {
                 auto proxy = std::make_shared<SceneNode>();
                 // Resolve the attachment anchor the same way original_world_
@@ -1952,8 +2004,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
             }
             scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
-            if (isOffscreen) {
-                // Dedicated RT for the final output of invisible dependency nodes.
+            if (effectOffscreen) {
+                // Dedicated RT for the final output of invisible dependency nodes
+                // (and synthesized-passthrough-only compose layers).  Sized to
+                // match the layer's pingpong so the link RT is a 1:1 copy of
+                // the captured region.
                 scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
                     scene.renderTargets.at(effect_ppong_a);
             }
@@ -3641,6 +3696,22 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     InitContext(context, vfs, sc);
     ParseCamera(context, sc);
+
+    // Pre-pass: collect every image id that appears in some image-object's
+    // `dependencies` list.  Stored on context so ParseImageObj can force
+    // referenced images offscreen (so the compose layer's blend samples an
+    // isolated sprite RT, not a full-FB snapshot via _rt_link_<id>).
+    for (const auto& obj : wp_objs) {
+        if (auto* img = std::get_if<wpscene::WPImageObject>(&obj)) {
+            for (int32_t dep_id : img->dependencies) {
+                context.compose_dependency_ids.insert(dep_id);
+            }
+        }
+    }
+    if (! context.compose_dependency_ids.empty()) {
+        LOG_INFO("compose dependency ids collected: %zu",
+                 context.compose_dependency_ids.size());
+    }
 
     // Build group node hierarchy: add each group to its parent (or scene root).
     //

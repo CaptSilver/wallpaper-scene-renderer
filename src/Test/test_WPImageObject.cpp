@@ -173,6 +173,89 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(obj.solidlayer == true);
         CHECK(obj.alpha == doctest::Approx(1.0f));
     }
+
+    // ---- compose-layer `dependencies` parsing ------------------------------
+    // Compose layers (and the dependents they reference) drive the
+    // "image referenced by another image" offscreen-routing rule in
+    // WPSceneParser.  Without this list, the dependent images render to
+    // _rt_default and the compose blend reads a full-FB snapshot via
+    // _rt_link_<id> — producing solid gray quads over each character
+    // (Clair Obscur Expedition 33 3498984739).
+    TEST_CASE("compose layer dependencies array parses into WPImageObject.dependencies") {
+        auto vfs = makeAssetsVfs({
+            { "models/util/composelayer.json",
+              R"({ "material": "materials/util/composelayer.json" })" },
+            { "materials/util/composelayer.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 413, "name": "Calque CO33-M3", "image": "models/util/composelayer.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "500 500",
+            "dependencies": [484, 555, 625]
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        REQUIRE(obj.dependencies.size() == 3);
+        CHECK(obj.dependencies[0] == 484);
+        CHECK(obj.dependencies[1] == 555);
+        CHECK(obj.dependencies[2] == 625);
+    }
+
+    TEST_CASE("scene.json without dependencies leaves WPImageObject.dependencies empty") {
+        auto vfs = makeAssetsVfs({
+            { "models/util/composelayer.json",
+              R"({ "material": "materials/util/composelayer.json" })" },
+            { "materials/util/composelayer.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 7, "name": "plain", "image": "models/util/composelayer.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "500 500"
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.dependencies.empty());
+    }
+
+    TEST_CASE("shape-quad path also accepts dependencies array") {
+        // Shape-quad objects (no `image` field) follow a separate JSON branch
+        // in WPImageObject::FromJson — pin parity so a future shape-quad
+        // compose layer can also force dependents offscreen.
+        auto vfs = makeAssetsVfs({});
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 99, "name": "shapeq", "shape": "quad",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
+            "dependencies": [10, 20]
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        REQUIRE(obj.dependencies.size() == 2);
+        CHECK(obj.dependencies[0] == 10);
+        CHECK(obj.dependencies[1] == 20);
+    }
+
+    TEST_CASE("dependencies tolerates non-integer entries (skipped, not crash)") {
+        // Hardened against author/serialiser quirks where a dependencies entry
+        // is a string or boolean: skip non-integers silently rather than
+        // throwing inside the JSON visitor.
+        auto vfs = makeAssetsVfs({
+            { "models/util/composelayer.json",
+              R"({ "material": "materials/util/composelayer.json" })" },
+            { "materials/util/composelayer.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 1, "name": "z", "image": "models/util/composelayer.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
+            "dependencies": [123, "oops", null, 456, true]
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        REQUIRE(obj.dependencies.size() == 2);
+        CHECK(obj.dependencies[0] == 123);
+        CHECK(obj.dependencies[1] == 456);
+    }
 }
 
 TEST_SUITE("SceneImageEffectLayer — gap fixes") {

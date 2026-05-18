@@ -369,6 +369,11 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
             const auto& jConf = json.at("config");
             GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
         }
+        if (json.contains("dependencies") && json.at("dependencies").is_array()) {
+            for (const auto& jD : json.at("dependencies")) {
+                if (jD.is_number_integer()) dependencies.push_back(jD.get<int32_t>());
+            }
+        }
         return true;
     }
 
@@ -498,6 +503,11 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     if (json.contains("config")) {
         const auto& jConf = json.at("config");
         GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
+    }
+    if (json.contains("dependencies") && json.at("dependencies").is_array()) {
+        for (const auto& jD : json.at("dependencies")) {
+            if (jD.is_number_integer()) dependencies.push_back(jD.get<int32_t>());
+        }
     }
     return true;
 }

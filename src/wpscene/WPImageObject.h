@@ -125,6 +125,17 @@ public:
     // Color property script (e.g. audio-reactive color)
     std::string colorScript;
     std::string colorScriptProperties; // JSON string
+
+    // scene.json "dependencies": [id, ...] — set on compose layers that sample
+    // the listed images via `_rt_imageLayerComposite_<id>_a`.  WPSceneParser
+    // collects these across all objects and forces every referenced image to
+    // render offscreen so the compose layer can sample an isolated sprite RT
+    // instead of getting a full-FB snapshot via _rt_link_<id>.  Without this,
+    // images that are intended to be sampled by a parent compose blend ALSO
+    // paint themselves onto _rt_default — and the compose layer's blend then
+    // produces solid quads (each Calque CO33-Mx in Clair Obscur Expedition 33
+    // 3498984739 produced a gray rectangle over its character).
+    std::vector<int32_t> dependencies;
 };
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);
