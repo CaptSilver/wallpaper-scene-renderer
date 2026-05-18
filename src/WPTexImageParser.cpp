@@ -211,6 +211,25 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             if (src_size <= 0 || mipmap.width <= 0 || mipmap.height <= 0 || decompressed_size < 0)
                 return nullptr;
 
+            // Cap any single-allocation byte count parsed from the .tex
+            // header — both decompressed_size below (Lz4Decompress) and
+            // raw_size in the MP4-placeholder path further down call
+            // std::vector / std::make_unique with this value, and
+            // libFuzzer's -malloc_limit_mb=512 trips on multi-hundred-MB
+            // allocations.  256 MB sits well above any legitimate single
+            // mip (8K × 8K × RGBA32F = 256 MB) and below the fuzz limit.
+            // Surfaced by fuzz_WPTexImageParser OOM artifacts:
+            //   oom-f282830d880e0ebc5ae123ee52c5fe2a20c1d163  (LZ4 path)
+            //   oom-aa47057a0c3b665efa41381957e7a441c40a2fda  (MP4-fallback path)
+            constexpr i64 kMaxTexAllocBytes = 256 * 1024 * 1024;
+            if ((i64)decompressed_size > kMaxTexAllocBytes) {
+                LOG_ERROR("tex '%s': decompressed_size %d exceeds %lld-byte cap",
+                          name.c_str(),
+                          decompressed_size,
+                          (long long)kMaxTexAllocBytes);
+                return nullptr;
+            }
+
             if (! CountFitsStream(file, (usize)src_size)) {
                 LOG_ERROR("tex '%s': src_size %d exceeds stream", name.c_str(), src_size);
                 return nullptr;
@@ -266,6 +285,14 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 if (raw_size < 0) {
                     LOG_ERROR("tex '%s': mipmap dimensions %dx%d unsupported",
                               name.c_str(), mipmap.width, mipmap.height);
+                    return nullptr;
+                }
+                if (raw_size > kMaxTexAllocBytes) {
+                    LOG_ERROR("tex '%s': mp4 placeholder raw_size %lld (%dx%d) exceeds %lld-byte cap",
+                              name.c_str(),
+                              (long long)raw_size,
+                              mipmap.width, mipmap.height,
+                              (long long)kMaxTexAllocBytes);
                     return nullptr;
                 }
                 auto buf = std::make_unique<uint8_t[]>((usize)raw_size);

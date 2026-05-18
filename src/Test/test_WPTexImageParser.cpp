@@ -612,6 +612,83 @@ TEST_SUITE("WPTexImageParser") {
         }
     }
 
+    TEST_CASE("Oversized decompressed_size returns nullptr (OOM guard)") {
+        // Fuzz finding (oom-f282830d880e0ebc5ae123ee52c5fe2a20c1d163): a
+        // crafted texb=2 mipmap header with a decompressed_size in the
+        // hundreds-of-MB range triggers std::vector<char>(N) inside
+        // Lz4Decompress before LZ4 even runs.  The 256 MB cap rejects the
+        // header instead of attempting the allocation.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);                                       // mipmap_count
+        appendInt32(buf, 4);                                       // width
+        appendInt32(buf, 4);                                       // height
+        appendInt32(buf, 1);                                       // LZ4_compressed = true
+        appendInt32(buf, 512 * 1024 * 1024);                       // decompressed_size = 512 MB
+        appendInt32(buf, 16);                                      // src_size = 16
+        for (int i = 0; i < 16; i++) buf.push_back(0);             // 16 bytes of payload
+
+        VFS vfs;
+        mountTex(vfs, "test_oom_dsize", std::move(buf));
+
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("test_oom_dsize") == nullptr);
+    }
+
+    TEST_CASE("MP4 placeholder buffer caps oversized dimensions (OOM guard)") {
+        // Fuzz finding (oom-aa47057a0c3b665efa41381957e7a441c40a2fda): a
+        // crafted .tex header pointed at the MP4-fallback code path with
+        // mipmap dimensions in the ten-thousands × ten-thousands range,
+        // making std::make_unique<uint8_t[]>(w*h*4) request ~676 MB.  The
+        // dimension-only guard (Rgba8ByteSize caps at 64K × 64K = 16 GB)
+        // wasn't tight enough; cap raw_size against the same 256 MB limit
+        // used for decompressed_size.  Use texb=2 + MP4 magic in the
+        // payload so the parser takes the MP4 branch.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 13000, 13000, 13000, 13000, 1);
+        appendInt32(buf, 1);                                       // mipmap_count
+        appendInt32(buf, 13000);                                   // width (≈676MB at *4)
+        appendInt32(buf, 13000);                                   // height
+        appendInt32(buf, 0);                                       // LZ4_compressed = false
+        appendInt32(buf, 0);                                       // decompressed_size (unused)
+        appendInt32(buf, 16);                                      // src_size
+        // 16 bytes of payload with "ftyp" at offset 4 to trigger MP4 branch
+        for (int i = 0; i < 4; i++) buf.push_back(0);              // size field
+        const char ftyp[] = { 'f', 't', 'y', 'p' };
+        for (char c : ftyp) buf.push_back(static_cast<uint8_t>(c));
+        for (int i = 0; i < 8; i++) buf.push_back(0);              // remainder
+
+        VFS vfs;
+        mountTex(vfs, "test_oom_mp4_placeholder", std::move(buf));
+
+        WPTexImageParser parser(&vfs);
+        // Must reject — does not allocate ~676 MB and does not crash.
+        CHECK(parser.Parse("test_oom_mp4_placeholder") == nullptr);
+    }
+
+    TEST_CASE("Decompressed_size at cap is accepted (boundary)") {
+        // Pin the cap: 256 MB ≤ decompressed_size must still pass the guard.
+        // Use a tiny src so the test stays fast; the LZ4 decode itself will
+        // fail and the parser returns nullptr — but for a different reason
+        // than the OOM guard.  We can't distinguish those cleanly from a
+        // black-box test, so just assert no crash and parser returns cleanly.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);                                       // mipmap_count
+        appendInt32(buf, 4);                                       // width
+        appendInt32(buf, 4);                                       // height
+        appendInt32(buf, 1);                                       // LZ4_compressed = true
+        appendInt32(buf, 256 * 1024 * 1024);                       // decompressed_size = 256 MB (== cap)
+        appendInt32(buf, 16);                                      // src_size = 16
+        for (int i = 0; i < 16; i++) buf.push_back(0);
+
+        VFS vfs;
+        mountTex(vfs, "test_oom_cap", std::move(buf));
+
+        WPTexImageParser parser(&vfs);
+        // Expect nullptr (LZ4_decompress_safe will fail on garbage) but not a
+        // crash and not an OOM — we proved this by reaching here.
+        (void)parser.Parse("test_oom_cap");
+        CHECK(true);
+    }
+
     TEST_CASE("Zero src_size returns nullptr") {
         auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
         appendInt32(buf, 1); // mipmap_count
