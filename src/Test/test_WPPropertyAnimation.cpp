@@ -254,6 +254,73 @@ TEST_SUITE("WPPropertyAnimation_Evaluate") {
     // length/fps becomes 0/0 = NaN, fmod(t, NaN) = NaN, and the comparisons
     // around `frame >= kf.front().frame` collapse so the function returns
     // kf.back().value instead of kf.front().value — observable difference.
+    // Wraploop closes the cycle by interpolating from the LAST keyframe back to
+    // the FIRST keyframe across the [last_kf.frame, length] segment.  Without
+    // wraploop the function holds kf.back() until the cycle restarts at
+    // length, producing a visible snap (Rella whale 3363252053 — c1 keys at
+    // 0/60 over length=120 dives down then jumps back without this).
+    TEST_CASE("wraploop interpolates from last keyframe back to first across tail segment") {
+        PropertyAnimation a;
+        a.mode      = PropertyAnimMode::Loop;
+        a.wraploop  = true;
+        a.fps       = 30.0f;
+        a.length    = 120.0f; // 4-second cycle
+        a.keyframes = { { 0, 5.0f }, { 60, -65.0f } };
+        // First half plays normally.
+        CHECK(EvaluatePropertyAnimation(a, 0.0) == doctest::Approx(5.0f));
+        CHECK(EvaluatePropertyAnimation(a, 1.0) == doctest::Approx(-30.0f).epsilon(0.01));
+        CHECK(EvaluatePropertyAnimation(a, 2.0) == doctest::Approx(-65.0f).epsilon(0.01));
+        // Second half: smooth lerp back to 5.0 (the first keyframe).
+        // At t=3 (frame 90, halfway through the wrap segment 60→120) value
+        // should be midway between -65 and 5 = -30.
+        CHECK(EvaluatePropertyAnimation(a, 3.0) == doctest::Approx(-30.0f).epsilon(0.01));
+        // Just before the cycle boundary, value approaches the first keyframe.
+        CHECK(EvaluatePropertyAnimation(a, 3.99) == doctest::Approx(5.0f).epsilon(0.5));
+        // After wrap, back to the first keyframe value (no snap).
+        CHECK(EvaluatePropertyAnimation(a, 4.0) == doctest::Approx(5.0f));
+    }
+
+    TEST_CASE("wraploop=false (default) holds last keyframe and snaps back at cycle boundary") {
+        PropertyAnimation a;
+        a.mode      = PropertyAnimMode::Loop;
+        a.wraploop  = false; // explicit
+        a.fps       = 30.0f;
+        a.length    = 120.0f;
+        a.keyframes = { { 0, 5.0f }, { 60, -65.0f } };
+        // Second half holds -65 (visible jump at t=4 when it snaps to 5).
+        CHECK(EvaluatePropertyAnimation(a, 3.0) == doctest::Approx(-65.0f));
+        CHECK(EvaluatePropertyAnimation(a, 3.99) == doctest::Approx(-65.0f));
+        CHECK(EvaluatePropertyAnimation(a, 4.0) == doctest::Approx(5.0f));
+    }
+
+    TEST_CASE("wraploop with length == last keyframe frame is a no-op (zero tail segment)") {
+        PropertyAnimation a;
+        a.mode      = PropertyAnimMode::Loop;
+        a.wraploop  = true;
+        a.fps       = 30.0f;
+        a.length    = 60.0f; // == kf.back().frame, no tail segment to lerp across
+        a.keyframes = { { 0, 5.0f }, { 60, -65.0f } };
+        // At t=1.9 (frame 57) we're 95% through the keyframe span 0→60.
+        // value = 5 + 0.95 * (-65 - 5) = -61.5.  No wrap segment exists, so
+        // wraploop is a no-op; we still get the normal linear interp.
+        CHECK(EvaluatePropertyAnimation(a, 1.9) == doctest::Approx(-61.5f).epsilon(0.01));
+        // t==2 exactly equals period — fmod returns 0 and we're back at front.
+        CHECK(EvaluatePropertyAnimation(a, 2.0) == doctest::Approx(5.0f));
+    }
+
+    TEST_CASE("wraploop ignored when mode=Mirror (mirror already closes its cycle)") {
+        PropertyAnimation a;
+        a.mode      = PropertyAnimMode::Mirror;
+        a.wraploop  = true;
+        a.fps       = 1.0f;
+        a.length    = 1.0f;
+        a.keyframes = { { 0, 0.0f }, { 1, 1.0f } };
+        // Period = 1s, mirror period = 2s.  At t=0.5 mid-forward → 0.5.
+        CHECK(EvaluatePropertyAnimation(a, 0.5) == doctest::Approx(0.5f));
+        // At t=1.5 we're halfway through the reverse leg → 0.5.
+        CHECK(EvaluatePropertyAnimation(a, 1.5) == doctest::Approx(0.5f));
+    }
+
     TEST_CASE("zero fps AND zero length forces kf.front() (kills fps<=0 → fps<0 mutant)") {
         PropertyAnimation a;
         a.mode      = PropertyAnimMode::Loop;

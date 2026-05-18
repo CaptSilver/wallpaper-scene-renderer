@@ -1517,9 +1517,76 @@ public:
                 float value = EvaluatePropertyAnimation(anim, anim.time);
                 if (anim.property == "alpha") {
                     writeAlphaToAllMaterials(sourceNode, nodeId, value);
+                } else {
+                    // Vec3 components: "origin.{x,y,z}", "scale.{x,y,z}",
+                    // "angles.{x,y,z}".  In relative mode evaluated value is a
+                    // delta added on top of the per-axis base in initialValue;
+                    // in absolute mode it replaces the component outright.
+                    applyVec3ComponentAnim(sourceNode, nodeId, anim, value);
                 }
-                // Extend here for other properties (color, brightness, …).
             }
+        }
+    }
+
+    // Dispatch a single-axis property animation tick onto the corresponding
+    // component of the node's translate / scale / rotation.  Property names
+    // carry the axis suffix ("origin.x" etc); we strip the suffix to pick the
+    // SceneNode setter, then read-modify-write the chosen axis.  No-ops when
+    // the node is missing or the property name doesn't match an axis we
+    // recognise (so legacy scalar entries that don't carry a suffix won't
+    // accidentally clobber the transform).
+    void applyVec3ComponentAnim(SceneNode* node, i32 nodeId, const PropertyAnimation& anim,
+                                float evaluated) {
+        if (! node) return;
+        const std::string& prop = anim.property;
+        if (prop.size() < 3) return;
+        int axis = -1;
+        if (prop.ends_with(".x"))
+            axis = 0;
+        else if (prop.ends_with(".y"))
+            axis = 1;
+        else if (prop.ends_with(".z"))
+            axis = 2;
+        if (axis < 0) return;
+        std::string_view base { prop.data(), prop.size() - 2 };
+
+        float target = anim.relative ? (anim.initialValue + evaluated) : evaluated;
+
+        // For layers with an effect chain, the image node's transform must
+        // stay at IDENTITY — the base pass renders into a pingpong RT using a
+        // per-image ortho camera at world (0,0) sized to the layer, so the
+        // local quad fills the pingpong.  Writing world coords to the image
+        // node moves the quad off-pingpong, leaving the pingpong empty and the
+        // composite invisible (Rella whale 3363252053 had this exact failure
+        // mode — the whole creature vanished except a small tail-fin sliver).
+        //
+        // The COMPOSITE pass uses last_output->sceneNode whose transform is
+        // copied from m_final_node at SceneImageEffectLayer::Resolve time.
+        // Redirect our writes to that node so origin animations actually
+        // shift the composite's screen position.  Fall back to the image
+        // node for layers without effects.
+        SceneNode* target_node = node;
+        if (m_scene) {
+            auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
+            if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+                if (auto* resolved = eit->second->ResolvedLastOutput()) {
+                    target_node = resolved;
+                }
+            }
+        }
+
+        if (base == "origin") {
+            Eigen::Vector3f v = target_node->Translate();
+            v[axis]           = target;
+            target_node->SetTranslate(v);
+        } else if (base == "scale") {
+            Eigen::Vector3f v = target_node->Scale();
+            v[axis]           = target;
+            target_node->SetScale(v);
+        } else if (base == "angles") {
+            Eigen::Vector3f v = target_node->Rotation();
+            v[axis]           = target;
+            target_node->SetRotation(v);
         }
     }
 

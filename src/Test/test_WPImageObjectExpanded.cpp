@@ -521,6 +521,135 @@ TEST_SUITE("WPImageObject::FromJson — image-backed") {
         CHECK(a.keyframes[1].value == doctest::Approx(1.0f));
     }
 
+    // Rella whale (3363252053 id=173) origin animation: per-axis keyframe
+    // tracks (c0/c1/c2) on a wrapped {value, animation, relative} object.
+    // Until this parser landed, GET_JSON_NAME_VALUE pulled the `value`
+    // string into origin[] and dropped the keyframes — the fish school sat
+    // static instead of swimming.
+    TEST_CASE("origin animation block emits three component anims with base") {
+        auto vfs = Vfs({
+            { "models/x.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 173, "name":"x", "image":"models/x.json",
+            "scale":"1 1 1", "angles":"0 0 0", "size":"10 10",
+            "origin": {
+                "value": "2032.50073 2182.06079 0.00000",
+                "animation": {
+                    "c0": [
+                        {"frame": 0,  "value": -5.2279},
+                        {"frame": 60, "value": -2.9997499}
+                    ],
+                    "c1": [
+                        {"frame": 0,  "value": 5.5241699},
+                        {"frame": 60, "value": -65.994881}
+                    ],
+                    "c2": [
+                        {"frame": 0,  "value": 0},
+                        {"frame": 60, "value": 0}
+                    ],
+                    "options": { "fps": 30, "length": 120, "mode": "loop", "wraploop": true },
+                    "relative": true
+                }
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        // The static base still lands in origin[] from the `value` string.
+        CHECK(obj.origin[0] == doctest::Approx(2032.50073f));
+        CHECK(obj.origin[1] == doctest::Approx(2182.06079f));
+        CHECK(obj.origin[2] == doctest::Approx(0.0f));
+        REQUIRE(obj.propertyAnimations.size() == 3u);
+        const auto& x = obj.propertyAnimations[0];
+        const auto& y = obj.propertyAnimations[1];
+        const auto& z = obj.propertyAnimations[2];
+        CHECK(x.property == "origin.x");
+        CHECK(y.property == "origin.y");
+        CHECK(z.property == "origin.z");
+        // Per-axis initialValue carries the base so relative deltas can
+        // compose onto it at tick time.
+        CHECK(x.initialValue == doctest::Approx(2032.50073f));
+        CHECK(y.initialValue == doctest::Approx(2182.06079f));
+        CHECK(z.initialValue == doctest::Approx(0.0f));
+        CHECK(x.relative);
+        CHECK(y.relative);
+        CHECK(z.relative);
+        CHECK(x.fps == doctest::Approx(30.0f));
+        CHECK(x.length == doctest::Approx(120.0f));
+        CHECK(x.mode == PropertyAnimMode::Loop);
+        // Rella's keyframes wrap smoothly back to the first via wraploop:true.
+        CHECK(x.wraploop);
+        CHECK(y.wraploop);
+        CHECK(z.wraploop);
+        REQUIRE(x.keyframes.size() == 2u);
+        REQUIRE(y.keyframes.size() == 2u);
+        CHECK(x.keyframes[1].value == doctest::Approx(-2.9997499f));
+        CHECK(y.keyframes[1].value == doctest::Approx(-65.994881f));
+    }
+
+    TEST_CASE("absolute (non-relative) origin animation parses with relative=false") {
+        auto vfs = Vfs({
+            { "models/x.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 1, "name":"x", "image":"models/x.json",
+            "scale":"1 1 1", "angles":"0 0 0", "size":"10 10",
+            "origin": {
+                "value": "100 200 0",
+                "animation": {
+                    "c0": [{"frame":0,"value":100},{"frame":30,"value":500}],
+                    "options": {"fps": 30, "length": 60, "mode": "loop"}
+                }
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        REQUIRE(obj.propertyAnimations.size() == 1u);
+        CHECK_FALSE(obj.propertyAnimations[0].relative);
+        CHECK(obj.propertyAnimations[0].property == "origin.x");
+        CHECK(obj.propertyAnimations[0].initialValue == doctest::Approx(100.0f));
+    }
+
+    TEST_CASE("scale and angles also accept multi-channel animations") {
+        auto vfs = Vfs({
+            { "models/x.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 1, "name":"x", "image":"models/x.json",
+            "origin":"0 0 0", "size":"10 10",
+            "scale": {
+                "value": "1 1 1",
+                "animation": {
+                    "c0": [{"frame":0,"value":1},{"frame":30,"value":2}],
+                    "c1": [{"frame":0,"value":1},{"frame":30,"value":3}],
+                    "options": {"fps": 30, "length": 30, "mode": "loop"}
+                }
+            },
+            "angles": {
+                "value": "0 0 0",
+                "animation": {
+                    "c2": [{"frame":0,"value":0},{"frame":30,"value":1.5707}],
+                    "options": {"fps": 30, "length": 30, "mode": "loop"},
+                    "relative": false
+                }
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        // scale.x, scale.y, angles.z
+        REQUIRE(obj.propertyAnimations.size() == 3u);
+        CHECK(obj.propertyAnimations[0].property == "scale.x");
+        CHECK(obj.propertyAnimations[1].property == "scale.y");
+        CHECK(obj.propertyAnimations[2].property == "angles.z");
+        // Channels without c-track aren't emitted.
+        for (const auto& a : obj.propertyAnimations) {
+            CHECK(a.property != "scale.z");
+        }
+    }
+
     TEST_CASE("animation block without name uses property name as fallback") {
         auto vfs = Vfs({
             { "models/x.json", R"({"material":"materials/util/m.json"})" },

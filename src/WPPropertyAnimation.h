@@ -36,16 +36,39 @@ inline PropertyAnimMode ParsePropertyAnimMode(std::string_view s) {
 
 struct PropertyAnimation {
     std::string name;     // animation name (from options.name) — script lookup key
-    std::string property; // target scalar property, e.g. "alpha"
+    std::string property; // target property — scalars ("alpha"), vec3 components
+                          // ("origin.x", "origin.y", "origin.z", "scale.*",
+                          // "angles.*") for multi-channel WE tracks that store
+                          // c0/c1/c2 keyframe arrays on the same animation.
 
     PropertyAnimMode mode { PropertyAnimMode::Loop };
     float            fps { 30.0f };
     float            length { 0.0f }; // in frames
     bool             startPaused { false };
 
+    // For vec3 component anims: when true the keyframe values are *deltas*
+    // applied on top of `initialValue` (the JSON `value` field for that
+    // component).  When false the keyframe values replace the component
+    // outright.  Maps WE's per-vec3-animation `relative` flag; the Rella
+    // whale (3363252053 id=173) authors a relative origin animation that
+    // drifts the school of fish around its base origin.
+    bool relative { false };
+
+    // WE's animation.options.wraploop flag.  When true (and mode=Loop), the
+    // segment from the LAST authored keyframe back to length-frames is
+    // interpolated linearly from kf.back().value to kf.front().value, so the
+    // cycle closes smoothly instead of holding the last value and snapping
+    // back at the period boundary.  Rella whale (3363252053) authors c1 with
+    // keys at 0/60 over length=120 plus wraploop:true — without this the
+    // whale dives down (frame 0→60) then *holds* the down position for
+    // another 2s and snaps up — visibly jumpy.
+    bool wraploop { false };
+
     std::vector<PropertyAnimKeyframe> keyframes;
 
-    // Fallback value when no keyframes or playback hasn't started.
+    // Fallback value when no keyframes or playback hasn't started.  For
+    // vec3-component anims this holds the corresponding axis of the JSON
+    // `value` string so `relative` mode can add deltas onto the base.
     float initialValue { 1.0f };
 
     // Runtime state (mutated on the render thread only).
@@ -92,6 +115,18 @@ inline float EvaluatePropertyAnimation(const PropertyAnimation& anim, double tim
 
     const float frame = (float)(t * (double)anim.fps);
     if (frame <= kf.front().frame) return kf.front().value;
+    // Wraploop (Loop mode only): instead of holding the last keyframe value
+    // until the cycle restarts (which produces a visible snap), interpolate
+    // from kf.back() back to kf.front() across the segment
+    // [kf.back().frame, length].  Mirror/Single ignore wraploop — Mirror
+    // already closes its cycle, Single intentionally holds at the end.
+    if (anim.wraploop && anim.mode == PropertyAnimMode::Loop && anim.length > kf.back().frame &&
+        frame >= kf.back().frame) {
+        const float span = anim.length - kf.back().frame;
+        if (span <= 0.0f) return kf.back().value;
+        const float frac = std::min(1.0f, (frame - kf.back().frame) / span);
+        return kf.back().value + frac * (kf.front().value - kf.back().value);
+    }
     if (frame >= kf.back().frame) return kf.back().value;
 
     auto it = std::lower_bound(kf.begin(), kf.end(), frame,

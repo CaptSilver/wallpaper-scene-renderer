@@ -79,6 +79,95 @@ bool TryParsePropertyAnimation(const nlohmann::json& fieldJson, std::string_view
     return true;
 }
 
+// Vec3 property keyframe animation:
+//   "<prop>": { "animation": { "c0":[…], "c1":[…], "c2":[…],
+//                              "options":{name,fps,length,mode,startpaused},
+//                              "relative":<bool> },
+//               "value": "x y z" }
+// WE stores one curve per axis (c0=x, c1=y, c2=z) on the same animation.  We
+// emit three PropertyAnimation entries — one per axis — with property names
+// "<prop>.x" / "<prop>.y" / "<prop>.z" so tickPropertyAnimations can dispatch
+// per component.  Each entry's initialValue carries the corresponding axis of
+// the JSON `value` string so relative mode can compose deltas onto the base.
+//
+// Drove the Rella whale (3363252053 id=173) fish school stuck at static origin
+// because origin.animation was silently dropped — alpha had its own parser
+// path but origin/scale/angles fell through.
+bool TryParseVec3PropertyAnimation(const nlohmann::json&           fieldJson,
+                                   std::string_view                propertyName,
+                                   const std::array<float, 3>&     fallbackBase,
+                                   std::vector<PropertyAnimation>& out) {
+    if (! fieldJson.is_object()) return false;
+    if (! fieldJson.contains("animation")) return false;
+    const auto& animJson = fieldJson.at("animation");
+    if (! animJson.is_object()) return false;
+
+    // Parse shared option fields once.
+    std::string      animName;
+    float            fps    = 30.0f;
+    float            length = 0.0f;
+    PropertyAnimMode mode   = PropertyAnimMode::Loop;
+    bool             startPaused = false;
+    bool             wraploop    = false;
+    if (animJson.contains("options") && animJson.at("options").is_object()) {
+        const auto& opts = animJson.at("options");
+        GET_JSON_NAME_VALUE_NOWARN(opts, "name", animName);
+        GET_JSON_NAME_VALUE_NOWARN(opts, "fps", fps);
+        GET_JSON_NAME_VALUE_NOWARN(opts, "length", length);
+        std::string modeStr;
+        GET_JSON_NAME_VALUE_NOWARN(opts, "mode", modeStr);
+        mode = ParsePropertyAnimMode(modeStr);
+        GET_JSON_NAME_VALUE_NOWARN(opts, "startpaused", startPaused);
+        GET_JSON_NAME_VALUE_NOWARN(opts, "wraploop", wraploop);
+    }
+    bool relative = false;
+    GET_JSON_NAME_VALUE_NOWARN(animJson, "relative", relative);
+
+    constexpr std::array<const char*, 3> kChannelKeys { "c0", "c1", "c2" };
+    constexpr std::array<const char*, 3> kAxisSuffix { ".x", ".y", ".z" };
+
+    bool emittedAny = false;
+    for (int axis = 0; axis < 3; ++axis) {
+        if (! animJson.contains(kChannelKeys[axis])) continue;
+        const auto& channelJson = animJson.at(kChannelKeys[axis]);
+        if (! channelJson.is_array() || channelJson.empty()) continue;
+
+        PropertyAnimation panim {};
+        panim.name        = animName.empty() ? std::string(propertyName) : animName;
+        panim.property    = std::string(propertyName) + kAxisSuffix[axis];
+        panim.fps         = fps;
+        panim.length      = length;
+        panim.mode        = mode;
+        panim.startPaused = startPaused;
+        panim.relative    = relative;
+        panim.wraploop    = wraploop;
+        panim.initialValue = fallbackBase[(std::size_t)axis];
+
+        for (const auto& kfJson : channelJson) {
+            PropertyAnimKeyframe kf {};
+            GET_JSON_NAME_VALUE_NOWARN(kfJson, "frame", kf.frame);
+            GET_JSON_NAME_VALUE_NOWARN(kfJson, "value", kf.value);
+            panim.keyframes.push_back(kf);
+        }
+
+        LOG_INFO("vec3 prop anim parsed: prop=%s name='%s' mode=%d fps=%.2f len=%.2f "
+                 "paused=%d relative=%d wraploop=%d keys=%zu base=%.3f",
+                 panim.property.c_str(),
+                 panim.name.c_str(),
+                 (int)panim.mode,
+                 panim.fps,
+                 panim.length,
+                 (int)panim.startPaused,
+                 (int)panim.relative,
+                 (int)panim.wraploop,
+                 panim.keyframes.size(),
+                 panim.initialValue);
+        out.push_back(std::move(panim));
+        emittedAny = true;
+    }
+    return emittedAny;
+}
+
 // Parse color field: may be a simple vec3 array or an object with {script, scriptproperties, value}
 void ParseColorField(const nlohmann::json& json, std::array<float, 3>& color,
                      std::string& colorScript, std::string& colorScriptProperties, int32_t id) {
@@ -331,6 +420,23 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         GET_JSON_NAME_VALUE(json, "angles", angles);
         GET_JSON_NAME_VALUE(json, "scale", scale);
         GET_JSON_NAME_VALUE_NOWARN(json, "parallaxDepth", parallaxDepth);
+        // GET_JSON_NAME_VALUE already extracts the `value` field from object-wrapped
+        // origin/scale/angles (so the static base is correct), but the embedded
+        // c0/c1/c2 keyframe tracks fell on the floor.  Pull them into the
+        // propertyAnimations vector now so tickPropertyAnimations can drive
+        // the node transform each frame.
+        if (json.contains("origin") && json.at("origin").is_object()) {
+            TryParseVec3PropertyAnimation(json.at("origin"), "origin", origin,
+                                          propertyAnimations);
+        }
+        if (json.contains("scale") && json.at("scale").is_object()) {
+            TryParseVec3PropertyAnimation(json.at("scale"), "scale", scale,
+                                          propertyAnimations);
+        }
+        if (json.contains("angles") && json.at("angles").is_object()) {
+            TryParseVec3PropertyAnimation(json.at("angles"), "angles", angles,
+                                          propertyAnimations);
+        }
         if (jImage.contains("width")) {
             int32_t w, h;
             GET_JSON_NAME_VALUE(jImage, "width", w);
