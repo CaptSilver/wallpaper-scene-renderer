@@ -100,11 +100,11 @@ public:
     // visibility / alpha / tint from parent groups or nodes.  Parsed for
     // completeness; currently no group hierarchy exists in the scenes we
     // handle, so nothing to propagate.
-    bool disablepropagation { false };
-    bool perspective { false };            // Use perspective camera (default: flat/ortho)
-    std::string                image;
-    std::string                alignment { "center" };
-    WPMaterial                 material;
+    bool        disablepropagation { false };
+    bool        perspective { false }; // Use perspective camera (default: flat/ortho)
+    std::string image;
+    std::string alignment { "center" };
+    WPMaterial  material;
     std::vector<WPImageEffect> effects;
     Config                     config;
 
@@ -137,6 +137,45 @@ public:
     // 3498984739 produced a gray rectangle over its character).
     std::vector<int32_t> dependencies;
 };
+
+// Marker used to recognise compose layers ("models/util/composelayer.json"
+// stored in WPImageObject::image).  Only compose layers actually sample
+// sibling layer RTs via _rt_imageLayerComposite_<id>_a, so they're the
+// only layers whose `dependencies` list should force dependents offscreen.
+constexpr std::string_view kComposeLayerImage = "models/util/composelayer.json";
+
+// Collect the image ids that any *compose* layer references in its
+// `dependencies` list.  Two filters apply:
+//
+//   1) Only image objects whose `image` is the compose-layer model
+//      contribute — non-compose layers that happen to declare
+//      `dependencies` (e.g. authoring quirks) must NOT force their
+//      "dependents" offscreen, because no compose-blend will ever read
+//      the resulting offscreen RT and the routed pixels would be lost.
+//      Driver: Eclipse 1210462523 — a single non-compose image layer
+//      declared `dependencies:[64,64,64]` (its own id three times).
+//      Without this filter, the layer was forced to `_rt_offscreen_64`,
+//      nothing read it, and the screen stayed at clearColor.
+//
+//   2) Self-references are dropped — a layer can't sample its own
+//      output via a link RT.  Same Eclipse 1210462523 case above.
+//
+// Header-resident as a small free function so the test suite can pin
+// these two filters without spinning up the full WPSceneParser::Parse
+// pipeline.
+inline std::unordered_set<int32_t>
+CollectComposeDependencyIds(const std::vector<const WPImageObject*>& image_objs) {
+    std::unordered_set<int32_t> out;
+    for (const WPImageObject* img : image_objs) {
+        if (img == nullptr) continue;
+        if (img->image != kComposeLayerImage) continue;
+        for (int32_t dep_id : img->dependencies) {
+            if (dep_id == img->id) continue;
+            out.insert(dep_id);
+        }
+    }
+    return out;
+}
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageEffect, name, visible, passes, fbos, materials);

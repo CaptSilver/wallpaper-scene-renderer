@@ -70,9 +70,9 @@ constexpr const char* kFlatMaterial = R"({
 TEST_SUITE("WPImageObject parsing — gap fixes") {
     // ---- gap 1: solidlayer flag from model JSON ----------------------------
     TEST_CASE("model JSON solidlayer:true populates WPImageObject.solidlayer") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/solidlayer.json",
-              R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
+                    R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
             { "materials/util/solidlayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -86,9 +86,8 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     }
 
     TEST_CASE("model JSON without solidlayer leaves the flag at default false") {
-        auto vfs = makeAssetsVfs({
-            { "models/regular.json",
-              R"({ "material": "materials/util/solidlayer.json" })" },
+        auto vfs       = makeAssetsVfs({
+            { "models/regular.json", R"({ "material": "materials/util/solidlayer.json" })" },
             { "materials/util/solidlayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -103,9 +102,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
 
     // ---- gap 5: copybackground flag from scene.json ------------------------
     TEST_CASE("scene.json copybackground:false populates WPImageObject.copybackground") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
+                    R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -120,9 +119,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     }
 
     TEST_CASE("scene.json copybackground:true populates WPImageObject.copybackground") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
+                    R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -137,9 +136,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     }
 
     TEST_CASE("scene.json without copybackground defaults to true") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json" })" },
+                    R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -157,9 +156,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     //       solidlayer to override g_Alpha=0 — that override is verified in
     //       a separate end-to-end render test on Nightingale 3470764447.
     TEST_CASE("solidlayer flag survives alongside explicit alpha=1") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/solidlayer.json",
-              R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
+                    R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
             { "materials/util/solidlayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -182,9 +181,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     // _rt_link_<id> — producing solid gray quads over each character
     // (Clair Obscur Expedition 33 3498984739).
     TEST_CASE("compose layer dependencies array parses into WPImageObject.dependencies") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json" })" },
+                    R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -202,9 +201,9 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     }
 
     TEST_CASE("scene.json without dependencies leaves WPImageObject.dependencies empty") {
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json" })" },
+                    R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -221,7 +220,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         // Shape-quad objects (no `image` field) follow a separate JSON branch
         // in WPImageObject::FromJson — pin parity so a future shape-quad
         // compose layer can also force dependents offscreen.
-        auto vfs = makeAssetsVfs({});
+        auto vfs       = makeAssetsVfs({});
         auto sceneJson = nlohmann::json::parse(R"({
             "id": 99, "name": "shapeq", "shape": "quad",
             "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
@@ -235,13 +234,116 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(obj.dependencies[1] == 20);
     }
 
+    // ---- CollectComposeDependencyIds: pre-pass filter --------------------
+    // The WPSceneParser pre-pass that forces dependent images offscreen
+    // consumes only *compose-layer* dependencies and ignores self-references.
+    // Two driver wallpapers anchor these filters:
+    //
+    //   - Clair Obscur Expedition 33 3498984739 — compose layers Calque
+    //     CO33-Mx declare body-part image ids in `dependencies`; those ids
+    //     MUST be routed offscreen so the compose blend samples a sprite RT
+    //     instead of a full-FB snapshot.
+    //   - Eclipse 1210462523 — a single non-compose image layer (id 64,
+    //     `image: models/868850.json`) declared `dependencies:[64,64,64]`.
+    //     If those self-refs were collected, the layer was forced to
+    //     `_rt_offscreen_64`, nothing read it, and the screen stayed at
+    //     clearColor (totally blank wallpaper on the desktop).
+    TEST_CASE("CollectComposeDependencyIds: compose layer's dependencies are collected") {
+        wpscene::WPImageObject compose;
+        compose.id           = 100;
+        compose.image        = "models/util/composelayer.json";
+        compose.dependencies = { 484, 555, 625 };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &compose });
+        CHECK(ids.size() == 3);
+        CHECK(ids.count(484) == 1);
+        CHECK(ids.count(555) == 1);
+        CHECK(ids.count(625) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: non-compose layer's dependencies are IGNORED") {
+        // Eclipse 1210462523: the only layer is a plain image (not a compose
+        // layer) and lists its own id as a dependency.  Forcing that layer
+        // offscreen produces a blank wallpaper because no compose blend
+        // ever samples the offscreen RT.
+        wpscene::WPImageObject plain;
+        plain.id           = 64;
+        plain.image        = "models/868850.json";
+        plain.dependencies = { 64, 64, 64 };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &plain });
+        CHECK(ids.empty());
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: self-reference on a compose layer is dropped") {
+        // Even if a compose layer declares its own id in `dependencies`,
+        // that's circular (you cannot sample your own output via a link RT)
+        // and must be filtered.
+        wpscene::WPImageObject compose;
+        compose.id           = 200;
+        compose.image        = "models/util/composelayer.json";
+        compose.dependencies = { 200, 300, 200, 400 };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &compose });
+        CHECK(ids.size() == 2);
+        CHECK(ids.count(200) == 0);
+        CHECK(ids.count(300) == 1);
+        CHECK(ids.count(400) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: duplicates across layers collapse to one id") {
+        wpscene::WPImageObject c1, c2;
+        c1.id           = 10;
+        c1.image        = "models/util/composelayer.json";
+        c1.dependencies = { 1, 2 };
+        c2.id           = 20;
+        c2.image        = "models/util/composelayer.json";
+        c2.dependencies = { 2, 3 };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &c1, &c2 });
+        CHECK(ids.size() == 3);
+        CHECK(ids.count(1) == 1);
+        CHECK(ids.count(2) == 1);
+        CHECK(ids.count(3) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: mixed compose / non-compose only honors compose") {
+        wpscene::WPImageObject compose, plain;
+        compose.id           = 1;
+        compose.image        = "models/util/composelayer.json";
+        compose.dependencies = { 100, 200 };
+        plain.id             = 2;
+        plain.image          = "models/something_else.json";
+        plain.dependencies   = { 300, 400 }; // ignored
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &compose, &plain });
+        CHECK(ids.size() == 2);
+        CHECK(ids.count(100) == 1);
+        CHECK(ids.count(200) == 1);
+        CHECK(ids.count(300) == 0);
+        CHECK(ids.count(400) == 0);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: empty / nullptr inputs are handled") {
+        CHECK(wpscene::CollectComposeDependencyIds({}).empty());
+
+        // nullptr entries are tolerated.
+        wpscene::WPImageObject compose;
+        compose.id           = 5;
+        compose.image        = "models/util/composelayer.json";
+        compose.dependencies = { 99 };
+        auto ids             = wpscene::CollectComposeDependencyIds({ nullptr, &compose, nullptr });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(99) == 1);
+    }
+
     TEST_CASE("dependencies tolerates non-integer entries (skipped, not crash)") {
         // Hardened against author/serialiser quirks where a dependencies entry
         // is a string or boolean: skip non-integers silently rather than
         // throwing inside the JSON visitor.
-        auto vfs = makeAssetsVfs({
+        auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-              R"({ "material": "materials/util/composelayer.json" })" },
+                    R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -260,7 +362,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
 
 TEST_SUITE("SceneImageEffectLayer — gap fixes") {
     TEST_CASE("CopyBackground defaults to true and round-trips through setter") {
-        SceneNode placeholder;
+        SceneNode             placeholder;
         SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
         CHECK(layer.CopyBackground() == true); // default
         layer.SetCopyBackground(false);
@@ -270,7 +372,7 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
     }
 
     TEST_CASE("CopyBackground is independent of Passthrough flag") {
-        SceneNode placeholder;
+        SceneNode             placeholder;
         SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
         layer.SetPassthrough(true);
         layer.SetCopyBackground(false);
@@ -294,7 +396,7 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
     // applies the layer's world transform to UV sampling (matching the
     // non-passthrough compose path and WE's behavior).
     TEST_CASE("passthrough+copybackground flag combinations — base-pass emission contract") {
-        SceneNode placeholder;
+        SceneNode             placeholder;
         SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
 
         SUBCASE("non-passthrough: base pass runs (default)") {

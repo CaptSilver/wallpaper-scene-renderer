@@ -3680,16 +3680,22 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     InitContext(context, vfs, sc);
     ParseCamera(context, sc);
 
-    // Pre-pass: collect every image id that appears in some image-object's
+    // Pre-pass: collect every image id that appears in some COMPOSE layer's
     // `dependencies` list.  Stored on context so ParseImageObj can force
     // referenced images offscreen (so the compose layer's blend samples an
     // isolated sprite RT, not a full-FB snapshot via _rt_link_<id>).
-    for (const auto& obj : wp_objs) {
-        if (auto* img = std::get_if<wpscene::WPImageObject>(&obj)) {
-            for (int32_t dep_id : img->dependencies) {
-                context.compose_dependency_ids.insert(dep_id);
+    // The compose-layer-only + self-reference filters live in
+    // CollectComposeDependencyIds (WPImageObject.h) so the test suite can
+    // pin them in isolation.
+    {
+        std::vector<const wpscene::WPImageObject*> image_objs;
+        image_objs.reserve(wp_objs.size());
+        for (const auto& obj : wp_objs) {
+            if (auto* img = std::get_if<wpscene::WPImageObject>(&obj)) {
+                image_objs.push_back(img);
             }
         }
+        context.compose_dependency_ids = wpscene::CollectComposeDependencyIds(image_objs);
     }
     if (! context.compose_dependency_ids.empty()) {
         LOG_INFO("compose dependency ids collected: %zu", context.compose_dependency_ids.size());
