@@ -362,6 +362,21 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
                 if (i_mipmap == 0) {
                     imageDatas.at(i_image) = { (float)width, (float)height };
                     header.mipmap_pow2     = algorism::IsPowOfTwo((u32)(width * height));
+                    // The full Parse() path calls SetHeaderPow2() per slot, which
+                    // also derives mipmap_larger (mip0 area > map area).  The
+                    // header-only path here forgot to, leaving mipmap_larger at
+                    // its default false for sprite textures.  That matters for
+                    // pictures stored as a single sprite frame inside a larger
+                    // power-of-two container (mapWidth/mapHeight < tex size):
+                    // WPSceneParser keys g_Texture0Resolution off mipmap_larger,
+                    // and a false value collapses the image's UV mapRate to
+                    // {1,1}, so the content only fills the map/tex fraction of
+                    // the quad (Tomb Raider 1179142239: 3500x2188 image in a
+                    // 4096x4096 .tex rendered into the top-left ~85%x53%).
+                    // Real animated sprite sheets store map == atlas, so this
+                    // stays false for them — only padded pictures flip true.
+                    header.mipmap_larger = static_cast<i64>(width) * height >
+                                           static_cast<i64>(header.mapWidth) * header.mapHeight;
                 }
                 if (header.extraHeader["texb"].val > 1) {
                     int32_t LZ4_compressed    = file.ReadInt32();
@@ -431,5 +446,18 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         i32 height = file.ReadInt32();
         SetHeaderPow2(header, width, height);
     }
+    // Diagnostic: surfaces atlas/content mismatches (mipmap_larger) and sprite
+    // vs picture classification — the inputs to the g_Texture0Resolution /
+    // image UV mapRate decision in WPSceneParser.  Kept for future audits of
+    // padded-picture textures (see Tomb Raider 1179142239 background fix).
+    LOG_INFO("TEXHDR '%s' sprite=%d tex=%dx%d map=%dx%d mipmap_larger=%d frames=%zu",
+             name.c_str(),
+             (int)header.isSprite,
+             header.width,
+             header.height,
+             header.mapWidth,
+             header.mapHeight,
+             (int)header.mipmap_larger,
+             header.spriteAnim.numFrames());
     return header;
 }

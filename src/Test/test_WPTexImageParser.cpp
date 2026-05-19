@@ -446,6 +446,77 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(header.mipmap_pow2 == true);
     }
 
+    TEST_CASE("Sprite mipmap_larger true when atlas exceeds map (padded picture)") {
+        // A plain picture stored as a single sprite frame inside a larger
+        // power-of-two container: 10x8 content in a 16x16 .tex.  ParseHeader's
+        // sprite branch used to leave mipmap_larger at its default false (only
+        // the full Parse() path computed it), so WPSceneParser collapsed the
+        // image's UV mapRate to {1,1} and the picture filled just the map/tex
+        // fraction of its quad.  Driver: Tomb Raider 1179142239 background
+        // (3500x2188 image in a 4096x4096 .tex rendered into the top-left).
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 10, 8, 1);
+
+        appendInt32(buf, 1); // mipmap_count
+        std::vector<uint8_t> pixels(16 * 16 * 4, 0);
+        appendMipmapV2(buf, 16, 16, pixels);
+
+        appendTexVersion(buf, 2); // texs
+        appendInt32(buf, 1);      // framecount = 1
+        appendInt32(buf, 0);      // imageId = 0
+        appendFloat(buf, 0.1f);   // frametime
+        appendFloat(buf, 0.0f);   // x
+        appendFloat(buf, 0.0f);   // y
+        appendFloat(buf, 10.0f);  // xAxis[0] (content width)
+        appendFloat(buf, 0.0f);   // xAxis[1]
+        appendFloat(buf, 0.0f);   // yAxis[0]
+        appendFloat(buf, 8.0f);   // yAxis[1] (content height)
+
+        VFS vfs;
+        mountTex(vfs, "sprite_padded", std::move(buf));
+
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_padded");
+        CHECK(header.isSprite == true);
+        CHECK(header.mapWidth == 10);
+        CHECK(header.mapHeight == 8);
+        // mip0 area 16*16=256 > map area 10*8=80 → must be true.
+        CHECK(header.mipmap_larger == true);
+    }
+
+    TEST_CASE("Sprite mipmap_larger false when atlas equals map (animated sheet)") {
+        // Real animated sprite sheets store map == atlas (per-frame size lives
+        // in the frame axes, not map dims), so the padded-picture fix must NOT
+        // flip mipmap_larger for them — otherwise their g_Texture0Resolution
+        // would change and shift particle UVs.
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 16, 16, 1);
+
+        appendInt32(buf, 1); // mipmap_count
+        std::vector<uint8_t> pixels(16 * 16 * 4, 0);
+        appendMipmapV2(buf, 16, 16, pixels);
+
+        appendTexVersion(buf, 2); // texs
+        appendInt32(buf, 1);      // framecount = 1
+        appendInt32(buf, 0);      // imageId = 0
+        appendFloat(buf, 0.1f);   // frametime
+        appendFloat(buf, 0.0f);   // x
+        appendFloat(buf, 0.0f);   // y
+        appendFloat(buf, 16.0f);  // xAxis[0]
+        appendFloat(buf, 0.0f);   // xAxis[1]
+        appendFloat(buf, 0.0f);   // yAxis[0]
+        appendFloat(buf, 16.0f);  // yAxis[1]
+
+        VFS vfs;
+        mountTex(vfs, "sprite_sheet_eq", std::move(buf));
+
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_sheet_eq");
+        CHECK(header.isSprite == true);
+        // mip0 area 16*16=256 == map area 16*16=256, not greater → false.
+        CHECK(header.mipmap_larger == false);
+    }
+
     TEST_CASE("Sprite frame width computed from xAxis magnitude (kills +→- mutant)") {
         // xAxis = (3, 4) → width = sqrt(9+16) = 5
         // If mutated to sqrt(9-16) = sqrt(-7) → NaN → frame.width != 5
