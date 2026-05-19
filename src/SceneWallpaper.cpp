@@ -996,16 +996,34 @@ private:
                         effectRedirects++;
                     }
 
+                    // For compose layers, the worldNode kept its parse-time
+                    // transform (WPSceneParser skips the identity-reset for
+                    // isCompose).  Its MVP feeds the composelayer base pass,
+                    // which samples _rt_default at the layer's screen position
+                    // via the composelayer shader's world-NDC math — so the
+                    // base capture position must track the final draw position
+                    // each frame.  Without this, a scripted oscillating origin
+                    // leaves the pingpong holding FB pixels from the parse-time
+                    // origin while the final draw renders at the current
+                    // scripted origin → visible rectangular ghost (Clair Obscur
+                    // Expedition 33 3498984739 M2 compose, ~30px scene shift
+                    // per frame).  IsComposeLayer covers ALL compose layers,
+                    // unlike IsPassthrough which only fires when copybackground
+                    // is false or scene.json sets config.passthrough.
+                    const bool composeWorldTracks =
+                        resolvedOutput && eit->second->IsComposeLayer();
                     if (prop == "origin") {
                         if (resolvedOutput) {
                             resolvedOutput->SetTranslate(v);
-                        } else {
+                        }
+                        if (! resolvedOutput || composeWorldTracks) {
                             node->SetTranslate(v);
                         }
                     } else if (prop == "scale") {
                         if (resolvedOutput) {
                             resolvedOutput->SetScale(v);
-                        } else {
+                        }
+                        if (! resolvedOutput || composeWorldTracks) {
                             node->SetScale(v);
                         }
                     } else if (prop == "angles") {
@@ -1014,7 +1032,8 @@ private:
                         Eigen::Vector3f rv(v[0] * deg2rad, v[1] * deg2rad, v[2] * deg2rad);
                         if (resolvedOutput) {
                             resolvedOutput->SetRotation(rv);
-                        } else {
+                        }
+                        if (! resolvedOutput || composeWorldTracks) {
                             node->SetRotation(rv);
                         }
                     }

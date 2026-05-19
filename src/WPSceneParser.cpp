@@ -1903,6 +1903,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 isCompose && ! wpimgobj.copybackground;
             imgEffectLayer->SetPassthrough(isCompose &&
                                            (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
+            imgEffectLayer->SetComposeLayer(isCompose);
             imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
             // Only visible (non-offscreen) nodes inherit the parent-group
             // transform.  Offscreen dependency nodes render into their own

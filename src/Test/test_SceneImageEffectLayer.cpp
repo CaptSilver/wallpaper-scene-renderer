@@ -667,3 +667,51 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
         CHECK(layer.GetEffect(1)->nodes.front().output == "_rt_unmatched_b");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SceneImageEffectLayer::IsComposeLayer
+//
+// Separate flag from m_passthrough.  IsPassthrough only fires when scene.json
+// sets config.passthrough OR copybackground=false; for a vanilla compose layer
+// (image == "models/util/composelayer.json" with default copybackground=true
+// and no scene.json config override) IsPassthrough is false even though the
+// layer's base pass still runs the composelayer shader.  The SceneScript
+// property dispatch consults IsComposeLayer (not IsPassthrough) to decide
+// whether to also update the worldNode in addition to resolvedOutput when a
+// script updates origin/scale/angles.  Driver: Clair Obscur Expedition 33
+// 3498984739 M2 compose layer with scripted oscillating origin.
+// ─────────────────────────────────────────────────────────────────────────────
+
+TEST_SUITE("SceneImageEffectLayer::IsComposeLayer")
+{
+    TEST_CASE("defaults to false") {
+        auto worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        CHECK(layer.IsComposeLayer() == false);
+    }
+
+    TEST_CASE("SetComposeLayer(true) → IsComposeLayer() == true") {
+        auto worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        layer.SetComposeLayer(true);
+        CHECK(layer.IsComposeLayer() == true);
+    }
+
+    TEST_CASE("IsComposeLayer is independent of IsPassthrough") {
+        // Verify the two flags don't alias.  Vanilla compose layers have
+        // IsComposeLayer=true but IsPassthrough=false (the common case).
+        auto worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        layer.SetComposeLayer(true);
+        CHECK(layer.IsComposeLayer() == true);
+        CHECK(layer.IsPassthrough() == false);
+
+        layer.SetPassthrough(true);
+        CHECK(layer.IsComposeLayer() == true);
+        CHECK(layer.IsPassthrough() == true);
+
+        layer.SetComposeLayer(false);
+        CHECK(layer.IsComposeLayer() == false);
+        CHECK(layer.IsPassthrough() == true);
+    }
+}

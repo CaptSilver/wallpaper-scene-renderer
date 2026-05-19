@@ -79,6 +79,19 @@ public:
     void SetPassthrough(bool v) { m_passthrough = v; }
     bool IsPassthrough() const { return m_passthrough; }
 
+    // True for ALL compose layers (image == "models/util/composelayer.json"),
+    // regardless of m_passthrough.  Compose layers' base pass runs the
+    // composelayer shader which samples _rt_FullFrameBuffer at the layer
+    // vertex's world-NDC position — so the worldNode's MVP must reflect the
+    // CURRENT scripted origin/scale/angles, not the parse-time values.  The
+    // SceneScript property dispatch consults this flag to decide whether to
+    // also update spImgNode in addition to resolvedOutput (Clair Obscur
+    // Expedition 33 3498984739 M2 ghost: scripted oscillating origin needs
+    // both worldNode (base capture position) AND resolvedOutput (final draw
+    // position) updated each tick).
+    void SetComposeLayer(bool v) { m_is_compose_layer = v; }
+    bool IsComposeLayer() const { return m_is_compose_layer; }
+
     // Scene-level "copybackground" flag (default true).  Only meaningful when
     // m_passthrough is also true — controls whether the implicit screen-copy
     // (_rt_default → pingpong) actually fires before the effect chain runs.
@@ -111,6 +124,7 @@ private:
     bool                       m_is_offscreen { false };
     bool                       m_inherit_parent { false };
     bool                       m_passthrough { false };
+    bool                       m_is_compose_layer { false };
     bool                       m_copy_background { true };
     std::string                m_final_camera; // Camera for final composite (empty → activeCamera)
     std::unique_ptr<SceneMesh> m_final_mesh;
