@@ -6,6 +6,7 @@ pkg_check_modules(MPV REQUIRED mpv)
 pkg_check_modules(EGL egl)
 pkg_check_modules(GL gl)
 pkg_check_modules(GBM gbm)
+pkg_check_modules(LIBPULSE libpulse)
 
 option(ENABLE_RENDERDOC "Build with renderdoc api" OFF)
 

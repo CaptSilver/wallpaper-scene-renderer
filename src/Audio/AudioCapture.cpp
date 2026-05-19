@@ -5,19 +5,63 @@
 // miniaudio header-only (implementation already in miniaudio-wrapper.hpp)
 #include <miniaudio/miniaudio.h>
 
-#include <cstring>
-#include <string>
+#ifdef WEK_HAVE_LIBPULSE
+#    include <pulse/pulseaudio.h>
+#    include <pulse/thread-mainloop.h>
+#endif
+
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
 
 using namespace wallpaper::audio;
 
+namespace
+{
+
+constexpr const char* kPulseClientName = "wallpaper-engine-kde-plugin";
+
+#ifdef WEK_HAVE_LIBPULSE
+// Lock + signal helpers — pa_threaded_mainloop_signal must always be paired
+// with the mainloop lock being held on the caller side; we centralize that.
+struct PALock {
+    pa_threaded_mainloop* loop;
+    explicit PALock(pa_threaded_mainloop* l): loop(l) { pa_threaded_mainloop_lock(loop); }
+    ~PALock() { pa_threaded_mainloop_unlock(loop); }
+};
+#endif
+
+} // namespace
+
 struct AudioCapture::Impl {
-    ma_context                     context {};
-    ma_device                      device {};
+    // ---- miniaudio: actual PCM capture ----
+    ma_context maContext {};
+    ma_device  maDevice {};
+    bool       maContextInited { false };
+    bool       maDeviceInited { false };
+
     std::shared_ptr<AudioAnalyzer> analyzer;
     std::atomic<bool>              active { false };
-    bool                           contextInited { false };
-    bool                           deviceInited { false };
+
+#ifdef WEK_HAVE_LIBPULSE
+    // ---- libpulse: default-sink discovery + change subscription ----
+    pa_threaded_mainloop* paLoop { nullptr };
+    pa_context*           paContext { nullptr };
+    bool                  paReady { false };
+
+    // ---- rebind worker (we can't manipulate ma_device from PA callback) ----
+    std::thread             rebindThread;
+    std::mutex              rebindMutex;
+    std::condition_variable rebindCV;
+    std::string             targetSink; // protected by rebindMutex
+    std::string             boundSink;  // touched only by rebindThread + Init
+    std::atomic<bool>       rebindPending { false };
+    std::atomic<bool>       shutdown { false };
+#endif
 
     static void captureCallback(ma_device* pDevice, void* pOutput, const void* pInput,
                                 ma_uint32 frameCount) {
@@ -28,6 +72,232 @@ struct AudioCapture::Impl {
             impl->analyzer->FeedPcm(input, frameCount, pDevice->capture.channels);
         }
     }
+
+    bool OpenMaDevice(const std::string& sinkName) {
+        if (maDeviceInited) {
+            ma_device_uninit(&maDevice);
+            maDeviceInited = false;
+        }
+        std::string  monitorName = sinkName + ".monitor";
+        ma_device_id devId {};
+        std::strncpy(devId.pulse, monitorName.c_str(), sizeof(devId.pulse) - 1);
+
+        ma_device_config cfg  = ma_device_config_init(ma_device_type_capture);
+        cfg.capture.pDeviceID = &devId;
+        cfg.capture.format    = ma_format_f32;
+        cfg.capture.channels  = 2;
+        cfg.sampleRate        = 48000;
+        cfg.dataCallback      = captureCallback;
+        cfg.pUserData         = this;
+
+        ma_result r = ma_device_init(&maContext, &cfg, &maDevice);
+        if (r != MA_SUCCESS) {
+            LOG_INFO(
+                "AudioCapture: ma_device_init('%s') failed (r=%d)", monitorName.c_str(), (int)r);
+            return false;
+        }
+        maDeviceInited = true;
+        r              = ma_device_start(&maDevice);
+        if (r != MA_SUCCESS) {
+            LOG_INFO("AudioCapture: ma_device_start failed (r=%d)", (int)r);
+            ma_device_uninit(&maDevice);
+            maDeviceInited = false;
+            return false;
+        }
+        return true;
+    }
+
+    // Fallback when libpulse is not available — enumerate via miniaudio and pick
+    // any .monitor source.  No live re-bind; user has to restart plasmashell if
+    // the chosen source disappears.
+    bool InitLegacy() {
+        ma_device_info* pCaptureInfos = nullptr;
+        ma_uint32       captureCount  = 0;
+        if (ma_context_get_devices(&maContext, nullptr, nullptr, &pCaptureInfos, &captureCount) !=
+            MA_SUCCESS)
+            return false;
+
+        int monitorIdx = -1;
+        for (ma_uint32 i = 0; i < captureCount; i++) {
+            std::string name(pCaptureInfos[i].name);
+            // PulseAudio descriptions: "Monitor of <sink description>"
+            bool isMonitor =
+                name.find(".monitor") != std::string::npos || name.find("Monitor of ") == 0;
+            if (isMonitor) {
+                monitorIdx = (int)i;
+            }
+        }
+        if (monitorIdx < 0) return false;
+
+        ma_device_config cfg  = ma_device_config_init(ma_device_type_capture);
+        cfg.capture.pDeviceID = &pCaptureInfos[monitorIdx].id;
+        cfg.capture.format    = ma_format_f32;
+        cfg.capture.channels  = 2;
+        cfg.sampleRate        = 48000;
+        cfg.dataCallback      = captureCallback;
+        cfg.pUserData         = this;
+        if (ma_device_init(&maContext, &cfg, &maDevice) != MA_SUCCESS) return false;
+        maDeviceInited = true;
+        if (ma_device_start(&maDevice) != MA_SUCCESS) {
+            ma_device_uninit(&maDevice);
+            maDeviceInited = false;
+            return false;
+        }
+        return true;
+    }
+
+#ifdef WEK_HAVE_LIBPULSE
+    static void paContextStateCb(pa_context* c, void* userdata) {
+        auto*              impl = static_cast<Impl*>(userdata);
+        pa_context_state_t st   = pa_context_get_state(c);
+        if (st == PA_CONTEXT_READY || st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED)
+            pa_threaded_mainloop_signal(impl->paLoop, 0);
+    }
+
+    // server-info callback used by both initial query and subscription
+    struct ServerInfoQuery {
+        std::string           name;
+        bool                  done { false };
+        bool                  ok { false };
+        pa_threaded_mainloop* loop { nullptr };
+    };
+
+    static void paQueryServerInfoCb(pa_context* /*c*/, const pa_server_info* info, void* userdata) {
+        auto* q = static_cast<ServerInfoQuery*>(userdata);
+        if (info && info->default_sink_name) {
+            q->name = info->default_sink_name;
+            q->ok   = true;
+        }
+        q->done = true;
+        pa_threaded_mainloop_signal(q->loop, 0);
+    }
+
+    // server-info callback used by the subscription path: schedule a rebind if
+    // the default sink moved.
+    static void paSubscribedServerInfoCb(pa_context* /*c*/, const pa_server_info* info,
+                                         void* userdata) {
+        auto* impl = static_cast<Impl*>(userdata);
+        if (! info || ! info->default_sink_name) return;
+        std::string newSink = info->default_sink_name;
+        {
+            std::lock_guard<std::mutex> lk(impl->rebindMutex);
+            if (newSink == impl->targetSink) return;
+            impl->targetSink = newSink;
+        }
+        impl->rebindPending = true;
+        impl->rebindCV.notify_one();
+    }
+
+    static void paSubscribeCb(pa_context* c, pa_subscription_event_type_t t, uint32_t /*idx*/,
+                              void* userdata) {
+        // Any server/sink event triggers a default-sink re-check.  Sink unload
+        // (e.g. user removes EasyEffects sink) is what makes this necessary —
+        // SERVER events alone don't fire on sink removal.
+        auto facility = static_cast<unsigned>(t) & PA_SUBSCRIPTION_EVENT_FACILITY_MASK;
+        if (facility == PA_SUBSCRIPTION_EVENT_SERVER || facility == PA_SUBSCRIPTION_EVENT_SINK) {
+            pa_operation* op = pa_context_get_server_info(c, paSubscribedServerInfoCb, userdata);
+            if (op) pa_operation_unref(op);
+        }
+    }
+
+    bool ConnectPulse() {
+        paLoop = pa_threaded_mainloop_new();
+        if (! paLoop) return false;
+        if (pa_threaded_mainloop_start(paLoop) < 0) {
+            pa_threaded_mainloop_free(paLoop);
+            paLoop = nullptr;
+            return false;
+        }
+        {
+            PALock lk(paLoop);
+            paContext = pa_context_new(pa_threaded_mainloop_get_api(paLoop), kPulseClientName);
+            if (! paContext) return false;
+            pa_context_set_state_callback(paContext, paContextStateCb, this);
+            if (pa_context_connect(paContext, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+                pa_context_unref(paContext);
+                paContext = nullptr;
+                return false;
+            }
+            while (true) {
+                pa_context_state_t st = pa_context_get_state(paContext);
+                if (st == PA_CONTEXT_READY) {
+                    paReady = true;
+                    break;
+                }
+                if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) break;
+                pa_threaded_mainloop_wait(paLoop);
+            }
+            if (paReady) {
+                pa_context_set_subscribe_callback(paContext, paSubscribeCb, this);
+                pa_operation* op = pa_context_subscribe(
+                    paContext,
+                    static_cast<pa_subscription_mask_t>(PA_SUBSCRIPTION_MASK_SERVER |
+                                                        PA_SUBSCRIPTION_MASK_SINK),
+                    nullptr,
+                    nullptr);
+                if (op) pa_operation_unref(op);
+            }
+        }
+        return paReady;
+    }
+
+    bool QueryDefaultSinkBlocking(std::string& out) {
+        if (! paReady) return false;
+        ServerInfoQuery q;
+        q.loop = paLoop;
+        {
+            PALock        lk(paLoop);
+            pa_operation* op = pa_context_get_server_info(paContext, paQueryServerInfoCb, &q);
+            if (! op) return false;
+            while (! q.done) pa_threaded_mainloop_wait(paLoop);
+            pa_operation_unref(op);
+        }
+        if (! q.ok) return false;
+        out = std::move(q.name);
+        return true;
+    }
+
+    void DisconnectPulse() {
+        if (paLoop && paContext) {
+            PALock lk(paLoop);
+            pa_context_disconnect(paContext);
+            pa_context_unref(paContext);
+            paContext = nullptr;
+            paReady   = false;
+        }
+        if (paLoop) {
+            pa_threaded_mainloop_stop(paLoop);
+            pa_threaded_mainloop_free(paLoop);
+            paLoop = nullptr;
+        }
+    }
+
+    void RebindLoop() {
+        while (! shutdown) {
+            std::string newSink;
+            {
+                std::unique_lock<std::mutex> lk(rebindMutex);
+                rebindCV.wait(lk, [this] {
+                    return shutdown.load() || rebindPending.load();
+                });
+                if (shutdown) return;
+                rebindPending = false;
+                if (targetSink == boundSink) continue;
+                newSink = targetSink;
+            }
+            LOG_INFO("AudioCapture: default sink changed → rebinding to monitor of '%s'",
+                     newSink.c_str());
+            // ma_device_uninit blocks until in-flight callbacks return, so it
+            // is safe to interleave with the running capture.
+            if (OpenMaDevice(newSink)) {
+                boundSink = newSink;
+            } else {
+                LOG_INFO("AudioCapture: rebind to '%s' failed; capture is silent until next change",
+                         newSink.c_str());
+            }
+        }
+    }
+#endif // WEK_HAVE_LIBPULSE
 };
 
 AudioCapture::AudioCapture(): m_impl(std::make_unique<Impl>()) {}
@@ -38,76 +308,57 @@ bool AudioCapture::Init(std::shared_ptr<AudioAnalyzer> analyzer) {
     if (! analyzer) return false;
     m_impl->analyzer = analyzer;
 
-    // Initialize miniaudio context (separate from playback context)
+    // Init miniaudio context against the PulseAudio backend (works on
+    // PipeWire-pulse too).
     ma_context_config ctxConfig  = ma_context_config_init();
     ma_backend        backends[] = { ma_backend_pulseaudio };
-    ma_result         result     = ma_context_init(backends, 1, &ctxConfig, &m_impl->context);
+    ma_result         result     = ma_context_init(backends, 1, &ctxConfig, &m_impl->maContext);
     if (result != MA_SUCCESS) {
         LOG_INFO("AudioCapture: Failed to init PulseAudio context (result=%d), "
                  "system audio capture unavailable",
                  (int)result);
         return false;
     }
-    m_impl->contextInited = true;
+    m_impl->maContextInited = true;
 
-    // Enumerate capture devices, find a .monitor source
-    ma_device_info* pCaptureInfos = nullptr;
-    ma_uint32       captureCount  = 0;
-    result =
-        ma_context_get_devices(&m_impl->context, nullptr, nullptr, &pCaptureInfos, &captureCount);
-    if (result != MA_SUCCESS) {
-        LOG_INFO("AudioCapture: Failed to enumerate capture devices");
-        return false;
-    }
-
-    int monitorIdx = -1;
-    for (ma_uint32 i = 0; i < captureCount; i++) {
-        std::string name(pCaptureInfos[i].name);
-        LOG_INFO("AudioCapture: capture device [%u] = '%s'", i, name.c_str());
-        // PulseAudio uses ".monitor" suffix, PipeWire uses "Monitor of " prefix
-        bool isMonitor =
-            name.find(".monitor") != std::string::npos || name.find("Monitor of ") == 0;
-        if (isMonitor) {
-            monitorIdx = (int)i;
-            // Don't break — prefer the last monitor (usually the default sink)
+#ifdef WEK_HAVE_LIBPULSE
+    if (m_impl->ConnectPulse()) {
+        std::string defaultSink;
+        if (! m_impl->QueryDefaultSinkBlocking(defaultSink) || defaultSink.empty()) {
+            LOG_INFO("AudioCapture: no default sink reported by PulseAudio");
+            return false;
         }
+        if (! m_impl->OpenMaDevice(defaultSink)) {
+            LOG_INFO("AudioCapture: failed to open monitor of default sink '%s'",
+                     defaultSink.c_str());
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_impl->rebindMutex);
+            m_impl->boundSink  = defaultSink;
+            m_impl->targetSink = defaultSink;
+        }
+        m_impl->active       = true;
+        m_impl->rebindThread = std::thread([impl = m_impl.get()] {
+            impl->RebindLoop();
+        });
+        LOG_INFO("AudioCapture: active on monitor of '%s' (%u Hz, %u ch) — live-rebind enabled",
+                 defaultSink.c_str(),
+                 m_impl->maDevice.sampleRate,
+                 m_impl->maDevice.capture.channels);
+        return true;
     }
+    LOG_INFO("AudioCapture: libpulse unavailable, falling back to one-shot enumeration");
+#endif
 
-    if (monitorIdx < 0) {
-        LOG_INFO("AudioCapture: No .monitor source found, system audio capture unavailable");
+    if (! m_impl->InitLegacy()) {
+        LOG_INFO("AudioCapture: no monitor source found");
         return false;
     }
-
-    LOG_INFO("AudioCapture: Using monitor source '%s'", pCaptureInfos[monitorIdx].name);
-
-    // Open capture device
-    ma_device_config config  = ma_device_config_init(ma_device_type_capture);
-    config.capture.pDeviceID = &pCaptureInfos[monitorIdx].id;
-    config.capture.format    = ma_format_f32;
-    config.capture.channels  = 2;
-    config.sampleRate        = 48000;
-    config.dataCallback      = Impl::captureCallback;
-    config.pUserData         = m_impl.get();
-
-    result = ma_device_init(&m_impl->context, &config, &m_impl->device);
-    if (result != MA_SUCCESS) {
-        LOG_INFO("AudioCapture: Failed to init capture device (result=%d)", (int)result);
-        return false;
-    }
-    m_impl->deviceInited = true;
-
-    result = ma_device_start(&m_impl->device);
-    if (result != MA_SUCCESS) {
-        LOG_INFO("AudioCapture: Failed to start capture device (result=%d)", (int)result);
-        ma_device_uninit(&m_impl->device);
-        m_impl->deviceInited = false;
-        return false;
-    }
-
     m_impl->active = true;
-    LOG_INFO("AudioCapture: System audio capture active (%u Hz, %u ch)",
-             m_impl->device.sampleRate,
-             m_impl->device.capture.channels);
+    LOG_INFO("AudioCapture: active via legacy enumeration (%u Hz, %u ch) — no live-rebind",
+             m_impl->maDevice.sampleRate,
+             m_impl->maDevice.capture.channels);
     return true;
 }
 
@@ -115,12 +366,18 @@ bool AudioCapture::IsActive() const { return m_impl->active; }
 
 void AudioCapture::Stop() {
     m_impl->active = false;
-    if (m_impl->deviceInited) {
-        ma_device_uninit(&m_impl->device);
-        m_impl->deviceInited = false;
+#ifdef WEK_HAVE_LIBPULSE
+    m_impl->shutdown = true;
+    m_impl->rebindCV.notify_all();
+    if (m_impl->rebindThread.joinable()) m_impl->rebindThread.join();
+    m_impl->DisconnectPulse();
+#endif
+    if (m_impl->maDeviceInited) {
+        ma_device_uninit(&m_impl->maDevice);
+        m_impl->maDeviceInited = false;
     }
-    if (m_impl->contextInited) {
-        ma_context_uninit(&m_impl->context);
-        m_impl->contextInited = false;
+    if (m_impl->maContextInited) {
+        ma_context_uninit(&m_impl->maContext);
+        m_impl->maContextInited = false;
     }
 }

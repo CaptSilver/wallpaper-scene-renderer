@@ -40,6 +40,7 @@ add_executable(backend_scene_tests
     test_FpsCounter.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
+    test_AudioCapture.cpp
     test_BinaryStream.cpp
     test_VFS.cpp
     test_SoundStreamSeek.cpp
