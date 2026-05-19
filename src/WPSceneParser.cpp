@@ -381,9 +381,8 @@ void LoadControlPoint(ParticleSubSystem& pSys, const wpscene::Particle& wp,
             pcs[i].is_null_offset = false;
         }
         if (over.controlpointOverrides[i].anglesActive) {
-            pcs[i].angles = Eigen::Vector3d {
-                array_cast<double>(over.controlpointOverrides[i].angles).data()
-            };
+            pcs[i].angles =
+                Eigen::Vector3d { array_cast<double>(over.controlpointOverrides[i].angles).data() };
             // No runtime operator consumes CP angles yet; report the capture so a future
             // consumer (or debug session) can see the data reached the CP struct.  Per
             // feedback_no_stubs.md: "Implement the API or report the gap loudly."
@@ -444,15 +443,15 @@ void LoadEmitter(ParticleSubSystem& pSys, const wpscene::Particle& wp, float cou
             // emitters per subsystem with diverging audio params would need
             // per-emitter state on the subsystem — out of scope; in practice
             // wallpapers tend to set a single audio-reactive emitter.
-            any_audio                    = true;
-            audioParams.mode             = em.audioprocessingmode;
-            audioParams.weShapeAuthored  = em.audio_we_shape_authored;
-            audioParams.freqStart        = em.audioprocessingfrequencystart;
-            audioParams.freqEnd          = em.audioprocessingfrequencyend;
-            audioParams.boundsLow        = em.audioprocessingbounds[0];
-            audioParams.boundsHigh       = em.audioprocessingbounds[1];
-            audioParams.exponent         = em.audioprocessingexponent;
-            audioParams.amount           = em.audioprocessing;
+            any_audio                   = true;
+            audioParams.mode            = em.audioprocessingmode;
+            audioParams.weShapeAuthored = em.audio_we_shape_authored;
+            audioParams.freqStart       = em.audioprocessingfrequencystart;
+            audioParams.freqEnd         = em.audioprocessingfrequencyend;
+            audioParams.boundsLow       = em.audioprocessingbounds[0];
+            audioParams.boundsHigh      = em.audioprocessingbounds[1];
+            audioParams.exponent        = em.audioprocessingexponent;
+            audioParams.amount          = em.audioprocessing;
         }
         auto  newEm      = em;
         float burst_rate = 0.0f;
@@ -836,7 +835,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
     for (const auto& el : pWPShaderInfo->alias) {
         material.customShader.alias[el.first] = el.second;
     }
-    material.name         = wpmat.shader;
+    material.name = wpmat.shader;
 
     return true;
 }
@@ -1019,9 +1018,8 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         // helper's comment for the original SIGFPE bug context.
         auto [cam_w, cam_h] =
             ComputeOrthoCameraSize(context.ortho_w, context.ortho_h, general.zoom);
-        scene.cameras["global"] =
-            std::make_shared<SceneCamera>(cam_w, cam_h, -5000.0f, 5000.0f);
-        scene.activeCamera = scene.cameras.at("global").get();
+        scene.cameras["global"] = std::make_shared<SceneCamera>(cam_w, cam_h, -5000.0f, 5000.0f);
+        scene.activeCamera      = scene.cameras.at("global").get();
         Vector3f cori { (float)context.ortho_w / 2.0f, (float)context.ortho_h / 2.0f, 0 },
             cscale { 1.0f, 1.0f, 1.0f }, cangle(Vector3f::Zero());
 
@@ -1205,8 +1203,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Clair Obscur Expedition 33 3498984739 had Calque CO33-Mx compose layers
     // declaring character body-parts (M3A/B/C, M4A/B/C, M2/C/B/D, M5A/B/C/D)
     // as dependencies, each producing a gray quad over its character.
-    if (! isOffscreen && context.compose_dependency_ids.count(wpimgobj.id) > 0
-        && ! isScriptedLayer && ! wpimgobj.visibleIsComboSelector) {
+    if (! isOffscreen && context.compose_dependency_ids.count(wpimgobj.id) > 0 &&
+        ! isScriptedLayer && ! wpimgobj.visibleIsComboSelector) {
         isOffscreen = true;
         LOG_INFO("  image id=%d name='%s' forced offscreen (referenced as compose dependency)",
                  wpimgobj.id,
@@ -1262,7 +1260,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // when its property scripts initialize `thisLayer = thisScene.getLayer(...)`,
     // and any script that touches `thisLayer.foo` would crash quietly.
     if (! hasEffect && wpimgobj.fullscreen) {
-        auto spPlaceholder = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
+        auto spPlaceholder  = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
                                                          Vector3f(wpimgobj.scale.data()),
                                                          Vector3f(wpimgobj.angles.data()));
         spPlaceholder->ID() = wpimgobj.id;
@@ -1315,8 +1313,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             passMat.blending            = "normal";
             passEffect.materials.push_back(std::move(passMat));
             wpimgobj.effects.push_back(std::move(passEffect));
-            count_eff = 1;
-            hasEffect = true;
+            count_eff                  = 1;
+            hasEffect                  = true;
             synthesizedPassthroughOnly = true;
             LOG_INFO("  compose layer id=%d has no effect — synthesized effectpassthrough "
                      "for dependent link RT (routed offscreen)",
@@ -1403,7 +1401,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                  puppet->puppet ? puppet->puppet->attachments.size() : 0u);
         if (puppet->puppet) {
             for (const auto& att : puppet->puppet->attachments) {
-                const auto& m = att.transform.matrix();
+                const auto& m  = att.transform.matrix();
                 float       nx = (xmax - xmin) > 0 ? (m(0, 3) - xmin) / (xmax - xmin) : 0.0f;
                 float       ny = (ymax - ymin) > 0 ? (m(1, 3) - ymin) / (ymax - ymin) : 0.0f;
                 LOG_INFO("  ATT '%s' trans=(%.2f, %.2f, %.2f) bone[0]_trans=(%.2f, %.2f) "
@@ -1412,10 +1410,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                          m(0, 3),
                          m(1, 3),
                          m(2, 3),
-                         puppet->puppet->bones.empty() ? 0.0f
-                                                       : puppet->puppet->bones[0].transform.matrix()(0, 3),
-                         puppet->puppet->bones.empty() ? 0.0f
-                                                       : puppet->puppet->bones[0].transform.matrix()(1, 3),
+                         puppet->puppet->bones.empty()
+                             ? 0.0f
+                             : puppet->puppet->bones[0].transform.matrix()(0, 3),
+                         puppet->puppet->bones.empty()
+                             ? 0.0f
+                             : puppet->puppet->bones[0].transform.matrix()(1, 3),
                          nx * 100.0f,
                          ny * 100.0f);
             }
@@ -1470,14 +1470,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         const std::string name_lower = to_lower(wpimgobj.name);
         std::string_view  needles(context.hide_pattern);
         while (! needles.empty()) {
-            auto        comma  = needles.find(',');
-            auto        needle = needles.substr(0, comma);
+            auto        comma        = needles.find(',');
+            auto        needle       = needles.substr(0, comma);
             std::string needle_lower = to_lower(needle);
-            if (! needle_lower.empty()
-                && name_lower.find(needle_lower) != std::string::npos) {
+            if (! needle_lower.empty() && name_lower.find(needle_lower) != std::string::npos) {
                 spImgNode->SetVisible(false);
-                context.hidden_names.push_back(wpimgobj.name + " (id=" +
-                                               std::to_string(wpimgobj.id) + ")");
+                context.hidden_names.push_back(wpimgobj.name +
+                                               " (id=" + std::to_string(wpimgobj.id) + ")");
                 LOG_INFO("HidePattern: id=%d name='%s' (match '%s')",
                          wpimgobj.id,
                          wpimgobj.name.c_str(),
@@ -1516,9 +1515,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         // color).  Populate both unconditionally; for solidlayer placeholders
         // override g_Alpha=0 so the per-image effect chain reads a clean
         // (0,0,0,0) base instead of an opaque colored quad.
-        baseConstSvs["g_Color"] = std::array<float, 3> {
-            wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2]
-        };
+        baseConstSvs["g_Color"] =
+            std::array<float, 3> { wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2] };
         baseConstSvs["g_Alpha"] = wpimgobj.solidlayer ? 0.0f : wpimgobj.alpha;
 
         shaderInfo.baseConstSvs = baseConstSvs;
@@ -1725,16 +1723,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             if (parent_puppet && ! wpimgobj.attachment.empty()) {
                 if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
                     if (att->bone_index < parent_puppet->bones.size()) {
-                        Eigen::Matrix4d attMat =
-                            att->transform.matrix().cast<double>();
-                        auto bit = context.node_mdl_bounds.find(wpimgobj.parent_id);
-                        auto sit = context.node_scene_size.find(wpimgobj.parent_id);
-                        auto nit = context.node_name_for_log.find(wpimgobj.parent_id);
-                        const char* parent_name =
+                        Eigen::Matrix4d attMat = att->transform.matrix().cast<double>();
+                        auto            bit    = context.node_mdl_bounds.find(wpimgobj.parent_id);
+                        auto            sit    = context.node_scene_size.find(wpimgobj.parent_id);
+                        auto            nit    = context.node_name_for_log.find(wpimgobj.parent_id);
+                        const char*     parent_name =
                             (nit != context.node_name_for_log.end()) ? nit->second.c_str() : "?";
-                        double tx = attMat(0, 3);
-                        double ty = attMat(1, 3);
-                        double tz = attMat(2, 3);
+                        double tx   = attMat(0, 3);
+                        double ty   = attMat(1, 3);
+                        double tz   = attMat(2, 3);
                         double xmin = 0, ymin = 0, span_x = 1, span_y = 1;
                         bool   have_bounds = bit != context.node_mdl_bounds.end();
                         bool   have_size   = sit != context.node_scene_size.end();
@@ -1747,13 +1744,12 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                         if (have_bounds && have_size && span_x > 0 && span_y > 0) {
                             double ratio_x = sit->second[0] / span_x;
                             double ratio_y = sit->second[1] / span_y;
-                            LOG_INFO(
-                                "ATT child id=%d name='%s' attach='%s' parent_id=%d ('%s')",
-                                wpimgobj.id,
-                                wpimgobj.name.c_str(),
-                                wpimgobj.attachment.c_str(),
-                                wpimgobj.parent_id,
-                                parent_name);
+                            LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d ('%s')",
+                                     wpimgobj.id,
+                                     wpimgobj.name.c_str(),
+                                     wpimgobj.attachment.c_str(),
+                                     wpimgobj.parent_id,
+                                     parent_name);
                             LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
                             LOG_INFO("  parent mdl_span=(%.0f,%.0f) scene_size=(%.0f,%.0f) "
                                      "ratio=(%.2f,%.2f)",
@@ -1787,8 +1783,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                 }
             }
 
-            auto compose_result = composeAttachedChildWorld(
-                parent_chain, parent_puppet, wpimgobj.attachment, local);
+            auto compose_result =
+                composeAttachedChildWorld(parent_chain, parent_puppet, wpimgobj.attachment, local);
             context.original_world_transforms[wpimgobj.id] = compose_result.world;
 
             // ATT diagnostic — one line per attached child whose attachment
@@ -1797,28 +1793,25 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             // world.  Grep "ATT compose " for puppet/attachment debugging
             // on future wallpapers.
             if (compose_result.attachment_resolved && parent_puppet) {
-                if (auto* att =
-                        parent_puppet->findAttachment(wpimgobj.attachment)) {
+                if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
                     if (att->bone_index < parent_puppet->bones.size()) {
                         auto bone_wt =
-                            parent_puppet->bones[att->bone_index]
-                                .world_transform.translation();
-                        LOG_INFO(
-                            "ATT compose id=%d name='%s' attach='%s' bone=%u "
-                            "boneW=(%.1f,%.1f) att=(%.1f,%.1f) local=(%.1f,%.1f) "
-                            "-> world=(%.1f,%.1f)",
-                            wpimgobj.id,
-                            wpimgobj.name.c_str(),
-                            wpimgobj.attachment.c_str(),
-                            att->bone_index,
-                            bone_wt.x(),
-                            bone_wt.y(),
-                            att->transform.translation().x(),
-                            att->transform.translation().y(),
-                            local(0, 3),
-                            local(1, 3),
-                            compose_result.world(0, 3),
-                            compose_result.world(1, 3));
+                            parent_puppet->bones[att->bone_index].world_transform.translation();
+                        LOG_INFO("ATT compose id=%d name='%s' attach='%s' bone=%u "
+                                 "boneW=(%.1f,%.1f) att=(%.1f,%.1f) local=(%.1f,%.1f) "
+                                 "-> world=(%.1f,%.1f)",
+                                 wpimgobj.id,
+                                 wpimgobj.name.c_str(),
+                                 wpimgobj.attachment.c_str(),
+                                 att->bone_index,
+                                 bone_wt.x(),
+                                 bone_wt.y(),
+                                 att->transform.translation().x(),
+                                 att->transform.translation().y(),
+                                 local(0, 3),
+                                 local(1, 3),
+                                 compose_result.world(0, 3),
+                                 compose_result.world(1, 3));
                     }
                 }
             }
@@ -1899,10 +1892,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             // (b) honors copybackground=false to also skip the implicit copy.
             // The pingpong stays cleared, BlendReflect over a transparent
             // pingpong = no-op, no blue box.
-            const bool forcePassthroughForCopyBg =
-                isCompose && ! wpimgobj.copybackground;
-            imgEffectLayer->SetPassthrough(isCompose &&
-                                           (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
+            const bool forcePassthroughForCopyBg = isCompose && ! wpimgobj.copybackground;
+            imgEffectLayer->SetPassthrough(
+                isCompose && (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
             imgEffectLayer->SetComposeLayer(isCompose);
             imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
             // Only visible (non-offscreen) nodes inherit the parent-group
@@ -1931,9 +1923,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                     if (pit != context.node_puppet.end() && pit->second) {
                         if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
                             if (att->bone_index < pit->second->bones.size()) {
-                                Eigen::Matrix4d bone_world =
-                                    pit->second->bones[att->bone_index]
-                                        .world_transform.matrix().cast<double>();
+                                Eigen::Matrix4d bone_world = pit->second->bones[att->bone_index]
+                                                                 .world_transform.matrix()
+                                                                 .cast<double>();
                                 parent_chain = parent_chain * bone_world *
                                                att->transform.matrix().cast<double>();
                             }
@@ -2324,8 +2316,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         // hardcoded `"visible": false` with no script to enable them) — WE's
         // runtime apparently treats `visible: false` as an editor-time-only
         // hint and renders them anyway.  Match that: start them visible.
-        bool isScriptedParticle = ! wppartobj.name.empty() &&
-                                  context.script_referenced_layers.count(wppartobj.name) > 0;
+        bool isScriptedParticle =
+            ! wppartobj.name.empty() && context.script_referenced_layers.count(wppartobj.name) > 0;
         if (isScriptedParticle) {
             spNode->SetVisible(wppartobj.visible);
         }
@@ -2349,10 +2341,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                  particle_obj.children.size());
 
         // Minimal setup: no mesh/material, just particle subsystem for children
-        u32          maxcount   = std::min(particle_obj.maxcount, 20000u);
-        const double time_scale = wpscene::OverrideTimeScale(override);
-        auto spMesh      = std::make_shared<SceneMesh>(true);
-        auto particleSub = std::make_unique<ParticleSubSystem>(
+        u32          maxcount    = std::min(particle_obj.maxcount, 20000u);
+        const double time_scale  = wpscene::OverrideTimeScale(override);
+        auto         spMesh      = std::make_shared<SceneMesh>(true);
+        auto         particleSub = std::make_unique<ParticleSubSystem>(
             *context.scene->paritileSys,
             spMesh,
             maxcount,
@@ -2367,8 +2359,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         // Debug name: basename of the particle preset.  Used for per-subsystem logs in
         // ParticleSystem.cpp (particle-clear / particle-state lines).
         {
-            std::string dn = is_child ? child_ptr.child->name : wppartobj.name;
-            auto slash = dn.find_last_of('/');
+            std::string dn    = is_child ? child_ptr.child->name : wppartobj.name;
+            auto        slash = dn.find_last_of('/');
             if (slash != std::string::npos) dn = dn.substr(slash + 1);
             auto dot = dn.find_last_of('.');
             if (dot != std::string::npos) dn = dn.substr(0, dot);
@@ -2395,9 +2387,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                     std::string tok = list.substr(start, comma - start);
                     if (! tok.empty() && child.name.find(tok) != std::string::npos) {
                         matched = true;
-                        LOG_INFO("WEKDE_SKIP_PARTICLE_CHILD_SUBSTR: skipping child '%s' (match '%s')",
-                                 child.name.c_str(),
-                                 tok.c_str());
+                        LOG_INFO(
+                            "WEKDE_SKIP_PARTICLE_CHILD_SUBSTR: skipping child '%s' (match '%s')",
+                            child.name.c_str(),
+                            tok.c_str());
                         break;
                     }
                     start = comma + 1;
@@ -2555,8 +2548,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
     }
 
-    const double time_scale = wpscene::OverrideTimeScale(override);
-    auto particleSub = std::make_unique<ParticleSubSystem>(
+    const double time_scale  = wpscene::OverrideTimeScale(override);
+    auto         particleSub = std::make_unique<ParticleSubSystem>(
         *context.scene->paritileSys,
         spMesh,
         maxcount,
@@ -2584,8 +2577,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
     }
 
     {
-        std::string dn = is_child ? child_ptr.child->name : wppartobj.name;
-        auto slash = dn.find_last_of('/');
+        std::string dn    = is_child ? child_ptr.child->name : wppartobj.name;
+        auto        slash = dn.find_last_of('/');
         if (slash != std::string::npos) dn = dn.substr(slash + 1);
         auto dot = dn.find_last_of('.');
         if (dot != std::string::npos) dn = dn.substr(0, dot);
@@ -2649,11 +2642,8 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         }
         if (rope_init_count == 0) rope_init_count = maxcount;
     }
-    LoadInitializer(*particleSub,
-                    particle_obj,
-                    override,
-                    rope_init_count,
-                    child_data.controlpointstartindex);
+    LoadInitializer(
+        *particleSub, particle_obj, override, rope_init_count, child_data.controlpointstartindex);
     LoadOperator(*particleSub, particle_obj, override);
 
     mesh.AddMaterial(std::move(material));
@@ -2888,12 +2878,10 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     std::string fontLoadedFrom;
     if (textObj.font.find("systemfont") != std::string::npos) {
         const std::string sysPath = ResolveSystemFontFallback(textObj.font);
-        if (!sysPath.empty()) {
+        if (! sysPath.empty()) {
             fontData       = ReadSystemFile(sysPath);
             fontLoadedFrom = sysPath;
-            LOG_INFO("  systemfont '%s' resolved to %s",
-                     textObj.font.c_str(),
-                     sysPath.c_str());
+            LOG_INFO("  systemfont '%s' resolved to %s", textObj.font.c_str(), sysPath.c_str());
         }
         if (fontData.empty()) {
             LOG_INFO("  systemfont '%s' has no available fallback, creating placeholder",
@@ -2935,9 +2923,9 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     // the author wants the canvas to grow to fit the text.  Without this
     // branch, the 18×18 (at 2× DPI = 36×36) texture clipped runtime-set
     // tooltips like "Stamp" to ~3 visible characters.
-    const bool  maxwidth_dwarfs_size =
+    const bool maxwidth_dwarfs_size =
         (textObj.maxwidth > 0.0f && textObj.maxwidth > std::max(texW, texH) * 4.0f);
-    const bool  autosize_canvas =
+    const bool autosize_canvas =
         (texW <= placeholder_threshold || texH <= placeholder_threshold || maxwidth_dwarfs_size);
     if (autosize_canvas) {
         // Matches WPTextRenderer's DPI multiplier — see WPTextRenderer.cpp
@@ -3417,9 +3405,7 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
             image_field = json_obj.at("image").get<std::string>();
         auto is_font_path = [](const std::string& p) {
             for (const char* ext : { ".ttf", ".otf", ".TTF", ".OTF" })
-                if (p.size() >= 4 &&
-                    p.compare(p.size() - 4, 4, ext) == 0)
-                    return true;
+                if (p.size() >= 4 && p.compare(p.size() - 4, 4, ext) == 0) return true;
             return false;
         };
         if (is_font_path(image_field)) return;
@@ -3444,7 +3430,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     //	LOG_INFO(nlohmann::json(sc).dump(4));
 
     ParseContext context;
-    context.hide_pattern           = m_hide_pattern;
+    context.hide_pattern            = m_hide_pattern;
     context.postprocessing_override = m_postprocessing_override;
 
     std::vector<WPObjectVar> wp_objs;
@@ -3482,8 +3468,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // Naruto Shippuden 2800255344's audio-spectrum bar (passes the asset
         // path directly without registerAsset).  Pre-register the path so
         // the runtime can rent pool nodes instead of returning stubs.
-        static const std::regex createLayerStringRe(
-            R"(createLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
+        static const std::regex createLayerStringRe(R"(createLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
         // Script-managed pool pattern: `identifier + Pool . (pop|push|length)`.
         // When present, the script expects createLayer to produce many
         // long-lived layers it manages itself — an 8-slot backend pool is
@@ -3493,8 +3478,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // workshop-imported script).  Used to resolve bare paths like
         // 'models/bar.json' to 'models/workshop/<id>/bar.json' when the bare
         // path doesn't exist on disk.
-        static const std::regex workshopIdRe(
-            R"(__workshopId\s*=\s*['"]([^'"]+)['"])");
+        static const std::regex workshopIdRe(R"(__workshopId\s*=\s*['"]([^'"]+)['"])");
         // Integer slider maxes in the same script — used as pool-size hints.
         // Matches `max: 400` but skips `max: 0.5` and `max: 1e10` (only `\d+`).
         static const std::regex                    intMaxRe(R"(max\s*:\s*(\d+)\s*[,\n])");
@@ -3571,9 +3555,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 if (! thisScriptPaths.empty()) {
                     // Locate every for-loop bound and pick the largest, capped
                     // at 2048 to match the explicit-pool path.
-                    static const std::regex forBoundRe(
-                        R"(for\s*\([^)]*?\b\w+\s*<=?\s*(\d+))");
-                    size_t largestBound = 0;
+                    static const std::regex forBoundRe(R"(for\s*\([^)]*?\b\w+\s*<=?\s*(\d+))");
+                    size_t                  largestBound = 0;
                     for (auto it = std::sregex_iterator(s.begin(), s.end(), forBoundRe);
                          it != std::sregex_iterator();
                          ++it) {
@@ -3634,8 +3617,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         } else if (obj.contains("id")) {
             // Group node — no content, just a transform container
             try {
-                auto g                  = ParseGroupNode(obj);
-                context.node_map[g.id]  = g.node;
+                auto g                 = ParseGroupNode(obj);
+                context.node_map[g.id] = g.node;
                 group_infos.push_back({ g.id, g.parent_id });
                 if (g.hasParallaxDepth) {
                     context.group_parallax_depths[g.id] = g.parallaxDepth;
@@ -3673,8 +3656,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             if (img == nullptr) continue;
             i32 iw = (i32)img->size.at(0);
             i32 ih = (i32)img->size.at(1);
-            if (img->autosize && iw <= 2 && ih <= 2 &&
-                ! img->material.textures.empty() &&
+            if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
                 ! img->material.textures.front().empty()) {
                 auto header = tempParser.ParseHeader(img->material.textures.front());
                 if (header.isSprite && header.spriteAnim.numFrames() > 0) {
@@ -3710,8 +3692,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         }
     }
     if (! context.compose_dependency_ids.empty()) {
-        LOG_INFO("compose dependency ids collected: %zu",
-                 context.compose_dependency_ids.size());
+        LOG_INFO("compose dependency ids collected: %zu", context.compose_dependency_ids.size());
     }
 
     // Build group node hierarchy: add each group to its parent (or scene root).
@@ -3863,9 +3844,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 if (wid != context.script_asset_workshop_id.end()) {
                     auto slash = assetPath.find('/');
                     if (slash != std::string::npos) {
-                        std::string candidate = assetPath.substr(0, slash) +
-                                                "/workshop/" + wid->second +
-                                                assetPath.substr(slash);
+                        std::string candidate = assetPath.substr(0, slash) + "/workshop/" +
+                                                wid->second + assetPath.substr(slash);
                         if (vfs.Contains("/assets/" + candidate)) {
                             LOG_INFO("  asset workshop-resolved: '%s' → '%s'",
                                      assetPath.c_str(),
@@ -4160,7 +4140,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                 // pure model/light objects), fall back to the live SceneNode
                 // ModelTrans, which has alignment + parent baked in.
                 {
-                    auto owt = context.original_world_transforms.find(id);
+                    auto            owt = context.original_world_transforms.find(id);
                     Eigen::Matrix4d w;
                     if (owt != context.original_world_transforms.end()) {
                         w = owt->second;
@@ -4170,12 +4150,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                         w = leaf->ModelTrans();
                     }
                     lis.worldOrigin = { (float)w(0, 3), (float)w(1, 3), (float)w(2, 3) };
-                    float sx = (float)std::sqrt(w(0, 0) * w(0, 0) + w(1, 0) * w(1, 0) +
-                                                w(2, 0) * w(2, 0));
-                    float sy = (float)std::sqrt(w(0, 1) * w(0, 1) + w(1, 1) * w(1, 1) +
-                                                w(2, 1) * w(2, 1));
-                    float sz = (float)std::sqrt(w(0, 2) * w(0, 2) + w(1, 2) * w(1, 2) +
-                                                w(2, 2) * w(2, 2));
+                    float sx =
+                        (float)std::sqrt(w(0, 0) * w(0, 0) + w(1, 0) * w(1, 0) + w(2, 0) * w(2, 0));
+                    float sy =
+                        (float)std::sqrt(w(0, 1) * w(0, 1) + w(1, 1) * w(1, 1) + w(2, 1) * w(2, 1));
+                    float sz =
+                        (float)std::sqrt(w(0, 2) * w(0, 2) + w(1, 2) * w(1, 2) + w(2, 2) * w(2, 2));
                     lis.worldScale = { sx, sy, sz };
                 }
                 context.scene->layerInitialStates[name] = lis;
@@ -4444,10 +4424,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // gone.  Force HDR for these scenes so the RGBA16F RTs preserve the channel
     // ratios and FinPass's exposure tonemap compresses back to [0,1] without
     // losing hue.
-    bool force_hdr_for_brightness = false;
-    const char* env_no_hdr = std::getenv("WEKDE_DISABLE_OVERBRIGHT_HDR");
+    bool        force_hdr_for_brightness = false;
+    const char* env_no_hdr               = std::getenv("WEKDE_DISABLE_OVERBRIGHT_HDR");
     const bool  skip_auto_hdr = env_no_hdr && env_no_hdr[0] != '\0' && env_no_hdr[0] != '0';
-    if (! skip_auto_hdr && ! sc.general.hdr && json.contains("objects") && json.at("objects").is_array()) {
+    if (! skip_auto_hdr && ! sc.general.hdr && json.contains("objects") &&
+        json.at("objects").is_array()) {
         for (const auto& obj : json.at("objects")) {
             if (! obj.is_object()) continue;
             if (! obj.contains("instanceoverride")) continue;
@@ -4464,8 +4445,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         LOG_INFO("HDR auto-enabled: scene declared hdr:false but has instance-override "
                  "brightness>1; forcing RGBA16F+tonemap to preserve overbright hue");
     }
-    const bool effective_hdr   = sc.general.hdr || force_hdr_for_brightness;
-    context.scene->hdrContent  = effective_hdr;
+    const bool effective_hdr  = sc.general.hdr || force_hdr_for_brightness;
+    context.scene->hdrContent = effective_hdr;
 
     // Pick the bloom parameter variant matching scene's effective HDR mode.  WE
     // scenes carry both SDR (bloomstrength/bloomthreshold) and HDR
@@ -4494,11 +4475,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // Plugin-level override (sceneviewer --postprocessing / KDE setting page)
         // takes precedence over the scene.json value.  Lets users force the HDR
         // mip-chain on wallpapers that declare hdr+bloom but omit the field.
-        const std::string& pp = context.postprocessing_override.empty()
-                                    ? sc.general.orthogonalprojection.postprocessing
-                                    : context.postprocessing_override;
-        const bool use_hdr_pipeline =
-            sc.general.hdr && (pp == "ultra" || pp == "displayhdr");
+        const std::string& pp       = context.postprocessing_override.empty()
+                                          ? sc.general.orthogonalprojection.postprocessing
+                                          : context.postprocessing_override;
+        const bool use_hdr_pipeline = sc.general.hdr && (pp == "ultra" || pp == "displayhdr");
 
         LOG_INFO("Bloom enabled: strength=%.2f threshold=%.2f (scene_hdr=%d effective_hdr=%d "
                  "postprocessing='%s' pipeline=%s)",
@@ -4509,296 +4489,277 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                  pp.c_str(),
                  use_hdr_pipeline ? "HDR-mip-chain" : "LDR-legacy");
 
-        auto& scene  = *context.scene;
-        auto& vfs    = *context.vfs;
+        auto&      scene = *context.scene;
+        auto&      vfs   = *context.vfs;
         const auto fullW = static_cast<float>(context.ortho_w);
         const auto fullH = static_cast<float>(context.ortho_h);
 
-      if (use_hdr_pipeline) {
-        // 5-level mip chain.  Mip 0 (= scene RT copy) at full res; each next
-        // level is halved.  hdr_downsample.frag handles all DS/US/extract
-        // variants via combos (BLOOM=1 bright-pass, UPSAMPLE=1 scatter-add,
-        // BICUBIC=1 cubic interp).  See WE assets/shaders/hdr_downsample.frag.
-        scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
-            .width  = context.ortho_w,
-            .height = context.ortho_h,
-            .bind   = { .enable = true, .screen = true },
-        };
-        const std::array<std::pair<std::string_view, float>, 4> mip_specs { {
-            { WE_BLOOM_MIP1, 0.5f },
-            { WE_BLOOM_MIP2, 0.25f },
-            { WE_BLOOM_MIP3, 0.125f },
-            { WE_BLOOM_MIP4, 0.0625f },
-        } };
-        for (auto& [name, scale] : mip_specs) {
-            scene.renderTargets[std::string(name)] = {
+        if (use_hdr_pipeline) {
+            // 5-level mip chain.  Mip 0 (= scene RT copy) at full res; each next
+            // level is halved.  hdr_downsample.frag handles all DS/US/extract
+            // variants via combos (BLOOM=1 bright-pass, UPSAMPLE=1 scatter-add,
+            // BICUBIC=1 cubic interp).  See WE assets/shaders/hdr_downsample.frag.
+            scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
+                .width  = context.ortho_w,
+                .height = context.ortho_h,
+                .bind   = { .enable = true, .screen = true },
+            };
+            const std::array<std::pair<std::string_view, float>, 4> mip_specs { {
+                { WE_BLOOM_MIP1, 0.5f },
+                { WE_BLOOM_MIP2, 0.25f },
+                { WE_BLOOM_MIP3, 0.125f },
+                { WE_BLOOM_MIP4, 0.0625f },
+            } };
+            for (auto& [name, scale] : mip_specs) {
+                scene.renderTargets[std::string(name)] = {
+                    .width  = 2,
+                    .height = 2,
+                    .bind   = { .enable = true, .screen = true, .scale = scale },
+                };
+            }
+
+            // Per-pass spec.  `src_scale` is the SOURCE mip's scale (1/(2^src_lvl)),
+            // used to compute g_RenderVar0 corner offsets in UV space:
+            //   dx = 0.5 / src_w = 0.5 / (fullW * src_scale)
+            // The 4-tap shader samples (-dx,-dy), (+dx,-dy), (-dx,+dy), (+dx,+dy)
+            // around v_TexCoord, averaging into the destination mip.
+            enum class Stage
+            {
+                Extract, // BLOOM=1, mip0 → mip1
+                Down,    // plain 4-tap, mipN → mip(N+1)
+                Up,      // UPSAMPLE=1 + additive, mipN → mip(N-1)
+                Compose, // combine_hdr final
+            };
+            struct BloomPassDef {
+                Stage                    stage;
+                std::vector<std::string> textures;  // input texture refs
+                std::string              output;    // destination RT
+                float                    src_scale; // source mip scale (for offset calc)
+            };
+            const std::array<BloomPassDef, 8> bloomPasses { {
+                // Bright-pass extract: source is mip0 at full res
+                { Stage::Extract,
+                  { std::string(WE_BLOOM_SCENE) },
+                  std::string(WE_BLOOM_MIP1),
+                  1.0f },
+                // Cascade downsample
+                { Stage::Down, { std::string(WE_BLOOM_MIP1) }, std::string(WE_BLOOM_MIP2), 0.5f },
+                { Stage::Down, { std::string(WE_BLOOM_MIP2) }, std::string(WE_BLOOM_MIP3), 0.25f },
+                { Stage::Down, { std::string(WE_BLOOM_MIP3) }, std::string(WE_BLOOM_MIP4), 0.125f },
+                // Cascade upsample (additive — accumulates into the next-larger mip
+                // which already holds its downsampled-from-above content).
+                { Stage::Up, { std::string(WE_BLOOM_MIP4) }, std::string(WE_BLOOM_MIP3), 0.0625f },
+                { Stage::Up, { std::string(WE_BLOOM_MIP3) }, std::string(WE_BLOOM_MIP2), 0.125f },
+                { Stage::Up, { std::string(WE_BLOOM_MIP2) }, std::string(WE_BLOOM_MIP1), 0.25f },
+                // Final compose: combine_hdr LINEAR=0 path produces clamped linear
+                // (sRGB-decoded scene + 4-tap upsampled bloom · exposure).  FinPass
+                // sRGB-encodes for display.
+                { Stage::Compose,
+                  { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_MIP1) },
+                  std::string(SpecTex_Default),
+                  0.5f },
+            } };
+
+            scene.bloomConfig.enabled   = true;
+            scene.bloomConfig.strength  = scene_bloom_strength;
+            scene.bloomConfig.threshold = scene_bloom_threshold;
+
+            for (auto& def : bloomPasses) {
+                wpscene::WPMaterial wpmat;
+                switch (def.stage) {
+                case Stage::Extract:
+                case Stage::Down:
+                case Stage::Up: wpmat.shader = "hdr_downsample"; break;
+                case Stage::Compose: wpmat.shader = "combine_hdr"; break;
+                }
+                wpmat.textures = def.textures;
+
+                // Combos drive the shader-side variant.
+                if (def.stage == Stage::Extract) wpmat.combos["BLOOM"] = 1;
+                if (def.stage == Stage::Up) wpmat.combos["UPSAMPLE"] = 1;
+                // Upsample passes additively accumulate into the destination —
+                // the destination mip already holds its downsampled-from-above
+                // content from a prior Down pass, and the Up pass adds the
+                // upsampled smaller mip.  ParseBlendMode("additive") →
+                // BlendMode::Additive (srcAlpha*src + 1*dst), which becomes
+                // src + dst since the shader writes alpha=1.
+                if (def.stage == Stage::Up) wpmat.blending = "additive";
+                // Otherwise: extract / downsample / compose all overwrite (alpha=1
+                // shader output through Normal blend = pure write).
+
+                auto         spNode = std::make_shared<SceneNode>();
+                WPShaderInfo shaderInfo;
+                shaderInfo.baseConstSvs = context.global_base_uniforms;
+                SceneMaterial     material;
+                WPShaderValueData svData;
+
+                if (! LoadMaterial(
+                        vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                    LOG_ERROR("bloom: failed to load material (stage=%d)", (int)def.stage);
+                    scene.bloomConfig.enabled = false;
+                    break;
+                }
+
+                LoadConstvalue(material, wpmat, shaderInfo);
+
+                // Per-pass uniforms (set on customShader.constValues directly —
+                // LoadConstvalue's name→glname lookup doesn't map direct
+                // g_-prefixed uniforms reliably through the alias fallback).
+                if (def.stage == Stage::Compose) {
+                    // combine_hdr g_RenderVar0: .x = exposure, .y = HDR-display
+                    // smoothstep boost (only used by DISPLAYHDR=1 branch we don't
+                    // activate; 0 for SDR).
+                    material.customShader.constValues["g_RenderVar0"] =
+                        std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
+                    // combine_hdr g_TexelSize: 1 texel of g_Texture1 (the bloom
+                    // mip we sample).  g_Texture1 = WE_BLOOM_MIP1 at 1/2 scale.
+                    material.customShader.constValues["g_TexelSize"] = std::vector<float> {
+                        1.0f / (fullW * 0.5f),
+                        1.0f / (fullH * 0.5f),
+                    };
+                } else {
+                    // hdr_downsample g_RenderVar0: 4-corner offsets in source RT
+                    // UV space (-dx, -dy, +dx, +dy) where d = 0.5 / src_resolution.
+                    const float dx = 0.5f / (fullW * def.src_scale);
+                    const float dy = 0.5f / (fullH * def.src_scale);
+                    material.customShader.constValues["g_RenderVar0"] =
+                        std::vector<float> { -dx, -dy, dx, dy };
+
+                    if (def.stage == Stage::Extract) {
+                        // BLOOM=1 branch reads g_BloomBlendParams (knee shape),
+                        // g_BloomTint, g_BloomStrength.  Soft knee from
+                        // (threshold - knee) ramping to (threshold + knee):
+                        //   .x = threshold (hard cutoff)
+                        //   .y = threshold - knee  (knee start)
+                        //   .z = 2*knee            (knee width)
+                        //   .w = 0.25 / knee       (quadratic shaping factor)
+                        // knee=0.30 gives a smooth roll-on around scene_threshold.
+                        const float knee = 0.30f;
+                        material.customShader.constValues["g_BloomBlendParams"] =
+                            std::vector<float> {
+                                scene_bloom_threshold,
+                                scene_bloom_threshold - knee,
+                                2.0f * knee,
+                                0.25f / knee,
+                            };
+                        material.customShader.constValues["g_BloomTint"] =
+                            std::vector<float> { 1.0f, 1.0f, 1.0f };
+                        material.customShader.constValues["g_BloomStrength"] =
+                            std::vector<float> { scene_bloom_strength };
+                    }
+                    if (def.stage == Stage::Up) {
+                        // UPSAMPLE=1 branch reads g_BloomScatter (multiplies the
+                        // 4-tap average).  1.0 = neutral pass-through scatter.
+                        material.customShader.constValues["g_BloomScatter"] =
+                            std::vector<float> { 1.0f };
+                    }
+                }
+
+                auto spMesh = std::make_shared<SceneMesh>();
+                spMesh->AddMaterial(std::move(material));
+                spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
+                spNode->AddMesh(spMesh);
+                spNode->SetCamera("effect");
+
+                context.shader_updater->SetNodeData(spNode.get(), svData);
+
+                scene.bloomConfig.outputs.push_back(def.output);
+                scene.bloomConfig.nodes.push_back(spNode);
+
+                LOG_INFO("bloom: stage=%d shader='%s' → '%s' created",
+                         (int)def.stage,
+                         wpmat.shader.c_str(),
+                         def.output.c_str());
+            }
+        } else {
+            // Legacy LDR bloom: 4 passes (bright-pass quarter, eighth blur-V,
+            // blur-H, raw `combine` add).  Output is unbounded linear; FinPass
+            // hard-clips and sRGB-encodes for display.  Matches WE's `combine_ldr`
+            // material chain for non-"ultra" scenes.
+            scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
+                .width  = context.ortho_w,
+                .height = context.ortho_h,
+                .bind   = { .enable = true, .screen = true },
+            };
+            scene.renderTargets[std::string(WE_BLOOM_QUARTER)] = {
                 .width  = 2,
                 .height = 2,
-                .bind   = { .enable = true, .screen = true, .scale = scale },
+                .bind   = { .enable = true, .screen = true, .scale = 0.25 },
             };
-        }
+            scene.renderTargets[std::string(WE_BLOOM_EIGHTH)] = {
+                .width  = 2,
+                .height = 2,
+                .bind   = { .enable = true, .screen = true, .scale = 0.125 },
+            };
+            scene.renderTargets[std::string(WE_BLOOM_RESULT)] = {
+                .width  = 2,
+                .height = 2,
+                .bind   = { .enable = true, .screen = true, .scale = 0.125 },
+            };
 
-        // Per-pass spec.  `src_scale` is the SOURCE mip's scale (1/(2^src_lvl)),
-        // used to compute g_RenderVar0 corner offsets in UV space:
-        //   dx = 0.5 / src_w = 0.5 / (fullW * src_scale)
-        // The 4-tap shader samples (-dx,-dy), (+dx,-dy), (-dx,+dy), (+dx,+dy)
-        // around v_TexCoord, averaging into the destination mip.
-        enum class Stage
-        {
-            Extract, // BLOOM=1, mip0 → mip1
-            Down,    // plain 4-tap, mipN → mip(N+1)
-            Up,      // UPSAMPLE=1 + additive, mipN → mip(N-1)
-            Compose, // combine_hdr final
-        };
-        struct BloomPassDef {
-            Stage                    stage;
-            std::vector<std::string> textures; // input texture refs
-            std::string              output;   // destination RT
-            float                    src_scale; // source mip scale (for offset calc)
-        };
-        const std::array<BloomPassDef, 8> bloomPasses { {
-            // Bright-pass extract: source is mip0 at full res
-            { Stage::Extract,
-              { std::string(WE_BLOOM_SCENE) },
-              std::string(WE_BLOOM_MIP1),
-              1.0f },
-            // Cascade downsample
-            { Stage::Down,
-              { std::string(WE_BLOOM_MIP1) },
-              std::string(WE_BLOOM_MIP2),
-              0.5f },
-            { Stage::Down,
-              { std::string(WE_BLOOM_MIP2) },
-              std::string(WE_BLOOM_MIP3),
-              0.25f },
-            { Stage::Down,
-              { std::string(WE_BLOOM_MIP3) },
-              std::string(WE_BLOOM_MIP4),
-              0.125f },
-            // Cascade upsample (additive — accumulates into the next-larger mip
-            // which already holds its downsampled-from-above content).
-            { Stage::Up,
-              { std::string(WE_BLOOM_MIP4) },
-              std::string(WE_BLOOM_MIP3),
-              0.0625f },
-            { Stage::Up,
-              { std::string(WE_BLOOM_MIP3) },
-              std::string(WE_BLOOM_MIP2),
-              0.125f },
-            { Stage::Up,
-              { std::string(WE_BLOOM_MIP2) },
-              std::string(WE_BLOOM_MIP1),
-              0.25f },
-            // Final compose: combine_hdr LINEAR=0 path produces clamped linear
-            // (sRGB-decoded scene + 4-tap upsampled bloom · exposure).  FinPass
-            // sRGB-encodes for display.
-            { Stage::Compose,
-              { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_MIP1) },
-              std::string(SpecTex_Default),
-              0.5f },
-        } };
+            struct LegacyBloomPassDef {
+                std::string              shader;
+                std::vector<std::string> textures;
+                std::string              output;
+            };
+            const std::array<LegacyBloomPassDef, 4> legacyPasses { {
+                { "downsample_quarter_bloom",
+                  { std::string(WE_BLOOM_SCENE) },
+                  std::string(WE_BLOOM_QUARTER) },
+                { "downsample_eighth_blur_v",
+                  { std::string(WE_BLOOM_QUARTER) },
+                  std::string(WE_BLOOM_EIGHTH) },
+                { "blur_h_bloom", { std::string(WE_BLOOM_EIGHTH) }, std::string(WE_BLOOM_RESULT) },
+                { "combine",
+                  { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_RESULT) },
+                  std::string(SpecTex_Default) },
+            } };
 
-        scene.bloomConfig.enabled   = true;
-        scene.bloomConfig.strength  = scene_bloom_strength;
-        scene.bloomConfig.threshold = scene_bloom_threshold;
+            scene.bloomConfig.enabled   = true;
+            scene.bloomConfig.strength  = scene_bloom_strength;
+            scene.bloomConfig.threshold = scene_bloom_threshold;
 
-        for (auto& def : bloomPasses) {
-            wpscene::WPMaterial wpmat;
-            switch (def.stage) {
-            case Stage::Extract:
-            case Stage::Down:
-            case Stage::Up:      wpmat.shader = "hdr_downsample"; break;
-            case Stage::Compose: wpmat.shader = "combine_hdr"; break;
-            }
-            wpmat.textures = def.textures;
+            for (auto& def : legacyPasses) {
+                wpscene::WPMaterial wpmat;
+                wpmat.shader   = def.shader;
+                wpmat.textures = def.textures;
 
-            // Combos drive the shader-side variant.
-            if (def.stage == Stage::Extract) wpmat.combos["BLOOM"] = 1;
-            if (def.stage == Stage::Up) wpmat.combos["UPSAMPLE"] = 1;
-            // Upsample passes additively accumulate into the destination —
-            // the destination mip already holds its downsampled-from-above
-            // content from a prior Down pass, and the Up pass adds the
-            // upsampled smaller mip.  ParseBlendMode("additive") →
-            // BlendMode::Additive (srcAlpha*src + 1*dst), which becomes
-            // src + dst since the shader writes alpha=1.
-            if (def.stage == Stage::Up) wpmat.blending = "additive";
-            // Otherwise: extract / downsample / compose all overwrite (alpha=1
-            // shader output through Normal blend = pure write).
-
-            auto         spNode = std::make_shared<SceneNode>();
-            WPShaderInfo shaderInfo;
-            shaderInfo.baseConstSvs = context.global_base_uniforms;
-            SceneMaterial     material;
-            WPShaderValueData svData;
-
-            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
-                LOG_ERROR("bloom: failed to load material (stage=%d)", (int)def.stage);
-                scene.bloomConfig.enabled = false;
-                break;
-            }
-
-            LoadConstvalue(material, wpmat, shaderInfo);
-
-            // Per-pass uniforms (set on customShader.constValues directly —
-            // LoadConstvalue's name→glname lookup doesn't map direct
-            // g_-prefixed uniforms reliably through the alias fallback).
-            if (def.stage == Stage::Compose) {
-                // combine_hdr g_RenderVar0: .x = exposure, .y = HDR-display
-                // smoothstep boost (only used by DISPLAYHDR=1 branch we don't
-                // activate; 0 for SDR).
-                material.customShader.constValues["g_RenderVar0"] =
-                    std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
-                // combine_hdr g_TexelSize: 1 texel of g_Texture1 (the bloom
-                // mip we sample).  g_Texture1 = WE_BLOOM_MIP1 at 1/2 scale.
-                material.customShader.constValues["g_TexelSize"] = std::vector<float> {
-                    1.0f / (fullW * 0.5f),
-                    1.0f / (fullH * 0.5f),
-                };
-            } else {
-                // hdr_downsample g_RenderVar0: 4-corner offsets in source RT
-                // UV space (-dx, -dy, +dx, +dy) where d = 0.5 / src_resolution.
-                const float dx = 0.5f / (fullW * def.src_scale);
-                const float dy = 0.5f / (fullH * def.src_scale);
-                material.customShader.constValues["g_RenderVar0"] =
-                    std::vector<float> { -dx, -dy, dx, dy };
-
-                if (def.stage == Stage::Extract) {
-                    // BLOOM=1 branch reads g_BloomBlendParams (knee shape),
-                    // g_BloomTint, g_BloomStrength.  Soft knee from
-                    // (threshold - knee) ramping to (threshold + knee):
-                    //   .x = threshold (hard cutoff)
-                    //   .y = threshold - knee  (knee start)
-                    //   .z = 2*knee            (knee width)
-                    //   .w = 0.25 / knee       (quadratic shaping factor)
-                    // knee=0.30 gives a smooth roll-on around scene_threshold.
-                    const float knee = 0.30f;
-                    material.customShader.constValues["g_BloomBlendParams"] =
-                        std::vector<float> {
-                            scene_bloom_threshold,
-                            scene_bloom_threshold - knee,
-                            2.0f * knee,
-                            0.25f / knee,
-                        };
-                    material.customShader.constValues["g_BloomTint"] =
-                        std::vector<float> { 1.0f, 1.0f, 1.0f };
-                    material.customShader.constValues["g_BloomStrength"] =
-                        std::vector<float> { scene_bloom_strength };
+                if (def.shader == "downsample_quarter_bloom") {
+                    wpmat.constantshadervalues["bloomstrength"]  = { scene_bloom_strength };
+                    wpmat.constantshadervalues["bloomthreshold"] = { scene_bloom_threshold };
                 }
-                if (def.stage == Stage::Up) {
-                    // UPSAMPLE=1 branch reads g_BloomScatter (multiplies the
-                    // 4-tap average).  1.0 = neutral pass-through scatter.
-                    material.customShader.constValues["g_BloomScatter"] =
-                        std::vector<float> { 1.0f };
+
+                auto         spNode = std::make_shared<SceneNode>();
+                WPShaderInfo shaderInfo;
+                shaderInfo.baseConstSvs = context.global_base_uniforms;
+                SceneMaterial     material;
+                WPShaderValueData svData;
+
+                if (! LoadMaterial(
+                        vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                    LOG_ERROR("bloom (LDR): failed to load material for '%s'", def.shader.c_str());
+                    scene.bloomConfig.enabled = false;
+                    break;
                 }
+
+                LoadConstvalue(material, wpmat, shaderInfo);
+
+                auto spMesh = std::make_shared<SceneMesh>();
+                spMesh->AddMaterial(std::move(material));
+                spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
+                spNode->AddMesh(spMesh);
+                spNode->SetCamera("effect");
+
+                context.shader_updater->SetNodeData(spNode.get(), svData);
+
+                scene.bloomConfig.outputs.push_back(def.output);
+                scene.bloomConfig.nodes.push_back(spNode);
+
+                LOG_INFO("bloom (LDR): pass '%s' → '%s' created",
+                         def.shader.c_str(),
+                         def.output.c_str());
             }
-
-            auto spMesh = std::make_shared<SceneMesh>();
-            spMesh->AddMaterial(std::move(material));
-            spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
-            spNode->AddMesh(spMesh);
-            spNode->SetCamera("effect");
-
-            context.shader_updater->SetNodeData(spNode.get(), svData);
-
-            scene.bloomConfig.outputs.push_back(def.output);
-            scene.bloomConfig.nodes.push_back(spNode);
-
-            LOG_INFO("bloom: stage=%d shader='%s' → '%s' created",
-                     (int)def.stage,
-                     wpmat.shader.c_str(),
-                     def.output.c_str());
         }
-      } else {
-        // Legacy LDR bloom: 4 passes (bright-pass quarter, eighth blur-V,
-        // blur-H, raw `combine` add).  Output is unbounded linear; FinPass
-        // hard-clips and sRGB-encodes for display.  Matches WE's `combine_ldr`
-        // material chain for non-"ultra" scenes.
-        scene.renderTargets[std::string(WE_BLOOM_SCENE)] = {
-            .width  = context.ortho_w,
-            .height = context.ortho_h,
-            .bind   = { .enable = true, .screen = true },
-        };
-        scene.renderTargets[std::string(WE_BLOOM_QUARTER)] = {
-            .width  = 2,
-            .height = 2,
-            .bind   = { .enable = true, .screen = true, .scale = 0.25 },
-        };
-        scene.renderTargets[std::string(WE_BLOOM_EIGHTH)] = {
-            .width  = 2,
-            .height = 2,
-            .bind   = { .enable = true, .screen = true, .scale = 0.125 },
-        };
-        scene.renderTargets[std::string(WE_BLOOM_RESULT)] = {
-            .width  = 2,
-            .height = 2,
-            .bind   = { .enable = true, .screen = true, .scale = 0.125 },
-        };
-
-        struct LegacyBloomPassDef {
-            std::string              shader;
-            std::vector<std::string> textures;
-            std::string              output;
-        };
-        const std::array<LegacyBloomPassDef, 4> legacyPasses { {
-            { "downsample_quarter_bloom",
-              { std::string(WE_BLOOM_SCENE) },
-              std::string(WE_BLOOM_QUARTER) },
-            { "downsample_eighth_blur_v",
-              { std::string(WE_BLOOM_QUARTER) },
-              std::string(WE_BLOOM_EIGHTH) },
-            { "blur_h_bloom",
-              { std::string(WE_BLOOM_EIGHTH) },
-              std::string(WE_BLOOM_RESULT) },
-            { "combine",
-              { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_RESULT) },
-              std::string(SpecTex_Default) },
-        } };
-
-        scene.bloomConfig.enabled   = true;
-        scene.bloomConfig.strength  = scene_bloom_strength;
-        scene.bloomConfig.threshold = scene_bloom_threshold;
-
-        for (auto& def : legacyPasses) {
-            wpscene::WPMaterial wpmat;
-            wpmat.shader   = def.shader;
-            wpmat.textures = def.textures;
-
-            if (def.shader == "downsample_quarter_bloom") {
-                wpmat.constantshadervalues["bloomstrength"]  = { scene_bloom_strength };
-                wpmat.constantshadervalues["bloomthreshold"] = { scene_bloom_threshold };
-            }
-
-            auto         spNode = std::make_shared<SceneNode>();
-            WPShaderInfo shaderInfo;
-            shaderInfo.baseConstSvs = context.global_base_uniforms;
-            SceneMaterial     material;
-            WPShaderValueData svData;
-
-            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
-                LOG_ERROR("bloom (LDR): failed to load material for '%s'",
-                          def.shader.c_str());
-                scene.bloomConfig.enabled = false;
-                break;
-            }
-
-            LoadConstvalue(material, wpmat, shaderInfo);
-
-            auto spMesh = std::make_shared<SceneMesh>();
-            spMesh->AddMaterial(std::move(material));
-            spMesh->ChangeMeshDataFrom(scene.default_effect_mesh);
-            spNode->AddMesh(spMesh);
-            spNode->SetCamera("effect");
-
-            context.shader_updater->SetNodeData(spNode.get(), svData);
-
-            scene.bloomConfig.outputs.push_back(def.output);
-            scene.bloomConfig.nodes.push_back(spNode);
-
-            LOG_INFO("bloom (LDR): pass '%s' → '%s' created",
-                     def.shader.c_str(),
-                     def.output.c_str());
-        }
-      }
     }
 
     // Reflection blur: two-pass separable Gaussian blur on _rt_Reflection
