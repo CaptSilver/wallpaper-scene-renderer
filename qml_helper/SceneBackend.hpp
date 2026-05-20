@@ -50,6 +50,13 @@ class SceneObject : public QQuickItem {
     // regular dpr path.
     Q_PROPERTY(int renderPixelWidth MEMBER m_renderPixelWidth)
     Q_PROPERTY(int renderPixelHeight MEMBER m_renderPixelHeight)
+    // Wallpaper's native aspect ratio (orthoW / orthoH from the parsed scene).
+    // 0.0 until the scene finishes loading; QML uses that sentinel to fall
+    // back to anchors.fill while the scene comes up.  Lets QML size this
+    // QQuickItem to the wallpaper's native aspect in Keep-Aspect-Ratio mode
+    // so the wrapper's BackgroundColor Rectangle shows through the bars
+    // instead of the renderer drawing them itself.
+    Q_PROPERTY(qreal nativeAspectRatio READ nativeAspectRatio NOTIFY nativeAspectRatioChanged)
 public:
     constexpr static std::string_view CACHE_DIR { "wescene-renderer" };
     static std::string                GetDefaultCachePath();
@@ -76,6 +83,7 @@ public:
     bool    systemAudioCapture() const;
     QString userProperties() const;
     QString postprocessingOverride() const;
+    qreal   nativeAspectRatio() const;
 
     void setFps(int);
     void setFillMode(int);
@@ -259,6 +267,7 @@ signals:
     void speedChanged();
     void volumeChanged();
     void userPropertiesChanged();
+    void nativeAspectRatioChanged();
     void firstFrame();
     // Emitted when SceneScript calls engine.openUserShortcut(name).  The main
     // plugin's Scene.qml maps common media-control names to MPRIS actions;
@@ -527,6 +536,7 @@ private:
     void  flushPendingLeaves(); // fires cursorLeave for layers past their deadline
     float m_sceneOrthoW { 1920.0f };
     float m_sceneOrthoH { 1080.0f };
+    bool  m_sceneOrthoLoaded { false }; // gates nativeAspectRatio — 0.0 until parser fills the real ortho
     float m_cursorSceneX { 0.0f }; // scene-space cursor X, updated on hover/drag
     float m_cursorSceneY { 0.0f }; // scene-space cursor Y, updated on hover/drag
     float m_mouseNx { 0.5f };      // widget-normalized cursor X (0..1)

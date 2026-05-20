@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "SceneAspect.h"
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
 #include "PropertyScriptDispatchJs.hpp"
@@ -301,6 +302,12 @@ int   SceneObject::fillMode() const { return m_fillMode; }
 float SceneObject::speed() const { return m_speed; }
 float SceneObject::volume() const { return m_volume; }
 bool  SceneObject::muted() const { return m_muted; }
+qreal SceneObject::nativeAspectRatio() const {
+    // Pure math + sentinel/guard live in SceneAspect.h so they can be unit-tested
+    // without standing up the Vulkan-backed QQuickItem.  Qualified to disambiguate
+    // from this member (we are inside `using namespace scenebackend`).
+    return scenebackend::computeNativeAspectRatio(m_sceneOrthoLoaded, m_sceneOrthoW, m_sceneOrthoH);
+}
 
 void SceneObject::setSource(const QUrl& source) {
     if (source == m_source) return;
@@ -4290,11 +4297,17 @@ void SceneObject::setupTextScripts() {
         }
     }
 
-    // Store scene ortho size for cursorClick hit-testing
+    // Store scene ortho size for cursorClick hit-testing.  Also gates
+    // nativeAspectRatio, which the plugin's Scene.qml reads to size this
+    // QQuickItem to the wallpaper's native aspect in Keep-Aspect-Ratio mode
+    // (so the wrapper's BackgroundColor Rectangle shows through the bars
+    // instead of the renderer drawing them itself).
     {
-        auto orthoSize = m_scene->getOrthoSize();
-        m_sceneOrthoW  = (float)orthoSize[0];
-        m_sceneOrthoH  = (float)orthoSize[1];
+        auto orthoSize     = m_scene->getOrthoSize();
+        m_sceneOrthoW      = (float)orthoSize[0];
+        m_sceneOrthoH      = (float)orthoSize[1];
+        m_sceneOrthoLoaded = true;
+        Q_EMIT nativeAspectRatioChanged();
     }
     refreshParallaxCache();
 

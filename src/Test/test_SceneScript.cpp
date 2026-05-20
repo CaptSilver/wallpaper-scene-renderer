@@ -8,6 +8,7 @@
 #include "SceneScriptShimsJs.hpp"
 
 #include "HoverLeaveDebounce.h"
+#include "SceneAspect.h"
 
 using scenebackend::CursorParallax;
 using scenebackend::drainExpiredLeaves;
@@ -7439,6 +7440,62 @@ TEST_SUITE("Hover-leave debounce") {
     }
 
 } // TEST_SUITE Hover-leave debounce
+
+// ------------------------------------------------------------------
+// computeNativeAspectRatio — the pure math behind SceneObject's
+// nativeAspectRatio Q_PROPERTY (SceneAspect.h).  Gated by a "loaded"
+// flag so it reports 0.0 (Scene.qml's "fall back to anchors.fill"
+// sentinel) until the parser fills the real ortho size, and guards a
+// non-positive height so a degenerate scene can't divide by zero.
+// ------------------------------------------------------------------
+TEST_SUITE("Native aspect ratio") {
+    using scenebackend::computeNativeAspectRatio;
+
+    TEST_CASE("returns 0.0 sentinel before the scene loads") {
+        // The QQuickItem ships 1920x1080 defaults for cursorClick hit-testing;
+        // those must NOT surface as an aspect until the parser confirms the
+        // load, or Scene.qml would letterbox to 16:9 for every scene that has
+        // not been parsed yet.
+        CHECK(computeNativeAspectRatio(/*loaded*/ false, 1920.0f, 1080.0f) == 0.0);
+        CHECK(computeNativeAspectRatio(false, 800.0f, 600.0f) == 0.0);
+    }
+
+    TEST_CASE("16:9 landscape") {
+        CHECK(computeNativeAspectRatio(true, 1920.0f, 1080.0f) == doctest::Approx(16.0 / 9.0));
+    }
+
+    TEST_CASE("9:16 portrait") {
+        CHECK(computeNativeAspectRatio(true, 1080.0f, 1920.0f) == doctest::Approx(9.0 / 16.0));
+    }
+
+    TEST_CASE("square is 1.0") {
+        CHECK(computeNativeAspectRatio(true, 1000.0f, 1000.0f) == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("21:9 ultrawide") {
+        CHECK(computeNativeAspectRatio(true, 3440.0f, 1440.0f) == doctest::Approx(3440.0 / 1440.0));
+    }
+
+    TEST_CASE("non-integer ortho divides in double precision") {
+        // Members are float; the helper widens to double before dividing so an
+        // odd size does not lose precision the way a float divide would.
+        CHECK(computeNativeAspectRatio(true, 1366.0f, 768.0f) == doctest::Approx(1366.0 / 768.0));
+    }
+
+    TEST_CASE("zero height returns the sentinel instead of dividing by zero") {
+        CHECK(computeNativeAspectRatio(true, 1920.0f, 0.0f) == 0.0);
+    }
+
+    TEST_CASE("negative height is guarded too") {
+        CHECK(computeNativeAspectRatio(true, 1920.0f, -1080.0f) == 0.0);
+    }
+
+    TEST_CASE("zero width collapses to the same sentinel") {
+        // Documents the deliberate aliasing: a 0-width scene yields 0.0, which
+        // Scene.qml treats identically to "not loaded" (fill the wallpaper).
+        CHECK(computeNativeAspectRatio(true, 0.0f, 1080.0f) == 0.0);
+    }
+} // TEST_SUITE Native aspect ratio
 
 // ------------------------------------------------------------------
 // Property-script batched dispatch: scalar broadcast for Vec3 kind.
