@@ -536,7 +536,8 @@ private:
     void  flushPendingLeaves(); // fires cursorLeave for layers past their deadline
     float m_sceneOrthoW { 1920.0f };
     float m_sceneOrthoH { 1080.0f };
-    bool  m_sceneOrthoLoaded { false }; // gates nativeAspectRatio — 0.0 until parser fills the real ortho
+    // gates nativeAspectRatio: returns 0.0 until the parser fills the real ortho size
+    bool  m_sceneOrthoLoaded { false };
     float m_cursorSceneX { 0.0f }; // scene-space cursor X, updated on hover/drag
     float m_cursorSceneY { 0.0f }; // scene-space cursor Y, updated on hover/drag
     float m_mouseNx { 0.5f };      // widget-normalized cursor X (0..1)
