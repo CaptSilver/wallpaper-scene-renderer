@@ -7476,6 +7476,16 @@ TEST_SUITE("Native aspect ratio") {
         CHECK(computeNativeAspectRatio(true, 3440.0f, 1440.0f) == doctest::Approx(3440.0 / 1440.0));
     }
 
+    // Regression note for the script-gating bug (SceneBackend.cpp setupTextScripts):
+    // the aspect publish must run for scenes with NO scripts too. We cannot
+    // construct a live SceneObject here (no Vulkan), so this asserts the helper
+    // contract the publish relies on: a loaded scene with a valid ortho yields a
+    // positive aspect — i.e. once m_sceneOrthoLoaded is set, Scene.qml letterboxes.
+    TEST_CASE("loaded script-less scene ortho yields a usable (>0) aspect") {
+        CHECK(computeNativeAspectRatio(true, 1920.0f, 1080.0f) > 0.0);
+        CHECK(computeNativeAspectRatio(true, 3440.0f, 1440.0f) > 0.0);
+    }
+
     TEST_CASE("non-integer ortho divides in double precision") {
         // Members are float; the helper widens to double before dividing so an
         // odd size does not lose precision the way a float divide would.

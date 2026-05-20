@@ -1633,6 +1633,22 @@ std::string SceneObject::GetDefaultCachePath() {
 void SceneObject::setupTextScripts() {
     cleanupTextScripts();
 
+    // Publish the scene's ortho size + nativeAspectRatio for EVERY loaded scene,
+    // BEFORE the no-scripts early-return below. This used to live near the end of
+    // setupTextScripts, after that return — so script-less wallpapers (the
+    // majority of simple scenes) never set m_sceneOrthoLoaded, nativeAspectRatio
+    // stayed 0, and Scene.qml's Keep-Aspect letterbox never engaged: the renderer
+    // filled the screen and painted opaque (black) bars, glaring on
+    // aspect-mismatched / ultrawide displays. Also feeds cursorClick hit-testing,
+    // which now gets the real ortho sooner. DO NOT move this back below the return.
+    {
+        auto orthoSize     = m_scene->getOrthoSize();
+        m_sceneOrthoW      = (float)orthoSize[0];
+        m_sceneOrthoH      = (float)orthoSize[1];
+        m_sceneOrthoLoaded = true;
+        Q_EMIT nativeAspectRatioChanged();
+    }
+
     auto scripts            = m_scene->getTextScripts();
     auto colorScripts       = m_scene->getColorScripts();
     auto propertyScripts    = m_scene->getPropertyScripts();
@@ -4297,18 +4313,8 @@ void SceneObject::setupTextScripts() {
         }
     }
 
-    // Store scene ortho size for cursorClick hit-testing.  Also gates
-    // nativeAspectRatio, which the plugin's Scene.qml reads to size this
-    // QQuickItem to the wallpaper's native aspect in Keep-Aspect-Ratio mode
-    // (so the wrapper's BackgroundColor Rectangle shows through the bars
-    // instead of the renderer drawing them itself).
-    {
-        auto orthoSize     = m_scene->getOrthoSize();
-        m_sceneOrthoW      = (float)orthoSize[0];
-        m_sceneOrthoH      = (float)orthoSize[1];
-        m_sceneOrthoLoaded = true;
-        Q_EMIT nativeAspectRatioChanged();
-    }
+    // (scene ortho size + nativeAspectRatio are now published at the TOP of this
+    // function, before the no-scripts early-return — see the comment there.)
     refreshParallaxCache();
 
     // Load sound volume scripts
