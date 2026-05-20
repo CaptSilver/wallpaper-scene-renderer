@@ -51,6 +51,7 @@ add_executable(backend_scene_tests
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
     test_BlendModeFactors.cpp
+    test_TexFormatVk.cpp
     test_SystemFontFallback.cpp
     ${SRC_DIR}/SystemFontFallback.cpp
     test_SceneImageEffectLayer.cpp
@@ -100,6 +101,7 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/Scene/include/Scene
     ${SRC_DIR}/Particle/include
     ${SRC_DIR}/VulkanRender/include
+    ${SRC_DIR}/Vulkan/include
     ${DOCTEST_INCLUDE_DIR}
 )
 

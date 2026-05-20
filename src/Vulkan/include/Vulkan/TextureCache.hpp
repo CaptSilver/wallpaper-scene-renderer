@@ -2,6 +2,12 @@
 
 #include "Parameters.hpp"
 #include "Type.hpp"
+// Provides the inline ToVkType(TextureFormat) definition.  Must be included
+// here (not just in TextureCache.cpp) so EVERY caller that includes
+// TextureCache.hpp — e.g. VulkanRender/CustomShaderPass.cpp — sees the inline
+// body and doesn't emit an unresolved external reference.  Otherwise the
+// plugin .so fails to dlopen with "undefined symbol: ...ToVkType...".
+#include "TexFormatVk.hpp"
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 
@@ -13,7 +19,8 @@ class Image;
 namespace vulkan
 {
 
-VkFormat             ToVkType(TextureFormat);
+// ToVkType(TextureFormat) is defined inline in TexFormatVk.hpp (included above)
+// so it has a definition in every translation unit that calls it.
 VkSamplerAddressMode ToVkType(TextureWrap);
 VkFilter             ToVkType(TextureFilter);
 

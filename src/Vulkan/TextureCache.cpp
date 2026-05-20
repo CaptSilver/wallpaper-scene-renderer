@@ -14,6 +14,7 @@
 #include "Utils/Hash.h"
 #include "include/Vulkan/Parameters.hpp"
 #include "vvk/vulkan_wrapper.hpp"
+#include "TexFormatVk.hpp" // ToVkType(TextureFormat) — testable mapping (BC1 1-bit alpha)
 
 #include <cstdio>
 #include <optional>
@@ -25,25 +26,8 @@ namespace wallpaper
 {
 namespace vulkan
 {
-VkFormat ToVkType(TextureFormat tf) {
-    switch (tf) {
-    case TextureFormat::BC1: return VK_FORMAT_BC1_RGB_UNORM_BLOCK;
-    case TextureFormat::BC2: return VK_FORMAT_BC2_UNORM_BLOCK;
-    case TextureFormat::BC3: return VK_FORMAT_BC3_UNORM_BLOCK;
-    case TextureFormat::BC7: return VK_FORMAT_BC7_UNORM_BLOCK;
-    case TextureFormat::R8: return VK_FORMAT_R8_UNORM;
-    case TextureFormat::RG8: return VK_FORMAT_R8G8_UNORM;
-    case TextureFormat::RGB8: return VK_FORMAT_R8G8B8_UNORM;
-    case TextureFormat::RGBA8: return VK_FORMAT_R8G8B8A8_UNORM;
-    case TextureFormat::RGBA16F: return VK_FORMAT_R16G16B16A16_SFLOAT;
-    case TextureFormat::RG16F: return VK_FORMAT_R16G16_SFLOAT;
-    case TextureFormat::R16F: return VK_FORMAT_R16_SFLOAT;
-    case TextureFormat::BC6H: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-    case TextureFormat::RGB565: return VK_FORMAT_R5G6B5_UNORM_PACK16;
-    case TextureFormat::RGBA1010102: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-    default: assert(false); return VK_FORMAT_R8G8B8A8_UNORM;
-    }
-}
+// ToVkType(TextureFormat) moved to include/Vulkan/TexFormatVk.hpp so it is
+// unit-testable without the Vulkan device (see Test/test_TexFormatVk.cpp).
 
 VkSamplerAddressMode ToVkType(wallpaper::TextureWrap sam) {
     using namespace wallpaper;
