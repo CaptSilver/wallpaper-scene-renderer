@@ -1444,6 +1444,22 @@ private:
         // pointer) on the render thread.
         std::shared_ptr<Scene> scene;
         if (msg->findObject("scene", &scene)) {
+            // Idle + release the OUTGOING scene's GPU resources BEFORE publishing
+            // the new one.  Without this, store(scene) drops the render thread's
+            // last ref to the previous scene and runs ~Scene() (freeing its VMA
+            // depth/MSAA images) while up to kFramesInFlight (2) frames may still
+            // reference them → destroy-while-in-flight (GPUVM fault /
+            // VK_ERROR_DEVICE_LOST, validation error under the layers).  Mirrors
+            // CMD_SET_HDR (~1559) and recoverFromDeviceLost (~1779):
+            // clearLastRenderGraph (which does a device WaitIdle) on the CURRENT
+            // scene first, holding prev alive across the idle so its destructor
+            // cannot run early, THEN swap.  The per-scene .reset()s inside
+            // clearLastRenderGraph are idempotent, so the synchronous ~Scene() the
+            // store still triggers finds them already released.  First scene load
+            // is safe: m_scene.load() is null, guard skipped.
+            if (auto prev = m_scene.load()) {
+                if (m_rg) m_render->clearLastRenderGraph(prev.get());
+            }
             m_scene.store(scene);
             if (m_rg) m_render->clearLastRenderGraph(scene.get());
             m_drawDiagReset = true;        // force DRAW diagnostic on next frame
