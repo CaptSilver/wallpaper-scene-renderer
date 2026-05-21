@@ -84,6 +84,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
     test_WPSceneParse.cpp
+    test_DependencyGraph.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
@@ -131,6 +132,9 @@ target_link_libraries(backend_scene_tests PRIVATE
     wpFs
     wpAudio
     wpParticle
+    # RenderGraph (DependencyGraph cycle detection / topo sort). Vulkan-free
+    # static lib — its .cpp files include only their own headers + Logging.
+    wpRGraph
     # wpVulkan supplies the glslang/SPIRV-Reflect symbols WPShaderParser.cpp
     # references (CompileToSpv / Init/FinalGlslang).  It is the host-CPU shader
     # toolchain, not a Vulkan device — the binary stays headless-safe.

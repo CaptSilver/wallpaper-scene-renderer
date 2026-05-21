@@ -37,33 +37,71 @@ void DependencyGraph::Connect(NodeID n1, NodeID n2) { m_nodeNext[n1].insert(n2);
 
 typedef std::function<std::vector<NodeID>(NodeID)> NextNodeOp;
 typedef std::function<void(NodeID)>                DfsCallbackOp;
-static void Dfs(NodeID id, std::vector<bool>& rec, const NextNodeOp& next,
-                const DfsCallbackOp& dcOp, const DfsCallbackOp& reverseOp) {
-    if (rec[id]) return;
-    rec[id] = true;
-    if (dcOp) dcOp(id);
-    for (const auto& el : next(id)) Dfs(el, rec, next, dcOp, reverseOp);
-    if (reverseOp) reverseOp(id);
+
+namespace
+{
+// Three-colour DFS: White = unvisited, Grey = on the current recursion stack,
+// Black = fully explored.  A Grey neighbour is a back-edge — the signature of a
+// cycle.  The old visited-only DFS used a single bool and could not tell Grey
+// from Black, so it skipped back-edges silently and returned a plausible-but-
+// invalid order.  Returns false iff a cycle was found.  `post` (if set) runs in
+// post-order (for the reversed topo sort).
+enum class Color : uint8_t
+{
+    White,
+    Grey,
+    Black
+};
+
+bool DfsVisit(NodeID id, std::vector<Color>& color, const NextNodeOp& next,
+              const DfsCallbackOp& post) {
+    color[id]    = Color::Grey; // on current path
+    bool acyclic = true;
+    for (NodeID nxt : next(id)) {
+        if (color[nxt] == Color::Grey) { // back-edge → cycle
+            LOG_ERROR("render graph cycle: edge %zu -> %zu", id, nxt);
+            acyclic = false;
+        } else if (color[nxt] == Color::White) {
+            acyclic = DfsVisit(nxt, color, next, post) && acyclic;
+        }
+        // Black: cross/forward edge — fine, already fully explored.
+    }
+    color[id] = Color::Black;
+    if (post) post(id);
+    return acyclic;
+}
+} // namespace
+
+bool DependencyGraph::HasCycle() const {
+    std::vector<Color> color(m_nodes.size(), Color::White);
+    auto               nextOut = [this](NodeID i) {
+        return GetNodeOut(i);
+    };
+    for (usize i = 0; i < color.size(); i++) {
+        if (color[i] == Color::White && ! DfsVisit(i, color, nextOut, DfsCallbackOp())) return true;
+    }
+    return false;
 }
 
 std::vector<NodeID> DependencyGraph::TopologicalOrder() const {
-    using namespace std::placeholders;
     std::vector<NodeID> result;
     result.reserve(m_nodes.size());
-    std::vector<bool> dfsrec(m_nodes.size(), false);
-    for (usize i = 0; i < dfsrec.size(); i++) {
-        if (dfsrec[i]) continue;
-        Dfs(
-            i,
-            dfsrec,
-            [this](NodeID i) {
-                return GetNodeOut(i);
-            },
-            DfsCallbackOp(),
-            [&](NodeID i) {
-                result.push_back(i);
-            });
+    std::vector<Color> color(m_nodes.size(), Color::White);
+    auto               nextOut = [this](NodeID i) {
+        return GetNodeOut(i);
+    };
+    bool acyclic = true;
+    for (usize i = 0; i < color.size(); i++) {
+        if (color[i] == Color::White)
+            acyclic = DfsVisit(i,
+                               color,
+                               nextOut,
+                               [&](NodeID n) {
+                                   result.push_back(n);
+                               }) &&
+                      acyclic;
     }
+    if (! acyclic) LOG_ERROR("TopologicalOrder on cyclic render graph — ordering is invalid");
     std::reverse(result.begin(), result.end());
     return result;
 }
