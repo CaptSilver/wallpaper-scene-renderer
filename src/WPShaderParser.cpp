@@ -85,9 +85,20 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
         auto lineStr  = input.substr(linePos, lineSize);
         output.append(input.substr(pos, linePos - pos));
 
-        auto inP         = lineStr.find_first_of('\"') + 1;
-        auto inE         = lineStr.find_last_of('\"');
-        auto includeName = lineStr.substr(inP, inE - inP);
+        auto qOpen  = lineStr.find_first_of('\"');
+        auto qClose = lineStr.find_last_of('\"');
+        if (qOpen == std::string::npos || qClose == std::string::npos || qClose <= qOpen) {
+            // Malformed #include (no/empty quoted name). Copy the line verbatim
+            // and keep scanning — do NOT run substr(0, npos), which would treat
+            // the whole line as a bogus include name and trigger a spurious VFS
+            // miss. pos is advanced below, so the continue cannot infinite-loop.
+            LOG_INFO("skipped malformed #include (no quoted name): %s", lineStr.c_str());
+            output.append(lineStr);
+            pos = lineEnd;
+            continue;
+        }
+        auto inP         = qOpen + 1;
+        auto includeName = lineStr.substr(inP, qClose - inP);
         auto includeSrc  = fs::GetFileContent(vfs, "/assets/shaders/" + includeName);
         output.append("\n//-----include " + includeName + "\n");
         output.append(LoadGlslInclude(vfs, includeSrc));

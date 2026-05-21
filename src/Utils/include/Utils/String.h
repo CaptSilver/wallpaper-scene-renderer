@@ -61,9 +61,9 @@ template<typename T>
 bool Convert(const std::string& str, std::vector<T>& target) {
     std::vector<std::string> str_list = SpliteString(str, ' ');
     if (target.size() < str_list.size()) target.resize(str_list.size());
-    auto StrConv = [](std::string str) {
+    auto StrConv = [](const std::string& str) {
         T num {};
-        _StrToNum(str, num);
+        STRTONUM(str, num); // exception-safe: bad/oversized token -> logs + leaves num at {}
         return num;
     };
     std::transform(str_list.begin(), str_list.end(), target.begin(), StrConv);
@@ -75,9 +75,9 @@ bool Convert(const std::string& str, std::array<T, N>& target) {
     if (N != str_list.size()) {
         throw WrongSizeExp();
     }
-    auto StrConv = [](std::string str) {
+    auto StrConv = [](const std::string& str) {
         T num {};
-        _StrToNum(str, num);
+        STRTONUM(str, num); // exception-safe: bad/oversized token -> logs + leaves num at {}
         return num;
     };
     std::transform(str_list.begin(), str_list.end(), target.begin(), StrConv);

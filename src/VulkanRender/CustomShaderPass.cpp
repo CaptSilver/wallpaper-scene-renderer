@@ -1194,9 +1194,9 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     VkImageSubresourceRange base_srang {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
         .baseMipLevel   = 0,
-        .levelCount     = VK_REMAINING_ARRAY_LAYERS,
+        .levelCount     = VK_REMAINING_MIP_LEVELS,
         .baseArrayLayer = 0,
-        .layerCount     = VK_REMAINING_MIP_LEVELS,
+        .layerCount     = VK_REMAINING_ARRAY_LAYERS,
     };
     // Batch image barriers for better performance
     std::vector<VkImageMemoryBarrier> image_barriers;

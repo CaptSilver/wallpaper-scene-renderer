@@ -17,6 +17,7 @@ add_executable(backend_scene_tests
     test_SpriteAnimation.cpp
     test_helpers.cpp
     test_WPShaderTransforms.cpp
+    test_WPShaderInclude.cpp
     test_StringUtils.cpp
     test_Algorism.cpp
     test_WPUserProperties.cpp

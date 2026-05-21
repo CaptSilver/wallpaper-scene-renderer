@@ -150,6 +150,25 @@ TEST_SUITE("StrToArray") {
         CHECK(v[0] == doctest::Approx(5.0f));
     }
 
+    // Item 21(c): a non-numeric token must not throw out of Convert (the lambdas
+    // now route through the exception-safe StrToNum); the bad token defaults to {}.
+    TEST_CASE("vector with non-numeric token does not throw") {
+        std::vector<float> v;
+        CHECK_NOTHROW(utils::StrToArray::Convert<float>("1.0 abc 3.0", v));
+        REQUIRE(v.size() == 3);
+        CHECK(v[0] == doctest::Approx(1.0f));
+        CHECK(v[1] == doctest::Approx(0.0f)); // bad token → default {}
+        CHECK(v[2] == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("array with non-numeric token does not throw") {
+        std::array<int32_t, 3> arr {};
+        CHECK_NOTHROW((utils::StrToArray::Convert<int32_t, 3>("10 xx 30", arr)));
+        CHECK(arr[0] == 10);
+        CHECK(arr[1] == 0); // bad token → default {}
+        CHECK(arr[2] == 30);
+    }
+
 } // TEST_SUITE
 
 // ===========================================================================
