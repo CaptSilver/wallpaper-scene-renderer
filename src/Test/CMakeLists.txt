@@ -358,6 +358,25 @@ if(BUILD_FUZZERS)
     target_compile_options(fuzz_WPShaderParser PRIVATE ${_fuzz_san_opts})
     target_link_options(fuzz_WPShaderParser PRIVATE ${_fuzz_san_opts})
 
+    # Drives the glslang CompileToSpv path (no cache dir -> synchronous compile),
+    # which fuzz_WPShaderParser stops short of.  Same sources + link set;
+    # wpVulkan satisfies the glslang/SPIRV-Reflect symbols (host-CPU toolchain,
+    # no Vulkan device).
+    add_executable(fuzz_WPShaderCompile EXCLUDE_FROM_ALL
+        fuzz/fuzz_WPShaderCompile.cpp
+        ${SRC_DIR}/WPShaderParser.cpp
+        ${SRC_DIR}/WPJson.cpp
+    )
+    target_include_directories(fuzz_WPShaderCompile PRIVATE
+        ${SRC_DIR}
+        ${SRC_DIR}/Scene/include
+    )
+    target_link_libraries(fuzz_WPShaderCompile PRIVATE
+        wpUtils wpFs wpVulkan nlohmann_json
+    )
+    target_compile_options(fuzz_WPShaderCompile PRIVATE ${_fuzz_san_opts})
+    target_link_options(fuzz_WPShaderCompile PRIVATE ${_fuzz_san_opts})
+
     # Fuzzes the JSON-driven object-construction root of the scene parser
     # (wpscene::WPScene::FromJson). Skips VFS / SoundManager / sub-parsers —
     # those are fuzzed separately. Targets the JSON-count-driven resize sites.
@@ -418,6 +437,6 @@ if(BUILD_FUZZERS)
     # Convenience: build all fuzz harnesses with one target.
     add_custom_target(fuzzers DEPENDS
         fuzz_WPMdlParser fuzz_WPTexImageParser fuzz_WPPkgFs
-        fuzz_WPShaderParser fuzz_WPSceneParser fuzz_WPParticleParser
-        fuzz_WPSoundParser)
+        fuzz_WPShaderParser fuzz_WPShaderCompile fuzz_WPSceneParser
+        fuzz_WPParticleParser fuzz_WPSoundParser)
 endif()
