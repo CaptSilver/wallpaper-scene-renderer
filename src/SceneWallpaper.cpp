@@ -11,6 +11,7 @@
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Scene/WorldCacheGate.h"
+#include "Scene/TextStyleMerge.hpp"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
 #include "Core/Random.hpp"
@@ -402,10 +403,7 @@ public:
     void setTextStyle(i32 id, std::string halign, std::string valign,
                       std::string fontName) {
         std::lock_guard<std::mutex> lock(m_text_update_mutex);
-        auto& cur = m_pending_text_style_updates[id];
-        if (! halign.empty())   cur.halign   = std::move(halign);
-        if (! valign.empty())   cur.valign   = std::move(valign);
-        if (! fontName.empty()) cur.fontName = std::move(fontName);
+        mergeTextStyle(m_pending_text_style_updates[id], halign, valign, fontName);
     }
 
     // World-matrix cache populated at end of each drawFrame.  SceneScript
@@ -798,35 +796,29 @@ private:
                 for (auto& [id, style] : m_pending_text_style_updates) {
                     for (auto& tl : scene->textLayers) {
                         if (tl.id != id) continue;
-                        bool anyChange = false;
-                        if (! style.halign.empty() && style.halign != tl.halign) {
-                            tl.halign = style.halign;
-                            anyChange = true;
-                        }
-                        if (! style.valign.empty() && style.valign != tl.valign) {
-                            tl.valign = style.valign;
-                            anyChange = true;
-                        }
-                        if (! style.fontName.empty() && style.fontName != tl.fontName) {
-                            std::string newBytes;
+                        // Font name -> bytes is resolved here on the render thread
+                        // because the VFS lives on the scene struct we already own;
+                        // a miss is logged and leaves the font unchanged.
+                        auto resolveFont = [&](const std::string& name) -> std::string {
+                            std::string bytes;
                             if (scene->vfs) {
-                                if (scene->vfs->Contains("/assets/" + style.fontName))
-                                    newBytes = fs::GetFileContent(*scene->vfs,
-                                                                  "/assets/" + style.fontName);
-                                else if (scene->vfs->Contains("/" + style.fontName))
-                                    newBytes =
-                                        fs::GetFileContent(*scene->vfs, "/" + style.fontName);
+                                if (scene->vfs->Contains("/assets/" + name))
+                                    bytes = fs::GetFileContent(*scene->vfs, "/assets/" + name);
+                                else if (scene->vfs->Contains("/" + name))
+                                    bytes = fs::GetFileContent(*scene->vfs, "/" + name);
                             }
-                            if (! newBytes.empty()) {
-                                tl.fontName = style.fontName;
-                                tl.fontData = std::move(newBytes);
-                                anyChange   = true;
-                            } else {
-                                LOG_ERROR("setTextStyle: font '%s' not found in VFS",
-                                          style.fontName.c_str());
-                            }
+                            if (bytes.empty())
+                                LOG_ERROR("setTextStyle: font '%s' not found in VFS", name.c_str());
+                            return bytes;
+                        };
+                        TextStyleTarget tgt { tl.halign, tl.valign, tl.fontName, tl.fontData };
+                        if (applyTextStyle(style, tgt, resolveFont)) {
+                            tl.halign         = std::move(tgt.halign);
+                            tl.valign         = std::move(tgt.valign);
+                            tl.fontName       = std::move(tgt.fontName);
+                            tl.fontData       = std::move(tgt.fontData);
+                            tl.textStyleDirty = true;
                         }
-                        if (anyChange) tl.textStyleDirty = true;
                         break;
                     }
                 }
@@ -1899,13 +1891,8 @@ private:
     std::unordered_map<i32, std::string> m_pending_text_updates;
     std::unordered_map<i32, float>       m_pending_pointsize_updates;
     // Per-id queue for thisLayer.horizontalalign/verticalalign/font/alignment.
-    // Empty-string fields mean "no change" so each property setter can post
-    // independently without clobbering siblings.
-    struct PendingTextStyleUpdate {
-        std::string halign;
-        std::string valign;
-        std::string fontName;
-    };
+    // PendingTextStyleUpdate + the merge/apply helpers live in
+    // Scene/TextStyleMerge.hpp (wpScene, no Vulkan) so they are unit-testable.
     std::unordered_map<i32, PendingTextStyleUpdate> m_pending_text_style_updates;
 
     // World-transform cache for SceneScript thisLayer.getTransformMatrix().
