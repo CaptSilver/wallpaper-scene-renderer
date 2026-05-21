@@ -31,10 +31,13 @@
 
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
+#include "WPShaderParser.hpp"
+#include "Fs/VFS.h"
 
 #include <atomic>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -161,6 +164,54 @@ int repro_scene_parent_tree(int iters) {
     return 0;
 }
 
+// Repro 3: concurrent CompileToSpv (locks in g_glslangSerialiseMtx).
+// glslang's keyword scanner caches const char* keys in a process-global hash
+// table that is not safe under concurrent reads.  WPShaderParser serialises
+// every glslang entry point with g_glslangSerialiseMtx.  This races N threads
+// each compiling K distinct trivial GLSL units through CompileToSpv with NO
+// cache dir (synchronous path).  Under -DWEK_SANITIZE=thread a clean run proves
+// the serialization holds; a refactor that drops/narrows the lock makes TSAN
+// report a race on the keyword table.
+int repro_glslang_concurrent_compile(int iters) {
+    wallpaper::WPShaderParser::InitGlslang(); // once for this process
+
+    constexpr int     kThreads   = 4;
+    const int         kPerThread = std::max(1, iters / 400); // ~50 at default 20000
+    std::atomic<bool> go { false };
+    std::atomic<long> ok_count { 0 };
+
+    auto worker = [&](int tid) {
+        while (! go.load()) {
+        }
+        long local = 0;
+        for (int k = 0; k < kPerThread; ++k) {
+            // Distinct source per (tid,k) so each thread exercises a fresh
+            // tokenize path (forces keyword-table lookups, not a cached result).
+            std::string src = "void main() { float x" + std::to_string(tid) + "_" +
+                              std::to_string(k) + " = 0.0; gl_FragColor = vec4(x" +
+                              std::to_string(tid) + "_" + std::to_string(k) + "); }\n";
+            wallpaper::fs::VFS                   vfs; // no cache -> sync compile
+            wallpaper::WPShaderInfo              info;
+            std::vector<wallpaper::WPShaderUnit> units {
+                { wallpaper::ShaderType::FRAGMENT, src, {} }
+            };
+            std::vector<wallpaper::ShaderCode>      codes;
+            std::vector<wallpaper::WPShaderTexInfo> texs;
+            if (wallpaper::WPShaderParser::CompileToSpv("tsan", units, codes, vfs, &info, texs))
+                ++local;
+        }
+        ok_count.fetch_add(local);
+    };
+
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) ts.emplace_back(worker, t);
+    go.store(true);
+    for (auto& t : ts) t.join();
+
+    // Invariant: at least one compile succeeded (trivial fragment is valid).
+    return ok_count.load() > 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -176,6 +227,9 @@ int main(int argc, char** argv) {
 
     std::printf("[thread-repro] Scene parent-tree (B5b), %d iters...\n", iters);
     rc |= repro_scene_parent_tree(iters);
+
+    std::printf("[thread-repro] concurrent CompileToSpv (glslang), %d iters...\n", iters);
+    rc |= repro_glslang_concurrent_compile(iters);
 
     std::printf("[thread-repro] done (rc=%d)%s\n", rc,
                 rc == 0 ? " — clean (check TSAN output for races)" : " — FAILED invariant");

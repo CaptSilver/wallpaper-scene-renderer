@@ -210,6 +210,12 @@ endif()
 # shared_ptr to demonstrate the harness bites (TSAN should then report a race).
 add_executable(backend_scene_thread_tests
     test_thread_repro.cpp
+    # WPShaderParser.cpp + WPJson.cpp compiled directly (the glslang concurrency
+    # repro needs CompileToSpv/InitGlslang).  Mirrors the fuzz_WPShaderCompile
+    # link set instead of dragging the whole wescene-renderer lib in — wpVulkan
+    # supplies the glslang/SPIRV-Reflect symbols (host-CPU toolchain, no device).
+    ${SRC_DIR}/WPShaderParser.cpp
+    ${SRC_DIR}/WPJson.cpp
 )
 target_include_directories(backend_scene_thread_tests PRIVATE
     ${SRC_DIR}
@@ -217,7 +223,7 @@ target_include_directories(backend_scene_thread_tests PRIVATE
     ${SRC_DIR}/Scene/include/Scene
 )
 target_link_libraries(backend_scene_thread_tests PRIVATE
-    wpScene wpUtils wpFs Eigen3::Eigen nlohmann_json Threads::Threads
+    wpScene wpUtils wpFs wpVulkan Eigen3::Eigen nlohmann_json Threads::Threads
 )
 option(WEK_THREAD_REPRO_PROVE_RACE
        "Compile the thread repro with a deliberately racy plain shared_ptr \
