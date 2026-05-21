@@ -8,6 +8,7 @@
 #include "Core/Literals.hpp"
 #include "SpecTexs.hpp"
 #include "ParticleModify.h"
+#include "Particle/RopeMedian.hpp"
 #include "ParticleSystem.h"
 
 #include "Utils/Logging.h"
@@ -316,12 +317,12 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
     for (size_t ai = 1; ai < alive.size(); ai++) {
         seg_lens[ai - 1] = (positions[ai] - positions[ai - 1]).norm();
     }
-    float median_len = 0.0f;
-    if (! seg_lens.empty()) {
-        auto sorted = seg_lens;
-        std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
-        median_len = sorted[sorted.size() / 2];
-    }
+    // Spec 11 — median over a reused scratch buffer; no per-frame `sorted` copy
+    // allocation, and seg_lens is left in original order for the outlier loop
+    // below.  GenGLData runs only on the render thread, so a function-local
+    // thread_local retains capacity across frames safely.
+    static thread_local std::vector<float> s_medianScratch;
+    const float median_len = ropeSegmentMedian(seg_lens, s_medianScratch);
     // 4x median catches the respawn-jump artifact (a brand-new particle on the
     // far end of the CP line vs. its stable neighbor hops a full rope length)
     // without clipping legitimate oscillation/turbulence jitter.

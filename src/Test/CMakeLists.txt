@@ -69,6 +69,7 @@ add_executable(backend_scene_tests
     test_WPSceneFileResolver.cpp
     test_WPMapSequenceParse.cpp
     test_WPRopeCombos.cpp
+    test_RopeMedian.cpp
     test_WPParticleOperators.cpp
     test_WPScenePostprocessing.cpp
     test_WPImageObject.cpp
