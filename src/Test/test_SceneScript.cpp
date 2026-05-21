@@ -11,6 +11,7 @@
 #include "JsStringEscape.hpp"
 #include "JsSyntaxNormalize.hpp"
 #include "JsWatchdog.h"
+#include "ScriptDiagState.h"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
 
@@ -7704,6 +7705,75 @@ TEST_SUITE("JS watchdog back-off policy (A3-T2)") {
         wd.stop();
     }
 } // TEST_SUITE JS watchdog back-off policy (A3-T2)
+
+// ------------------------------------------------------------------
+// Per-load script diagnostics dedup (Item 15)
+//
+// The error-dedup / one-shot probe state was function-local `static` — process
+// lifetime, shared across all SceneObject instances — so it was never reset on
+// wallpaper switch (cross-load swallowing) and shared across monitors
+// (cross-monitor swallowing).  Promoting it into ScriptDiagState (one per
+// SceneObject, cleared in cleanupTextScripts) makes dedup per-load + per-instance.
+// ------------------------------------------------------------------
+TEST_SUITE("Per-load script diagnostics dedup (Item 15)") {
+    using scenebackend::ScriptDiagState;
+
+    TEST_CASE("first error per id logs once within a load (intra-load dedup works)") {
+        ScriptDiagState d;
+        // First occurrence -> insert succeeds -> "would log".
+        CHECK(d.textErroredIds.insert(7).second == true);
+        CHECK(d.textErroredIds.count(7) == 1);
+        // Second occurrence -> insert fails -> "would suppress".
+        CHECK(d.textErroredIds.insert(7).second == false);
+    }
+
+    TEST_CASE("clear() re-arms dedup (KEYSTONE: per-load, not per-process)") {
+        ScriptDiagState d;
+        d.textErroredIds.insert(7);
+        d.mathRandomProbed = true;
+        d.clear();
+        // After a load switch, the dedup and the one-shot probe are fresh.
+        CHECK(d.textErroredIds.empty());
+        CHECK(d.mathRandomProbed == false);
+        // The SAME node id that errored in load A logs again in load B.
+        CHECK(d.textErroredIds.insert(7).second == true);
+    }
+
+    TEST_CASE("two independent instances don't share state (per-monitor isolation)") {
+        ScriptDiagState a, b;
+        a.soundVolErrored.insert(3);
+        // Screen 1's dedup must NOT suppress screen 2's identical-id error.
+        CHECK(b.soundVolErrored.count(3) == 0);
+        CHECK(a.soundVolErrored.count(3) == 1);
+    }
+
+    TEST_CASE("all five sets + the probe flag round-trip through clear()") {
+        // A future field added without a clear() line fails this round-trip.
+        ScriptDiagState d;
+        d.textErroredIds.insert(1);
+        d.svErrored.insert(2);
+        d.propErroredIds.insert(3);
+        d.dirtyLayerMisses.insert("layerA");
+        d.soundVolErrored.insert(4);
+        d.mathRandomProbed = true;
+
+        CHECK(d.textErroredIds.size() == 1);
+        CHECK(d.svErrored.size() == 1);
+        CHECK(d.propErroredIds.size() == 1);
+        CHECK(d.dirtyLayerMisses.size() == 1);
+        CHECK(d.soundVolErrored.size() == 1);
+        CHECK(d.mathRandomProbed == true);
+
+        d.clear();
+
+        CHECK(d.textErroredIds.empty());
+        CHECK(d.svErrored.empty());
+        CHECK(d.propErroredIds.empty());
+        CHECK(d.dirtyLayerMisses.empty());
+        CHECK(d.soundVolErrored.empty());
+        CHECK(d.mathRandomProbed == false);
+    }
+} // TEST_SUITE Per-load script diagnostics dedup (Item 15)
 
 // ------------------------------------------------------------------
 // F19 (cleanup leak) — cleanupTextScripts() now clears m_pendingLeaves (and

@@ -15,6 +15,7 @@
 
 #include "HoverLeaveDebounce.h"
 #include "JsWatchdog.h"
+#include "ScriptDiagState.h"
 #include "SceneWallpaper.hpp"
 
 Q_DECLARE_LOGGING_CATEGORY(wekdeScene)
@@ -529,6 +530,10 @@ private:
     std::vector<ShaderValueScriptState>      m_shaderValueScriptStates;
     std::vector<PropertyScriptState>         m_propertyScriptStates;
     std::vector<SoundVolumeScriptState>      m_soundVolumeScriptStates;
+    // Per-load diagnostics dedup / one-shot state (Item 15) — one per SceneObject
+    // (per monitor), cleared in cleanupTextScripts() on each wallpaper switch.
+    // Was six function-local statics (process-global).
+    ScriptDiagState                          m_scriptDiag;
     std::unordered_map<std::string, int32_t> m_nodeNameToId;
     QJSValue                                 m_collectDirtyLayersFn;
     QJSValue                                 m_collectDirtySceneFn;

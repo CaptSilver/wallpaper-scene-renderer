@@ -3935,9 +3935,8 @@ void SceneObject::evaluateTextScripts() {
         textInterrupted = textInterrupted || wasInterrupted;
         if (result.isError()) {
             errors++;
-            static std::unordered_set<int> textErroredIds;
-            if (textErroredIds.find(state.id) == textErroredIds.end()) {
-                textErroredIds.insert(state.id);
+            if (m_scriptDiag.textErroredIds.find(state.id) == m_scriptDiag.textErroredIds.end()) {
+                m_scriptDiag.textErroredIds.insert(state.id);
                 QString stack = result.property("stack").toString();
                 int     line  = result.property("lineNumber").toInt();
                 // Plain-C LOG_INFO matches property-script errors so they
@@ -4143,12 +4142,11 @@ void SceneObject::evaluateColorScripts() {
             &wasInterrupted);
         colorInterrupted = colorInterrupted || wasInterrupted;
         if (result.isError()) {
-            static std::unordered_set<int64_t> svErrored;
             int64_t tag = ((int64_t)state.id << 32) ^
                           ((int64_t)state.effectIdx << 24) ^
                           (int64_t)std::hash<std::string>{}(state.uniformName);
-            if (svErrored.find(tag) == svErrored.end()) {
-                svErrored.insert(tag);
+            if (m_scriptDiag.svErrored.find(tag) == m_scriptDiag.svErrored.end()) {
+                m_scriptDiag.svErrored.insert(tag);
                 LOG_INFO("sv-script error id=%d effect=%d uniform=%s: %s",
                          state.id, state.effectIdx, state.uniformName.c_str(),
                          qPrintable(result.toString()));
@@ -4558,10 +4556,10 @@ void SceneObject::evaluatePropertyScripts() {
             if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;
             auto& state = m_propertyScriptStates[idx];
             if (s_scriptDiag) s_errorsThisWin++;
-            static std::unordered_set<int> erroredIds;
-            int                            tag = state.id * 10 + (int)state.kind;
-            if (erroredIds.find(tag) != erroredIds.end()) continue;
-            erroredIds.insert(tag);
+            int tag = state.id * 10 + (int)state.kind;
+            if (m_scriptDiag.propErroredIds.find(tag) != m_scriptDiag.propErroredIds.end())
+                continue;
+            m_scriptDiag.propErroredIds.insert(tag);
             static int s_rt_err = 0;
             QString    msg      = errors.property(i + 1).toString();
             int        line     = errors.property(i + 2).toInt();
@@ -4666,9 +4664,9 @@ void SceneObject::evaluatePropertyScripts() {
             auto        it   = m_nodeNameToId.find(name);
             if (it == m_nodeNameToId.end()) {
                 dirtyLayerMiss++;
-                static std::unordered_set<std::string> loggedMisses;
-                if (loggedMisses.find(name) == loggedMisses.end()) {
-                    loggedMisses.insert(name);
+                if (m_scriptDiag.dirtyLayerMisses.find(name) ==
+                    m_scriptDiag.dirtyLayerMisses.end()) {
+                    m_scriptDiag.dirtyLayerMisses.insert(name);
                     qCWarning(wekdeScene,
                               "Dirty layer '%s' not found in nodeNameToId "
                               "(%zu entries)",
@@ -4952,9 +4950,9 @@ void SceneObject::evaluatePropertyScripts() {
             &svInterrupted);
         tickInterrupted = tickInterrupted || svInterrupted;
         if (result.isError()) {
-            static std::unordered_set<int> erroredIndices;
-            if (erroredIndices.find(svState.index) == erroredIndices.end()) {
-                erroredIndices.insert(svState.index);
+            if (m_scriptDiag.soundVolErrored.find(svState.index) ==
+                m_scriptDiag.soundVolErrored.end()) {
+                m_scriptDiag.soundVolErrored.insert(svState.index);
                 qCWarning(wekdeScene,
                           "Sound volume script error index=%d: %s",
                           svState.index,
@@ -5093,9 +5091,8 @@ void SceneObject::evaluatePropertyScripts() {
                 qCInfo(wekdeScene, "Shared vars: %s", qPrintable(dump));
                 // One-shot Math.random sanity probe — if always 0, the JS
                 // engine's PRNG is broken (bodies can't get random init).
-                static bool probed = false;
-                if (! probed) {
-                    probed     = true;
+                if (! m_scriptDiag.mathRandomProbed) {
+                    m_scriptDiag.mathRandomProbed = true;
                     QJSValue r = m_jsEngine->evaluate(
                         "Math.random().toFixed(6) + ',' + Math.random().toFixed(6) +"
                         "',' + Math.random().toFixed(6)");
@@ -5173,6 +5170,10 @@ void SceneObject::cleanupTextScripts() {
     m_colorScriptsDisabled       = false;
     m_consecutivePropInterrupts  = 0;
     m_propertyScriptsDisabled    = false;
+    // Item 15: clear per-load dedup / one-shot diagnostics so the next loaded
+    // wallpaper (or a setSource reload) starts fresh and a recycled node id that
+    // errored in the previous scene logs again.
+    m_scriptDiag.clear();
     m_nodeNameToId.clear();
     m_collectDirtyLayersFn    = QJSValue();
     m_fireSceneEventFn        = QJSValue();
