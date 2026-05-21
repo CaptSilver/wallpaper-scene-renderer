@@ -10,6 +10,7 @@
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
+#include "Scene/WorldCacheGate.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
 #include "Core/Random.hpp"
@@ -400,10 +401,15 @@ public:
     // node destroyed); identity is a safe fallback because scripts mainly
     // inspect translation indices [12,13] which read as 0 from identity.
     std::array<float, 16> getLayerWorldMatrix(i32 id) const {
+        // Spec 09 — a reader has appeared: enable the per-frame rebuild from now
+        // on.  Idempotent; relaxed.  The very first read (before the producer
+        // observes the flag) falls through to the identity fallback, which is
+        // the documented not-yet-cached behavior.
+        markWorldCacheNeeded(m_needs_world_cache);
         std::lock_guard<std::mutex> lk(m_world_cache_mutex);
         auto it = m_layer_world_cache.find(id);
         if (it != m_layer_world_cache.end()) return it->second;
-        return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
+        return worldCacheIdentity();
     }
 
     // SceneScript thisLayer.getTextureAnimation() read-back — returns the
@@ -1340,10 +1346,17 @@ private:
             // of Life Tool Selection / Color / Stamp buttons all fall in
             // this category, and the previous local-only snapshot put
             // their hit rects at the wrong world position.
-            {
+            // Spec 09 — only rebuild when a SceneScript has read the world cache
+            // at least once.  Non-hit-testing scenes (the vast majority) skip the
+            // O(named-nodes) UpdateTrans() walk + map churn entirely.  When it IS
+            // needed, update in place (operator[] via worldCacheAssign) instead
+            // of clear()+reserve()+emplace() so the stable steady-state node set
+            // never reallocates and a concurrent reader never sees a transient
+            // identity gap for a known id.  The cache + this gate are reset on
+            // CMD_SET_SCENE so a recycled id never returns the prior scene's
+            // matrix.
+            if (worldCacheShouldRebuild(m_needs_world_cache)) {
                 std::lock_guard<std::mutex> lk(m_world_cache_mutex);
-                m_layer_world_cache.clear();
-                m_layer_world_cache.reserve(scene->nodeNameToId.size());
                 for (auto& [name, id] : scene->nodeNameToId) {
                     auto it = scene->nodeById.find(id);
                     if (it == scene->nodeById.end() || ! it->second) continue;
@@ -1368,7 +1381,7 @@ private:
                     for (int c = 0; c < 4; ++c)
                         for (int r = 0; r < 4; ++r)
                             arr[c * 4 + r] = static_cast<float>(wt(r, c));
-                    m_layer_world_cache.emplace(id, arr);
+                    worldCacheAssign(m_layer_world_cache, id, arr); // Spec 09 in-place
                 }
             }
 
@@ -1461,6 +1474,17 @@ private:
                 if (m_rg) m_render->clearLastRenderGraph(prev.get());
             }
             m_scene.store(scene);
+            // Spec 09 — drop the previous scene's world-cache entries and reset
+            // the needs-cache gate.  In-place operator[] reuse (no per-frame
+            // clear()) means a reload must clear here so a recycled id never
+            // returns the old scene's matrix; resetting the gate returns a new
+            // script-light scene to the zero-per-frame path until its own scripts
+            // hit-test.
+            {
+                std::lock_guard<std::mutex> lk(m_world_cache_mutex);
+                m_layer_world_cache.clear();
+            }
+            m_needs_world_cache.store(false, std::memory_order_relaxed);
             if (m_rg) m_render->clearLastRenderGraph(scene.get());
             m_drawDiagReset = true;        // force DRAW diagnostic on next frame
             m_last_draw_wall_time.reset(); // first DRAW uses ideatime, not the
@@ -1874,6 +1898,13 @@ private:
     // 16-float matrices.  Mutable so const accessors can lock it.
     mutable std::mutex                                       m_world_cache_mutex;
     std::unordered_map<i32, std::array<float, 16>>           m_layer_world_cache;
+    // Spec 09 — set true the first time the GUI-thread bridge reads the world
+    // cache (thisLayer.getTransformMatrix() / hit-test).  Until then the render
+    // thread skips the whole O(named-nodes) rebuild below.  mutable so the const
+    // reader can latch it; relaxed ordering — a one-frame delay before the
+    // producer observes it is harmless (the reader returns identity for the
+    // not-yet-cached id, which is the existing behavior).
+    mutable std::atomic<bool> m_needs_world_cache { false };
 
     std::mutex                                    m_color_update_mutex;
     std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
