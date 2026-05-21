@@ -1322,8 +1322,14 @@ function _collectDirtyLayers() {
       if (layer.visible !== prev.visible)
         { flags |= F_VISIBLE; prev.visible = layer.visible; }
       if (flags === 0) continue;
+      // Spec 10 — emit the resolved integer id (set at proxy creation from
+      // _layerNameToId) in slot 0 so the C++ hot loop reads an int directly,
+      // with no per-tick QString->std::string + nodeNameToId lookup.  -1 =
+      // unresolved (the C++ side counts it a miss; the name is reported once at
+      // first flush by scanning _layerList).
+      var pid = (typeof layer.id === 'number') ? layer.id : -1;
       out.push(
-        name, flags,
+        pid, flags,
         o.x, o.y, o.z,
         sc.x, sc.y, sc.z,
         a.x, a.y, a.z,
@@ -1347,8 +1353,10 @@ function _collectDirtyLayers() {
     if (efxList && efxList.length) flags |= F_EFX;
     if (flags === 0) continue;
     var o = s.origin, sc = s.scale, a = s.angles;
+    // Spec 10 — resolved id in slot 0 (echoed onto _state.id at proxy creation).
+    var rid = (typeof s.id === 'number') ? s.id : -1;
     out.push(
-      name, flags,
+      rid, flags,
       o.x, o.y, o.z,
       sc.x, sc.y, sc.z,
       a.x, a.y, a.z,

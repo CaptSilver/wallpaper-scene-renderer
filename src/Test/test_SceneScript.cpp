@@ -4913,7 +4913,7 @@ TEST_SUITE("Layer Proxy") {
         // stride slot 16 (the 17th element).  Blur is index 0 in
         // efx:['Blur','Shake_Glitch_3','ChromAb'], set to false.
         CHECK(updates.property("length").toInt() == 17);
-        CHECK(updates.property(0).toString() == "bg");
+        CHECK(updates.property(0).toInt() == 7);         // Spec 10: slot 0 is bg's resolved id
         CHECK((updates.property(1).toInt() & 256) != 0); // F_EFX
         QJSValue efx = updates.property(16);
         CHECK(efx.property("length").toInt() == 2);
@@ -5266,10 +5266,10 @@ TEST_SUITE("Scene Event Bus") {
                             "});");
         env.engine.evaluate("_fireSceneEvent('update')");
         auto dirty = env.engine.evaluate("_collectDirtyLayers()");
-        // Production flat stride-17 array: one dirty layer -> length 17, name
-        // in slot 0, F_VISIBLE (8) in the flags slot.
+        // Production flat stride-17 array: one dirty layer -> length 17,
+        // resolved id (Spec 10) in slot 0, F_VISIBLE (8) in the flags slot.
         CHECK(dirty.property("length").toInt() == 17);
-        CHECK(dirty.property(0).toString() == "bg");
+        CHECK(dirty.property(0).toInt() == 7);       // bg's resolved id
         CHECK((dirty.property(1).toInt() & 8) != 0); // F_VISIBLE
     }
 
@@ -5330,7 +5330,7 @@ TEST_SUITE("Dirty Layer Collection") {
         //  text, cmds, efx].  One dirty layer -> length 17.  flags carries the
         // F_ORIGIN bit (1).
         CHECK(r.property("length").toInt() == 17);
-        CHECK(r.property(0).toString() == "bg");
+        CHECK(r.property(0).toInt() == 7);       // Spec 10: bg's resolved id
         CHECK((r.property(1).toInt() & 1) != 0); // F_ORIGIN
         CHECK(r.property(2).toNumber() == doctest::Approx(1.0)); // ox
         CHECK(r.property(3).toNumber() == doctest::Approx(2.0)); // oy
@@ -5353,7 +5353,7 @@ TEST_SUITE("Dirty Layer Collection") {
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
         // One layer, two dirty props -> length 17 with both bits in flags.
         CHECK(r.property("length").toInt() == 17);
-        CHECK(r.property(0).toString() == "bg");
+        CHECK(r.property(0).toInt() == 7); // Spec 10: bg's resolved id
         int flags = r.property(1).toInt();
         CHECK((flags & 1) != 0); // F_ORIGIN
         CHECK((flags & 8) != 0); // F_VISIBLE
@@ -5401,12 +5401,13 @@ TEST_SUITE("Dirty Layer Collection") {
         env.engine.evaluate("thisScene.getLayer('fg').visible = false;\n"
                             "thisScene.getLayer('bg').origin = {x:1,y:2,z:3};\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
-        // Flat stride-17 array: 2 dirty layers -> 34 entries.  The name of
-        // each layer sits at the start of its stride (slot 0 and slot 17),
-        // in _layerList insertion order: fg materialized first, then bg.
+        // Flat stride-17 array: 2 dirty layers -> 34 entries.  The resolved id
+        // (Spec 10) of each layer sits at the start of its stride (slot 0 and
+        // slot 17), in _layerList insertion order: fg materialized first (id
+        // 11), then bg (id 7).
         REQUIRE(r.property("length").toInt() == 34);
-        CHECK(r.property(0).toString() == "fg");
-        CHECK(r.property(17).toString() == "bg");
+        CHECK(r.property(0).toInt() == 11); // fg's resolved id
+        CHECK(r.property(17).toInt() == 7); // bg's resolved id
     }
 
 } // TEST_SUITE Dirty Layer Collection
@@ -9526,3 +9527,67 @@ TEST_SUITE("SceneScript Texture Animation") {
         CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 12);
     }
 } // TEST_SUITE SceneScript Texture Animation
+
+// ------------------------------------------------------------------
+// Spec 10 — _collectDirtyLayers must emit the resolved integer id in slot 0
+// (not the layer name), so the C++ hot loop reads an int directly with no
+// per-tick QString->std::string alloc + nodeNameToId lookup.  ScriptEnv
+// evaluates the real production proxy/runtime JS, so this characterizes the
+// shipped collector.  The fixture's _layerNameToId maps bg->7, fg->11.
+TEST_SUITE("Spec 10 dirty-layer id slot") {
+    TEST_CASE("regular layer dirty entry carries resolved id in slot 0") {
+        ScriptEnv env;
+        // Materialize 'bg' (id 7) and mutate its origin so it goes dirty.
+        env.engine.evaluate("var L = thisScene.getLayer('bg');\n"
+                            "L.origin = new Vec3(10, 20, 0);\n");
+        QJSValue out = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(out.isArray());
+        const int DIRTY_STRIDE = 17;
+        REQUIRE(out.property("length").toInt() == DIRTY_STRIDE); // one dirty layer
+        // Slot 0 is now the integer id (7), NOT the string 'bg'.
+        QJSValue slot0 = out.property(0);
+        CHECK(slot0.isNumber());
+        CHECK(slot0.toInt() == 7);
+        // Flags slot (1) has F_ORIGIN (=1) set; origin slots (2,3,4) match.
+        CHECK((out.property(1).toInt() & 1) != 0); // F_ORIGIN
+        CHECK(out.property(2).toNumber() == doctest::Approx(10.0));
+        CHECK(out.property(3).toNumber() == doctest::Approx(20.0));
+        CHECK(out.property(4).toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("a layer with no resolved id reports -1 in slot 0 (miss, not crash)") {
+        ScriptEnv env;
+        // Create a layer name absent from _layerNameToId; its proxy id stays
+        // undefined.  _collectDirtyLayers must emit a sentinel the C++ side can
+        // treat as a miss (id < 0) without a hash lookup.
+        env.engine.evaluate(
+            "_layerInitStates['ghost'] = { o:[0,0,0], s:[1,1,1], a:[0,0,0], sz:[1,1], v:true };\n"
+            "var G = thisScene.getLayer('ghost');\n"
+            "G.alpha = 0.5;\n");
+        QJSValue out = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(out.isArray());
+        REQUIRE(out.property("length").toInt() == 17);
+        // No id resolved -> slot 0 is the miss sentinel (-1).
+        CHECK(out.property(0).toInt() == -1);
+    }
+
+    TEST_CASE("pool layer dirty entry carries resolved id in slot 0") {
+        ScriptEnv env;
+        // Pool proxy fast-path (name starts with __pool).  The proxy needs an
+        // init state to materialize (mirrors setupPoolFixture); start visible so
+        // visible=false is a real change -> F_VISIBLE dirty.  Give it a resolved
+        // id so slot 0 carries it.
+        env.engine.evaluate("_layerInitStates['__pool_fx_0'] = { o:[0,0,0], s:[1,1,1],\n"
+                            "                                    a:[0,0,0], sz:[10,10], v:true };\n"
+                            "_layerNameToId['__pool_fx_0'] = 200;\n"
+                            "_layerIdToName['200'] = '__pool_fx_0';\n"
+                            "var P = thisScene.getLayer('__pool_fx_0');\n"
+                            "P.visible = false;\n");
+        QJSValue out = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(out.isArray());
+        REQUIRE(out.property("length").toInt() == 17);
+        CHECK(out.property(0).isNumber());
+        CHECK(out.property(0).toInt() == 200);
+        CHECK((out.property(1).toInt() & 8) != 0); // F_VISIBLE
+    }
+} // TEST_SUITE Spec 10 dirty-layer id slot

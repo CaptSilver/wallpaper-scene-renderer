@@ -4720,23 +4720,49 @@ void SceneObject::evaluatePropertyScripts() {
         s_batch.reserve(dirtyLayerCount);
         constexpr uint32_t HOT_FLAGS = F_ORIGIN | F_SCALE | F_ANGLES | F_ALPHA | F_VISIBLE;
 
+        // Spec 10 — one-shot unresolved-name diagnostic.  Dirty entries are now
+        // keyed by the JS-resolved integer id (slot 0), so the hot loop no longer
+        // carries names; report any layer proxy whose name failed to resolve to
+        // an id ONCE per load here (loudly), preserving the old unknown-name
+        // warning without the per-tick string work.  Runs at the first non-empty
+        // flush, by when touched proxies exist; lazily-created bad proxies are
+        // still caught by the per-miss (-1) warning below.
+        if (! m_scriptDiag.dirtyMissesScanned && totalEntries > 0) {
+            m_scriptDiag.dirtyMissesScanned = true;
+            QJSValue unresolved =
+                m_jsEngine->evaluate("(function(){var u=[];if(typeof _layerList!=='undefined')"
+                                     "for(var i=0;i<_layerList.length;i++){var L=_layerList[i];"
+                                     "var id=L._state?L._state.id:L.id;"
+                                     "if(typeof id!=='number')u.push(L.name);}return u;})()");
+            int n = unresolved.property("length").toInt();
+            for (int i = 0; i < n && i < 20; i++) {
+                std::string nm = unresolved.property(i).toString().toStdString();
+                m_scriptDiag.dirtyLayerMisses.insert(nm);
+                qCWarning(wekdeScene,
+                          "Layer '%s' has no resolved id in nodeNameToId (%zu "
+                          "entries) — its dirty updates will be dropped",
+                          nm.c_str(),
+                          m_nodeNameToId.size());
+            }
+        }
+
         for (int base = 0; base < totalEntries; base += DIRTY_STRIDE) {
-            std::string name = updates.property(base + 0).toString().toStdString();
-            auto        it   = m_nodeNameToId.find(name);
-            if (it == m_nodeNameToId.end()) {
+            // Spec 10 — slot 0 is the JS-resolved integer id (echoed from
+            // _layerNameToId at proxy creation), so no per-tick
+            // QString->std::string materialization + nodeNameToId hash lookup.
+            int32_t id = (int32_t)updates.property(base + 0).toInt();
+            if (id < 0) {
                 dirtyLayerMiss++;
-                if (m_scriptDiag.dirtyLayerMisses.find(name) ==
-                    m_scriptDiag.dirtyLayerMisses.end()) {
-                    m_scriptDiag.dirtyLayerMisses.insert(name);
+                // The hot loop no longer has the name; unresolvable layers are
+                // reported by name once at first flush above, so here we only
+                // count + cap a generic warning.
+                static int s_dirtyMissLog = 0;
+                if (++s_dirtyMissLog <= 10)
                     qCWarning(wekdeScene,
-                              "Dirty layer '%s' not found in nodeNameToId "
-                              "(%zu entries)",
-                              name.c_str(),
-                              m_nodeNameToId.size());
-                }
+                              "Dirty layer with unresolved id (-1) in dispatch; "
+                              "see the first-flush unresolved-name warning");
                 continue;
             }
-            int32_t  id    = it->second;
             uint32_t flags = (uint32_t)updates.property(base + 1).toInt();
 
             if (flags & HOT_FLAGS) {
