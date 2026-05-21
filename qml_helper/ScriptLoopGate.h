@@ -45,4 +45,15 @@ inline bool propertyTickShouldEval(bool highRate, uint64_t curFrameIdx, uint64_t
     return highRate || lastFrameIdx == 0 || curFrameIdx != lastFrameIdx;
 }
 
+// Spec 08 — audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
+// the property loop (now Spec-07 render-gated), the text loop (render-gated),
+// and the color loop (33Hz); the analyzer only produces new spectrum data per
+// processed render frame, so a refresh whose frame index matches the
+// previously-refreshed one is redundant.  Returns true (do the refresh) iff
+// this is the first refresh (frame 0) or the frame index advanced — collapsing
+// all callers to one actual rebuild per drawn frame.
+inline bool audioRefreshShouldRun(uint64_t curFrameIdx, uint64_t lastRefreshedFrameIdx) {
+    return curFrameIdx == 0 || curFrameIdx != lastRefreshedFrameIdx;
+}
+
 } // namespace scenebackend

@@ -532,6 +532,11 @@ private:
     // render-frame gate.  Default off; set from WEKDE_SCRIPT_HIGHRATE=1 or a
     // workshop-id allowlist (3body 3509243656) in setupTextScripts.
     bool m_propertyHighRate { false };
+    // Spec 08 — last render frame index for which the audio buffers were
+    // refreshed.  The property/text/color loops all call refreshAudioBuffers();
+    // this de-dups them to one actual rebuild per drawn frame (the analyzer only
+    // produces new spectrum data per processed render frame).
+    uint64_t m_lastAudioBufFrameIdx { 0 };
     // Monotonic frame counter exposed to scripts as `engine.frameCount`.
     // Ticked once per property-script evaluation (the 120Hz/8ms pulse,
     // not the render FIF).

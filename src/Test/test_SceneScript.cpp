@@ -7596,6 +7596,41 @@ TEST_SUITE("Property tick render-frame gate (Spec 07)") {
 } // TEST_SUITE Property tick render-frame gate (Spec 07)
 
 // ------------------------------------------------------------------
+// Spec 08 — audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
+// the property/text/color loops; the analyzer only produces new data per
+// processed render frame, so all callers must collapse to one rebuild per drawn
+// frame.  Pure predicate (the gate keys on a render-thread atomic the test
+// can't drive through a live SceneObject), tested here against the value-shape
+// the body uses.
+TEST_SUITE("Audio buffer refresh de-dup (Spec 08)") {
+    using scenebackend::audioRefreshShouldRun;
+
+    TEST_CASE("first refresh (frame 0) always runs") {
+        CHECK(audioRefreshShouldRun(/*cur*/ 0, /*last*/ 0) == true);
+    }
+    TEST_CASE("second call at same frame is skipped") {
+        // Two callers (property + text loop) in the same drawn frame: the second
+        // must NOT rebuild — the analyzer data is identical.
+        CHECK(audioRefreshShouldRun(/*cur*/ 7, /*last*/ 7) == false);
+    }
+    TEST_CASE("advanced frame runs the refresh") {
+        CHECK(audioRefreshShouldRun(/*cur*/ 8, /*last*/ 7) == true);
+    }
+    TEST_CASE("three loops, one frame -> exactly one refresh") {
+        uint64_t last      = 0;
+        int      refreshes = 0;
+        // frame 5 hit by property + text + color in one frame.
+        for (uint64_t cur : { (uint64_t)5, (uint64_t)5, (uint64_t)5 }) {
+            if (audioRefreshShouldRun(cur, last)) {
+                ++refreshes;
+                last = cur;
+            }
+        }
+        CHECK(refreshes == 1);
+    }
+} // TEST_SUITE Audio buffer refresh de-dup (Spec 08)
+
+// ------------------------------------------------------------------
 // A3-T2 — QJSEngine watchdog interrupt back-off policy.  The watchdog's
 // monitor-thread machinery is timing-dependent and hard to unit-test, so (as
 // with scriptLoopShouldRun above) the user-visible *policy* is split into the

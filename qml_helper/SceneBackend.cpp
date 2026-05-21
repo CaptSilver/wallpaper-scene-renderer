@@ -3875,6 +3875,23 @@ void SceneObject::refreshAudioBuffers() {
     QJSValue audioRegs = engineObj.property("_audioRegs");
     if (! audioRegs.isArray()) return;
 
+    // Spec 08 — render-frame de-dup.  refreshAudioBuffers() is called from the
+    // property loop (Spec-07 render-gated), the text loop (render-gated), and
+    // the color loop (33Hz).  The analyzer only produces new spectrum data per
+    // processed render frame, so collapse all callers to ONE rebuild per drawn
+    // frame; a second call at the same frame index reuses the buffers already
+    // filled this frame.  (Form A bulk-array-assignment from the spec was
+    // dropped after review: the loop below already caches buf.left/right/average
+    // ONCE per buffer and fills them in place, so replacing them with freshly
+    // allocated arrays would add allocations + an extra structured store per
+    // array AND break any script holding a `buf.left` reference, for zero
+    // boundary-crossing reduction.  This de-dup gate is the real, dominant win.)
+    {
+        uint64_t f = m_scene->getFrameIdx();
+        if (! audioRefreshShouldRun(f, m_lastAudioBufFrameIdx)) return;
+        m_lastAudioBufFrameIdx = f;
+    }
+
     int len = audioRegs.property("length").toInt();
     for (int r = 0; r < len; r++) {
         QJSValue buf        = audioRegs.property(r);
