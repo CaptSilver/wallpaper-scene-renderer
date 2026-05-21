@@ -2779,6 +2779,11 @@ void MainHandler::loadScene() {
         }
 
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, userProps);
+        if (! scene) {
+            LOG_ERROR("scene parse failed for id=%s — malformed scene.json, aborting load",
+                      scene_id.c_str());
+            return; // MainHandler::loadScene is void; nothing published yet, safe to bail
+        }
         scene->vfs.swap(pVfs);
 
         // Store for runtime re-resolution of combo visibility

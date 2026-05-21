@@ -239,11 +239,16 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         WPUserProperties    props {};
 
         WPSceneParser parser;
-        // PARSE_JSON fails → Parse bails at the very top with nullptr.  Use a
-        // hard syntax error that survives the trailing-comma/leading-zero
-        // recovery passes (an unterminated object).
-        auto scene = parser.Parse("bad", "{ \"general\": ", *vfs, sm, props);
-        CHECK(scene == nullptr);
+        // PARSE_JSON fails → Parse bails at the very top with nullptr.  Cover
+        // the three malformed shapes a hostile/truncated workshop scene.json
+        // can take; each must yield nullptr (not a partial Scene) so the
+        // MainHandler::loadScene call-site guard has a contract to lean on.
+        //   - unterminated object (survives trailing-comma/leading-zero recovery)
+        CHECK(parser.Parse("bad", "{ \"general\": ", *vfs, sm, props) == nullptr);
+        //   - free-text, no JSON structure at all
+        CHECK(parser.Parse("notjson", "{ this is not json", *vfs, sm, props) == nullptr);
+        //   - empty buffer
+        CHECK(parser.Parse("empty", "", *vfs, sm, props) == nullptr);
     }
 
 } // TEST_SUITE
