@@ -3792,6 +3792,32 @@ void SceneObject::setupTextScripts() {
     // Property scripts must run first — they populate shared.* that text/color scripts depend on
     if (! m_propertyScriptStates.empty() || ! m_soundVolumeScriptStates.empty() ||
         ! m_soundLayerStates.empty() || hasUpdateListeners) {
+        // Spec 07 — sub-frame physics opt-in.  Default: gate the property loop to
+        // the render rate (script output is sampled only when the render thread
+        // draws, so faster eval is wasted CPU).  A scene opts into >render-rate
+        // stepping via the WEKDE_SCRIPT_HIGHRATE env override OR a hard workshop-
+        // id allowlist (the workshop id is the scene.pkg's parent dir name, the
+        // same derivation ensureLocalStorageLoaded() uses).  Seeded with 3body
+        // (3509243656), whose chaotic 3-body integration the 8ms timer below was
+        // written for.  Behavior is unchanged for every scene that does not ask.
+        {
+            const char* hr = std::getenv("WEKDE_SCRIPT_HIGHRATE");
+            if (hr && hr[0] && hr[0] != '0') m_propertyHighRate = true;
+            QString workshopId;
+            if (m_source.isValid()) {
+                const QString localPath = m_source.toLocalFile();
+                if (! localPath.isEmpty()) workshopId = QFileInfo(localPath).dir().dirName();
+            }
+            static const std::unordered_set<std::string> kHighRateIds = {
+                "3509243656", // 3body — chaotic 3-body, wants sub-frame stepping
+            };
+            if (! workshopId.isEmpty() && kHighRateIds.count(workshopId.toStdString()))
+                m_propertyHighRate = true;
+            if (m_propertyHighRate)
+                LOG_INFO("Property loop: HIGH-RATE mode (sub-frame stepping, no frame gate)");
+            else
+                LOG_INFO("Property loop: render-frame-gated (~render rate, not 125Hz)");
+        }
         m_propertyTimer = new QTimer(this);
         // PreciseTimer + 8ms for ~120Hz.  After the Vec3/slim-dirty/pool
         // optimization pass the per-tick cost dropped from ~42ms to ~5.7ms,
@@ -4256,6 +4282,24 @@ void SceneObject::evaluatePropertyScripts() {
     const bool hasStates = ! m_propertyScriptStates.empty() ||
                            ! m_soundVolumeScriptStates.empty() || ! m_soundLayerStates.empty();
     if (! scriptLoopShouldRun(hasStates, m_paused)) return;
+
+    // Spec 07 — render-frame gate (mirrors evaluateTextScripts above).  Unless
+    // this wallpaper opted into sub-frame physics stepping, never evaluate
+    // property scripts faster than the render thread draws — the script output
+    // is sampled at the render rate, so extra ticks are wasted CPU (~76% of
+    // ticks at 30fps, ~88% at 15fps).  The lastFrameIdx==0 branch keeps the
+    // ctor's seed eval ungated so shared.* is populated before text/color
+    // scripts run.  Counters below feed the diag dump.
+    static uint64_t s_propEvalCount = 0, s_propSkipCount = 0;
+    {
+        uint64_t curFrameIdx = m_scene->getFrameIdx();
+        if (! propertyTickShouldEval(m_propertyHighRate, curFrameIdx, m_lastPropertyFrameIdx)) {
+            ++s_propSkipCount;
+            return;
+        }
+        ++s_propEvalCount;
+        m_lastPropertyFrameIdx = curFrameIdx;
+    }
 
     // A3-T2 — OR'd across every guarded JS dispatch in this tick (animationEvent,
     // runAllPropertyScripts, the dirty-collect calls); drives the back-off
@@ -5018,13 +5062,18 @@ void SceneObject::evaluatePropertyScripts() {
     }
     if (++propEvalCount % 90 == 1) {
         int sharedCount = m_jsEngine->evaluate("Object.keys(shared).length").toInt();
-        LOG_INFO("PROPEVAL[%d]: %zu states, shared=%d, dirty=%d (miss=%d), soundVol=%zu",
+        LOG_INFO("PROPEVAL[%d]: %zu states, shared=%d, dirty=%d (miss=%d), soundVol=%zu "
+                 "| gate evals=%llu skips=%llu (highRate=%d)",
                  propEvalCount,
                  (size_t)m_propertyScriptStates.size(),
                  sharedCount,
                  dirtyLayerCount,
                  dirtyLayerMiss,
-                 (size_t)m_soundVolumeScriptStates.size());
+                 (size_t)m_soundVolumeScriptStates.size(),
+                 (unsigned long long)s_propEvalCount,
+                 (unsigned long long)s_propSkipCount,
+                 (int)m_propertyHighRate);
+        s_propEvalCount = s_propSkipCount = 0;
         qCInfo(wekdeScene,
                "Property scripts: %zu states, shared vars: %d, dirty layers: %d (miss: %d), sound "
                "vol: %zu",

@@ -521,6 +521,17 @@ private:
     // the QTimer cadence (was: 2Hz, hard-coded — Miku 3363252053 was stuck at
     // "fps: 2" because of that).
     uint64_t                                 m_lastTextFrameIdx { 0 };
+    // Spec 07 — last render-thread frame index seen by evaluatePropertyScripts.
+    // The property timer polls getFrameIdx() at ~125Hz; eval only fires when the
+    // index advances (or on the seed eval / a high-rate scene), so a non-high-
+    // rate scripted wallpaper stops burning ~5.7ms/tick on ticks that no
+    // rendered frame ever reads.
+    uint64_t m_lastPropertyFrameIdx { 0 };
+    // When true this wallpaper opted into sub-frame physics stepping and the
+    // property loop runs at the full timer rate (~125Hz), bypassing the
+    // render-frame gate.  Default off; set from WEKDE_SCRIPT_HIGHRATE=1 or a
+    // workshop-id allowlist (3body 3509243656) in setupTextScripts.
+    bool m_propertyHighRate { false };
     // Monotonic frame counter exposed to scripts as `engine.frameCount`.
     // Ticked once per property-script evaluation (the 120Hz/8ms pulse,
     // not the render FIF).

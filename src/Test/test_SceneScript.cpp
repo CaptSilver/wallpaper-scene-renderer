@@ -7524,6 +7524,78 @@ TEST_SUITE("Script loop gate (F19)") {
 } // TEST_SUITE Script loop gate (F19)
 
 // ------------------------------------------------------------------
+// Spec 07 — render-frame gate for the property loop.  The property timer
+// fires at 125Hz but a non-high-rate wallpaper must not evaluate its scripts
+// faster than the render thread draws (script output is sampled at the render
+// rate, so extra evals are wasted CPU).  As with scriptLoopShouldRun above, a
+// live SceneObject can't be built without Vulkan, so the policy is a pure
+// predicate tested here and called from the loop body so the test covers the
+// shipped logic.
+TEST_SUITE("Property tick render-frame gate (Spec 07)") {
+    using scenebackend::propertyTickShouldEval;
+
+    TEST_CASE("high-rate scenes always evaluate (sub-frame physics opt-in)") {
+        // 3body (3509243656) integrates a chaotic 3-body system that wants
+        // >render-rate stepping; with highRate=true the gate must never skip,
+        // regardless of frameIdx — i.e. the 8ms timer drives full 125Hz.
+        CHECK(propertyTickShouldEval(/*highRate*/ true, /*cur*/ 5, /*last*/ 5) == true);
+        CHECK(propertyTickShouldEval(/*highRate*/ true, /*cur*/ 0, /*last*/ 7) == true);
+    }
+
+    TEST_CASE("seed eval (lastFrameIdx==0) always evaluates") {
+        // The ctor seeds one eval to populate shared.* before text/color
+        // scripts run; frameIdx can be 0 before the render thread starts.
+        // The lastFrameIdx==0 branch guarantees that first eval is never gated.
+        CHECK(propertyTickShouldEval(/*highRate*/ false, /*cur*/ 0, /*last*/ 0) == true);
+        CHECK(propertyTickShouldEval(/*highRate*/ false, /*cur*/ 9, /*last*/ 0) == true);
+    }
+
+    TEST_CASE("same frame index as last eval -> skip (the wasted-tick case)") {
+        // The timer ticked but no new frame was produced: skip the body.
+        CHECK(propertyTickShouldEval(/*highRate*/ false, /*cur*/ 42, /*last*/ 42) == false);
+    }
+
+    TEST_CASE("advanced frame index -> evaluate") {
+        // A new frame exists since the last eval: do the work.
+        CHECK(propertyTickShouldEval(/*highRate*/ false, /*cur*/ 43, /*last*/ 42) == true);
+    }
+
+    TEST_CASE("steady-state 30fps sequence: one eval per advanced frame") {
+        // Simulate the production loop: track lastFrameIdx and step it forward
+        // only when the predicate says eval.  Render frame advances
+        // 0,0,0,1,1,1,2,2,2 (3 ticks per frame).
+        uint64_t       last  = 0; // seed state
+        int            evals = 0, skips = 0;
+        const uint64_t frames[] = { 0, 0, 0, 1, 1, 1, 2, 2, 2 };
+        for (uint64_t cur : frames) {
+            if (propertyTickShouldEval(false, cur, last)) {
+                ++evals;
+                last = cur;
+            } else {
+                ++skips;
+            }
+        }
+        // First three ticks: cur==0,last==0 -> eval x3 (seed branch dominates).
+        // Then cur==1 (eval, last=1), 1 (skip), 1 (skip),
+        //      cur==2 (eval, last=2), 2 (skip), 2 (skip).
+        CHECK(evals == 5);
+        CHECK(skips == 4);
+    }
+
+    TEST_CASE("frame advances every tick -> never skips (output-equivalence)") {
+        // The output-equivalence guarantee: when getFrameIdx() advances once per
+        // property tick (render rate == tick rate), the gate evaluates on EVERY
+        // tick, so the dispatched dirty-layer batch is identical to the no-gate
+        // path.  The gate can only ever REMOVE evals where the frame did not move.
+        uint64_t last = 0;
+        for (uint64_t cur = 1; cur <= 50; ++cur) {
+            CHECK(propertyTickShouldEval(false, cur, last) == true);
+            last = cur;
+        }
+    }
+} // TEST_SUITE Property tick render-frame gate (Spec 07)
+
+// ------------------------------------------------------------------
 // A3-T2 — QJSEngine watchdog interrupt back-off policy.  The watchdog's
 // monitor-thread machinery is timing-dependent and hard to unit-test, so (as
 // with scriptLoopShouldRun above) the user-visible *policy* is split into the
