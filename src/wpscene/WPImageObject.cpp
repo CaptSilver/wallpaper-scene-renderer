@@ -210,7 +210,14 @@ bool WPEffectFbo::FromJson(const nlohmann::json& json) {
 
 // Define and initialize the static property
 const std::unordered_set<std::string> WPImageEffect::BLACKLISTED_WORKSHOP_EFFECTS = {
-    "2799421411" // Audio Responsive Oscilloscope   --  causes vulcan deadlock
+    // (empty) Mechanism retained for any effect that genuinely must be
+    // suppressed.  "2799421411" (Audio Responsive Oscilloscope) was previously
+    // listed for a Vulkan deadlock; re-enabled after the renderer's sync/
+    // render-graph fixes — verified to render without deadlock (2992803622).
+    // NOTE: blacklisting forces visible=false, which the effect loader skips
+    // and *compacts* the loaded index, while shader-value scripts key on the
+    // JSON effect index — so a blacklisted effect silently breaks the alpha/
+    // uniform scripts of every effect after it on the same layer.
 };
 
 bool WPImageEffect::IsEffectBlacklisted(const std::string& filePath) {

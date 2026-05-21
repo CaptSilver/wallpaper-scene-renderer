@@ -9,6 +9,7 @@
 
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
+#include "JsSyntaxNormalize.hpp"
 #include "JsWatchdog.h"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
@@ -21,6 +22,7 @@ using scenebackend::nextLeaveDeadlineMs;
 using scenebackend::PendingLeave;
 using scenebackend::processHoverFrame;
 using scenebackend::SceneTimerBridge;
+using wek::qml_helper::normalizeOptionalCatchBinding;
 
 // Spin the Qt event loop for a given number of milliseconds.
 // This lets QTimers fire within doctest test cases.
@@ -8963,3 +8965,155 @@ TEST_SUITE("JS string escaping (F18)") {
         CHECK_FALSE(newResult.isError());
     }
 } // TEST_SUITE JS string escaping (F18)
+
+// ------------------------------------------------------------------
+// JsSyntaxNormalize — ES2019 optional catch binding (`catch {`)
+// QJSEngine/V4 rejects the bare `catch {`; stripESModuleSyntax() rewrites it
+// via normalizeOptionalCatchBinding().  Real-world hit: the Gariam parenting
+// system embedded in 2992803622 (id=31, 791-line script) never compiled.
+// ------------------------------------------------------------------
+TEST_SUITE("JsSyntaxNormalize") {
+    TEST_CASE("optional catch binding gains a parameterized binding") {
+        QString src = QStringLiteral("try { risky(); } catch { fallback(); }");
+        normalizeOptionalCatchBinding(src);
+        CHECK(src == QStringLiteral("try { risky(); } catch (__wecatch) { fallback(); }"));
+    }
+
+    TEST_CASE("compact and newline-separated catch forms are handled") {
+        QString compact = QStringLiteral("try{f()}catch{g()}");
+        normalizeOptionalCatchBinding(compact);
+        CHECK(compact.contains(QStringLiteral("catch (__wecatch) {")));
+        CHECK_FALSE(compact.contains(QStringLiteral("catch{")));
+
+        QString multiline = QStringLiteral("try {\n  f();\n}\ncatch\n{\n  g();\n}");
+        normalizeOptionalCatchBinding(multiline);
+        CHECK(multiline.contains(QStringLiteral("catch (__wecatch) {")));
+    }
+
+    TEST_CASE("nested optional catches each get a (shadowing) binding") {
+        QString src = QStringLiteral("try{a()}catch{ try{b()}catch{c()} }");
+        normalizeOptionalCatchBinding(src);
+        CHECK(src.count(QStringLiteral("catch (__wecatch) {")) == 2);
+    }
+
+    TEST_CASE("already-bound catch is left untouched") {
+        QString src    = QStringLiteral("try { f(); } catch (e) { log(e); }");
+        QString before = src;
+        normalizeOptionalCatchBinding(src);
+        CHECK(src == before);
+    }
+
+    TEST_CASE("script with no try/catch is a no-op") {
+        QString src    = QStringLiteral("function f(){ return 1; }");
+        QString before = src;
+        normalizeOptionalCatchBinding(src);
+        CHECK(src == before);
+    }
+
+    // End-to-end against the real engine: the bare `catch {}` is a SyntaxError
+    // in QJSEngine/V4 (whole compile fails); after normalization it runs.
+    TEST_CASE("normalized optional catch compiles and runs in QJSEngine") {
+        const QString body = QStringLiteral(
+            "var hit = 0;\n"
+            "try { throw new Error('x'); } catch { hit = 1; }\n"
+            "hit;");
+
+        QJSEngine engine;
+        QJSValue  raw = engine.evaluate(body);
+        CHECK(raw.isError()); // documents the V4 limitation this transform exists for
+
+        QString fixed = body;
+        normalizeOptionalCatchBinding(fixed);
+        QJSValue out = engine.evaluate(fixed);
+        CHECK_FALSE(out.isError());
+        CHECK(out.toInt() == 1);
+    }
+
+    TEST_CASE("dropOneTrailingBrace removes a single trailing brace") {
+        QString src = QStringLiteral("function f(){}}");
+        CHECK(wek::qml_helper::dropOneTrailingBrace(src));
+        CHECK(src == QStringLiteral("function f(){}"));
+    }
+
+    TEST_CASE("dropOneTrailingBrace skips trailing whitespace/newlines") {
+        QString src = QStringLiteral("function f(){}}\n\n  ");
+        CHECK(wek::qml_helper::dropOneTrailingBrace(src));
+        CHECK(src == QStringLiteral("function f(){}\n\n  "));
+    }
+
+    TEST_CASE("dropOneTrailingBrace is a no-op without a trailing brace") {
+        QString src = QStringLiteral("var x = 1;");
+        CHECK_FALSE(wek::qml_helper::dropOneTrailingBrace(src));
+        CHECK(src == QStringLiteral("var x = 1;"));
+    }
+
+    // End-to-end: a stray trailing '}' breaks the IIFE wrapper (code follows the
+    // body), and the SceneBackend strip-and-retry loop recovers it.  This is the
+    // exact shape of the Gariam parenting script ('}}') in 2992803622.
+    TEST_CASE("stray trailing brace recovered by strip-and-retry under IIFE wrap") {
+        auto wrap = [](const QString& body) {
+            return QStringLiteral("(function(){ var exports={};\n%1\n"
+                                  "return (typeof f==='function')?f():0; })()")
+                .arg(body);
+        };
+        QString body = QStringLiteral("function f(){ return 7; }}"); // stray '}'
+
+        QJSEngine engine;
+        QJSValue  r = engine.evaluate(wrap(body));
+        CHECK(r.isError()); // unmatched '}' closes the IIFE early -> parse error
+
+        int retries = 0;
+        for (; r.isError() && retries < 3; ++retries) {
+            if (! wek::qml_helper::dropOneTrailingBrace(body))
+                break;
+            r = engine.evaluate(wrap(body));
+        }
+        CHECK_FALSE(r.isError());
+        CHECK(r.toInt() == 7);
+        CHECK(retries == 1); // exactly one stray brace removed
+    }
+} // TEST_SUITE JsSyntaxNormalize
+
+// ------------------------------------------------------------------
+// getTextureAnimation().rate — must be WRITABLE (getter + setter).
+// Regression for 2992803622's music player: animateIcon() does
+// `thisLayer.getTextureAnimation().rate = 0` / `= 5` to pause/play the
+// play-button icon.  The real shim (_makeLayerProxy) used to expose `rate`
+// as a getter only, so the assignment threw a TypeError under 'use strict'
+// and aborted update() every tick.
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript Texture Animation") {
+    TEST_CASE("getTextureAnimation().rate is writable under strict mode and delegates") {
+        ScriptEnv env;
+        // Mock the sprite bridge: the setter delegates here, and _readInfo
+        // returns a known current frame so the pause path can be asserted.
+        env.engine.evaluate(
+            "var __spriteCalls = [];\n"
+            "var __sceneBridge = {\n"
+            "  setLayerSpriteFrame: function(n,pin,f){ __spriteCalls.push([n,pin,f]); },\n"
+            "  getLayerSpriteInfo: function(n){ return "
+            "{frameCount:31, currentFrame:12, isManualPin:false}; }\n"
+            "};\n");
+        // Real production proxy from SceneScriptShimsJs.hpp (not a mirror).
+        env.engine.evaluate("var anim = _makeLayerProxy('playerplay').getTextureAnimation();");
+
+        // The historical bug: assignment to a getter-only `rate` throws in
+        // strict mode.  With the setter it succeeds.
+        QJSValue play =
+            env.engine.evaluate("(function(){ 'use strict'; anim.rate = 5; return 'ok'; })()");
+        CHECK_FALSE(play.isError());
+        CHECK(play.toString() == "ok");
+        // rate>0 => play: unpinned (pin=false).
+        CHECK(env.engine.evaluate("__spriteCalls[__spriteCalls.length-1][1]").toBool() == false);
+
+        // rate<=0 => pause at the current frame (12, from the mock).
+        env.engine.evaluate("(function(){ 'use strict'; anim.rate = 0; })()");
+        CHECK(env.engine.evaluate("__spriteCalls[__spriteCalls.length-1][1]").toBool() == true);
+        CHECK(env.engine.evaluate("__spriteCalls[__spriteCalls.length-1][2]").toInt() == 12);
+
+        // Getters still read through the bridge.
+        CHECK(env.engine.evaluate("anim.rate").toNumber() == doctest::Approx(1.0)); // not pinned
+        CHECK(env.engine.evaluate("anim.frameCount").toInt() == 31);
+        CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 12);
+    }
+} // TEST_SUITE SceneScript Texture Animation

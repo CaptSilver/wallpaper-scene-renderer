@@ -275,8 +275,15 @@ TEST_SUITE("WPImageEffect::FromJson") {
         CHECK(e.name.empty());
     }
 
-    TEST_CASE("blacklisted effect ID flips visible to false") {
-        // 2799421411 is the only id in BLACKLISTED_WORKSHOP_EFFECTS.
+    TEST_CASE("audio oscilloscope (2799421411) loads — no longer blacklisted") {
+        // 2799421411 was the only id in BLACKLISTED_WORKSHOP_EFFECTS, listed for
+        // a Vulkan deadlock that the renderer's sync/render-graph fixes resolved.
+        // Blacklisting forces visible=false, which the effect loader skips and
+        // *compacts* — and shader-value scripts key on the JSON effect index, so
+        // a blacklisted effect silently breaks the alpha/uniform scripts of every
+        // effect after it on the same layer (it gated the entire post-FX composite
+        // — blur/bloom/CA — in 2992803622's "Music Player").  The set is now
+        // empty; this guards against silently re-adding the oscilloscope.
         auto vfs = Vfs({
             { "effects/2799421411/myFx/effect.json", R"({
                 "name": "fx", "version": 1,
@@ -291,7 +298,7 @@ TEST_SUITE("WPImageEffect::FromJson") {
 
         WPImageEffect e;
         REQUIRE(e.FromJson(j, *vfs));
-        CHECK_FALSE(e.visible);
+        CHECK(e.visible); // not blacklisted -> declared visibility is honored
     }
 }
 

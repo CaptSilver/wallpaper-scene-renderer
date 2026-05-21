@@ -939,6 +939,17 @@ function _makeLayerProxy(name) {
       get frameCount(){ return _readInfo().frameCount; },
       get duration(){ return _readInfo().duration; },
       get rate(){ return _readInfo().isManualPin ? 0 : 1; },
+      // Writable: WE scripts set rate=0 to pause the sprite animation and
+      // rate>0 to play it (e.g. a play/pause button icon morph in 2992803622's
+      // music player).  Without a setter, `layer.rate = N` throws a TypeError
+      // under 'use strict' (assignment to getter-only), aborting the whole
+      // update().  Map to the manual-pin bridge: >0 = play (unpinned),
+      // <=0 = pause at the current frame.
+      set rate(v){
+        if (typeof __sceneBridge === 'undefined' || !__sceneBridge.setLayerSpriteFrame) return;
+        if (v > 0) __sceneBridge.setLayerSpriteFrame(_name, false, 0);
+        else __sceneBridge.setLayerSpriteFrame(_name, true, _readInfo().currentFrame);
+      },
       get _frame(){ return _readInfo().currentFrame; },
       getFrame: function(){ return _readInfo().currentFrame; },
       setFrame: function(f){

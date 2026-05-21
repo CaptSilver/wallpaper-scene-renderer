@@ -4,6 +4,7 @@
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
+#include "JsSyntaxNormalize.hpp"
 #include "PropertyScriptDispatchJs.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
@@ -1258,6 +1259,11 @@ static void stripESModuleSyntax(QString& src) {
     // (covers edge cases like 'export default;' or unknown forms)
     src.replace(QRegularExpression("^(\\s*)\\bexport\\s+", QRegularExpression::MultilineOption),
                 "\\1");
+
+    // Rewrite ES2019 optional catch bindings (`catch {`) — QJSEngine/V4 rejects
+    // them with a SyntaxError that fails the whole script compile.  See
+    // JsSyntaxNormalize.hpp.
+    wek::qml_helper::normalizeOptionalCatchBinding(src);
 }
 
 // hitTestLayerProxy lives in SceneCursorHitTest.h so scenescript_tests can
@@ -3046,8 +3052,8 @@ void SceneObject::setupTextScripts() {
         // set before the error point remain available to update).
         // `_tlo` carries the current global `thisLayer` into a local shadow so
         // the scriptProperties overlay below doesn't contaminate sibling scripts.
-        QString wrapped =
-            QString(
+        const QString kPropWrap =
+            QStringLiteral(
                 "(function(_tlo) {\n"
                 "  'use strict';\n"
                 "  var exports = {};\n"
@@ -3164,10 +3170,31 @@ void SceneObject::setupTextScripts() {
                 "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
                 "           mediaStatusChanged: _mstc,\n"
                 "           animationEvent: _animSafe };\n"
-                "})(thisLayer)\n")
-                .arg(propsInit, scriptSrc);
+                "})(thisLayer)\n");
 
-        QJSValue result = m_jsEngine->evaluate(wrapped);
+        auto buildWrapped = [&](const QString& body) {
+            return kPropWrap.arg(propsInit, body);
+        };
+        QString  wrapped = buildWrapped(scriptSrc);
+        QJSValue result  = m_jsEngine->evaluate(wrapped);
+        // Compatibility fallback: WE tolerates a stray trailing '}' that our
+        // IIFE wrapper does not (an unmatched '}' closes the wrapper early, so
+        // the appended `return {...}` becomes a parse error and the whole
+        // compile fails).  ONLY after an already-failed compile do we strip a
+        // trailing brace and retry — a well-formed script compiles first try and
+        // is never touched, so this cannot regress a valid wallpaper.  Real hit:
+        // Gariam parenting system (id=31 in 2992803622) ends with '}}'.
+        for (int retry = 0; result.isError() && retry < 3; ++retry) {
+            if (! wek::qml_helper::dropOneTrailingBrace(scriptSrc))
+                break;
+            wrapped = buildWrapped(scriptSrc);
+            result  = m_jsEngine->evaluate(wrapped);
+            if (! result.isError()) {
+                LOG_INFO("Property script id=%d prop=%s recovered after stripping "
+                         "%d trailing brace(s)",
+                         psi.id, psi.property.c_str(), retry + 1);
+            }
+        }
         if (result.isError()) {
             static int s_err_log = 0;
             if (++s_err_log <= 10) {

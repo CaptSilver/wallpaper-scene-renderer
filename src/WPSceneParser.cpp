@@ -1195,7 +1195,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // still reference its texture.
     bool isScriptedLayer =
         ! wpimgobj.name.empty() && context.script_referenced_layers.count(wpimgobj.name) > 0;
-    bool isOffscreen = ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector && ! isScriptedLayer;
+    // A zero-area layer (size 0x0) can't produce a usable offscreen texture, and
+    // allocating a 0x0 Vulkan image fails with VK_ERROR_INITIALIZATION_FAILED —
+    // which also fails its base pass.  Driver: 2992803622's "Player Options", an
+    // invisible 0x0 solidlayer that only carries scriptProperties.  Keep such
+    // layers in the main graph where, being invisible, they are simply skipped
+    // (no offscreen RT, no dead "flat" pass).  Property scripts on the layer are
+    // extracted independently, so this does not affect their execution.
+    const bool hasArea = wpimgobj.size[0] >= 1.0f && wpimgobj.size[1] >= 1.0f;
+    bool       isOffscreen =
+        ! wpimgobj.visible && ! wpimgobj.visibleIsComboSelector && ! isScriptedLayer && hasArea;
 
     // Any image referenced by some compose layer's `dependencies` list must
     // render offscreen — the compose blend samples `_rt_imageLayerComposite_<id>_a`
@@ -1287,7 +1296,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     bool hasPuppet = ! wpimgobj.puppet.empty();
     (void)hasPuppet;
 
-    bool isCompose = (wpimgobj.image == "models/util/composelayer.json");
+    // `projectlayer` is WE's "entire project as a layer": it uses the same
+    // composelayer material with passthrough, plus projectlayer/autosize, and the
+    // layer carries copybackground.  Functionally it is a fullscreen
+    // background-capturing compose layer (e.g. 2992803622's "Full Composition
+    // Layer" runs the blur/bokeh/bloom/CA post chain over the scene below it).
+    // Matching only "composelayer.json" left projectlayer as a plain effect layer
+    // applying its effects to a blank quad — the captured scene was never blurred.
+    bool isCompose = (wpimgobj.image == "models/util/composelayer.json" ||
+                      wpimgobj.image == "models/util/projectlayer.json");
     // A no-effect compose layer still needs an output RT so dependent nodes can
     // reference `_rt_imageLayerComposite_<id>_a` via their `dependencies` list
     // and `textures` slots.  Synthesize an effectpassthrough so the compose
@@ -2220,10 +2237,14 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // Invisible nodes without effects still need an offscreen RT so their output
     // can be referenced via link tex by compose layers.
     if (isOffscreen && ! hasEffect) {
-        auto& scene                                      = *context.scene;
+        auto& scene = *context.scene;
+        // Clamp to >=1px: a 0-dimension RT fails Vulkan image creation
+        // (VK_ERROR_INITIALIZATION_FAILED).  hasArea already excludes 0x0 from
+        // the speculative isOffscreen above, but a layer forced offscreen as a
+        // compose dependency could still arrive here zero-sized.
         scene.renderTargets[GenOffscreenRT(wpimgobj.id)] = {
-            .width      = (uint16_t)wpimgobj.size[0],
-            .height     = (uint16_t)wpimgobj.size[1],
+            .width      = (uint16_t)std::max(1.0f, wpimgobj.size[0]),
+            .height     = (uint16_t)std::max(1.0f, wpimgobj.size[1]),
             .allowReuse = true,
         };
         LOG_INFO("  created offscreen RT '%s' for id=%d (%dx%d)",
