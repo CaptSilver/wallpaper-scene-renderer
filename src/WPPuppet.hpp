@@ -185,4 +185,19 @@ private:
     std::shared_ptr<WPPuppet> m_puppet;
 };
 
+// Flatten a per-frame bone-affine span (each Eigen::Affine3f is 16 contiguous
+// floats) into the float view uploaded as the g_Bones uniform.  Returns an
+// EMPTY (null-data) span when there are no bones: a puppet whose skeleton
+// parsed to ZERO bones (e.g. an MDL bone-table block we don't read) makes
+// WPPuppet::genFrame() return an empty span, and indexing it as `data[0]` trips
+// the libstdc++ hardened std::span::operator[] and aborts the whole process —
+// which crash-looped plasmashell on totoro 2891663007.  Callers upload g_Bones
+// only when the result is non-empty.
+inline std::span<const float> boneAffinesAsUploadFloats(
+    std::span<const Eigen::Affine3f> affines) {
+    if (affines.empty())
+        return {};
+    return std::span<const float> { affines[0].data(), affines.size() * 16 };
+}
+
 } // namespace wallpaper

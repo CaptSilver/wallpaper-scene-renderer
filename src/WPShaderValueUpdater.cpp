@@ -227,7 +227,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                          m_scene->frameTime);
                 _bones_logged = true;
             }
-            updateOp(G_BONES, std::span<const float> { data[0].data(), data.size() * 16 });
+            // A puppet whose skeleton parsed to ZERO bones makes genFrame()
+            // return an empty span; uploading it would index `data[0]` on an
+            // empty std::span and abort the whole process (plasmashell crash
+            // loop on totoro 2891663007, "uploading g_Bones: 0 bones").
+            // boneAffinesAsUploadFloats() returns an empty span for the no-bone
+            // case — upload only when non-empty (see WPPuppet.hpp).
+            if (auto boneFloats = boneAffinesAsUploadFloats(data); ! boneFloats.empty()) {
+                updateOp(G_BONES, boneFloats);
+            }
             // Collect keyframe events fired during updateInterpolation inside
             // genFrame(); forwarded to the owning node's SceneScript via the
             // QML-side drain on the next evaluation tick.

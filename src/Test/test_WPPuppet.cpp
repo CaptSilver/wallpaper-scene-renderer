@@ -1133,3 +1133,57 @@ TEST_SUITE("WPPuppetLayer_Events") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// boneAffinesAsUploadFloats() — empty-bone guard for the g_Bones upload.
+// Regression: totoro 2891663007's puppet parsed to ZERO bones; the uploader
+// indexed data[0] on the empty span and the libstdc++ hardened
+// std::span::operator[] aborted the process, crash-looping plasmashell.
+// ===========================================================================
+TEST_SUITE("boneAffinesAsUploadFloats") {
+    TEST_CASE("empty bone span -> empty, null-data float span (never indexes [0])") {
+        std::span<const Eigen::Affine3f> none {};
+        auto                             r = wallpaper::boneAffinesAsUploadFloats(none);
+        CHECK(r.empty());
+        CHECK(r.data() == nullptr); // proves element [0] was not dereferenced
+    }
+
+    TEST_CASE("one bone -> 16 column-major floats aliasing (not copying) the affine") {
+        std::vector<Eigen::Affine3f> bones(1, Eigen::Affine3f::Identity());
+        bones[0].translation() = Eigen::Vector3f(3.f, 4.f, 5.f);
+        auto r                 = wallpaper::boneAffinesAsUploadFloats(bones);
+        REQUIRE(r.size() == 16);
+        CHECK(r.data() == bones[0].data()); // a view into the affine, not a copy
+        // Affine3f stores a column-major 4x4; the translation is column 3.
+        CHECK(r[12] == doctest::Approx(3.f));
+        CHECK(r[13] == doctest::Approx(4.f));
+        CHECK(r[14] == doctest::Approx(5.f));
+    }
+
+    TEST_CASE("N bones -> N*16 contiguous floats") {
+        std::vector<Eigen::Affine3f> bones(3, Eigen::Affine3f::Identity());
+        CHECK(wallpaper::boneAffinesAsUploadFloats(bones).size() == 48);
+    }
+}
+
+// ===========================================================================
+// A bone-less puppet's genFrame() is empty — the exact crash trigger the
+// uploader guard handles (totoro 2891663007).
+// ===========================================================================
+TEST_SUITE("WPPuppet_ZeroBones") {
+    TEST_CASE("genFrame of a 0-bone puppet returns an empty span") {
+        auto puppet = makePuppet(0, 100, 10.0, 2);
+        puppet->prepared();
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+        alayers[0].id      = 100;
+        alayers[0].blend   = 1.0;
+        alayers[0].visible = true;
+        alayers[0].rate    = 1.0;
+        layer.prepared(alayers);
+        auto frames = layer.genFrame(0.0);
+        CHECK(frames.empty());
+        // ...so the g_Bones uploader must (and now does) skip it without crashing.
+        CHECK(wallpaper::boneAffinesAsUploadFloats(frames).empty());
+    }
+}
