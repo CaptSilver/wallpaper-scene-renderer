@@ -3792,7 +3792,7 @@ void SceneObject::setupTextScripts() {
     // Property scripts must run first — they populate shared.* that text/color scripts depend on
     if (! m_propertyScriptStates.empty() || ! m_soundVolumeScriptStates.empty() ||
         ! m_soundLayerStates.empty() || hasUpdateListeners) {
-        // Spec 07 — sub-frame physics opt-in.  Default: gate the property loop to
+        // sub-frame physics opt-in.  Default: gate the property loop to
         // the render rate (script output is sampled only when the render thread
         // draws, so faster eval is wasted CPU).  A scene opts into >render-rate
         // stepping via the WEKDE_SCRIPT_HIGHRATE env override OR a hard workshop-
@@ -3863,6 +3863,20 @@ void SceneObject::setupTextScripts() {
         // Run once immediately
         evaluateColorScripts();
     }
+
+    // tell the render side whether SceneScripts registered audio
+    // buffers, so the FFT gate (WPShaderValueUpdater) keeps Process() running
+    // for script-only-audio scenes (no spectrum uniform, no reactive particle).
+    // CRITICAL starvation guard.  Runs here at the end of setupTextScripts (on
+    // firstFrame, so the scene is published) after every script's top-level
+    // registerAudioBuffers has executed via the seed evals above.
+    {
+        QJSValue   engineObj      = m_jsEngine->globalObject().property("engine");
+        QJSValue   regs           = engineObj.property("_audioRegs");
+        const bool hasScriptAudio = regs.isArray() && regs.property("length").toInt() > 0;
+        if (m_scene) m_scene->setHasScriptAudio(hasScriptAudio);
+        if (hasScriptAudio) LOG_INFO("SceneScript registered audio buffers -> FFT gate enabled");
+    }
 }
 
 void SceneObject::refreshAudioBuffers() {
@@ -3875,8 +3889,8 @@ void SceneObject::refreshAudioBuffers() {
     QJSValue audioRegs = engineObj.property("_audioRegs");
     if (! audioRegs.isArray()) return;
 
-    // Spec 08 — render-frame de-dup.  refreshAudioBuffers() is called from the
-    // property loop (Spec-07 render-gated), the text loop (render-gated), and
+    // render-frame de-dup.  refreshAudioBuffers() is called from the
+    // property loop (render-gated), the text loop (render-gated), and
     // the color loop (33Hz).  The analyzer only produces new spectrum data per
     // processed render frame, so collapse all callers to ONE rebuild per drawn
     // frame; a second call at the same frame index reuses the buffers already
@@ -4300,7 +4314,7 @@ void SceneObject::evaluatePropertyScripts() {
                            ! m_soundVolumeScriptStates.empty() || ! m_soundLayerStates.empty();
     if (! scriptLoopShouldRun(hasStates, m_paused)) return;
 
-    // Spec 07 — render-frame gate (mirrors evaluateTextScripts above).  Unless
+    // render-frame gate (mirrors evaluateTextScripts above).  Unless
     // this wallpaper opted into sub-frame physics stepping, never evaluate
     // property scripts faster than the render thread draws — the script output
     // is sampled at the render rate, so extra ticks are wasted CPU (~76% of
@@ -4720,7 +4734,7 @@ void SceneObject::evaluatePropertyScripts() {
         s_batch.reserve(dirtyLayerCount);
         constexpr uint32_t HOT_FLAGS = F_ORIGIN | F_SCALE | F_ANGLES | F_ALPHA | F_VISIBLE;
 
-        // Spec 10 — one-shot unresolved-name diagnostic.  Dirty entries are now
+        // one-shot unresolved-name diagnostic.  Dirty entries are now
         // keyed by the JS-resolved integer id (slot 0), so the hot loop no longer
         // carries names; report any layer proxy whose name failed to resolve to
         // an id ONCE per load here (loudly), preserving the old unknown-name
@@ -4747,7 +4761,7 @@ void SceneObject::evaluatePropertyScripts() {
         }
 
         for (int base = 0; base < totalEntries; base += DIRTY_STRIDE) {
-            // Spec 10 — slot 0 is the JS-resolved integer id (echoed from
+            // slot 0 is the JS-resolved integer id (echoed from
             // _layerNameToId at proxy creation), so no per-tick
             // QString->std::string materialization + nodeNameToId hash lookup.
             int32_t id = (int32_t)updates.property(base + 0).toInt();

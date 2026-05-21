@@ -195,6 +195,11 @@ public:
     ReflectionBlurConfig reflectionBlurConfig;
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer;
+    // true iff some particle subsystem is audio-reactive
+    // (audioprocessingmode != 0).  Set once at scene build; lets the render
+    // thread skip the per-frame emit-rate map walk + spectrum span fetch on
+    // non-reactive scenes without re-scanning particleSubByNodeId.
+    bool hasAudioReactiveParticles { false };
 
     std::vector<TextLayerInfo>         textLayers;
     std::vector<SceneColorScript>      colorScripts;

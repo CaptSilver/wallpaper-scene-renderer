@@ -49,8 +49,11 @@ void WPShaderValueUpdater::FrameBegin() {
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
     }
 
-    // Process audio FFT for this frame
-    if (m_audioAnalyzer) {
+    // Process audio FFT for this frame — only if the scene actually consumes
+    // audio (a spectrum uniform, a reactive particle, or a SceneScript audio
+    // buffer).  Non-audio scenes skip the full 512-sample x2 FFT every frame
+    //.
+    if (m_audioAnalyzer && hasAudioConsumer()) {
         m_audioAnalyzer->Process();
     }
 
@@ -119,6 +122,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     if (info.has_AUDIOSPECTRUM16LEFT || info.has_AUDIOSPECTRUM16RIGHT ||
         info.has_AUDIOSPECTRUM32LEFT || info.has_AUDIOSPECTRUM32RIGHT ||
         info.has_AUDIOSPECTRUM64LEFT || info.has_AUDIOSPECTRUM64RIGHT) {
+        m_hasAudioUniform = true; // scene-level aggregate FFT gate
         LOG_INFO("Audio spectrum uniforms detected for node %d", pNode->ID());
     }
 

@@ -229,6 +229,19 @@ public:
 
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
+    // push the SceneScript audio-consumer term (engine._audioRegs
+    // non-empty) into the current scene's updater so the FFT gate keeps
+    // Process() running for script-only-audio scenes (the CRITICAL starvation
+    // guard).  Called from the QML thread (SceneObject::setupTextScripts, fired
+    // on firstFrame, so the scene is already published); .load() stabilises the
+    // pointer and the updater flag is atomic.
+    void setHasScriptAudio(bool v) {
+        auto scene = m_scene.load();
+        if (! scene) return;
+        if (auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get()))
+            updater->SetHasScriptAudio(v);
+    }
+
     std::vector<AnimationEventInfo> drainAnimationEvents() {
         // m_scene is an atomic<shared_ptr> re-published by loadScene on the main
         // looper thread (a reload re-assigns it), and read here on the QML
@@ -401,7 +414,7 @@ public:
     // node destroyed); identity is a safe fallback because scripts mainly
     // inspect translation indices [12,13] which read as 0 from identity.
     std::array<float, 16> getLayerWorldMatrix(i32 id) const {
-        // Spec 09 — a reader has appeared: enable the per-frame rebuild from now
+        // a reader has appeared: enable the per-frame rebuild from now
         // on.  Idempotent; relaxed.  The very first read (before the producer
         // observes the flag) falls through to the identity fallback, which is
         // the documented not-yet-cached behavior.
@@ -717,9 +730,11 @@ private:
             // emitter authored audioprocessingmode != 0, sample the bass band
             // of the FFT spectrum and push a multiplier into Emitt's rate_eff.
             // Smoothing state lives on the subsystem so attack/decay survives
-            // across frames.  Cheap when no subsystems are flagged (early-out
-            // on IsAudioReactive).
-            {
+            // across frames.  Skipped entirely (no map walk, no spectrum span
+            // fetch) when no subsystem is audio-reactive (the vast majority of
+            // scenes); the flag is OR'd over particleSubByNodeId once at scene
+            // build.
+            if (scene->hasAudioReactiveParticles) {
                 auto                   analyzer  = scene->audioAnalyzer;
                 std::span<const float> specLeft  = analyzer && analyzer->HasData()
                                                        ? analyzer->GetRawSpectrum(16, 0)
@@ -1346,7 +1361,7 @@ private:
             // of Life Tool Selection / Color / Stamp buttons all fall in
             // this category, and the previous local-only snapshot put
             // their hit rects at the wrong world position.
-            // Spec 09 — only rebuild when a SceneScript has read the world cache
+            // only rebuild when a SceneScript has read the world cache
             // at least once.  Non-hit-testing scenes (the vast majority) skip the
             // O(named-nodes) UpdateTrans() walk + map churn entirely.  When it IS
             // needed, update in place (operator[] via worldCacheAssign) instead
@@ -1381,7 +1396,7 @@ private:
                     for (int c = 0; c < 4; ++c)
                         for (int r = 0; r < 4; ++r)
                             arr[c * 4 + r] = static_cast<float>(wt(r, c));
-                    worldCacheAssign(m_layer_world_cache, id, arr); // Spec 09 in-place
+                    worldCacheAssign(m_layer_world_cache, id, arr); // in-place reuse
                 }
             }
 
@@ -1474,7 +1489,7 @@ private:
                 if (m_rg) m_render->clearLastRenderGraph(prev.get());
             }
             m_scene.store(scene);
-            // Spec 09 — drop the previous scene's world-cache entries and reset
+            // drop the previous scene's world-cache entries and reset
             // the needs-cache gate.  In-place operator[] reuse (no per-frame
             // clear()) means a reload must clear here so a recycled id never
             // returns the old scene's matrix; resetting the gate returns a new
@@ -1898,7 +1913,7 @@ private:
     // 16-float matrices.  Mutable so const accessors can lock it.
     mutable std::mutex                                       m_world_cache_mutex;
     std::unordered_map<i32, std::array<float, 16>>           m_layer_world_cache;
-    // Spec 09 — set true the first time the GUI-thread bridge reads the world
+    // set true the first time the GUI-thread bridge reads the world
     // cache (thisLayer.getTransformMatrix() / hit-test).  Until then the render
     // thread skips the whole O(named-nodes) rebuild below.  mutable so the const
     // reader can latch it; relaxed ordering — a one-frame delay before the
@@ -2113,6 +2128,8 @@ std::array<int32_t, 2> SceneWallpaper::getOrthoSize() const {
 SceneWallpaper::ParallaxInfo SceneWallpaper::getParallaxInfo() const {
     return m_main_handler->getParallaxInfo();
 }
+
+void SceneWallpaper::setHasScriptAudio(bool v) { m_main_handler->setHasScriptAudio(v); }
 
 void SceneWallpaper::updateNodeTransform(int32_t id, const std::string& property, float x, float y,
                                          float z) {
@@ -2843,6 +2860,11 @@ void MainHandler::loadScene() {
     scene->audioAnalyzer = m_audio_analyzer;
     if (auto* wpUpdater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
         wpUpdater->SetAudioAnalyzer(m_audio_analyzer);
+        // push the reactive-particle term so the FFT gate keeps
+        // Process() running for audio-reactive-particle scenes.  Set here (load
+        // thread, before the scene is published) so it happens-before the first
+        // render-thread FrameBegin read.
+        wpUpdater->SetHasReactiveParticles(scene->hasAudioReactiveParticles);
         LOG_INFO("Audio analyzer connected to shader value updater");
     }
 

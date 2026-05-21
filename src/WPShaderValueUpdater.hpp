@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -89,6 +90,27 @@ struct PendingAnimationEvent {
     std::string name;
 };
 
+// "this scene consumes audio" predicate.  The per-frame audio FFT
+// (AudioAnalyzer::Process) + the emit-rate scan must run iff SOMETHING reads
+// the spectrum: a shader uniform (has_AUDIOSPECTRUM*), an audio-reactive
+// particle subsystem, OR a SceneScript audio buffer registration
+// (engine._audioRegs non-empty).  CRITICAL: all three terms are required —
+// omitting the script-audio term starves script-only-audio scenes (their
+// _audioRegs consumer would get no data).
+inline bool audioConsumerPredicate(bool hasUniform, bool hasReactiveParticle, bool hasScriptAudio) {
+    return hasUniform || hasReactiveParticle || hasScriptAudio;
+}
+
+// True iff ANY subsystem in [begin,end) is audio-reactive.  Computed
+// once at scene build and stored on Scene so the render thread reads it without
+// re-scanning particleSubByNodeId.  Iterates a map<id, ParticleSubSystem*>.
+template<class It>
+inline bool anyAudioReactive(It begin, It end) {
+    for (It it = begin; it != end; ++it)
+        if (it->second && it->second->IsAudioReactive()) return true;
+    return false;
+}
+
 class WPShaderValueUpdater : public IShaderValueUpdater {
 public:
     WPShaderValueUpdater(Scene* scene): m_scene(scene) {}
@@ -110,6 +132,21 @@ public:
     void                    SetCameraShake(const WPCameraShake& value) { m_shake = value; }
     void                    SetAudioAnalyzer(std::shared_ptr<audio::AudioAnalyzer> analyzer) {
         m_audioAnalyzer = std::move(analyzer);
+    }
+    // Audio-consumer terms.  m_hasAudioUniform is OR'd from the
+    // per-node has_AUDIOSPECTRUM* bits in InitUniforms; these two are pushed in
+    // from the scene-build / SceneObject side.  Process() runs iff
+    // hasAudioConsumer() — non-audio scenes skip the per-frame FFT entirely.
+    void SetHasReactiveParticles(bool v) { m_hasReactiveParticles = v; }
+    // Written from the QML thread (SceneObject::setupTextScripts, fired on
+    // firstFrame) and read on the render thread (FrameBegin); atomic to avoid a
+    // data race.  Relaxed: a one-frame delay before the producer observes it is
+    // harmless (the first frame's audio buffers were already zero at startup).
+    void SetHasScriptAudio(bool v) { m_hasScriptAudio.store(v, std::memory_order_relaxed); }
+    bool hasAudioConsumer() const {
+        return audioConsumerPredicate(m_hasAudioUniform,
+                                      m_hasReactiveParticles,
+                                      m_hasScriptAudio.load(std::memory_order_relaxed));
     }
 
     // Append events fired by a specific node's puppet animation layer during
@@ -144,6 +181,12 @@ private:
     std::array<float, 2> m_screen_size { 1920, 1080 };
 
     std::shared_ptr<audio::AudioAnalyzer> m_audioAnalyzer;
+    // Audio-consumer aggregate (see audioConsumerPredicate).  The
+    // updater is created fresh per scene (WPSceneParser), so these start false
+    // and latch as consumers are detected; no reset needed.
+    bool              m_hasAudioUniform { false };
+    bool              m_hasReactiveParticles { false };
+    std::atomic<bool> m_hasScriptAudio { false };
 
     Map<void*, WPShaderValueData> m_nodeDataMap;
     Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;

@@ -4892,5 +4892,14 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         std::cerr.flush();
     }
 
+    // aggregate audio-reactivity once for the render-thread emit-rate
+    // gate.  particleSubByNodeId is exactly what the per-frame emit-rate scan
+    // (SceneWallpaper drawFrame) iterates, so OR'ing IsAudioReactive() over it
+    // gives the precise gate: when false, the scan would do nothing anyway.
+    context.scene->hasAudioReactiveParticles = anyAudioReactive(
+        context.scene->particleSubByNodeId.begin(), context.scene->particleSubByNodeId.end());
+    if (context.scene->hasAudioReactiveParticles)
+        LOG_INFO("Scene has audio-reactive particles: emit-rate scan enabled");
+
     return context.scene;
 }

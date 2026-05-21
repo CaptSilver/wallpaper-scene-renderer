@@ -162,6 +162,9 @@ public:
         float camY { 0.0f };
     };
     ParallaxInfo getParallaxInfo() const;
+    // push the SceneScript audio-consumer term into the FFT gate
+    // (engine._audioRegs non-empty).  Called from the QML/SceneObject side.
+    void setHasScriptAudio(bool v);
     void updateNodeTransform(int32_t id, const std::string& property, float x, float y, float z);
     void updateNodeVisible(int32_t id, bool visible);
     void updateNodeAlpha(int32_t id, float alpha);
