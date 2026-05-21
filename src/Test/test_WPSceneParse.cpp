@@ -251,4 +251,49 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(parser.Parse("empty", "", *vfs, sm, props) == nullptr);
     }
 
+    // Three transform-only groups declared in non-monotonic JSON order (30, 10,
+    // 20).  The render order of the scene root's children must follow the
+    // authored JSON "objects" order — the parser re-sorts root children to JSON
+    // order at the end of Parse (WPSceneParser.cpp:4430) so the two-pass
+    // group/image construction can't scramble Z-order (blue-archive sortLayer
+    // regression).  Groups keep this case glslang-free.
+    TEST_CASE("multi-object scene: root child render order follows JSON order") {
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 30, "name": "c", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true },
+    { "id": 10, "name": "a", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true },
+    { "id": 20, "name": "b", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs        = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_zorder", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->sceneGraph != nullptr);
+
+        // The root also carries camera/wrapper nodes, so filter to our three
+        // group ids and assert their RELATIVE order is the JSON declaration
+        // order (30, 10, 20) — not ascending id, not some construction order.
+        auto indexOf = [&](i32 id) -> long {
+            long i = 0;
+            for (auto& c : scene->sceneGraph->GetChildren()) {
+                if (c->ID() == id) return i;
+                ++i;
+            }
+            return -1;
+        };
+        const long i30 = indexOf(30), i10 = indexOf(10), i20 = indexOf(20);
+        REQUIRE(i30 >= 0);
+        REQUIRE(i10 >= 0);
+        REQUIRE(i20 >= 0);
+        CHECK(i30 < i10); // JSON order: 30 declared before 10
+        CHECK(i10 < i20); // 10 declared before 20
+    }
+
 } // TEST_SUITE
