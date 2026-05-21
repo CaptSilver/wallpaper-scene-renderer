@@ -1753,8 +1753,12 @@ void SceneObject::setupTextScripts() {
     // A reload via setSource() re-runs setupTextScripts on the same SceneObject:
     // reset the interrupt back-off so a fresh scene is not pre-disabled by a
     // previous wallpaper's runaway.
-    m_consecutivePropInterrupts = 0;
-    m_propertyScriptsDisabled   = false;
+    m_consecutivePropInterrupts  = 0;
+    m_propertyScriptsDisabled    = false;
+    m_consecutiveTextInterrupts  = 0;
+    m_textScriptsDisabled        = false;
+    m_consecutiveColorInterrupts = 0;
+    m_colorScriptsDisabled       = false;
 
     // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
     // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
@@ -3870,6 +3874,9 @@ void SceneObject::refreshAudioBuffers() {
 
 void SceneObject::evaluateTextScripts() {
     if (! m_jsEngine || m_textScriptStates.empty()) return;
+    // A3-T2 — once the watchdog has disabled this wallpaper's text scripts (K
+    // consecutive interrupts), stay idle (the text timer is also stopped).
+    if (m_textScriptsDisabled) return;
 
     // Render-frame gate: only fire when the render thread has produced a new
     // frame since the previous eval.  The timer ticks at 125Hz but actual
@@ -3917,10 +3924,15 @@ void SceneObject::evaluateTextScripts() {
     int        updated = 0, errors = 0;
     static int s_textDebugCount = 0;
     s_textDebugCount++;
+    bool textInterrupted = false;
     for (auto& state : m_textScriptStates) {
-        QJSValue result = callJsGuarded([&] {
-            return state.updateFn.call({ QJSValue(state.currentText) });
-        });
+        bool     wasInterrupted = false;
+        QJSValue result         = callJsGuarded(
+            [&] {
+                return state.updateFn.call({ QJSValue(state.currentText) });
+            },
+            &wasInterrupted);
+        textInterrupted = textInterrupted || wasInterrupted;
         if (result.isError()) {
             errors++;
             static std::unordered_set<int> textErroredIds;
@@ -3986,15 +3998,26 @@ void SceneObject::evaluateTextScripts() {
                      errors);
         }
     }
+
+    // A3-T2 back-off: latch text scripts off after K consecutive interrupts so a
+    // runaway text script stops re-interrupting (and pinning a CPU) every tick.
+    applyInterruptBackoff(
+        textInterrupted, m_consecutiveTextInterrupts, m_textScriptsDisabled, m_textTimer, "text");
 }
 
 void SceneObject::evaluateColorScripts() {
     if (! m_jsEngine) return;
+    // A3-T2 — color + shader-value share this method/timer; once disabled, idle.
+    if (m_colorScriptsDisabled) return;
     // Idle when there is nothing to evaluate OR the wallpaper is paused (F19).
     // pause() also stops m_colorTimer; this guards the setup-time seed eval and
     // any tick already queued when pause() ran.
     const bool hasStates = ! m_colorScriptStates.empty() || ! m_shaderValueScriptStates.empty();
     if (! scriptLoopShouldRun(hasStates, m_paused)) return;
+
+    // A3-T2 — OR'd across the color + shader-value guarded calls; drives the
+    // shared back-off latch at the tail.
+    bool colorInterrupted = false;
 
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
@@ -4030,9 +4053,13 @@ void SceneObject::evaluateColorScripts() {
                               .arg((double)state.currentColor[2], 0, 'g', 8);
         QJSValue colorVal = m_jsEngine->evaluate(colorJs);
 
-        QJSValue result = callJsGuarded([&] {
-            return state.updateFn.call({ colorVal });
-        });
+        bool     wasInterrupted = false;
+        QJSValue result         = callJsGuarded(
+            [&] {
+                return state.updateFn.call({ colorVal });
+            },
+            &wasInterrupted);
+        colorInterrupted = colorInterrupted || wasInterrupted;
         if (result.isError()) {
             qCWarning(wekdeScene,
                       "Color script runtime error id=%d: %s",
@@ -4108,9 +4135,13 @@ void SceneObject::evaluateColorScripts() {
             arg = m_jsEngine->evaluate(ctor);
         }
 
-        QJSValue result = callJsGuarded([&] {
-            return state.updateFn.call({ arg });
-        });
+        bool     wasInterrupted = false;
+        QJSValue result         = callJsGuarded(
+            [&] {
+                return state.updateFn.call({ arg });
+            },
+            &wasInterrupted);
+        colorInterrupted = colorInterrupted || wasInterrupted;
         if (result.isError()) {
             static std::unordered_set<int64_t> svErrored;
             int64_t tag = ((int64_t)state.id << 32) ^
@@ -4156,6 +4187,13 @@ void SceneObject::evaluateColorScripts() {
         m_scene->updateEffectMaterialValue(state.id, state.effectIdx, state.uniformName,
                                            std::move(floats));
     }
+
+    // A3-T2 back-off: color + shader-value share one latch (same method/timer).
+    applyInterruptBackoff(colorInterrupted,
+                          m_consecutiveColorInterrupts,
+                          m_colorScriptsDisabled,
+                          m_colorTimer,
+                          "color");
 }
 
 QJSValue SceneObject::callJsGuarded(const std::function<QJSValue()>& fn, bool* outInterrupted) {
@@ -4183,6 +4221,29 @@ QJSValue SceneObject::callJsGuarded(const std::function<QJSValue()>& fn, bool* o
         if (outInterrupted) *outInterrupted = true;
     }
     return result;
+}
+
+bool SceneObject::applyInterruptBackoff(bool tickInterrupted, int& consecutive, bool& disabledFlag,
+                                        QTimer* timer, const char* what) {
+    if (! tickInterrupted) {
+        consecutive = 0;
+        return false;
+    }
+    consecutive++;
+    if (scenebackend::shouldDisableAfterInterrupts(
+            consecutive, scenebackend::JsWatchdog::kDisableAfterInterrupts) &&
+        ! disabledFlag) {
+        disabledFlag = true;
+        if (timer) timer->stop();
+        LOG_ERROR("%s script exceeded %lldms budget %d ticks running — disabling %s for this "
+                  "wallpaper (it will stop updating)",
+                  what,
+                  (long long)m_jsWatchdogBudgetMs,
+                  consecutive,
+                  what);
+        return true;
+    }
+    return false;
 }
 
 void SceneObject::evaluatePropertyScripts() {
@@ -4879,7 +4940,17 @@ void SceneObject::evaluatePropertyScripts() {
             }
         }
 
-        QJSValue result = svState.updateFn.call({ QJSValue((double)baseVolume) });
+        // Guard the author volume script under the watchdog and fold its
+        // interrupt into the property tick's back-off (tickInterrupted drives the
+        // back-off latch) — a runaway setVolume(()=>{while(true){}}) is now
+        // interrupted instead of freezing the GUI thread.
+        bool     svInterrupted = false;
+        QJSValue result        = callJsGuarded(
+            [&] {
+                return svState.updateFn.call({ QJSValue((double)baseVolume) });
+            },
+            &svInterrupted);
+        tickInterrupted = tickInterrupted || svInterrupted;
         if (result.isError()) {
             static std::unordered_set<int> erroredIndices;
             if (erroredIndices.find(svState.index) == erroredIndices.end()) {
@@ -5041,22 +5112,15 @@ void SceneObject::evaluatePropertyScripts() {
     // wallpaper's property scripts (stop the timer, latch the gate, log once) so
     // a persistent runaway stops animating instead of perpetually losing one
     // tick (and pinning a CPU on the watchdog) every 8ms.
-    if (tickInterrupted) {
-        m_consecutivePropInterrupts++;
-        if (scenebackend::shouldDisableAfterInterrupts(
-                m_consecutivePropInterrupts, scenebackend::JsWatchdog::kDisableAfterInterrupts) &&
-            ! m_propertyScriptsDisabled) {
-            m_propertyScriptsDisabled = true;
-            if (m_propertyTimer) m_propertyTimer->stop();
-            LOG_ERROR("property script exceeded %lldms budget %d ticks running — disabling "
-                      "property scripts for this wallpaper (it will stop animating)",
-                      (long long)m_jsWatchdogBudgetMs,
-                      m_consecutivePropInterrupts);
-            return; // do not chain color eval on a wallpaper we just disabled
-        }
-    } else {
-        m_consecutivePropInterrupts = 0;
-    }
+    // A3-T2 back-off (shared helper — see applyInterruptBackoff).  A clean tick
+    // resets the run; once K consecutive interrupts disable this wallpaper's
+    // property scripts, bail before chaining color eval.
+    if (applyInterruptBackoff(tickInterrupted,
+                              m_consecutivePropInterrupts,
+                              m_propertyScriptsDisabled,
+                              m_propertyTimer,
+                              "property"))
+        return; // do not chain color eval on a wallpaper we just disabled
 
     // Chain color/shader-value evaluation into the same tick so transient
     // signaling state (shared.brushEditor.hasChanged = true → consume → set
@@ -5101,6 +5165,14 @@ void SceneObject::cleanupTextScripts() {
     m_shaderValueScriptStates.clear();
     m_propertyScriptStates.clear();
     m_soundVolumeScriptStates.clear();
+    // A3-T2: clear the per-loop interrupt back-off so a switch to a healthy
+    // wallpaper isn't pre-disabled by a previous one's runaway (Item 05).
+    m_consecutiveTextInterrupts  = 0;
+    m_textScriptsDisabled        = false;
+    m_consecutiveColorInterrupts = 0;
+    m_colorScriptsDisabled       = false;
+    m_consecutivePropInterrupts  = 0;
+    m_propertyScriptsDisabled    = false;
     m_nodeNameToId.clear();
     m_collectDirtyLayersFn    = QJSValue();
     m_fireSceneEventFn        = QJSValue();

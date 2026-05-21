@@ -7602,6 +7602,107 @@ TEST_SUITE("JS watchdog back-off policy (A3-T2)") {
         CHECK(engine.isInterrupted() == false);
         wd.stop();
     }
+
+    // Item 05 — the shared back-off helper (SceneObject::applyInterruptBackoff) is
+    // a thin wrapper over shouldDisableAfterInterrupts + a disabled flag + a timer
+    // stop.  scenescript_tests can't build SceneObject, so this fixture is a
+    // faithful int/bool reimplementation that locks the contract the three tick
+    // loops (property/text/color) now share.
+    struct Backoff {
+        int  consecutive  = 0;
+        bool disabled     = false;
+        bool timerStopped = false;
+        // Returns true if scripts were JUST disabled (caller bails this tick).
+        bool apply(bool tickInterrupted, int k) {
+            if (! tickInterrupted) {
+                consecutive = 0;
+                return false;
+            }
+            consecutive++;
+            if (shouldDisableAfterInterrupts(consecutive, k) && ! disabled) {
+                disabled     = true;
+                timerStopped = true;
+                return true;
+            }
+            return false;
+        }
+    };
+
+    TEST_CASE("applyInterruptBackoff: runaway stream disables at exactly K") {
+        const int K = JsWatchdog::kDisableAfterInterrupts; // 5
+        Backoff   b;
+        for (int i = 1; i < K; ++i) {
+            CHECK(b.apply(/*interrupted=*/true, K) == false); // ticks 1..K-1: no disable
+            CHECK(b.disabled == false);
+        }
+        CHECK(b.apply(/*interrupted=*/true, K) == true); // tick K: disable fires once
+        CHECK(b.disabled == true);
+        CHECK(b.timerStopped == true);
+        CHECK(b.consecutive == K);
+    }
+
+    TEST_CASE("applyInterruptBackoff: a clean tick before K resets the run") {
+        const int K = JsWatchdog::kDisableAfterInterrupts;
+        Backoff   b;
+        for (int i = 1; i < K; ++i) CHECK(b.apply(true, K) == false);
+        CHECK(b.apply(/*clean*/ false, K) == false); // reset
+        CHECK(b.consecutive == 0);
+        CHECK(b.disabled == false);
+        // Now a fresh full run is needed to trip it.
+        for (int i = 1; i < K; ++i) CHECK(b.apply(true, K) == false);
+        CHECK(b.apply(true, K) == true);
+    }
+
+    TEST_CASE("applyInterruptBackoff: once disabled the flag stays latched (idempotent)") {
+        const int K = JsWatchdog::kDisableAfterInterrupts;
+        Backoff   b;
+        for (int i = 0; i < K; ++i) b.apply(true, K);
+        CHECK(b.disabled == true);
+        b.timerStopped = false; // observe re-stop attempts
+        // Further interrupted ticks must NOT re-fire the disable.
+        CHECK(b.apply(true, K) == false);
+        CHECK(b.apply(true, K) == false);
+        CHECK(b.timerStopped == false);
+        CHECK(b.disabled == true);
+    }
+
+    TEST_CASE("applyInterruptBackoff: property/text/color latches are independent") {
+        // The shared helper must not couple the three loops — separate
+        // counters/flags/timers per loop (Item 05 de-dup must not regress this).
+        const int K = JsWatchdog::kDisableAfterInterrupts;
+        Backoff   prop, text, color;
+        for (int i = 0; i < K; ++i) text.apply(true, K); // only text runs away
+        CHECK(text.disabled == true);
+        CHECK(prop.disabled == false);  // property unaffected
+        CHECK(color.disabled == false); // color unaffected
+    }
+
+    // Item 05 — a runaway script body (stands in for the sv/text/color loops:
+    // identical arm->call->disarm->count bracket) is interrupted, and after K
+    // consecutive interrupts the shared back-off latches off.  Requires Item 03's
+    // header-inline interruptEngine to link a real armed watchdog.
+    TEST_CASE("runaway tick-loop body is interrupted and latches off after K") {
+        QJSEngine  engine;
+        JsWatchdog wd;
+        wd.start();
+        QJSValue  runaway = engine.evaluate("(function(){ while(true){} })");
+        Backoff   loop; // the per-loop latch state (mirrors applyInterruptBackoff)
+        const int K        = JsWatchdog::kDisableAfterInterrupts;
+        bool      disabled = false;
+        for (int tick = 0; tick < K && ! disabled; ++tick) {
+            wd.arm(&engine, 30); // tiny budget
+            QJSValue   r     = runaway.call();
+            const bool fired = wd.disarm();
+            CHECK(fired == true); // interrupted, control returned
+            CHECK(r.isError() == true);
+            if (fired) engine.setInterrupted(false);
+            disabled = loop.apply(/*tickInterrupted=*/fired, K);
+        }
+        CHECK(loop.disabled == true); // latched off after K
+        CHECK(loop.consecutive == K);
+        CHECK(engine.isInterrupted() == false); // latch cleared
+        wd.stop();
+    }
 } // TEST_SUITE JS watchdog back-off policy (A3-T2)
 
 // ------------------------------------------------------------------

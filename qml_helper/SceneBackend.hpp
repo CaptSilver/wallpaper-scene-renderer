@@ -330,6 +330,14 @@ private:
     // call's QJSValue (undefined on interrupt/throw).
     QJSValue callJsGuarded(const std::function<QJSValue()>& fn, bool* outInterrupted = nullptr);
 
+    // A3-T2 back-off shared by the property/text/color tick loops.  On an
+    // interrupted tick increments `consecutive`; once the run reaches
+    // JsWatchdog::kDisableAfterInterrupts (and not already disabled) it latches
+    // `disabledFlag`, stops `timer`, logs once, and returns true (caller bails
+    // this tick).  A clean tick zeroes `consecutive`.  `what` names the loop.
+    bool applyInterruptBackoff(bool tickInterrupted, int& consecutive, bool& disabledFlag,
+                               QTimer* timer, const char* what);
+
     bool m_inited { false };
     bool m_enable_valid { false };
     // Set by pause()/play().  Gates the property + color script loops (F19) via
@@ -485,6 +493,15 @@ private:
     // shell) and m_propertyScriptsDisabled latches so we log only once.
     int                                      m_consecutivePropInterrupts { 0 };
     bool                                     m_propertyScriptsDisabled { false };
+    // A3-T2 back-off for the text and color tick loops — separate methods/timers
+    // (m_textTimer/m_colorTimer), so they can't reuse the property latch.  Same
+    // disable-after-K policy via applyInterruptBackoff.  (Sound-volume rides the
+    // property latch via tickInterrupted; shader-value rides the color latch —
+    // same method/timer.)  Reset on wallpaper switch (setup/cleanupTextScripts).
+    int  m_consecutiveTextInterrupts { 0 };
+    bool m_textScriptsDisabled { false };
+    int  m_consecutiveColorInterrupts { 0 };
+    bool m_colorScriptsDisabled { false };
     // Drives the watchdog deadline (ms).  Overridable so a unit/integration
     // test can inject a tiny budget without waiting 250ms; production leaves
     // it at the default.
