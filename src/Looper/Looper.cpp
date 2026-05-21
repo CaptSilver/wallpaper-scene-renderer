@@ -1,5 +1,6 @@
 #include "Looper.hpp"
 #include <algorithm>
+#include <exception>
 
 #include "Core/Visitors.hpp"
 #include "Utils/Logging.h"
@@ -29,9 +30,20 @@ bool Looper::loop() {
         msg = *m_msg_queue.begin();
         m_msg_queue.erase(m_msg_queue.begin());
     }
-    msg.msg->deliver();
-    if (msg.msg->cleanAfterDeliver()) {
-        msg.msg->cleanContent();
+    // The render/parse path runs entirely inside deliver().  An uncaught
+    // exception escaping here would unwind out of the worker std::thread and
+    // call std::terminate(), taking down plasmashell with the wallpaper.  Log
+    // and continue so a single malformed scene degrades gracefully.  Mirrors
+    // the catch idioms in SceneWallpaper.cpp.
+    try {
+        msg.msg->deliver();
+        if (msg.msg->cleanAfterDeliver()) {
+            msg.msg->cleanContent();
+        }
+    } catch (const std::exception& e) {
+        LOG_ERROR("looper '%s' deliver threw: %s", m_name.c_str(), e.what());
+    } catch (...) {
+        LOG_ERROR("looper '%s' deliver threw (non-std exception)", m_name.c_str());
     }
     return true;
 }
@@ -53,7 +65,16 @@ status_t Looper::start() {
             // expired is safe here
             // 1. looper deleted at another thread, will join this, expired() allways true
             // 2. looper deleted at this thread, only in loop(), expired() reliable
-            while (! wlooper.expired() && looper->m_running && looper->loop()) {
+            // Top-level guard: loop() already catches per-message throws, but keep
+            // a final net so the worker thread can never escape into std::terminate
+            // (which would crash plasmashell).  Let the thread exit cleanly instead.
+            try {
+                while (! wlooper.expired() && looper->m_running && looper->loop()) {
+                }
+            } catch (const std::exception& e) {
+                LOG_ERROR("%s looper thread threw: %s", name.c_str(), e.what());
+            } catch (...) {
+                LOG_ERROR("%s looper thread threw (non-std exception)", name.c_str());
             }
             LOG_INFO("%s looper stopped", name.c_str());
         },

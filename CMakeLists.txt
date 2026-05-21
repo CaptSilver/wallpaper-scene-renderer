@@ -19,6 +19,18 @@ option(MUTATION_TESTING "Enable Mull mutation testing instrumentation (requires 
 option(COVERAGE "Enable Clang source-based coverage instrumentation (requires Clang)" OFF)
 option(PROFILING "Enable lightweight scoped-timer profiler (SceneProfiler.h)" OFF)
 
+# Sanitizer plumbing (WEK_SANITIZE option + wek_apply_sanitizers helper).
+# Same canonical file the parent includes; the guard inside makes it idempotent
+# when the parent has already declared the option.  Lets the submodule be
+# sanitized on its own:  cmake -B b -S src/backend_scene -DWEK_SANITIZE=thread.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekSanitize.cmake)
+
+# Warning-flag plumbing (WEK_WERROR option + wek_warn_opts).  Same canonical
+# file the parent includes; the guard makes it idempotent.  Provides
+# WEK_WERROR_FLAGS, appended to the renderer `warn_opts` in src/CMakeLists.txt,
+# and wek_warn_opts for the wescene-renderer-qml bridge below.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekWarnings.cmake)
+
 if(PROFILING)
     # Applied before add_subdirectory so every backend target compiles the
     # WEK_PROFILE_SCOPE macros to real timers instead of ((void)0).
@@ -113,7 +125,14 @@ if(BUILD_QML)
     target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper third_party
         PRIVATE src/Audio/include)
 
-    set(CMAKE_AUTOMOC OFF) 
+    # The QML bridge (SceneBackend.cpp ~2200 lines) is dlopen'd into plasmashell
+    # via the plugin .so but previously carried NO warning flags.  Apply the
+    # conservative wek_warn_opts (-Wall -Wextra, +/-Werror under WEK_WERROR).
+    # Not the full -Wconversion family: the bridge marshals QJSEngine doubles
+    # <-> C++ ints heavily and that would drown the actionable warnings.
+    target_compile_options(${PROJECT_NAME}-qml PRIVATE ${wek_warn_opts})
+
+    set(CMAKE_AUTOMOC OFF)
     set(CMAKE_AUTORCC OFF) 
     set(CMAKE_AUTOUIC OFF) 
 endif()

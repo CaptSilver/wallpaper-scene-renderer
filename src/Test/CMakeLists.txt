@@ -1,5 +1,11 @@
 enable_testing()
 
+# WPTextRenderer.cpp (pulled in for the WPSceneParser::Parse end-to-end test)
+# rasterizes glyphs via FreeType.  find_package here so the Freetype::Freetype
+# imported target is visible in this subdirectory scope (the one in
+# src/CMakeLists.txt is a sibling and doesn't propagate the imported target).
+find_package(Freetype REQUIRED)
+
 set(DOCTEST_INCLUDE_DIR
     "${CMAKE_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
@@ -66,6 +72,7 @@ add_executable(backend_scene_tests
     test_WPScenePostprocessing.cpp
     test_WPImageObject.cpp
     test_ParticleEmitter.cpp
+    test_Determinism.cpp
     test_WPSoundObject.cpp
     test_WPScene.cpp
     test_WPMaterial.cpp
@@ -76,6 +83,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserDeepKill.cpp
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
+    test_WPSceneParse.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
@@ -93,6 +101,19 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/Scene/SceneIndexArray.cpp
     ${SRC_DIR}/Scene/SceneVertexArray.cpp
     ${SRC_DIR}/Scene/SceneShader.cpp
+    # End-to-end WPSceneParser::Parse() coverage (test_WPSceneParse.cpp) needs
+    # the parser TU plus its transitive non-Vulkan deps.  WPShaderParser.cpp
+    # transitively references glslang (host-CPU SPIR-V toolchain, NOT a Vulkan
+    # device) via Vulkan/ShaderComp.hpp — satisfied by linking wpVulkan below,
+    # mirroring fuzz_WPShaderParser.  No vkCreate*-class device symbol is
+    # pulled in (the fixture scene loads no materials/shaders).
+    ${SRC_DIR}/WPSceneParser.cpp
+    ${SRC_DIR}/WPShaderParser.cpp
+    ${SRC_DIR}/WPShaderValueUpdater.cpp
+    ${SRC_DIR}/WPTextRenderer.cpp
+    ${SRC_DIR}/wpscene/WPLightObject.cpp
+    ${SRC_DIR}/wpscene/WPModelObject.cpp
+    ${SRC_DIR}/wpscene/WPTextObject.cpp
 )
 
 target_include_directories(backend_scene_tests PRIVATE
@@ -110,12 +131,21 @@ target_link_libraries(backend_scene_tests PRIVATE
     wpFs
     wpAudio
     wpParticle
+    # wpVulkan supplies the glslang/SPIRV-Reflect symbols WPShaderParser.cpp
+    # references (CompileToSpv / Init/FinalGlslang).  It is the host-CPU shader
+    # toolchain, not a Vulkan device — the binary stays headless-safe.
+    wpVulkan
+    # WPTextRenderer.cpp rasterizes via FreeType.
+    Freetype::Freetype
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
     nlohmann_json
 )
 
 target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
+
+# Opt-in sanitizers (WEK_SANITIZE=address,undefined | thread). No-op when empty.
+wek_apply_sanitizers(backend_scene_tests)
 
 if(MUTATION_TESTING)
     target_compile_options(backend_scene_tests PRIVATE
@@ -126,6 +156,12 @@ if(MUTATION_TESTING)
 endif()
 
 add_test(NAME backend_scene_tests COMMAND backend_scene_tests)
+# Backstop against a wedged run (e.g. a device-enumeration block that slips
+# the WEKDE_HAS_AUDIO_DEVICE env gate).  The non-blocking suite finishes in
+# seconds; 120s leaves headroom for a real audio-enabled local run.  NOTE:
+# this only protects ctest-driven runs — preflight.sh invokes the binary
+# BARE, so the env gate in the audio test cases is the load-bearing fix.
+set_tests_properties(backend_scene_tests PROPERTIES TIMEOUT 120)
 
 # Expose wp-pkg binary path to tests when BUILD_TOOLS is on.  The wp-pkg pack
 # format suite shells out to the real binary; when the tool isn't built (the
@@ -151,8 +187,39 @@ if(Qt6_FOUND)
         ${DOCTEST_INCLUDE_DIR}
     )
     target_link_libraries(scenescript_tests PRIVATE Qt6::Core Qt6::Qml)
+    wek_apply_sanitizers(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
+    set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)
 endif()
+
+# ── Thread-safety repro (run under -DWEK_SANITIZE=thread) ─────────────────────
+# Focused multithread exerciser for the B5 races.  Links wpScene (Scene +
+# SceneNode, NO Vulkan) so it drives the REAL parent-tree fix (B5b), plus a
+# generic atomic<shared_ptr> stand-in for the B5a pattern (SceneWallpaper.cpp
+# can't link without Vulkan).  Builds in any config; only meaningful under TSAN.
+# WEK_THREAD_REPRO_PROVE_RACE=ON swaps repro 1 to a deliberately racy plain
+# shared_ptr to demonstrate the harness bites (TSAN should then report a race).
+add_executable(backend_scene_thread_tests
+    test_thread_repro.cpp
+)
+target_include_directories(backend_scene_thread_tests PRIVATE
+    ${SRC_DIR}
+    ${SRC_DIR}/Scene/include
+    ${SRC_DIR}/Scene/include/Scene
+)
+target_link_libraries(backend_scene_thread_tests PRIVATE
+    wpScene wpUtils wpFs Eigen3::Eigen nlohmann_json Threads::Threads
+)
+option(WEK_THREAD_REPRO_PROVE_RACE
+       "Compile the thread repro with a deliberately racy plain shared_ptr \
+(demonstrates TSAN bites; leave OFF for the clean regression run)" OFF)
+if(WEK_THREAD_REPRO_PROVE_RACE)
+    target_compile_definitions(backend_scene_thread_tests PRIVATE
+        WEK_THREAD_REPRO_PROVE_RACE)
+endif()
+wek_apply_sanitizers(backend_scene_thread_tests)
+add_test(NAME backend_scene_thread_tests COMMAND backend_scene_thread_tests)
+set_tests_properties(backend_scene_thread_tests PROPERTIES TIMEOUT 300)
 
 # ── Coverage report target ────────────────────────────────────────────────────
 if(COVERAGE)

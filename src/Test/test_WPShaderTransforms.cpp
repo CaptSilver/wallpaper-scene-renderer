@@ -2707,3 +2707,208 @@ TEST_SUITE("FixImplicitConversions.intToFloat") {
         CHECK(out.find("float bar = _westep") != std::string::npos);
     }
 }
+
+// ===========================================================================
+// FixImplicitConversions — composite golden characterization (T0 safety net)
+// ===========================================================================
+// These pin the WHOLE-pipeline output of FixImplicitConversions for
+// representative HLSL→GLSL inputs.  Unlike the substring assertions above, each
+// CHECK_EQ freezes the EXACT composite result of all ~45 ordered phases.  They
+// exist so that mechanical refactors of FixImplicitConversions (static-regex
+// hoist, lambda/phase extraction) are provably non-regressing: any byte of
+// drift in the combined output fails here.  The expected strings were captured
+// from the current implementation; do NOT hand-edit them — if a CHECK_EQ fails
+// after a behaviour-preserving refactor, the refactor changed output (a bug),
+// not the golden.  Each golden targets a distinct phase cluster the existing
+// substring cases exercise.
+TEST_SUITE("FixImplicitConversions.goldenCharacterization") {
+    // Cluster: direct vec→vec truncation on assignment (vec2=vec4, vec3=vec4,
+    // vec2=vec3 each gain the right swizzle).
+    TEST_CASE("golden: direct vec truncation") {
+        std::string in =
+            "void main() {\n"
+            "  vec4 b;\n"
+            "  vec3 c;\n"
+            "  vec2 a;\n"
+            "  a = b;\n"
+            "  c = b;\n"
+            "  a = c;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec4 b;\n"
+                 "  vec3 c;\n"
+                 "  vec2 a;\n"
+                 "  a = b.xy;\n"
+                 "  c = b.xyz;\n"
+                 "  a = c.xy;\n"
+                 "}\n");
+    }
+
+    // Cluster: arithmetic swizzle truncation (mix-rank in `+`) — wider operand
+    // narrowed to the narrower LHS width on both operand orders.
+    TEST_CASE("golden: arithmetic swizzle truncation") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 a = vec2(0);\n"
+            "  vec4 b;\n"
+            "  vec3 d;\n"
+            "  vec2 r = a + b.xyzw;\n"
+            "  vec2 s = d.xyz + a;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec2 a = vec2(0);\n"
+                 "  vec4 b;\n"
+                 "  vec3 d;\n"
+                 "  vec2 r = a + b.xy;\n"
+                 "  vec2 s = d.xy + a;\n"
+                 "}\n");
+    }
+
+    // Cluster: uint modulo (three sub-patterns) + general `word % N`.
+    TEST_CASE("golden: uint modulo + general modulo") {
+        std::string in =
+            "void main() {\n"
+            "  uint b = (a + 1) % 32;\n"
+            "  uint c = (a - 3) % 16;\n"
+            "  uint idx = val % 8;\n"
+            "  x = foo % 10;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  uint b = uint((int(a) + 1) % 32);\n"
+                 "  uint c = uint((int(a) - 3) % 16);\n"
+                 "  uint idx = uint(int(val) % 8);\n"
+                 "  x = int(foo) % 10;\n"
+                 "}\n");
+    }
+
+    // Cluster: ternary condition is a bare integer literal → wrapped with bool().
+    TEST_CASE("golden: integer ternary condition wrapped with bool") {
+        std::string in =
+            "void main() {\n"
+            "  float r = (1 ? a : b);\n"
+            "  float s = cond , 0 ? c : d;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  float r = (bool(1) ? a : b);\n"
+                 "  float s = cond , bool(0) ? c : d;\n"
+                 "}\n");
+    }
+
+    // Cluster: int-promotion of bare integer literals inside (nested) builtin
+    // call args — the pass descends into the outer call (Cybering 2326102392).
+    TEST_CASE("golden: int promotion in nested builtin args") {
+        std::string in =
+            "float f(vec2 uv){\n"
+            "  return step(0.99, _wedot(step(0, uv) * step(uv, 1), vec2(0.5)));\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "float f(vec2 uv){\n"
+                 "  return step(0.99, _wedot(step(0.0, uv) * step(uv, 1.0), vec2(0.5)));\n"
+                 "}\n");
+    }
+
+    // Cluster: scalar broadcast — `float = vecN_expr` gains a trailing `.x`
+    // (Lens Flare Sun 2487531853).
+    TEST_CASE("golden: scalar broadcast appends .x") {
+        std::string in =
+            "uniform vec2 g_PointerPosition;\n"
+            "uniform float u_pointerSpeed;\n"
+            "void main() {\n"
+            "  float pointer = g_PointerPosition.xy * u_pointerSpeed;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform vec2 g_PointerPosition;\n"
+                 "uniform float u_pointerSpeed;\n"
+                 "void main() {\n"
+                 "  float pointer = (g_PointerPosition.xy * u_pointerSpeed).x;\n"
+                 "}\n");
+    }
+
+    // Cluster: for-loop int initializer/condition with a uniform float bound
+    // get wrapped in int(...).
+    TEST_CASE("golden: for-loop int init/cond promotion") {
+        std::string in =
+            "uniform float g_Count;\n"
+            "void main() {\n"
+            "  for (int i = -g_Count * 2; i <= g_Count * 2; ++i) {\n"
+            "    accum += i;\n"
+            "  }\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float g_Count;\n"
+                 "void main() {\n"
+                 "  for (int i = int(-g_Count * 2); i <= int(g_Count) * 2; ++i) {\n"
+                 "    accum += i;\n"
+                 "  }\n"
+                 "}\n");
+    }
+
+    // Cluster: `float VAR = int(...)` becomes `int VAR`; `const` dropped on a
+    // non-constant initializer but KEPT on a literal-only one.
+    TEST_CASE("golden: float-int ctor swap + const drop heuristic") {
+        std::string in =
+            "uniform float u_hueShift;\n"
+            "void main() {\n"
+            "  float x = int(foo);\n"
+            "  const float cos_a = cos(radians(u_hueShift));\n"
+            "  const vec3 k = vec3(0.57735);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_hueShift;\n"
+                 "void main() {\n"
+                 "  int x = int(foo);\n"
+                 "  float cos_a = cos(radians(u_hueShift));\n"
+                 "  const vec3 k = vec3(0.57735);\n"
+                 "}\n");
+    }
+
+    // Cluster: mix(scalar, vecN(scalar), ...) rank handling + bool*float wrap
+    // (Mikey 2622312893).
+    TEST_CASE("golden: mix rank + bool multiply wrap") {
+        std::string in =
+            "float in01(float f){ return float(f >= 0) * (f < 1); }\n"
+            "void main(){\n"
+            "  float m = mix(a, vec4(b), t);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "float in01(float f){ return float(f >= 0) * float(f < 1); }\n"
+                 "void main(){\n"
+                 "  float m = mix(a, vec4(b), t);\n"
+                 "}\n");
+    }
+
+    // Cluster: brace-list vec ctor stripped (Now Playing 2883312700) +
+    // smoothstep(vec, vec OP scalar, scalar) narrowed to .x (Mikey).
+    TEST_CASE("golden: brace-list ctor strip + smoothstep narrow") {
+        std::string in =
+            "void main(){\n"
+            "  vec4 albedo = vec4({ 1.0, 1.0, 1.0, 0.0 });\n"
+            "  vec2 dist = vec2(1.0);\n"
+            "  float smoothing = 0.5;\n"
+            "  float thresh = 0.5;\n"
+            "  float v = smoothstep(dist, dist + smoothing, thresh);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main(){\n"
+                 "  vec4 albedo = vec4( 1.0, 1.0, 1.0, 0.0 );\n"
+                 "  vec2 dist = vec2(1.0);\n"
+                 "  float smoothing = 0.5;\n"
+                 "  float thresh = 0.5;\n"
+                 "  float v = smoothstep(dist.x, dist.x + smoothing, thresh);\n"
+                 "}\n");
+    }
+}

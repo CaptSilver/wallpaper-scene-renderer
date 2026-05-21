@@ -8,7 +8,10 @@
 #include "SceneScriptShimsJs.hpp"
 
 #include "HoverLeaveDebounce.h"
+#include "JsStringEscape.hpp"
+#include "JsWatchdog.h"
 #include "SceneAspect.h"
+#include "ScriptLoopGate.h"
 
 using scenebackend::CursorParallax;
 using scenebackend::drainExpiredLeaves;
@@ -166,6 +169,74 @@ TEST_SUITE("SceneTimerBridge") {
 
         processEventsFor(200);
         CHECK(engine.evaluate("result").toInt() == 42);
+    }
+
+    // ── A3-T1: timer caps (untrusted-script hardening) ──────────────────────
+    // The clamp is a pure constexpr so it can be asserted exactly, without
+    // racing a real QTimer.  Floor is kMinTimerMs (8): a sub-8ms author delay
+    // can't schedule more GUI-thread wakeups than the 8ms engine tick.
+    TEST_CASE("clampInterval floors sub-minimum delays at kMinTimerMs") {
+        CHECK(SceneTimerBridge::kMinTimerMs == 8);
+        CHECK(SceneTimerBridge::clampInterval(0) == SceneTimerBridge::kMinTimerMs);
+        CHECK(SceneTimerBridge::clampInterval(1) == SceneTimerBridge::kMinTimerMs);
+        CHECK(SceneTimerBridge::clampInterval(7) == SceneTimerBridge::kMinTimerMs);
+        // At/above the floor the delay passes through unchanged.
+        CHECK(SceneTimerBridge::clampInterval(8) == 8);
+        CHECK(SceneTimerBridge::clampInterval(33) == 33);
+        CHECK(SceneTimerBridge::clampInterval(5000) == 5000);
+        // A negative delay (some scripts pass garbage) clamps up, never negative.
+        CHECK(SceneTimerBridge::clampInterval(-100) == SceneTimerBridge::kMinTimerMs);
+    }
+
+    // A delay-0 interval timer must fire no faster than the 8ms floor: in a
+    // 100ms window it can fire at most ~12 times (100/8), and crucially NOT the
+    // ~100 it would at the old 1ms floor.  Loose bound keeps it non-flaky.
+    TEST_CASE("createTimer(delay=0) is throttled to the kMinTimerMs floor") {
+        QJSEngine engine;
+        engine.evaluate("var n = 0;");
+        SceneTimerBridge bridge(&engine);
+        bridge.createTimer(engine.evaluate("(function(){ n++; })"), 0, /*repeat=*/true);
+
+        processEventsFor(100);
+        int n = engine.evaluate("n").toInt();
+        bridge.clearAll();
+        // 100ms / 8ms ≈ 12 fires max; allow generous headroom but well under the
+        // ~100 the unclamped 1ms floor would have produced.
+        CHECK(n >= 1);
+        CHECK(n <= 30);
+    }
+
+    // The hard cap rejects creation past kMaxTimers so a runaway author loop
+    // (`for(;;) setInterval(...)`) can't leak QTimers / GUI-thread wakeups.
+    // 5000ms delays guarantee none fire during the test (no hang, no flake).
+    TEST_CASE("createTimer rejects past kMaxTimers with a sentinel") {
+        QJSEngine        engine;
+        SceneTimerBridge bridge(&engine);
+        QJSValue         noop = engine.evaluate("(function(){})");
+
+        for (std::size_t i = 0; i < SceneTimerBridge::kMaxTimers; ++i) {
+            int id = bridge.createTimer(noop, 5000, /*repeat=*/true);
+            CHECK(id != SceneTimerBridge::kRejectedTimerId);
+        }
+        CHECK(bridge.activeCount() == (int)SceneTimerBridge::kMaxTimers);
+
+        // The (kMaxTimers+1)-th request is rejected and does NOT grow the table.
+        int rejected = bridge.createTimer(noop, 5000, /*repeat=*/true);
+        CHECK(rejected == SceneTimerBridge::kRejectedTimerId);
+        CHECK(bridge.activeCount() == (int)SceneTimerBridge::kMaxTimers);
+
+        // clearTimer on the sentinel is a harmless no-op (id was never inserted).
+        bridge.clearTimer(rejected);
+        CHECK(bridge.activeCount() == (int)SceneTimerBridge::kMaxTimers);
+
+        // After freeing one slot, creation is accepted again (cap is a live
+        // ceiling, not a permanent latch).
+        // Re-create a clearable timer to free a slot deterministically.
+        bridge.clearAll();
+        CHECK(bridge.activeCount() == 0);
+        int reopened = bridge.createTimer(noop, 5000, /*repeat=*/true);
+        CHECK(reopened != SceneTimerBridge::kRejectedTimerId);
+        bridge.clearAll();
     }
 
 } // TEST_SUITE SceneTimerBridge
@@ -1941,272 +2012,12 @@ static const char* JS_AUDIO_BUFFERS =
     "  return buf;\n"
     "});\n";
 
-static const char* JS_LAYER_INFRA =
-    "var _layerCache = {};\n"
-    // Dense list mirroring _layerCache so _collectDirtyLayers can iterate by
-    // index (production uses the same pattern — `for..in` on _layerCache was
-    // the dirtyCollect hot spot for 1200-slot pool scenes).
-    "var _layerList = [];\n"
-    "function _makeLayerProxy(name) {\n"
-    "  var init = _layerInitStates[name];\n"
-    "  var _s = init ? {\n"
-    "    origin: Vec3(init.o[0], init.o[1], init.o[2]),\n"
-    "    scale:  Vec3(init.s[0], init.s[1], init.s[2]),\n"
-    "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
-    "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
-    "    visible: init.v, alpha: 1.0,\n"
-    "    text: '', name: name, _dirty: {}\n"
-    "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
-    "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
-    "        visible: true, alpha: 1.0,\n"
-    "        text: '', name: name, _dirty: {} };\n"
-    "  var p = {};\n"
-    "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true });\n"
-    "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true "
-    "});\n"
-    "  var vec3Props = ['origin','scale','angles'];\n"
-    "  for (var i=0; i<vec3Props.length; i++) {\n"
-    "    (function(prop){\n"
-    "      Object.defineProperty(p, prop, {\n"
-    "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
-    "        set: function(v){ _s[prop] = Vec3(v && v.x||0, v && v.y||0, v && v.z||0);\n"
-    "                          _s._dirty[prop] = true; },\n"
-    "        enumerable: true\n"
-    "      });\n"
-    "    })(vec3Props[i]);\n"
-    "  }\n"
-    // Read-only parse-time snapshots (mirrors production _makeLayerProxy).
-    "  var _origO = init ? {x:init.o[0], y:init.o[1], z:init.o[2]} : {x:0,y:0,z:0};\n"
-    "  var _origS = init ? {x:init.s[0], y:init.s[1], z:init.s[2]} : {x:1,y:1,z:1};\n"
-    "  var _origA = init ? {x:init.a[0], y:init.a[1], z:init.a[2]} : {x:0,y:0,z:0};\n"
-    "  Object.defineProperty(p, 'originalOrigin', {\n"
-    "    get: function(){ return Vec3(_origO.x, _origO.y, _origO.z); },\n"
-    "    set: function(){}, enumerable: true });\n"
-    "  Object.defineProperty(p, 'originalScale', {\n"
-    "    get: function(){ return Vec3(_origS.x, _origS.y, _origS.z); },\n"
-    "    set: function(){}, enumerable: true });\n"
-    "  Object.defineProperty(p, 'originalAngles', {\n"
-    "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
-    "    set: function(){}, enumerable: true });\n"
-    // getInitialLayerConfig: pre-script snapshot bundle.
-    "  p.getInitialLayerConfig = function() {\n"
-    "    return {\n"
-    "      origin:  Vec3(_origO.x, _origO.y, _origO.z),\n"
-    "      scale:   Vec3(_origS.x, _origS.y, _origS.z),\n"
-    "      angles:  Vec3(_origA.x, _origA.y, _origA.z),\n"
-    "      alpha:   1.0,\n"
-    "      visible: init ? init.v : true,\n"
-    "      color:   Vec3(1, 1, 1),\n"
-    "      size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
-    "                                : {x: 0, y: 0}\n"
-    "    };\n"
-    "  };\n"
-    "  var scalarProps = ['visible','alpha'];\n"
-    "  for (var j=0; j<scalarProps.length; j++) {\n"
-    "    (function(prop){\n"
-    "      Object.defineProperty(p, prop, {\n"
-    "        get: function(){ return _s[prop]; },\n"
-    "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
-    "        enumerable: true\n"
-    "      });\n"
-    "    })(scalarProps[j]);\n"
-    "  }\n"
-    "  Object.defineProperty(p, 'text', {\n"
-    "    get: function(){ return _s.text; },\n"
-    "    set: function(v){ _s.text = v; _s._dirty.text = true; },\n"
-    "    enumerable: true\n"
-    "  });\n"
-    "  Object.defineProperty(p, 'size', {\n"
-    "    get: function(){ return _s.size; },\n"
-    "    enumerable: true\n"
-    "  });\n"
-    // Mirror the production proxy: `opacity` aliases `alpha`, `solid`
-    // defaults to true and is writeable.  Kept in sync with SceneBackend's
-    // _makeLayerProxy so the tests actually cover what production runs.
-    "  Object.defineProperty(p, 'opacity', {\n"
-    "    get: function(){ return _s.alpha; },\n"
-    "    set: function(v){ _s.alpha = v; _s._dirty.alpha = true; },\n"
-    "    enumerable: true\n"
-    "  });\n"
-    "  Object.defineProperty(p, 'solid', {\n"
-    "    get: function(){ return _s.solid === false ? false : true; },\n"
-    "    set: function(v){ _s.solid = !!v; },\n"
-    "    enumerable: true\n"
-    "  });\n"
-    "  p.play = function(){};\n"
-    "  p.stop = function(){};\n"
-    "  p.pause = function(){};\n"
-    "  p.isPlaying = function(){ return false; };\n"
-    "  p.getTextureAnimation = function(){\n"
-    "    return { rate: 0, frameCount: 1, _frame: 0,\n"
-    "      getFrame: function(){ return this._frame; },\n"
-    "      setFrame: function(f){ this._frame = f; },\n"
-    "      play: function(){ this.rate = 1; },\n"
-    "      pause: function(){ this.rate = 0; },\n"
-    "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
-    "      isPlaying: function(){ return this.rate > 0; }\n"
-    "    };\n"
-    "  };\n"
-    "  if (!_s._aniLayers) _s._aniLayers = {};\n"
-    "  p.getAnimationLayerCount = function(){ return Object.keys(_s._aniLayers).length || 1; };\n"
-    "  p.getAnimationLayer = function(idx) {\n"
-    "    var key = String(idx);\n"
-    "    if (_s._aniLayers[key]) return _s._aniLayers[key];\n"
-    "    var al = { rate: 1, blend: 1, visible: true, frameCount: 60, _frame: 0, _playing: false,\n"
-    "      play: function(){ al._playing = true; },\n"
-    "      pause: function(){ al._playing = false; },\n"
-    "      stop: function(){ al._playing = false; al._frame = 0; },\n"
-    "      isPlaying: function(){ return al._playing; },\n"
-    "      getFrame: function(){ return al._frame; },\n"
-    "      setFrame: function(f){ al._frame = f; }\n"
-    "    };\n"
-    "    _s._aniLayers[key] = al;\n"
-    "    return al;\n"
-    "  };\n"
-    // getEffect(name) — effect proxy with dirty-tracked visible
-    "  if (!_s._effCache) _s._effCache = {};\n"
-    "  p.getEffect = function(ename) {\n"
-    "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
-    "    var efxList = init ? init.efx : null;\n"
-    "    if (!efxList) return null;\n"
-    "    var idx = -1;\n"
-    "    for (var i = 0; i < efxList.length; i++) {\n"
-    "      if (efxList[i] === ename) { idx = i; break; }\n"
-    "    }\n"
-    "    if (idx < 0) return null;\n"
-    "    var es = { visible: true, name: ename, _idx: idx };\n"
-    "    var ep = {};\n"
-    "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: true "
-    "});\n"
-    "    Object.defineProperty(ep, 'visible', {\n"
-    "      get: function(){ return es.visible; },\n"
-    "      set: function(v){ es.visible = v; _s._dirty['_efx_' + idx] = { idx: idx, v: v }; },\n"
-    "      enumerable: true\n"
-    "    });\n"
-    "    _s._effCache[ename] = ep;\n"
-    "    return ep;\n"
-    "  };\n"
-    "  p.getEffectCount = function() {\n"
-    "    return (init && init.efx) ? init.efx.length : 0;\n"
-    "  };\n"
-    // Validity flag: production flips _destroyed in thisScene.destroyLayer.
-    "  p._destroyed = false;\n"
-    "  p.isObjectValid = function() { return !this._destroyed; };\n"
-    "  p._state = _s;\n"
-    // Layer-hierarchy fields & methods (mirror production _makeLayerProxy).
-    // Stash the node id on _state so __sceneBridge.setParent can resolve it.
-    "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
-    "    _s.id = _layerNameToId[name];\n"
-    "  }\n"
-    "  if (typeof _installHierarchyMethods === 'function') _installHierarchyMethods(p);\n"
-    "  return p;\n"
-    "}\n"
-    "var _nullProxy = (function() {\n"
-    "  var _s = { origin:{x:0,y:0,z:0}, scale:{x:1,y:1,z:1},\n"
-    "    angles:{x:0,y:0,z:0}, size:{x:0,y:0},\n"
-    "    visible:false, alpha:0, text:'', name:'', _dirty:{} };\n"
-    "  var p = {};\n"
-    "  Object.defineProperty(p, 'name', {get:function(){return '';}, enumerable:true});\n"
-    "  Object.defineProperty(p, 'debug', {get:function(){return undefined;}, enumerable:true});\n"
-    "  var vec3Props = ['origin','scale','angles'];\n"
-    "  for (var i=0; i<vec3Props.length; i++) {\n"
-    "    (function(prop){\n"
-    "      Object.defineProperty(p, prop, {\n"
-    "        get: function(){return _s[prop];}, set: function(v){},\n"
-    "        enumerable: true\n"
-    "      });\n"
-    "    })(vec3Props[i]);\n"
-    "  }\n"
-    "  var scalarProps = ['visible','alpha'];\n"
-    "  for (var j=0; j<scalarProps.length; j++) {\n"
-    "    (function(prop){\n"
-    "      Object.defineProperty(p, prop, {\n"
-    "        get: function(){return _s[prop];}, set: function(v){},\n"
-    "        enumerable: true\n"
-    "      });\n"
-    "    })(scalarProps[j]);\n"
-    "  }\n"
-    "  Object.defineProperty(p, 'text', {get:function(){return '';}, set:function(v){}, "
-    "enumerable:true});\n"
-    "  Object.defineProperty(p, 'size', {get:function(){return _s.size;}, enumerable:true});\n"
-    "  p.play = function(){}; p.stop = function(){};\n"
-    "  p.pause = function(){}; p.isPlaying = function(){return false;};\n"
-    "  p.getTextureAnimation = function(){\n"
-    "    return { rate:0, frameCount:1, _frame:0,\n"
-    "      getFrame:function(){return this._frame;}, setFrame:function(f){},\n"
-    "      play:function(){}, pause:function(){}, stop:function(){},\n"
-    "      isPlaying:function(){return false;}\n"
-    "    };\n"
-    "  };\n"
-    "  p.getAnimationLayerCount = function(){ return 0; };\n"
-    "  p.getAnimationLayer = function(idx){\n"
-    "    return { rate:0, blend:0, visible:false, frameCount:0, _frame:0, _playing:false,\n"
-    "      play:function(){}, pause:function(){}, stop:function(){},\n"
-    "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, "
-    "setFrame:function(f){}\n"
-    "    };\n"
-    "  };\n"
-    "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
-    "  p.getEffectCount = function() { return 0; };\n"
-    "  p._state = _s;\n"
-    "  return p;\n"
-    "})();\n"
-    "var thisScene = {\n"
-    "  getLayer: function(name) {\n"
-    "    if (_layerCache[name]) return _layerCache[name];\n"
-    "    if (!_layerInitStates[name]) return null;\n"
-    "    var layer = _makeLayerProxy(name);\n"
-    "    _layerCache[name] = layer;\n"
-    "    _layerList.push(layer);\n"
-    "    return layer;\n"
-    "  }\n"
-    "};\n"
-    "var _sceneListeners = {};\n"
-    "thisScene.on = function(eventName, callback) {\n"
-    "  if (typeof eventName !== 'string' || typeof callback !== 'function') return;\n"
-    "  if (!_sceneListeners[eventName]) _sceneListeners[eventName] = [];\n"
-    "  _sceneListeners[eventName].push(callback);\n"
-    "};\n"
-    "thisScene.off = function(eventName, callback) {\n"
-    "  if (!_sceneListeners[eventName]) return;\n"
-    "  if (typeof callback === 'function') {\n"
-    "    _sceneListeners[eventName] = _sceneListeners[eventName].filter(\n"
-    "      function(cb) { return cb !== callback; });\n"
-    "  } else { delete _sceneListeners[eventName]; }\n"
-    "};\n"
-    "function _fireSceneEvent(eventName) {\n"
-    "  var listeners = _sceneListeners[eventName];\n"
-    "  if (!listeners || listeners.length === 0) return 0;\n"
-    "  var args = Array.prototype.slice.call(arguments, 1);\n"
-    "  var count = 0;\n"
-    "  for (var i = 0; i < listeners.length; i++) {\n"
-    "    try { listeners[i].apply(null, args); count++; }\n"
-    "    catch(e) { console.log('scene.on(' + eventName + ') error: ' + e.message); }\n"
-    "  }\n"
-    "  return count;\n"
-    "}\n"
-    "function _hasSceneListeners(eventName) {\n"
-    "  var l = _sceneListeners[eventName];\n"
-    "  return l && l.length > 0;\n"
-    "}\n"
-    "var scene = thisScene;\n"
-    "var thisLayer = null;\n"
-    "function _collectDirtyLayers() {\n"
-    "  var updates = [];\n"
-    "  var list = _layerList;\n"
-    "  for (var li = 0, ln = list.length; li < ln; li++) {\n"
-    "    var layer = list[li];\n"
-    "    var s = layer._state;\n"
-    "    var d = s._dirty;\n"
-    "    var keys = Object.keys(d);\n"
-    "    if (keys.length === 0) continue;\n"
-    "    updates.push({ name: layer.name, dirty: d,\n"
-    "      origin: s.origin, scale: s.scale, angles: s.angles,\n"
-    "      visible: s.visible, alpha: s.alpha, text: s.text });\n"
-    "    s._dirty = {};\n"
-    "  }\n"
-    "  return updates;\n"
-    "}\n";
+// NOTE: the former hand-mirrored JS_LAYER_INFRA constant (a partial,
+// drifted copy of production's _makeLayerProxy / thisScene /
+// _collectDirtyLayers) was deleted.  ScriptEnv below now evaluates the
+// real production source from SceneScriptShimsJs.hpp
+// (kLayerProxyJs / kLayerRuntimeJs), so these cases characterize
+// production rather than a mirror that could silently diverge.
 
 // Mirrors the `_overlayScriptProps` helper in SceneBackend.cpp.
 // Returns a thisLayer wrapper that exposes scriptProperties keys as live
@@ -2431,18 +2242,34 @@ struct ScriptEnv {
             "var _layerIdToName = { '7': 'bg', '11': 'fg' };\n"
             "var _layerNameToId = { 'bg': 7, 'fg': 11 };\n");
 
-        // Layer infrastructure
-        engine.evaluate(JS_LAYER_INFRA);
-        // Hierarchy shim — mirrors production injection sequence.
+        // Layer infrastructure — shared verbatim with production via
+        // SceneScriptShimsJs.hpp (kMaterialProxyJs / kHierarchyProxyJs /
+        // kLayerProxyJs / kApplyLayerLiteralJs / kLayerRuntimeJs).  This is
+        // the EXACT evaluation order production uses in SceneBackend.cpp
+        // (material + hierarchy shims first; the layer factories call
+        // _makeMaterialProxy / _installHierarchyMethods; createLayer in the
+        // runtime block depends on _applyLayerLiteral).  Running the real
+        // production proxy/runtime JS — instead of the old hand-mirrored
+        // JS_LAYER_INFRA which had drifted (no pool fast-path, no
+        // _woBaked/_wsBaked, no createLayer/destroyLayer, and an
+        // object-array _collectDirtyLayers instead of the stride-17 flat
+        // array) — turns these cases into a characterization test of
+        // production.
+        engine.evaluate(wek::qml_helper::kMaterialProxyJs);
         engine.evaluate(wek::qml_helper::kHierarchyProxyJs);
+        engine.evaluate(wek::qml_helper::kLayerProxyJs);
+        engine.evaluate(wek::qml_helper::kApplyLayerLiteralJs);
+        engine.evaluate(wek::qml_helper::kLayerRuntimeJs);
 
         // Sound layer infrastructure
         engine.evaluate(JS_SOUND_INFRA);
 
-        // Indexed-access methods layered on top of JS_LAYER_INFRA (which
-        // defines thisScene.getLayer / enumerateLayers / etc.).  These
-        // match the definitions injected by SceneBackend right after
-        // m_nodeNameToId is built, using the same maps.
+        // Indexed-access methods layered on top of the production layer
+        // block above (kLayerProxyJs defines thisScene.getLayer; kLayerRuntimeJs
+        // defines getLayerIndex/sortLayer).  These match the definitions
+        // injected by SceneBackend right after m_nodeNameToId is built, using
+        // the same maps.  getLayerIndex here intentionally re-defines the
+        // production one with the deterministic test id map.
         engine.evaluate(
             "thisScene.getLayerByID = function(id) {\n"
             "  var name = _layerIdToName[id];\n"
@@ -4838,19 +4665,30 @@ TEST_SUITE("Layer Proxy") {
         CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('bg').isPlaying()").toBool());
     }
 
-    TEST_CASE("getTextureAnimation lifecycle") {
+    TEST_CASE("getTextureAnimation lifecycle (no-bridge defaults)") {
+        // Production's getTextureAnimation is __sceneBridge-backed: getFrame /
+        // isPlaying read back from __sceneBridge.getLayerSpriteInfo, and
+        // play/pause/stop/setFrame dispatch to __sceneBridge.setLayerSpriteFrame
+        // (no JS-side _frame state).  ScriptEnv installs no bridge, so the
+        // reader returns the documented defaults: frameCount 1, currentFrame 0,
+        // duration 0, isManualPin false (=> rate 1, isPlaying true), and the
+        // setters are guarded no-ops.  The full bridge-backed lifecycle is
+        // characterized separately under the "getTextureAnimation (production
+        // proxy)" suite with a sprite-info mock.
         ScriptEnv env;
         env.engine.evaluate("var anim = thisScene.getLayer('bg').getTextureAnimation();\n"
-                            "anim.setFrame(5);\n");
-        CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 5);
-        CHECK_FALSE(env.engine.evaluate("anim.isPlaying()").toBool());
+                            "anim.setFrame(5);\n"); // no-op without a bridge
+        CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 0);
+        CHECK(env.engine.evaluate("anim.isPlaying()").toBool()); // not manual-pinned
+        CHECK(env.engine.evaluate("anim.rate").toInt() == 1);
+        CHECK(env.engine.evaluate("anim.frameCount").toInt() == 1);
 
         env.engine.evaluate("anim.play();");
         CHECK(env.engine.evaluate("anim.isPlaying()").toBool());
-        CHECK(env.engine.evaluate("anim.rate").toInt() == 1);
 
         env.engine.evaluate("anim.stop();");
-        CHECK_FALSE(env.engine.evaluate("anim.isPlaying()").toBool());
+        // Still "playing" by the no-bridge reader (isManualPin stays false).
+        CHECK(env.engine.evaluate("anim.isPlaying()").toBool());
         CHECK(env.engine.evaluate("anim.getFrame()").toInt() == 0);
     }
 
@@ -4956,11 +4794,17 @@ TEST_SUITE("Layer Proxy") {
         ScriptEnv env;
         env.engine.evaluate("thisScene.getLayer('bg').getEffect('Blur').visible = false;");
         QJSValue updates = env.engine.evaluate("_collectDirtyLayers()");
-        CHECK(updates.property("length").toInt() == 1);
-        QJSValue dirty = updates.property(0).property("dirty");
-        CHECK(dirty.property("_efx_0").isObject());
-        CHECK(dirty.property("_efx_0").property("idx").toInt() == 0);
-        CHECK(dirty.property("_efx_0").property("v").toBool() == false);
+        // Production flat stride-17 array.  Effect-visibility edits set the
+        // F_EFX flag (256) and pack a flat [idx, v?1:0, ...] pair list into
+        // stride slot 16 (the 17th element).  Blur is index 0 in
+        // efx:['Blur','Shake_Glitch_3','ChromAb'], set to false.
+        CHECK(updates.property("length").toInt() == 17);
+        CHECK(updates.property(0).toString() == "bg");
+        CHECK((updates.property(1).toInt() & 256) != 0); // F_EFX
+        QJSValue efx = updates.property(16);
+        CHECK(efx.property("length").toInt() == 2);
+        CHECK(efx.property(0).toInt() == 0); // idx
+        CHECK(efx.property(1).toInt() == 0); // v (false)
     }
 
     TEST_CASE("getEffect dirty resets after collection") {
@@ -5308,8 +5152,11 @@ TEST_SUITE("Scene Event Bus") {
                             "});");
         env.engine.evaluate("_fireSceneEvent('update')");
         auto dirty = env.engine.evaluate("_collectDirtyLayers()");
-        CHECK(dirty.property("length").toInt() == 1);
-        CHECK(dirty.property(0).property("name").toString() == "bg");
+        // Production flat stride-17 array: one dirty layer -> length 17, name
+        // in slot 0, F_VISIBLE (8) in the flags slot.
+        CHECK(dirty.property("length").toInt() == 17);
+        CHECK(dirty.property(0).toString() == "bg");
+        CHECK((dirty.property(1).toInt() & 8) != 0); // F_VISIBLE
     }
 
     TEST_CASE("scene.off for unknown event is no-op") {
@@ -5364,10 +5211,16 @@ TEST_SUITE("Dirty Layer Collection") {
         ScriptEnv env;
         env.engine.evaluate("thisScene.getLayer('bg').origin = {x:1,y:2,z:3};");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
-        CHECK(r.property("length").toInt() == 1);
-        CHECK(r.property(0).property("name").toString() == "bg");
-        CHECK(r.property(0).property("dirty").property("origin").toBool());
-        CHECK(r.property(0).property("origin").property("x").toNumber() == doctest::Approx(1.0));
+        // Production returns a FLAT stride-17 array (not an array of objects):
+        // [name, flags, ox,oy,oz, sx,sy,sz, ax,ay,az, alpha, vis, psize,
+        //  text, cmds, efx].  One dirty layer -> length 17.  flags carries the
+        // F_ORIGIN bit (1).
+        CHECK(r.property("length").toInt() == 17);
+        CHECK(r.property(0).toString() == "bg");
+        CHECK((r.property(1).toInt() & 1) != 0); // F_ORIGIN
+        CHECK(r.property(2).toNumber() == doctest::Approx(1.0)); // ox
+        CHECK(r.property(3).toNumber() == doctest::Approx(2.0)); // oy
+        CHECK(r.property(4).toNumber() == doctest::Approx(3.0)); // oz
     }
 
     TEST_CASE("resets dirty after collection") {
@@ -5384,9 +5237,12 @@ TEST_SUITE("Dirty Layer Collection") {
                             "l.origin = {x:1,y:2,z:3};\n"
                             "l.visible = false;\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
-        CHECK(r.property("length").toInt() == 1);
-        CHECK(r.property(0).property("dirty").property("origin").toBool());
-        CHECK(r.property(0).property("dirty").property("visible").toBool());
+        // One layer, two dirty props -> length 17 with both bits in flags.
+        CHECK(r.property("length").toInt() == 17);
+        CHECK(r.property(0).toString() == "bg");
+        int flags = r.property(1).toInt();
+        CHECK((flags & 1) != 0); // F_ORIGIN
+        CHECK((flags & 8) != 0); // F_VISIBLE
     }
 
     TEST_CASE("multiple dirty layers simultaneously") {
@@ -5394,7 +5250,8 @@ TEST_SUITE("Dirty Layer Collection") {
         env.engine.evaluate("thisScene.getLayer('bg').origin = {x:1,y:1,z:1};\n"
                             "thisScene.getLayer('fg').visible = true;\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
-        CHECK(r.property("length").toInt() == 2);
+        // Two dirty layers -> 2 * stride-17 = 34 flat entries.
+        CHECK(r.property("length").toInt() == 34);
     }
 
     TEST_CASE("_layerList grows as layers are materialized via getLayer") {
@@ -5430,9 +5287,12 @@ TEST_SUITE("Dirty Layer Collection") {
         env.engine.evaluate("thisScene.getLayer('fg').visible = false;\n"
                             "thisScene.getLayer('bg').origin = {x:1,y:2,z:3};\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
-        REQUIRE(r.property("length").toInt() == 2);
-        CHECK(r.property(0).property("name").toString() == "fg");
-        CHECK(r.property(1).property("name").toString() == "bg");
+        // Flat stride-17 array: 2 dirty layers -> 34 entries.  The name of
+        // each layer sits at the start of its stride (slot 0 and slot 17),
+        // in _layerList insertion order: fg materialized first, then bg.
+        REQUIRE(r.property("length").toInt() == 34);
+        CHECK(r.property(0).toString() == "fg");
+        CHECK(r.property(17).toString() == "bg");
     }
 
 } // TEST_SUITE Dirty Layer Collection
@@ -7508,6 +7368,147 @@ TEST_SUITE("Native aspect ratio") {
 } // TEST_SUITE Native aspect ratio
 
 // ------------------------------------------------------------------
+// F19 — a paused wallpaper kept running the property loop at ~125Hz and the
+// color loop at ~30Hz on the GUI thread (only the render thread was paused),
+// wasting CPU/battery on TTY-switch / suspend / occlusion.  The pause/resume
+// decision is now the pure predicate scriptLoopShouldRun(hasStates, paused),
+// which pause()/play() (timer stop/restart) and the loop bodies share.  Test
+// the predicate here — a live SceneObject cannot be built without Vulkan (see
+// the Native aspect ratio note above).
+TEST_SUITE("Script loop gate (F19)") {
+    using scenebackend::scriptLoopShouldRun;
+
+    TEST_CASE("runs when there are states and we are not paused") {
+        // The normal playing case: property/color scripts evaluate every tick.
+        CHECK(scriptLoopShouldRun(/*hasStates*/ true, /*paused*/ false) == true);
+    }
+
+    TEST_CASE("idle when paused even though states exist") {
+        // The bug being fixed: a paused wallpaper must NOT keep evaluating its
+        // scripts.  This is the gate pause() relies on (plus stopping the QTimer).
+        CHECK(scriptLoopShouldRun(/*hasStates*/ true, /*paused*/ true) == false);
+    }
+
+    TEST_CASE("idle when there is nothing to evaluate, paused or not") {
+        // Preserves the pre-existing empty-state early-return: a scene with no
+        // property/color scripts never does work regardless of pause state.
+        CHECK(scriptLoopShouldRun(/*hasStates*/ false, /*paused*/ false) == false);
+        CHECK(scriptLoopShouldRun(/*hasStates*/ false, /*paused*/ true) == false);
+    }
+
+    TEST_CASE("resume after pause re-enables the loop") {
+        // pause() sets paused=true (idle); play()/setupTextScripts() set it back
+        // to false, and with states present the loop runs again — scripts must
+        // continue normally once resumed (the correctness requirement).
+        bool paused = false;
+        CHECK(scriptLoopShouldRun(true, paused) == true); // playing
+        paused = true;
+        CHECK(scriptLoopShouldRun(true, paused) == false); // paused: suspended
+        paused = false;
+        CHECK(scriptLoopShouldRun(true, paused) == true); // resumed
+    }
+} // TEST_SUITE Script loop gate (F19)
+
+// ------------------------------------------------------------------
+// A3-T2 — QJSEngine watchdog interrupt back-off policy.  The watchdog's
+// monitor-thread machinery is timing-dependent and hard to unit-test, so (as
+// with scriptLoopShouldRun above) the user-visible *policy* is split into the
+// pure predicate shouldDisableAfterInterrupts(consecutive, K): after K
+// consecutive budget-exceeding interrupts the wallpaper's property scripts are
+// disabled (it stops animating instead of freezing the desktop), and a clean
+// tick resets the run.  Test the predicate exactly here.
+TEST_SUITE("JS watchdog back-off policy (A3-T2)") {
+    using scenebackend::JsWatchdog;
+    using scenebackend::shouldDisableAfterInterrupts;
+
+    TEST_CASE("does not disable below the K threshold") {
+        // K=5 (production default): a few stray interrupts must NOT kill the
+        // wallpaper — legitimate heavy ticks can occasionally overrun.
+        const int K = JsWatchdog::kDisableAfterInterrupts;
+        CHECK(K == 5);
+        CHECK(shouldDisableAfterInterrupts(0, K) == false);
+        CHECK(shouldDisableAfterInterrupts(1, K) == false);
+        CHECK(shouldDisableAfterInterrupts(4, K) == false);
+    }
+
+    TEST_CASE("disables at and beyond K consecutive interrupts") {
+        const int K = JsWatchdog::kDisableAfterInterrupts;
+        CHECK(shouldDisableAfterInterrupts(5, K) == true);
+        CHECK(shouldDisableAfterInterrupts(6, K) == true);
+        CHECK(shouldDisableAfterInterrupts(100, K) == true);
+    }
+
+    TEST_CASE("a clean tick resets the run (caller zeroes the counter)") {
+        // The SceneObject increments on an interrupted tick and zeroes on a
+        // clean one; the predicate only reads the running count.  Simulate the
+        // count walking up to K-1, a clean tick (reset to 0), then climbing
+        // again — the predicate fires only once the *consecutive* run hits K.
+        int count = 0;
+        for (int i = 0; i < JsWatchdog::kDisableAfterInterrupts - 1; ++i) {
+            ++count; // interrupted ticks
+            CHECK(shouldDisableAfterInterrupts(count, JsWatchdog::kDisableAfterInterrupts) ==
+                  false);
+        }
+        count = 0; // clean tick resets
+        CHECK(shouldDisableAfterInterrupts(count, JsWatchdog::kDisableAfterInterrupts) == false);
+        // Now a fresh run of K interrupts trips it.
+        for (int i = 0; i < JsWatchdog::kDisableAfterInterrupts; ++i) ++count;
+        CHECK(shouldDisableAfterInterrupts(count, JsWatchdog::kDisableAfterInterrupts) == true);
+    }
+
+    TEST_CASE("K<=0 disables on the very first interrupt (degenerate budget)") {
+        // Guards the boundary: a misconfigured K of 0 must still be well-defined
+        // (disable immediately) rather than under/overflow.
+        CHECK(shouldDisableAfterInterrupts(0, 0) == true);
+        CHECK(shouldDisableAfterInterrupts(1, 0) == true);
+        CHECK(shouldDisableAfterInterrupts(0, -1) == true);
+    }
+
+    TEST_CASE("watchdog tunables are sane") {
+        // The budget must be generous enough that legitimate heavy first-frame
+        // scripts (puppet/rig init) never trip it — 250ms per the spec.
+        CHECK(JsWatchdog::kDefaultBudgetMs == 250);
+    }
+} // TEST_SUITE JS watchdog back-off policy (A3-T2)
+
+// ------------------------------------------------------------------
+// F19 (cleanup leak) — cleanupTextScripts() now clears m_pendingLeaves (and
+// stops m_hoverLeaveTimer) on a wallpaper switch.  A live SceneObject cannot be
+// built without Vulkan, so lock the contract the clear relies on at the pure
+// HoverLeaveDebounce level: an emptied pending-leaves map arms no further timer
+// (nextLeaveDeadlineMs == 0, the "no timer" sentinel) and drains nothing — so a
+// stale cursorLeave can never fire against the torn-down JS engine.
+TEST_SUITE("Hover-leave cleanup contract (F19)") {
+    using LeaveMap = std::unordered_map<std::string, scenebackend::PendingLeave>;
+
+    TEST_CASE("a cleared pending-leaves map arms no timer and drains nothing") {
+        LeaveMap pending;
+        // Simulate the state cleanupTextScripts() inherits: a couple of leaves
+        // still pending from the outgoing wallpaper's hover interaction.
+        pending["playerbounds"] = { 1500 };
+        pending["f1"]           = { 1800 };
+        REQUIRE(nextLeaveDeadlineMs(pending) == 1500); // a timer WOULD be armed
+
+        // cleanupTextScripts() does this on wallpaper switch.
+        pending.clear();
+
+        // No deadline => hoverMoveEvent()/flushPendingLeaves() arm no QTimer
+        // (0 is the "nothing pending" sentinel), and nothing can drain/fire.
+        CHECK(nextLeaveDeadlineMs(pending) == 0);
+        CHECK(drainExpiredLeaves(pending, 1500).empty());
+        CHECK(drainExpiredLeaves(pending, 100000).empty());
+    }
+
+    TEST_CASE("an already-empty map is a no-op (idempotent cleanup)") {
+        LeaveMap pending;
+        pending.clear(); // clearing an empty map is safe
+        CHECK(pending.empty());
+        CHECK(nextLeaveDeadlineMs(pending) == 0);
+        CHECK(drainExpiredLeaves(pending, 9999).empty());
+    }
+} // TEST_SUITE Hover-leave cleanup contract (F19)
+
+// ------------------------------------------------------------------
 // Property-script batched dispatch: scalar broadcast for Vec3 kind.
 // Uses the exact same JS source as production (shared header) so any
 // drift between prod and test causes these to fail.
@@ -8781,4 +8782,184 @@ TEST_SUITE("SceneScript engine.fps binding") {
     }
 } // SceneScript engine.fps binding
 
+// ------------------------------------------------------------------
+// JS string escaping (F18)
+//
+// escapeForJsSingleQuoted / jsLayerLookupExpr (JsStringEscape.hpp) are the
+// single source of truth for embedding author data into a JS single-quoted
+// string literal that SceneBackend.cpp then feeds to the QJSEngine
+// (`JSON.parse('%1')`, `thisScene.getLayer('%1')`, inline object literals).
+//
+// The pre-F18 idiom escaped only `\` and `'`.  That left raw newline / CR /
+// U+2028 / U+2029 to terminate the literal early and SyntaxError the parse —
+// silently dropping that script's scriptProperties / init / user-props.  These
+// cases evaluate the escaped output through a bare QJSEngine (the production
+// code path) so prod and test cannot drift.
+// ------------------------------------------------------------------
+TEST_SUITE("JS string escaping (F18)") {
+    using wek::qml_helper::escapeForJsSingleQuoted;
+    using wek::qml_helper::jsLayerLookupExpr;
 
+    // Helper: wrap the escaped payload exactly like the production feeder sites
+    // (`JSON.parse('%1')`) and evaluate it through a bare engine.
+    static QJSValue parseEscaped(QJSEngine & e, const QString& rawJson) {
+        const QString escaped = escapeForJsSingleQuoted(rawJson);
+        return e.evaluate(QStringLiteral("JSON.parse('%1')").arg(escaped));
+    }
+
+    TEST_CASE("escapeForJsSingleQuoted round-trips through JSON.parse for plain JSON") {
+        QJSEngine e;
+        QJSValue  v = parseEscaped(e, QStringLiteral("{\"a\":1,\"b\":\"hello\"}"));
+        CHECK_FALSE(v.isError());
+        CHECK(v.property("a").toInt() == 1);
+        CHECK(v.property("b").toString() == QStringLiteral("hello"));
+    }
+
+    TEST_CASE("embedded single quote survives") {
+        QJSEngine e;
+        // JSON string value contains an apostrophe: O'Brien.
+        QJSValue v = parseEscaped(e, QStringLiteral("{\"name\":\"O'Brien\"}"));
+        CHECK_FALSE(v.isError());
+        CHECK(v.property("name").toString() == QStringLiteral("O'Brien"));
+    }
+
+    TEST_CASE("embedded backslash survives") {
+        QJSEngine e;
+        // JSON value C:\path  → in JSON that is the two chars  C : \ p ...
+        // (escaped in the JSON itself as \\).  The QString below holds a single
+        // backslash, which is a valid JSON escape lead only as \\, so encode it.
+        QJSValue v = parseEscaped(e, QStringLiteral("{\"p\":\"C:\\\\path\"}"));
+        CHECK_FALSE(v.isError());
+        CHECK(v.property("p").toString() == QStringLiteral("C:\\path"));
+    }
+
+    TEST_CASE("U+2028 line separator does not break the literal") {
+        QJSEngine e;
+        // A *raw* U+2028 inside the JSON string value (legal in JSON, fatal in a
+        // JS source literal unless escaped).
+        const QChar ls(0x2028);
+        QString     raw = QStringLiteral("{\"t\":\"a") + ls + QStringLiteral("b\"}");
+        QJSValue    v   = parseEscaped(e, raw);
+        CHECK_FALSE(v.isError());
+        const QString got = v.property("t").toString();
+        // The parsed value still contains the U+2028 character.
+        CHECK(got.contains(ls));
+        CHECK(got == QStringLiteral("a") + ls + QStringLiteral("b"));
+        // And the helper emitted the escaped six-char form, not a raw separator.
+        CHECK(escapeForJsSingleQuoted(raw).contains(QStringLiteral("\\u2028")));
+        CHECK_FALSE(escapeForJsSingleQuoted(raw).contains(ls));
+    }
+
+    TEST_CASE("U+2029 paragraph separator does not break the literal") {
+        QJSEngine   e;
+        const QChar ps(0x2029);
+        QString     raw = QStringLiteral("{\"t\":\"a") + ps + QStringLiteral("b\"}");
+        QJSValue    v   = parseEscaped(e, raw);
+        CHECK_FALSE(v.isError());
+        const QString got = v.property("t").toString();
+        CHECK(got.contains(ps));
+        CHECK(escapeForJsSingleQuoted(raw).contains(QStringLiteral("\\u2029")));
+        CHECK_FALSE(escapeForJsSingleQuoted(raw).contains(ps));
+    }
+
+    TEST_CASE("raw newline / CR in the source value is escaped") {
+        QJSEngine e;
+        // Raw \n and \r embedded in the JS source string literal would each
+        // terminate it; the helper turns them into the two-char \n / \r forms.
+        // (JSON itself forbids a raw newline inside a string, so the round-trip
+        // here is over the *JS literal*, not a JSON value: build the literal
+        // directly to model parser-produced content reaching the feeder.)
+        const QString raw = QStringLiteral("line1\nline2\rline3");
+        const QString esc = escapeForJsSingleQuoted(raw);
+        CHECK(esc == QStringLiteral("line1\\nline2\\rline3"));
+        // Evaluating it as a JS string literal yields the original back.
+        QJSValue v = e.evaluate(QStringLiteral("'%1'").arg(esc));
+        CHECK_FALSE(v.isError());
+        CHECK(v.toString() == raw);
+    }
+
+    TEST_CASE("tab is escaped to two-char \\t") {
+        QJSEngine     e;
+        const QString esc = escapeForJsSingleQuoted(QStringLiteral("a\tb"));
+        CHECK(esc == QStringLiteral("a\\tb"));
+        QJSValue v = e.evaluate(QStringLiteral("'%1'").arg(esc));
+        CHECK_FALSE(v.isError());
+        CHECK(v.toString() == QStringLiteral("a\tb"));
+    }
+
+    TEST_CASE("other C0 control chars become \\uXXXX") {
+        // Backspace (0x08), vertical tab (0x0B), form feed (0x0C), NUL (0x00).
+        QString raw;
+        raw.append(QChar(0x08));
+        raw.append(QChar(0x0B));
+        raw.append(QChar(0x0C));
+        raw.append(QChar(0x00));
+        const QString esc = escapeForJsSingleQuoted(raw);
+        CHECK(esc == QStringLiteral("\\u0008\\u000b\\u000c\\u0000"));
+        QJSEngine e;
+        QJSValue  v = e.evaluate(QStringLiteral("'%1'").arg(esc));
+        CHECK_FALSE(v.isError());
+        // Round-trips to the same four control chars.
+        const QString got = v.toString();
+        CHECK(got.size() == 4);
+        CHECK(got.at(0).unicode() == 0x08);
+        CHECK(got.at(3).unicode() == 0x00);
+    }
+
+    TEST_CASE("special-char-free input is byte-identical to the old escape") {
+        // Behavioral-equivalence guard: for input with none of the special
+        // characters, escapeForJsSingleQuoted must match the historical
+        // `\\`+`'` output exactly so existing wallpapers are unaffected.
+        const QString plain = QStringLiteral("{\"a\":1,\"b\":[2,3],\"c\":\"plain text\"}");
+        CHECK(escapeForJsSingleQuoted(plain) == plain);
+    }
+
+    TEST_CASE("jsLayerLookupExpr escapes the name") {
+        // Mirror the production layer-proxy stub: thisScene.getLayer(name)
+        // returns an object carrying that name, or an empty-name fallback.
+        QJSEngine e;
+        e.evaluate(R"JS(
+            var thisScene = {
+                getLayer: function(n) { return { name: n, isFallback: (n === '') }; }
+            };
+        )JS");
+
+        // A name with a single quote AND a U+2028 — the pre-F18 unescaped
+        // getLayer('%1') would either SyntaxError or resolve the wrong name.
+        const QChar   ls(0x2028);
+        const QString tricky = QStringLiteral("Layer 'X'") + ls + QStringLiteral("Y");
+        const QString expr   = jsLayerLookupExpr(tricky);
+        QJSValue      v      = e.evaluate(expr);
+        CHECK_FALSE(v.isError());
+        CHECK_FALSE(v.property("isFallback").toBool());
+        CHECK(v.property("name").toString() == tricky);
+    }
+
+    TEST_CASE("jsLayerLookupExpr produces the expected expression shape") {
+        // Plain name → exact expression; locks the helper's output format.
+        CHECK(jsLayerLookupExpr(QStringLiteral("Sky")) ==
+              QStringLiteral("thisScene.getLayer('Sky')"));
+        // Quote is escaped inside the single-quoted literal.
+        CHECK(jsLayerLookupExpr(QStringLiteral("A'B")) ==
+              QStringLiteral("thisScene.getLayer('A\\'B')"));
+    }
+
+    TEST_CASE("regression mirror: the OLD backslash+quote-only escape DOES error") {
+        // Reproduce the pre-F18 escaping (only `\` and `'`) and prove that a raw
+        // U+2028 in the payload makes JSON.parse a SyntaxError — i.e. this test
+        // would have caught the bug.  The new helper (asserted above) does not.
+        QJSEngine   e;
+        const QChar ls(0x2028);
+        QString     raw = QStringLiteral("{\"t\":\"a") + ls + QStringLiteral("b\"}");
+
+        QString oldEsc = raw;
+        oldEsc.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+        oldEsc.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+        QJSValue oldResult = e.evaluate(QStringLiteral("JSON.parse('%1')").arg(oldEsc));
+        CHECK(oldResult.isError()); // line-terminator breaks the literal
+
+        // Same payload through the new helper succeeds.
+        QJSValue newResult = parseEscaped(e, raw);
+        CHECK_FALSE(newResult.isError());
+    }
+} // TEST_SUITE JS string escaping (F18)

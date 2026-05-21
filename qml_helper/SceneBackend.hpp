@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "HoverLeaveDebounce.h"
+#include "JsWatchdog.h"
 #include "SceneWallpaper.hpp"
 
 Q_DECLARE_LOGGING_CATEGORY(wekdeScene)
@@ -319,8 +320,24 @@ private:
     void evaluatePropertyScripts();
     void cleanupTextScripts();
 
+    // A3-T2 — run an untrusted-JS dispatch under the off-thread watchdog.
+    // Arms the deadline, invokes `fn` (the QJSEngine::call() site), disarms, and
+    // clears the engine's interrupted flag if the watchdog fired.  `fn` is
+    // wrapped in try/catch so the interrupt-induced JS exception (or any C++
+    // throw) is contained, not propagated up the GUI-thread event loop.  Sets
+    // `*outInterrupted` (when non-null) to whether the watchdog tripped, so the
+    // property tick can drive the consecutive-interrupt back-off.  Returns the
+    // call's QJSValue (undefined on interrupt/throw).
+    QJSValue callJsGuarded(const std::function<QJSValue()>& fn, bool* outInterrupted = nullptr);
+
     bool m_inited { false };
     bool m_enable_valid { false };
+    // Set by pause()/play().  Gates the property + color script loops (F19) via
+    // scenebackend::scriptLoopShouldRun so a paused wallpaper (TTY-switch /
+    // suspend / battery / occlusion) stops burning its 125Hz/30Hz GUI-thread JS
+    // evaluation.  pause()/play() also stop/restart the timers themselves; this
+    // flag is the belt that idles the seed eval + any already-queued timer tick.
+    bool m_paused { false };
 
     std::shared_ptr<wallpaper::SceneWallpaper> m_scene { nullptr };
 
@@ -457,6 +474,21 @@ private:
     };
     QJSEngine*                               m_jsEngine { nullptr };
     SceneTimerBridge*                        m_timerBridge { nullptr };
+    // A3-T2 — off-GUI-thread watchdog that aborts a runaway author script via
+    // QJSEngine::setInterrupted(true) when a JS .call() exceeds its budget.
+    // Armed/disarmed around each dispatch site (property/text/color/lifecycle).
+    // Stopped (thread joined) before m_jsEngine is deleted in cleanupTextScripts.
+    JsWatchdog                               m_jsWatchdog;
+    // Count of consecutive watchdog interrupts on the property tick; a clean
+    // tick resets it.  After JsWatchdog::kDisableAfterInterrupts, the property
+    // timer is disabled (the wallpaper stops animating instead of freezing the
+    // shell) and m_propertyScriptsDisabled latches so we log only once.
+    int                                      m_consecutivePropInterrupts { 0 };
+    bool                                     m_propertyScriptsDisabled { false };
+    // Drives the watchdog deadline (ms).  Overridable so a unit/integration
+    // test can inject a tiny budget without waiting 250ms; production leaves
+    // it at the default.
+    int64_t                                  m_jsWatchdogBudgetMs { JsWatchdog::kDefaultBudgetMs };
     QTimer*                                  m_textTimer { nullptr };
     QTimer*                                  m_colorTimer { nullptr };
     QTimer*                                  m_propertyTimer { nullptr };
@@ -574,7 +606,7 @@ private:
     QString     localStoragePath(bool global) const;
 
 protected:
-    QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*);
+    QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*) override;
 };
 
 } // namespace scenebackend

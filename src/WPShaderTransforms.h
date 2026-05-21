@@ -372,7 +372,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL pattern where a float variable is assigned an int constructor result,
     // then used in int contexts (for loops)
     {
-        std::regex re(R"((\bfloat\s+)(\w+)(\s*=\s*int\s*\())");
+        static const std::regex re(R"((\bfloat\s+)(\w+)(\s*=\s*int\s*\())");
         result = std::regex_replace(result, re, "int $2$3");
     }
 
@@ -385,17 +385,17 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // where WORD is uint: "uint + int" and "uint % int" are both GLSL errors.
         // Fix: uint VAR = uint((int(WORD) OP int_lit) % N)
         {
-            std::regex re(R"(\buint\s+(\w+)\s*=\s*\((\w+)\s*([\+\-])\s*(\d+)\)\s*%\s*(\d+\b))");
+            static const std::regex re(R"(\buint\s+(\w+)\s*=\s*\((\w+)\s*([\+\-])\s*(\d+)\)\s*%\s*(\d+\b))");
             result = std::regex_replace(result, re, "uint $1 = uint((int($2) $3 $4) % $5)");
         }
         // Special case: uint VAR = EXPR % N;  →  uint VAR = uint(int(EXPR) % N);
         {
-            std::regex re(R"(\buint\s+(\w+)\s*=\s*\b(\w+)\s*%\s*(\d+\b))");
+            static const std::regex re(R"(\buint\s+(\w+)\s*=\s*\b(\w+)\s*%\s*(\d+\b))");
             result = std::regex_replace(result, re, "uint $1 = uint(int($2) % $3)");
         }
         // General case: EXPR % N  →  int(EXPR) % N
         {
-            std::regex re(R"(\b(\w+)\s*%\s*(\d+\b))");
+            static const std::regex re(R"(\b(\w+)\s*%\s*(\d+\b))");
             result = std::regex_replace(result, re, "int($1) % $2");
         }
     }
@@ -606,7 +606,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // WE mul(vec4(X), MAT) → ((MAT) * (vec4(X))) returns vec4 but may be assigned to vec3.
     // Add .xyz to truncate.
     {
-        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*(\([^;]*\)\s*\*\s*\(vec4\s*\([^;]*?\)\)\s*)\s*;)");
+        static const std::regex re(R"(\bvec3\s+(\w+)\s*=\s*(\([^;]*\)\s*\*\s*\(vec4\s*\([^;]*?\)\)\s*)\s*;)");
         result = std::regex_replace(result, re, "vec3 $1 = ($2).xyz;");
     }
 
@@ -616,7 +616,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Wrapping an already-vecN arg in vecN() is a safe copy-constructor identity.
     // Only handles one level of nesting inside each pow argument (sufficient in practice).
     {
-        std::regex re(R"(\b(vec[234])\s*\(\s*pow\s*\()"
+        static const std::regex re(R"(\b(vec[234])\s*\(\s*pow\s*\()"
                       R"(([^(),]*(?:\([^)]*\)[^(),]*)*),\s*)"
                       R"(([^()]*(?:\([^)]*\)[^()]*)*)\)\s*\))");
         result = std::regex_replace(result, re, "pow($1($2), $1($3))");
@@ -626,7 +626,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL implicitly converts vec4 texture result to float (first component);
     // GLSL requires an explicit swizzle.
     {
-        std::regex re(R"(\bfloat\s+(\w+)\s*=\s*(texture\w*\s*\([^;]*?\))\s*;)");
+        static const std::regex re(R"(\bfloat\s+(\w+)\s*=\s*(texture\w*\s*\([^;]*?\))\s*;)");
         result = std::regex_replace(result, re, "float $1 = $2.x;");
     }
 
@@ -638,20 +638,20 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         // Collect vec4 vars assigned from texture()
         std::set<std::string> tex_vec4_vars;
-        std::regex            re_decl(R"(\bvec4\s+(\w+)\s*=\s*texture\w*\s*\()");
+        static const std::regex            re_decl(R"(\bvec4\s+(\w+)\s*=\s*texture\w*\s*\()");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
              it != std::sregex_iterator();
              ++it)
             tex_vec4_vars.insert((*it)[1].str());
         // Collect known float uniforms
         std::set<std::string> float_vars;
-        std::regex            re_float(R"(\buniform\s+float\s+(\w+)\s*;)");
+        static const std::regex            re_float(R"(\buniform\s+float\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
              it != std::sregex_iterator();
              ++it)
             float_vars.insert((*it)[1].str());
         // Also add local float vars
-        std::regex re_flocal(R"(\bfloat\s+(\w+)\s*=)");
+        static const std::regex re_flocal(R"(\bfloat\s+(\w+)\s*=)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_flocal);
              it != std::sregex_iterator();
              ++it)
@@ -694,7 +694,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL allows int in ternary condition; GLSL requires bool.
     // Match bare integer after = ( , that is followed by ? (ternary operator).
     {
-        std::regex re(R"(([\=\(,]\s*)(\d+)(\s*\?))");
+        static const std::regex re(R"(([\=\(,]\s*)(\d+)(\s*\?))");
         result = std::regex_replace(result, re, "$1bool($2)$3");
     }
 
@@ -704,7 +704,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     //   float outside = 1.0; … vec4 final = outside ? inSmooth : outSmooth;
     {
         std::set<std::string> float_locals_for_ternary;
-        std::regex            re_floc(R"(\bfloat\s+(\w+)\s*[=;,)])");
+        static const std::regex            re_floc(R"(\bfloat\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_floc);
              it != std::sregex_iterator(); ++it)
             float_locals_for_ternary.insert((*it)[1].str());
@@ -818,13 +818,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         // Collect user-defined bool-returning functions and bool locals.
         std::set<std::string> bool_fns;
-        std::regex            re_fn(R"(\bbool\s+(\w+)\s*\([^)]*\)\s*\{)");
+        static const std::regex            re_fn(R"(\bbool\s+(\w+)\s*\([^)]*\)\s*\{)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
              it != std::sregex_iterator();
              ++it)
             bool_fns.insert((*it)[1].str());
         std::set<std::string> bool_vars;
-        std::regex            re_bv(R"(\bbool\s+(\w+)\s*[=;,)])");
+        static const std::regex            re_bv(R"(\bbool\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_bv);
              it != std::sregex_iterator();
              ++it)
@@ -927,23 +927,23 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // Collect known typed identifiers: locals, function params, uniforms.
         std::set<std::string> float_idents;
         std::set<std::string> vec_idents; // any vec2/vec3/vec4
-        std::regex            re_float(R"(\bfloat\s+(\w+)\s*[=;,)])");
+        static const std::regex            re_float(R"(\bfloat\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
              it != std::sregex_iterator();
              ++it)
             float_idents.insert((*it)[1].str());
-        std::regex re_uniform_float(R"(\buniform\s+float\s+(\w+))");
+        static const std::regex re_uniform_float(R"(\buniform\s+float\s+(\w+))");
         for (auto it =
                  std::sregex_iterator(result.begin(), result.end(), re_uniform_float);
              it != std::sregex_iterator();
              ++it)
             float_idents.insert((*it)[1].str());
-        std::regex re_vec(R"(\bvec[234]\s+(\w+)\s*[=;,)])");
+        static const std::regex re_vec(R"(\bvec[234]\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vec);
              it != std::sregex_iterator();
              ++it)
             vec_idents.insert((*it)[1].str());
-        std::regex re_uniform_vec(R"(\buniform\s+vec[234]\s+(\w+))");
+        static const std::regex re_uniform_vec(R"(\buniform\s+vec[234]\s+(\w+))");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uniform_vec);
              it != std::sregex_iterator();
              ++it)
@@ -1191,11 +1191,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
         std::set<std::string> float_idents2;
         std::map<std::string, int> vec_idents2;
         {
-            std::regex re_float(R"(\b(?:float|in\s+float|uniform\s+float)\s+(\w+)\s*[=;,)])");
+            static const std::regex re_float(R"(\b(?:float|in\s+float|uniform\s+float)\s+(\w+)\s*[=;,)])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
                  it != std::sregex_iterator(); ++it)
                 float_idents2.insert((*it)[1].str());
-            std::regex re_vecn(
+            static const std::regex re_vecn(
                 R"(\b(?:uniform|in|out|varying)?\s*vec([234])\s+(\w+)\s*[=;,)])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vecn);
                  it != std::sregex_iterator(); ++it)
@@ -1402,7 +1402,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL broadcasts the `0.5` literal up to vec3; GLSL errors with "mix:
     // no matching overloaded".  Wrap arg0 in `vecN(literal)` matching LHS.
     {
-        std::regex re(
+        static const std::regex re(
             R"(\b(vec[234])(\s+\w+\s*=\s*mix\s*\()(\s*\d+(?:\.\d*)?(?:e[-+]?\d+)?\s*),)");
         result = std::regex_replace(result, re, "$1$2$1($3),");
     }
@@ -1423,12 +1423,12 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // which the broadcast pass deliberately produces).
     {
         std::set<std::string> float_idents_u;
-        std::regex re_fid(R"(\b(?:in\s+|out\s+|uniform\s+)?float\s+(\w+)\s*[=;,)])");
+        static const std::regex re_fid(R"(\b(?:in\s+|out\s+|uniform\s+)?float\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fid);
              it != std::sregex_iterator(); ++it)
             float_idents_u.insert((*it)[1].str());
 
-        std::regex re(R"(\bmix\s*\(\s*(\w+)\s*,\s*vec[234]\s*\(\s*(\w+)\s*\)\s*,)");
+        static const std::regex re(R"(\bmix\s*\(\s*(\w+)\s*,\s*vec[234]\s*\(\s*(\w+)\s*\)\s*,)");
         std::string out_u;
         out_u.reserve(result.size());
         size_t lastPos = 0;
@@ -1462,11 +1462,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // argument lists.  Without the guard, `foo(x > 0) * y` would have
     // been mis-transformed into `foofloat(x > 0) * y`.
     {
-        std::regex re_kw(R"(\b(return|if|while|for|do|switch)\()");
+        static const std::regex re_kw(R"(\b(return|if|while|for|do|switch)\()");
         result = std::regex_replace(result, re_kw, "$1 (");
     }
     {
-        std::regex re(R"((^|[\s,({=+\-*/])\(([^()]*(?:<=|>=|==|!=|<|>)[^()]*)\)(\s*[*+/\-]))");
+        static const std::regex re(R"((^|[\s,({=+\-*/])\(([^()]*(?:<=|>=|==|!=|<|>)[^()]*)\)(\s*[*+/\-]))");
         result = std::regex_replace(result, re, "$1float($2)$3");
     }
 
@@ -1476,7 +1476,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // in compound assignment (*=, +=, -=, /=) or after arithmetic operators (* + - /).
     {
         std::set<std::string> bool_vars;
-        std::regex            re_bool(R"(\bbool\s+(\w+)\s*[=;])");
+        static const std::regex            re_bool(R"(\bbool\s+(\w+)\s*[=;])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_bool);
              it != std::sregex_iterator();
              ++it)
@@ -1496,7 +1496,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // (bar *= step(...), bar * u_BarOpacity, etc.), so changing the type is correct.
     // HLSL allows int = float implicitly; GLSL requires matching types.
     {
-        std::regex re(R"(\bint\s+(\w+)\s*=\s*(step\s*\([^;]*\))\s*;)");
+        static const std::regex re(R"(\bint\s+(\w+)\s*=\s*(step\s*\([^;]*\))\s*;)");
         result = std::regex_replace(result, re, "float $1 = $2;");
     }
 
@@ -1518,12 +1518,12 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // is what they intended.
     {
         std::set<std::string> float_locals;
-        std::regex            re_decl(R"(\bfloat\s+(\w+)\s*[=;])");
+        static const std::regex            re_decl(R"(\bfloat\s+(\w+)\s*[=;])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
              it != std::sregex_iterator(); ++it)
             float_locals.insert((*it)[1].str());
         // Also collect uniforms/varyings declared `float NAME`
-        std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*;)");
+        static const std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_qual);
              it != std::sregex_iterator(); ++it)
             float_locals.insert((*it)[1].str());
@@ -1560,13 +1560,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // `float noise(vec2 coord) {...}` and uses `float rnd = noise(gl_Position.xy);`.
     std::set<std::string> user_float_fns;
     {
-        std::regex re_fn(R"(\bfloat\s+(\w+)\s*\([^)]*\)\s*\{)");
+        static const std::regex re_fn(R"(\bfloat\s+(\w+)\s*\([^)]*\)\s*\{)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
              it != std::sregex_iterator(); ++it)
             user_float_fns.insert((*it)[1].str());
     }
     {
-        std::regex re(R"(\bfloat\s+(\w+)\s*=\s*([^;]+);)");
+        static const std::regex re(R"(\bfloat\s+(\w+)\s*=\s*([^;]+);)");
         std::string out;
         std::string::size_type lastPos = 0;
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
@@ -1577,17 +1577,17 @@ inline std::string FixImplicitConversions(const std::string& src) {
             // swizzle).  Look for `.xy`/`.xyz`/`.xyzw`/`.rg`/`.rgb`/`.rgba`
             // — note `.x`/`.y`/etc. alone are scalar and ignored by this
             // regex (negative-lookahead-like via length match).
-            std::regex multi_sw(R"(\.(xy|xyz|xyzw|rg|rgb|rgba)\b)");
+            static const std::regex multi_sw(R"(\.(xy|xyz|xyzw|rg|rgb|rgba)\b)");
             if (! std::regex_search(rhs, multi_sw)) continue;
             // Skip if RHS already ends with .x/.y/.z/.w/.r/.g/.b/.a
             // (already-truncated forms like `(...).x`).
-            std::regex trailing_scalar(R"(\.[xyzwrgba]\s*$)");
+            static const std::regex trailing_scalar(R"(\.[xyzwrgba]\s*$)");
             if (std::regex_search(rhs, trailing_scalar)) continue;
             // Skip texture() calls (already handled by an earlier rule).
             if (rhs.find("texture") != std::string::npos &&
                 rhs.find("texture") < 6) continue;
             // Skip vec*() / float() constructor (already explicit cast).
-            std::regex ctor_only(R"(^\s*(vec[234]|float)\s*\()");
+            static const std::regex ctor_only(R"(^\s*(vec[234]|float)\s*\()");
             if (std::regex_search(rhs, ctor_only)) continue;
             // Skip when the RHS starts with a known scalar-returning
             // function call (length/dot/distance/_wedot/_wep, etc.) —
@@ -1595,7 +1595,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
             // Lucy 2866203962 color_key effect: `float delta = _wedot(...);`
             // — the multi-component swizzle is inside _wedot's args, not
             // the outer expression.
-            std::regex scalar_call(
+            static const std::regex scalar_call(
                 R"(^\s*(length|dot|distance|_wedot|_wep|_wemx|_wemn|abs|min|max|clamp|saturate|smoothstep|step|sign|floor|ceil|fract|mod|sin|cos|tan|asin|acos|atan|exp|log|log10|sqrt|inversesqrt|trunc|round)\s*\()");
             if (std::regex_search(rhs, scalar_call)) continue;
             // Skip when the RHS starts with a user-defined float-returning
@@ -1630,7 +1630,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         // Collect all "in vec4" and "in vec3" varying names
         std::set<std::string> wide_varyings;
-        std::regex            re_in(R"(\bin\s+vec[34]\s+(\w+)\s*;)");
+        static const std::regex            re_in(R"(\bin\s+vec[34]\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
              it != std::sregex_iterator();
              ++it)
@@ -1645,7 +1645,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Fix: "const TYPE VAR = texture(...)" → remove const qualifier.
     // GLSL requires const initializers to be compile-time constants; texture() is runtime.
     {
-        std::regex re(R"(\bconst\s+(vec[234]|float|int)\s+(\w+)\s*=\s*(texture\w*\s*\())");
+        static const std::regex re(R"(\bconst\s+(vec[234]|float|int)\s+(\w+)\s*=\s*(texture\w*\s*\())");
         result = std::regex_replace(result, re, "$1 $2 = $3");
     }
 
@@ -1660,13 +1660,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // and the renderer SEGV'd downstream.
     {
         std::set<std::string> uniform_names;
-        std::regex            re_uni(R"(\buniform\s+(?:\w+\s+)?(\w+)\s*(?:\[[^\]]*\])?\s*;)");
+        static const std::regex            re_uni(R"(\buniform\s+(?:\w+\s+)?(\w+)\s*(?:\[[^\]]*\])?\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uni);
              it != std::sregex_iterator(); ++it)
             uniform_names.insert((*it)[1].str());
 
         // Walk const-vec[234] decls and drop `const` if RHS mentions any uniform.
-        std::regex re_const_vec(R"(\bconst\s+(vec[234])\s+(\w+)\s*=\s*([^;]+);)");
+        static const std::regex re_const_vec(R"(\bconst\s+(vec[234])\s+(\w+)\s*=\s*([^;]+);)");
         std::string out;
         size_t lastPos = 0;
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_const_vec);
@@ -1696,7 +1696,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // varying, they're introducing a local with the same name.  Renaming would
     // cause a redefinition clash with the mutable-copy we'd insert at the top.
     {
-        std::regex re_in(R"(\bin\s+(vec[234]|float)\s+(\w+)\s*;)");
+        static const std::regex re_in(R"(\bin\s+(vec[234]|float)\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
              it != std::sregex_iterator();
              ++it) {
@@ -1751,7 +1751,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL implicit truncation from vec4 result to vec3.  Handles both the vec4()
     // constructor and the texture() family (all return vec4).
     {
-        std::regex re(R"(\bvec3\s+(\w+)\s*=\s*((?:vec4|texture\w*)\s*\([^;]*?\))\s*;)");
+        static const std::regex re(R"(\bvec3\s+(\w+)\s*=\s*((?:vec4|texture\w*)\s*\([^;]*?\))\s*;)");
         result = std::regex_replace(result, re, "vec3 $1 = $2.xyz;");
     }
 
@@ -1765,7 +1765,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // We rewrite `p + e.xyy` to `vec3(p, 0.0) + e.xyy`.  Same for `-`/`*`/`/`.
     {
         std::set<std::string> vec2_names;
-        std::regex re_v2(R"(\bvec2\s+(\w+)\s*[=;,)])");
+        static const std::regex re_v2(R"(\bvec2\s+(\w+)\s*[=;,)])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_v2);
              it != std::sregex_iterator(); ++it)
             vec2_names.insert((*it)[1].str());
@@ -1808,7 +1808,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // from `vname` looking for a function name preceding a `(`.
         std::map<std::string, int> user_fn_arg1_width;
         {
-            std::regex re_fn(
+            static const std::regex re_fn(
                 R"(\b(?:float|int|uint|bool|void|vec[234])\s+(\w+)\s*\(\s*(?:in\s+)?(vec[234])\s+\w+)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fn);
                  it != std::sregex_iterator(); ++it) {
@@ -2050,11 +2050,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // so this block can run independently.
         std::set<std::string> scalar_vars;
         {
-            std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*[\[;])");
+            static const std::regex re_qual(R"(\b(?:uniform|in|out|varying|attribute)\s+float\s+(\w+)\s*[\[;])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_qual);
                  it != std::sregex_iterator(); ++it)
                 scalar_vars.insert((*it)[1].str());
-            std::regex re_local(R"(\bfloat\s+(\w+)\s*[=;])");
+            static const std::regex re_local(R"(\bfloat\s+(\w+)\s*[=;])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_local);
                  it != std::sregex_iterator(); ++it)
                 scalar_vars.insert((*it)[1].str());
@@ -2194,11 +2194,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
             if (info.has_vec_producer) return false;
 
             // Multi-component swizzles indicate vector access (foo.xy, foo.rgba, etc.)
-            std::regex multi_sw(R"(\.(?:xy|xyz|xyzw|rg|rgb|rgba)\b)");
+            static const std::regex multi_sw(R"(\.(?:xy|xyz|xyzw|rg|rgb|rgba)\b)");
             if (std::regex_search(expr, multi_sw)) return false;
             // Identifiers in the expression — if any unknown identifier appears,
             // we don't know its type, so be conservative and skip.
-            std::regex id_re(R"([A-Za-z_]\w*)");
+            static const std::regex id_re(R"([A-Za-z_]\w*)");
             for (auto it = std::sregex_iterator(expr.begin(), expr.end(), id_re);
                  it != std::sregex_iterator(); ++it) {
                 std::string id = (*it).str();
@@ -2223,7 +2223,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // AvgLumR = 0.5;` inside the function body in `vec3(0.5)`, because the
         // regex spanned from the return-type vec3 all the way to the first `;`
         // inside the function body.
-        std::regex re_decl(R"(\b(vec[234])\s+(\w+\s*=[^;]+);)");
+        static const std::regex re_decl(R"(\b(vec[234])\s+(\w+\s*=[^;]+);)");
         std::string                out;
         std::string::size_type     lastPos = 0;
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
@@ -2314,12 +2314,12 @@ inline std::string FixImplicitConversions(const std::string& src) {
     //     RHS, never inside function-call args.
     {
         std::map<std::string, int> wider_named;  // name → rank (3 or 4)
-        std::regex re_wider(R"(\b(?:uniform|in|out|varying)\s+vec([34])\s+(\w+)\s*[;\[])");
+        static const std::regex re_wider(R"(\b(?:uniform|in|out|varying)\s+vec([34])\s+(\w+)\s*[;\[])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_wider);
              it != std::sregex_iterator(); ++it)
             wider_named[(*it)[2].str()] = std::stoi((*it)[1].str());
         // Also locals: `vec3 NAME = …;` and `vec4 NAME = …;`.
-        std::regex re_local_wider(R"(\bvec([34])\s+(\w+)\s*[=;])");
+        static const std::regex re_local_wider(R"(\bvec([34])\s+(\w+)\s*[=;])");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_local_wider);
              it != std::sregex_iterator(); ++it)
             wider_named[(*it)[2].str()] = std::stoi((*it)[1].str());
@@ -2330,7 +2330,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // Sun (`varying vec4 timer; float timer = sin(...);`).
         {
             std::set<std::string> shadowed;
-            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            static const std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
                  it != std::sregex_iterator(); ++it)
                 shadowed.insert((*it)[1].str());
@@ -2338,7 +2338,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         }
 
         // For each `vec[23] VAR = RHS;` declaration, scan RHS for wider names.
-        std::regex re_narrow_decl(R"(\bvec([23])\s+\w+\s*=\s*([^;]+);)");
+        static const std::regex re_narrow_decl(R"(\bvec([23])\s+\w+\s*=\s*([^;]+);)");
         std::string out;
         out.reserve(result.size());
         size_t lastPos = 0;
@@ -2402,7 +2402,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Detect known vec2/vec3/vec4 variables used in a float assignment.
     {
         std::set<std::string> vec_vars;
-        std::regex            re_vec(R"(\b(?:uniform|in)\s+vec[234]\s+(\w+)\s*;)");
+        static const std::regex            re_vec(R"(\b(?:uniform|in)\s+vec[234]\s+(\w+)\s*;)");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_vec);
              it != std::sregex_iterator();
              ++it)
@@ -2435,7 +2435,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::map<std::string, int> wider_varyings;
         {
-            std::regex re_wide(R"(\b(?:in|out)\s+vec([34])\s+(\w+)\s*;)");
+            static const std::regex re_wide(R"(\b(?:in|out)\s+vec([34])\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_wide);
                  it != std::sregex_iterator();
                  ++it)
@@ -2449,7 +2449,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // truncation needed.
         {
             std::set<std::string> shadowed;
-            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            static const std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
                  it != std::sregex_iterator(); ++it)
                 shadowed.insert((*it)[1].str());
@@ -2527,7 +2527,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::map<std::string, int> varying_widths;
         {
-            std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
+            static const std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
                  it != std::sregex_iterator();
                  ++it)
@@ -2539,7 +2539,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // resolves to the float local, swizzling it errors.
         {
             std::set<std::string> shadowed;
-            std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
+            static const std::regex re_float(R"(\bfloat\s+(\w+)\s*[=;])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_float);
                  it != std::sregex_iterator(); ++it)
                 shadowed.insert((*it)[1].str());
@@ -2575,7 +2575,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Fix: "for (int VAR = -FLOAT_EXPR" → "for (int VAR = int(-FLOAT_EXPR)"
     // HLSL allows implicit float-to-int in for-loop initializers; GLSL does not.
     {
-        std::regex re(R"(for\s*\(\s*int\s+(\w+)\s*=\s*(-\s*\w+\s*\*\s*\d+))");
+        static const std::regex re(R"(for\s*\(\s*int\s+(\w+)\s*=\s*(-\s*\w+\s*\*\s*\d+))");
         result = std::regex_replace(result, re, "for (int $1 = int($2)");
     }
 
@@ -2587,7 +2587,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // 3496072356).  Same idea for the loop-condition comparison.
     {
         std::set<std::string> float_uniforms;
-        std::regex            re_uf(R"(\buniform\s+float\s+(\w+))");
+        static const std::regex            re_uf(R"(\buniform\s+float\s+(\w+))");
         for (auto it = std::sregex_iterator(result.begin(), result.end(), re_uf);
              it != std::sregex_iterator(); ++it)
             float_uniforms.insert((*it)[1].str());
@@ -2605,7 +2605,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     }
     // Also fix the loop condition: "VAR <= FLOAT_EXPR * N" → "VAR <= int(FLOAT_EXPR * N)"
     {
-        std::regex re(R"((\w+)\s*<=\s*(\w+\s*\*\s*\d+)\s*;)");
+        static const std::regex re(R"((\w+)\s*<=\s*(\w+\s*\*\s*\d+)\s*;)");
         // Only apply when the pattern looks like a for-loop condition with a float uniform
         result = std::regex_replace(result, re, "$1 <= int($2);");
     }
@@ -2615,7 +2615,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // e.g. "glOutColor = sample.x * mask * step(...);" → "glOutColor = vec4(...);"
     // Does NOT match component writes like "glOutColor.a *= ..." (the '.' prevents \s*= match).
     {
-        std::regex re(R"(\bglOutColor\s*=(?!\s*vec4\s*\()\s*([^;]+);)");
+        static const std::regex re(R"(\bglOutColor\s*=(?!\s*vec4\s*\()\s*([^;]+);)");
         result = std::regex_replace(result, re, "glOutColor = vec4($1);");
     }
 
@@ -2623,7 +2623,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // HLSL lerp() auto-truncates vec4→vec3; GLSL mix() requires matching types.
     // When a vec4 var is swizzled on the LHS but used bare as first arg to mix(), add swizzle.
     {
-        std::regex re(R"((\w+)\.(rgb|xyz)(\s*=\s*mix\s*\(\s*)\1\b(?!\s*[.\[]))");
+        static const std::regex re(R"((\w+)\.(rgb|xyz)(\s*=\s*mix\s*\(\s*)\1\b(?!\s*[.\[]))");
         result = std::regex_replace(result, re, "$1.$2$3$1.$2");
     }
 
@@ -2633,7 +2633,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // invalid when followed by '(' (function); const variable decls (const float PI = 3.14;)
     // are left alone because the identifier is followed by '=' instead.
     {
-        std::regex re(R"(\bconst\s+(vec[234]|float|int|uint|bool)\s+(\w+)\s*\()");
+        static const std::regex re(R"(\bconst\s+(vec[234]|float|int|uint|bool)\s+(\w+)\s*\()");
         result = std::regex_replace(result, re, "$1 $2(");
     }
 
@@ -2666,7 +2666,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         std::map<std::string, int> func_first_param_dim;
         {
-            std::regex re_func(
+            static const std::regex re_func(
                 R"(\b(?:void|float|int|uint|bool|vec[234])\s+(\w+)\s*\(\s*(vec[234])\s+\w+)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_func);
                  it != std::sregex_iterator();
@@ -2679,7 +2679,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
         }
         std::map<std::string, int> varying_dim;
         {
-            std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
+            static const std::regex re_in(R"(\bin\s+vec([234])\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_in);
                  it != std::sregex_iterator();
                  ++it) {
@@ -2704,7 +2704,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     //   vec4 albedo = vec4({ 1.0, 1.0, 1.0, 0.0 });
     // Strip the inner braces so the constructor is `vec4(1.0,1.0,1.0,0.0)`.
     {
-        std::regex re(R"((vec[234])\s*\(\s*\{([^{}]*)\}\s*\))");
+        static const std::regex re(R"((vec[234])\s*\(\s*\{([^{}]*)\}\s*\))");
         result = std::regex_replace(result, re, "$1($2)");
     }
 
@@ -2717,11 +2717,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // are recognised by the presence of `<`, `>`, `<=`, `>=`, `==`, `!=`.
     {
         // Right-hand bool: `* ( ... CMP ... )`
-        std::regex re1(R"(\*\s*\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\))");
+        static const std::regex re1(R"(\*\s*\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\))");
         result = std::regex_replace(result, re1, "* float($1)");
         // Left-hand bool: `( ... CMP ... ) *` — only when not already wrapped
         // in a float(/vec[234]( cast.
-        std::regex re2(R"(([^A-Za-z0-9_])\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\)\s*\*)");
+        static const std::regex re2(R"(([^A-Za-z0-9_])\(\s*([^()]*(?:<=?|>=?|==|!=)[^()]*)\s*\)\s*\*)");
         result = std::regex_replace(result, re2, "$1float($2) *");
     }
 
@@ -2789,7 +2789,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Keep `const` only when the initializer is a literal or a `vec[234](`/
     // `mat[234](`/`float(`/`int(` constructor wrapping literals.
     {
-        std::regex re(R"(\bconst\s+(float|vec[234]|mat[234])\s+(\w+)\s*=\s*([^;]+);)");
+        static const std::regex re(R"(\bconst\s+(float|vec[234]|mat[234])\s+(\w+)\s*=\s*([^;]+);)");
         regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
             std::string init = m[3].str();
             bool non_const = false;
@@ -2797,11 +2797,11 @@ inline std::string FixImplicitConversions(const std::string& src) {
                 init.find("g_") != std::string::npos)
                 non_const = true;
             if (! non_const) {
-                std::regex re_dot(R"(\.\s*[A-Za-z_])");
+                static const std::regex re_dot(R"(\.\s*[A-Za-z_])");
                 if (std::regex_search(init, re_dot)) non_const = true;
             }
             if (! non_const) {
-                std::regex re_fn(R"(\b([A-Za-z_]\w*)\s*\()");
+                static const std::regex re_fn(R"(\b([A-Za-z_]\w*)\s*\()");
                 for (auto it = std::sregex_iterator(init.begin(), init.end(), re_fn);
                      it != std::sregex_iterator(); ++it) {
                     std::string name = (*it)[1].str();
@@ -2825,7 +2825,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // Re-declare as float; the usage sites (multiplication with float, etc.)
     // accept the wider type without further change.
     {
-        std::regex re(R"(\bint\s+(\w+)\s*=\s*(step|_westep|smoothstep|mix|min|max|clamp|_wemn|_wemx|abs|sign|floor|ceil|fract|sin|cos|tan|exp|log|sqrt|pow|_wep|mod|atan|asin|acos)\s*\()");
+        static const std::regex re(R"(\bint\s+(\w+)\s*=\s*(step|_westep|smoothstep|mix|min|max|clamp|_wemn|_wemx|abs|sign|floor|ceil|fract|sin|cos|tan|exp|log|sqrt|pow|_wep|mod|atan|asin|acos)\s*\()");
         result = std::regex_replace(result, re, "float $1 = $2(");
     }
 
@@ -2853,7 +2853,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
             vec_vars.insert(s.begin(), s.end());
         }
         if (! vec_vars.empty()) {
-            std::regex re(R"(\bsmoothstep\s*\(\s*(\w+)\s*,\s*(\w+)\s*([+\-*/])\s*(\w+)\s*,\s*(\w+)\s*\))");
+            static const std::regex re(R"(\bsmoothstep\s*\(\s*(\w+)\s*,\s*(\w+)\s*([+\-*/])\s*(\w+)\s*,\s*(\w+)\s*\))");
             regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
                 std::string a1 = m[1].str();
                 std::string a2 = m[2].str();

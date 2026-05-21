@@ -143,6 +143,95 @@ TEST_SUITE("Scene.PendingParentChanges") {
 } // Scene.PendingParentChanges
 
 // ===========================================================================
+// ResolveParentNodeId — cross-thread (QML) reverse lookup of a child's
+// parent id.  Companion to ApplyPendingParentChanges: shares
+// m_pending_parent_mutex so the parent-walk never races a reparent on the
+// render thread.  Returns -1 on any miss.
+// ===========================================================================
+
+TEST_SUITE("Scene.ResolveParentNodeId") {
+    TEST_CASE("resolves a child to its parent's id") {
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p       = std::make_shared<SceneNode>();
+        auto c       = std::make_shared<SceneNode>();
+        p->ID()      = 7;
+        c->ID()      = 8;
+        s.sceneGraph->AppendChild(p);
+        p->AppendChild(c);
+        s.nodeById[7] = p.get();
+        s.nodeById[8] = c.get();
+
+        CHECK(s.ResolveParentNodeId(8) == 7);
+    }
+
+    TEST_CASE("reflects a reparent after ApplyPendingParentChanges drains") {
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto a       = std::make_shared<SceneNode>();
+        auto b       = std::make_shared<SceneNode>();
+        auto c       = std::make_shared<SceneNode>();
+        a->ID()      = 1;
+        b->ID()      = 2;
+        c->ID()      = 3;
+        s.sceneGraph->AppendChild(a);
+        s.sceneGraph->AppendChild(b);
+        a->AppendChild(c);
+        s.nodeById[1] = a.get();
+        s.nodeById[2] = b.get();
+        s.nodeById[3] = c.get();
+
+        // Before the drain, c's parent is a (id 1).
+        CHECK(s.ResolveParentNodeId(3) == 1);
+
+        s.QueueParentChange(3, 2); // reparent c from a → b
+        s.ApplyPendingParentChanges();
+
+        // After the drain, c's parent is b (id 2).
+        CHECK(s.ResolveParentNodeId(3) == 2);
+    }
+
+    TEST_CASE("unknown childId returns -1") {
+        Scene s;
+        s.sceneGraph = std::make_shared<SceneNode>();
+        auto p       = std::make_shared<SceneNode>();
+        p->ID()      = 1;
+        s.sceneGraph->AppendChild(p);
+        s.nodeById[1] = p.get();
+
+        CHECK(s.ResolveParentNodeId(999) == -1);
+    }
+
+    TEST_CASE("root/parentless node returns -1") {
+        // A node with no parent pointer (never AppendChild'd to anything).
+        Scene s;
+        auto orphan   = std::make_shared<SceneNode>();
+        orphan->ID()  = 5;
+        s.nodeById[5] = orphan.get();
+        REQUIRE(orphan->Parent() == nullptr);
+
+        CHECK(s.ResolveParentNodeId(5) == -1);
+    }
+
+    TEST_CASE("parent not present in nodeById returns -1") {
+        // child has a live parent pointer, but that parent was never
+        // registered in nodeById, so the reverse map walk finds no id.
+        Scene s;
+        auto p       = std::make_shared<SceneNode>();
+        auto c       = std::make_shared<SceneNode>();
+        p->ID()      = 1;
+        c->ID()      = 2;
+        p->AppendChild(c);
+        // Only the child is registered; the parent is intentionally absent.
+        s.nodeById[2] = c.get();
+        REQUIRE(c->Parent() == p.get());
+
+        CHECK(s.ResolveParentNodeId(2) == -1);
+    }
+
+} // Scene.ResolveParentNodeId
+
+// ===========================================================================
 // Pending-child-sort queue + ApplyPendingChildSorts drain
 // (thisScene.sortLayer bridge — Blue Archive 2764537029 visualizer)
 // ===========================================================================

@@ -12,6 +12,7 @@
 #include "Scene/SceneImageEffectLayer.h"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
+#include "Core/Random.hpp"
 #include "Interface/IShaderValueUpdater.h"
 #include "WPShaderValueUpdater.hpp"
 
@@ -201,13 +202,14 @@ public:
     }
 
     std::array<int32_t, 2> getOrthoSize() const {
-        if (m_scene) return { m_scene->ortho[0], m_scene->ortho[1] };
+        auto scene = m_scene.load();
+        if (scene) return { scene->ortho[0], scene->ortho[1] };
         return { 1920, 1080 };
     }
 
     SceneWallpaper::ParallaxInfo getParallaxInfo() const {
         SceneWallpaper::ParallaxInfo info;
-        auto                         scene = m_scene;
+        auto                         scene = m_scene.load();
         if (! scene) return info;
         auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
         if (updater) {
@@ -227,11 +229,12 @@ public:
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
     std::vector<AnimationEventInfo> drainAnimationEvents() {
-        // m_scene is assigned once at load on the main thread; read from QML
-        // thread here.  Matches the lockless pattern used elsewhere
-        // (e.g. getOrthoSize()).  The underlying DrainAnimationEvents() is
-        // itself mutex-protected against the render-thread writer.
-        auto scene = m_scene;
+        // m_scene is an atomic<shared_ptr> re-published by loadScene on the main
+        // looper thread (a reload re-assigns it), and read here on the QML
+        // thread.  .load() takes a stable local so the pointer can't tear under
+        // a concurrent reload; the underlying DrainAnimationEvents() is itself
+        // mutex-protected against the render-thread writer.
+        auto scene = m_scene.load();
         if (! scene) return {};
         auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
         if (! updater) return {};
@@ -270,7 +273,11 @@ private:
     std::unique_ptr<audio::AudioCapture>  m_audio_capture;
     FirstFrameCallback                    m_first_frame_callback;
     std::string                           m_user_props_json;
-    std::shared_ptr<Scene>                m_scene; // shared with render handler
+    // Atomic: written on the main looper thread (loadScene) and read on the
+    // QML thread (getOrthoSize / getParallaxInfo / drainAnimationEvents).  Every
+    // access goes through .load()/.store() so a reload's re-publish can't tear
+    // the pointer under a concurrent reader.  Shared with the render handler.
+    std::atomic<std::shared_ptr<Scene>> m_scene;
 
     mutable std::mutex                       m_text_scripts_mutex;
     std::vector<TextScriptInfo>              m_text_scripts;
@@ -322,8 +329,9 @@ public:
     virtual ~RenderHandler() {
         frame_timer.Stop();
         // Release Scene GPU resources before destroying VMA allocator
-        if (m_scene && m_render->inited()) {
-            m_render->clearLastRenderGraph(m_scene.get());
+        auto scene = m_scene.load();
+        if (scene && m_render->inited()) {
+            m_render->clearLastRenderGraph(scene.get());
         }
         m_render->destroy();
         LOG_INFO("render handler deleted");
@@ -406,44 +414,40 @@ public:
     // isPlaying: true}`.  Held under nodeSpriteSnapshotMutex so the
     // render-thread writer and JS-thread reader don't race.
     Scene::NodeSpriteSnapshot getLayerSpriteSnapshot(i32 nodeId) const {
-        if (! m_scene) return {};
-        std::lock_guard<std::mutex> lk(m_scene->nodeSpriteSnapshotMutex);
-        auto it = m_scene->nodeSpriteSnapshot.find(nodeId);
-        if (it == m_scene->nodeSpriteSnapshot.end()) return {};
+        auto scene = m_scene.load();
+        if (! scene) return {};
+        std::lock_guard<std::mutex> lk(scene->nodeSpriteSnapshotMutex);
+        auto                        it = scene->nodeSpriteSnapshot.find(nodeId);
+        if (it == scene->nodeSpriteSnapshot.end()) return {};
         return it->second;
     }
 
     // SceneScript thisLayer.getBoneIndex(name) — resolves a named MDAT
     // attachment in the puppet rigged to this layer (or its parent's puppet
-    // for child-rigged layers).  No locking: nodePuppetMap is populated at
-    // parse time and never mutated thereafter; WPPuppet attachments are
-    // likewise immutable.  Returns 0 ("origin") if not found — matches
-    // WE's sentinel that authoring scripts treat as a missing attachment.
+    // for child-rigged layers).  nodePuppetMap is populated at parse time and
+    // never mutated thereafter (WPPuppet attachments are likewise immutable),
+    // so the puppet lookups are content-safe; the surrounding m_scene pointer
+    // is .load()ed once into a local so a concurrent render-thread reset can't
+    // tear it.  The parent walk (for child-rigged layers) reads SceneNode
+    // parent pointers that the render thread reparents via the drain, so it
+    // goes through Scene::ResolveParentNodeId under the Scene parent-tree lock
+    // (B5b) rather than touching nodeById/Parent() inline.  Returns 0
+    // ("origin") if not found — matches WE's missing-attachment sentinel.
     i32 getLayerBoneIndex(i32 nodeId, const std::string& boneName) const {
-        if (! m_scene || boneName.empty()) return 0;
+        auto scene = m_scene.load();
+        if (! scene || boneName.empty()) return 0;
         auto try_lookup = [&](i32 id) -> i32 {
             if (id < 0) return -1;
-            auto it = m_scene->nodePuppetMap.find(id);
-            if (it == m_scene->nodePuppetMap.end() || ! it->second) return -1;
+            auto it = scene->nodePuppetMap.find(id);
+            if (it == scene->nodePuppetMap.end() || ! it->second) return -1;
             auto* att = it->second->findAttachment(boneName);
             if (! att) return -1;
             return static_cast<i32>(att->bone_index);
         };
         i32 r = try_lookup(nodeId);
         if (r >= 0) return r;
-        auto nit = m_scene->nodeById.find(nodeId);
-        if (nit != m_scene->nodeById.end() && nit->second) {
-            SceneNode* parent = nit->second->Parent();
-            if (parent) {
-                for (auto& [pid, pnode] : m_scene->nodeById) {
-                    if (pnode == parent) {
-                        r = try_lookup(pid);
-                        if (r >= 0) return r;
-                        break;
-                    }
-                }
-            }
-        }
+        r = try_lookup(scene->ResolveParentNodeId(nodeId));
+        if (r >= 0) return r;
         return 0;
     }
 
@@ -519,12 +523,16 @@ public:
     }
 
     void queueParentChange(i32 childId, i32 parentId) {
-        // Scene owns its own mutex on the queue, so no extra locking here.
-        if (m_scene) m_scene->QueueParentChange(childId, parentId);
+        // Called inline on the QML thread; .load() the scene pointer so it
+        // can't tear under a render-thread reset.  Scene owns its own mutex on
+        // the queue, so no extra locking on the enqueue itself.
+        auto scene = m_scene.load();
+        if (scene) scene->QueueParentChange(childId, parentId);
     }
 
     void queueChildSort(i32 childId, i32 targetIndex) {
-        if (m_scene) m_scene->QueueChildSort(childId, targetIndex);
+        auto scene = m_scene.load();
+        if (scene) scene->QueueChildSort(childId, targetIndex);
     }
 
     void setNodeAlpha(i32 id, float alpha) {
@@ -667,30 +675,36 @@ private:
             return;
         }
 
+        // Render-thread-confined: .load() the atomic scene pointer once into a
+        // local and use `scene` for the rest of the frame.  The render looper
+        // is the only writer (CMD_SET_SCENE/HDR/STOP/device-lost), so this load
+        // is uncontended here, but the atomic type forces a single deref point.
+        auto scene = m_scene.load();
+
         // Apply queued parent-change requests from SceneScript before any
         // transform / visibility traversal.  See layer-hierarchy spec for
         // the JS-side queue API and cycle prevention.  No-op when no scene
         // is loaded yet.  Apply child-sort drain in the same window so
         // sortLayer + setLayerParent run on the same frame.
-        if (m_scene) {
-            m_scene->ApplyPendingParentChanges();
-            m_scene->ApplyPendingChildSorts();
+        if (scene) {
+            scene->ApplyPendingParentChanges();
+            scene->ApplyPendingChildSorts();
         }
 
         frame_timer.FrameBegin();
         if (m_rg) {
-            // LOG_INFO("frame info, fps: %.1f, frametime: %.1f", 1.0f, 1000.0f*m_scene->frameTime);
-            m_scene->shaderValueUpdater->FrameBegin();
+            // LOG_INFO("frame info, fps: %.1f, frametime: %.1f", 1.0f, 1000.0f*scene->frameTime);
+            scene->shaderValueUpdater->FrameBegin();
             {
                 auto pos = m_mouse_pos.load();
-                m_scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
+                scene->shaderValueUpdater->MouseInput(pos[0], pos[1]);
 
                 // Update particle control points that follow the mouse
                 auto* wpUpdater =
-                    static_cast<WPShaderValueUpdater*>(m_scene->shaderValueUpdater.get());
+                    static_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
                 auto mousePos = wpUpdater->GetMousePosition();
-                m_scene->paritileSys->UpdateMouseControlPoints(
-                    mousePos, { m_scene->ortho[0], m_scene->ortho[1] });
+                scene->paritileSys->UpdateMouseControlPoints(mousePos,
+                                                             { scene->ortho[0], scene->ortho[1] });
             }
 
             // Audio-reactive emit-rate push.  For each subsystem whose source
@@ -700,15 +714,15 @@ private:
             // across frames.  Cheap when no subsystems are flagged (early-out
             // on IsAudioReactive).
             {
-                auto                   analyzer = m_scene->audioAnalyzer;
+                auto                   analyzer  = scene->audioAnalyzer;
                 std::span<const float> specLeft  = analyzer && analyzer->HasData()
                                                        ? analyzer->GetRawSpectrum(16, 0)
                                                        : std::span<const float> {};
                 std::span<const float> specRight = analyzer && analyzer->HasData()
                                                        ? analyzer->GetRawSpectrum(16, 1)
                                                        : std::span<const float> {};
-                double                 dt        = m_scene->frameTime;
-                for (auto& [nodeId, sub] : m_scene->particleSubByNodeId) {
+                double                 dt        = scene->frameTime;
+                for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
                     if (! sub || ! sub->IsAudioReactive()) continue;
                     auto r = audio_reactive::computeRateMultiplier(
                         specLeft, specRight, sub->AudioSmoothedRef(), dt, sub->AudioParams());
@@ -717,7 +731,7 @@ private:
                 }
             }
 
-            m_scene->paritileSys->Emitt();
+            scene->paritileSys->Emitt();
 
             // Auto-hide pool particle nodes whose burst has played out.
             // SceneScript pool-particle assets (e.g. dino_run's coinget)
@@ -727,10 +741,10 @@ private:
             // "visible" with zero active particles.  Hide it here so pool
             // slots release automatically; JS destroyLayer then re-pushes
             // the name to the pool for reuse.
-            for (auto& [nodeId, sub] : m_scene->particleSubByNodeId) {
+            for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
                 if (! sub || ! sub->IsBurstDone()) continue;
-                auto nit = m_scene->nodeById.find(nodeId);
-                if (nit == m_scene->nodeById.end() || ! nit->second) {
+                auto nit = scene->nodeById.find(nodeId);
+                if (nit == scene->nodeById.end() || ! nit->second) {
                     sub->ClearBurstDone();
                     continue;
                 }
@@ -746,7 +760,7 @@ private:
                 // Pointsize updates first — they influence every subsequent
                 // rasterization for the same layer in this frame.
                 for (auto& [id, newSize] : m_pending_pointsize_updates) {
-                    for (auto& tl : m_scene->textLayers) {
+                    for (auto& tl : scene->textLayers) {
                         if (tl.id != id) continue;
                         if (newSize > 0.0f && std::abs(tl.pointsize - newSize) > 0.01f) {
                             tl.pointsize      = newSize;
@@ -761,7 +775,7 @@ private:
                 // Font name → bytes is resolved here on the render thread
                 // because the VFS lives on the scene struct we already own.
                 for (auto& [id, style] : m_pending_text_style_updates) {
-                    for (auto& tl : m_scene->textLayers) {
+                    for (auto& tl : scene->textLayers) {
                         if (tl.id != id) continue;
                         bool anyChange = false;
                         if (! style.halign.empty() && style.halign != tl.halign) {
@@ -774,13 +788,13 @@ private:
                         }
                         if (! style.fontName.empty() && style.fontName != tl.fontName) {
                             std::string newBytes;
-                            if (m_scene->vfs) {
-                                if (m_scene->vfs->Contains("/assets/" + style.fontName))
-                                    newBytes = fs::GetFileContent(
-                                        *m_scene->vfs, "/assets/" + style.fontName);
-                                else if (m_scene->vfs->Contains("/" + style.fontName))
-                                    newBytes = fs::GetFileContent(
-                                        *m_scene->vfs, "/" + style.fontName);
+                            if (scene->vfs) {
+                                if (scene->vfs->Contains("/assets/" + style.fontName))
+                                    newBytes = fs::GetFileContent(*scene->vfs,
+                                                                  "/assets/" + style.fontName);
+                                else if (scene->vfs->Contains("/" + style.fontName))
+                                    newBytes =
+                                        fs::GetFileContent(*scene->vfs, "/" + style.fontName);
                             }
                             if (! newBytes.empty()) {
                                 tl.fontName = style.fontName;
@@ -796,7 +810,7 @@ private:
                     }
                 }
                 for (auto& [id, newText] : m_pending_text_updates) {
-                    for (auto& tl : m_scene->textLayers) {
+                    for (auto& tl : scene->textLayers) {
                         if (tl.id != id) continue;
                         // Re-rasterize if text, pointsize, or style changed
                         if (tl.currentText == newText && ! tl.pointsizeDirty
@@ -824,7 +838,7 @@ private:
                 // pending text update still need a re-render against the
                 // existing currentText.  (Without this pass, halign/font
                 // changes wouldn't manifest until the next text mutation.)
-                for (auto& tl : m_scene->textLayers) {
+                for (auto& tl : scene->textLayers) {
                     if (! tl.textStyleDirty) continue;
                     if (tl.currentText.empty()) {
                         tl.textStyleDirty = false;
@@ -908,10 +922,10 @@ private:
                 if (! m_pending_color_updates.empty()) {
                     LOG_INFO("DRAW: %zu pending color updates, %zu colorScripts",
                              m_pending_color_updates.size(),
-                             m_scene->colorScripts.size());
+                             scene->colorScripts.size());
                 }
                 for (auto& [id, rgb] : m_pending_color_updates) {
-                    for (auto& cs : m_scene->colorScripts) {
+                    for (auto& cs : scene->colorScripts) {
                         if (cs.id == id && cs.material) {
                             // Preserve existing alpha from g_Color4
                             float alpha = 1.0f;
@@ -950,7 +964,7 @@ private:
                              m_pending_transform_updates.size(),
                              m_pending_visible_updates.size(),
                              m_pending_alpha_updates.size(),
-                             m_scene->nodeById.size());
+                             scene->nodeById.size());
                 }
                 int transformHit = 0, transformMiss = 0;
                 int effectRedirects   = 0;
@@ -958,8 +972,8 @@ private:
                 int planetSampleCount = 0;
                 for (auto& [key, vec] : m_pending_transform_updates) {
                     auto [id, prop] = key;
-                    auto nit        = m_scene->nodeById.find(id);
-                    if (nit == m_scene->nodeById.end()) {
+                    auto nit        = scene->nodeById.find(id);
+                    if (nit == scene->nodeById.end()) {
                         transformMiss++;
                         continue;
                     }
@@ -989,9 +1003,9 @@ private:
                     // For nodes with effect chains, redirect transform updates
                     // to the resolved final composite node.  The world node must
                     // stay at identity so the base render fills the ping-pong RT.
-                    auto       eit            = m_scene->nodeEffectLayerMap.find(id);
+                    auto       eit            = scene->nodeEffectLayerMap.find(id);
                     SceneNode* resolvedOutput = nullptr;
-                    if (eit != m_scene->nodeEffectLayerMap.end()) {
+                    if (eit != scene->nodeEffectLayerMap.end()) {
                         resolvedOutput = eit->second->ResolvedLastOutput();
                         effectRedirects++;
                     }
@@ -1040,8 +1054,8 @@ private:
                 }
                 int visHit = 0, visMiss = 0;
                 for (auto& [id, visible] : m_pending_visible_updates) {
-                    auto nit = m_scene->nodeById.find(id);
-                    if (nit != m_scene->nodeById.end()) {
+                    auto nit = scene->nodeById.find(id);
+                    if (nit != scene->nodeById.end()) {
                         visHit++;
                         bool wasVisible = nit->second->IsVisible();
                         nit->second->SetVisible(visible);
@@ -1052,8 +1066,8 @@ private:
                         // fires its instantaneous emit on the first frame
                         // after scene load and never again.
                         if (visible && ! wasVisible) {
-                            auto pit = m_scene->particleSubByNodeId.find(id);
-                            if (pit != m_scene->particleSubByNodeId.end() && pit->second) {
+                            auto pit = scene->particleSubByNodeId.find(id);
+                            if (pit != scene->particleSubByNodeId.end() && pit->second) {
                                 pit->second->Reset();
                             }
                         }
@@ -1071,8 +1085,8 @@ private:
                     }
                 }
                 for (auto& [id, alpha] : m_pending_alpha_updates) {
-                    auto nit = m_scene->nodeById.find(id);
-                    if (nit == m_scene->nodeById.end()) continue;
+                    auto nit = scene->nodeById.find(id);
+                    if (nit == scene->nodeById.end()) continue;
                     SceneNode* node = nit->second;
                     if (node->HasMaterial()) {
                         auto* mat                                    = node->Mesh()->Material();
@@ -1088,15 +1102,15 @@ private:
                 // created (effect redirect, pool carve-out) and the script
                 // just had nothing to drive.
                 for (auto& [id, rate] : m_pending_particle_rate) {
-                    auto sit = m_scene->particleSubByNodeId.find(id);
-                    if (sit == m_scene->particleSubByNodeId.end() || ! sit->second) continue;
+                    auto sit = scene->particleSubByNodeId.find(id);
+                    if (sit == scene->particleSubByNodeId.end() || ! sit->second) continue;
                     sit->second->SetDynamicRateMultiplier((double)rate);
                 }
                 m_pending_particle_rate.clear();
                 // Apply effect visibility changes
                 for (auto& [nodeId, effIdx, vis] : m_pending_effect_visible) {
-                    auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
-                    if (eit == m_scene->nodeEffectLayerMap.end()) continue;
+                    auto eit = scene->nodeEffectLayerMap.find(nodeId);
+                    if (eit == scene->nodeEffectLayerMap.end()) continue;
                     auto* effLayer = eit->second;
                     if (effIdx < 0 || effIdx >= (i32)effLayer->EffectCount()) continue;
                     auto& eff    = effLayer->GetEffect(effIdx);
@@ -1113,8 +1127,8 @@ private:
                 // shader-specific (g_Color, g_TintColor, etc.).  Without
                 // resolution the write lands in an unused constValues slot.
                 for (auto& [nodeId, uName, floats] : m_pending_material_values) {
-                    auto nit = m_scene->nodeById.find(nodeId);
-                    if (nit == m_scene->nodeById.end()) continue;
+                    auto nit = scene->nodeById.find(nodeId);
+                    if (nit == scene->nodeById.end()) continue;
                     auto* mesh = nit->second->Mesh();
                     if (! mesh) continue;
                     auto* mat = mesh->Material();
@@ -1132,8 +1146,8 @@ private:
                 // like Game Of Life (3453251764) can paint cells via
                 // thisLayer.getEffect('paint').getMaterial().color = Vec3(...)
                 for (auto& [nodeId, effectIdx, uName, floats] : m_pending_effect_material_values) {
-                    auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
-                    if (eit == m_scene->nodeEffectLayerMap.end() || ! eit->second) continue;
+                    auto eit = scene->nodeEffectLayerMap.find(nodeId);
+                    if (eit == scene->nodeEffectLayerMap.end() || ! eit->second) continue;
                     auto* layer = eit->second;
                     if (effectIdx < 0 || effectIdx >= (i32)layer->EffectCount()) continue;
                     auto& eff = layer->GetEffect(effectIdx);
@@ -1154,7 +1168,7 @@ private:
                 // into Scene::nodeSpriteFrame for per-pass consumption in
                 // WPShaderValueUpdater (see SetManualFrame loop there).
                 for (auto& [nodeId, pin] : m_pending_sprite_frame) {
-                    m_scene->nodeSpriteFrame[nodeId] = pin;
+                    scene->nodeSpriteFrame[nodeId] = pin;
                 }
                 m_pending_sprite_frame.clear();
                 if (logDiag) {
@@ -1168,8 +1182,8 @@ private:
                              m_pending_alpha_updates.size());
                     // Dump world transforms for key planet nodes after applying updates
                     for (int checkId : { 1360, 1365, 1373, 1374, 1375, 1376 }) {
-                        auto nit = m_scene->nodeById.find(checkId);
-                        if (nit != m_scene->nodeById.end()) {
+                        auto nit = scene->nodeById.find(checkId);
+                        if (nit != scene->nodeById.end()) {
                             auto* n = nit->second;
                             n->UpdateTrans();
                             auto  wt = n->ModelTrans();
@@ -1198,13 +1212,13 @@ private:
 
                 // Scene-level property updates
                 if (m_pending_clear_color) {
-                    m_scene->clearColor = *m_pending_clear_color;
+                    scene->clearColor = *m_pending_clear_color;
                     m_pending_clear_color.reset();
                 }
                 if (m_pending_bloom_strength) {
-                    m_scene->bloomConfig.strength = *m_pending_bloom_strength;
-                    if (! m_scene->bloomConfig.nodes.empty()) {
-                        auto* mat = m_scene->bloomConfig.nodes[0]->Mesh()->Material();
+                    scene->bloomConfig.strength = *m_pending_bloom_strength;
+                    if (! scene->bloomConfig.nodes.empty()) {
+                        auto* mat = scene->bloomConfig.nodes[0]->Mesh()->Material();
                         mat->customShader.constValues["bloomstrength"] =
                             std::vector<float> { *m_pending_bloom_strength };
                         mat->customShader.constValuesDirty = true;
@@ -1212,56 +1226,56 @@ private:
                     m_pending_bloom_strength.reset();
                 }
                 if (m_pending_bloom_threshold) {
-                    m_scene->bloomConfig.threshold = *m_pending_bloom_threshold;
-                    if (! m_scene->bloomConfig.nodes.empty()) {
-                        auto* mat = m_scene->bloomConfig.nodes[0]->Mesh()->Material();
+                    scene->bloomConfig.threshold = *m_pending_bloom_threshold;
+                    if (! scene->bloomConfig.nodes.empty()) {
+                        auto* mat = scene->bloomConfig.nodes[0]->Mesh()->Material();
                         mat->customShader.constValues["bloomthreshold"] =
                             std::vector<float> { *m_pending_bloom_threshold };
                         mat->customShader.constValuesDirty = true;
                     }
                     m_pending_bloom_threshold.reset();
                 }
-                if (m_pending_camera_fov && m_scene->activeCamera) {
-                    m_scene->activeCamera->SetFov(*m_pending_camera_fov);
-                    m_scene->activeCamera->Update();
+                if (m_pending_camera_fov && scene->activeCamera) {
+                    scene->activeCamera->SetFov(*m_pending_camera_fov);
+                    scene->activeCamera->Update();
                     m_pending_camera_fov.reset();
                 }
-                if (m_pending_camera_lookat && m_scene->activeCamera) {
+                if (m_pending_camera_lookat && scene->activeCamera) {
                     auto&           u = *m_pending_camera_lookat;
                     Eigen::Vector3d eye(u.eye[0], u.eye[1], u.eye[2]);
                     Eigen::Vector3d ctr(u.center[0], u.center[1], u.center[2]);
                     Eigen::Vector3d up(u.up[0], u.up[1], u.up[2]);
-                    m_scene->activeCamera->SetDirectLookAt(eye, ctr, up);
+                    scene->activeCamera->SetDirectLookAt(eye, ctr, up);
                     m_pending_camera_lookat.reset();
                 }
                 if (m_pending_ambient_color) {
-                    m_scene->ambientColor = *m_pending_ambient_color;
+                    scene->ambientColor = *m_pending_ambient_color;
                     m_pending_ambient_color.reset();
                 }
                 if (m_pending_skylight_color) {
-                    m_scene->skylightColor = *m_pending_skylight_color;
+                    scene->skylightColor = *m_pending_skylight_color;
                     m_pending_skylight_color.reset();
                 }
                 for (auto& u : m_pending_light_colors) {
-                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size()) {
-                        m_scene->lights[u.index]->setColor(
+                    if (u.index >= 0 && u.index < (i32)scene->lights.size()) {
+                        scene->lights[u.index]->setColor(
                             Eigen::Vector3f(u.color[0], u.color[1], u.color[2]));
                     }
                 }
                 m_pending_light_colors.clear();
                 for (auto& u : m_pending_light_radii) {
-                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size())
-                        m_scene->lights[u.index]->setRadius(u.value);
+                    if (u.index >= 0 && u.index < (i32)scene->lights.size())
+                        scene->lights[u.index]->setRadius(u.value);
                 }
                 m_pending_light_radii.clear();
                 for (auto& u : m_pending_light_intensities) {
-                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size())
-                        m_scene->lights[u.index]->setIntensity(u.value);
+                    if (u.index >= 0 && u.index < (i32)scene->lights.size())
+                        scene->lights[u.index]->setIntensity(u.value);
                 }
                 m_pending_light_intensities.clear();
                 for (auto& u : m_pending_light_positions) {
-                    if (u.index >= 0 && u.index < (i32)m_scene->lights.size()) {
-                        auto* node = m_scene->lights[u.index]->node();
+                    if (u.index >= 0 && u.index < (i32)scene->lights.size()) {
+                        auto* node = scene->lights[u.index]->node();
                         if (node)
                             node->SetTranslate(
                                 Eigen::Vector3f(u.position[0], u.position[1], u.position[2]));
@@ -1280,15 +1294,28 @@ private:
             // perception-correct; the upper clamp keeps a long pause
             // (suspend/resume, long scene reload) from jumping the scene
             // clock by many seconds in one frame.
-            auto   now = std::chrono::steady_clock::now();
-            double dt_wall =
-                m_last_draw_wall_time
-                    ? std::chrono::duration<double>(now - *m_last_draw_wall_time).count()
-                    : frame_timer.IdeaTime();
-            m_last_draw_wall_time = now;
-            if (dt_wall < 0.0) dt_wall = 0.0;
-            if (dt_wall > 0.1) dt_wall = 0.1;
-            double dt_scene = dt_wall * m_speed;
+            //
+            // Deterministic mode (default OFF) replaces this wall-clock read
+            // with a FIXED step so the scene clock, property animations, and
+            // particle stepping all advance reproducibly frame-to-frame — the
+            // single highest-leverage change for golden-image capture (spec
+            // D11 phase-1).  The off-path below is byte-identical to before:
+            // when the flag is off we still read steady_clock, clamp, and
+            // update m_last_draw_wall_time exactly as in normal playback.
+            double dt_wall;
+            if (m_init_info.deterministic) {
+                dt_wall = m_init_info.fixed_dt;
+            } else {
+                auto now              = std::chrono::steady_clock::now();
+                dt_wall               = m_last_draw_wall_time
+                                            ? std::chrono::duration<double>(now - *m_last_draw_wall_time).count()
+                                            : frame_timer.IdeaTime();
+                m_last_draw_wall_time = now;
+                if (dt_wall < 0.0) dt_wall = 0.0;
+                if (dt_wall > 0.1) dt_wall = 0.1;
+            }
+            double dt_scene =
+                SelectFrameDt(m_init_info.deterministic, m_init_info.fixed_dt, dt_wall) * m_speed;
 
             // Tick property animations (alpha.animation keyframe tracks).
             // Advances time on playing tracks, evaluates, writes resulting
@@ -1297,7 +1324,7 @@ private:
             // lockstep with visuals.
             tickPropertyAnimations(dt_scene);
 
-            m_render->drawFrame(*m_scene);
+            m_render->drawFrame(*scene);
 
             // Snapshot each named layer's world transform after the per-frame
             // UpdateTrans walk (driven from drawFrame).  SceneScript
@@ -1316,14 +1343,14 @@ private:
             {
                 std::lock_guard<std::mutex> lk(m_world_cache_mutex);
                 m_layer_world_cache.clear();
-                m_layer_world_cache.reserve(m_scene->nodeNameToId.size());
-                for (auto& [name, id] : m_scene->nodeNameToId) {
-                    auto it = m_scene->nodeById.find(id);
-                    if (it == m_scene->nodeById.end() || ! it->second) continue;
+                m_layer_world_cache.reserve(scene->nodeNameToId.size());
+                for (auto& [name, id] : scene->nodeNameToId) {
+                    auto it = scene->nodeById.find(id);
+                    if (it == scene->nodeById.end() || ! it->second) continue;
                     Eigen::Matrix4d wt;
-                    auto            eit = m_scene->nodeEffectLayerMap.find(id);
+                    auto            eit  = scene->nodeEffectLayerMap.find(id);
                     SceneNode*      live = nullptr;
-                    if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+                    if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
                         // Prefer the resolved last-output node — its parent is
                         // wired to the parent_proxy (which holds the authored
                         // world transform), so its ModelTrans gives the on-
@@ -1353,8 +1380,8 @@ private:
                 return;
             }
 
-            m_scene->PassFrameTime(dt_scene);
-            m_scene_time.store(m_scene->elapsingTime, std::memory_order_relaxed);
+            scene->PassFrameTime(dt_scene);
+            m_scene_time.store(scene->elapsingTime, std::memory_order_relaxed);
 
             // DIAG: log elapsingTime vs wall clock drift
             if (std::getenv("WEKDE_TIME_DIAG")) {
@@ -1366,15 +1393,15 @@ private:
                     double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                                                 s_wall_start)
                                       .count();
-                    double delta_scene = m_scene->elapsingTime - s_last_scene;
-                    s_last_scene       = m_scene->elapsingTime;
+                    double delta_scene = scene->elapsingTime - s_last_scene;
+                    s_last_scene       = scene->elapsingTime;
                     LOG_INFO(
                         "TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
                         "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f dt_wall=%.4f",
                         s_tick_count,
                         wall,
-                        m_scene->elapsingTime,
-                        wall > 0.01 ? m_scene->elapsingTime / wall : 0.0,
+                        scene->elapsingTime,
+                        wall > 0.01 ? scene->elapsingTime / wall : 0.0,
                         frame_timer.FrameTime(),
                         frame_timer.IdeaTime(),
                         frame_timer.RequiredFps(),
@@ -1383,11 +1410,11 @@ private:
                 }
             }
 
-            m_scene->shaderValueUpdater->FrameEnd();
+            scene->shaderValueUpdater->FrameEnd();
             fps_counter.RegisterFrame();
 
-            if (! m_scene->first_frame_ok) {
-                m_scene->first_frame_ok = true;
+            if (! scene->first_frame_ok) {
+                scene->first_frame_ok = true;
                 main_handler.sendFirstFrameOk();
             }
 
@@ -1404,14 +1431,21 @@ private:
         int32_t value;
         if (msg->findInt32("value", &value)) {
             m_fillmode = (FillMode)value;
-            if (m_scene && renderInited()) {
-                m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+            auto scene = m_scene.load();
+            if (scene && renderInited()) {
+                m_render->UpdateCameraFillMode(*scene, m_fillmode);
             }
         }
     }
     MHANDLER_CMD(SET_SCENE) {
-        if (msg->findObject("scene", &m_scene)) {
-            if (m_rg) m_render->clearLastRenderGraph(m_scene.get());
+        // findObject assigns through a plain shared_ptr<Scene>* and can't bind
+        // to the atomic member, so read into a temp then publish via .store().
+        // The rest of the body uses the `scene` local (== the just-stored
+        // pointer) on the render thread.
+        std::shared_ptr<Scene> scene;
+        if (msg->findObject("scene", &scene)) {
+            m_scene.store(scene);
+            if (m_rg) m_render->clearLastRenderGraph(scene.get());
             m_drawDiagReset = true;        // force DRAW diagnostic on next frame
             m_last_draw_wall_time.reset(); // first DRAW uses ideatime, not the
                                            // wall-clock gap across scene load
@@ -1425,11 +1459,11 @@ private:
             //   - host any           + scene SDR → RGBA8 RTs,   FinPass passthrough
             // Without the tonemap path, overbright scenes (NieR 3633635618 thunderbolts,
             // etc.) additively pile their clamped-to-1.0 channels into pure white.
-            const bool scene_wants_hdr = m_scene->hdrContent;
+            const bool scene_wants_hdr = scene->hdrContent;
             const bool effective_hdr   = scene_wants_hdr;
             if (effective_hdr) {
                 int upgraded = 0;
-                for (auto& [name, rt] : m_scene->renderTargets) {
+                for (auto& [name, rt] : scene->renderTargets) {
                     if (rt.format == TextureFormat::RGBA8) {
                         rt.format = TextureFormat::RGBA16F;
                         upgraded++;
@@ -1443,24 +1477,41 @@ private:
                          (int)scene_wants_hdr,
                          (int)m_render->hdrContent());
             }
-            m_scene->hdrContent = effective_hdr;
+            scene->hdrContent = effective_hdr;
             // Align FinPass tonemap with the effective HDR mode for this scene.
             // If the mode differs from the previous scene, FinPass is marked for
             // re-prepare so it picks the matching tonemap/passthrough shader.
             m_render->setSceneHdrContent(effective_hdr);
 
-            m_rg = sceneToRenderGraph(*m_scene);
+            m_rg = sceneToRenderGraph(*scene);
 
             if (main_handler.isGenGraphviz()) m_rg->ToGraphviz("graph.dot");
-            m_render->compileRenderGraph(*m_scene, *m_rg);
-            m_render->UpdateCameraFillMode(*m_scene, m_fillmode);
+            m_render->compileRenderGraph(*scene, *m_rg);
+            m_render->UpdateCameraFillMode(*scene, m_fillmode);
+
+            // Deterministic mode (default OFF): seed the particle PRNG here,
+            // on the RENDER THREAD, before any particle is spawned.  This is
+            // the thread that runs PreSimulate() below and the per-frame
+            // Emitt() in CMD_DRAW, and effolkronium's Random is THREAD-LOCAL —
+            // seeding on any other thread (e.g. the main/QML thread) would be a
+            // silent no-op that leaves ParticleEmitter's Random::get<> draws
+            // nondeterministic.  Seeding here makes every emitter spawn and
+            // each particle's stable random_seed reproducible (spec D11
+            // phase-1).  The guarded LOG_INFO confirms the seed actually took
+            // on this thread (a thread-local-misseed is the exact stub-failure
+            // mode the project rejects, so we verify, not assume).
+            if (m_init_info.deterministic) {
+                Random::seed(m_init_info.rng_seed);
+                LOG_INFO("deterministic: seeded particle Random with 0x%08x on render thread",
+                         m_init_info.rng_seed);
+            }
 
             // Pre-simulate particle systems so scenes that author a non-zero
             // `starttime` (WE semantic: "seconds of sim before frame 1", e.g.
             // shimmering_particles' 50s dustmotes / 200s small_motes) show a
             // populated scene on load instead of a black screen ramping up.
-            if (m_scene->paritileSys) {
-                m_scene->paritileSys->PreSimulate();
+            if (scene->paritileSys) {
+                scene->paritileSys->PreSimulate();
             }
 
             // Create video texture decoders for MP4 textures detected during loading
@@ -1469,7 +1520,7 @@ private:
                 std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
                 m_video_decoders.clear();
             }
-            for (auto& vt : m_scene->videoTextures) {
+            for (auto& vt : scene->videoTextures) {
                 std::shared_ptr<VideoTextureDecoder> decoder;
 #ifdef HAVE_EGL_HWDEC
                 {
@@ -1497,10 +1548,10 @@ private:
             // Requires full Vulkan reinit (ExSwapchain format change)
             LOG_INFO("HDR output changed to %s, reinitializing Vulkan", value ? "on" : "off");
             frame_timer.Stop();
-            if (m_scene) {
-                m_render->clearLastRenderGraph(m_scene.get());
+            if (auto scene = m_scene.load()) {
+                m_render->clearLastRenderGraph(scene.get());
             }
-            m_scene.reset();
+            m_scene.store(nullptr);
             m_rg.reset();
             m_render->destroy();
             m_render = std::make_unique<vulkan::VulkanRender>();
@@ -1516,6 +1567,17 @@ private:
         std::shared_ptr<RenderInitInfo> info;
         if (msg->findObject("info", &info)) {
             m_init_info = *info;
+            // Fold the WEK_DETERMINISTIC env-var override into the struct flag
+            // once, here, so the per-frame dt site and the scene-load seed site
+            // only ever read m_init_info.deterministic (no repeated getenv in
+            // the hot draw loop).  Env is an ad-hoc-debugging convenience; the
+            // struct field is the explicit source of truth.
+            m_init_info.deterministic = ResolveDeterministic(m_init_info.deterministic);
+            if (m_init_info.deterministic) {
+                LOG_INFO("deterministic render mode ON (fixed_dt=%g, rng_seed=0x%08x)",
+                         m_init_info.fixed_dt,
+                         m_init_info.rng_seed);
+            }
             m_render->init(m_init_info);
 
             // inited, callback to laod scene
@@ -1531,12 +1593,13 @@ public:
     // the effect chain's own material copies, so updating only the source
     // leaves the rendered output unchanged.  Runs on the render thread.
     void tickPropertyAnimations(double dt) {
-        if (! m_scene) return;
-        if (m_scene->nodePropertyAnimations.empty()) return;
+        auto scene = m_scene.load();
+        if (! scene) return;
+        if (scene->nodePropertyAnimations.empty()) return;
         applyPendingPropertyAnimCommands();
-        for (auto& [nodeId, anims] : m_scene->nodePropertyAnimations) {
-            auto       nit        = m_scene->nodeById.find(nodeId);
-            SceneNode* sourceNode = (nit != m_scene->nodeById.end()) ? nit->second : nullptr;
+        for (auto& [nodeId, anims] : scene->nodePropertyAnimations) {
+            auto       nit        = scene->nodeById.find(nodeId);
+            SceneNode* sourceNode = (nit != scene->nodeById.end()) ? nit->second : nullptr;
 
             for (auto& anim : anims) {
                 if (anim.playing) anim.time += dt;
@@ -1592,9 +1655,9 @@ public:
         // shift the composite's screen position.  Fall back to the image
         // node for layers without effects.
         SceneNode* target_node = node;
-        if (m_scene) {
-            auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
-            if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+        if (auto scene = m_scene.load()) {
+            auto eit = scene->nodeEffectLayerMap.find(nodeId);
+            if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
                 if (auto* resolved = eit->second->ResolvedLastOutput()) {
                     target_node = resolved;
                 }
@@ -1635,8 +1698,10 @@ public:
         if (sourceNode && sourceNode->HasMaterial()) {
             pushAlpha(sourceNode->Mesh()->Material());
         }
-        auto eit = m_scene->nodeEffectLayerMap.find(nodeId);
-        if (eit != m_scene->nodeEffectLayerMap.end() && eit->second) {
+        auto scene = m_scene.load();
+        if (! scene) return;
+        auto eit = scene->nodeEffectLayerMap.find(nodeId);
+        if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
             auto* eff = eit->second;
             for (std::size_t i = 0; i < eff->EffectCount(); i++) {
                 auto& e = eff->GetEffect(i);
@@ -1656,9 +1721,12 @@ public:
     }
 
     bool propertyAnimIsPlaying(int32_t nodeId, const std::string& name) const {
-        if (! m_scene) return false;
-        auto it = m_scene->nodePropertyAnimations.find(nodeId);
-        if (it == m_scene->nodePropertyAnimations.end()) return false;
+        // Called inline on the QML thread; .load() keeps the Scene alive across
+        // the lookup so the pointer can't tear under a render-thread reset.
+        auto scene = m_scene.load();
+        if (! scene) return false;
+        auto it = scene->nodePropertyAnimations.find(nodeId);
+        if (it == scene->nodePropertyAnimations.end()) return false;
         for (const auto& a : it->second) {
             if (a.name == name) return a.playing;
         }
@@ -1672,9 +1740,11 @@ public:
             cmds.swap(m_prop_anim_cmds);
         }
         if (cmds.empty()) return;
+        auto scene = m_scene.load();
+        if (! scene) return;
         for (auto& c : cmds) {
-            auto it = m_scene->nodePropertyAnimations.find(c.nodeId);
-            if (it == m_scene->nodePropertyAnimations.end()) continue;
+            auto it = scene->nodePropertyAnimations.find(c.nodeId);
+            if (it == scene->nodePropertyAnimations.end()) continue;
             for (auto& a : it->second) {
                 if (a.name != c.name) continue;
                 if (c.cmd == "play") {
@@ -1698,12 +1768,12 @@ private:
         frame_timer.Stop();
 
         // Release Scene GPU resources before destroying VMA allocator
-        if (m_scene) {
-            m_render->clearLastRenderGraph(m_scene.get());
+        if (auto scene = m_scene.load()) {
+            m_render->clearLastRenderGraph(scene.get());
         }
 
         // Clear scene state
-        m_scene.reset();
+        m_scene.store(nullptr);
         m_rg.reset();
 
         // Destroy and recreate the Vulkan renderer
@@ -1730,8 +1800,14 @@ public:
     FpsCounter fps_counter;
 
 private:
-    std::shared_ptr<Scene> m_scene { nullptr };
-    float                  m_speed { 1.0f };
+    // Atomic: written on the render looper thread (CMD_SET_SCENE assign,
+    // CMD_SET_HDR / CMD_STOP / device-lost reset) and read on the QML thread
+    // (getLayerSpriteSnapshot / getLayerBoneIndex / queueParentChange /
+    // queueChildSort / propertyAnimIsPlaying — all called inline, no message
+    // post).  Render-thread methods .load() once into a local `scene` and use
+    // that; the atomic has no operator-> so any missed deref fails to compile.
+    std::atomic<std::shared_ptr<Scene>> m_scene { nullptr };
+    float                               m_speed { 1.0f };
 
     std::unique_ptr<vulkan::VulkanRender> m_render;
     std::unique_ptr<rg::RenderGraph>      m_rg { nullptr };
@@ -2339,7 +2415,7 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                 m_user_props_json   = json;
                 if (! json.empty() && ! m_source.empty() && ! m_assets.empty()) {
                     // Try runtime update first (no reload)
-                    if (m_scene && applyUserPropsRuntime(json)) {
+                    if (m_scene.load() && applyUserPropsRuntime(json)) {
                         LOG_INFO("Applied user properties at runtime (no reload): %s",
                                  json.c_str());
                     } else {
@@ -2399,8 +2475,9 @@ MHANDLER_CMD_IMPL(MainHandler, FIRST_FRAME) {
 }
 
 bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
-    if (! m_scene) return false;
-    auto& scene = *m_scene;
+    auto scene_sp = m_scene.load();
+    if (! scene_sp) return false;
+    auto& scene = *scene_sp;
 
     // If no bindings were recorded during parsing, fall back to reload
     if (scene.userPropVisBindings.empty() && scene.userPropUniformBindings.empty()) {
@@ -2717,7 +2794,7 @@ void MainHandler::loadScene() {
         LOG_INFO("Audio analyzer connected to shader value updater");
     }
 
-    m_scene = scene; // keep reference for runtime user property updates
+    m_scene.store(scene); // keep reference for runtime user property updates
 
     // Write active user property bindings to disk for the config UI.
     // Include ALL project.json properties — some are used only by property

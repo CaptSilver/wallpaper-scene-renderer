@@ -64,12 +64,16 @@ ParticleSubSystem::ParticleSubSystem(ParticleSystem& p, std::shared_ptr<SceneMes
                                      uint32_t maxcount, double rate, u32 maxcount_instance,
                                      double probability, SpawnType type,
                                      ParticleRawGenSpecOp specOp, float starttime)
+    // Init order follows member declaration order in ParticleSystem.h
+    // (m_genSpecOp before m_maxcount/m_starttime/m_rate) to silence
+    // -Wreorder-ctor; every initialiser reads a constructor parameter, not
+    // another member, so the order is behaviourally identical.
     : m_sys(p),
       m_mesh(sm),
+      m_genSpecOp(specOp),
       m_maxcount(maxcount),
       m_starttime(starttime),
       m_rate(rate),
-      m_genSpecOp(specOp),
       m_time(0),
       m_maxcount_instance(maxcount_instance),
       m_probability(probability),
@@ -273,7 +277,13 @@ void ParticleSubSystem::Emitt() {
     };
 
     for (auto& inst : m_instances) {
-        assert(inst);
+        // Explicit guard replacing a data-driven assert stripped under -DNDEBUG
+        // in shipped builds: a null instance slot would otherwise crash on the
+        // GetBoundedData() deref below (segfault → plasmashell death).
+        if (! inst) {
+            LOG_ERROR("null particle instance, skipping");
+            continue;
+        }
 
         auto& bounded_data = inst->GetBoundedData();
 

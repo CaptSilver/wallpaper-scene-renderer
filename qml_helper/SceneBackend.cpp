@@ -1,7 +1,9 @@
 #include "SceneBackend.hpp"
 #include "SceneAspect.h"
+#include "ScriptLoopGate.h"
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
+#include "JsStringEscape.hpp"
 #include "PropertyScriptDispatchJs.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
@@ -66,7 +68,18 @@ float SceneObject::SoundVolumeAnimState::evaluate() const {
 
 Q_LOGGING_CATEGORY(wekdeScene, "wekde.scene")
 
-#define _Q_INFO(fmt, ...) qCInfo(wekdeScene, fmt, __VA_ARGS__)
+// ##__VA_ARGS__ swallows the trailing comma when no format args are passed, so
+// a plain message form (_Q_INFO("text")) does not pass a spurious "" argument
+// that would trip -Wformat-extra-args.
+#define _Q_INFO(fmt, ...) qCInfo(wekdeScene, fmt, ##__VA_ARGS__)
+
+// A3-T2 — out-of-line so JsWatchdog.h needs only a forward decl of QJSEngine
+// (keeps the header pure for the lean scenescript_tests binary, which never
+// instantiates JsWatchdog).  Runs on the watchdog monitor thread; setInterrupted
+// is the documented cross-thread abort for an in-flight QJSEngine evaluation.
+void scenebackend::JsWatchdog::interruptEngine(QJSEngine* engine) {
+    if (engine) engine->setInterrupted(true);
+}
 
 namespace
 {
@@ -109,9 +122,12 @@ class TextureNode : public QObject, public QSGSimpleTextureNode {
 public:
     typedef std::function<QSGTexture*(QQuickWindow*)> EatFrameOp;
     TextureNode(QQuickWindow* window, sp_scene_t scene, bool valid, EatFrameOp eatFrameOp)
-        : m_texture(nullptr),
-          m_scene(scene),
+        // Init order follows member declaration order (m_scene, m_enable_valid,
+        // m_texture, m_eatFrameOp, m_window, m_first_frame) to silence
+        // -Wreorder-ctor; none of these initialisers reads another member.
+        : m_scene(scene),
           m_enable_valid(valid),
+          m_texture(nullptr),
           m_eatFrameOp(eatFrameOp),
           m_window(window),
           m_first_frame(false) {
@@ -132,7 +148,7 @@ public:
         }
         delete m_init_texture;
         emit nodeDestroyed();
-        _Q_INFO("Destroy texnode", "");
+        _Q_INFO("Destroy texnode");
     }
 
     // only at qt render thread
@@ -242,7 +258,7 @@ SceneObject::~SceneObject() {
     // Final flush so the 500ms debounce timer doesn't drop pending writes
     // (e.g. solar's icon toggle saved right before sceneviewer exits).
     if (m_lsGlobalDirty || m_lsScreenDirty) flushLocalStorage();
-    _Q_INFO("Destroy sceneobject", "");
+    _Q_INFO("Destroy sceneobject");
 }
 
 void SceneObject::resizeFb() {
@@ -254,7 +270,7 @@ void SceneObject::resizeFb() {
 QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     TextureNode* node = static_cast<TextureNode*>(oldNode);
     if (! node) {
-        node = new TextureNode(window(), m_scene, m_enable_valid, [this](QQuickWindow* window) {
+        node = new TextureNode(window(), m_scene, m_enable_valid, [](QQuickWindow*) {
             return (QSGTexture*)nullptr;
         });
         if (node->initGl()) {
@@ -389,11 +405,12 @@ void SceneObject::setUserProperties(const QString& value) {
 
 void SceneObject::refreshJsUserProperties() {
     if (! m_jsEngine || m_userProperties.isEmpty()) return;
-    // Escape single quotes and backslashes for safe embedding in a JS string literal.
-    // JSON values use double quotes so single quotes only appear inside string values.
-    QString json = m_userProperties;
-    json.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
-    json.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+    // Escape for safe embedding in a JS single-quoted string literal (covers
+    // backslash, quote, raw newline/CR/tab, U+2028/U+2029 and other control
+    // chars — see JsStringEscape.hpp / F18).  Without the full escape a literal
+    // line terminator in the user-props JSON would SyntaxError the JSON.parse
+    // and the try/catch below would silently drop all user-property overrides.
+    QString  json   = wek::qml_helper::escapeForJsSingleQuoted(m_userProperties);
     QJSValue result = m_jsEngine->evaluate(QString("(function(){"
                                                    "try{"
                                                    "var p=JSON.parse('%1');"
@@ -436,7 +453,11 @@ void SceneObject::fireSceneEventListeners(const QString& eventName, const QJSVal
     QJSValueList callArgs;
     callArgs << QJSValue(eventName);
     callArgs.append(args);
-    m_fireSceneEventFn.call(callArgs);
+    // A3-T2 — scene.on(...) handlers are untrusted author JS; run them under the
+    // watchdog so a runaway listener can't freeze the GUI thread.
+    callJsGuarded([&] {
+        return m_fireSceneEventFn.call(callArgs);
+    });
 }
 
 void SceneObject::fireApplyUserProperties() {
@@ -454,7 +475,9 @@ void SceneObject::fireApplyUserProperties() {
             m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
-        QJSValue result = state.applyUserPropertiesFn.call({ propsArg });
+        QJSValue result = callJsGuarded([&] {
+            return state.applyUserPropertiesFn.call({ propsArg });
+        });
         if (result.isError()) {
             LOG_INFO("applyUserProperties error id=%d prop=%s: %s",
                      state.id,
@@ -472,7 +495,9 @@ void SceneObject::fireApplyUserProperties() {
             m_jsEngine->globalObject().setProperty("thisObject", svState.thisLayerProxy);
         }
 
-        QJSValue result = svState.applyUserPropertiesFn.call({ propsArg });
+        QJSValue result = callJsGuarded([&] {
+            return svState.applyUserPropertiesFn.call({ propsArg });
+        });
         if (result.isError()) {
             LOG_INFO("applyUserProperties error vol index=%d: %s",
                      svState.index,
@@ -534,7 +559,9 @@ void SceneObject::fireDestroyEvent() {
             m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
-        QJSValue result = state.destroyFn.call({});
+        QJSValue result = callJsGuarded([&] {
+            return state.destroyFn.call({});
+        });
         if (result.isError()) {
             LOG_INFO("destroy event error id=%d prop=%s: %s",
                      state.id,
@@ -565,7 +592,9 @@ void SceneObject::fireResizeScreen(int width, int height) {
             m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
         }
 
-        QJSValue result = state.resizeScreenFn.call({ QJSValue(width), QJSValue(height) });
+        QJSValue result = callJsGuarded([&] {
+            return state.resizeScreenFn.call({ QJSValue(width), QJSValue(height) });
+        });
         if (result.isError()) {
             LOG_INFO("resizeScreen error id=%d prop=%s: %s",
                      state.id,
@@ -587,7 +616,9 @@ void SceneObject::mediaPlaybackChanged(int state) {
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
-        s.mediaPlaybackChangedFn.call({ event });
+        callJsGuarded([&] {
+            return s.mediaPlaybackChangedFn.call({ event });
+        });
     }
     fireSceneEventListeners("mediaPlaybackChanged", { event });
 }
@@ -612,7 +643,9 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
-        s.mediaPropertiesChangedFn.call({ event });
+        callJsGuarded([&] {
+            return s.mediaPropertiesChangedFn.call({ event });
+        });
     }
     fireSceneEventListeners("mediaPropertiesChanged", { event });
 }
@@ -639,7 +672,9 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
-        s.mediaThumbnailChangedFn.call({ event });
+        callJsGuarded([&] {
+            return s.mediaThumbnailChangedFn.call({ event });
+        });
     }
     fireSceneEventListeners("mediaThumbnailChanged", { event });
 }
@@ -658,7 +693,9 @@ void SceneObject::mediaTimelineChanged(double position, double duration, int sta
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
-        s.mediaTimelineChangedFn.call({ event });
+        callJsGuarded([&] {
+            return s.mediaTimelineChangedFn.call({ event });
+        });
     }
     fireSceneEventListeners("mediaTimelineChanged", { event });
 }
@@ -672,13 +709,39 @@ void SceneObject::mediaStatusChanged(bool enabled) {
         if (! s.layerName.empty())
             m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
-        s.mediaStatusChangedFn.call({ event });
+        callJsGuarded([&] {
+            return s.mediaStatusChangedFn.call({ event });
+        });
     }
     fireSceneEventListeners("mediaStatusChanged", { event });
 }
 
-void SceneObject::play() { m_scene->play(); }
-void SceneObject::pause() { m_scene->pause(); }
+void SceneObject::play() {
+    m_scene->play();
+    // Resume the GUI-thread script loops the matching pause() stopped (F19).
+    // Restart only timers that were actually created (a scene with no
+    // property/color/text scripts never allocates the timer) and that are not
+    // already running, so play()-without-pause or double-play stays a no-op.
+    m_paused = false;
+    if (m_propertyTimer && ! m_propertyTimer->isActive()) m_propertyTimer->start();
+    if (m_colorTimer && ! m_colorTimer->isActive()) m_colorTimer->start();
+    if (m_textTimer && ! m_textTimer->isActive()) m_textTimer->start();
+}
+void SceneObject::pause() {
+    m_scene->pause();
+    // Stop the GUI-thread script loops while paused (TTY-switch / suspend /
+    // battery / occlusion).  Without this, the property loop kept evaluating
+    // every author script at ~125Hz and the color loop at ~30Hz, dispatching
+    // updates into queues the paused render thread never drains — pure CPU /
+    // battery waste with nothing on screen (F19).  The text loop self-throttles
+    // on the render-frame index, but stop it too for symmetry / to save the
+    // wakeup.  m_paused also gates the loop bodies (scriptLoopShouldRun) so the
+    // setup-time seed eval and any already-queued tick idle.
+    m_paused = true;
+    if (m_propertyTimer) m_propertyTimer->stop();
+    if (m_colorTimer) m_colorTimer->stop();
+    if (m_textTimer) m_textTimer->stop();
+}
 
 bool SceneObject::vulkanValid() const { return m_enable_valid; }
 void SceneObject::enableVulkanValid() { m_enable_valid = true; }
@@ -1312,7 +1375,9 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             if (! hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY, para)) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue r = target.downFn.call({ ev });
+            QJSValue r = callJsGuarded([&] {
+                return target.downFn.call({ ev });
+            });
             downFired++;
             if (r.isError())
                 LOG_INFO("cursorDown error on '%s': %s",
@@ -1330,7 +1395,9 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue r = target.downFn.call({ ev });
+            QJSValue r = callJsGuarded([&] {
+                return target.downFn.call({ ev });
+            });
             downFired++;
             if (r.isError())
                 LOG_INFO("cursorDown error on '%s': %s",
@@ -1343,7 +1410,9 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
         auto& target = m_cursorTargets[clickIdx];
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        QJSValue r = target.clickFn.call({ ev });
+        QJSValue r = callJsGuarded([&] {
+            return target.clickFn.call({ ev });
+        });
         LOG_INFO(
             "cursorClick fired on '%s'%s", target.layerName.c_str(), r.isError() ? " ERROR" : "");
         if (r.isError()) LOG_INFO("  cursorClick error: %s", qPrintable(r.toString()));
@@ -1410,7 +1479,9 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
         if (! target.upFn.isCallable()) return;
         m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
         m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-        QJSValue r = target.upFn.call({ ev });
+        QJSValue r = callJsGuarded([&] {
+            return target.upFn.call({ ev });
+        });
         upFired++;
         if (r.isError())
             LOG_INFO("cursorUp error on '%s': %s",
@@ -1478,7 +1549,9 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-            QJSValue r  = target.moveFn.call({ ev });
+            QJSValue r  = callJsGuarded([&] {
+                return target.moveFn.call({ ev });
+            });
             // Throttle per-frame to avoid flooding when a real user drags.
             // Sample once every ~30 dispatches so drag tests still surface
             // the first few events without drowning out the rest of the log.
@@ -1571,7 +1644,9 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-            QJSValue r  = target.enterFn.call({ ev });
+            QJSValue r  = callJsGuarded([&] {
+                return target.enterFn.call({ ev });
+            });
             if (r.isError()) LOG_INFO("cursorEnter ERROR: %s", r.toString().toStdString().c_str());
             break;
         }
@@ -1612,7 +1687,9 @@ void SceneObject::flushPendingLeaves() {
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 QJSValue ev = makeCursorEvent(m_jsEngine, m_cursorSceneX, m_cursorSceneY);
-                target.leaveFn.call({ ev });
+                callJsGuarded([&] {
+                    return target.leaveFn.call({ ev });
+                });
             }
             m_hoveredLayers.erase(name);
             break;
@@ -1632,6 +1709,13 @@ std::string SceneObject::GetDefaultCachePath() {
 
 void SceneObject::setupTextScripts() {
     cleanupTextScripts();
+
+    // Reaching here means the render thread emitted firstFrame (it has drawn),
+    // so the scene is live — clear any stale paused gate from a prior wallpaper
+    // that was paused at switch time, or the freshly created+started script
+    // timers below would tick into a body that scriptLoopShouldRun() idles
+    // (F19).  pause()/play() drive m_paused for the live-occlusion case.
+    m_paused = false;
 
     // Publish the scene's ortho size + nativeAspectRatio for EVERY loaded scene,
     // BEFORE the no-scripts early-return below. This used to live near the end of
@@ -1663,6 +1747,16 @@ void SceneObject::setupTextScripts() {
         return;
 
     m_jsEngine = new QJSEngine(this);
+
+    // Start the runaway-script watchdog now that the engine exists.  It stays
+    // disarmed until a JS dispatch site arms it; the monitor thread is joined in
+    // cleanupTextScripts() BEFORE m_jsEngine is deleted (A3-T2).
+    m_jsWatchdog.start();
+    // A reload via setSource() re-runs setupTextScripts on the same SceneObject:
+    // reset the interrupt back-off so a fresh scene is not pre-disabled by a
+    // previous wallpaper's runaway.
+    m_consecutivePropInterrupts = 0;
+    m_propertyScriptsDisabled   = false;
 
     // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
     // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
@@ -1991,9 +2085,9 @@ void SceneObject::setupTextScripts() {
     {
         std::string defaultsJson = m_scene->getUserPropertiesJson();
         if (! defaultsJson.empty() && defaultsJson != "{}") {
-            QString escaped = QString::fromStdString(defaultsJson);
-            escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
-            escaped.replace(QLatin1Char('\''), QStringLiteral("\\'"));
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(defaultsJson));
             m_jsEngine->evaluate(QString("(function(){"
                                          "var p=JSON.parse('%1');"
                                          "var up=engine.userProperties;"
@@ -2082,9 +2176,9 @@ void SceneObject::setupTextScripts() {
     {
         std::string initJson = m_scene->getLayerInitialStatesJson();
         if (! initJson.empty()) {
-            QString escaped = QString::fromStdString(initJson);
-            escaped.replace("\\", "\\\\");
-            escaped.replace("'", "\\'");
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(initJson));
             m_jsEngine->evaluate(
                 QString("var _layerInitStates = JSON.parse('%1');\n").arg(escaped));
         } else {
@@ -2107,897 +2201,13 @@ void SceneObject::setupTextScripts() {
 
     // thisScene.getLayer() and thisLayer infrastructure
     // Layer proxies use Object.defineProperty for dirty tracking
-    m_jsEngine->evaluate(
-        "var _layerCache = {};\n"
-        // Dense array parallel to _layerCache so _collectDirtyLayers can iterate
-        // by index instead of `for (var name in _layerCache)`.  V8-style `for..in`
-        // walks hash buckets and is ~5-10× slower than an indexed array loop; on
-        // 3body with 1200 pool slots that saved ~0.5ms/tick of dirtyCollect.
-        "var _layerList = [];\n"
-        // Pool-layer fast path: for slots whose name starts with __pool_,
-        // skip the defineProperty-based proxy entirely and return a plain
-        // object.  Scripts mutate origin/scale/angles/alpha/visible directly
-        // (no setter overhead).  _collectDirtyLayers snapshots and compares
-        // at tick boundary.  Cuts ~200k per-second setter invocations for
-        // 1200-slot trail scenes like 3body.
-        "function _makePoolLayerProxy(name) {\n"
-        "  var init = _layerInitStates[name];\n"
-        // Vec3 storage held privately; defineProperty getters/setters below
-        // give origin/scale/angles copy-on-assign semantics so scripts that
-        // share a single Vec3 across many bars (Blue Archive 2764537029
-        // visualizer pattern) get independent values per layer.
-        "  var _origin = init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0);\n"
-        "  var _scale  = init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1);\n"
-        "  var _angles = init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0);\n"
-        "  var p = {\n"
-        "    _pool: true,\n"
-        "    name: name,\n"
-        "    alpha: 1.0, visible: init ? init.v : true,\n"
-        "    color: Vec3(1,1,1), text: '', pointsize: 0,\n"
-        "    __asset: null,\n"
-        // Proxy validity flag: flipped to true by thisScene.destroyLayer so
-        // async callbacks (timers, media events) that fire after the slot
-        // has been recycled can bail out via `if (!layer.isObjectValid())`.
-        "    _destroyed: false,\n"
-        "    isObjectValid: function() { return !this._destroyed; },\n"
-        // Snapshot of pre-script state.  Pool slots use `init` directly
-        // since there are no separate _origO/_origS/_origA closures.
-        "    getInitialLayerConfig: function() {\n"
-        "      return {\n"
-        "        origin:  init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0),\n"
-        "        scale:   init ? Vec3(init.s[0], init.s[1], init.s[2]) : Vec3(1,1,1),\n"
-        "        angles:  init ? Vec3(init.a[0], init.a[1], init.a[2]) : Vec3(0,0,0),\n"
-        "        alpha:   1.0,\n"
-        "        visible: init ? init.v : true,\n"
-        "        color:   Vec3(1, 1, 1),\n"
-        "        size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
-        "                                  : {x: 0, y: 0}\n"
-        "      };\n"
-        "    }\n"
-        "  };\n"
-        // origin/scale/angles defined after `p` so we can close over the
-        // private _origin/_scale/_angles vars.  Same copy-on-assign +
-        // copy-on-get semantics as _makeLayerProxy: getter returns a fresh
-        // Vec3, setter copies by component.  Breaks script-side aliasing
-        // (Blue Archive visualizer assigns one Vec3 to 64 bars).
-        "  Object.defineProperty(p, 'origin', {\n"
-        "    get: function(){ return Vec3(_origin.x, _origin.y, _origin.z); },\n"
-        "    set: function(v){\n"
-        "      _origin = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(0,0,0);\n"
-        "    }, enumerable: true, configurable: true });\n"
-        "  Object.defineProperty(p, 'scale', {\n"
-        "    get: function(){ return Vec3(_scale.x, _scale.y, _scale.z); },\n"
-        "    set: function(v){\n"
-        "      _scale = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(1,1,1);\n"
-        "    }, enumerable: true, configurable: true });\n"
-        "  Object.defineProperty(p, 'angles', {\n"
-        "    get: function(){ return Vec3(_angles.x, _angles.y, _angles.z); },\n"
-        "    set: function(v){\n"
-        "      _angles = v ? Vec3(v.x||0, v.y||0, v.z||0) : Vec3(0,0,0);\n"
-        "    }, enumerable: true, configurable: true });\n"
-        // Snapshot used by _collectDirtyLayers to detect changes.
-        "  p._prev = { ox: p.origin.x, oy: p.origin.y, oz: p.origin.z,\n"
-        "              sx: p.scale.x, sy: p.scale.y, sz: p.scale.z,\n"
-        "              ax: p.angles.x, ay: p.angles.y, az: p.angles.z,\n"
-        "              alpha: p.alpha, visible: p.visible };\n"
-        // Layer-hierarchy fields & methods on the pool slot.  Pool proxies
-        // are plain objects; `id` lives directly on the proxy (not _state).
-        "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
-        "    p.id = _layerNameToId[name];\n"
-        "  }\n"
-        "  _installHierarchyMethods(p);\n"
-        "  return p;\n"
-        "}\n"
-        "function _makeLayerProxy(name) {\n"
-        "  if (name.charCodeAt(0) === 95 && name.charCodeAt(1) === 95 &&\n"
-        "      name.charCodeAt(2) === 112 && name.charCodeAt(3) === 111 &&\n"
-        "      name.charCodeAt(4) === 111 && name.charCodeAt(5) === 108) {\n"
-        "    return _makePoolLayerProxy(name);\n"
-        "  }\n"
-        "  var init = _layerInitStates[name];\n"
-        "  var _s = init ? {\n"
-        "    origin: Vec3(init.o[0], init.o[1], init.o[2]),\n"
-        "    scale:  Vec3(init.s[0], init.s[1], init.s[2]),\n"
-        "    angles: Vec3(init.a[0], init.a[1], init.a[2]),\n"
-        "    size: init.sz ? {x:init.sz[0], y:init.sz[1]} : {x:0, y:0},\n"
-        "    parallaxDepth: init.pd ? {x:init.pd[0], y:init.pd[1]} : {x:0, y:0},\n"
-        // Parse-time baked fallback for worldOrigin / worldScale — these
-        // remain authoritative when the live cache hasn't been populated
-        // yet (e.g. before the first drawFrame or for offscreen-only
-        // layers).  The live getters below preferentially read from the
-        // per-frame world cache so script-driven .origin/.scale mutations
-        // (Tool Options visible script repositions Color/Size/Stamp
-        // Selection groups based on shared.currentBrush) propagate to
-        // hit-test without a scene reload.
-        "    _woBaked: init.wo ? Vec3(init.wo[0], init.wo[1], init.wo[2]) : null,\n"
-        "    _wsBaked: init.ws ? Vec3(init.ws[0], init.ws[1], init.ws[2]) : null,\n"
-        "    visible: init.v, alpha: 1.0,\n"
-        "    text: '', pointsize: init.ps || 0,\n"
-        "    name: name, _dirty: {}, _cmds: []\n"
-        "  } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),\n"
-        "        angles: Vec3(0,0,0), size: {x:0, y:0},\n"
-        "        parallaxDepth: {x:0, y:0},\n"
-        "        _woBaked: null, _wsBaked: null,\n"
-        "        visible: true, alpha: 1.0,\n"
-        "        text: '', pointsize: 0,\n"
-        "        name: name, _dirty: {}, _cmds: [] };\n"
-        // worldOrigin / worldScale: live getters that read from the per-
-        // frame world cache populated after each drawFrame (see
-        // SceneWallpaper::m_layer_world_cache).  hitTestLayerProxy reads
-        // these so the hit rect tracks any script-driven repositioning
-        // (Game of Life Tool Options moves Color/Size/Stamp groups
-        // dynamically; without live transforms the hit-test rect lagged a
-        // frame behind the rendered button position by tens of pixels).
-        // Falls back to the parse-time baked value when the live cache
-        // hasn't been populated (first tick / offscreen-only layers) so
-        // the hit-test remains stable from frame 0 instead of returning
-        // identity (0, 0).
-        "  Object.defineProperty(_s, 'worldOrigin', {\n"
-        "    get: function() {\n"
-        "      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.getLayerWorldTransform) {\n"
-        "        var m = __sceneBridge.getLayerWorldTransform(_s.name);\n"
-        "        if (m && m.length === 16 && Number.isFinite(+m[12]) && Number.isFinite(+m[13])) {\n"
-        "          var tx = +m[12], ty = +m[13];\n"
-        "          if (tx !== 0 || ty !== 0) return Vec3(tx, ty, +m[14]||0);\n"
-        "        }\n"
-        "      }\n"
-        "      return _s._woBaked;\n"
-        "    }, enumerable: true, configurable: true });\n"
-        "  Object.defineProperty(_s, 'worldScale', {\n"
-        "    get: function() {\n"
-        "      if (typeof __sceneBridge !== 'undefined' && __sceneBridge.getLayerWorldTransform) {\n"
-        "        var m = __sceneBridge.getLayerWorldTransform(_s.name);\n"
-        "        if (m && m.length === 16 && Number.isFinite(+m[0]) && Number.isFinite(+m[5])) {\n"
-        "          var sx = Math.sqrt((+m[0])*(+m[0]) + (+m[1])*(+m[1]) + (+m[2])*(+m[2]));\n"
-        "          var sy = Math.sqrt((+m[4])*(+m[4]) + (+m[5])*(+m[5]) + (+m[6])*(+m[6]));\n"
-        "          var sz = Math.sqrt((+m[8])*(+m[8]) + (+m[9])*(+m[9]) + (+m[10])*(+m[10]));\n"
-        "          if (sx > 0 && sy > 0) return Vec3(sx, sy, sz);\n"
-        "        }\n"
-        "      }\n"
-        "      return _s._wsBaked;\n"
-        "    }, enumerable: true, configurable: true });\n"
-        "  var p = {};\n"
-        "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, enumerable:true "
-        "});\n"
-        "  Object.defineProperty(p, 'debug', { get: function(){return undefined;}, enumerable:true "
-        "});\n"
-        // Getters return a fresh Vec3 copy each call — matches WE semantics where
-        // `let o = thisLayer.origin; o.x = 5;` mutates a snapshot, and only an
-        // explicit `thisLayer.origin = o` writes back.  Without this, scripts that
-        // cache `initialPosition = thisLayer.origin` end up sharing a reference
-        // with `marioOrigin = thisLayer.origin`, so `isInAir` checks always fail.
-        "  var vec3Props = ['origin','scale','angles'];\n"
-        "  for (var i=0; i<vec3Props.length; i++) {\n"
-        "    (function(prop){\n"
-        "      Object.defineProperty(p, prop, {\n"
-        // Getter still copies — scripts that do
-        //   initialPos = thisLayer.origin; marioPos = thisLayer.origin;
-        // rely on these being independent snapshots; otherwise a later
-        // mutation to one affects the other.  See the proxy-aliasing
-        // gotcha note in dynamic-asset-pool.md.
-        "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
-        // Setter ALWAYS copies by component.  WE copies on assign — the
-        // Blue Archive (2764537029) audio visualizer relies on this:
-        //   var origin = baseOrigin.copy();
-        //   for (i = 0; i < 64; i++) { origin.x += 30; bar.origin = origin; }
-        // Without copy-on-set, all 64 bars end up sharing the same Vec3 ref
-        // and pile up at the last iteration's x value.  The component copy
-        // costs one Vec3 allocation per assign — hot scripts that already
-        // construct a fresh `Vec3(x, y, z)` per call (e.g. 3body trails)
-        // pay one extra alloc per setter — measurable but tolerable.
-        "        set: function(v){\n"
-        "          if (!v) { _s[prop] = Vec3(0,0,0); }\n"
-        "          else    { _s[prop] = Vec3(v.x||0, v.y||0, v.z||0); }\n"
-        "          _s._dirty[prop] = true; },\n"
-        "        enumerable: true\n"
-        "      });\n"
-        "    })(vec3Props[i]);\n"
-        "  }\n"
-        // Read-only parse-time snapshots.  Scripts that let the user drag a
-        // layer around (Lucy Clock, Cyberpunk Lucy media player) expose a
-        // "reset to default" exit — `thisLayer.origin = thisLayer.originalOrigin`.
-        // Frozen at proxy construction: a later `thisLayer.origin = foo` does
-        // NOT change originalOrigin.  Returns fresh Vec3 copies to prevent
-        // aliasing shenanigans.  Setter is a no-op rather than throwing —
-        // matches our overall tolerant-JS posture.
-        "  var _origO = init ? {x:init.o[0], y:init.o[1], z:init.o[2]} : {x:0,y:0,z:0};\n"
-        "  var _origS = init ? {x:init.s[0], y:init.s[1], z:init.s[2]} : {x:1,y:1,z:1};\n"
-        "  var _origA = init ? {x:init.a[0], y:init.a[1], z:init.a[2]} : {x:0,y:0,z:0};\n"
-        "  Object.defineProperty(p, 'originalOrigin', {\n"
-        "    get: function(){ return Vec3(_origO.x, _origO.y, _origO.z); },\n"
-        "    set: function(){},\n"
-        "    enumerable: true });\n"
-        "  Object.defineProperty(p, 'originalScale', {\n"
-        "    get: function(){ return Vec3(_origS.x, _origS.y, _origS.z); },\n"
-        "    set: function(){},\n"
-        "    enumerable: true });\n"
-        "  Object.defineProperty(p, 'originalAngles', {\n"
-        "    get: function(){ return Vec3(_origA.x, _origA.y, _origA.z); },\n"
-        "    set: function(){},\n"
-        "    enumerable: true });\n"
-        // getInitialLayerConfig: snapshot of pre-script layer state for
-        // reset/interp.  Returns fresh Vec3 instances + a size object so
-        // callers can mutate without affecting the snapshot.
-        "  p.getInitialLayerConfig = function() {\n"
-        "    return {\n"
-        "      origin:  Vec3(_origO.x, _origO.y, _origO.z),\n"
-        "      scale:   Vec3(_origS.x, _origS.y, _origS.z),\n"
-        "      angles:  Vec3(_origA.x, _origA.y, _origA.z),\n"
-        "      alpha:   1.0,\n"
-        "      visible: init ? init.v : true,\n"
-        "      color:   Vec3(1, 1, 1),\n"
-        "      size:    init && init.sz ? {x: init.sz[0], y: init.sz[1]}\n"
-        "                                : {x: 0, y: 0}\n"
-        "    };\n"
-        "  };\n"
-        "  var scalarProps = ['visible','alpha'];\n"
-        "  for (var j=0; j<scalarProps.length; j++) {\n"
-        "    (function(prop){\n"
-        "      Object.defineProperty(p, prop, {\n"
-        "        get: function(){ return _s[prop]; },\n"
-        "        set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
-        "        enumerable: true\n"
-        "      });\n"
-        "    })(scalarProps[j]);\n"
-        "  }\n"
-        "  Object.defineProperty(p, 'text', {\n"
-        "    get: function(){ return _s.text; },\n"
-        "    set: function(v){ _s.text = v; _s._dirty.text = true; },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        "  Object.defineProperty(p, 'pointsize', {\n"
-        "    get: function(){ return _s.pointsize; },\n"
-        "    set: function(v){ _s.pointsize = v; _s._dirty.pointsize = true;\n"
-        "                      _s._dirty.text = true; },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        "  Object.defineProperty(p, 'size', {\n"
-        "    get: function(){ return _s.size; },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        // Text-style props: horizontalalign / verticalalign / font are stored
-        // on _s and pushed to the render thread via __sceneBridge.setTextStyle.
-        // `alignment` is WE's combined form — parsed JS-side into h/v components.
-        // Initial values come from _s.halign/_s.valign/_s.font which seed from
-        // _layerInitStates (parser-supplied) so reads return parse-time defaults
-        // before any assignment.
-        "  if (init && init.halign && _s.halign === undefined) _s.halign = init.halign;\n"
-        "  if (init && init.valign && _s.valign === undefined) _s.valign = init.valign;\n"
-        "  if (init && init.font   && _s.font   === undefined) _s.font   = init.font;\n"
-        "  Object.defineProperty(p, 'horizontalalign', {\n"
-        "    get: function(){ return _s.halign || 'center'; },\n"
-        "    set: function(v){ _s.halign = String(v == null ? 'center' : v);\n"
-        "                      __sceneBridge.setTextStyle(name, _s.halign, '', ''); },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        "  Object.defineProperty(p, 'verticalalign', {\n"
-        "    get: function(){ return _s.valign || 'center'; },\n"
-        "    set: function(v){ _s.valign = String(v == null ? 'center' : v);\n"
-        "                      __sceneBridge.setTextStyle(name, '', _s.valign, ''); },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        "  Object.defineProperty(p, 'font', {\n"
-        "    get: function(){ return _s.font || ''; },\n"
-        "    set: function(v){ _s.font = String(v == null ? '' : v);\n"
-        "                      __sceneBridge.setTextStyle(name, '', '', _s.font); },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        // `alignment` accepts WE's composite strings (e.g. 'topleft',\n"
-        // 'centerright', 'center') and splits into h+v.  Tokens that don't\n"
-        // match either axis fall back to dual-set so a single-axis value like\n"
-        // 'left' propagates as horizontalalign only.
-        "  Object.defineProperty(p, 'alignment', {\n"
-        "    get: function(){\n"
-        "      var h = _s.halign || 'center', v = _s.valign || 'center';\n"
-        "      if (h === 'center' && v === 'center') return 'center';\n"
-        "      return (v === 'center' ? '' : v) + (h === 'center' ? '' : h);\n"
-        "    },\n"
-        "    set: function(v){\n"
-        "      var s = String(v == null ? '' : v).toLowerCase();\n"
-        "      var nh = '', nv = '';\n"
-        "      if (s.indexOf('left')   >= 0) nh = 'left';\n"
-        "      else if (s.indexOf('right')  >= 0) nh = 'right';\n"
-        "      if (s.indexOf('top')    >= 0) nv = 'top';\n"
-        "      else if (s.indexOf('bottom') >= 0) nv = 'bottom';\n"
-        "      if (s === 'center' || (s.indexOf('center') >= 0 && !nh && !nv)) {\n"
-        "        nh = 'center'; nv = 'center';\n"
-        "      }\n"
-        "      if (nh) _s.halign = nh;\n"
-        "      if (nv) _s.valign = nv;\n"
-        "      __sceneBridge.setTextStyle(name, nh, nv, '');\n"
-        "    },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        // opacity: WE alias for alpha.  Used by wallpaper 2866203962's
-        // playervolume.cursorUp script to hide the '100%' percentage text
-        // via `percentageLayer.opacity = 0`; without this alias the assign
-        // silently dropped into a plain JS property and the old bitmap stuck.
-        "  Object.defineProperty(p, 'opacity', {\n"
-        "    get: function(){ return _s.alpha; },\n"
-        "    set: function(v){ _s.alpha = v; _s._dirty.alpha = true; },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        // solid: WE property that toggles whether a layer participates in
-        // cursor hit-testing.  Tracked on _state so hitTestLayerProxy (C++
-        // side) can honor it.  Defaults to true — the proxy's _state.solid
-        // stays undefined until explicitly set, which hitTestLayerProxy
-        // treats as 'on' via the same undefined→true convention.
-        "  Object.defineProperty(p, 'solid', {\n"
-        "    get: function(){ return _s.solid === false ? false : true; },\n"
-        "    set: function(v){ _s.solid = !!v; },\n"
-        "    enumerable: true\n"
-        "  });\n"
-        "  p.play = function(){};\n"
-        "  p.stop = function(){};\n"
-        "  p.pause = function(){};\n"
-        "  p.isPlaying = function(){ return false; };\n"
-        // getTextureAnimation(): proxy for the layer's sprite-sheet animation.
-        // frameCount / currentFrame / duration come from a live read-back of
-        // Scene::nodeSpriteSnapshot via __sceneBridge.getLayerSpriteInfo;
-        // setFrame(N) / play() / stop() / pause() write through
-        // __sceneBridge.setLayerSpriteFrame so the pin reaches every per-pass
-        // sprite copy.  Without the live read-back the proxy hardcoded
-        // frameCount=1, which made `frame === ani.frameCount - 1` (Rella
-        // firework 3363252053) fire every tick and tear through the pause
-        // loop.  Falls back to {1, 0, 0} when the bridge or layer is missing
-        // (so the script keeps running rather than touching `undefined`).
-        "  p.getTextureAnimation = function(){\n"
-        "    var _name = _s.name;\n"
-        "    var _readInfo = function() {\n"
-        "      var info = (typeof __sceneBridge !== 'undefined'\n"
-        "                  && __sceneBridge.getLayerSpriteInfo)\n"
-        "                 ? __sceneBridge.getLayerSpriteInfo(_name) : null;\n"
-        "      var fc = info && info.frameCount ? info.frameCount : 1;\n"
-        "      var cf = info && typeof info.currentFrame === 'number' "
-        "? info.currentFrame : 0;\n"
-        "      var dur = info && typeof info.duration === 'number' "
-        "? info.duration : 0;\n"
-        "      var mp = info ? !!info.isManualPin : false;\n"
-        "      return { frameCount: fc, currentFrame: cf, duration: dur, isManualPin: mp };\n"
-        "    };\n"
-        "    return {\n"
-        "      get frameCount(){ return _readInfo().frameCount; },\n"
-        "      get duration(){ return _readInfo().duration; },\n"
-        "      get rate(){ return _readInfo().isManualPin ? 0 : 1; },\n"
-        "      get _frame(){ return _readInfo().currentFrame; },\n"
-        "      getFrame: function(){ return _readInfo().currentFrame; },\n"
-        "      setFrame: function(f){\n"
-        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, true, f|0); },\n"
-        "      play: function(){\n"
-        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, false, 0); },\n"
-        "      pause: function(){\n"
-        "        var cur = _readInfo().currentFrame;\n"
-        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, true, cur); },\n"
-        "      stop: function(){\n"
-        "        if (typeof __sceneBridge !== 'undefined' && __sceneBridge.setLayerSpriteFrame)\n"
-        "          __sceneBridge.setLayerSpriteFrame(_name, true, 0); },\n"
-        "      isPlaying: function(){ return !_readInfo().isManualPin; }\n"
-        "    };\n"
-        "  };\n"
-        // getVideoTexture(): returns IVideoTexture proxy bound to this layer.
-        // Methods delegate to SceneObject Q_INVOKABLEs via the __sceneBridge
-        // global.  Rate is cached JS-side (libmpv readback would race with
-        // writes issued the same tick).  Safe on layers with no video — the
-        // bridge returns 0/no-op defaults.
-        "  p.getVideoTexture = function() {\n"
-        "    var name = _s.name;\n"
-        "    var _rate = 1.0;\n"
-        "    var o = {\n"
-        "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },\n"
-        "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },\n"
-        "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
-        "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
-        "      pause: function(){ __sceneBridge.videoPause(name); },\n"
-        "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
-        "    };\n"
-        "    Object.defineProperty(o, 'duration', {\n"
-        "      get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true "
-        "});\n"
-        "    Object.defineProperty(o, 'rate', {\n"
-        "      get: function(){ return _rate; },\n"
-        "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },\n"
-        "      enumerable:true });\n"
-        "    return o;\n"
-        "  };\n"
-        // getMaterial(): returns IMaterial proxy bound to this layer.
-        // setValue queues a uniform write via __sceneBridge; getValue reads
-        // a JS-side cache so it never crosses threads.  See
-        // SceneScriptShimsJs.hpp::kMaterialProxyJs for the implementation.
-        "  p.getMaterial = function() { return _makeMaterialProxy(_s.name); };\n"
-        // getTransformMatrix(): returns a Mat4 populated with the layer's world
-        // transform from the render-thread snapshot.  Scripts mainly read
-        // .m[12] / .m[13] for world X/Y position (compared against
-        // engine.canvasSize.x/2 for "past midpoint?" checks).  Returns identity
-        // for unknown / not-yet-drawn layers.
-        "  p.getTransformMatrix = function() {\n"
-        "    var arr = __sceneBridge.getLayerWorldTransform(_s.name);\n"
-        "    var mm = new Mat4();\n"
-        "    if (arr && arr.length === 16) {\n"
-        "      for (var i = 0; i < 16; i++) mm.m[i] = +arr[i] || 0;\n"
-        "    }\n"
-        "    return mm;\n"
-        "  };\n"
-        // getBoneIndex(name): resolves an MDAT attachment name to its bone
-        // index on the puppet rigged to this layer (or its parent's puppet).
-        // Returns 0 if not found — Music Player (2992803622) treats 0 as the
-        // "attachment missing" signal and throws a config error.
-        "  p.getBoneIndex = function(bname) {\n"
-        "    return __sceneBridge.getBoneIndex(_s.name, String(bname == null ? '' : bname)) | 0;\n"
-        "  };\n"
-        // Animation layer stub: getAnimationLayer(index|name) returns an IAnimationLayer proxy.
-        // Scripts control puppet animation layers (play, pause, rate, blend, frame).
-        "  if (!_s._aniLayers) _s._aniLayers = {};\n"
-        "  p.getAnimationLayerCount = function(){ return Object.keys(_s._aniLayers).length || 1; "
-        "};\n"
-        "  p.getAnimationLayer = function(idx) {\n"
-        "    var key = String(idx);\n"
-        "    if (_s._aniLayers[key]) return _s._aniLayers[key];\n"
-        "    var al = { rate: 1, blend: 1, visible: true, frameCount: 60, _frame: 0, _playing: "
-        "false,\n"
-        "      play: function(){ al._playing = true; },\n"
-        "      pause: function(){ al._playing = false; },\n"
-        "      stop: function(){ al._playing = false; al._frame = 0; },\n"
-        "      isPlaying: function(){ return al._playing; },\n"
-        "      getFrame: function(){ return al._frame; },\n"
-        "      setFrame: function(f){ al._frame = f; }\n"
-        "    };\n"
-        "    _s._aniLayers[key] = al;\n"
-        "    return al;\n"
-        "  };\n"
-        // Named keyframe animation controller for image-layer properties
-        // (alpha.animation etc).  Matches the WE IAnimation shape used by
-        // scripts: getAnimation(name).play()/stop()/pause()/isPlaying.
-        "  if (!_s._namedAnims) _s._namedAnims = {};\n"
-        "  p.getAnimation = function(animName) {\n"
-        "    if (_s._namedAnims[animName]) return _s._namedAnims[animName];\n"
-        "    var ctrl = { _playing: false, _name: animName,\n"
-        "      play:  function(){ this._playing = true;  _s._cmds.push('panim_play:'  + animName); "
-        "_s._dirty._cmds = true; },\n"
-        "      pause: function(){ this._playing = false; _s._cmds.push('panim_pause:' + animName); "
-        "_s._dirty._cmds = true; },\n"
-        "      stop:  function(){ this._playing = false; _s._cmds.push('panim_stop:'  + animName); "
-        "_s._dirty._cmds = true; },\n"
-        "      isPlaying: function(){ return this._playing; }\n"
-        "    };\n"
-        "    _s._namedAnims[animName] = ctrl;\n"
-        "    return ctrl;\n"
-        "  };\n"
-        // getEffect(name) — returns effect proxy with dirty-tracked visible property
-        "  if (!_s._effCache) _s._effCache = {};\n"
-        "  p.getEffect = function(ename) {\n"
-        // WE's getEffect accepts either a string name or a numeric index.
-        // Game of Life (3453251764) Pattern Texture init and Color buttons
-        // both use `for (i=0; i < getEffectCount(); i++) getEffect(i)`.
-        "    var efxList = init ? init.efx : null;\n"
-        "    if (!efxList) return null;\n"
-        "    var idx = -1;\n"
-        "    if (typeof ename === 'number') {\n"
-        "      if (ename >= 0 && ename < efxList.length) { idx = ename|0; ename = efxList[idx]; }\n"
-        "    } else {\n"
-        "      for (var i = 0; i < efxList.length; i++) {\n"
-        "        if (efxList[i] === ename) { idx = i; break; }\n"
-        "      }\n"
-        "    }\n"
-        "    if (idx < 0) return null;\n"
-        "    if (_s._effCache[ename]) return _s._effCache[ename];\n"
-        "    var es = { visible: true, name: ename, _idx: idx };\n"
-        "    var ep = {};\n"
-        "    Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: "
-        "true });\n"
-        "    Object.defineProperty(ep, 'visible', {\n"
-        "      get: function(){ return es.visible; },\n"
-        "      set: function(v){ es.visible = v;\n"
-        "        if (!_s._efxDirty) _s._efxDirty = [];\n"
-        "        _s._efxDirty.push(idx, v ? 1 : 0); },\n"
-        "      enumerable: true\n"
-        "    });\n"
-        // getMaterial(): returns an IMaterial proxy bound to this specific
-        // effect (per-effect material, not the layer's main material).  Routes
-        // through __sceneBridge.effectMaterialSetValue with the effect index,
-        // so writes target effects/dqss2/<material> etc.  Game Of Life
-        // (3453251764) uses this to paint cells via
-        // `thisLayer.getEffect('paint').getMaterial().color = Vec3(...)`.
-        "    ep.getMaterial = function() {\n"
-        "      return _makeMaterialProxy(_s.name, idx);\n"
-        "    };\n"
-        "    _s._effCache[ename] = ep;\n"
-        "    return ep;\n"
-        "  };\n"
-        "  p.getEffectCount = function() {\n"
-        "    return (init && init.efx) ? init.efx.length : 0;\n"
-        "  };\n"
-        // Proxy validity flag: flipped to true by thisScene.destroyLayer so
-        // async callbacks (timers, media events) that fire after the layer
-        // has been torn down can bail via `if (!layer.isObjectValid())`.
-        "  p._destroyed = false;\n"
-        "  p.isObjectValid = function() { return !this._destroyed; };\n"
-        "  p._state = _s;\n"
-        // Layer-hierarchy fields & methods.  ID is stashed on _state so
-        // _hierarchyResolveId can dispatch to __sceneBridge.setParent.
-        "  if (typeof _layerNameToId !== 'undefined' && _layerNameToId[name] !== undefined) {\n"
-        "    _s.id = _layerNameToId[name];\n"
-        "  }\n"
-        "  _installHierarchyMethods(p);\n"
-        "  return p;\n"
-        "}\n"
-        // Null-safe proxy: returned when getLayer() can't find a layer.
-        // All setters are no-ops, no dirty tracking. Prevents TypeError on missing layers.
-        "var _nullProxy = (function() {\n"
-        "  var _s = { origin:Vec3(0,0,0), scale:Vec3(1,1,1),\n"
-        "    angles:Vec3(0,0,0), size:{x:0,y:0},\n"
-        "    visible:false, alpha:0, text:'', name:'', _dirty:{} };\n"
-        "  var p = {};\n"
-        "  Object.defineProperty(p, 'name', {get:function(){return '';}, enumerable:true});\n"
-        "  Object.defineProperty(p, 'debug', {get:function(){return undefined;}, "
-        "enumerable:true});\n"
-        "  var vec3Props = ['origin','scale','angles'];\n"
-        "  for (var i=0; i<vec3Props.length; i++) {\n"
-        "    (function(prop){\n"
-        "      Object.defineProperty(p, prop, {\n"
-        "        get: function(){ var s = _s[prop]; return Vec3(s.x, s.y, s.z); },\n"
-        "        set: function(v){},\n"
-        "        enumerable: true\n"
-        "      });\n"
-        "    })(vec3Props[i]);\n"
-        "  }\n"
-        "  var scalarProps = ['visible','alpha'];\n"
-        "  for (var j=0; j<scalarProps.length; j++) {\n"
-        "    (function(prop){\n"
-        "      Object.defineProperty(p, prop, {\n"
-        "        get: function(){return _s[prop];}, set: function(v){},\n"
-        "        enumerable: true\n"
-        "      });\n"
-        "    })(scalarProps[j]);\n"
-        "  }\n"
-        "  Object.defineProperty(p, 'text', {get:function(){return '';}, set:function(v){}, "
-        "enumerable:true});\n"
-        "  Object.defineProperty(p, 'size', {get:function(){return _s.size;}, enumerable:true});\n"
-        "  p.play = function(){}; p.stop = function(){};\n"
-        "  p.pause = function(){}; p.isPlaying = function(){return false;};\n"
-        "  p.getTextureAnimation = function(){\n"
-        "    return { rate:0, frameCount:1, _frame:0,\n"
-        "      getFrame:function(){return this._frame;}, setFrame:function(f){},\n"
-        "      play:function(){}, pause:function(){}, stop:function(){},\n"
-        "      isPlaying:function(){return false;}\n"
-        "    };\n"
-        "  };\n"
-        // Empty-layer proxy: getVideoTexture returns functional object bound to
-        // the layer name. Bridge returns 0/no-op for non-video layers.
-        "  p.getVideoTexture = function() {\n"
-        "    var name = _s.name;\n"
-        "    var _rate = 1.0;\n"
-        "    var o = {\n"
-        "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); },\n"
-        "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || 0); },\n"
-        "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
-        "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
-        "      pause: function(){ __sceneBridge.videoPause(name); },\n"
-        "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
-        "    };\n"
-        "    Object.defineProperty(o, 'duration', {\n"
-        "      get: function(){ return __sceneBridge.videoGetDuration(name); }, enumerable:true "
-        "});\n"
-        "    Object.defineProperty(o, 'rate', {\n"
-        "      get: function(){ return _rate; },\n"
-        "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, _rate); },\n"
-        "      enumerable:true });\n"
-        "    return o;\n"
-        "  };\n"
-        "  p.getAnimationLayerCount = function(){ return 0; };\n"
-        "  p.getAnimationLayer = function(idx){\n"
-        "    return { rate:0, blend:0, visible:false, frameCount:0, _frame:0, _playing:false,\n"
-        "      play:function(){}, pause:function(){}, stop:function(){},\n"
-        "      isPlaying:function(){return false;}, getFrame:function(){return 0;}, "
-        "setFrame:function(f){}\n"
-        "    };\n"
-        "  };\n"
-        "  p.getAnimation = function(animName){\n"
-        "    return { _playing: false, _name: animName,\n"
-        "      play:function(){}, pause:function(){}, stop:function(){},\n"
-        "      isPlaying:function(){return false;}\n"
-        "    };\n"
-        "  };\n"
-        "  p.getEffect = function(name) { return { name: name||'', visible: false }; };\n"
-        "  p.getEffectCount = function() { return 0; };\n"
-        "  p.getMaterial = function() { return _makeNullMaterialProxy(); };\n"
-        // Null proxy is always valid (it's shared, never destroyed).
-        "  p.isObjectValid = function() { return true; };\n"
-        "  p._state = _s;\n"
-        "  return p;\n"
-        "})();\n"
-        "var thisScene = {\n"
-        "  getLayer: function(name) {\n"
-        "    if (_layerCache[name]) return _layerCache[name];\n"
-        "    if (!_layerInitStates[name]) return null;\n"
-        "    var layer = _makeLayerProxy(name);\n"
-        "    _layerCache[name] = layer;\n"
-        "    _layerList.push(layer);\n"
-        "    return layer;\n"
-        "  },\n"
-        // WE's thisScene.getInitialLayerConfig(layer) variant — Game of
-        // Life Brush (3453251764) uses `thisScene.getInitialLayerConfig(thisLayer).effects`
-        // to iterate effect names.  Delegates to the per-layer proxy
-        // method, and adds an `effects: [{name}, ...]` array assembled
-        // from init.efx (the effect-name list serialized by Scene.cpp).
-        "  getInitialLayerConfig: function(layer) {\n"
-        "    if (!layer || typeof layer.getInitialLayerConfig !== 'function') return null;\n"
-        "    var cfg = layer.getInitialLayerConfig();\n"
-        "    var efx = layer._state && layer._state._initEfx;\n"
-        "    if (!efx) {\n"
-        "      var st = layer._state && layer._state.name && _layerInitStates[layer._state.name];\n"
-        "      if (st && st.efx) efx = st.efx;\n"
-        "    }\n"
-        "    if (efx && efx.length) {\n"
-        "      cfg.effects = [];\n"
-        "      for (var i = 0; i < efx.length; i++) cfg.effects.push({ name: efx[i] });\n"
-        "    } else { cfg.effects = []; }\n"
-        "    return cfg;\n"
-        "  }\n"
-        "};\n"
-        "var _sceneListeners = {};\n"
-        "thisScene.on = function(eventName, callback) {\n"
-        "  if (typeof eventName !== 'string' || typeof callback !== 'function') return;\n"
-        "  if (!_sceneListeners[eventName]) _sceneListeners[eventName] = [];\n"
-        "  _sceneListeners[eventName].push(callback);\n"
-        "};\n"
-        "thisScene.off = function(eventName, callback) {\n"
-        "  if (!_sceneListeners[eventName]) return;\n"
-        "  if (typeof callback === 'function') {\n"
-        "    _sceneListeners[eventName] = _sceneListeners[eventName].filter(\n"
-        "      function(cb) { return cb !== callback; });\n"
-        "  } else { delete _sceneListeners[eventName]; }\n"
-        "};\n"
-        "function _fireSceneEvent(eventName) {\n"
-        "  var listeners = _sceneListeners[eventName];\n"
-        "  if (!listeners || listeners.length === 0) return 0;\n"
-        "  var args = Array.prototype.slice.call(arguments, 1);\n"
-        "  var count = 0;\n"
-        "  for (var i = 0; i < listeners.length; i++) {\n"
-        "    try { listeners[i].apply(null, args); count++; }\n"
-        "    catch(e) { console.log('scene.on(' + eventName + ') error: ' + e.message); }\n"
-        "  }\n"
-        "  return count;\n"
-        "}\n"
-        "function _hasSceneListeners(eventName) {\n"
-        "  var l = _sceneListeners[eventName];\n"
-        "  return l && l.length > 0;\n"
-        "}\n"
-        "var scene = thisScene;\n"
-        "var thisLayer = null;\n"
-        // _overlayScriptProps(layer, sp): returns a thisLayer wrapper with
-        // `sp` (scriptProperties) overlaid as live accessors, falling through
-        // to the real layer for everything else.  WE scripts commonly write
-        // `if (thisLayer.debug) { ... }` where `debug` is a scriptProperty
-        // declared via createScriptProperties — WE aliases scriptProperties
-        // onto thisLayer inside the owning script's scope.  We mirror that
-        // by inserting this overlay per-IIFE after the script body has run
-        // (so scriptProperties is fully populated).  Uses Object.create so
-        // unaliased reads/writes forward via the prototype chain to the real
-        // layer proxy and its dirty-tracking getters/setters keep working.
-        "function _overlayScriptProps(layer, sp) {\n"
-        "  if (!sp || typeof sp !== 'object') return layer;\n"
-        "  var w = layer ? Object.create(layer) : {};\n"
-        "  for (var k in sp) if (Object.prototype.hasOwnProperty.call(sp, k)) {\n"
-        "    (function(key) {\n"
-        "      Object.defineProperty(w, key, {\n"
-        "        get: function() { return sp[key]; },\n"
-        "        set: function(v) { sp[key] = v; },\n"
-        "        enumerable: true, configurable: true\n"
-        "      });\n"
-        "    })(k);\n"
-        "  }\n"
-        "  return w;\n"
-        "}\n"
-        // createLayer pops a hidden pool node; destroyLayer returns it.
-        // Two calling conventions:
-        //   1. engine.registerAsset('path') → { __asset: 'path' }; then
-        //      createLayer(thatAsset).  Used by dino_run etc.
-        //   2. Object literal: createLayer({image: 'path', origin:..., ...}).
-        //      WE's real API; pre-scan in WPSceneParser seeds the pool for
-        //      any paths it finds.  Extra keys (origin/scale/angles/alpha/
-        //      visible/color) are applied to the rented layer after it's
-        //      popped, so trail-style scripts that rely on "initial
-        //      position from literal" behave as on WE.
-        // Fallback: if asset wasn't pre-scanned or pool exhausted, return a
-        // throwaway stub so scripts don't crash (but the "layer" renders
-        // nothing).
-        );
+    m_jsEngine->evaluate(wek::qml_helper::kLayerProxyJs);
     // _applyLayerLiteral is shared with scenescript_tests via
     // SceneScriptShimsJs.hpp — evaluated as a separate top-level statement
     // so the production QJSEngine sees the exact same source string the
     // tests do.
     m_jsEngine->evaluate(wek::qml_helper::kApplyLayerLiteralJs);
-    m_jsEngine->evaluate(
-        "thisScene.createLayer = function(asset) {\n"
-        // Accept three argument forms:
-        //   1. string:  createLayer('models/bar.json')
-        //   2. asset descriptor returned by engine.registerAsset()
-        //      (carries __asset)
-        //   3. object literal: createLayer({image:'path', origin:...})
-        // Naruto Shippuden 2800255344's audio-spectrum bar script uses
-        // form 1 — without it, every createLayer returned a stub and 63
-        // bars collapsed onto each other in the centre of the scene.
-        "  var path = (typeof asset === 'string') ? asset\n"
-        "             : (asset && (asset.__asset || asset.image));\n"
-        "  var pool = path && engine._assetPools[path];\n"
-        "  if (!engine._assetLive[path]) engine._assetLive[path] = [];\n"
-        "  var live = engine._assetLive[path];\n"
-        "  var name = null;\n"
-        "  if (pool && pool.length > 0) {\n"
-        "    name = pool.shift();\n"
-        "  } else if (live.length > 0) {\n"
-        // LRU recycle: reuse the oldest live slot.  Scripts that call
-        // createLayer in a loop without destroyLayer (3body MAIN, dino_run
-        // coins, etc.) would otherwise exhaust the 8-slot pool and hit a
-        // stub.  Recycling keeps createLayer always returning a real node.
-        "    name = live.shift();\n"
-        "    console.log('createLayer LRU-recycle: path=' + path + ' name=' + name);\n"
-        "  }\n"
-        "  if (name) {\n"
-        "    var layer = thisScene.getLayer(name);\n"
-        "    if (layer && layer !== _nullProxy) {\n"
-        // Revive the proxy if this slot was previously destroyed — the
-        // cached proxy object is reused across create/destroy cycles.
-        "      layer._destroyed = false;\n"
-        "      layer.__asset = path;\n"
-        "      _applyLayerLiteral(layer, asset);\n"
-        "      live.push(name);\n"
-        "      console.log('createLayer OK: path=' + path + ' name=' + name +\n"
-        "                  ' pool.free=' + (pool ? pool.length : 0) +\n"
-        "                  ' live=' + live.length);\n"
-        "      return layer;\n"
-        "    }\n"
-        "    console.log('createLayer: pool layer ' + name + ' not a real proxy');\n"
-        "  }\n"
-        // Pool never registered for this path — pre-scan missed it.  Loudly
-        // report so the caller can extend the scan (see feedback_no_stubs).
-        // Exception: if the caller passed `undefined`/`null`/empty string —
-        // that's a wallpaper-side bug (Lazarus 2881607945 ships a script that
-        // calls createLayer with an undefined variable) and not something
-        // our pre-scan could ever catch.  Skip the loud report quietly.
-        "  if (path === undefined || path === null || path === '') {\n"
-        "    return { __stub: true, __asset: '',\n"
-        "      origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
-        "      alpha: 1.0, visible: true, text: '',\n"
-        "      isObjectValid: function() { return false; },\n"
-        "      getAnimation: function(n) {\n"
-        "        return { play:function(){}, stop:function(){}, pause:function(){},\n"
-        "                 isPlaying:function(){ return false; } }; } };\n"
-        "  }\n"
-        "  console.log('createLayer NO-POOL: path=' + path +\n"
-        "              ' (pre-scan did not register this asset)');\n"
-        "  return { __stub: true, __asset: path,\n"
-        "    origin: Vec3(0,0,0), scale: Vec3(1,1,1), angles: Vec3(0,0,0),\n"
-        "    alpha: 1.0, visible: true, text: '',\n"
-        // Stubs are never bound to a real node, so isObjectValid is false.
-        "    isObjectValid: function() { return false; },\n"
-        "    getAnimation: function(n) {\n"
-        "      return { play:function(){}, stop:function(){}, pause:function(){},\n"
-        "               isPlaying:function(){ return false; } }; } };\n"
-        "};\n"
-        "thisScene.destroyLayer = function(layer) {\n"
-        "  if (!layer || layer.__stub) return;\n"
-        "  layer.visible = false;\n"
-        // Flip the validity flag BEFORE recycling.  Async callbacks that
-        // captured this proxy can now bail via isObjectValid().
-        "  layer._destroyed = true;\n"
-        // Layer-hierarchy reset: detach from any parent and clear children.
-        // Without this, the next createLayer on the same pool slot inherits
-        // stale linkage; the render-thread queue gets a -1 dispatch so the
-        // C++ SceneNode reattaches to the scene-graph root.
-        "  if (typeof _detachLayerHierarchy === 'function') _detachLayerHierarchy(layer);\n"
-        "  var path = layer.__asset;\n"
-        "  if (!path) return;\n"
-        "  var live = engine._assetLive[path];\n"
-        "  if (live && layer.name) {\n"
-        "    var idx = live.indexOf(layer.name);\n"
-        "    if (idx >= 0) live.splice(idx, 1);\n"
-        "  }\n"
-        "  if (engine._assetPools[path] && layer.name)\n"
-        "    engine._assetPools[path].push(layer.name);\n"
-        "};\n"
-        // thisScene.sortLayer(layer, index) — moves the layer to slot `index`
-        // in its current parent's children list.  Routes through __sceneBridge
-        // to the render thread, which applies the reorder at the start of
-        // the next draw.  No-op when the layer has no id (placeholder /
-        // already-destroyed) or when the bridge is missing.
-        "thisScene.sortLayer    = function(layer, index) {\n"
-        "  if (!layer || layer._destroyed) return;\n"
-        "  var id = (typeof layer === 'number') ? layer : layer.id;\n"
-        "  if (typeof id !== 'number') return;\n"
-        "  if (typeof index !== 'number') return;\n"
-        "  if (typeof __sceneBridge !== 'undefined' && __sceneBridge.sortLayer)\n"
-        "    __sceneBridge.sortLayer(id|0, index|0);\n"
-        "};\n"
-        "thisScene.getLayerIndex = function(name) {\n"
-        "  var l = thisScene.getLayer(name);\n"
-        "  return l && typeof l._index === 'number' ? l._index : 0;\n"
-        "};\n"
-        // _collectDirtyLayers returns a FLAT array.  Each dirty layer
-        // contributes a fixed 17-entry block:
-        //   [0]  name (string)
-        //   [1]  flags (int bitmask): 1=origin 2=scale 4=angles 8=visible
-        //        16=alpha 32=text 64=pointsize 128=cmds 256=efx
-        //   [2-4]  origin x,y,z
-        //   [5-7]  scale x,y,z
-        //   [8-10] angles x,y,z
-        //   [11] alpha (float)
-        //   [12] visible (0 or 1)
-        //   [13] pointsize (float)
-        //   [14] text (string) or null
-        //   [15] cmds (array of strings) or null
-        //   [16] efxList (array of [idx,visible] tuples) or null
-        // The old version returned nested objects — C++ did ~30 QJSValue
-        // property reads per layer.  Flat layout cuts that to 17, and most
-        // values short-circuit to null when their flag isn't set.
-        "var DIRTY_STRIDE = 17;\n"
-        "var F_ORIGIN=1, F_SCALE=2, F_ANGLES=4, F_VISIBLE=8, F_ALPHA=16,\n"
-        "    F_TEXT=32, F_PSIZE=64, F_CMDS=128, F_EFX=256;\n"
-        "function _collectDirtyLayers() {\n"
-        "  var out = [];\n"
-        "  var list = _layerList;\n"
-        "  for (var li = 0, ln = list.length; li < ln; li++) {\n"
-        "    var layer = list[li];\n"
-        "    var name = layer.name;\n"
-        "    if (layer._pool) {\n"
-        // Pool fast path: plain properties, snapshot-compare for dirty.
-        "      var prev = layer._prev;\n"
-        "      var o = layer.origin, sc = layer.scale, a = layer.angles;\n"
-        "      var flags = 0;\n"
-        "      if (o.x !== prev.ox || o.y !== prev.oy || o.z !== prev.oz)\n"
-        "        { flags |= F_ORIGIN; prev.ox = o.x; prev.oy = o.y; prev.oz = o.z; }\n"
-        "      if (sc.x !== prev.sx || sc.y !== prev.sy || sc.z !== prev.sz)\n"
-        "        { flags |= F_SCALE; prev.sx = sc.x; prev.sy = sc.y; prev.sz = sc.z; }\n"
-        "      if (a.x !== prev.ax || a.y !== prev.ay || a.z !== prev.az)\n"
-        "        { flags |= F_ANGLES; prev.ax = a.x; prev.ay = a.y; prev.az = a.z; }\n"
-        "      if (layer.alpha !== prev.alpha)\n"
-        "        { flags |= F_ALPHA; prev.alpha = layer.alpha; }\n"
-        "      if (layer.visible !== prev.visible)\n"
-        "        { flags |= F_VISIBLE; prev.visible = layer.visible; }\n"
-        "      if (flags === 0) continue;\n"
-        "      out.push(\n"
-        "        name, flags,\n"
-        "        o.x, o.y, o.z,\n"
-        "        sc.x, sc.y, sc.z,\n"
-        "        a.x, a.y, a.z,\n"
-        "        layer.alpha, layer.visible ? 1 : 0, 0,\n"
-        "        null, null, null);\n"
-        "      continue;\n"
-        "    }\n"
-        "    var s = layer._state;\n"
-        "    var d = s._dirty;\n"
-        "    var cmds = s._cmds;\n"
-        "    var efxList = s._efxDirty;\n"
-        "    var flags = 0;\n"
-        "    if (d.origin)    flags |= F_ORIGIN;\n"
-        "    if (d.scale)     flags |= F_SCALE;\n"
-        "    if (d.angles)    flags |= F_ANGLES;\n"
-        "    if (d.visible)   flags |= F_VISIBLE;\n"
-        "    if (d.alpha)     flags |= F_ALPHA;\n"
-        "    if (d.text)      flags |= F_TEXT;\n"
-        "    if (d.pointsize) flags |= F_PSIZE;\n"
-        "    if (cmds && cmds.length) flags |= F_CMDS;\n"
-        "    if (efxList && efxList.length) flags |= F_EFX;\n"
-        "    if (flags === 0) continue;\n"
-        "    var o = s.origin, sc = s.scale, a = s.angles;\n"
-        "    out.push(\n"
-        "      name, flags,\n"
-        "      o.x, o.y, o.z,\n"
-        "      sc.x, sc.y, sc.z,\n"
-        "      a.x, a.y, a.z,\n"
-        "      s.alpha, s.visible ? 1 : 0, s.pointsize,\n"
-        "      (flags & F_TEXT) ? s.text : null,\n"
-        "      (flags & F_CMDS) ? cmds.slice() : null,\n"
-        "      (flags & F_EFX) ? efxList.slice() : null);\n"
-        "    s._dirty = {};\n"
-        "    if (flags & F_CMDS) s._cmds = [];\n"
-        "    if (flags & F_EFX)  s._efxDirty = [];\n"
-        "  }\n"
-        "  return out;\n"
-        "}\n");
+    m_jsEngine->evaluate(wek::qml_helper::kLayerRuntimeJs);
 
     // Batched property-script dispatch: `_runAllPropertyScripts` replaces
     // the per-script C++->JS .call boundary (670 calls/tick on solar system)
@@ -3021,9 +2231,9 @@ void SceneObject::setupTextScripts() {
     {
         std::string sceneJson = m_scene->getSceneInitialStateJson();
         if (! sceneJson.empty()) {
-            QString escaped = QString::fromStdString(sceneJson);
-            escaped.replace("\\", "\\\\");
-            escaped.replace("'", "\\'");
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sceneJson));
             m_jsEngine->evaluate(QString("var _sceneInit = JSON.parse('%1');\n").arg(escaped));
         } else {
             m_jsEngine->evaluate("var _sceneInit = {cc:[0,0,0],bloom:false,bs:2,bt:0.65,"
@@ -3136,8 +2346,12 @@ void SceneObject::setupTextScripts() {
         QString nameToId   = "var _layerNameToId = {";
         bool    first      = true;
         for (const auto& [name, id] : m_nodeNameToId) {
-            QString nameEsc = QString::fromStdString(name);
-            nameEsc.replace("'", "\\'");
+            // Full JS-literal escape — these names are interpolated into the
+            // single-quoted keys/values of the object literals below; a name
+            // with a backslash or U+2028/U+2029 would otherwise break the
+            // literal (same hazard class as F18 / JsStringEscape.hpp).
+            QString nameEsc =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(name));
             if (! first) {
                 idToName += ",";
                 nameToId += ",";
@@ -3260,8 +2474,11 @@ void SceneObject::setupTextScripts() {
                 m_soundLayerStates.push_back(std::move(sls));
                 m_soundLayerNameToIndex[sl.name] = i;
 
-                QString nameEsc = QString::fromStdString(sl.name);
-                nameEsc.replace("'", "\\'");
+                // Full JS-literal escape — sl.name is interpolated into the
+                // single-quoted key of the _soundLayerStates object literal
+                // (same hazard class as F18 / JsStringEscape.hpp).
+                QString nameEsc =
+                    wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sl.name));
                 if (i > 0) statesJson += ",\n";
                 statesJson += QString("  '%1': { idx: %2, vol: %3, silent: %4 }")
                                   .arg(nameEsc)
@@ -3575,9 +2792,10 @@ void SceneObject::setupTextScripts() {
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
         if (! csi.scriptProperties.empty()) {
-            QString jsonStr = QString::fromStdString(csi.scriptProperties);
-            jsonStr.replace("\\", "\\\\");
-            jsonStr.replace("'", "\\'");
+            // Full JS-literal escape before feeding the JSON.parse('%1') in
+            // kCreateScriptPropertiesShadowJs (see JsStringEscape.hpp / F18).
+            QString jsonStr = wek::qml_helper::escapeForJsSingleQuoted(
+                QString::fromStdString(csi.scriptProperties));
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
@@ -3711,9 +2929,10 @@ void SceneObject::setupTextScripts() {
 
         QString propsInit;
         if (! svi.scriptProperties.empty()) {
-            QString jsonStr = QString::fromStdString(svi.scriptProperties);
-            jsonStr.replace("\\", "\\\\");
-            jsonStr.replace("'", "\\'");
+            // Full JS-literal escape before feeding the JSON.parse('%1') in
+            // kCreateScriptPropertiesShadowJs (see JsStringEscape.hpp / F18).
+            QString jsonStr = wek::qml_helper::escapeForJsSingleQuoted(
+                QString::fromStdString(svi.scriptProperties));
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
@@ -3804,19 +3023,21 @@ void SceneObject::setupTextScripts() {
         // Inject scriptProperties and per-IIFE createScriptProperties that merges stored values
         QString propsInit;
         if (! psi.scriptProperties.empty()) {
-            QString jsonStr = QString::fromStdString(psi.scriptProperties);
-            jsonStr.replace("\\", "\\\\");
-            jsonStr.replace("'", "\\'");
+            // Full JS-literal escape before feeding the JSON.parse('%1') in
+            // kCreateScriptPropertiesShadowJs (see JsStringEscape.hpp / F18).
+            QString jsonStr = wek::qml_helper::escapeForJsSingleQuoted(
+                QString::fromStdString(psi.scriptProperties));
             // Shadow global createScriptProperties with one that uses stored property values
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
         // Set thisLayer before compilation so closures can capture it
         if (! psi.layerName.empty()) {
+            // Escaped layer-name lookup (was unescaped pre-F18; see JsStringEscape.hpp).
             m_jsEngine->globalObject().setProperty(
                 "thisLayer",
-                m_jsEngine->evaluate(QString("thisScene.getLayer('%1')")
-                                         .arg(QString::fromStdString(psi.layerName))));
+                m_jsEngine->evaluate(
+                    wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName))));
         }
 
         // Wrap in IIFE returning {update, init}
@@ -4034,10 +3255,11 @@ void SceneObject::setupTextScripts() {
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;
 
-        // Cache layer proxy for thisLayer (avoids evaluate per frame)
+        // Cache layer proxy for thisLayer (avoids evaluate per frame).
+        // Escaped layer-name lookup (was unescaped pre-F18; see JsStringEscape.hpp).
         if (! psi.layerName.empty()) {
             state.thisLayerProxy = m_jsEngine->evaluate(
-                QString("thisScene.getLayer('%1')").arg(QString::fromStdString(psi.layerName)));
+                wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName)));
         }
 
         // Resolve thisObject.  For Object-attached scripts this equals
@@ -4077,7 +3299,9 @@ void SceneObject::setupTextScripts() {
                                                    .arg(psi.initialVec3[1], 0, 'g', 9)
                                                    .arg(psi.initialVec3[2], 0, 'g', 9));
             }
-            QJSValue initResult = initFn.call({ initVal });
+            QJSValue initResult = callJsGuarded([&] {
+                return initFn.call({ initVal });
+            });
             if (initResult.isError()) {
                 QString stack = initResult.property("stack").toString();
                 int     line  = initResult.property("lineNumber").toInt();
@@ -4324,21 +3548,22 @@ void SceneObject::setupTextScripts() {
 
         stripESModuleSyntax(scriptSrc);
 
-        // Set thisLayer to the sound layer proxy for this script's own layer
+        // Set thisLayer to the sound layer proxy for this script's own layer.
+        // Shared escaped lookup (was a bespoke '-only escape pre-F18; see JsStringEscape.hpp).
         if (! svsi.layerName.empty()) {
-            QString nameEsc = QString::fromStdString(svsi.layerName);
-            nameEsc.replace("'", "\\'");
             m_jsEngine->globalObject().setProperty(
                 "thisLayer",
-                m_jsEngine->evaluate(QString("thisScene.getLayer('%1')").arg(nameEsc)));
+                m_jsEngine->evaluate(
+                    wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(svsi.layerName))));
         }
 
         // Inject scriptProperties
         QString propsInit;
         if (! svsi.scriptProperties.empty()) {
-            QString jsonStr = QString::fromStdString(svsi.scriptProperties);
-            jsonStr.replace("\\", "\\\\");
-            jsonStr.replace("'", "\\'");
+            // Full JS-literal escape before feeding the JSON.parse('%1') in
+            // kCreateScriptPropertiesShadowJs (see JsStringEscape.hpp / F18).
+            QString jsonStr = wek::qml_helper::escapeForJsSingleQuoted(
+                QString::fromStdString(svsi.scriptProperties));
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
@@ -4450,9 +3675,10 @@ void SceneObject::setupTextScripts() {
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
         if (! tsi.scriptProperties.empty()) {
-            QString jsonStr = QString::fromStdString(tsi.scriptProperties);
-            jsonStr.replace("\\", "\\\\");
-            jsonStr.replace("'", "\\'");
+            // Full JS-literal escape before feeding the JSON.parse('%1') in
+            // kCreateScriptPropertiesShadowJs (see JsStringEscape.hpp / F18).
+            QString jsonStr = wek::qml_helper::escapeForJsSingleQuoted(
+                QString::fromStdString(tsi.scriptProperties));
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
@@ -4507,7 +3733,9 @@ void SceneObject::setupTextScripts() {
 
         // Call init(value) if available
         if (initFn.isCallable()) {
-            QJSValue initResult = initFn.call({ QJSValue(state.currentText) });
+            QJSValue initResult = callJsGuarded([&] {
+                return initFn.call({ QJSValue(state.currentText) });
+            });
             if (initResult.isError()) {
                 qCWarning(wekdeScene,
                           "Text script init error id=%d: %s",
@@ -4659,7 +3887,9 @@ void SceneObject::evaluateTextScripts() {
     static int s_textDebugCount = 0;
     s_textDebugCount++;
     for (auto& state : m_textScriptStates) {
-        QJSValue result = state.updateFn.call({ QJSValue(state.currentText) });
+        QJSValue result = callJsGuarded([&] {
+            return state.updateFn.call({ QJSValue(state.currentText) });
+        });
         if (result.isError()) {
             errors++;
             static std::unordered_set<int> textErroredIds;
@@ -4728,9 +3958,12 @@ void SceneObject::evaluateTextScripts() {
 }
 
 void SceneObject::evaluateColorScripts() {
-    if (! m_jsEngine ||
-        (m_colorScriptStates.empty() && m_shaderValueScriptStates.empty()))
-        return;
+    if (! m_jsEngine) return;
+    // Idle when there is nothing to evaluate OR the wallpaper is paused (F19).
+    // pause() also stops m_colorTimer; this guards the setup-time seed eval and
+    // any tick already queued when pause() ran.
+    const bool hasStates = ! m_colorScriptStates.empty() || ! m_shaderValueScriptStates.empty();
+    if (! scriptLoopShouldRun(hasStates, m_paused)) return;
 
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
@@ -4766,7 +3999,9 @@ void SceneObject::evaluateColorScripts() {
                               .arg((double)state.currentColor[2], 0, 'g', 8);
         QJSValue colorVal = m_jsEngine->evaluate(colorJs);
 
-        QJSValue result = state.updateFn.call({ colorVal });
+        QJSValue result = callJsGuarded([&] {
+            return state.updateFn.call({ colorVal });
+        });
         if (result.isError()) {
             qCWarning(wekdeScene,
                       "Color script runtime error id=%d: %s",
@@ -4842,7 +4077,9 @@ void SceneObject::evaluateColorScripts() {
             arg = m_jsEngine->evaluate(ctor);
         }
 
-        QJSValue result = state.updateFn.call({ arg });
+        QJSValue result = callJsGuarded([&] {
+            return state.updateFn.call({ arg });
+        });
         if (result.isError()) {
             static std::unordered_set<int64_t> svErrored;
             int64_t tag = ((int64_t)state.id << 32) ^
@@ -4890,11 +4127,50 @@ void SceneObject::evaluateColorScripts() {
     }
 }
 
+QJSValue SceneObject::callJsGuarded(const std::function<QJSValue()>& fn, bool* outInterrupted) {
+    if (outInterrupted) *outInterrupted = false;
+    if (! m_jsEngine) return QJSValue();
+    // Arm the off-thread deadline, run the author JS, then disarm.  A runaway
+    // (`while(true)`) trips the watchdog, which calls setInterrupted(true) and
+    // makes this call() unwind as a JS exception — caught here so the GUI-thread
+    // tick loop continues instead of the desktop freezing.
+    m_jsWatchdog.arm(m_jsEngine, m_jsWatchdogBudgetMs);
+    QJSValue result;
+    try {
+        result = fn();
+    } catch (const std::exception& e) {
+        LOG_ERROR("guarded JS dispatch threw: %s", e.what());
+    } catch (...) {
+        LOG_ERROR("guarded JS dispatch threw (non-std)");
+    }
+    const bool fired = m_jsWatchdog.disarm();
+    if (fired) {
+        // Clear the interrupt latch so the NEXT guarded call can run; if the
+        // script keeps overrunning, the watchdog re-fires and the caller's
+        // back-off (consecutive-interrupt counter) eventually disables it.
+        m_jsEngine->setInterrupted(false);
+        if (outInterrupted) *outInterrupted = true;
+    }
+    return result;
+}
+
 void SceneObject::evaluatePropertyScripts() {
     if (! m_jsEngine) return;
-    if (m_propertyScriptStates.empty() && m_soundVolumeScriptStates.empty() &&
-        m_soundLayerStates.empty())
-        return;
+    // A3-T2 — once the watchdog has disabled this wallpaper's property scripts
+    // (K consecutive interrupts), stay idle.  pause()/stop also halts the
+    // timer; this belt covers the seed eval and any already-queued tick.
+    if (m_propertyScriptsDisabled) return;
+    // Idle when there is nothing to evaluate OR the wallpaper is paused (F19).
+    // pause() also stops m_propertyTimer; this guards the setup-time seed eval
+    // and any tick already queued when pause() ran.
+    const bool hasStates = ! m_propertyScriptStates.empty() ||
+                           ! m_soundVolumeScriptStates.empty() || ! m_soundLayerStates.empty();
+    if (! scriptLoopShouldRun(hasStates, m_paused)) return;
+
+    // A3-T2 — OR'd across every guarded JS dispatch in this tick (animationEvent,
+    // runAllPropertyScripts, the dirty-collect calls); drives the back-off
+    // counter at the tail.  Declared up here because animationEvent fires first.
+    bool tickInterrupted = false;
 
     // Periodic GC to prevent JS heap growth during long sessions
     {
@@ -5084,7 +4360,13 @@ void SceneObject::evaluatePropertyScripts() {
                     eventObj.setProperty("name", QString::fromStdString(evt.name));
                     eventObj.setProperty("frame", QJSValue(evt.frame));
 
-                    QJSValue result = state.animationEventFn.call({ eventObj, buildValue(state) });
+                    bool     wasInterrupted = false;
+                    QJSValue result         = callJsGuarded(
+                        [&] {
+                            return state.animationEventFn.call({ eventObj, buildValue(state) });
+                        },
+                        &wasInterrupted);
+                    tickInterrupted = tickInterrupted || wasInterrupted;
                     if (result.isError()) {
                         QString stack = result.property("stack").toString();
                         int     line  = result.property("lineNumber").toInt();
@@ -5124,9 +4406,15 @@ void SceneObject::evaluatePropertyScripts() {
     // to `_scriptErrors` (stride 4: idx, message, line, stack) and drained
     // below.  Kind for each idx is known from `m_propertyScriptStates[idx].kind`.
     if (m_runAllPropertyScriptsFn.isCallable()) {
-        using Kind     = PropertyScriptState::Kind;
-        QJSValue out   = m_runAllPropertyScriptsFn.call();
-        int      total = out.property("length").toInt();
+        using Kind              = PropertyScriptState::Kind;
+        bool     wasInterrupted = false;
+        QJSValue out            = callJsGuarded(
+            [this] {
+                return m_runAllPropertyScriptsFn.call();
+            },
+            &wasInterrupted);
+        tickInterrupted = tickInterrupted || wasInterrupted;
+        int total       = out.property("length").toInt();
         for (int i = 0; i < total; i += 4) {
             int idx = out.property(i).toInt();
             if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;
@@ -5263,7 +4551,13 @@ void SceneObject::evaluatePropertyScripts() {
     int dirtyLayerCount = 0;
     int dirtyLayerMiss  = 0;
     if (m_collectDirtyLayersFn.isCallable()) {
-        QJSValue updates = m_collectDirtyLayersFn.call();
+        bool     wasInterrupted = false;
+        QJSValue updates        = callJsGuarded(
+            [this] {
+                return m_collectDirtyLayersFn.call();
+            },
+            &wasInterrupted);
+        tickInterrupted = tickInterrupted || wasInterrupted;
         probeMark(s_t_dirtyCollect);
         int totalEntries = updates.property("length").toInt();
         dirtyLayerCount  = totalEntries / DIRTY_STRIDE;
@@ -5364,8 +4658,14 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Flush dirty sound layer proxies (play/stop/pause/volume commands)
     if (m_collectDirtySoundLayersFn.isCallable()) {
-        QJSValue soundUpdates     = m_collectDirtySoundLayersFn.call();
-        int      soundUpdateCount = soundUpdates.property("length").toInt();
+        bool     wasInterrupted = false;
+        QJSValue soundUpdates   = callJsGuarded(
+            [this] {
+                return m_collectDirtySoundLayersFn.call();
+            },
+            &wasInterrupted);
+        tickInterrupted      = tickInterrupted || wasInterrupted;
+        int soundUpdateCount = soundUpdates.property("length").toInt();
         for (int i = 0; i < soundUpdateCount; i++) {
             QJSValue    entry = soundUpdates.property(i);
             std::string name  = entry.property("name").toString().toStdString();
@@ -5423,7 +4723,13 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Flush dirty scene properties (bloom, clear color, camera, lighting)
     if (m_collectDirtySceneFn.isCallable()) {
-        QJSValue sceneUpdate = m_collectDirtySceneFn.call();
+        bool     wasInterrupted = false;
+        QJSValue sceneUpdate    = callJsGuarded(
+            [this] {
+                return m_collectDirtySceneFn.call();
+            },
+            &wasInterrupted);
+        tickInterrupted = tickInterrupted || wasInterrupted;
         if (! sceneUpdate.isNull() && ! sceneUpdate.isUndefined()) {
             QJSValue dirty = sceneUpdate.property("dirty");
 
@@ -5699,6 +5005,28 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
+    // A3-T2 back-off — a clean tick resets the run; consecutive interrupts
+    // accumulate.  Once the run reaches kDisableAfterInterrupts, disable this
+    // wallpaper's property scripts (stop the timer, latch the gate, log once) so
+    // a persistent runaway stops animating instead of perpetually losing one
+    // tick (and pinning a CPU on the watchdog) every 8ms.
+    if (tickInterrupted) {
+        m_consecutivePropInterrupts++;
+        if (scenebackend::shouldDisableAfterInterrupts(
+                m_consecutivePropInterrupts, scenebackend::JsWatchdog::kDisableAfterInterrupts) &&
+            ! m_propertyScriptsDisabled) {
+            m_propertyScriptsDisabled = true;
+            if (m_propertyTimer) m_propertyTimer->stop();
+            LOG_ERROR("property script exceeded %lldms budget %d ticks running — disabling "
+                      "property scripts for this wallpaper (it will stop animating)",
+                      (long long)m_jsWatchdogBudgetMs,
+                      m_consecutivePropInterrupts);
+            return; // do not chain color eval on a wallpaper we just disabled
+        }
+    } else {
+        m_consecutivePropInterrupts = 0;
+    }
+
     // Chain color/shader-value evaluation into the same tick so transient
     // signaling state (shared.brushEditor.hasChanged = true → consume → set
     // false next property tick) doesn't race the separate color timer.
@@ -5727,6 +5055,15 @@ void SceneObject::cleanupTextScripts() {
     m_lsGlobal = {};
     m_lsScreen = {};
     m_lsSceneId.clear();
+    // Stop + delete the localStorage debounce timer AFTER the flush above, or a
+    // single-shot still pending from scheduleLocalStorageFlush() could fire
+    // flushLocalStorage() against the half-torn-down state (m_jsEngine is
+    // deleted at the tail of this function) on a wallpaper switch (F19).
+    if (m_lsFlushTimer) {
+        m_lsFlushTimer->stop();
+        delete m_lsFlushTimer;
+        m_lsFlushTimer = nullptr;
+    }
 
     m_textScriptStates.clear();
     m_colorScriptStates.clear();
@@ -5750,6 +5087,17 @@ void SceneObject::cleanupTextScripts() {
     m_cursorTargets.clear();
     m_hoveredLayers.clear();
     m_dragTarget.clear();
+    // Stop + delete the hover-leave debounce timer and drop any pending leaves
+    // (F19).  A single-shot still armed from hoverMoveEvent()/flushPendingLeaves()
+    // would otherwise fire flushPendingLeaves() against stale m_pendingLeaves
+    // entries after the script state and m_jsEngine are torn down on a wallpaper
+    // switch — a use-after-teardown on the proxies the leave handlers call into.
+    if (m_hoverLeaveTimer) {
+        m_hoverLeaveTimer->stop();
+        delete m_hoverLeaveTimer;
+        m_hoverLeaveTimer = nullptr;
+    }
+    m_pendingLeaves.clear();
     if (m_textTimer) {
         m_textTimer->stop();
         delete m_textTimer;
@@ -5770,6 +5118,10 @@ void SceneObject::cleanupTextScripts() {
         delete m_timerBridge;
         m_timerBridge = nullptr;
     }
+    // Stop + join the watchdog monitor thread BEFORE deleting the engine.  join()
+    // blocks until any in-flight setInterrupted() has returned, so a watchdog
+    // fire can never touch a freed QJSEngine (A3-T2 engine-pointer safety).
+    m_jsWatchdog.stop();
     if (m_jsEngine) {
         delete m_jsEngine;
         m_jsEngine = nullptr;

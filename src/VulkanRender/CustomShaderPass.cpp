@@ -432,10 +432,18 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     VkFormat output_vk_format;
     {
         auto& tex_name = m_desc.output;
-        assert(IsSpecTex(tex_name));
-        assert(scene.renderTargets.count(tex_name) > 0);
-        auto& rt         = scene.renderTargets.at(tex_name);
-        output_vk_format = ToVkType(rt.format);
+        // Runtime guard (replaces the two Release-stripped asserts): a
+        // malformed scene can name an output RT that was never registered.
+        // The bare .at() would throw std::out_of_range onto the render worker
+        // thread (std::terminate → plasmashell death) in every shipped build,
+        // since -DNDEBUG strips the asserts.  Log + return instead.
+        auto* rtp = scene.tryGetRenderTarget(tex_name);
+        if (rtp == nullptr) {
+            LOG_ERROR("output RT '%s' missing (not a registered render target)", tex_name.c_str());
+            return;
+        }
+        auto& rt                = *rtp;
+        output_vk_format        = ToVkType(rt.format);
         m_desc.vk_output_format = output_vk_format;
         if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             opt.has_value()) {

@@ -31,6 +31,12 @@ struct UserData {
     uint16_t height;
 };
 
+// Forward declaration: key_callback (inside the extern "C" block below) calls
+// updateCallback() on resume, but the definition lives further down at file
+// scope.  Without this declaration the call site is a hard compile error
+// (use of undeclared identifier) — the historical "scope split" build break.
+void updateCallback();
+
 extern "C" {
 void framebuffer_size_callback(GLFWwindow*, int width, int height) {}
 

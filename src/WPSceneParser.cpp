@@ -639,7 +639,12 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         } else if (! IsSpecTex(el)) {
             const auto& texh = pScene->imageParser->ParseHeader(el);
             texHeaders[el]   = texh;
-            if (texh.extraHeader.count("compo1") == 0) {
+            // Require ALL THREE compo* keys before reading them: a malformed
+            // .tex header carrying compo1 but not compo2/compo3 would throw
+            // out_of_range from .at("compo2"/"compo3").  Runs on the parse
+            // (MainHandler) worker thread.
+            if (texh.extraHeader.count("compo1") == 0 || texh.extraHeader.count("compo2") == 0 ||
+                texh.extraHeader.count("compo3") == 0) {
                 texinfos.push_back({ false });
                 continue;
             }

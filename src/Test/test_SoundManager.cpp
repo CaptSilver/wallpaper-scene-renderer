@@ -5,11 +5,25 @@
 #include "Audio/miniaudio-wrapper.hpp"
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 using namespace wallpaper::audio;
+
+// Audio device access is environment-dependent: SoundManager::Init opens the
+// default playback device via miniaudio, which enumerates PulseAudio/PipeWire
+// and can BLOCK indefinitely on a stale socket in a headless distrobox.  Gate
+// the device-touching cases behind an explicit opt-in env var so the suite
+// never wedges; set WEKDE_HAS_AUDIO_DEVICE=1 on a box with a live audio server
+// to exercise the real Init() path.  (Mirrors the probe in test_AudioCapture
+// and the MESSAGE+return skip idiom of wp_pkg_tool_available.)
+static bool wekde_audio_device_optin() {
+    const char* v = std::getenv("WEKDE_HAS_AUDIO_DEVICE");
+    return v && std::string_view(v) == "1";
+}
 
 // SoundManager is a thin wrapper around miniaudio::Device.  Many of its
 // methods won't actually succeed in distrobox (no PipeWire socket for Init),
@@ -30,6 +44,16 @@ TEST_SUITE("SoundManager") {
         // sole audio-reactivity feed for several wallpapers (e.g. Cyberpunk
         // Lucy 2866203962), so muting the wallpaper has to leave the data
         // callback firing.
+        //
+        // SetMuted lazily calls Init() on the first toggle
+        // (`if (!IsInited()) Init();` in SoundManager.cpp), which opens the
+        // default device and can BLOCK on a stale audio socket — so this case
+        // is a device test and must be gated behind the opt-in.
+        if (! wekde_audio_device_optin()) {
+            MESSAGE("no audio device opt-in (set WEKDE_HAS_AUDIO_DEVICE=1); "
+                    "skipping SetMuted (lazily opens the device)");
+            return;
+        }
         SoundManager sm;
         sm.SetMuted(true);
         CHECK(sm.Muted());
@@ -43,6 +67,14 @@ TEST_SUITE("SoundManager") {
         // killed the spectrum-callback feed forever once the user muted.
         // Init must now attempt the open regardless of mute state, so the
         // data callback can run and the analyzer keeps getting PCM frames.
+        //
+        // Both SetMuted(true) and the explicit Init() touch the device and can
+        // BLOCK on a stale audio socket headless — gate behind the opt-in.
+        if (! wekde_audio_device_optin()) {
+            MESSAGE("no audio device opt-in (set WEKDE_HAS_AUDIO_DEVICE=1); "
+                    "skipping live SoundManager::Init()");
+            return;
+        }
         SoundManager sm;
         sm.SetMuted(true);
         // Init's return value depends on whether a real audio device is

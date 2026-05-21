@@ -30,7 +30,15 @@ void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& r
 
         ImageParameters img;
         if (IsSpecTex(tex_name)) {
-            auto& rt  = scene.renderTargets.at(tex_name);
+            // src is guarded by the early-return at the top of prepare(); dst is
+            // normally inserted just above.  Guard anyway so a stray non-existent
+            // SpecTex RT logs+skips rather than throwing onto the worker thread.
+            auto* rtp = scene.tryGetRenderTarget(tex_name);
+            if (rtp == nullptr) {
+                LOG_ERROR("CopyPass RT '%s' missing", tex_name.c_str());
+                continue;
+            }
+            auto& rt  = *rtp;
             auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
             if (opt.has_value())
                 img = opt.value();

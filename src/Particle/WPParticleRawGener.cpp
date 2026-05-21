@@ -281,7 +281,7 @@ inline size_t GenRopeParticleData(std::span<const Particle> particles, const Vec
 
 // GS rope: 1 vertex per segment (geometry shader expands to triangle strip)
 inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const Vector3f& inst_pos,
-                                    const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                    const ParticleRawGenSpecOp& specOp, WPGOption /*opt*/,
                                     SceneVertexArray& sv, size_t start_idx,
                                     float anc_alpha = 1.0f) {
     const auto one_size  = sv.OneSize();
@@ -429,7 +429,7 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
 
 // Spritetrail: each particle's trail history rendered as mini-rope segments
 inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstance>> instances,
-                                 const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                 const ParticleRawGenSpecOp& /*specOp*/, WPGOption opt,
                                  SceneVertexArray& sv) noexcept {
     std::array<float, 32 * 4> storage;
     float*                    data = storage.data();
@@ -553,7 +553,7 @@ inline size_t GenSpriteTrailData(std::span<const std::unique_ptr<ParticleInstanc
 
 // GS spritetrail: 1 vertex per trail segment
 inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInstance>> instances,
-                                   const ParticleRawGenSpecOp& specOp, WPGOption opt,
+                                   const ParticleRawGenSpecOp& /*specOp*/, WPGOption opt,
                                    SceneVertexArray& sv) noexcept {
     const auto            one_size   = sv.OneSize();
     size_t                total_segs = 0;

@@ -162,8 +162,16 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     // auto& shadervs = material->customShader.updateValueList;
     // const auto& valueSet = material->customShader.valueSet;
 
-    assert(exists(m_nodeUniformInfoMap, pNode));
-    const auto& info = m_nodeUniformInfoMap[pNode];
+    // Explicit guard replacing a data-driven assert that compiled out under
+    // -DNDEBUG in every shipped build.  Without it, operator[] on an absent
+    // node would silently default-construct a zeroed UniformInfo entry and
+    // render with garbage uniforms (silent corruption).  Use .at() after the
+    // existence check so no entry is ever inserted.
+    if (! exists(m_nodeUniformInfoMap, pNode)) {
+        LOG_ERROR("no uniform info for node %d, skipping uniform update", pNode->ID());
+        return;
+    }
+    const auto& info = m_nodeUniformInfoMap.at(pNode);
 
     bool hasNodeData = exists(m_nodeDataMap, pNode);
     if (hasNodeData) {

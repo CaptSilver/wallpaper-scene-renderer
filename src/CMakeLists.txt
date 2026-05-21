@@ -20,8 +20,15 @@ if(ENDIAN)
   add_compile_definitions(WP_BIG_ENDIAN)
 endif()
 
+# Renderer-lib warning set.  Richer than the shippable-target wek_warn_opts: it
+# opts into the -Wconversion / -Wsign-conversion family that catches the
+# recurring HLSL->GLSL int-promotion bug class.  WEK_WERROR_FLAGS (from
+# cmake/WekWarnings.cmake, included at the submodule root before this dir) is the
+# -Werror tail: empty unless WEK_WERROR=ON, and even then keeps the conversion
+# family warning-only (-Wno-error=conversion/-Wno-error=sign-conversion).
 set(warn_opts
     -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wno-unused-variable
+    ${WEK_WERROR_FLAGS}
     CACHE INTERNAL "")
 
 include_directories(.)

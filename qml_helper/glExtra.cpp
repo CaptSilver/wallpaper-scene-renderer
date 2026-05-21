@@ -13,7 +13,7 @@ using namespace wallpaper;
 
 namespace
 {
-inline char const* const GLErrorToStr(GLenum const err) noexcept {
+inline char const* GLErrorToStr(GLenum const err) noexcept {
 #define Enum_GLError(glerr) \
     case glerr: return #glerr;
 

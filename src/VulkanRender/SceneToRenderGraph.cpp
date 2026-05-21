@@ -156,6 +156,12 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
 
     SceneImageEffectLayer* imgeff = nullptr;
     if (! node->Camera().empty()) {
+        // A node naming a camera the parser never registered would throw
+        // out_of_range from .at() onto the render worker thread; guard+return.
+        if (! exists(scene.cameras, node->Camera())) {
+            LOG_ERROR("node camera '%s' not registered", node->Camera().c_str());
+            return;
+        }
         auto& cam = scene.cameras.at(node->Camera());
         if (cam->HasImgEffect()) {
             imgeff = cam->GetImgEffect().get();
@@ -298,6 +304,12 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
 
     // Skip effect camera nodes (internal compositing passes)
     if (! node->Camera().empty()) {
+        // Guard the unordered_map .at() against an unregistered camera name
+        // (would otherwise throw onto the render worker thread).
+        if (! exists(scene.cameras, node->Camera())) {
+            LOG_ERROR("node camera '%s' not registered (reflection pass)", node->Camera().c_str());
+            return;
+        }
         auto& cam = scene.cameras.at(node->Camera());
         if (cam->HasImgEffect()) return;
     }

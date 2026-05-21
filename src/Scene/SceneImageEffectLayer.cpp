@@ -70,7 +70,13 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 last_output = &(*it);
             }
 
-            assert(it->sceneNode->HasMaterial());
+            // Explicit guard replacing a data-driven assert stripped under
+            // -DNDEBUG: an effect-layer node with no material would null-deref
+            // on the Material() dereference below (segfault → desktop death).
+            if (! it->sceneNode->HasMaterial()) {
+                LOG_ERROR("effect-layer node has no material, skipping");
+                continue;
+            }
 
             auto& material = *(it->sceneNode->Mesh()->Material());
             {

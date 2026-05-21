@@ -32,6 +32,7 @@
 #include "VulkanRender/PassCacheAlias.hpp"
 
 #include "Core/ArrayHelper.hpp"
+#include "Core/MapSet.hpp"
 
 #include <cassert>
 #include <vector>
@@ -1418,7 +1419,14 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
     if (width == 0) return;
     double sw = scene.ortho[0], sh = scene.ortho[1];
     double fboAspect = width / (double)height, sAspect = sw / sh;
-    auto&  gCam = *scene.cameras.at("global");
+    // "global" is normally always created, but an empty/malformed scene that
+    // reaches fill-mode update would throw out_of_range from .at() onto the
+    // render worker thread; guard+return.
+    if (! exists(scene.cameras, std::string("global"))) {
+        LOG_ERROR("UpdateCameraFillMode: 'global' camera missing");
+        return;
+    }
+    auto& gCam = *scene.cameras.at("global");
 
     // 3D perspective scenes: global camera IS perspective, no separate global_perspective
     if (gCam.IsPerspective()) {
@@ -1436,6 +1444,12 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
         return;
     }
 
+    // Non-perspective scenes pair "global" (ortho) with "global_perspective";
+    // guard the .at() against a malformed scene missing the perspective cam.
+    if (! exists(scene.cameras, std::string("global_perspective"))) {
+        LOG_ERROR("UpdateCameraFillMode: 'global_perspective' camera missing");
+        return;
+    }
     auto& gPerCam = *scene.cameras.at("global_perspective");
     // assum cam
     switch (fillmode) {

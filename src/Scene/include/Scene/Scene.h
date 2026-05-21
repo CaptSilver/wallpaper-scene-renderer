@@ -361,6 +361,21 @@ public:
     // Scene.cpp to keep nlohmann/json out of this header.
     std::string SerializeLayerInitialStates() const;
 
+    // Non-throwing render-target lookup.  Returns nullptr when `name` is
+    // absent instead of throwing std::out_of_range like renderTargets.at().
+    // Used by the render passes (CustomShaderPass / CopyPass) so a malformed
+    // scene that references a missing RT logs+skips rather than escaping an
+    // exception onto the render worker thread (see Looper try/catch).  Inline
+    // so no new translation-unit symbol / plugin .so linkage change.
+    SceneRenderTarget* tryGetRenderTarget(const std::string& name) {
+        auto it = renderTargets.find(name);
+        return it != renderTargets.end() ? &it->second : nullptr;
+    }
+    const SceneRenderTarget* tryGetRenderTarget(const std::string& name) const {
+        auto it = renderTargets.find(name);
+        return it != renderTargets.end() ? &it->second : nullptr;
+    }
+
     void UpdateLinkedCamera(const std::string& name) {
         if (linkedCameras.count(name) != 0) {
             auto& cams = linkedCameras.at(name);
@@ -386,9 +401,7 @@ public:
 
     std::vector<std::pair<i32, i32>> TakePendingParentChanges() {
         std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
-        std::vector<std::pair<i32, i32>> out;
-        out.swap(m_pending_parent_changes);
-        return out;
+        return TakePendingParentChanges_locked();
     }
 
     // Apply all queued parent changes against the live SceneNode tree.
@@ -397,8 +410,15 @@ public:
     // and old-parent extraction via SceneNode::ExtractChild + new-parent
     // re-attach via AppendChild (re-wires both m_parent and
     // m_visibility_parent).
+    //
+    // m_pending_parent_mutex is held across the WHOLE drain (not just the
+    // queue swap), because the mutation rewrites SceneNode::m_parent and the
+    // m_children lists that the cross-thread reader (ResolveParentNodeId, on
+    // the QML thread) walks under the same lock — otherwise that walk would
+    // see a torn parent pointer / a std::list mid-mutation.
     void ApplyPendingParentChanges() {
-        auto pending = TakePendingParentChanges();
+        std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
+        auto                        pending = TakePendingParentChanges_locked();
         for (auto& [child_id, parent_id] : pending) {
             auto child_it = nodeById.find(child_id);
             if (child_it == nodeById.end()) continue;
@@ -421,6 +441,25 @@ public:
             if (! child_sp) continue;
             new_parent->AppendChild(child_sp);
         }
+    }
+
+    // Resolve the scene-graph parent of `childId` to its node id (or -1 if the
+    // child is unknown, has no parent, or the parent isn't in nodeById).
+    // Taken under m_pending_parent_mutex so it never races
+    // ApplyPendingParentChanges / ApplyPendingChildSorts rewriting m_parent and
+    // the children lists on the render thread.  Returns a plain value type so
+    // no SceneNode pointer escapes the lock (used by SceneScript
+    // getBoneIndex's parent-walk on the QML thread).
+    i32 ResolveParentNodeId(i32 childId) const {
+        std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
+        auto                        cit = nodeById.find(childId);
+        if (cit == nodeById.end() || ! cit->second) return -1;
+        SceneNode* parent = cit->second->Parent();
+        if (! parent) return -1;
+        for (auto& [pid, pnode] : nodeById) {
+            if (pnode == parent) return pid;
+        }
+        return -1;
     }
 
     // ===================================================================
@@ -448,8 +487,15 @@ public:
     // Apply queued child sorts.  Each sort extracts the child from its
     // current parent's children list and re-inserts at target_index
     // (clamped).  Unknown ids and orphan children skip silently.
+    //
+    // The queue swap uses m_pending_sort_mutex (released before we take the
+    // tree lock — no nesting), then the tree mutation is held under
+    // m_pending_parent_mutex so it shares the same exclusion as
+    // ApplyPendingParentChanges and ResolveParentNodeId (it rewrites m_parent
+    // and m_children just like AppendChild does).
     void ApplyPendingChildSorts() {
-        auto pending = TakePendingChildSorts();
+        auto                        pending = TakePendingChildSorts();
+        std::lock_guard<std::mutex> lk(m_pending_parent_mutex);
         for (auto& [child_id, target_index] : pending) {
             auto child_it = nodeById.find(child_id);
             if (child_it == nodeById.end()) continue;
@@ -464,7 +510,15 @@ public:
     }
 
 private:
-    std::mutex                       m_pending_parent_mutex;
+    // No-lock queue swap; caller must already hold m_pending_parent_mutex.
+    std::vector<std::pair<i32, i32>> TakePendingParentChanges_locked() {
+        std::vector<std::pair<i32, i32>> out;
+        out.swap(m_pending_parent_changes);
+        return out;
+    }
+
+    // mutable: ResolveParentNodeId is const but must lock to read the tree.
+    mutable std::mutex               m_pending_parent_mutex;
     std::vector<std::pair<i32, i32>> m_pending_parent_changes;
     std::mutex                       m_pending_sort_mutex;
     std::vector<std::pair<i32, i32>> m_pending_child_sorts;
