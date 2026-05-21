@@ -521,7 +521,7 @@ private:
     // the QTimer cadence (was: 2Hz, hard-coded — Miku 3363252053 was stuck at
     // "fps: 2" because of that).
     uint64_t                                 m_lastTextFrameIdx { 0 };
-    // Spec 07 — last render-thread frame index seen by evaluatePropertyScripts.
+    // last render-thread frame index seen by evaluatePropertyScripts.
     // The property timer polls getFrameIdx() at ~125Hz; eval only fires when the
     // index advances (or on the seed eval / a high-rate scene), so a non-high-
     // rate scripted wallpaper stops burning ~5.7ms/tick on ticks that no
@@ -532,7 +532,7 @@ private:
     // render-frame gate.  Default off; set from WEKDE_SCRIPT_HIGHRATE=1 or a
     // workshop-id allowlist (3body 3509243656) in setupTextScripts.
     bool m_propertyHighRate { false };
-    // Spec 08 — last render frame index for which the audio buffers were
+    // Last render frame index for which the audio buffers were
     // refreshed.  The property/text/color loops all call refreshAudioBuffers();
     // this de-dups them to one actual rebuild per drawn frame (the analyzer only
     // produces new spectrum data per processed render frame).

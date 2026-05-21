@@ -7,7 +7,7 @@
 namespace wallpaper
 {
 
-// Spec 09 — gate for the SceneScript world-transform cache.  The render thread
+// Gate for the SceneScript world-transform cache.  The render thread
 // rebuilds m_layer_world_cache at the end of every drawFrame so the GUI-thread
 // bridge (thisLayer.getTransformMatrix() / hit-test) can read live world
 // matrices.  Most scenes never read it, so the producer should not do the
@@ -30,7 +30,7 @@ inline std::array<float, 16> worldCacheIdentity() {
     return { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
 }
 
-// Spec 09 — in-place cache update.  Reuse the existing bucket node via
+// in-place cache update.  Reuse the existing bucket node via
 // operator[] instead of clear()+emplace(), so the steady-state node set (stable
 // between reloads) never reallocates and a concurrent reader never sees a
 // transient gap for a known id.  Returns the assigned value.

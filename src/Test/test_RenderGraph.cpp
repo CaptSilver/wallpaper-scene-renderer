@@ -23,8 +23,8 @@ long indexOf(const std::vector<NodeID>& v, NodeID x) {
 }
 } // namespace
 
-// CPU-only coverage for the pure-data render-graph layer (zero tests before
-// Spec 19/27).  DependencyGraph cycle detection is covered separately in
+// CPU-only coverage for the pure-data render-graph layer (previously
+// untested).  DependencyGraph cycle detection is covered separately in
 // test_DependencyGraph.cpp; this file adds DAG ordering / in-out symmetry and
 // the RenderGraph builder's pass-alias resolution (the alias-aware pass cache
 // depends on it).  SceneToRenderGraph is Vulkan-coupled and out of scope.

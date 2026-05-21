@@ -26,7 +26,7 @@ namespace scenebackend
 // The loop runs iff there is something to run AND we are not paused.
 inline bool scriptLoopShouldRun(bool hasStates, bool paused) { return hasStates && ! paused; }
 
-// Spec 07 — render-frame gate for the property loop (mirrors the gate baked
+// render-frame gate for the property loop (mirrors the gate baked
 // into evaluateTextScripts).  The property timer polls at ~125Hz, but unless
 // this wallpaper opted into sub-frame physics stepping the script output is
 // sampled only when the render thread draws a frame — so evaluating faster
@@ -45,8 +45,8 @@ inline bool propertyTickShouldEval(bool highRate, uint64_t curFrameIdx, uint64_t
     return highRate || lastFrameIdx == 0 || curFrameIdx != lastFrameIdx;
 }
 
-// Spec 08 — audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
-// the property loop (now Spec-07 render-gated), the text loop (render-gated),
+// audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
+// the property loop (now render-gated), the text loop (render-gated),
 // and the color loop (33Hz); the analyzer only produces new spectrum data per
 // processed render frame, so a refresh whose frame index matches the
 // previously-refreshed one is redundant.  Returns true (do the refresh) iff

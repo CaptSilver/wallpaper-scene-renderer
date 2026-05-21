@@ -32,7 +32,7 @@ struct ScriptDiagState {
     std::unordered_set<std::string> dirtyLayerMisses; // was static @ :4669 (keyed by layer name)
     std::unordered_set<int>         soundVolErrored;  // was static @ :4955
     bool                            mathRandomProbed { false }; // was static @ :5096
-    // Spec 10 — one-shot guard for the first-flush unresolved-id scan.  After
+    // one-shot guard for the first-flush unresolved-id scan.  After
     // dirty entries became keyed by resolved id (not name), the hot loop no
     // longer carries names, so the unknown-name diagnostic is produced once per
     // load by scanning _layerList; this latches it and dirtyLayerMisses holds

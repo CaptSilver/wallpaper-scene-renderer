@@ -5,12 +5,12 @@
 
 using namespace wallpaper;
 
-// Spec 09 — the render thread rebuilds the SceneScript world-transform cache
+// The render thread rebuilds the SceneScript world-transform cache
 // at the end of every drawFrame; most scenes never read it.  These pure
 // helpers (gate latch, in-place assign, identity fallback) are the exact
 // functions the production rebuild calls, extracted so they are testable
 // without driving a render-thread CMD_DRAW (which needs Vulkan).
-TEST_SUITE("WorldCacheGate (Spec 09)") {
+TEST_SUITE("WorldCacheGate") {
     TEST_CASE("flag defaults false -> rebuild is skipped on a non-consuming scene") {
         std::atomic<bool> flag { false };
         CHECK(worldCacheShouldRebuild(flag) == false);
@@ -90,4 +90,4 @@ TEST_SUITE("WorldCacheGate (Spec 09)") {
         auto it = cache.find(7);
         CHECK(it == cache.end()); // stale id gone -> reader gets identity
     }
-} // TEST_SUITE WorldCacheGate (Spec 09)
+} // TEST_SUITE WorldCacheGate

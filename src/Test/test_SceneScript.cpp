@@ -4913,7 +4913,7 @@ TEST_SUITE("Layer Proxy") {
         // stride slot 16 (the 17th element).  Blur is index 0 in
         // efx:['Blur','Shake_Glitch_3','ChromAb'], set to false.
         CHECK(updates.property("length").toInt() == 17);
-        CHECK(updates.property(0).toInt() == 7);         // Spec 10: slot 0 is bg's resolved id
+        CHECK(updates.property(0).toInt() == 7);         // slot 0 is bg's resolved id
         CHECK((updates.property(1).toInt() & 256) != 0); // F_EFX
         QJSValue efx = updates.property(16);
         CHECK(efx.property("length").toInt() == 2);
@@ -5267,7 +5267,7 @@ TEST_SUITE("Scene Event Bus") {
         env.engine.evaluate("_fireSceneEvent('update')");
         auto dirty = env.engine.evaluate("_collectDirtyLayers()");
         // Production flat stride-17 array: one dirty layer -> length 17,
-        // resolved id (Spec 10) in slot 0, F_VISIBLE (8) in the flags slot.
+        // resolved id in slot 0, F_VISIBLE (8) in the flags slot.
         CHECK(dirty.property("length").toInt() == 17);
         CHECK(dirty.property(0).toInt() == 7);       // bg's resolved id
         CHECK((dirty.property(1).toInt() & 8) != 0); // F_VISIBLE
@@ -5330,7 +5330,7 @@ TEST_SUITE("Dirty Layer Collection") {
         //  text, cmds, efx].  One dirty layer -> length 17.  flags carries the
         // F_ORIGIN bit (1).
         CHECK(r.property("length").toInt() == 17);
-        CHECK(r.property(0).toInt() == 7);       // Spec 10: bg's resolved id
+        CHECK(r.property(0).toInt() == 7);       // bg's resolved id
         CHECK((r.property(1).toInt() & 1) != 0); // F_ORIGIN
         CHECK(r.property(2).toNumber() == doctest::Approx(1.0)); // ox
         CHECK(r.property(3).toNumber() == doctest::Approx(2.0)); // oy
@@ -5353,7 +5353,7 @@ TEST_SUITE("Dirty Layer Collection") {
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
         // One layer, two dirty props -> length 17 with both bits in flags.
         CHECK(r.property("length").toInt() == 17);
-        CHECK(r.property(0).toInt() == 7); // Spec 10: bg's resolved id
+        CHECK(r.property(0).toInt() == 7); // bg's resolved id
         int flags = r.property(1).toInt();
         CHECK((flags & 1) != 0); // F_ORIGIN
         CHECK((flags & 8) != 0); // F_VISIBLE
@@ -5402,7 +5402,7 @@ TEST_SUITE("Dirty Layer Collection") {
                             "thisScene.getLayer('bg').origin = {x:1,y:2,z:3};\n");
         QJSValue r = env.engine.evaluate("_collectDirtyLayers()");
         // Flat stride-17 array: 2 dirty layers -> 34 entries.  The resolved id
-        // (Spec 10) of each layer sits at the start of its stride (slot 0 and
+        // of each layer sits at the start of its stride (slot 0 and
         // slot 17), in _layerList insertion order: fg materialized first (id
         // 11), then bg (id 7).
         REQUIRE(r.property("length").toInt() == 34);
@@ -7525,14 +7525,14 @@ TEST_SUITE("Script loop gate (F19)") {
 } // TEST_SUITE Script loop gate (F19)
 
 // ------------------------------------------------------------------
-// Spec 07 — render-frame gate for the property loop.  The property timer
+// render-frame gate for the property loop.  The property timer
 // fires at 125Hz but a non-high-rate wallpaper must not evaluate its scripts
 // faster than the render thread draws (script output is sampled at the render
 // rate, so extra evals are wasted CPU).  As with scriptLoopShouldRun above, a
 // live SceneObject can't be built without Vulkan, so the policy is a pure
 // predicate tested here and called from the loop body so the test covers the
 // shipped logic.
-TEST_SUITE("Property tick render-frame gate (Spec 07)") {
+TEST_SUITE("Property tick render-frame gate") {
     using scenebackend::propertyTickShouldEval;
 
     TEST_CASE("high-rate scenes always evaluate (sub-frame physics opt-in)") {
@@ -7594,16 +7594,16 @@ TEST_SUITE("Property tick render-frame gate (Spec 07)") {
             last = cur;
         }
     }
-} // TEST_SUITE Property tick render-frame gate (Spec 07)
+} // TEST_SUITE Property tick render-frame gate
 
 // ------------------------------------------------------------------
-// Spec 08 — audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
+// audio-buffer refresh de-dup.  refreshAudioBuffers() is called from
 // the property/text/color loops; the analyzer only produces new data per
 // processed render frame, so all callers must collapse to one rebuild per drawn
 // frame.  Pure predicate (the gate keys on a render-thread atomic the test
 // can't drive through a live SceneObject), tested here against the value-shape
 // the body uses.
-TEST_SUITE("Audio buffer refresh de-dup (Spec 08)") {
+TEST_SUITE("Audio buffer refresh de-dup") {
     using scenebackend::audioRefreshShouldRun;
 
     TEST_CASE("first refresh (frame 0) always runs") {
@@ -7629,7 +7629,7 @@ TEST_SUITE("Audio buffer refresh de-dup (Spec 08)") {
         }
         CHECK(refreshes == 1);
     }
-} // TEST_SUITE Audio buffer refresh de-dup (Spec 08)
+} // TEST_SUITE Audio buffer refresh de-dup
 
 // ------------------------------------------------------------------
 // A3-T2 — QJSEngine watchdog interrupt back-off policy.  The watchdog's
@@ -9529,12 +9529,12 @@ TEST_SUITE("SceneScript Texture Animation") {
 } // TEST_SUITE SceneScript Texture Animation
 
 // ------------------------------------------------------------------
-// Spec 10 — _collectDirtyLayers must emit the resolved integer id in slot 0
+// _collectDirtyLayers must emit the resolved integer id in slot 0
 // (not the layer name), so the C++ hot loop reads an int directly with no
 // per-tick QString->std::string alloc + nodeNameToId lookup.  ScriptEnv
 // evaluates the real production proxy/runtime JS, so this characterizes the
 // shipped collector.  The fixture's _layerNameToId maps bg->7, fg->11.
-TEST_SUITE("Spec 10 dirty-layer id slot") {
+TEST_SUITE("dirty-layer id slot") {
     TEST_CASE("regular layer dirty entry carries resolved id in slot 0") {
         ScriptEnv env;
         // Materialize 'bg' (id 7) and mutate its origin so it goes dirty.
@@ -9590,4 +9590,4 @@ TEST_SUITE("Spec 10 dirty-layer id slot") {
         CHECK(out.property(0).toInt() == 200);
         CHECK((out.property(1).toInt() & 8) != 0); // F_VISIBLE
     }
-} // TEST_SUITE Spec 10 dirty-layer id slot
+} // TEST_SUITE dirty-layer id slot
