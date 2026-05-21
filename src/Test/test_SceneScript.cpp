@@ -244,6 +244,117 @@ TEST_SUITE("SceneTimerBridge") {
 } // TEST_SUITE SceneTimerBridge
 
 // ------------------------------------------------------------------
+// SceneTimerBridge watchdog containment (A3-T1/T2)
+//
+// A runaway timer body (`setInterval(()=>{while(true){}})`) runs on the GUI
+// thread; without the watchdog it never returns and the desktop freezes. These
+// cases prove the callback is CONTAINED (interrupted, control returns), not
+// infinite — the required untrusted-JS assertion. They are only possible because
+// Item 03 fix (a) made interruptEngine header-inline so a real armed JsWatchdog
+// links in scenescript_tests.
+// ------------------------------------------------------------------
+TEST_SUITE("SceneTimerBridge watchdog containment (A3-T1/T2)") {
+    using scenebackend::JsWatchdog;
+
+    // Stand-in for SceneObject::callJsGuarded: arm a tiny budget, run, disarm,
+    // clear the latch and report whether the watchdog fired.
+    static SceneTimerBridge::GuardedCallFn makeGuard(
+        QJSEngine & engine, JsWatchdog & wd, int budgetMs, int* fireCount = nullptr) {
+        return [&engine, &wd, budgetMs, fireCount](const std::function<QJSValue()>& call,
+                                                   bool* outInterrupted) -> QJSValue {
+            if (outInterrupted) *outInterrupted = false;
+            wd.arm(&engine, budgetMs);
+            QJSValue   r     = call();
+            const bool fired = wd.disarm();
+            if (fired) {
+                engine.setInterrupted(false);
+                if (outInterrupted) *outInterrupted = true;
+                if (fireCount) ++(*fireCount);
+            }
+            return r;
+        };
+    }
+
+    TEST_CASE("runaway single-shot is interrupted; GUI thread returns") {
+        QJSEngine  engine;
+        JsWatchdog wd;
+        wd.start();
+        int              fires = 0;
+        SceneTimerBridge bridge(&engine, nullptr, {}, makeGuard(engine, wd, 30, &fires));
+
+        // On the UNGUARDED baseline this .call() never returns and the pump below
+        // hangs the test process (ctest TIMEOUT is the backstop).
+        bridge.createTimer(engine.evaluate("(function(){ while(true){} })"),
+                           10,
+                           /*repeat=*/false);
+        processEventsFor(500); // KEYSTONE: reached only if the watchdog fired
+
+        CHECK(fires >= 1);                      // watchdog tripped at least once
+        CHECK(bridge.activeCount() == 0);       // single-shot removed itself
+        CHECK(engine.isInterrupted() == false); // latch cleared
+        wd.stop();
+    }
+
+    TEST_CASE("runaway repeat-interval latches off after K interrupts") {
+        QJSEngine  engine;
+        JsWatchdog wd;
+        wd.start();
+        int disableLogged = 0;
+        // postFire records the disable; guardedCall arms the tiny budget.
+        SceneTimerBridge bridge(
+            &engine,
+            nullptr,
+            /*postFire*/
+            [&](int, bool, const QString& msg) {
+                if (msg.contains("disabl")) ++disableLogged;
+            },
+            /*guardedCall*/ makeGuard(engine, wd, 30));
+
+        bridge.createTimer(engine.evaluate("(function(){ while(true){} })"),
+                           10,
+                           /*repeat=*/true);
+        // Long enough for >= K (=5) interrupted periods at 30ms budget + 10ms
+        // interval (~5*40ms = 200ms); give generous headroom.
+        processEventsFor(900);
+
+        CHECK(bridge.activeCount() == 0); // the interval disabled itself
+        CHECK(disableLogged >= 1);        // disable was reported once
+        CHECK(engine.isInterrupted() == false);
+        wd.stop();
+    }
+
+    TEST_CASE("well-behaved timer is never interrupted") {
+        QJSEngine engine;
+        engine.evaluate("var n = 0;");
+        JsWatchdog wd;
+        wd.start();
+        int              fires = 0;
+        SceneTimerBridge bridge(&engine, nullptr, {}, makeGuard(engine, wd, 30, &fires));
+
+        bridge.createTimer(engine.evaluate("(function(){ n++; })"), 15, /*repeat=*/true);
+        processEventsFor(200);
+
+        CHECK(fires == 0);                        // watchdog never mis-fired
+        CHECK(engine.evaluate("n").toInt() >= 3); // fired the expected times
+        CHECK(bridge.activeCount() == 1);         // interval still alive (not disabled)
+        bridge.clearAll();
+        wd.stop();
+    }
+
+    TEST_CASE("backward-compat: no guardedCall hook -> direct call still fires") {
+        QJSEngine engine;
+        engine.evaluate("var m = 0;");
+        // Construct with NO guardedCall (and no postFire) — the fix must keep the
+        // bridge usable standalone (existing C++-level suites do this).
+        SceneTimerBridge bridge(&engine);
+        bridge.createTimer(engine.evaluate("(function(){ m++; })"), 10, /*repeat=*/false);
+        processEventsFor(200);
+        CHECK(engine.evaluate("m").toInt() == 1);
+        CHECK(bridge.activeCount() == 0);
+    }
+} // TEST_SUITE SceneTimerBridge watchdog containment
+
+// ------------------------------------------------------------------
 // JS-level setTimeout / setInterval / clearTimeout / clearInterval
 // ------------------------------------------------------------------
 TEST_SUITE("SceneScript Timers JS API") {
@@ -7470,6 +7581,26 @@ TEST_SUITE("JS watchdog back-off policy (A3-T2)") {
         // The budget must be generous enough that legitimate heavy first-frame
         // scripts (puppet/rig init) never trip it — 250ms per the spec.
         CHECK(JsWatchdog::kDefaultBudgetMs == 250);
+    }
+
+    // A3-T2 — a REAL armed watchdog interrupts a runaway script. This case is
+    // only linkable once JsWatchdog::interruptEngine is header-inline (Item 03
+    // fix (a)); before that it is an undefined-symbol link error, which is
+    // exactly why the rest of this suite only exercises the pure predicate.
+    TEST_CASE("armed watchdog interrupts a runaway script (real interrupt)") {
+        QJSEngine  engine;
+        JsWatchdog wd;
+        wd.start();
+        // Tiny budget so the test is fast (prod is 250ms).
+        wd.arm(&engine, 30);
+        QJSValue   r     = engine.evaluate("(function(){ while(true){} })").call();
+        const bool fired = wd.disarm();
+        CHECK(fired == true);       // the monitor thread tripped
+        CHECK(r.isError() == true); // .call() unwound as a JS exception
+        // Clear the latch so the engine is reusable, as callJsGuarded does.
+        engine.setInterrupted(false);
+        CHECK(engine.isInterrupted() == false);
+        wd.stop();
     }
 } // TEST_SUITE JS watchdog back-off policy (A3-T2)
 

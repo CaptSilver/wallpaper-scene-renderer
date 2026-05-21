@@ -74,14 +74,6 @@ Q_LOGGING_CATEGORY(wekdeScene, "wekde.scene")
 // that would trip -Wformat-extra-args.
 #define _Q_INFO(fmt, ...) qCInfo(wekdeScene, fmt, ##__VA_ARGS__)
 
-// A3-T2 — out-of-line so JsWatchdog.h needs only a forward decl of QJSEngine
-// (keeps the header pure for the lean scenescript_tests binary, which never
-// instantiates JsWatchdog).  Runs on the watchdog monitor thread; setInterrupted
-// is the documented cross-thread abort for an in-flight QJSEngine evaluation.
-void scenebackend::JsWatchdog::interruptEngine(QJSEngine* engine) {
-    if (engine) engine->setInterrupted(true);
-}
-
 namespace
 {
 void* get_proc_address(const char* name) {
@@ -1819,12 +1811,24 @@ void SceneObject::setupTextScripts() {
                          "};\n");
 
     // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
-    m_timerBridge =
-        new SceneTimerBridge(m_jsEngine, this, [this](int id, bool error, const QString& msg) {
+    m_timerBridge = new SceneTimerBridge(
+        m_jsEngine,
+        this,
+        /* postFire */
+        [this](int id, bool error, const QString& msg) {
             if (error) {
                 LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
             }
             flushJsConsole(m_jsEngine, "timer");
+        },
+        /* guardedCall */
+        [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
+            // Arms m_jsWatchdog (~250ms budget), runs the callback, disarms, and
+            // clears the interrupt latch — the SAME bracket the tick loops use. A
+            // runaway timer body now trips the watchdog and unwinds instead of
+            // freezing the GUI thread; an interrupted INTERVAL latches off after K
+            // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
+            return callJsGuarded(call, outInterrupted);
         });
     m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
     m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "

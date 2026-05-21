@@ -7,7 +7,7 @@
 #include <mutex>
 #include <thread>
 
-class QJSEngine;
+#include <QJSEngine>
 
 namespace scenebackend
 {
@@ -142,10 +142,14 @@ private:
         }
     }
 
-    // Defined in SceneBackend.cpp so this header needs only a forward
-    // declaration of QJSEngine (keeps it pure/dependency-light for the test
-    // binary, which never instantiates JsWatchdog).
-    static void interruptEngine(QJSEngine* engine);
+    // Inline so a real armed JsWatchdog is linkable in scenescript_tests
+    // (which links Qt6::Qml but NOT SceneBackend.cpp).  One-liner with no
+    // Vulkan/wpUtils dependency — needs only the full QJSEngine type, included
+    // above.  Runs on the monitor thread; setInterrupted is the documented
+    // cross-thread abort for an in-flight QJSEngine evaluation.
+    static void interruptEngine(QJSEngine* engine) {
+        if (engine) engine->setInterrupted(true);
+    }
 
     std::thread                           m_thread;
     std::mutex                            m_mtx;

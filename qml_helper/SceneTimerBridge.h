@@ -10,6 +10,8 @@
 #include <functional>
 #include <unordered_map>
 
+#include "JsWatchdog.h"
+
 namespace scenebackend
 {
 
@@ -54,9 +56,19 @@ public:
     /// Parameters: timer id, whether the callback threw, error message (if any).
     using PostFireFn = std::function<void(int id, bool error, const QString& msg)>;
 
+    /// Runs the author callback under the engine watchdog (arm->call->disarm).
+    /// Returns the callback result; *outInterrupted is set true if the watchdog
+    /// fired (the call was aborted as a JS exception).  When unset, the bridge
+    /// falls back to a direct .call() so it stays usable standalone (C++ tests).
+    using GuardedCallFn =
+        std::function<QJSValue(const std::function<QJSValue()>& call, bool* outInterrupted)>;
+
     explicit SceneTimerBridge(QJSEngine* engine, QObject* parent = nullptr,
-                              PostFireFn postFire = {})
-        : QObject(parent), m_engine(engine), m_postFire(std::move(postFire)) {}
+                              PostFireFn postFire = {}, GuardedCallFn guardedCall = {})
+        : QObject(parent),
+          m_engine(engine),
+          m_postFire(std::move(postFire)),
+          m_guardedCall(std::move(guardedCall)) {}
 
     ~SceneTimerBridge() override { clearAll(); }
 
@@ -83,17 +95,52 @@ public:
         connect(timer, &QTimer::timeout, this, [this, id]() {
             auto it = m_timers.find(id);
             if (it == m_timers.end()) return;
-            bool    error = false;
+            bool    error       = false;
+            bool    interrupted = false;
             QString errorMsg;
             if (it->second.callback.isCallable()) {
-                QJSValue r = it->second.callback.call();
+                // Same arm->call->disarm->clear-interrupt bracket every other
+                // GUI-thread JS dispatch gets via SceneObject::callJsGuarded.
+                // Fall back to a bare call when no hook is wired (standalone use).
+                auto invoke = [&]() -> QJSValue {
+                    return it->second.callback.call();
+                };
+                QJSValue r = m_guardedCall ? m_guardedCall(invoke, &interrupted) : invoke();
                 if (r.isError()) {
                     error    = true;
                     errorMsg = r.toString();
                 }
             }
             if (m_postFire) m_postFire(id, error, errorMsg);
-            // Re-lookup: postFire may have cleared timers
+
+            // Per-timer interrupt back-off: a runaway INTERVAL would otherwise be
+            // interrupted every period forever (a slow-motion freeze).  Mirror the
+            // property-tick latch — count consecutive interrupts, reset on a clean
+            // fire, and clear the timer once the run reaches kDisableAfterInterrupts.
+            it = m_timers.find(id); // re-lookup: postFire may have cleared timers
+            if (it != m_timers.end()) {
+                if (interrupted) {
+                    it->second.consecutiveInterrupts++;
+                    if (shouldDisableAfterInterrupts(it->second.consecutiveInterrupts,
+                                                     JsWatchdog::kDisableAfterInterrupts)) {
+                        if (m_postFire)
+                            m_postFire(id,
+                                       true,
+                                       QStringLiteral("timer callback id=%1 exceeded JS budget "
+                                                      "%2 fires running — disabling this timer")
+                                           .arg(id)
+                                           .arg(it->second.consecutiveInterrupts));
+                        it->second.timer->stop();
+                        delete it->second.timer;
+                        m_timers.erase(it);
+                        return;
+                    }
+                } else {
+                    it->second.consecutiveInterrupts = 0;
+                }
+            }
+
+            // Re-lookup again (the disable branch above may have erased it).
             it = m_timers.find(id);
             if (it != m_timers.end() && it->second.timer->isSingleShot()) {
                 delete it->second.timer;
@@ -128,11 +175,16 @@ private:
     struct TimerEntry {
         QTimer*  timer;
         QJSValue callback;
+        // Consecutive watchdog interrupts on THIS timer's callback.  A clean fire
+        // resets it; at kDisableAfterInterrupts the timer is cleared so a runaway
+        // interval can't pin the CPU forever (A3-T2 per-timer back-off).
+        int consecutiveInterrupts { 0 };
     };
     QJSEngine*                          m_engine;
     std::unordered_map<int, TimerEntry> m_timers;
     int                                 m_nextId { 1 };
     PostFireFn                          m_postFire;
+    GuardedCallFn                       m_guardedCall;
     // Latch so the timer-cap rejection is logged at most once per bridge — a
     // tight createTimer loop would otherwise spam the journal every tick.
     bool m_capWarned { false };
