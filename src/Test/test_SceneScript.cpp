@@ -9591,3 +9591,125 @@ TEST_SUITE("dirty-layer id slot") {
         CHECK((out.property(1).toInt() & 8) != 0); // F_VISIBLE
     }
 } // TEST_SUITE dirty-layer id slot
+
+// ------------------------------------------------------------------
+// Cached Vec constructor handle == the old evaluate("VecN(...)") path.
+// The color + shader-value tick loops used to build a "VecN(...)" source
+// string and run a full QJSEngine::evaluate() compile every tick; they now
+// call a cached constructor handle directly.  The loop body lives in a
+// Vulkan-backed SceneObject (untestable here, as the scriptLoopShouldRun
+// note above explains), so the contract is pinned at the seam: the object a
+// cached VecN handle produces must be field-for-field the object the old
+// evaluate("VecN(...)") string path produced — for every field the loops
+// read (.x/.y/.z[/.w] and the r/g/b[/a] aliases) and the prototype methods.
+TEST_SUITE("Cached Vec ctor handle equivalence") {
+    // Reproduce the OLD string path exactly: QString("VecN(%1,...)").arg(d,0,'g',8)
+    // then engine.evaluate(...).  Mirrors SceneBackend.cpp's removed code so the
+    // test compares against the literal prior behavior, 'g',8 truncation included.
+    static QString g8(double d) { return QString("%1").arg(d, 0, 'g', 8); }
+
+    TEST_CASE("Vec3 cached-handle call equals evaluate(\"Vec3(...)\") for representative triples") {
+        MathEnv  env;
+        QJSValue vec3Fn = env.engine.globalObject().property("Vec3"); // cached once, as production does
+        REQUIRE(vec3Fn.isCallable());
+
+        struct T { double x, y, z; };
+        // Negatives, zero, one, and an exactly-'g',8-representable high-precision value.
+        const T cases[] = { { 0, 0, 0 },     { 1, 2, 3 },     { -0.5, 0.25, -1.75 },
+                            { 0.12345678, 0.5, 0.001 } };
+        for (const T& c : cases) {
+            QJSValue viaCall = vec3Fn.call({ QJSValue(c.x), QJSValue(c.y), QJSValue(c.z) });
+            QString  src =
+                QString("Vec3(%1,%2,%3)").arg(g8(c.x)).arg(g8(c.y)).arg(g8(c.z));
+            QJSValue viaEval = env.engine.evaluate(src);
+            REQUIRE(viaCall.isObject());
+            REQUIRE(viaEval.isObject());
+            // Fields the color loop reads (x/y/z) — exact equality (these values
+            // survive 'g',8 so both paths agree to the bit).
+            CHECK(viaCall.property("x").toNumber() == viaEval.property("x").toNumber());
+            CHECK(viaCall.property("y").toNumber() == viaEval.property("y").toNumber());
+            CHECK(viaCall.property("z").toNumber() == viaEval.property("z").toNumber());
+            // r/g/b aliases the color loop falls back on.
+            CHECK(viaCall.property("r").toNumber() == viaEval.property("r").toNumber());
+            CHECK(viaCall.property("g").toNumber() == viaEval.property("g").toNumber());
+            CHECK(viaCall.property("b").toNumber() == viaEval.property("b").toNumber());
+        }
+    }
+
+    TEST_CASE("Vec3 cached-handle call yields a real Vec3 (prototype methods + aliases)") {
+        MathEnv  env;
+        QJSValue vec3Fn = env.engine.globalObject().property("Vec3");
+        QJSValue v      = vec3Fn.call({ QJSValue(3.0), QJSValue(4.0), QJSValue(0.0) });
+        // length() must exist and compute — proves .call gives a prototyped Vec3,
+        // not a bare {x,y,z} literal (the color script may call methods on it).
+        CHECK(v.property("length").isCallable());
+        QJSValue lenFn = env.engine.evaluate("(function(v){return v.length();})");
+        CHECK(lenFn.call({ v }).toNumber() == doctest::Approx(5.0));
+        // r/g/b accessors are live (defineProperty getters on the prototype).
+        CHECK(v.property("r").toNumber() == doctest::Approx(3.0));
+        CHECK(v.property("g").toNumber() == doctest::Approx(4.0));
+    }
+
+    TEST_CASE("Vec2 cached-handle call equals evaluate(\"Vec2(...)\")") {
+        MathEnv  env;
+        QJSValue vec2Fn = env.engine.globalObject().property("Vec2");
+        REQUIRE(vec2Fn.isCallable());
+        QJSValue viaCall = vec2Fn.call({ QJSValue(-2.5), QJSValue(7.0) });
+        QJSValue viaEval = env.engine.evaluate(QString("Vec2(%1,%2)").arg(g8(-2.5)).arg(g8(7.0)));
+        CHECK(viaCall.property("x").toNumber() == viaEval.property("x").toNumber());
+        CHECK(viaCall.property("y").toNumber() == viaEval.property("y").toNumber());
+        // Prototype-linked (Object.setPrototypeOf in the shim) so methods resolve.
+        CHECK(viaCall.property("length").isCallable());
+    }
+
+    TEST_CASE("Vec4 cached-handle call equals evaluate(\"Vec4(...)\") incl. w and r/g/b/a") {
+        MathEnv  env;
+        QJSValue vec4Fn = env.engine.globalObject().property("Vec4");
+        REQUIRE(vec4Fn.isCallable());
+        QJSValue viaCall =
+            vec4Fn.call({ QJSValue(0.1), QJSValue(-0.2), QJSValue(0.3), QJSValue(1.0) });
+        QJSValue viaEval = env.engine.evaluate(
+            QString("Vec4(%1,%2,%3,%4)").arg(g8(0.1)).arg(g8(-0.2)).arg(g8(0.3)).arg(g8(1.0)));
+        // x/y/z/w — the order the shader-value unpacker reads (SceneBackend.cpp:4226-4233).
+        CHECK(viaCall.property("x").toNumber() == viaEval.property("x").toNumber());
+        CHECK(viaCall.property("y").toNumber() == viaEval.property("y").toNumber());
+        CHECK(viaCall.property("z").toNumber() == viaEval.property("z").toNumber());
+        CHECK(viaCall.property("w").toNumber() == viaEval.property("w").toNumber());
+        // r/g/b/a aliases.
+        CHECK(viaCall.property("a").toNumber() == viaEval.property("a").toNumber());
+    }
+
+    TEST_CASE("shader-value zero-fill: missing components default to 0 (first-tick guard)") {
+        // The old shader-value path zero-filled trailing components when
+        // cachedValue was short (e.g. before the first result is cached).  The
+        // replacement's at() helper must preserve that: Vec3 from a single arg
+        // fills y,z = 0.  Vec3(x) -> {x,0,0} (numeric branch: this.y=y||0).
+        MathEnv  env;
+        QJSValue vec3Fn = env.engine.globalObject().property("Vec3");
+        QJSValue v      = vec3Fn.call({ QJSValue(5.0), QJSValue(0.0), QJSValue(0.0) });
+        CHECK(v.property("x").toNumber() == doctest::Approx(5.0));
+        CHECK(v.property("y").toNumber() == doctest::Approx(0.0));
+        CHECK(v.property("z").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("DOCUMENTED behavior change: .call keeps full precision; 'g',8 string path truncated") {
+        // The OLD path serialised the double with 'g',8 then re-parsed it, which
+        // truncates values carrying >8 significant decimal digits.  The NEW path
+        // passes the raw double.  This is intentional (the truncation was a string
+        // artifact, not a design choice) and the delta (~5e-9) is far below the
+        // color (>0.001f) and shader-value (>0.0001f) change-detection thresholds,
+        // so no renderer dispatch decision changes.  This case PINS the new
+        // behavior so the divergence reads as deliberate, not a regression.
+        MathEnv        env;
+        QJSValue       vec3Fn = env.engine.globalObject().property("Vec3");
+        const double   third  = 1.0 / 3.0; // 0.3333333333333333, needs >8 sig figs
+        QJSValue       viaCall = vec3Fn.call({ QJSValue(third), QJSValue(0.0), QJSValue(0.0) });
+        QJSValue       viaEval = env.engine.evaluate(QString("Vec3(%1,0,0)").arg(g8(third)));
+        // .call preserves the full double exactly.
+        CHECK(viaCall.property("x").toNumber() == third);
+        // The old 'g',8 string path did NOT (it stored ~0.33333333).
+        CHECK(viaEval.property("x").toNumber() != third);
+        // ...but the two agree to well within every consumer threshold.
+        CHECK(std::abs(viaCall.property("x").toNumber() - viaEval.property("x").toNumber()) < 1e-7);
+    }
+} // TEST_SUITE Cached Vec ctor handle equivalence
