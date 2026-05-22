@@ -128,6 +128,9 @@ void FinPass::setHdrContent(bool hdr) { m_desc.hdr_content = hdr; }
 
 void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("FinPass::prepare");
+    // A re-prepare (e.g. HDR toggle) may rebuild the render pass; drop cached
+    // framebuffers built against the old one.
+    m_fb_cache.clear();
     {
         auto tex_name = std::string(m_desc.result);
         if (scene.renderTargets.count(tex_name) == 0) return;
@@ -247,8 +250,10 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .layerCount     = VK_REMAINING_MIP_LEVELS,
 
     };
-    {
-        m_desc.fb = {};
+    // The present image cycles a fixed set of swapchain views; cache one
+    // framebuffer per view instead of recreating it every frame.  Cleared on
+    // re-prepare (prepare()) when the render pass may change.
+    vvk::Framebuffer& framebuffer = m_fb_cache.getOrCreate(m_desc.vk_present.view, [&] {
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext           = nullptr,
@@ -259,8 +264,10 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
             .height          = m_desc.vk_present.extent.height,
             .layers          = 1,
         };
-        (void)device.handle().CreateFramebuffer(info, m_desc.fb);
-    }
+        vvk::Framebuffer fb;
+        (void)device.handle().CreateFramebuffer(info, fb);
+        return fb;
+    });
     {
         VkDescriptorImageInfo desc_img {
             .sampler     = m_desc.vk_result.sampler,
@@ -303,7 +310,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
         .renderPass  = *m_desc.pipeline.pass,
-        .framebuffer = *m_desc.fb,
+        .framebuffer = *framebuffer,
         .renderArea =
             VkRect2D {
                 .offset = { 0, 0 },
@@ -356,5 +363,6 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
 void FinPass::destory(const Device&, RenderingResources& rr) {
     setPrepared(false);
     clearReleaseTexs();
+    m_fb_cache.clear();
     if (m_desc.vertex_buf) rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
 }

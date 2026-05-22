@@ -1,5 +1,6 @@
 #pragma once
 #include "VulkanPass.hpp"
+#include "FramebufferCache.hpp"
 #include <string>
 
 #include "Vulkan/Device.hpp"
@@ -32,7 +33,6 @@ public:
         VkClearValue    clear_value;
 
         StagingBufferRef   vertex_buf;
-        vvk::Framebuffer   fb;
         PipelineParameters pipeline;
     };
 
@@ -55,7 +55,8 @@ public:
     void destory(const Device&, RenderingResources&) override;
 
 private:
-    Desc m_desc;
+    Desc                                            m_desc;
+    FramebufferCache<VkImageView, vvk::Framebuffer> m_fb_cache;
 };
 
 } // namespace vulkan
