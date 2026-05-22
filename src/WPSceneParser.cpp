@@ -3784,6 +3784,99 @@ void initShaderAndTextSubsystems() {
     WPShaderParser::InitGlslang();
     WPTextRenderer::Init();
 }
+
+// Pre-allocate dynamic-asset pool nodes.  SceneScript calls
+// engine.registerAsset(path) to declare a dynamic image, then creates
+// instances at runtime via thisScene.createLayer(asset).  Since our
+// render graph is static, we pre-build a pool of hidden scene nodes per
+// asset; createLayer/destroyLayer toggle visibility rather than
+// instantiating at runtime.  Particles are skipped — they'd need pool
+// support on the particle pipeline too.
+void allocateAssetPools(ParseContext& context, fs::VFS& vfs, std::vector<WPObjectVar>& wp_objs,
+                        std::map<i32, size_t>& json_order, size_t obj_idx,
+                        std::map<i32, std::string>& pool_id_to_name) {
+    // Default 8 slots — plenty for typical coin/spawn patterns.  Scripts
+    // that run their own object pool (3body, trail systems) get the
+    // larger hint from asset_pool_size_hints.
+    const int kDefaultPoolSize = 8;
+    i32       synthId          = 2'000'000;
+    // Assign pool nodes a json_order LATER than every real scene object.
+    // The z-order sort at the end of parse uses json_order; nodes not in
+    // the map are treated as cameras and sorted to the FRONT, which means
+    // pool coins render before backgrounds and get painted over.  We
+    // want them rendered LAST (on top), so base their order on obj_idx +
+    // large offset.
+    size_t poolOrderBase = obj_idx + 1'000'000;
+    for (const auto& assetPath : context.registered_asset_paths) {
+        bool isParticle = assetPath.find("particles/") == 0;
+        // Sanitize asset path into a unique layer-name prefix.
+        std::string safePrefix = "__pool_" + assetPath;
+        for (char& c : safePrefix)
+            if (c == '/' || c == '.') c = '_';
+        // Resolve the on-disk path.  Pools are keyed by the bare
+        // assetPath (what the script writes in createLayer/registerAsset),
+        // but the actual file may live under
+        // `<root>/workshop/<workshopId>/<rest>` for workshop-imported
+        // scripts.  Probe both forms so the synthetic pool wpobj's
+        // `image` field references a file that actually exists in the
+        // VFS — otherwise the wpobj parse fails and the pool stays empty.
+        std::string resolvedPath = assetPath;
+        if (! isParticle && ! vfs.Contains("/assets/" + assetPath)) {
+            auto wid = context.script_asset_workshop_id.find(assetPath);
+            if (wid != context.script_asset_workshop_id.end()) {
+                auto slash = assetPath.find('/');
+                if (slash != std::string::npos) {
+                    std::string candidate = assetPath.substr(0, slash) + "/workshop/" +
+                                            wid->second + assetPath.substr(slash);
+                    if (vfs.Contains("/assets/" + candidate)) {
+                        LOG_INFO("  asset workshop-resolved: '%s' → '%s'",
+                                 assetPath.c_str(),
+                                 candidate.c_str());
+                        resolvedPath = candidate;
+                    }
+                }
+            }
+        }
+        auto hint      = context.asset_pool_size_hints.find(assetPath);
+        int  kPoolSize = hint != context.asset_pool_size_hints.end()
+                             ? static_cast<int>(hint->second)
+                             : kDefaultPoolSize;
+        for (int i = 0; i < kPoolSize; i++) {
+            std::string poolName = safePrefix + "_" + std::to_string(i);
+            i32         thisId   = synthId++;
+            // Particle pool layers store the particle path under
+            // "particle"; image pool layers store under "image" and rely
+            // on the model's autosize to resolve dimensions.  Scripts
+            // always set origin at runtime so the off-center zero
+            // default isn't an issue.
+            nlohmann::json poolObj = {
+                { "id", thisId },     { "name", poolName },  { "origin", "0 0 0" },
+                { "scale", "1 1 1" }, { "angles", "0 0 0" }, { "visible", false },
+            };
+            if (isParticle)
+                poolObj["particle"] = resolvedPath;
+            else
+                poolObj["image"] = resolvedPath;
+            size_t beforeSize = wp_objs.size();
+            if (isParticle)
+                AddWPObject<wpscene::WPParticleObject>(wp_objs, poolObj, vfs);
+            else
+                AddWPObject<wpscene::WPImageObject>(wp_objs, poolObj, vfs);
+            if (wp_objs.size() > beforeSize) {
+                context.script_referenced_layers.insert(poolName);
+                context.scene->assetPools[assetPath].push_back(poolName);
+                pool_id_to_name[thisId] = poolName;
+                json_order[thisId]      = poolOrderBase++;
+            }
+        }
+    }
+    if (! context.scene->assetPools.empty()) {
+        LOG_INFO("Dynamic asset pools allocated: %zu assets", context.scene->assetPools.size());
+        for (const auto& [path, names] : context.scene->assetPools) {
+            LOG_INFO("  %s × %zu slots", path.c_str(), names.size());
+        }
+    }
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3873,97 +3966,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     initShaderAndTextSubsystems();
 
-    // Pre-allocate dynamic-asset pool nodes.  SceneScript calls
-    // engine.registerAsset(path) to declare a dynamic image, then creates
-    // instances at runtime via thisScene.createLayer(asset).  Since our
-    // render graph is static, we pre-build a pool of hidden scene nodes per
-    // asset; createLayer/destroyLayer toggle visibility rather than
-    // instantiating at runtime.  Particles are skipped — they'd need pool
-    // support on the particle pipeline too.
     std::map<i32, std::string> pool_id_to_name;
-    {
-        // Default 8 slots — plenty for typical coin/spawn patterns.  Scripts
-        // that run their own object pool (3body, trail systems) get the
-        // larger hint from asset_pool_size_hints.
-        const int kDefaultPoolSize = 8;
-        i32       synthId          = 2'000'000;
-        // Assign pool nodes a json_order LATER than every real scene object.
-        // The z-order sort at the end of parse uses json_order; nodes not in
-        // the map are treated as cameras and sorted to the FRONT, which means
-        // pool coins render before backgrounds and get painted over.  We
-        // want them rendered LAST (on top), so base their order on obj_idx +
-        // large offset.
-        size_t poolOrderBase = obj_idx + 1'000'000;
-        for (const auto& assetPath : context.registered_asset_paths) {
-            bool isParticle = assetPath.find("particles/") == 0;
-            // Sanitize asset path into a unique layer-name prefix.
-            std::string safePrefix = "__pool_" + assetPath;
-            for (char& c : safePrefix)
-                if (c == '/' || c == '.') c = '_';
-            // Resolve the on-disk path.  Pools are keyed by the bare
-            // assetPath (what the script writes in createLayer/registerAsset),
-            // but the actual file may live under
-            // `<root>/workshop/<workshopId>/<rest>` for workshop-imported
-            // scripts.  Probe both forms so the synthetic pool wpobj's
-            // `image` field references a file that actually exists in the
-            // VFS — otherwise the wpobj parse fails and the pool stays empty.
-            std::string resolvedPath = assetPath;
-            if (! isParticle && ! vfs.Contains("/assets/" + assetPath)) {
-                auto wid = context.script_asset_workshop_id.find(assetPath);
-                if (wid != context.script_asset_workshop_id.end()) {
-                    auto slash = assetPath.find('/');
-                    if (slash != std::string::npos) {
-                        std::string candidate = assetPath.substr(0, slash) + "/workshop/" +
-                                                wid->second + assetPath.substr(slash);
-                        if (vfs.Contains("/assets/" + candidate)) {
-                            LOG_INFO("  asset workshop-resolved: '%s' → '%s'",
-                                     assetPath.c_str(),
-                                     candidate.c_str());
-                            resolvedPath = candidate;
-                        }
-                    }
-                }
-            }
-            auto hint      = context.asset_pool_size_hints.find(assetPath);
-            int  kPoolSize = hint != context.asset_pool_size_hints.end()
-                                 ? static_cast<int>(hint->second)
-                                 : kDefaultPoolSize;
-            for (int i = 0; i < kPoolSize; i++) {
-                std::string poolName = safePrefix + "_" + std::to_string(i);
-                i32         thisId   = synthId++;
-                // Particle pool layers store the particle path under
-                // "particle"; image pool layers store under "image" and rely
-                // on the model's autosize to resolve dimensions.  Scripts
-                // always set origin at runtime so the off-center zero
-                // default isn't an issue.
-                nlohmann::json poolObj = {
-                    { "id", thisId },     { "name", poolName },  { "origin", "0 0 0" },
-                    { "scale", "1 1 1" }, { "angles", "0 0 0" }, { "visible", false },
-                };
-                if (isParticle)
-                    poolObj["particle"] = resolvedPath;
-                else
-                    poolObj["image"] = resolvedPath;
-                size_t beforeSize = wp_objs.size();
-                if (isParticle)
-                    AddWPObject<wpscene::WPParticleObject>(wp_objs, poolObj, vfs);
-                else
-                    AddWPObject<wpscene::WPImageObject>(wp_objs, poolObj, vfs);
-                if (wp_objs.size() > beforeSize) {
-                    context.script_referenced_layers.insert(poolName);
-                    context.scene->assetPools[assetPath].push_back(poolName);
-                    pool_id_to_name[thisId] = poolName;
-                    json_order[thisId]      = poolOrderBase++;
-                }
-            }
-        }
-        if (! context.scene->assetPools.empty()) {
-            LOG_INFO("Dynamic asset pools allocated: %zu assets", context.scene->assetPools.size());
-            for (const auto& [path, names] : context.scene->assetPools) {
-                LOG_INFO("  %s × %zu slots", path.c_str(), names.size());
-            }
-        }
-    }
+    allocateAssetPools(context, vfs, wp_objs, json_order, obj_idx, pool_id_to_name);
 
     // Build name→initial state from parsed objects (before node transforms may be reset)
     struct ObjInitState {
