@@ -446,19 +446,29 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
     std::string insert_str {};
     auto&       cur    = unit.preprocess_info;
     bool        is_geo = (unit.stage == ShaderType::GEOMETRY);
+
+    // Constant-pattern varying-swap regexes hoisted to compile once, not per
+    // varying inside the loops below (cold-load / wallpaper-switch path).
+    static const std::regex re_out_to_in(R"(\s*out\s)");
+    static const std::regex re_in_to_out(R"(\s*in\s)");
+    static const std::regex re_gs_in_decl(R"(\bin\s+([\w]+)\s+(v_\w+))");
+    static const std::regex re_gs_unsized(R"((\w)\s*;)");
+    static const std::regex re_strip_gs_prefix(R"(\bgs_in_(v_\w+))");
+    static const std::regex re_strip_array(R"(\[\]\s*;)");
+
     if (pre != nullptr) {
         for (auto& [k, v] : pre->output) {
             // For geometry shaders, check for gs_in_ prefixed name
             bool already_declared =
                 exists(cur.input, k) || (is_geo && exists(cur.input, "gs_in_" + k));
             if (! already_declared) {
-                auto n = std::regex_replace(v, std::regex(R"(\s*out\s)"), " in ");
+                auto n = std::regex_replace(v, re_out_to_in, " in ");
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
                 // Geometry shader inputs: unsized arrays with gs_in_ prefix
                 if (is_geo) {
                     n = std::regex_replace(
-                        n, std::regex(R"(\bin\s+([\w]+)\s+(v_\w+))"), "in $1 gs_in_$2");
-                    n = std::regex_replace(n, std::regex(R"((\w)\s*;)"), "$1[];");
+                        n, re_gs_in_decl, "in $1 gs_in_$2");
+                    n = std::regex_replace(n, re_gs_unsized, "$1[];");
                 }
                 insert_str += n + '\n';
             }
@@ -471,12 +481,12 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
             std::string canon = k;
             if (canon.substr(0, 6) == "gs_in_") canon = canon.substr(6);
             if (! exists(cur.output, k) && ! exists(cur.output, canon)) {
-                auto n = std::regex_replace(v, std::regex(R"(\s*in\s)"), " out ");
+                auto n = std::regex_replace(v, re_in_to_out, " out ");
                 if (NeedsFlatDecoration(n)) n = "flat " + n;
                 // Strip gs_in_ prefix and [] suffix for non-geometry outputs
                 if (k.substr(0, 6) == "gs_in_") {
-                    n = std::regex_replace(n, std::regex(R"(\bgs_in_(v_\w+))"), "$1");
-                    n = std::regex_replace(n, std::regex(R"(\[\]\s*;)"), ";");
+                    n = std::regex_replace(n, re_strip_gs_prefix, "$1");
+                    n = std::regex_replace(n, re_strip_array, ";");
                 }
                 insert_str += n + '\n';
             }
@@ -875,7 +885,9 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
     if (type == ShaderType::VERTEX) pre += pre_shader_code_vert;
     if (type == ShaderType::GEOMETRY) pre += pre_shader_code_geom;
     if (type == ShaderType::FRAGMENT) pre += pre_shader_code_frag;
-    std::string header(pre);
+    // Append #define combos directly into `pre` instead of copying it into a
+    // separate `header` string first (that copy of the shader header block was
+    // pure waste — `pre` is not reused afterward).
     for (const auto& c : combos) {
         std::string cup(c.first);
         std::transform(c.first.begin(), c.first.end(), cup.begin(), ::toupper);
@@ -883,9 +895,9 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
             LOG_ERROR("combo '%s' can't be empty", cup.c_str());
             continue;
         }
-        header.append("#define " + cup + " " + c.second + "\n");
+        pre.append("#define " + cup + " " + c.second + "\n");
     }
-    return header + src;
+    return pre + src;
 }
 
 void WPShaderParser::InitGlslang() {
