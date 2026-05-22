@@ -12,7 +12,6 @@
 #include "WPCommon.hpp"
 
 #include "Vulkan/ShaderComp.hpp"
-#include "Scene/ShaderCacheKey.h"
 
 #include <regex>
 #include <stack>
@@ -24,13 +23,12 @@
 #include <mutex>
 #include <atomic>
 #include <chrono>
-#include <cstdlib>
 #include <unordered_map>
 #include <set>
 
 static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 
-#define SHADER_DIR    "spvs02"
+#define SHADER_DIR    "spvs01"
 #define SHADER_SUFFIX "spvs"
 
 // Header inclusions must precede `using namespace wallpaper;` and the
@@ -495,6 +493,13 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
 // FixImplicitConversions — moved to WPShaderTransforms.h
 // FixEffectAlpha — moved to WPShaderTransforms.h
 
+inline std::string GenSha1(std::span<const WPShaderUnit> units) {
+    std::string shas;
+    for (auto& unit : units) {
+        shas += utils::genSha1(unit.src);
+    }
+    return utils::genSha1(shas);
+}
 inline std::string GetCachePath(std::string_view scene_id, std::string_view filename) {
     return std::string("/cache/") + std::string(scene_id) + "/" SHADER_DIR "/" +
            std::string(filename) + "." SHADER_SUFFIX;
@@ -810,7 +815,7 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
 
 // Deferred parallel compilation state
 struct PendingShaderCompilation {
-    std::string              cache_key;
+    std::string              sha1;
     std::string              cache_path;
     std::vector<ShaderCode>* output;
 };
@@ -818,18 +823,6 @@ static std::mutex s_compileMtx;
 static std::unordered_map<std::string, std::shared_future<std::vector<ShaderCode>>>
                                              s_asyncCompilations;
 static std::vector<PendingShaderCompilation> s_pendingOutputs;
-
-// Counts Preprocessor() invocations across the current load.  On a fully warm
-// SPV cache every CompileToSpv short-circuits at the disk-cache check ahead of
-// Preprocessor, so this must read 0 on a warm reload.  Logged (once per flush)
-// only when WEKDE_DEBUG_SHADERCACHE is set, so it is a zero-cost diagnostic in
-// normal use but a live verification surface for the warm-cache contract.
-static std::atomic<int> s_preprocessRuns { 0 };
-
-inline bool shaderCacheDebugEnabled() {
-    static const bool enabled = std::getenv("WEKDE_DEBUG_SHADERCACHE") != nullptr;
-    return enabled;
-}
 
 } // namespace
 
@@ -918,41 +911,12 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         }
     }
 
-    // Compute the disk-cache key from the RAW per-unit source + stage + combos
-    // (the inputs that fully determine the compiled SPV), and consult the cache
-    // BEFORE Preprocessor runs.  The geometry-shader translate above is part of
-    // the raw boundary (deterministic from raw text); #include inlining already
-    // happened upstream in PreShaderSrc, so unit.src reflects the resolved
-    // include set here.  On a warm hit this returns the pre-compiled SPV without
-    // running Preprocessor + glslang-preprocess at all.
-    bool        has_cache_dir = vfs.IsMounted("cache");
-    std::string cache_key;
-    std::string cache_file_path;
-    if (has_cache_dir) {
-        std::vector<ShaderCacheUnitInput> key_units;
-        key_units.reserve(units.size());
-        for (auto& unit : units) key_units.push_back({ unit.stage, unit.src });
-        cache_key       = shaderCacheKey(key_units, shader_info->combos);
-        cache_file_path = GetCachePath(scene_id, cache_key);
-
-        if (vfs.Contains(cache_file_path)) {
-            // Disk cache hit — load synchronously, skipping Preprocessor entirely.
-            auto cache_file = vfs.Open(cache_file_path);
-            if (! cache_file || ! ::LoadShaderFromFile(codes, *cache_file)) {
-                LOG_ERROR("load shader from \'%s\' failed", cache_file_path.c_str());
-                return false;
-            }
-            return true;
-        }
-    }
-
     {
         // Preprocessor() ultimately invokes glslang::TShader::preprocess, which
         // holds non-thread-safe static keyword tables.  See g_glslangSerialiseMtx
         // declaration above.
         std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
         std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
-            s_preprocessRuns.fetch_add(1, std::memory_order_relaxed);
             unit.src =
                 Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
         });
@@ -984,21 +948,36 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         }
     }
 
+    bool has_cache_dir = vfs.IsMounted("cache");
+
     if (has_cache_dir) {
+        std::string sha1            = GenSha1(units);
+        std::string cache_file_path = GetCachePath(scene_id, sha1);
+
+        if (vfs.Contains(cache_file_path)) {
+            // Disk cache hit — load synchronously
+            auto cache_file = vfs.Open(cache_file_path);
+            if (! cache_file || ! ::LoadShaderFromFile(codes, *cache_file)) {
+                LOG_ERROR("load shader from \'%s\' failed", cache_file_path.c_str());
+                return false;
+            }
+            return true;
+        }
+
         // Cache miss — defer compilation until FlushPendingCompilations.
         //
         // Originally compilation ran in a std::async(std::launch::async) thread per
-        // key.  glslang's keyword scanner caches `const char*` keys in a process-
+        // SHA1.  glslang's keyword scanner caches `const char*` keys in a process-
         // global hash table that is not safe under concurrent reads — concurrent
         // tokenizeIdentifier triggers UAF on hashtable buckets even when individual
         // calls are externally serialised, because glslang's per-stage symbol-
         // table init still races against other threads' thread-local pools.
         // We instead defer the work as a no-arg packaged_task and run it
         // synchronously inside FlushPendingCompilations on the calling thread.
-        // Cache dedupe is preserved (one task per cache_key).
+        // Cache dedupe is preserved (one task per SHA1).
         {
             std::lock_guard<std::mutex> lock(s_compileMtx);
-            if (s_asyncCompilations.find(cache_key) == s_asyncCompilations.end()) {
+            if (s_asyncCompilations.find(sha1) == s_asyncCompilations.end()) {
                 auto units_copy = std::vector<WPShaderUnit>(units.begin(), units.end());
                 auto future = std::async(std::launch::deferred,
                                          [u = std::move(units_copy)]() mutable {
@@ -1006,9 +985,9 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
                                              CompileShaderUnits(u, result);
                                              return result;
                                          });
-                s_asyncCompilations[cache_key] = future.share();
+                s_asyncCompilations[sha1] = future.share();
             }
-            s_pendingOutputs.push_back({ cache_key, cache_file_path, &codes });
+            s_pendingOutputs.push_back({ sha1, cache_file_path, &codes });
         }
         return true;
 
@@ -1023,16 +1002,6 @@ void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
     WEK_PROFILE_SCOPE("WPShaderParser::FlushPendingCompilations");
     std::lock_guard<std::mutex> lock(s_compileMtx);
 
-    // Report + reset the per-load Preprocessor-invocation counter.  A fully warm
-    // SPV cache short-circuits every CompileToSpv ahead of Preprocessor, so this
-    // reads 0 on a warm reload (and the deferred-compile list below is empty).
-    if (shaderCacheDebugEnabled()) {
-        LOG_INFO("Preprocessor invocations this load: %d (%zu deferred compiles)",
-                 s_preprocessRuns.load(std::memory_order_relaxed),
-                 s_pendingOutputs.size());
-    }
-    s_preprocessRuns.store(0, std::memory_order_relaxed);
-
     if (s_pendingOutputs.empty()) return;
 
     auto t0 = std::chrono::steady_clock::now();
@@ -1043,22 +1012,22 @@ void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
 
     std::set<std::string> saved_to_disk;
     for (auto& pending : s_pendingOutputs) {
-        auto it = s_asyncCompilations.find(pending.cache_key);
+        auto it = s_asyncCompilations.find(pending.sha1);
         if (it == s_asyncCompilations.end()) continue;
 
         const auto& compiled = it->second.get(); // blocks until compilation finishes
         if (compiled.empty()) {
-            LOG_ERROR("async shader compilation failed for %s", pending.cache_key.c_str());
+            LOG_ERROR("async shader compilation failed for %s", pending.sha1.c_str());
             continue;
         }
         *pending.output = compiled;
 
-        // Write to disk cache (once per unique cache_key)
-        if (saved_to_disk.find(pending.cache_key) == saved_to_disk.end()) {
+        // Write to disk cache (once per unique SHA1)
+        if (saved_to_disk.find(pending.sha1) == saved_to_disk.end()) {
             if (auto cache_file = vfs.OpenW(pending.cache_path); cache_file) {
                 ::SaveShaderToFile(compiled, *cache_file);
             }
-            saved_to_disk.insert(pending.cache_key);
+            saved_to_disk.insert(pending.sha1);
         }
     }
 
@@ -1070,11 +1039,4 @@ void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
 
     s_pendingOutputs.clear();
     s_asyncCompilations.clear();
-}
-
-int WPShaderParser::PreprocessRunCount() {
-    return s_preprocessRuns.load(std::memory_order_relaxed);
-}
-void WPShaderParser::ResetPreprocessRunCount() {
-    s_preprocessRuns.store(0, std::memory_order_relaxed);
 }

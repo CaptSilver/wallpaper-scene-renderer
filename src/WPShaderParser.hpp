@@ -61,12 +61,5 @@ public:
     // Wait for all deferred async shader compilations and write results to disk cache.
     // Call after all CompileToSpv calls are done (before FinalGlslang).
     static void FlushPendingCompilations(fs::VFS& vfs);
-
-    // Number of Preprocessor() invocations since the counter was last reset
-    // (reset on each FlushPendingCompilations).  A warm SPV cache short-circuits
-    // CompileToSpv ahead of Preprocessor, so this reads 0 on a warm reload.
-    // Exposed for the warm-cache verification surface (WEKDE_DEBUG_SHADERCACHE).
-    static int  PreprocessRunCount();
-    static void ResetPreprocessRunCount();
 };
 } // namespace wallpaper
