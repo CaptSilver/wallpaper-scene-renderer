@@ -558,6 +558,15 @@ private:
     // Batched property-script dispatch — see `_runAllPropertyScripts` in
     // SceneBackend.cpp.  One C++->JS call per tick instead of N.
     QJSValue m_runAllPropertyScriptsFn;
+    // Cached Vec2/Vec3/Vec4 shim constructors (kVecClassesJs, installed at the
+    // top of setupTextScripts).  The color + shader-value tick loops box their
+    // float arguments into these every tick at the render rate; calling the
+    // cached constructor directly avoids a full QJSEngine::evaluate() JS compile
+    // of a "VecN(...)" source string per script per tick.  Mirrors the property
+    // loop, which already caches Vec3 locally.  Cleared in cleanupTextScripts.
+    QJSValue m_vec2Fn;
+    QJSValue m_vec3Fn;
+    QJSValue m_vec4Fn;
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API

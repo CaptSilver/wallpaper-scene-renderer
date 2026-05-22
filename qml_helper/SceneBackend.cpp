@@ -1877,6 +1877,13 @@ void SceneObject::setupTextScripts() {
     // and the Mat3/Mat4 / _Internal / script-identity shims that follow can
     // all reference Vec2/Vec3 freely.
     m_jsEngine->evaluate(wek::qml_helper::kVecClassesJs);
+    // Cache the Vec ctor handles for the color/shader-value tick loops (see
+    // SceneBackend.hpp).  Grabbed here, right after kVecClassesJs installs them,
+    // so the per-tick loops never re-fetch from the global object or string-
+    // compile a "VecN(...)" call.
+    m_vec2Fn = m_jsEngine->globalObject().property("Vec2");
+    m_vec3Fn = m_jsEngine->globalObject().property("Vec3");
+    m_vec4Fn = m_jsEngine->globalObject().property("Vec4");
 
     m_jsEngine->evaluate(
         // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain
@@ -4102,12 +4109,11 @@ void SceneObject::evaluateColorScripts() {
     }
 
     for (auto& state : m_colorScriptStates) {
-        // Pass current color as a full Vec3 so scripts can use both .x/.y/.z and .r/.g/.b
-        QString colorJs = QString("Vec3(%1,%2,%3)")
-                              .arg((double)state.currentColor[0], 0, 'g', 8)
-                              .arg((double)state.currentColor[1], 0, 'g', 8)
-                              .arg((double)state.currentColor[2], 0, 'g', 8);
-        QJSValue colorVal = m_jsEngine->evaluate(colorJs);
+        // Pass current color as a full Vec3 so scripts can use both .x/.y/.z and .r/.g/.b.
+        // Cached ctor .call() avoids a per-tick QJSEngine::evaluate() of a "Vec3(...)" string.
+        QJSValue colorVal = m_vec3Fn.call({ QJSValue((double)state.currentColor[0]),
+                                            QJSValue((double)state.currentColor[1]),
+                                            QJSValue((double)state.currentColor[2]) });
 
         bool     wasInterrupted = false;
         QJSValue result         = callJsGuarded(
@@ -4166,29 +4172,18 @@ void SceneObject::evaluateColorScripts() {
         if (state.argShape <= 1) {
             arg = QJSValue(state.cachedValue.empty() ? 0.0 : (double)state.cachedValue[0]);
         } else {
-            QString ctor;
+            // Cached ctor .call() — was a per-tick QJSEngine::evaluate() of a
+            // "VecN(...)" string.  at() keeps the old zero-fill for the rare
+            // first-tick case where cachedValue is shorter than argShape.
+            auto at = [&](size_t i) -> QJSValue {
+                return QJSValue(state.cachedValue.size() > i ? (double)state.cachedValue[i] : 0.0);
+            };
             if (state.argShape == 2)
-                ctor = QString("Vec2(%1,%2)")
-                           .arg((double)state.cachedValue[0], 0, 'g', 8)
-                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
-                                0, 'g', 8);
+                arg = m_vec2Fn.call({ at(0), at(1) });
             else if (state.argShape == 3)
-                ctor = QString("Vec3(%1,%2,%3)")
-                           .arg((double)state.cachedValue[0], 0, 'g', 8)
-                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
-                                0, 'g', 8)
-                           .arg(state.cachedValue.size() > 2 ? (double)state.cachedValue[2] : 0.0,
-                                0, 'g', 8);
+                arg = m_vec3Fn.call({ at(0), at(1), at(2) });
             else
-                ctor = QString("Vec4(%1,%2,%3,%4)")
-                           .arg((double)state.cachedValue[0], 0, 'g', 8)
-                           .arg(state.cachedValue.size() > 1 ? (double)state.cachedValue[1] : 0.0,
-                                0, 'g', 8)
-                           .arg(state.cachedValue.size() > 2 ? (double)state.cachedValue[2] : 0.0,
-                                0, 'g', 8)
-                           .arg(state.cachedValue.size() > 3 ? (double)state.cachedValue[3] : 0.0,
-                                0, 'g', 8);
-            arg = m_jsEngine->evaluate(ctor);
+                arg = m_vec4Fn.call({ at(0), at(1), at(2), at(3) });
         }
 
         bool     wasInterrupted = false;
@@ -5285,6 +5280,9 @@ void SceneObject::cleanupTextScripts() {
     m_fireSceneEventFn        = QJSValue();
     m_hasSceneListenersFn     = QJSValue();
     m_runAllPropertyScriptsFn = QJSValue();
+    m_vec2Fn                  = QJSValue();
+    m_vec3Fn                  = QJSValue();
+    m_vec4Fn                  = QJSValue();
     // Drain the JS-side script array so a reload starts fresh.  The engine
     // itself stays alive; just its cached references need to clear.
     if (m_jsEngine) {
