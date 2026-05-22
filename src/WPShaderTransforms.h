@@ -413,8 +413,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
                                              const char* big_type,
                                              const char* oob_pattern,
                                              const char* bare_swizzle) {
+            static const std::regex re_decl_vec2(R"(\bvec2\s+(\w+)\s*;)");
+            static const std::regex re_decl_vec3(R"(\bvec3\s+(\w+)\s*;)");
+            static const std::regex re_decl_vec4(R"(\bvec4\s+(\w+)\s*;)");
+            const std::regex&       re_decl = (small_type[3] == '2') ? re_decl_vec2
+                                            : (small_type[3] == '3') ? re_decl_vec3
+                                                                      : re_decl_vec4;
             std::vector<std::string> to_upgrade;
-            std::regex               re_decl(std::string(R"(\b)") + small_type + R"(\s+(\w+)\s*;)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
                  it != std::sregex_iterator();
                  ++it) {
@@ -447,8 +452,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
     // are not seen as vec2/vec3 targets and have their assignments incorrectly truncated.
     {
         auto collect = [&result](const char* type) {
+            static const std::regex re_vec2(R"(\bvec2\s+(\w+)\b)");
+            static const std::regex re_vec3(R"(\bvec3\s+(\w+)\b)");
+            static const std::regex re_vec4(R"(\bvec4\s+(\w+)\b)");
+            const std::regex&       re = (type[3] == '2') ? re_vec2
+                                       : (type[3] == '3') ? re_vec3
+                                                          : re_vec4;
             std::set<std::string> vars;
-            std::regex            re(std::string(R"(\b)") + type + R"(\s+(\w+)\b)");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
                  it != std::sregex_iterator();
                  ++it)
@@ -517,8 +527,13 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // (TYPE NAME ; or TYPE NAME =), not function parameters (TYPE NAME , or TYPE NAME )).
         // This avoids false positives when the same name appears as vec2 param + vec4 local.
         auto collectLocal = [&result](const char* type) {
+            static const std::regex re_vec2(R"(\bvec2\s+(\w+)\s*[;=])");
+            static const std::regex re_vec3(R"(\bvec3\s+(\w+)\s*[;=])");
+            static const std::regex re_vec4(R"(\bvec4\s+(\w+)\s*[;=])");
+            const std::regex&       re = (type[3] == '2') ? re_vec2
+                                       : (type[3] == '3') ? re_vec3
+                                                          : re_vec4;
             std::set<std::string> vars;
-            std::regex            re(std::string(R"(\b)") + type + R"(\s+(\w+)\s*[;=])");
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re);
                  it != std::sregex_iterator();
                  ++it)
