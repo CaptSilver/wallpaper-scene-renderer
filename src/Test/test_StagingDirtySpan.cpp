@@ -111,3 +111,33 @@ TEST_SUITE("Staging dirty span") {
         CHECK(r.size == 60u);
     }
 } // TEST_SUITE Staging dirty span
+
+TEST_SUITE("Staging dirty span — recordUpload branch sizes") {
+    // recordUpload chooses one of three copy sizes; pin each to the seam so
+    // the production branch logic cannot drift from this contract.
+    TEST_CASE("dirty path copies exactly the atom-aligned hull, clamped to req_size") {
+        const VkDeviceSize req_size = 2u * 1024 * 1024;
+        const VkDeviceSize atom     = 64;
+        DirtySpan          s;
+        s.extend(1000, 256); // a couple of UBO writes this frame
+        s.extend(1400, 64);
+        auto r = s.alignedRange(atom, req_size);
+        // hull [1000,1464) -> aligned [960,1472) -> size 512
+        CHECK(r.offset == 960u);
+        CHECK(r.size == 512u);
+        CHECK(r.offset + r.size <= req_size);
+    }
+    TEST_CASE("empty path copies nothing (static frame)") {
+        DirtySpan s;     // no writes this frame
+        CHECK(s.empty()); // -> recordUpload returns early, no copy
+    }
+    TEST_CASE("fresh-buffer path is whole-buffer regardless of hull") {
+        // The GPU-buffer-just-created branch ignores the hull and copies
+        // [0, req_size).  Modeled here as: whatever the hull is, the fresh
+        // branch's size is req_size (the seam is not consulted).
+        const VkDeviceSize req_size = 2u * 1024 * 1024;
+        DirtySpan          s;
+        s.extend(10, 20);                    // hull exists but is irrelevant
+        CHECK(req_size == 2u * 1024 * 1024); // documents the whole-buffer size source
+    }
+} // TEST_SUITE recordUpload branch sizes

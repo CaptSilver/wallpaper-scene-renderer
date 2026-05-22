@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/NoCopyMove.hpp"
+#include "DirtySpan.hpp"
 #include "Instance.hpp"
 #include "Parameters.hpp"
 #include "vk_mem_alloc.h"
@@ -82,6 +83,11 @@ private:
     bool                             m_broadcast { false };
     std::vector<void*>               m_stage_raws;
     std::vector<VmaBufferParameters> m_stage_bufs;
+    // One written-interval tracker per slot (parallel to m_stage_bufs).  A
+    // write widens the current slot's hull; setCurrentSlot resets it at the
+    // per-frame boundary; recordUpload flushes+copies only the hull (staging
+    // is never cleared between frames, so the hull is always byte-valid).
+    std::vector<DirtySpan>           m_dirty;
     std::vector<VirtualBlock>        m_virtual_blocks {};
 
     VmaBufferParameters m_gpu_buf;
