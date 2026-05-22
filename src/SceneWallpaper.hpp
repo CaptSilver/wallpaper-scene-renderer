@@ -334,6 +334,11 @@ public:
     // image.  screenshotDone() flips true once the file is written.
     void requestScreenshot(const std::string& path);
     bool screenshotDone() const;
+    // Frame-indexed capture: fire exactly when the render thread's monotonic
+    // frame counter reaches `frame` (race-free, deterministic with the
+    // --deterministic render mode).  Used by the render oracle for
+    // byte-identical warm==cold comparison.
+    void requestScreenshotAtFrame(const std::string& path, uint64_t frame);
 
     // Debug: hide any scene object whose name contains any comma-separated
     // needle.  Must be set before scene load.  Empty disables.

@@ -378,6 +378,19 @@ public:
     }
     bool screenshotDone() const { return m_render && m_render->screenshotDone(); }
 
+    // Arm a screenshot to fire on the render thread exactly when the monotonic
+    // frame counter reaches `frame`.  Unlike requestScreenshot() (which captures
+    // the next frame after an async path-set, racing the wall clock), this is
+    // frame-deterministic: identical target frame → identical captured
+    // scene-frame, so a cold run and a warm run produce byte-identical output.
+    void requestScreenshotAtFrame(const std::string& path, uint64_t frame) {
+        {
+            std::lock_guard<std::mutex> lk(m_shot_at_mutex);
+            m_shot_at_path = path;
+        }
+        m_shot_at_frame.store(static_cast<int64_t>(frame), std::memory_order_release);
+    }
+
     void requestPassDump(const std::string& dir) {
         if (m_render) m_render->setPassDumpDir(dir);
     }
@@ -1337,6 +1350,21 @@ private:
             // lockstep with visuals.
             tickPropertyAnimations(dt_scene);
 
+            // Frame-exact screenshot: when a target frame is armed and the
+            // monotonic counter has reached it, set the readback path NOW so
+            // THIS drawFrame captures that exact scene-frame.  ShouldCaptureAtFrame
+            // keeps the off-by-one / disabled-sentinel logic pure + unit-tested.
+            if (ShouldCaptureAtFrame(m_shot_at_frame.load(std::memory_order_acquire),
+                                     m_frame_idx.load(std::memory_order_acquire))) {
+                std::string p;
+                {
+                    std::lock_guard<std::mutex> lk(m_shot_at_mutex);
+                    p = m_shot_at_path;
+                }
+                m_render->setScreenshotPath(p);
+                m_shot_at_frame.store(-1, std::memory_order_release);
+            }
+
             m_render->drawFrame(*scene);
 
             // Snapshot each named layer's world transform after the per-frame
@@ -1887,6 +1915,17 @@ private:
     // actual render rate instead of the QTimer cadence.
     std::atomic<uint64_t> m_frame_idx { 0 };
 
+    // Frame-exact screenshot target (frame-indexed capture).  -1 = none.  Set
+    // off-thread via requestScreenshotAtFrame(); consumed on the render thread
+    // in CMD_DRAW, which arms m_render->setScreenshotPath() exactly when
+    // m_frame_idx reaches the target.  This makes warm/cold runs capture the
+    // SAME scene-frame regardless of wall-clock / shader-compile time — the
+    // byte-identical-comparison prerequisite the wall-clock --screenshot-frames
+    // sleep cannot provide.
+    std::atomic<int64_t> m_shot_at_frame { -1 };
+    std::mutex           m_shot_at_mutex;
+    std::string          m_shot_at_path;
+
     std::mutex                           m_text_update_mutex;
     std::unordered_map<i32, std::string> m_pending_text_updates;
     std::unordered_map<i32, float>       m_pending_pointsize_updates;
@@ -2363,6 +2402,10 @@ std::shared_ptr<audio::AudioAnalyzer> SceneWallpaper::audioAnalyzer() const {
 
 void SceneWallpaper::requestScreenshot(const std::string& path) {
     m_main_handler->renderHandler()->requestScreenshot(path);
+}
+
+void SceneWallpaper::requestScreenshotAtFrame(const std::string& path, uint64_t frame) {
+    m_main_handler->renderHandler()->requestScreenshotAtFrame(path, frame);
 }
 
 bool SceneWallpaper::screenshotDone() const {
