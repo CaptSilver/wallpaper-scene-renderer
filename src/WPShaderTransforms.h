@@ -719,37 +719,54 @@ inline std::string FixImplicitConversions(const std::string& src) {
              it != std::sregex_iterator();
              ++it)
             float_vars.insert((*it)[1].str());
-        // For each tex vec4 var, check if it appears in arithmetic with float vars
-        for (const auto& tvar : tex_vec4_vars) {
-            bool used_as_scalar = false;
-            for (const auto& fvar : float_vars) {
-                // float * vec4_var  or  vec4_var * float
-                std::regex re_arith("\\b" + fvar + R"(\s*\*\s*)" + tvar + R"((?!\s*[\.\[]))" +
-                                    "|\\b" + tvar + R"((?!\s*[\.\[]))" + R"(\s*\*\s*)" + fvar +
-                                    "\\b");
-                if (std::regex_search(result, re_arith)) {
-                    used_as_scalar = true;
-                    break;
-                }
+        // Detect which tex_vec4_vars are used as scalars in float*VAR or VAR*float
+        // arithmetic — one constant pattern replaces the O(tex×float) per-pair NFA loop.
+        // Lookahead on group2 ensures the second operand has no existing swizzle/subscript.
+        // The first operand can't have one either: \b(\w+) stops at '.' so "tvar.x * fvar"
+        // would leave \s*\*\s* unmatched after "tvar".
+        static const std::regex re_arith_any(R"(\b(\w+)\s*\*\s*(\w+)(?!\s*[.\[]))");
+        std::set<std::string>   scalar_tvars;
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_arith_any);
+             it != std::sregex_iterator();
+             ++it) {
+            const std::string& g1 = (*it)[1].str();
+            const std::string& g2 = (*it)[2].str();
+            if (float_vars.count(g1) && tex_vec4_vars.count(g2))
+                scalar_tvars.insert(g2);
+            if (tex_vec4_vars.count(g1) && float_vars.count(g2))
+                scalar_tvars.insert(g1);
+        }
+        // String find+replace helper — mark strings contain only alphanumeric and
+        // underscores (no regex metacharacters), so plain string ops are safe and
+        // faster than constructing a new NFA per tvar.
+        auto strReplaceAll = [](std::string& s, const std::string& from, const std::string& to) {
+            size_t pos = 0;
+            while ((pos = s.find(from, pos)) != std::string::npos) {
+                s.replace(pos, from.size(), to);
+                pos += to.size();
             }
-            if (used_as_scalar) {
-                // Replace bare uses of tvar (not followed by . or [) with tvar.x
-                // But preserve declarations: "vec4 tvar = texture" and "in vec4 tvar;"
-                std::string mark = "__DECL_MARK_" + tvar;
-                // Mark local declaration
-                result = std::regex_replace(result,
-                                            std::regex(R"(\bvec4\s+)" + tvar + R"(\s*=\s*texture)"),
-                                            "vec4 " + mark + " = texture");
-                // Mark 'in' declaration
-                result = std::regex_replace(result,
-                                            std::regex(R"(\bin\s+vec4\s+)" + tvar + R"(\s*;)"),
-                                            "in vec4 " + mark + ";");
-                // Replace bare uses with .x
-                std::regex re_bare("\\b" + tvar + "(?!\\s*[.\\[\\w])");
-                result = std::regex_replace(result, re_bare, tvar + ".x");
-                // Restore marks
-                result = std::regex_replace(result, std::regex(mark), tvar);
-            }
+        };
+        // Constant bare-use pattern — captures any word-boundary identifier not followed
+        // by '.', '[', or another word char.  Equivalent to the old per-tvar
+        // \b{tvar}(?!\s*[.\[\w]) after filtering on m[1] == tvar.
+        static const std::regex re_bare_use(R"(\b(\w+)(?!\s*[.\[\w]))");
+        for (const auto& tvar : scalar_tvars) {
+            // Replace bare uses of tvar (not followed by . or [ or word char) with tvar.x
+            // but preserve declarations: "vec4 tvar = texture" and "in vec4 tvar;"
+            // Mark-restore protocol: rename the declaration spans FIRST so the bare-use
+            // pass cannot corrupt them, then restore after bare-use replacement completes.
+            std::string mark = "__DECL_MARK_" + tvar;
+            // Mark local declaration (plain string — faster, no NFA compile per tvar)
+            strReplaceAll(result, "vec4 " + tvar + " = texture", "vec4 " + mark + " = texture");
+            // Mark 'in' declaration
+            strReplaceAll(result, "in vec4 " + tvar + ";", "in vec4 " + mark + ";");
+            // Replace bare uses with .x (constant pattern + C++ name filter)
+            regexTransformAll(result, re_bare_use, [&](const std::smatch& m) -> std::string {
+                if (m[1].str() != tvar) return m[0].str();
+                return tvar + ".x";
+            });
+            // Restore marks (plain string — mark has no regex metacharacters)
+            strReplaceAll(result, mark, tvar);
         }
     }
 
