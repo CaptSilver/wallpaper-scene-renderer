@@ -336,6 +336,12 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     if (auto it = m_registered.find(name); it != m_registered.end()) {
         return it->second->header;
     }
+    // Header-only cache: serves repeated ParseHeader calls on the same instance
+    // without re-opening the .tex file (e.g. multiple WPSceneParser sites
+    // querying the same autosize texture during one scene load).
+    if (auto it = m_headerCache.find(name); it != m_headerCache.end()) {
+        return it->second;
+    }
     ImageHeader header;
     std::string path = "/assets/materials/" + name + ".tex";
     if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {
@@ -459,5 +465,8 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
              header.mapHeight,
              (int)header.mipmap_larger,
              header.spriteAnim.numFrames());
+    // Cache the successfully-parsed header so subsequent ParseHeader calls for
+    // the same name on this instance skip the file open + parse.
+    m_headerCache[name] = header;
     return header;
 }

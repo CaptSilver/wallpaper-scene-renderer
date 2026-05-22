@@ -1058,11 +1058,16 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
     }
 }
 
-void InitContext(ParseContext& context, fs::VFS& vfs, wpscene::WPScene& sc) {
-    context.scene            = std::make_shared<Scene>();
-    context.vfs              = &vfs;
-    auto& scene              = *context.scene;
-    scene.imageParser        = std::make_unique<WPTexImageParser>(&vfs);
+void InitContext(ParseContext&                     context,
+                 fs::VFS&                          vfs,
+                 wpscene::WPScene&                 sc,
+                 std::unique_ptr<WPTexImageParser> prebuiltParser = nullptr) {
+    context.scene   = std::make_shared<Scene>();
+    context.vfs     = &vfs;
+    auto& scene     = *context.scene;
+    scene.imageParser = prebuiltParser
+                            ? std::unique_ptr<IImageParser>(std::move(prebuiltParser))
+                            : std::make_unique<WPTexImageParser>(&vfs);
     scene.paritileSys->gener = std::make_unique<WPParticleRawGener>();
     scene.shaderValueUpdater = std::make_unique<WPShaderValueUpdater>(&scene);
     GenCardMesh(scene.default_effect_mesh, { 2, 2 });
@@ -3666,6 +3671,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         }
     }
 
+    // Create the image parser before the autosize ortho pre-pass so the
+    // pre-pass populates its header cache, and subsequent ParseImageObj /
+    // LoadMaterial calls on the same instance hit the cache instead of
+    // re-opening .tex files.
+    auto imageParser = std::make_unique<WPTexImageParser>(&vfs);
+
     if (sc.general.orthogonalprojection.auto_) {
         // For autosize image objects, WPImageObject::FromJson leaves size at
         // the default (2,2) — the real dimensions are only resolved later in
@@ -3675,8 +3686,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         // this the ortho collapses to 2x2 and every world-space-positioned
         // image renders far outside clip space (Aesthetic City 843532366
         // background was ~240,150 in a 2x2 ortho — entirely off-screen).
-        WPTexImageParser tempParser(&vfs);
-        i32              w = 0, h = 0;
+        i32 w = 0, h = 0;
         for (auto& obj : wp_objs) {
             auto* img = std::get_if<wpscene::WPImageObject>(&obj);
             if (img == nullptr) continue;
@@ -3684,7 +3694,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             i32 ih = (i32)img->size.at(1);
             if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
                 ! img->material.textures.front().empty()) {
-                auto header = tempParser.ParseHeader(img->material.textures.front());
+                auto header = imageParser->ParseHeader(img->material.textures.front());
                 if (header.isSprite && header.spriteAnim.numFrames() > 0) {
                     const auto& frame = header.spriteAnim.GetCurFrame();
                     iw                = (i32)frame.width;
@@ -3703,7 +3713,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         sc.general.orthogonalprojection.height = h;
     }
 
-    InitContext(context, vfs, sc);
+    InitContext(context, vfs, sc, std::move(imageParser));
     ParseCamera(context, sc);
 
     // Pre-pass: collect every image id that appears in some COMPOSE layer's

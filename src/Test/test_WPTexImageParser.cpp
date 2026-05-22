@@ -28,6 +28,7 @@ public:
     }
 
     std::shared_ptr<IBinaryStream> Open(std::string_view path) override {
+        m_openCount[std::string(path)]++;
         auto it = m_files.find(std::string(path));
         if (it == m_files.end()) return nullptr;
         auto copy = it->second; // copy so stream owns its data
@@ -36,8 +37,15 @@ public:
 
     std::shared_ptr<IBinaryStreamW> OpenW(std::string_view) override { return nullptr; }
 
+    // How many times was a given VFS-internal path opened?
+    int openCount(const std::string& path) const {
+        auto it = m_openCount.find(path);
+        return it == m_openCount.end() ? 0 : it->second;
+    }
+
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
+    std::unordered_map<std::string, int>                  m_openCount;
 };
 
 // ---------------------------------------------------------------------------
@@ -1487,3 +1495,137 @@ TEST_SUITE("WPTexImageParser") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// ParseHeader header cache — second call for the same name must not re-open
+// the file.  Open-count assertions are the ground truth; value-equality
+// assertions prove the cached return is bit-identical to what a fresh parse
+// would produce.
+// ===========================================================================
+
+TEST_SUITE("WPTexImageParser.ParseHeaderCache") {
+
+    TEST_CASE("Second ParseHeader call does not re-open the file") {
+        // Build the VFS manually so we keep a raw pointer to the MockFs for
+        // open-count queries after ownership has been transferred to the VFS.
+        VFS   vfs;
+        auto  fsOwned = std::make_unique<MockFs>();
+        auto* mock    = fsOwned.get();
+        mock->AddFile("/materials/cache_rgba8.tex", makeSimpleRGBA8Tex(8, 8));
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+
+        auto h1 = parser.ParseHeader("cache_rgba8");
+        auto h2 = parser.ParseHeader("cache_rgba8");
+
+        // The file is at "/materials/cache_rgba8.tex" inside the MockFs.
+        // After the cache lands the second ParseHeader must NOT call Open again.
+        CHECK(mock->openCount("/materials/cache_rgba8.tex") == 1);
+
+        // Both calls return bit-identical headers.
+        CHECK(h1.width     == h2.width);
+        CHECK(h1.height    == h2.height);
+        CHECK(h1.mapWidth  == h2.mapWidth);
+        CHECK(h1.mapHeight == h2.mapHeight);
+        CHECK(h1.isSprite  == h2.isSprite);
+        CHECK(h1.format    == h2.format);
+        CHECK(h1.count     == h2.count);
+    }
+
+    TEST_CASE("m_registered fast-path serves ParseHeader without any file open") {
+        // RegisterImage pre-populates m_registered; ParseHeader's very first
+        // check hits it — neither the header cache nor the VFS is consulted.
+        VFS   vfs;
+        auto  fsOwned = std::make_unique<MockFs>();
+        auto* mock    = fsOwned.get();
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+
+        auto img           = std::make_shared<Image>();
+        img->key           = "prebuilt";
+        img->header.width  = 32;
+        img->header.height = 16;
+        img->header.format = TextureFormat::RGBA8;
+        img->header.count  = 1;
+        parser.RegisterImage("prebuilt", img);
+
+        auto h = parser.ParseHeader("prebuilt");
+        CHECK(mock->openCount("/materials/prebuilt.tex") == 0);
+        CHECK(h.width  == 32);
+        CHECK(h.height == 16);
+    }
+
+    TEST_CASE("Missing file is not cached — headerCacheSize stays zero") {
+        // A name whose file does not exist triggers the nullptr-open early-return
+        // path in ParseHeader.  That sentinel header must NOT be written into
+        // m_headerCache — so repeated calls must not poison the cache.
+        VFS   vfs;
+        auto  fsOwned = std::make_unique<MockFs>();
+        auto* mock    = fsOwned.get();
+        // No file added — Contains() returns false, so VFS short-circuits
+        // before even calling MockFs::Open on the missing path.
+        vfs.Mount("/assets", std::move(fsOwned));
+        (void)mock; // retained for potential future counter extensions
+
+        WPTexImageParser parser(&vfs);
+
+        // "missing" is not an alias name, so the alias-fallback guard
+        // (IsAliasTexture) won't intercept — the VFS miss falls through to the
+        // nullptr-open early-return path (before the write-back).
+        auto h1 = parser.ParseHeader("missing");
+        auto h2 = parser.ParseHeader("missing");
+
+        // headerCacheSize() must be zero — the failed-open path is not cached.
+        CHECK(parser.headerCacheSize() == 0);
+        // Both returned the same default-initialized header.
+        CHECK(h1.width  == h2.width);
+        CHECK(h1.height == h2.height);
+    }
+
+    TEST_CASE("Sprite header cached correctly — frame data identical on second call") {
+        // Sprite textures have per-frame scan loops in ParseHeader.  Caching
+        // must preserve the full SpriteAnimation, not just scalar fields.
+        uint32_t             spriteFlag = (1u << 2);
+        std::vector<uint8_t> buf =
+            makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 16, 16, 1);
+        appendInt32(buf, 1);                          // mipmap_count
+        std::vector<uint8_t> pixels(16 * 16 * 4, 0);
+        appendMipmapV2(buf, 16, 16, pixels);
+        appendTexVersion(buf, 2); // texs
+        appendInt32(buf, 2);      // framecount = 2
+        for (int i = 0; i < 2; i++) {
+            appendInt32(buf, 0);     // imageId = 0
+            appendFloat(buf, 0.1f);  // frametime
+            appendFloat(buf, 0.0f);  // x
+            appendFloat(buf, 0.0f);  // y
+            appendFloat(buf, 16.0f); // xAxis[0]
+            appendFloat(buf, 0.0f);  // xAxis[1]
+            appendFloat(buf, 0.0f);  // yAxis[0]
+            appendFloat(buf, 16.0f); // yAxis[1]
+        }
+
+        VFS   vfs;
+        auto  fsOwned = std::make_unique<MockFs>();
+        auto* mock    = fsOwned.get();
+        mock->AddFile("/materials/sprite_cached.tex", std::move(buf));
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+
+        auto h1 = parser.ParseHeader("sprite_cached");
+        auto h2 = parser.ParseHeader("sprite_cached");
+
+        CHECK(mock->openCount("/materials/sprite_cached.tex") == 1);
+        CHECK(h1.isSprite == true);
+        CHECK(h2.isSprite == true);
+        CHECK(h1.spriteAnim.numFrames() == h2.spriteAnim.numFrames());
+        // Frame 0 identical across both calls.
+        const auto& f1 = h1.spriteAnim.GetCurFrame();
+        const auto& f2 = h2.spriteAnim.GetCurFrame();
+        CHECK(f1.imageId == f2.imageId);
+        CHECK(f1.frametime == doctest::Approx(f2.frametime));
+    }
+
+} // WPTexImageParser.ParseHeaderCache
