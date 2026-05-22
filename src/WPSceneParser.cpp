@@ -3695,6 +3695,61 @@ void linkGroupHierarchy(ParseContext& context, std::vector<GroupInfo>& group_inf
         }
     }
 }
+
+// Compute original world transforms for group nodes so image-object
+// children can look up the correct parent transform even when the
+// parent's world node has been reset to identity for effect rendering.
+//
+// Walk the raw-JSON parent chain (works for both group ancestors AND
+// image ancestors).  An earlier group-only walk dropped image-ancestor
+// transforms — Game of Life (3453251764) UI_Bg image at (1280,720)*8
+// contains four group children whose effect-having descendants
+// (PenBtn / RedBtn / BlueprintStampBtn) read OWT[group] as the parent
+// proxy for their FinalNode and rendered at world (-8..400, ±8) —
+// bottom-left of the scene — instead of the right-side panel.  This
+// pass must precede ParseImageObj (called via the wp_objs visitor
+// below) since that's where image objects bake parent_proxy from OWT.
+void computeGroupWorldTransforms(ParseContext& context, const nlohmann::json& json,
+                                 const std::vector<GroupInfo>& group_infos) {
+    auto& id_local = context.id_authored_local;
+    id_local.clear();
+    for (auto& obj : json.at("objects")) {
+        if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
+        i32 id  = obj.at("id").get<i32>();
+        i32 pid = -1;
+        if (obj.contains("parent") && obj.at("parent").is_number_integer())
+            pid = obj.at("parent").get<i32>();
+        std::array<float, 3> origin { 0, 0, 0 };
+        std::array<float, 3> scale { 1, 1, 1 };
+        std::array<float, 3> angles { 0, 0, 0 };
+        GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
+        GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
+        GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
+        Eigen::Affine3d t = Eigen::Affine3d::Identity();
+        t.prescale(Eigen::Vector3d(scale[0], scale[1], scale[2]));
+        t.prerotate(Eigen::AngleAxisd(angles[0], Eigen::Vector3d::UnitX()));
+        t.prerotate(Eigen::AngleAxisd(angles[1], Eigen::Vector3d::UnitY()));
+        t.prerotate(Eigen::AngleAxisd(angles[2], Eigen::Vector3d::UnitZ()));
+        t.pretranslate(Eigen::Vector3d(origin[0], origin[1], origin[2]));
+        id_local[id] = { pid, t.matrix() };
+    }
+    for (auto& gi : group_infos) {
+        std::vector<i32> chain;
+        i32              c = gi.id;
+        for (int depth = 0; depth < 64 && c >= 0; ++depth) {
+            chain.push_back(c);
+            auto it = id_local.find(c);
+            if (it == id_local.end()) break;
+            c = it->second.first;
+        }
+        Eigen::Matrix4d w = Eigen::Matrix4d::Identity();
+        for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
+            auto lit = id_local.find(*rit);
+            if (lit != id_local.end()) w = w * lit->second.second;
+        }
+        context.original_world_transforms[gi.id] = w;
+    }
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3776,59 +3831,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     std::vector<GroupInfo> deferred_group_links;
     linkGroupHierarchy(context, group_infos, deferred_group_links);
-    // Compute original world transforms for group nodes so image-object
-    // children can look up the correct parent transform even when the
-    // parent's world node has been reset to identity for effect rendering.
-    //
-    // Walk the raw-JSON parent chain (works for both group ancestors AND
-    // image ancestors).  An earlier group-only walk dropped image-ancestor
-    // transforms — Game of Life (3453251764) UI_Bg image at (1280,720)*8
-    // contains four group children whose effect-having descendants
-    // (PenBtn / RedBtn / BlueprintStampBtn) read OWT[group] as the parent
-    // proxy for their FinalNode and rendered at world (-8..400, ±8) —
-    // bottom-left of the scene — instead of the right-side panel.  This
-    // pass must precede ParseImageObj (called via the wp_objs visitor
-    // below) since that's where image objects bake parent_proxy from OWT.
-    {
-        auto& id_local = context.id_authored_local;
-        id_local.clear();
-        for (auto& obj : json.at("objects")) {
-            if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
-            i32 id  = obj.at("id").get<i32>();
-            i32 pid = -1;
-            if (obj.contains("parent") && obj.at("parent").is_number_integer())
-                pid = obj.at("parent").get<i32>();
-            std::array<float, 3> origin { 0, 0, 0 };
-            std::array<float, 3> scale { 1, 1, 1 };
-            std::array<float, 3> angles { 0, 0, 0 };
-            GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
-            GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
-            GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
-            Eigen::Affine3d t = Eigen::Affine3d::Identity();
-            t.prescale(Eigen::Vector3d(scale[0], scale[1], scale[2]));
-            t.prerotate(Eigen::AngleAxisd(angles[0], Eigen::Vector3d::UnitX()));
-            t.prerotate(Eigen::AngleAxisd(angles[1], Eigen::Vector3d::UnitY()));
-            t.prerotate(Eigen::AngleAxisd(angles[2], Eigen::Vector3d::UnitZ()));
-            t.pretranslate(Eigen::Vector3d(origin[0], origin[1], origin[2]));
-            id_local[id] = { pid, t.matrix() };
-        }
-        for (auto& gi : group_infos) {
-            std::vector<i32> chain;
-            i32              c = gi.id;
-            for (int depth = 0; depth < 64 && c >= 0; ++depth) {
-                chain.push_back(c);
-                auto it = id_local.find(c);
-                if (it == id_local.end()) break;
-                c = it->second.first;
-            }
-            Eigen::Matrix4d w = Eigen::Matrix4d::Identity();
-            for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
-                auto lit = id_local.find(*rit);
-                if (lit != id_local.end()) w = w * lit->second.second;
-            }
-            context.original_world_transforms[gi.id] = w;
-        }
-    }
+    computeGroupWorldTransforms(context, json, group_infos);
 
     {
         context.scene->renderTargets[SpecTex_Default.data()] = {
