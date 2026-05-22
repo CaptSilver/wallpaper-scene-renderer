@@ -6,6 +6,7 @@
 #include "Particle/BlendWindow.h"
 #include "Particle/HsvColor.h"
 #include "Particle/ParticleCollision.h"
+#include "Particle/RemapValueOps.hpp"
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -1287,30 +1288,33 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             outputCP0 = ClampCpIndex(outputCP0);
             BlendWindow bw = BlendWindow::FromJson(wpj);
 
-            // Reduce a vec3 to a scalar based on the named component.  The
-            // source enum lists 8 reductions: { all, x, y, z, sum, average,
-            // max, min } — `all` only makes sense on the output side as the
-            // scalar-broadcast indicator, so on the input side `all` is
-            // treated as magnitude (the natural "use the whole vector"
-            // scalar projection).  The legacy aliases `magnitude`, `w`,
-            // `x+y` from earlier shipping are kept for back-compat: existing
-            // scenes that authored `magnitude` continue to work, and `w`
-            // (out-of-range index, source has no fourth component) returns 0.
-            auto reduce = [](const Vector3d& v, const std::string& comp) -> double {
-                if (comp == "x") return v.x();
-                if (comp == "y") return v.y();
-                if (comp == "z") return v.z();
-                if (comp == "w") return 0.0;
-                if (comp == "x+y") return v.x() + v.y();
-                if (comp == "sum") return v.x() + v.y() + v.z();
-                if (comp == "average") return (v.x() + v.y() + v.z()) / 3.0;
-                if (comp == "max") return std::max({ v.x(), v.y(), v.z() });
-                if (comp == "min") return std::min({ v.x(), v.y(), v.z() });
-                // "all" / "magnitude" / unknown → vector norm.
-                return v.norm();
-            };
+            // Decode the never-changing dispatch strings to enums ONCE here,
+            // outside the returned per-particle lambda, so the inner loop
+            // switches on integers instead of running std::string == ladders
+            // for every particle every frame.  Resolved AFTER the prefix-sugar
+            // / short-form normalisation above so the aliases are already
+            // canonicalised (e.g. setvelocity -> output particlevelocity + set).
+            //
+            // The component reduction (formerly the per-particle reduce()
+            // lambda) is now reduceComponent(vec, in_comp).  The source enum
+            // lists 8 reductions: { all, x, y, z, sum, average, max, min } —
+            // `all` only makes sense on the output side as the scalar-broadcast
+            // indicator, so on the input side `all` is treated as magnitude
+            // (the natural "use the whole vector" scalar projection).  The
+            // legacy aliases `magnitude`, `w`, `x+y` from earlier shipping are
+            // kept for back-compat: existing scenes that authored `magnitude`
+            // continue to work, and `w` (out-of-range index, source has no
+            // fourth component) returns 0.
+            const RemapInput     in_kind  = parseRemapInput(input);
+            const RemapTransform tx_kind  = parseRemapTransform(transformfunction);
+            const RemapOperation op_kind  = parseRemapOperation(operation);
+            const RemapOutput    out_kind = parseRemapOutput(output);
+            const RemapComponent in_comp  = parseRemapComponent(inputcomponent);
+            const RemapComponent out_comp = parseRemapComponent(outputcomponent);
 
-            return [=](const ParticleInfo& info) {
+            return [in_kind, tx_kind, op_kind, out_kind, in_comp, out_comp,
+                    inMin, inMax, outMin, outMax, transforminputscale, transformoctaves,
+                    inputCP0, outputCP0, bw](const ParticleInfo& info) {
                 const double in_span = (double)(inMax - inMin);
                 const double in_inv  = std::abs(in_span) > 1e-9 ? 1.0 / in_span : 0.0;
 
@@ -1319,34 +1323,47 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
 
                     // 1) Read the raw input as a scalar.
                     double raw = 0.0;
-                    if (input == "particlesystemtime") {
+                    switch (in_kind) {
+                    case RemapInput::ParticleSystemTime:
                         raw = info.time;
-                    } else if (input == "particlelifetime") {
+                        break;
+                    case RemapInput::ParticleLifetime:
                         raw = PM::LifetimePos(p);
-                    } else if (input == "particlevelocity") {
-                        raw = reduce(p.velocity.cast<double>(), inputcomponent);
-                    } else if (input == "particleposition") {
-                        raw = reduce(p.position.cast<double>(), inputcomponent);
-                    } else if (input == "particlerotation") {
-                        raw = reduce(p.rotation.cast<double>(), inputcomponent);
-                    } else if (input == "particleangularvelocity") {
-                        raw = reduce(p.angularVelocity.cast<double>(), inputcomponent);
-                    } else if (input == "particlecolor" || input == "color") {
-                        raw = reduce(p.color.cast<double>(), inputcomponent);
-                    } else if (input == "particlesize" || input == "size") {
+                        break;
+                    case RemapInput::ParticleVelocity:
+                        raw = reduceComponent(p.velocity.cast<double>(), in_comp);
+                        break;
+                    case RemapInput::ParticlePosition:
+                        raw = reduceComponent(p.position.cast<double>(), in_comp);
+                        break;
+                    case RemapInput::ParticleRotation:
+                        raw = reduceComponent(p.rotation.cast<double>(), in_comp);
+                        break;
+                    case RemapInput::ParticleAngularVelocity:
+                        raw = reduceComponent(p.angularVelocity.cast<double>(), in_comp);
+                        break;
+                    case RemapInput::ParticleColor:
+                        raw = reduceComponent(p.color.cast<double>(), in_comp);
+                        break;
+                    case RemapInput::ParticleSize:
                         raw = p.size;
-                    } else if (input == "particlealpha" || input == "opacity") {
+                        break;
+                    case RemapInput::ParticleAlpha:
                         raw = p.alpha;
-                    } else if (input == "speed") {
+                        break;
+                    case RemapInput::Speed:
                         // Source-enum variant of particlevelocity that always
                         // takes the magnitude.  Aliased here regardless of
                         // inputcomponent so authors get a scalar speed.
                         raw = p.velocity.cast<double>().norm();
-                    } else if (input == "angularspeed") {
+                        break;
+                    case RemapInput::AngularSpeed:
                         raw = p.angularVelocity.cast<double>().norm();
-                    } else if (input == "maxlifetime") {
+                        break;
+                    case RemapInput::MaxLifetime:
                         raw = p.init.lifetime;
-                    } else if (input == "runtime" || input == "layertime") {
+                        break;
+                    case RemapInput::Runtime:
                         // `runtime` and `layertime` are distinct in the source
                         // enum but both resolve to "scene wall-clock since
                         // start" for our purposes — neither layer-local time
@@ -1355,7 +1372,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         // both.  When a wallpaper appears that distinguishes
                         // them this branch is the place to split.
                         raw = info.time;
-                    } else if (input == "timeofday") {
+                        break;
+                    case RemapInput::TimeOfDay: {
                         // Local time as a fraction of a day — useful for
                         // wallpapers that subtly drift colour or particle
                         // density with the system clock.
@@ -1367,27 +1385,33 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         localtime_r(&now, &lt);
 #endif
                         raw = (lt.tm_hour * 3600.0 + lt.tm_min * 60.0 + lt.tm_sec) / 86400.0;
-                    } else if (input == "controlpoint" || input == "controlpointposition") {
+                        break;
+                    }
+                    case RemapInput::ControlPoint:
                         if ((usize)inputCP0 < info.controlpoints.size())
-                            raw = reduce(info.controlpoints[inputCP0].resolved, inputcomponent);
-                    } else if (input == "controlpointvelocity") {
+                            raw = reduceComponent(info.controlpoints[inputCP0].resolved, in_comp);
+                        break;
+                    case RemapInput::ControlPointVelocity:
                         if ((usize)inputCP0 < info.controlpoints.size())
-                            raw = reduce(info.controlpoints[inputCP0].velocity, inputcomponent);
-                    } else if (input == "distancetocontrolpoint") {
+                            raw = reduceComponent(info.controlpoints[inputCP0].velocity, in_comp);
+                        break;
+                    case RemapInput::DistanceToControlPoint:
                         if ((usize)inputCP0 < info.controlpoints.size())
                             raw = (p.position.cast<double>() -
                                    info.controlpoints[inputCP0].resolved)
                                       .norm();
-                    } else if (input == "deltatocontrolpoint") {
+                        break;
+                    case RemapInput::DeltaToControlPoint:
                         // (p.position - cp.resolved) reduced through the
                         // inputcomponent enum.  Authors driving (e.g.) only
                         // the x-axis displacement use inputcomponent: x.
                         if ((usize)inputCP0 < info.controlpoints.size()) {
                             Vector3d delta =
                                 p.position.cast<double>() - info.controlpoints[inputCP0].resolved;
-                            raw = reduce(delta, inputcomponent);
+                            raw = reduceComponent(delta, in_comp);
                         }
-                    } else if (input == "directiontocontrolpoint") {
+                        break;
+                    case RemapInput::DirectionToControlPoint:
                         // Normalised vector from particle toward the CP, then
                         // reduced via inputcomponent.  Useful for "drive
                         // velocity along the line to a CP" effects.
@@ -1397,9 +1421,10 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                             const double n = toward.norm();
                             if (n > 1e-9) toward /= n;
                             else          toward.setZero();
-                            raw = reduce(toward, inputcomponent);
+                            raw = reduceComponent(toward, in_comp);
                         }
-                    } else if (input == "positionbetweentwocontrolpoints") {
+                        break;
+                    case RemapInput::PositionBetweenTwoControlPoints:
                         // Scalar in [0, 1] giving the particle's projection
                         // along the line segment from CP0 → CP1.  Driver
                         // case: a rope whose colour gradients along its
@@ -1426,7 +1451,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                                     1.0);
                             }
                         }
-                    } else if (input == "layerorigin") {
+                        break;
+                    case RemapInput::LayerOrigin: {
                         // The owning layer's origin is not plumbed into
                         // ParticleInfo.  Until a driver wallpaper appears we
                         // log loudly the first time and read 0 — mirrors the
@@ -1437,9 +1463,12 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                             warned = true;
                         }
                         raw = 0.0;
-                    } else if (input == "random") {
+                        break;
+                    }
+                    case RemapInput::Random:
                         raw = p.RandomFloat();
-                    } else if (input == "noise") {
+                        break;
+                    case RemapInput::Noise: {
                         // Per-particle smooth-noise input source.  Samples 3D
                         // Perlin noise at the particle's position offset by
                         // scene time so the value drifts smoothly across the
@@ -1462,6 +1491,10 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         }
                         if (maxAmp < 1e-9) maxAmp = 1.0;
                         raw = std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
+                        break;
+                    }
+                    case RemapInput::Unknown:
+                        break; // raw stays 0 (matches no-branch-taken)
                     }
 
                     // 2) Normalise to [0, 1] over the author's input range.
@@ -1485,52 +1518,14 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     //    Legacy names `cosine`, `step`, `smoothstep` are kept as
                     //    aliases for back-compat with our prior shipping.
                     double xs = t * transforminputscale;
-                    double tx;
-                    if (transformfunction == "sine") {
-                        tx = (std::sin(xs * 2.0 * M_PI) + 1.0) * 0.5;
-                    } else if (transformfunction == "cosine") {
-                        tx = (std::cos(xs * 2.0 * M_PI) + 1.0) * 0.5;
-                    } else if (transformfunction == "square") {
-                        // Square wave shifted into [0, 1]: high half then low half.
-                        tx = std::sin(xs * 2.0 * M_PI) >= 0.0 ? 1.0 : 0.0;
-                    } else if (transformfunction == "saw") {
-                        tx = xs - std::floor(xs);
-                    } else if (transformfunction == "triangle") {
-                        const double f = xs - std::floor(xs);
-                        tx = std::abs(2.0 * f - 1.0);
-                    } else if (transformfunction == "simplexnoise") {
-                        // Use the available 3D Perlin sampler with two zero
-                        // axes so the output varies smoothly along the input
-                        // dimension only.  Output range is roughly [-0.7, 0.7];
-                        // shift+scale into [0, 1].
-                        const double n = algorism::PerlinNoise(xs, 0.0, 0.0);
-                        tx = std::clamp((n + 1.0) * 0.5, 0.0, 1.0);
-                    } else if (transformfunction == "fbmnoise") {
-                        // Fractal Brownian motion: sum of `transformoctaves`
-                        // noise octaves with doubling frequency and halving
-                        // amplitude.  Normalised so the running max-amplitude
-                        // sum keeps the result well-centred near 0.5.
-                        double sum    = 0.0;
-                        double amp    = 1.0;
-                        double freq   = 1.0;
-                        double maxAmp = 0.0;
-                        for (int oct = 0; oct < transformoctaves; oct++) {
-                            sum += amp * algorism::PerlinNoise(xs * freq, 0.0, 0.0);
-                            maxAmp += amp;
-                            amp *= 0.5;
-                            freq *= 2.0;
-                        }
-                        if (maxAmp < 1e-9) maxAmp = 1.0;
-                        tx = std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
-                    } else if (transformfunction == "step") {
-                        tx = std::floor(xs);
-                    } else if (transformfunction == "smoothstep") {
-                        double c = std::clamp(xs, 0.0, 1.0);
-                        tx = c * c * (3.0 - 2.0 * c);
-                    } else {
-                        // none / linear / unknown — identity pass-through.
-                        tx = xs;
-                    }
+                    // `transforminputscale` pre-scales BEFORE the transform (so
+                    // scale=2 doubles a sine period); the kernel takes the
+                    // already-scaled xs.  `transformoctaves` (clamped [1,8]
+                    // above) drives the fbmnoise octave loop.  Legacy names
+                    // `cosine`, `step`, `smoothstep` are kept as aliases for
+                    // back-compat with our prior shipping; `none`/`linear`/
+                    // unknown pass through as identity.
+                    double tx = applyRemapTransform(tx_kind, xs, transformoctaves);
 
                     // 4) Map into the author's output range.
                     double mapped = outMin + tx * (outMax - outMin);
@@ -1548,62 +1543,67 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         // shifting visuals on already-shipped scenes; authors
                         // who want the source-engine default behaviour write
                         // `operation: "remap"` (or the equivalent `"set"`).
-                        if (operation == "set" || operation == "remap") {
-                            return current * (1.0 - blend) + op_val * blend;
-                        }
-                        if (operation == "add") {
-                            return current + op_val * blend;
-                        }
-                        if (operation == "subtract") {
-                            return current - op_val * blend;
-                        }
-                        // multiply (default — see note above)
-                        return current * (1.0 + (op_val - 1.0) * blend);
+                        return applyRemapOperation(op_kind, current, op_val, blend);
                     };
 
-                    // 6) Write to output.
-                    if (output == "opacity" || output == "particlealpha" ||
-                        output == "alpha") {
+                    // 6) Write to output.  vec3 outputs broadcast the scalar
+                    //    across xyz unless `outputcomponent` selects a single
+                    //    axis (X/Y/Z); anything else (magnitude/all/...) falls
+                    //    to the broadcast default, matching the current `else`.
+                    switch (out_kind) {
+                    case RemapOutput::Alpha:
                         p.alpha = (float)apply_scalar(p.alpha, mapped);
-                    } else if (output == "size" || output == "particlesize") {
+                        break;
+                    case RemapOutput::Size:
                         p.size = (float)apply_scalar(p.size, mapped);
-                    } else if (output == "particlevelocity") {
-                        // Broadcast scalar across xyz unless an outputcomponent is
-                        // selected (then only that axis is written).
+                        break;
+                    case RemapOutput::Velocity: {
                         Vector3d v = p.velocity.cast<double>();
-                        if (outputcomponent == "x") v.x() = apply_scalar(v.x(), mapped);
-                        else if (outputcomponent == "y") v.y() = apply_scalar(v.y(), mapped);
-                        else if (outputcomponent == "z") v.z() = apply_scalar(v.z(), mapped);
-                        else {
+                        switch (out_comp) {
+                        case RemapComponent::X: v.x() = apply_scalar(v.x(), mapped); break;
+                        case RemapComponent::Y: v.y() = apply_scalar(v.y(), mapped); break;
+                        case RemapComponent::Z: v.z() = apply_scalar(v.z(), mapped); break;
+                        default:
                             v.x() = apply_scalar(v.x(), mapped);
                             v.y() = apply_scalar(v.y(), mapped);
                             v.z() = apply_scalar(v.z(), mapped);
+                            break;
                         }
                         p.velocity = v.cast<float>();
-                    } else if (output == "particleangularvelocity") {
+                        break;
+                    }
+                    case RemapOutput::AngularVelocity: {
                         Vector3d v = p.angularVelocity.cast<double>();
                         v.x() = apply_scalar(v.x(), mapped);
                         v.y() = apply_scalar(v.y(), mapped);
                         v.z() = apply_scalar(v.z(), mapped);
                         p.angularVelocity = v.cast<float>();
-                    } else if (output == "particlerotation") {
+                        break;
+                    }
+                    case RemapOutput::Rotation: {
                         Vector3d r = p.rotation.cast<double>();
                         r.x() = apply_scalar(r.x(), mapped);
                         r.y() = apply_scalar(r.y(), mapped);
                         r.z() = apply_scalar(r.z(), mapped);
                         p.rotation = r.cast<float>();
-                    } else if (output == "particlecolor") {
+                        break;
+                    }
+                    case RemapOutput::Color: {
                         Vector3d c = p.color.cast<double>();
-                        if (outputcomponent == "x") c.x() = apply_scalar(c.x(), mapped);
-                        else if (outputcomponent == "y") c.y() = apply_scalar(c.y(), mapped);
-                        else if (outputcomponent == "z") c.z() = apply_scalar(c.z(), mapped);
-                        else {
+                        switch (out_comp) {
+                        case RemapComponent::X: c.x() = apply_scalar(c.x(), mapped); break;
+                        case RemapComponent::Y: c.y() = apply_scalar(c.y(), mapped); break;
+                        case RemapComponent::Z: c.z() = apply_scalar(c.z(), mapped); break;
+                        default:
                             c.x() = apply_scalar(c.x(), mapped);
                             c.y() = apply_scalar(c.y(), mapped);
                             c.z() = apply_scalar(c.z(), mapped);
+                            break;
                         }
                         p.color = c.cast<float>();
-                    } else if (output == "controlpoint") {
+                        break;
+                    }
+                    case RemapOutput::ControlPoint:
                         // Write back into a controlpoint's resolved position
                         // so subsequent operators in this tick (and the next
                         // tick's chain consumers via the resolver re-walk)
@@ -1614,21 +1614,26 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         // alpha each tick".
                         if ((usize)outputCP0 < info.controlpoints.size()) {
                             Vector3d cp = info.controlpoints[outputCP0].resolved;
-                            if (outputcomponent == "x") cp.x() = apply_scalar(cp.x(), mapped);
-                            else if (outputcomponent == "y") cp.y() = apply_scalar(cp.y(), mapped);
-                            else if (outputcomponent == "z") cp.z() = apply_scalar(cp.z(), mapped);
-                            else {
+                            switch (out_comp) {
+                            case RemapComponent::X: cp.x() = apply_scalar(cp.x(), mapped); break;
+                            case RemapComponent::Y: cp.y() = apply_scalar(cp.y(), mapped); break;
+                            case RemapComponent::Z: cp.z() = apply_scalar(cp.z(), mapped); break;
+                            default:
                                 cp.x() = apply_scalar(cp.x(), mapped);
                                 cp.y() = apply_scalar(cp.y(), mapped);
                                 cp.z() = apply_scalar(cp.z(), mapped);
+                                break;
                             }
                             info.controlpoints[outputCP0].resolved = cp;
                         }
+                        break;
+                    case RemapOutput::Unhandled:
+                        // Other outputs (position) intentionally unhandled —
+                        // writing back into world space would need a pending
+                        // particle-position queue we don't have; report loudly
+                        // the first time we see one in the wild.
+                        break;
                     }
-                    // Other outputs (position) intentionally unhandled —
-                    // writing back into world space would need a pending
-                    // particle-position queue we don't have; report loudly
-                    // the first time we see one in the wild.
                 }
             };
         } else if (name == "capvelocity") {
