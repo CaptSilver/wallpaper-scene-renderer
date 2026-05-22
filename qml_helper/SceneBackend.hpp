@@ -514,6 +514,12 @@ private:
     qint64                                   m_lastPropertyTickMs { -1 };
     qint64                                   m_lastColorTickMs { -1 };
     qint64                                   m_lastTextTickMs { -1 };
+    // Cached timeOfDay (0.0=midnight, 1.0=midnight) with 1-second refresh gate.
+    // QTime::currentTime() is a syscall (clock_gettime) called every tick across
+    // three loops; timeOfDay is seconds-resolution so caching at 1Hz is exact.
+    // m_cachedTimeOfDay < 0.0 is the uninitialized sentinel (forces first-tick fetch).
+    double  m_cachedTimeOfDay { -1.0 };
+    qint64  m_lastTimeOfDayMs { -1 };
     // Last render-thread frame index seen by evaluateTextScripts.  The text
     // timer polls SceneWallpaper::getFrameIdx() at ~125Hz; eval only fires
     // when the index advances, so user scripts that compute FPS as
@@ -573,9 +579,10 @@ private:
     // avoids three globalObject().property() hash lookups per tick across the
     // property, text, and color loops.  Mirrors the m_vec2Fn/m_vec3Fn/m_vec4Fn
     // pattern.  Cleared in cleanupTextScripts.
-    QJSValue m_engineObj; // globalObject().property("engine")
-    QJSValue m_inputObj;  // globalObject().property("input")
-    QJSValue m_cwpObj;    // m_inputObj.property("cursorWorldPosition")
+    QJSValue m_engineObj;   // globalObject().property("engine")
+    QJSValue m_inputObj;    // globalObject().property("input")
+    QJSValue m_cwpObj;      // m_inputObj.property("cursorWorldPosition")
+    QJSValue m_consoleObj;  // globalObject().property("console"); stable after setupTextScripts
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API

@@ -9860,3 +9860,240 @@ TEST_SUITE("Cached engine/input global handle aliasing") {
         CHECK(live.property("frameCount").toNumber() == doctest::Approx(42.0));
     }
 } // TEST_SUITE Cached engine/input global handle aliasing
+
+// ------------------------------------------------------------------
+// Audio buffer handle aliasing (refreshAudioBuffers lazy-populate).
+// m_audioBufferRegs was declared but never populated; its leftArray/
+// rightArray/averageArray fields should be grabbed once on the first
+// call through the de-dup gate and reused on subsequent calls.
+//
+// refreshAudioBuffers lives in a Vulkan-backed SceneObject so it cannot
+// be called directly in tests.  The seam is the QJSValue aliasing
+// contract: a handle grabbed from buf.property("left") aliases the same
+// JS array as a fresh buf.property("left") call, so writes through the
+// cached handle are visible in JS.
+TEST_SUITE("Audio buffer handle aliasing") {
+    struct AudioEnv {
+        QJSEngine engine;
+        AudioEnv() {
+            // Install a minimal engine._audioRegs array matching the
+            // shape refreshAudioBuffers reads: an array of buf objects
+            // with resolution, left[], right[], average[] properties.
+            engine.evaluate(
+                "var engine = {};\n"
+                "engine._audioRegs = [\n"
+                "  { resolution: 16,\n"
+                "    left:    new Array(16).fill(0.0),\n"
+                "    right:   new Array(16).fill(0.0),\n"
+                "    average: new Array(16).fill(0.0) }\n"
+                "];\n");
+        }
+    };
+
+    TEST_CASE("cached left/right/average handles alias the JS arrays") {
+        AudioEnv env;
+        QJSValue audioRegs = env.engine.evaluate("engine._audioRegs");
+        REQUIRE(audioRegs.isArray());
+        REQUIRE(audioRegs.property("length").toInt() == 1);
+
+        QJSValue buf     = audioRegs.property(0);
+        // Simulate the lazy-populate grab (first call through de-dup gate).
+        QJSValue leftArr = buf.property("left");
+        QJSValue rightArr = buf.property("right");
+        QJSValue avgArr  = buf.property("average");
+
+        // Write through the cached handles (as the hot path does).
+        leftArr.setProperty(0, 0.5);
+        rightArr.setProperty(0, 0.75);
+        avgArr.setProperty(0, 0.625);
+
+        // Verify via a fresh JS eval (full round-trip a script reading
+        // audioRegs[0].left[0] would see).
+        CHECK(env.engine.evaluate("engine._audioRegs[0].left[0]").toNumber() ==
+              doctest::Approx(0.5));
+        CHECK(env.engine.evaluate("engine._audioRegs[0].right[0]").toNumber() ==
+              doctest::Approx(0.75));
+        CHECK(env.engine.evaluate("engine._audioRegs[0].average[0]").toNumber() ==
+              doctest::Approx(0.625));
+    }
+
+    TEST_CASE("second-call (cached handle) path produces same values as first-call") {
+        AudioEnv env;
+        QJSValue audioRegs = env.engine.evaluate("engine._audioRegs");
+        QJSValue buf       = audioRegs.property(0);
+
+        // First call: grab handles, write values.
+        QJSValue leftArr = buf.property("left");
+        leftArr.setProperty(0, 0.25);
+
+        // Second call: no re-fetch of buf.property("left"); use cached handle.
+        // Should write successfully (cached handle still aliases the JS array).
+        leftArr.setProperty(0, 0.99);
+        CHECK(env.engine.evaluate("engine._audioRegs[0].left[0]").toNumber() ==
+              doctest::Approx(0.99));
+    }
+
+    TEST_CASE("resolution is cached correctly") {
+        AudioEnv env;
+        QJSValue audioRegs  = env.engine.evaluate("engine._audioRegs");
+        QJSValue buf        = audioRegs.property(0);
+        int      resolution = buf.property("resolution").toInt();
+        CHECK(resolution == 16);
+    }
+} // TEST_SUITE Audio buffer handle aliasing
+
+// ------------------------------------------------------------------
+// Cached console object handle.
+// The property loop's flush block did two lookups per tick:
+// globalObject().property("console").property("_buf").  The console
+// object is installed once in setupTextScripts and never replaced;
+// cache it as m_consoleObj and do one lookup per tick instead of two.
+//
+// The flush block lives in the Vulkan-backed evaluatePropertyScripts
+// (untestable headlessly).  The seam: m_consoleObj aliases the live
+// console JS object so _buf populated by console.log() is visible
+// through the cached handle.
+TEST_SUITE("Cached console object handle") {
+    static const char* kConsoleJs =
+        "var console = {\n"
+        "  log: function() {\n"
+        "    var args = Array.prototype.slice.call(arguments);\n"
+        "    var msg = args.map(function(a){return String(a);}).join(' ');\n"
+        "    if (!console._buf) console._buf = [];\n"
+        "    console._buf.push(msg);\n"
+        "  },\n"
+        "  warn: function() { console.log.apply(console, arguments); },\n"
+        "  error: function() { console.log.apply(console, arguments); }\n"
+        "};\n";
+
+    TEST_CASE("m_consoleObj aliases the installed console global") {
+        QJSEngine engine;
+        engine.evaluate(kConsoleJs);
+
+        // Simulate the cache-grab in setupTextScripts.
+        QJSValue m_consoleObj = engine.globalObject().property("console");
+        REQUIRE(m_consoleObj.isObject());
+
+        // Before any console.log: _buf is undefined.
+        CHECK(m_consoleObj.property("_buf").isUndefined());
+
+        // Call console.log — lazily creates _buf.
+        engine.evaluate("console.log('hello', 'world');");
+
+        // Read _buf through the cached handle (as the flush block does).
+        QJSValue consoleBuf = m_consoleObj.property("_buf");
+        CHECK(consoleBuf.isArray());
+        CHECK(consoleBuf.property("length").toInt() == 1);
+        CHECK(consoleBuf.property(0).toString() == "hello world");
+    }
+
+    TEST_CASE("_buf populated by multiple console.log calls is all visible") {
+        QJSEngine engine;
+        engine.evaluate(kConsoleJs);
+        QJSValue m_consoleObj = engine.globalObject().property("console");
+
+        engine.evaluate("console.log('a'); console.log('b');");
+        QJSValue consoleBuf = m_consoleObj.property("_buf");
+        REQUIRE(consoleBuf.isArray());
+        CHECK(consoleBuf.property("length").toInt() == 2);
+        CHECK(consoleBuf.property(0).toString() == "a");
+        CHECK(consoleBuf.property(1).toString() == "b");
+    }
+
+    TEST_CASE("m_consoleObj single lookup equals two-lookup chain") {
+        // Prove: m_consoleObj.property("_buf") is the same value as
+        // globalObject().property("console").property("_buf").
+        QJSEngine engine;
+        engine.evaluate(kConsoleJs);
+        QJSValue m_consoleObj = engine.globalObject().property("console");
+        engine.evaluate("console.log('test');");
+
+        QJSValue via_cached     = m_consoleObj.property("_buf");
+        QJSValue via_two_lookup = engine.globalObject()
+                                      .property("console")
+                                      .property("_buf");
+        // Both are arrays; first element is the same string.
+        REQUIRE(via_cached.isArray());
+        REQUIRE(via_two_lookup.isArray());
+        CHECK(via_cached.property(0).toString() == via_two_lookup.property(0).toString());
+    }
+} // TEST_SUITE Cached console object handle
+
+// ------------------------------------------------------------------
+// timeOfDay 1-second throttle.
+// QTime::currentTime() (a syscall) was called once per tick in each
+// of the three evaluation loops (property/text/color) even though
+// timeOfDay is a seconds-resolution value.  A cached m_cachedTimeOfDay
+// with a 1-second gate (using the already-available nowMs monotonic
+// counter) eliminates the syscall for 99%+ of ticks.
+//
+// The per-tick loops are Vulkan-backed (untestable headlessly).  The
+// seam test pins the gate predicate logic in isolation: a simulated
+// monotonic counter, a cached value, and the refresh condition.
+TEST_SUITE("timeOfDay 1-second throttle gate") {
+    // Standalone test of the cache predicate.  Mirrors the in-loop logic:
+    //   if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000)
+    //       refresh;
+    // where nowMs comes from m_runtimeTimer.elapsed().
+
+    static double computeTimeOfDay(const QTime& t) {
+        return (t.hour() * 3600 + t.minute() * 60 + t.second()) / 86400.0;
+    }
+
+    TEST_CASE("sentinel (-1) triggers refresh on first tick") {
+        double m_cachedTimeOfDay = -1.0;
+        qint64 m_lastTimeOfDayMs = -1;
+        qint64 nowMs             = 100; // any positive value
+
+        bool shouldRefresh = (m_cachedTimeOfDay < 0.0 ||
+                              nowMs - m_lastTimeOfDayMs >= 1000);
+        CHECK(shouldRefresh);
+    }
+
+    TEST_CASE("no refresh within 1 second of last refresh") {
+        double m_cachedTimeOfDay = 0.5;   // previously cached value
+        qint64 m_lastTimeOfDayMs = 5000;  // last refresh at 5000ms
+        qint64 nowMs             = 5999;  // 999ms later — below threshold
+
+        bool shouldRefresh = (m_cachedTimeOfDay < 0.0 ||
+                              nowMs - m_lastTimeOfDayMs >= 1000);
+        CHECK(!shouldRefresh);
+    }
+
+    TEST_CASE("refresh fires at exactly 1000ms elapsed") {
+        double m_cachedTimeOfDay = 0.5;
+        qint64 m_lastTimeOfDayMs = 5000;
+        qint64 nowMs             = 6000; // exactly 1000ms later
+
+        bool shouldRefresh = (m_cachedTimeOfDay < 0.0 ||
+                              nowMs - m_lastTimeOfDayMs >= 1000);
+        CHECK(shouldRefresh);
+    }
+
+    TEST_CASE("timeOfDay formula maps midnight to 0.0, noon to ~0.5, 23:59:59 to <1.0") {
+        // The formula itself: no cache involved, just correctness.
+        CHECK(computeTimeOfDay(QTime(0,  0,  0)) == doctest::Approx(0.0));
+        CHECK(computeTimeOfDay(QTime(12, 0,  0)) == doctest::Approx(0.5));
+        CHECK(computeTimeOfDay(QTime(23, 59, 59))  >  0.9999);
+        CHECK(computeTimeOfDay(QTime(23, 59, 59))  <  1.0);
+    }
+
+    TEST_CASE("cached value is unchanged across sub-1s ticks") {
+        // Simulate the tick sequence: refresh at t=0, then 50 ticks at 8ms each.
+        double m_cachedTimeOfDay = computeTimeOfDay(QTime::currentTime());
+        qint64 m_lastTimeOfDayMs = 0;
+        double snapshot          = m_cachedTimeOfDay;
+
+        for (int tick = 1; tick <= 50; tick++) {
+            qint64 nowMs = tick * 8; // 8ms per property tick, total 400ms < 1000ms
+            bool shouldRefresh = (m_cachedTimeOfDay < 0.0 ||
+                                  nowMs - m_lastTimeOfDayMs >= 1000);
+            if (shouldRefresh) {
+                m_cachedTimeOfDay = computeTimeOfDay(QTime::currentTime());
+                m_lastTimeOfDayMs = nowMs;
+            }
+        }
+        // 50 x 8ms = 400ms < 1000ms -> no refresh should have fired.
+        CHECK(m_cachedTimeOfDay == doctest::Approx(snapshot));
+    }
+} // TEST_SUITE timeOfDay 1-second throttle gate

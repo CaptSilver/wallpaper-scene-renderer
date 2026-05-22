@@ -1814,6 +1814,7 @@ void SceneObject::setupTextScripts() {
                          "  warn: function() { console.log.apply(console, arguments); },\n"
                          "  error: function() { console.log.apply(console, arguments); }\n"
                          "};\n");
+    m_consoleObj = m_jsEngine->globalObject().property("console");
 
     // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
     m_timerBridge = new SceneTimerBridge(
@@ -3916,25 +3917,33 @@ void SceneObject::refreshAudioBuffers() {
         m_lastAudioBufFrameIdx = f;
     }
 
-    int len = audioRegs.property("length").toInt();
-    for (int r = 0; r < len; r++) {
-        QJSValue buf        = audioRegs.property(r);
-        int      resolution = buf.property("resolution").toInt();
+    // Lazy first-run populate: grab and cache the JS array handles so subsequent
+    // calls skip the buf.property("left"/"right"/"average") fetch.
+    if (m_audioBufferRegs.empty()) {
+        int len = audioRegs.property("length").toInt();
+        m_audioBufferRegs.reserve(static_cast<size_t>(len));
+        for (int r = 0; r < len; r++) {
+            QJSValue       buf = audioRegs.property(r);
+            AudioBufferReg reg;
+            reg.resolution   = buf.property("resolution").toInt();
+            reg.leftArray    = buf.property("left");
+            reg.rightArray   = buf.property("right");
+            reg.averageArray = buf.property("average");
+            m_audioBufferRegs.push_back(std::move(reg));
+        }
+    }
 
-        auto leftData  = analyzer->GetRawSpectrum(resolution, 0);
-        auto rightData = analyzer->GetRawSpectrum(resolution, 1);
-
-        QJSValue leftArr  = buf.property("left");
-        QJSValue rightArr = buf.property("right");
-        QJSValue avgArr   = buf.property("average");
-
-        int n = (int)leftData.size();
+    // Hot path: iterate cached handles — no JS property fetch per buffer per call.
+    for (auto& reg : m_audioBufferRegs) {
+        auto leftData  = analyzer->GetRawSpectrum(reg.resolution, 0);
+        auto rightData = analyzer->GetRawSpectrum(reg.resolution, 1);
+        int  n         = (int)leftData.size();
         for (int i = 0; i < n; i++) {
             float l  = leftData[i];
             float rv = rightData[i];
-            leftArr.setProperty(i, (double)l);
-            rightArr.setProperty(i, (double)rv);
-            avgArr.setProperty(i, (double)((l + rv) * 0.5f));
+            reg.leftArray.setProperty(i, (double)l);
+            reg.rightArray.setProperty(i, (double)rv);
+            reg.averageArray.setProperty(i, (double)((l + rv) * 0.5f));
         }
     }
 }
@@ -3970,10 +3979,15 @@ void SceneObject::evaluateTextScripts() {
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
     engineObj.setProperty("fps", m_scene->getFps());
-    // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight
-    QTime  now = QTime::currentTime();
-    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-    engineObj.setProperty("timeOfDay", tod);
+    // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight.  Cached at 1Hz —
+    // the value is seconds-resolution so a fresh QTime::currentTime() syscall per
+    // tick repeats the same value for hundreds of consecutive ticks.
+    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
+        QTime now         = QTime::currentTime();
+        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+        m_lastTimeOfDayMs = nowMs;
+    }
+    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
@@ -4097,9 +4111,12 @@ void SceneObject::evaluateColorScripts() {
     engineObj.setProperty("frametime", frametime);
     engineObj.setProperty("fps", m_scene->getFps());
 
-    QTime  now = QTime::currentTime();
-    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-    engineObj.setProperty("timeOfDay", tod);
+    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
+        QTime now         = QTime::currentTime();
+        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+        m_lastTimeOfDayMs = nowMs;
+    }
+    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
@@ -4432,9 +4449,12 @@ void SceneObject::evaluatePropertyScripts() {
     engineObj.setProperty("fps", m_scene->getFps());
     engineObj.setProperty("frameCount", (double)++m_propFrameCount);
 
-    QTime  now = QTime::currentTime();
-    double tod = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-    engineObj.setProperty("timeOfDay", tod);
+    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
+        QTime now         = QTime::currentTime();
+        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+        m_lastTimeOfDayMs = nowMs;
+    }
+    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
@@ -4694,7 +4714,7 @@ void SceneObject::evaluatePropertyScripts() {
 
     probeMark(s_t_scripts);
 
-    // Fire scene.on("update") listeners — after IIFE updates, before dirty flush
+    // Fire scene.on("update") listeners — after IIFE updates, before dirty flush.
     fireSceneEventListeners("update");
 
     // Flush dirty layer proxies — flat layout (see DIRTY_STRIDE in JS).
@@ -5066,7 +5086,7 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Flush console.log buffer from scripts
     {
-        QJSValue consoleBuf = m_jsEngine->globalObject().property("console").property("_buf");
+        QJSValue consoleBuf = m_consoleObj.property("_buf"); // cached handle — one lookup
         if (consoleBuf.isArray()) {
             int len = consoleBuf.property("length").toInt();
             for (int i = 0; i < len; i++) {
@@ -5282,6 +5302,9 @@ void SceneObject::cleanupTextScripts() {
     m_engineObj               = QJSValue();
     m_inputObj                = QJSValue();
     m_cwpObj                  = QJSValue();
+    m_consoleObj              = QJSValue();
+    m_cachedTimeOfDay         = -1.0;
+    m_lastTimeOfDayMs         = -1;
     // Drain the JS-side script array so a reload starts fresh.  The engine
     // itself stays alive; just its cached references need to clear.
     if (m_jsEngine) {
@@ -5291,6 +5314,7 @@ void SceneObject::cleanupTextScripts() {
     m_soundLayerStates.clear();
     m_soundLayerNameToIndex.clear();
     m_collectDirtySoundLayersFn = QJSValue();
+    m_audioBufferRegs.clear();
     m_cursorTargets.clear();
     m_hoveredLayers.clear();
     m_dragTarget.clear();
