@@ -99,4 +99,66 @@ inline RemapComponent parseRemapComponent(std::string_view s) noexcept {
     return RemapComponent::Norm; // all / magnitude / unknown
 }
 
+inline double reduceComponent(const Eigen::Vector3d& v, RemapComponent c) noexcept {
+    switch (c) {
+        case RemapComponent::X:       return v.x();
+        case RemapComponent::Y:       return v.y();
+        case RemapComponent::Z:       return v.z();
+        case RemapComponent::W:       return 0.0;
+        case RemapComponent::XPlusY:  return v.x() + v.y();
+        case RemapComponent::Sum:     return v.x() + v.y() + v.z();
+        case RemapComponent::Average: return (v.x() + v.y() + v.z()) / 3.0;
+        case RemapComponent::Max:     return std::max({ v.x(), v.y(), v.z() });
+        case RemapComponent::Min:     return std::min({ v.x(), v.y(), v.z() });
+        case RemapComponent::Norm:    break;
+    }
+    return v.norm(); // all / magnitude / unknown
+}
+
+inline double applyRemapTransform(RemapTransform fn, double xs, int octaves) noexcept {
+    switch (fn) {
+        case RemapTransform::Sine:   return (std::sin(xs * 2.0 * M_PI) + 1.0) * 0.5;
+        case RemapTransform::Cosine: return (std::cos(xs * 2.0 * M_PI) + 1.0) * 0.5;
+        case RemapTransform::Square: return std::sin(xs * 2.0 * M_PI) >= 0.0 ? 1.0 : 0.0;
+        case RemapTransform::Saw:    return xs - std::floor(xs);
+        case RemapTransform::Triangle: {
+            const double f = xs - std::floor(xs);
+            return std::abs(2.0 * f - 1.0);
+        }
+        case RemapTransform::SimplexNoise: {
+            const double n = algorism::PerlinNoise(xs, 0.0, 0.0);
+            return std::clamp((n + 1.0) * 0.5, 0.0, 1.0);
+        }
+        case RemapTransform::FbmNoise: {
+            double sum = 0.0, amp = 1.0, freq = 1.0, maxAmp = 0.0;
+            for (int oct = 0; oct < octaves; oct++) {
+                sum += amp * algorism::PerlinNoise(xs * freq, 0.0, 0.0);
+                maxAmp += amp;
+                amp *= 0.5;
+                freq *= 2.0;
+            }
+            if (maxAmp < 1e-9) maxAmp = 1.0;
+            return std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
+        }
+        case RemapTransform::Step:       return std::floor(xs);
+        case RemapTransform::Smoothstep: {
+            double c = std::clamp(xs, 0.0, 1.0);
+            return c * c * (3.0 - 2.0 * c);
+        }
+        case RemapTransform::Identity:   break;
+    }
+    return xs; // none / linear / unknown
+}
+
+inline double applyRemapOperation(RemapOperation op, double current, double op_val,
+                                  double blend) noexcept {
+    switch (op) {
+        case RemapOperation::SetRemap: return current * (1.0 - blend) + op_val * blend;
+        case RemapOperation::Add:      return current + op_val * blend;
+        case RemapOperation::Subtract: return current - op_val * blend;
+        case RemapOperation::Multiply: break;
+    }
+    return current * (1.0 + (op_val - 1.0) * blend); // multiply (default)
+}
+
 } // namespace wallpaper

@@ -1,7 +1,59 @@
 #include <doctest.h>
 #include "Particle/RemapValueOps.hpp"
 
+#include <Eigen/Core>
+#include <cmath>
+
 using namespace wallpaper;
+
+using Vec3 = Eigen::Vector3d;
+
+namespace {
+// Oracle: faithful copy of the CURRENT reduce() string switch.
+double reduceOracle(const Vec3& v, std::string_view comp) {
+    if (comp == "x") return v.x();
+    if (comp == "y") return v.y();
+    if (comp == "z") return v.z();
+    if (comp == "w") return 0.0;
+    if (comp == "x+y") return v.x() + v.y();
+    if (comp == "sum") return v.x() + v.y() + v.z();
+    if (comp == "average") return (v.x() + v.y() + v.z()) / 3.0;
+    if (comp == "max") return std::max({ v.x(), v.y(), v.z() });
+    if (comp == "min") return std::min({ v.x(), v.y(), v.z() });
+    return v.norm();
+}
+// Oracle: faithful copy of the CURRENT transform string switch.
+double txOracle(std::string_view fn, double xs, int octaves) {
+    if (fn == "sine")   return (std::sin(xs * 2.0 * M_PI) + 1.0) * 0.5;
+    if (fn == "cosine") return (std::cos(xs * 2.0 * M_PI) + 1.0) * 0.5;
+    if (fn == "square") return std::sin(xs * 2.0 * M_PI) >= 0.0 ? 1.0 : 0.0;
+    if (fn == "saw")    return xs - std::floor(xs);
+    if (fn == "triangle") { const double f = xs - std::floor(xs); return std::abs(2.0 * f - 1.0); }
+    if (fn == "simplexnoise") {
+        const double n = wallpaper::algorism::PerlinNoise(xs, 0.0, 0.0);
+        return std::clamp((n + 1.0) * 0.5, 0.0, 1.0);
+    }
+    if (fn == "fbmnoise") {
+        double sum = 0.0, amp = 1.0, freq = 1.0, maxAmp = 0.0;
+        for (int oct = 0; oct < octaves; oct++) {
+            sum += amp * wallpaper::algorism::PerlinNoise(xs * freq, 0.0, 0.0);
+            maxAmp += amp; amp *= 0.5; freq *= 2.0;
+        }
+        if (maxAmp < 1e-9) maxAmp = 1.0;
+        return std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
+    }
+    if (fn == "step") return std::floor(xs);
+    if (fn == "smoothstep") { double c = std::clamp(xs, 0.0, 1.0); return c * c * (3.0 - 2.0 * c); }
+    return xs; // none / linear / unknown
+}
+// Oracle: faithful copy of the CURRENT apply_scalar operation switch.
+double opOracle(std::string_view op, double current, double op_val, double blend) {
+    if (op == "set" || op == "remap") return current * (1.0 - blend) + op_val * blend;
+    if (op == "add")      return current + op_val * blend;
+    if (op == "subtract") return current - op_val * blend;
+    return current * (1.0 + (op_val - 1.0) * blend); // multiply
+}
+} // namespace
 
 TEST_SUITE("RemapValueOps resolvers") {
     TEST_CASE("input strings map to their enum, with aliases") {
@@ -85,5 +137,35 @@ TEST_SUITE("RemapValueOps resolvers") {
         CHECK(parseRemapComponent("all")       == RemapComponent::Norm);
         CHECK(parseRemapComponent("magnitude") == RemapComponent::Norm);
         CHECK(parseRemapComponent("")          == RemapComponent::Norm);
+    }
+}
+
+TEST_SUITE("RemapValueOps kernels match the string oracle") {
+    TEST_CASE("reduceComponent equals reduce() for every component") {
+        const Vec3 vs[] = { {3, -4, 12}, {0, 0, 0}, {-1.5, 2.5, -7.0}, {1, 1, 1} };
+        const char* comps[] = { "x","y","z","w","x+y","sum","average","max","min","magnitude","all","junk" };
+        for (auto& v : vs)
+            for (auto c : comps)
+                CHECK(reduceComponent(v, parseRemapComponent(c)) == doctest::Approx(reduceOracle(v, c)));
+    }
+    TEST_CASE("applyRemapTransform equals the transform switch for every function") {
+        const double xss[] = { 0.0, 0.25, 0.5, 1.0, 2.0, -0.3 };
+        const int octs[] = { 1, 4 };
+        const char* fns[] = { "sine","cosine","square","saw","triangle","simplexnoise",
+                              "fbmnoise","step","smoothstep","linear","none","junk" };
+        for (auto xs : xss)
+            for (auto oct : octs)
+                for (auto fn : fns)
+                    CHECK(applyRemapTransform(parseRemapTransform(fn), xs, oct)
+                          == doctest::Approx(txOracle(fn, xs, oct)));
+    }
+    TEST_CASE("applyRemapOperation equals apply_scalar for every operation") {
+        const double cur[] = { 0.0, 1.0, 0.5, 2.0 };
+        const double opv[] = { 0.0, 1.0, 0.25, 3.0 };
+        const double bl[]  = { 0.0, 0.5, 1.0 };
+        const char* ops[] = { "set","remap","add","subtract","multiply","junk" };
+        for (auto c : cur) for (auto ov : opv) for (auto b : bl) for (auto op : ops)
+            CHECK(applyRemapOperation(parseRemapOperation(op), c, ov, b)
+                  == doctest::Approx(opOracle(op, c, ov, b)));
     }
 }
