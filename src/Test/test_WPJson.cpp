@@ -452,3 +452,86 @@ TEST_SUITE("WPJson.QuoteFirstKey") {
     }
 
 } // QuoteFirstKey
+
+// ===========================================================================
+// ResolveUserPropertyRef — copy-free resolution: returns a reference into the
+// input for the common (no-"user" / no-context / embedded-default) paths, and
+// only materializes a value into caller-owned storage for the genuine resolved
+// path (so it cannot dangle).  Address-equality assertions are the proof that
+// the common path performs no deep copy.
+// ===========================================================================
+
+TEST_SUITE("WPJson.ResolveUserPropertyRef") {
+
+    TEST_CASE("no-user scalar returns a reference to the same object (no copy)") {
+        njson                         input = 3.14;
+        std::optional<njson>          storage;
+        const njson&                  out = ResolveUserPropertyRef(input, storage);
+        CHECK(&out == &input);              // same object: zero copy
+        CHECK_FALSE(storage.has_value());   // resolved path never taken
+        CHECK(out == 3.14);
+    }
+
+    TEST_CASE("no-user object returns a reference to the same object (no copy)") {
+        njson                input   = { { "color", "red" }, { "n", 7 } };
+        std::optional<njson> storage;
+        const njson&         out = ResolveUserPropertyRef(input, storage);
+        CHECK(&out == &input);
+        CHECK_FALSE(storage.has_value());
+        CHECK(out == input);
+    }
+
+    TEST_CASE("no-user array returns a reference to the same object (no copy)") {
+        njson                input   = njson::array({ 1, 2, 3 });
+        std::optional<njson> storage;
+        const njson&         out = ResolveUserPropertyRef(input, storage);
+        CHECK(&out == &input);
+        CHECK_FALSE(storage.has_value());
+        CHECK(out == input);
+    }
+
+    TEST_CASE("user field, no active context — embedded value default, still copy-free") {
+        // g_currentUserProperties is nullptr (no scope), so the resolver falls
+        // back to the embedded "value" — a reference INTO the input, not a copy.
+        REQUIRE(g_currentUserProperties == nullptr);
+        njson                input   = { { "user", "bright" }, { "value", 0.7 } };
+        std::optional<njson> storage;
+        const njson&         out = ResolveUserPropertyRef(input, storage);
+        CHECK(&out == &input.at("value"));  // reference into the input subtree
+        CHECK_FALSE(storage.has_value());
+        CHECK(out == 0.7);
+    }
+
+    TEST_CASE("active context resolves a stored value into caller storage (no dangle)") {
+        WPUserProperties props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"speed":{"value":5,"type":"slider"}}}})"));
+        UserPropertiesScope scope(&props);
+
+        njson                input   = { { "user", "speed" }, { "value", 1 } };
+        std::optional<njson> storage;
+        const njson&         out = ResolveUserPropertyRef(input, storage);
+        CHECK(storage.has_value());     // materialized — this is the only copying path
+        CHECK(&out == &*storage);       // reference points into caller-owned slot
+        CHECK(out == 5);                // resolved value, not the embedded literal
+    }
+
+    TEST_CASE("active context synthesized bool lands in caller storage (no dangle)") {
+        // Default-flip branch: combo prop at non-default value, bool-typed
+        // binding -> ResolveValue synthesizes a fresh bool (a temporary).  It
+        // must be parked in `storage`, never returned as a dangling reference.
+        WPUserProperties props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"style":{"type":"combo","value":"6"}}}})"));
+        props.SetProperty("style", "3"); // now differs from default "6"
+        UserPropertiesScope scope(&props);
+
+        njson                input   = { { "user", "style" }, { "value", true } };
+        std::optional<njson> storage;
+        const njson&         out = ResolveUserPropertyRef(input, storage);
+        CHECK(storage.has_value());
+        CHECK(&out == &*storage);
+        CHECK(out == false);            // current != default -> !visDefault
+    }
+
+} // WPJson.ResolveUserPropertyRef

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <nlohmann/json_fwd.hpp>
+#include <optional>
 #include <string_view>
 #include <type_traits>
 
@@ -54,6 +55,17 @@ std::string StripTrailingCommas(std::string_view source);
 // 2530355779 ships this in its u_userSpeed annotation).  Applied automatically
 // inside ParseJson alongside the other recoveries.
 std::string StripLeadingZeros(std::string_view source);
+
+// Resolve a possibly-user-property-bound JSON value WITHOUT copying when no
+// resolution is needed.  The dominant case — a value with no "user" key, or no
+// active user-property context — returns a reference into `json` directly, so
+// the per-field reads in the scene parser do not deep-copy a JSON subtree on
+// every GET_JSON_* call.  Only the genuine resolved case (an active
+// g_currentUserProperties resolving a {"user":...} field, which may yield a
+// synthesized/temporary value) materializes into caller-owned `storage` and
+// returns a reference into it.  `storage` must outlive the returned reference.
+const nlohmann::json& ResolveUserPropertyRef(const nlohmann::json&          json,
+                                             std::optional<nlohmann::json>& storage);
 
 // Quote first-key-missing-opening-quote object members like `{Foo":0,"Bar":1}`,
 // rewriting to `{"Foo":0,"Bar":1}`.  WE workshop shader source occasionally

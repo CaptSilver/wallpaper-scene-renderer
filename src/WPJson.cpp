@@ -1,5 +1,6 @@
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
+#include <optional>
 
 #include "Utils/Identity.hpp"
 #include "Utils/String.h"
@@ -8,18 +9,27 @@
 namespace wallpaper
 {
 
-// Resolve user property reference if present
-// Returns the resolved JSON value (either from user properties or default value)
-static nlohmann::json ResolveUserProperty(const nlohmann::json& json) {
+// Resolve user property reference if present.  Returns a reference into `json`
+// for the pass-through cases (the common path — zero copy); for the genuine
+// resolved case the value is materialized into `storage` (it may be a
+// synthesized temporary) and a reference into it is returned, so it does not
+// dangle.  See WPJson.hpp for the contract.
+const nlohmann::json& ResolveUserPropertyRef(const nlohmann::json&          json,
+                                             std::optional<nlohmann::json>& storage) {
     if (! json.is_object() || ! json.contains("user")) {
-        return json;
+        return json; // common case: reference into the input, no copy
     }
 
     if (g_currentUserProperties != nullptr) {
-        return g_currentUserProperties->ResolveValue(json);
+        // The only path that may produce a temporary (ResolveValue can return a
+        // synthesized bool or a copy out of GetProperty's optional).  Park it in
+        // caller-owned storage and hand back a reference into that slot.
+        storage = g_currentUserProperties->ResolveValue(json);
+        return *storage;
     }
 
-    // No user properties context, use default value
+    // No user-property context: fall back to the embedded default.
+    // json["value"] is a reference into `json` (const operator[]), still no copy.
     if (json.contains("value")) {
         return json["value"];
     }
@@ -203,8 +213,10 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
                           typename utils::is_std_array<T>::type& value) {
     using Tv = typename T::value_type;
 
-    // Resolve user property reference first
-    nlohmann::json resolved = ResolveUserProperty(json);
+    // Resolve user property reference first (no copy unless a user property
+    // actually resolves; see ResolveUserPropertyRef).
+    std::optional<nlohmann::json> resolvedStorage;
+    const nlohmann::json&         resolved = ResolveUserPropertyRef(json, resolvedStorage);
 
     const auto* pjson = &resolved;
     if (resolved.contains("value")) pjson = &resolved.at("value");
@@ -227,8 +239,10 @@ inline bool _GetJsonValue(const nlohmann::json&                  json,
 
 template<typename T>
 inline bool _GetJsonValue(const nlohmann::json& json, T& value) {
-    // Resolve user property reference first
-    nlohmann::json resolved = ResolveUserProperty(json);
+    // Resolve user property reference first (no copy unless a user property
+    // actually resolves; see ResolveUserPropertyRef).
+    std::optional<nlohmann::json> resolvedStorage;
+    const nlohmann::json&         resolved = ResolveUserPropertyRef(json, resolvedStorage);
 
     if (resolved.contains("value"))
         value = resolved.at("value").get<T>();
