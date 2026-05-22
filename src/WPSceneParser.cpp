@@ -3668,6 +3668,33 @@ void prescanDependencies(ParseContext& context, const std::vector<WPObjectVar>& 
         LOG_INFO("compose dependency ids collected: %zu", context.compose_dependency_ids.size());
     }
 }
+
+// Build group node hierarchy: add each group to its parent (or scene root).
+//
+// Groups whose parent_id refers to an image/text/particle object are
+// deferred — those nodes aren't in node_map until after wp_objs parsing
+// (see ParseImageObj/ParseTextObj).  Without this, e.g. solar system's
+// info-panel chain `725 → 530 → 1210 → 936 → (image 1166) → (group 1234)
+// → (image 970) → (group 974) → (text 982)` collapses: groups 1234 and
+// 974 orphan to scene root, losing the 0.0001× and 10× parent scales.
+// Text 982 then renders at world scale 0.013 instead of 1.8e-5 — the
+// "giant 026-0 text filling the viewport" bug.
+void linkGroupHierarchy(ParseContext& context, std::vector<GroupInfo>& group_infos,
+                        std::vector<GroupInfo>& deferred_group_links) {
+    for (auto& gi : group_infos) {
+        auto& node = context.node_map.at(gi.id);
+        if (gi.parent_id >= 0 && context.node_map.count(gi.parent_id)) {
+            context.node_map.at(gi.parent_id)->AppendChild(node);
+        } else if (gi.parent_id >= 0) {
+            // Parent is a non-group object parsed later.  Temporarily attach
+            // to scene root; re-link after wp_objs parsing below.
+            context.scene->sceneGraph->AppendChild(node);
+            deferred_group_links.push_back(gi);
+        } else {
+            context.scene->sceneGraph->AppendChild(node);
+        }
+    }
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3747,30 +3774,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     prescanDependencies(context, wp_objs);
 
-    // Build group node hierarchy: add each group to its parent (or scene root).
-    //
-    // Groups whose parent_id refers to an image/text/particle object are
-    // deferred — those nodes aren't in node_map until after wp_objs parsing
-    // (see ParseImageObj/ParseTextObj).  Without this, e.g. solar system's
-    // info-panel chain `725 → 530 → 1210 → 936 → (image 1166) → (group 1234)
-    // → (image 970) → (group 974) → (text 982)` collapses: groups 1234 and
-    // 974 orphan to scene root, losing the 0.0001× and 10× parent scales.
-    // Text 982 then renders at world scale 0.013 instead of 1.8e-5 — the
-    // "giant 026-0 text filling the viewport" bug.
     std::vector<GroupInfo> deferred_group_links;
-    for (auto& gi : group_infos) {
-        auto& node = context.node_map.at(gi.id);
-        if (gi.parent_id >= 0 && context.node_map.count(gi.parent_id)) {
-            context.node_map.at(gi.parent_id)->AppendChild(node);
-        } else if (gi.parent_id >= 0) {
-            // Parent is a non-group object parsed later.  Temporarily attach
-            // to scene root; re-link after wp_objs parsing below.
-            context.scene->sceneGraph->AppendChild(node);
-            deferred_group_links.push_back(gi);
-        } else {
-            context.scene->sceneGraph->AppendChild(node);
-        }
-    }
+    linkGroupHierarchy(context, group_infos, deferred_group_links);
     // Compute original world transforms for group nodes so image-object
     // children can look up the correct parent transform even when the
     // parent's world node has been reset to identity for effect rendering.
