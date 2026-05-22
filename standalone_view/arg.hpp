@@ -20,6 +20,8 @@ constexpr std::string_view OPT_USER_PROPS        = "--user-props";
 constexpr std::string_view OPT_SET_PROP          = "--set";
 constexpr std::string_view OPT_SCREENSHOT        = "--screenshot";
 constexpr std::string_view OPT_SCREENSHOT_FRAMES = "--screenshot-frames";
+constexpr std::string_view OPT_SCREENSHOT_AT_FRAME = "--screenshot-at-frame";
+constexpr std::string_view OPT_DETERMINISTIC       = "--deterministic";
 // Interval capture: write a screenshot every N seconds for a bounded total
 // time.  Output filename becomes `<base>_<ms>.ppm` so a sorted listing is
 // chronological.  Mutually exclusive with single-shot (if both present,
@@ -148,6 +150,23 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .default_value<int32_t>(30)
         .nargs(1)
         .scan<'i', int32_t>();
+
+    arg.add_argument(OPT_SCREENSHOT_AT_FRAME)
+        .help("capture EXACTLY at this monotonic frame index (race-free, decided "
+              "on the render thread) instead of the wall-clock --screenshot-frames "
+              "sleep; pair with --deterministic for byte-reproducible captures. "
+              "0 (default) keeps the wall-clock behaviour.")
+        .default_value<int32_t>(0)
+        .nargs(1)
+        .scan<'i', int32_t>();
+
+    arg.add_argument(OPT_DETERMINISTIC)
+        .help("deterministic render mode: fixed per-frame dt + seeded particle "
+              "RNG, so a headless capture is reproducible run-to-run on this "
+              "machine (the render oracle's warm==cold prerequisite)")
+        .default_value(false)
+        .implicit_value(true)
+        .nargs(0);
 
     arg.add_argument(OPT_SCREENSHOT_INTERVAL)
         .help("time-lapse: seconds between captures (requires --screenshot)")

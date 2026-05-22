@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
     wallpaper::RenderInitInfo info;
     info.enable_valid_layer = program.get<bool>(OPT_VALID_LAYER);
     info.hdr_content        = program.get<bool>(OPT_HDR);
+    info.deterministic      = program.get<bool>(OPT_DETERMINISTIC);
     info.width              = w_width;
     info.height             = w_height;
 
@@ -268,18 +269,34 @@ int main(int argc, char** argv) {
             glfwPostEmptyEvent();
         }).detach();
     } else if (! screenshot_path.empty()) {
-        std::thread([psw, screenshot_path, &program]() {
-            int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
-            if (frames_to_wait < 1) frames_to_wait = 30;
-            // A simple wall-clock wait tied to --fps gives enough frames without
-            // needing a frame counter hook.  At default 60fps, 30 frames ~ 0.5s.
-            int32_t fps = program.get<int32_t>(OPT_FPS);
-            if (fps < 5) fps = 60;
-            double wait_seconds = (double)frames_to_wait / (double)fps + 0.3;
-            std::this_thread::sleep_for(std::chrono::milliseconds((int64_t)(wait_seconds * 1000)));
-            psw->requestScreenshot(screenshot_path);
-            // Poll for completion (max 5 seconds).
-            for (int i = 0; i < 500 && ! psw->screenshotDone(); i++) {
+        int32_t at_frame = program.get<int32_t>(OPT_SCREENSHOT_AT_FRAME);
+        std::thread([psw, screenshot_path, &program, at_frame]() {
+            if (at_frame > 0) {
+                // Frame-exact capture: the render thread fires the readback when
+                // its monotonic frame counter reaches `at_frame`.  Deterministic
+                // and race-free, so a slow cold run and a fast warm run capture
+                // the SAME scene-frame regardless of wall-clock / shader compile
+                // time — the byte-identical warm==cold prerequisite.
+                psw->requestScreenshotAtFrame(screenshot_path, (uint64_t)at_frame);
+            } else {
+                int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
+                if (frames_to_wait < 1) frames_to_wait = 30;
+                // A simple wall-clock wait tied to --fps gives enough frames
+                // without a frame counter hook.  At default 60fps, 30 frames
+                // ~ 0.5s.  (Not reproducible run-to-run — use --screenshot-at-frame
+                // with --deterministic for that.)
+                int32_t fps = program.get<int32_t>(OPT_FPS);
+                if (fps < 5) fps = 60;
+                double wait_seconds = (double)frames_to_wait / (double)fps + 0.3;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds((int64_t)(wait_seconds * 1000)));
+                psw->requestScreenshot(screenshot_path);
+            }
+            // Poll for completion.  Frame-exact mode may legitimately wait a
+            // long time for a high target frame after a slow cold compile, so
+            // give it a longer cap (30s) than the wall-clock path (5s).
+            int max_polls = at_frame > 0 ? 3000 : 500; // *10ms
+            for (int i = 0; i < max_polls && ! psw->screenshotDone(); i++) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             if (g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
