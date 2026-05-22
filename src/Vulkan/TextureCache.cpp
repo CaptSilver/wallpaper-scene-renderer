@@ -15,8 +15,10 @@
 #include "include/Vulkan/Parameters.hpp"
 #include "vvk/vulkan_wrapper.hpp"
 #include "TexFormatVk.hpp" // ToVkType(TextureFormat) — testable mapping (BC1 1-bit alpha)
+#include "ImagePayload.h"  // mayReleaseDecodedPayload / releaseDecodedPayload
 
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 
 using namespace wallpaper;
@@ -531,6 +533,24 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         m_device.handle().WaitIdle();
     }
     m_tex_map[image.key] = std::move(img_slots);
+    // The GPU image is now authoritative; the decoded CPU mip bytes were the
+    // staging source and are dead after the WaitIdle above.  Free them but
+    // keep the Image shell so the parser cache (m_registered) still serves
+    // ParseHeader and a duplicate CreateTex early-returns on the m_tex_map
+    // key.  Video-texture placeholders are left intact (policy == false);
+    // their per-frame frames come from the live decoder, not from this image.
+    // WEKDE_KEEP_TEXBYTES is a zero-rebuild A/B / rollback escape hatch.
+    if (mayReleaseDecodedPayload(image) && ! std::getenv("WEKDE_KEEP_TEXBYTES")) {
+        if (std::getenv("WEKDE_DEBUG_TEXBYTES")) {
+            isize freed = 0;
+            for (auto& s : image.slots)
+                for (auto& m : s.mipmaps) freed += m.size;
+            LOG_INFO("TEXBYTES free '%s': %lld decoded CPU bytes released",
+                     image.key.c_str(),
+                     (long long)freed);
+        }
+        releaseDecodedPayload(image);
+    }
     return m_tex_map[image.key];
 }
 
