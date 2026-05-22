@@ -4313,6 +4313,78 @@ void registerObjectBindings(ParseContext& context, const nlohmann::json& json,
         }
     }
 }
+void registerPoolNodes(ParseContext& context, const std::map<i32, std::string>& pool_id_to_name,
+                       const std::unordered_map<std::string, ObjInitState>& nameToObjState) {
+    // Register dynamic-asset pool nodes in nodeNameToId / layerInitialStates.
+    // The main loop above iterates the raw scene.json objects only; pool
+    // nodes were synthesized in C++ and bypass that registration path.
+    // Without this, thisScene.getLayer('__pool_...') returns null and
+    // createLayer falls through to its stub.
+    for (const auto& [poolId, poolName] : pool_id_to_name) {
+        auto nodeIt = context.node_map.find(poolId);
+        if (nodeIt == context.node_map.end()) continue;
+        auto stateIt = nameToObjState.find(poolName);
+        if (stateIt == nameToObjState.end()) continue;
+        context.scene->nodeById[poolId]       = nodeIt->second.get();
+        context.scene->nodeNameToId[poolName] = poolId;
+        Scene::LayerInitialState lis;
+        lis.origin                                  = stateIt->second.origin;
+        lis.scale                                   = stateIt->second.scale;
+        lis.angles                                  = stateIt->second.angles;
+        lis.size                                    = stateIt->second.size;
+        lis.parallaxDepth                           = stateIt->second.parallaxDepth;
+        lis.visible                                 = stateIt->second.visible;
+        context.scene->layerInitialStates[poolName] = lis;
+    }
+}
+
+void syncVisibilityBindings(ParseContext& context) {
+    // Sync layerInitialStates visibility with user property bindings.
+    // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
+    // causing the JS proxy to think the node is visible when it's actually hidden.
+    // Also apply the binding's default visibility directly on the node itself —
+    // otherwise m_visible stays at the ctor default (true) until the first
+    // applyUserPropertyChanges() (which only fires on user-driven changes).
+    // This matters for scene-graph visibility inheritance: a hidden parent
+    // group (e.g. 24088 "人物" bound to timevarying==0 while default==1)
+    // must actually have m_visible=false at frame 0 so children stop rendering.
+    for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
+        for (const auto& binding : bindings) {
+            auto* node = binding.node;
+            if (! node) continue;
+            node->SetVisible(binding.defaultVisible);
+            for (auto& [layerName, lis] : context.scene->layerInitialStates) {
+                auto nameIt = context.scene->nodeNameToId.find(layerName);
+                if (nameIt != context.scene->nodeNameToId.end() && nameIt->second == node->ID()) {
+                    lis.visible = binding.defaultVisible;
+                }
+            }
+        }
+    }
+}
+
+void patchPlayerFaderScripts(ParseContext& context) {
+    // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
+    // its alpha script preserves "exception"-named layers while a song
+    // plays, so the track title hovers on screen long after the player
+    // fades.  Strip the exception gate so all player layers fade together.
+    for (auto& sps : context.scene->propertyScripts) {
+        const std::string needle = "playerExceptions.indexOf(element)==-1 || !shared.songplays";
+        auto              pos    = sps.script.find(needle);
+        if (pos != std::string::npos) {
+            sps.script.replace(pos, needle.size(), "true");
+            LOG_INFO("Patched player-fader alpha script: dropped exception gate "
+                     "(layer id=%d name='%s')",
+                     sps.id,
+                     sps.layerName.c_str());
+        }
+    }
+
+    if (! context.scene->propertyScripts.empty()) {
+        LOG_INFO("Extracted %zu property scripts", context.scene->propertyScripts.size());
+    }
+}
+
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -4417,70 +4489,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     registerObjectBindings(context, json, nameToObjState);
 
-    // Register dynamic-asset pool nodes in nodeNameToId / layerInitialStates.
-    // The main loop above iterates the raw scene.json objects only; pool
-    // nodes were synthesized in C++ and bypass that registration path.
-    // Without this, thisScene.getLayer('__pool_...') returns null and
-    // createLayer falls through to its stub.
-    for (const auto& [poolId, poolName] : pool_id_to_name) {
-        auto nodeIt = context.node_map.find(poolId);
-        if (nodeIt == context.node_map.end()) continue;
-        auto stateIt = nameToObjState.find(poolName);
-        if (stateIt == nameToObjState.end()) continue;
-        context.scene->nodeById[poolId]       = nodeIt->second.get();
-        context.scene->nodeNameToId[poolName] = poolId;
-        Scene::LayerInitialState lis;
-        lis.origin                                  = stateIt->second.origin;
-        lis.scale                                   = stateIt->second.scale;
-        lis.angles                                  = stateIt->second.angles;
-        lis.size                                    = stateIt->second.size;
-        lis.parallaxDepth                           = stateIt->second.parallaxDepth;
-        lis.visible                                 = stateIt->second.visible;
-        context.scene->layerInitialStates[poolName] = lis;
-    }
+    registerPoolNodes(context, pool_id_to_name, nameToObjState);
 
-    // Sync layerInitialStates visibility with user property bindings.
-    // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
-    // causing the JS proxy to think the node is visible when it's actually hidden.
-    // Also apply the binding's default visibility directly on the node itself —
-    // otherwise m_visible stays at the ctor default (true) until the first
-    // applyUserPropertyChanges() (which only fires on user-driven changes).
-    // This matters for scene-graph visibility inheritance: a hidden parent
-    // group (e.g. 24088 "人物" bound to timevarying==0 while default==1)
-    // must actually have m_visible=false at frame 0 so children stop rendering.
-    for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
-        for (const auto& binding : bindings) {
-            auto* node = binding.node;
-            if (! node) continue;
-            node->SetVisible(binding.defaultVisible);
-            for (auto& [layerName, lis] : context.scene->layerInitialStates) {
-                auto nameIt = context.scene->nodeNameToId.find(layerName);
-                if (nameIt != context.scene->nodeNameToId.end() && nameIt->second == node->ID()) {
-                    lis.visible = binding.defaultVisible;
-                }
-            }
-        }
-    }
+    syncVisibilityBindings(context);
 
-    // Wallpaper 2866203962 (Cyberpunk Lucy music player) fader pattern:
-    // its alpha script preserves "exception"-named layers while a song
-    // plays, so the track title hovers on screen long after the player
-    // fades.  Strip the exception gate so all player layers fade together.
-    for (auto& sps : context.scene->propertyScripts) {
-        const std::string needle = "playerExceptions.indexOf(element)==-1 || !shared.songplays";
-        auto              pos    = sps.script.find(needle);
-        if (pos != std::string::npos) {
-            sps.script.replace(pos, needle.size(), "true");
-            LOG_INFO("Patched player-fader alpha script: dropped exception gate "
-                     "(layer id=%d name='%s')",
-                     sps.id,
-                     sps.layerName.c_str());
-        }
-    }
-
-    if (! context.scene->propertyScripts.empty()) {
-        LOG_INFO("Extracted %zu property scripts", context.scene->propertyScripts.size());
-    }
+    patchPlayerFaderScripts(context);
 
     // Sort root children to match JSON "objects" array order.
     // The two-pass construction (groups first, then images) breaks the intended
