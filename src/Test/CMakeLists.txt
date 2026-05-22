@@ -95,6 +95,7 @@ add_executable(backend_scene_tests
     test_ImagePayload.cpp
     test_AudioConsumerGate.cpp
     test_TextStyleMerge.cpp
+    test_WarmCacheTexSlots.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
