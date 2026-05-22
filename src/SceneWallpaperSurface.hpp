@@ -56,6 +56,18 @@ inline double SelectFrameDt(bool deterministic, double fixed_dt, double wall_dt)
     return deterministic ? fixed_dt : wall_dt;
 }
 
+// Pure capture-gate predicate for frame-exact screenshots.  The render-thread
+// draw loop calls this once per frame BEFORE drawing; when it returns true the
+// loop arms m_render->setScreenshotPath() so the frame about to be rendered is
+// the one read back.  Kept a pure free function (like SelectFrameDt) so the
+// off-by-one and "disabled when target < 0" semantics are unit-tested without
+// a Vulkan device.
+//   target  : requested monotonic frame index, or -1 when no capture is pending.
+//   current : the render thread's monotonic completed-frame counter (getFrameIdx).
+inline bool ShouldCaptureAtFrame(int64_t target, uint64_t current) noexcept {
+    return target >= 0 && current == static_cast<uint64_t>(target);
+}
+
 // Resolve whether deterministic mode is active given the struct flag and an
 // optional `WEK_DETERMINISTIC` env-var override.  The env var is a convenience
 // for ad-hoc headless debugging (set WEK_DETERMINISTIC=1) that does not require

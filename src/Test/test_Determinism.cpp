@@ -254,3 +254,27 @@ TEST_SUITE("DeterminismSeed") {
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ShouldCaptureAtFrame — the frame-exact capture gate
+// ─────────────────────────────────────────────────────────────────────────────
+// The render-thread draw loop uses this to arm a screenshot for an EXACT
+// monotonic frame index.  Pinning the off-by-one + disabled-sentinel keeps the
+// threaded capture path honest: warm/cold runs capture the SAME scene-frame
+// regardless of wall-clock, the byte-identical-comparison prerequisite.
+
+TEST_SUITE("DeterminismCaptureGate") {
+    TEST_CASE("ShouldCaptureAtFrame: fires only on the exact target frame") {
+        // -1 sentinel = no capture pending → never fires.
+        CHECK_FALSE(ShouldCaptureAtFrame(-1, 0));
+        CHECK_FALSE(ShouldCaptureAtFrame(-1, 120));
+
+        // Exact match fires (frame 0 is a valid target).
+        CHECK(ShouldCaptureAtFrame(0, 0));
+        CHECK(ShouldCaptureAtFrame(120, 120));
+
+        // One frame early or late does NOT fire (no "fire on first frame >= N").
+        CHECK_FALSE(ShouldCaptureAtFrame(120, 119));
+        CHECK_FALSE(ShouldCaptureAtFrame(120, 121));
+    }
+}
