@@ -4385,6 +4385,25 @@ void patchPlayerFaderScripts(ParseContext& context) {
     }
 }
 
+// Sort root children to match JSON "objects" array order.
+// The two-pass construction (groups first, then images) breaks the intended
+// Z-order.  Re-sorting ensures groups are interleaved with images at their
+// original position so e.g. backgrounds render before compose layers.
+// Camera nodes (not in JSON objects) stay at the front.
+void restoreZOrder(ParseContext& context, const std::map<i32, size_t>& json_order) {
+    context.scene->sceneGraph->GetChildren().sort(
+        [&json_order](const std::shared_ptr<SceneNode>& a, const std::shared_ptr<SceneNode>& b) {
+            auto it_a  = json_order.find(a->ID());
+            auto it_b  = json_order.find(b->ID());
+            bool has_a = it_a != json_order.end();
+            bool has_b = it_b != json_order.end();
+            if (! has_a && ! has_b) return false; // both cameras: stable
+            if (! has_a) return true;             // cameras stay first
+            if (! has_b) return false;
+            return it_a->second < it_b->second;
+        });
+}
+
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -4495,22 +4514,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     patchPlayerFaderScripts(context);
 
-    // Sort root children to match JSON "objects" array order.
-    // The two-pass construction (groups first, then images) breaks the intended
-    // Z-order.  Re-sorting ensures groups are interleaved with images at their
-    // original position so e.g. backgrounds render before compose layers.
-    // Camera nodes (not in JSON objects) stay at the front.
-    context.scene->sceneGraph->GetChildren().sort(
-        [&json_order](const std::shared_ptr<SceneNode>& a, const std::shared_ptr<SceneNode>& b) {
-            auto it_a  = json_order.find(a->ID());
-            auto it_b  = json_order.find(b->ID());
-            bool has_a = it_a != json_order.end();
-            bool has_b = it_b != json_order.end();
-            if (! has_a && ! has_b) return false; // both cameras: stable
-            if (! has_a) return true;             // cameras stay first
-            if (! has_b) return false;
-            return it_a->second < it_b->second;
-        });
+    restoreZOrder(context, json_order);
 
     // Record scene's HDR intent so SceneWallpaper can decide whether to upgrade
     // render targets.  If the scene declares hdr:false, we should stay in SDR to
