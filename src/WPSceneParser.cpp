@@ -4404,118 +4404,7 @@ void restoreZOrder(ParseContext& context, const std::map<i32, size_t>& json_orde
         });
 }
 
-} // namespace
-
-std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
-                                            fs::VFS& vfs, audio::SoundManager& sm,
-                                            const WPUserProperties& userProps) {
-    WEK_PROFILE_SCOPE("WPSceneParser::Parse");
-    // Set user properties context for the duration of parsing
-    UserPropertiesScope propsScope(&userProps);
-
-    nlohmann::json json;
-    if (! PARSE_JSON(buf, json)) return nullptr;
-    wpscene::WPScene sc;
-    sc.FromJson(json);
-    //	LOG_INFO(nlohmann::json(sc).dump(4));
-
-    ParseContext context;
-    context.hide_pattern            = m_hide_pattern;
-    context.postprocessing_override = m_postprocessing_override;
-
-    std::vector<WPObjectVar> wp_objs;
-    std::vector<GroupInfo>   group_infos;
-
-    // Track each object's position in the JSON array so we can restore
-    // the intended Z-order after the two-pass group/image construction.
-    std::map<i32, size_t> json_order;
-    size_t                obj_idx = 0;
-
-    // Pre-scan embedded SceneScript sources (layer refs, registered assets, pool-size hints).
-    prescanScripts(context, json);
-
-    prescanGroups(context, json, vfs, wp_objs, group_infos, json_order, obj_idx);
-
-    // Create the image parser before the autosize ortho pre-pass so the
-    // pre-pass populates its header cache, and subsequent ParseImageObj /
-    // LoadMaterial calls on the same instance hit the cache instead of
-    // re-opening .tex files.
-    auto imageParser = std::make_unique<WPTexImageParser>(&vfs);
-
-    if (sc.general.orthogonalprojection.auto_) {
-        // For autosize image objects, WPImageObject::FromJson leaves size at
-        // the default (2,2) — the real dimensions are only resolved later in
-        // ParseImageObj when the texture parser is in scope.  Probe the .tex
-        // header here too so the auto-ortho measurement reflects the actual
-        // sprite/map dimensions instead of the default placeholder.  Without
-        // this the ortho collapses to 2x2 and every world-space-positioned
-        // image renders far outside clip space (Aesthetic City 843532366
-        // background was ~240,150 in a 2x2 ortho — entirely off-screen).
-        i32 w = 0, h = 0;
-        for (auto& obj : wp_objs) {
-            auto* img = std::get_if<wpscene::WPImageObject>(&obj);
-            if (img == nullptr) continue;
-            i32 iw = (i32)img->size.at(0);
-            i32 ih = (i32)img->size.at(1);
-            if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
-                ! img->material.textures.front().empty()) {
-                auto header = imageParser->ParseHeader(img->material.textures.front());
-                if (header.isSprite && header.spriteAnim.numFrames() > 0) {
-                    const auto& frame = header.spriteAnim.GetCurFrame();
-                    iw                = (i32)frame.width;
-                    ih                = (i32)frame.height;
-                } else if (header.mapWidth > 0 && header.mapHeight > 0) {
-                    iw = header.mapWidth;
-                    ih = header.mapHeight;
-                }
-            }
-            if (iw * ih > w * h) {
-                w = iw;
-                h = ih;
-            }
-        }
-        sc.general.orthogonalprojection.width  = w;
-        sc.general.orthogonalprojection.height = h;
-    }
-
-    InitContext(context, vfs, sc, std::move(imageParser));
-    ParseCamera(context, sc);
-
-    prescanDependencies(context, wp_objs);
-
-    std::vector<GroupInfo> deferred_group_links;
-    linkGroupHierarchy(context, group_infos, deferred_group_links);
-    computeGroupWorldTransforms(context, json, group_infos);
-
-    initSceneRenderTargets(context);
-
-    context.scene->scene_id = scene_id;
-
-    initShaderAndTextSubsystems();
-
-    std::map<i32, std::string> pool_id_to_name;
-    allocateAssetPools(context, vfs, wp_objs, json_order, obj_idx, pool_id_to_name);
-
-    auto nameToObjState = dispatchObjects(context, wp_objs, sm);
-
-    fixupDeferredGroupLinks(context, deferred_group_links);
-
-    // OWT for groups was computed before wp_objs parsing via the raw-JSON
-    // walk above (context.id_authored_local) — it already includes
-    // image-object ancestors, so no recompute needed here.  ParseImageObj
-    // (called between the two points) only writes OWT for image objects
-    // it owns; group OWT entries are stable.
-
-    registerObjectBindings(context, json, nameToObjState);
-
-    registerPoolNodes(context, pool_id_to_name, nameToObjState);
-
-    syncVisibilityBindings(context);
-
-    patchPlayerFaderScripts(context);
-
-    restoreZOrder(context, json_order);
-
+bool setHdrIntent(ParseContext& context, const wpscene::WPScene& sc, const nlohmann::json& json) {
     // Record scene's HDR intent so SceneWallpaper can decide whether to upgrade
     // render targets.  If the scene declares hdr:false, we should stay in SDR to
     // avoid over-brightness from overbright materials + additive blending.
@@ -4551,7 +4440,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     }
     const bool effective_hdr  = sc.general.hdr || force_hdr_for_brightness;
     context.scene->hdrContent = effective_hdr;
+    return effective_hdr;
+}
 
+void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, bool effective_hdr) {
     // Pick the bloom parameter variant matching scene's effective HDR mode.  WE
     // scenes carry both SDR (bloomstrength/bloomthreshold) and HDR
     // (bloomhdrstrength/bloomhdrthreshold) values; the SDR threshold is tuned
@@ -4921,7 +4813,9 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                      def.output.c_str());
         }
     }
+}
 
+void finalizeParse(ParseContext& context) {
     // Wait for all deferred async shader compilations
     WPShaderParser::FlushPendingCompilations(*context.vfs);
 
@@ -4972,6 +4866,125 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
         context.scene->particleSubByNodeId.begin(), context.scene->particleSubByNodeId.end());
     if (context.scene->hasAudioReactiveParticles)
         LOG_INFO("Scene has audio-reactive particles: emit-rate scan enabled");
+}
+
+} // namespace
+
+std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
+                                            fs::VFS& vfs, audio::SoundManager& sm,
+                                            const WPUserProperties& userProps) {
+    WEK_PROFILE_SCOPE("WPSceneParser::Parse");
+    // Set user properties context for the duration of parsing
+    UserPropertiesScope propsScope(&userProps);
+
+    nlohmann::json json;
+    if (! PARSE_JSON(buf, json)) return nullptr;
+    wpscene::WPScene sc;
+    sc.FromJson(json);
+    //	LOG_INFO(nlohmann::json(sc).dump(4));
+
+    ParseContext context;
+    context.hide_pattern            = m_hide_pattern;
+    context.postprocessing_override = m_postprocessing_override;
+
+    std::vector<WPObjectVar> wp_objs;
+    std::vector<GroupInfo>   group_infos;
+
+    // Track each object's position in the JSON array so we can restore
+    // the intended Z-order after the two-pass group/image construction.
+    std::map<i32, size_t> json_order;
+    size_t                obj_idx = 0;
+
+    // Pre-scan embedded SceneScript sources (layer refs, registered assets, pool-size hints).
+    prescanScripts(context, json);
+
+    prescanGroups(context, json, vfs, wp_objs, group_infos, json_order, obj_idx);
+
+    // Create the image parser before the autosize ortho pre-pass so the
+    // pre-pass populates its header cache, and subsequent ParseImageObj /
+    // LoadMaterial calls on the same instance hit the cache instead of
+    // re-opening .tex files.
+    auto imageParser = std::make_unique<WPTexImageParser>(&vfs);
+
+    if (sc.general.orthogonalprojection.auto_) {
+        // For autosize image objects, WPImageObject::FromJson leaves size at
+        // the default (2,2) — the real dimensions are only resolved later in
+        // ParseImageObj when the texture parser is in scope.  Probe the .tex
+        // header here too so the auto-ortho measurement reflects the actual
+        // sprite/map dimensions instead of the default placeholder.  Without
+        // this the ortho collapses to 2x2 and every world-space-positioned
+        // image renders far outside clip space (Aesthetic City 843532366
+        // background was ~240,150 in a 2x2 ortho — entirely off-screen).
+        i32 w = 0, h = 0;
+        for (auto& obj : wp_objs) {
+            auto* img = std::get_if<wpscene::WPImageObject>(&obj);
+            if (img == nullptr) continue;
+            i32 iw = (i32)img->size.at(0);
+            i32 ih = (i32)img->size.at(1);
+            if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
+                ! img->material.textures.front().empty()) {
+                auto header = imageParser->ParseHeader(img->material.textures.front());
+                if (header.isSprite && header.spriteAnim.numFrames() > 0) {
+                    const auto& frame = header.spriteAnim.GetCurFrame();
+                    iw                = (i32)frame.width;
+                    ih                = (i32)frame.height;
+                } else if (header.mapWidth > 0 && header.mapHeight > 0) {
+                    iw = header.mapWidth;
+                    ih = header.mapHeight;
+                }
+            }
+            if (iw * ih > w * h) {
+                w = iw;
+                h = ih;
+            }
+        }
+        sc.general.orthogonalprojection.width  = w;
+        sc.general.orthogonalprojection.height = h;
+    }
+
+    InitContext(context, vfs, sc, std::move(imageParser));
+    ParseCamera(context, sc);
+
+    prescanDependencies(context, wp_objs);
+
+    std::vector<GroupInfo> deferred_group_links;
+    linkGroupHierarchy(context, group_infos, deferred_group_links);
+    computeGroupWorldTransforms(context, json, group_infos);
+
+    initSceneRenderTargets(context);
+
+    context.scene->scene_id = scene_id;
+
+    initShaderAndTextSubsystems();
+
+    std::map<i32, std::string> pool_id_to_name;
+    allocateAssetPools(context, vfs, wp_objs, json_order, obj_idx, pool_id_to_name);
+
+    auto nameToObjState = dispatchObjects(context, wp_objs, sm);
+
+    fixupDeferredGroupLinks(context, deferred_group_links);
+
+    // OWT for groups was computed before wp_objs parsing via the raw-JSON
+    // walk above (context.id_authored_local) — it already includes
+    // image-object ancestors, so no recompute needed here.  ParseImageObj
+    // (called between the two points) only writes OWT for image objects
+    // it owns; group OWT entries are stable.
+
+    registerObjectBindings(context, json, nameToObjState);
+
+    registerPoolNodes(context, pool_id_to_name, nameToObjState);
+
+    syncVisibilityBindings(context);
+
+    patchPlayerFaderScripts(context);
+
+    restoreZOrder(context, json_order);
+
+    const bool effective_hdr = setHdrIntent(context, sc, json);
+
+    buildBloomAndReflection(context, sc, effective_hdr);
+
+    finalizeParse(context);
 
     return context.scene;
 }
