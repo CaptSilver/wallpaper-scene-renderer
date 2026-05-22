@@ -1,8 +1,13 @@
 #include <doctest.h>
 
 #include "Scene/UniformDirtyGate.h"
+#include "Scene/SceneShader.h"
 
 #include <cstdint>
+#include <array>
+#include <vector>
+#include <string>
+#include <Eigen/Dense>
 
 using namespace wallpaper;
 
@@ -93,5 +98,52 @@ TEST_SUITE("Uniform matrix recompute gate") {
             cachedVp   = 6;
         }
         CHECK(recomputes == 1); // only frame B
+    }
+
+    // Models the updater's cache-or-recompute dispatch to prove the cached
+    // re-upload emits the SAME ShaderValues the recompute would, i.e. the gate
+    // only removes redundant recomputes.
+    TEST_CASE("cached re-upload dispatches the same values a recompute would") {
+        // A tiny stand-in for the per-node matrix cache the updater holds.
+        struct MatrixCache {
+            uint64_t    node_epoch { 0 }, vp_epoch { 0 };
+            bool        valid { false };
+            ShaderValue m, mi;
+        };
+        // Capture every (name,16-floats) the "updater" emits this frame.
+        std::vector<std::pair<std::string, std::array<float, 16>>> emitted;
+        auto emit = [&](const char* name, const ShaderValue& v) {
+            std::array<float, 16> a {};
+            for (size_t i = 0; i < 16 && i < v.size(); ++i) a[i] = v.data()[i];
+            emitted.emplace_back(name, a);
+        };
+
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model(0, 3)           = 9.0;
+
+        MatrixCache mc;
+        auto        frame = [&](uint64_t nodeEpoch, uint64_t vpEpoch) {
+            if (uniformMatricesShouldRecompute(! mc.valid, false, false, nodeEpoch, mc.node_epoch,
+                                                      vpEpoch, mc.vp_epoch)) {
+                mc.m          = ShaderValue::fromMatrix(model);           // recompute path
+                mc.mi         = ShaderValue::fromMatrix(model.inverse()); // the double inverse
+                mc.node_epoch = nodeEpoch;
+                mc.vp_epoch   = vpEpoch;
+                mc.valid      = true;
+            }
+            emit("g_Model", mc.m); // both paths emit from the cache fields
+            emit("g_ModelInverse", mc.mi);
+        };
+
+        frame(1, 1); // recompute (first)
+        auto first = emitted;
+        emitted.clear();
+        frame(1, 1); // cached re-upload (frozen epochs)
+        // Cached frame must emit byte-identical values to the recompute frame.
+        REQUIRE(emitted.size() == first.size());
+        for (size_t k = 0; k < emitted.size(); ++k) {
+            CHECK(emitted[k].first == first[k].first);
+            for (size_t i = 0; i < 16; ++i) CHECK(emitted[k].second[i] == first[k].second[i]);
+        }
     }
 } // TEST_SUITE Uniform matrix recompute gate

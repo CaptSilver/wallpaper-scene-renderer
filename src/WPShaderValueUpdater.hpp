@@ -7,12 +7,16 @@
 #include <unordered_map>
 #include <cstdint>
 #include <chrono>
+#include <string>
+#include <utility>
 
 #include <Eigen/Dense>
 
 #include "Core/Core.hpp"
 #include "Interface/IShaderValueUpdater.h"
 #include "Core/MapSet.hpp"
+#include "Scene/SceneShader.h"      // ShaderValue
+#include "Scene/UniformDirtyGate.h" // uniformMatricesShouldRecompute
 #include "SpriteAnimation.hpp"
 #include "WPPuppet.hpp"
 #include "Audio/AudioAnalyzer.h"
@@ -58,6 +62,20 @@ struct WPUniformInfo {
         bool has_mipmap { false };
     };
     std::array<Tex, 12> texs;
+};
+
+// Per-(node,camera) cache of the model/MVP/VP uniform block.  Re-uploaded
+// verbatim while the node transform + camera VP epochs are unchanged and
+// neither parallax nor camera-shake is active, so the two double-precision
+// 4x4 inverses (g_ModelMatrixInverse / g_ModelViewProjectionMatrixInverse)
+// and the four fromMatrix conversions run once per CHANGE, not per frame.
+struct WPNodeMatrixCache {
+    uint64_t    node_epoch { 0 };
+    uint64_t    vp_epoch { 0 };
+    bool        valid { false };
+    bool        has_vp { false }, has_m { false }, has_am { false };
+    bool        has_mi { false }, has_mvp { false }, has_mvpi { false };
+    ShaderValue vp, m, am, mi, mvp, mvpi;
 };
 
 struct WPShaderValueData {
@@ -190,6 +208,11 @@ private:
 
     Map<void*, WPShaderValueData> m_nodeDataMap;
     Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;
+    // Keyed on (node ptr, cam_name): the SAME node renders under the global
+    // camera (empty name), the "effect" camera, and "reflected_perspective"
+    // in different passes within one frame, each producing a different
+    // M/VP/MVP.  A node-only key would cross-contaminate those passes.
+    Map<std::pair<void*, std::string>, WPNodeMatrixCache> m_nodeMatrixCache;
 
     std::mutex                         m_anim_events_mtx;
     std::vector<PendingAnimationEvent> m_anim_events;

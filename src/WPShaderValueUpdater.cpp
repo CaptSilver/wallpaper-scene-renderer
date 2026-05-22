@@ -14,6 +14,7 @@
 #include <iostream>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <numeric>
 #include <set>
 
@@ -266,125 +267,199 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     bool reqETVP  = info.has_ETVP;
     bool reqETVPI = info.has_ETVPI;
 
-    Matrix4d viewProTrans = camera->GetViewProjectionMatrix();
+    // ---- matrix/VP uniform block: recompute only when something moved ----
+    // Parallax mutates the model matrix from live mouse input every frame;
+    // camera-shake mutates the VP for the global camera every frame.  Both
+    // must stay volatile (never served from the static cache).  The flags
+    // mirror the exact runtime conditions of the parallax/shake math below.
+    const bool parallaxActive = m_parallax.enable && hasNodeData && cam_name != "effect";
+    const bool shakeActive    = m_shake.enable && cam_name.empty();
 
-    // Camera shake: translate the view-projection so all scene objects shift together.
-    // Only apply to the global camera (cam_name empty) — per-node effect cameras and
-    // the "effect" camera render to intermediate RTs and must not be shaken.
-    if (m_shake.enable && cam_name.empty()) {
-        Vector2f shakeVec;
-        if (camera->IsPerspective()) {
-            // Perspective: m_shakeOffset already contains amplitude, use directly
-            // as world-space translation (typical amplitude 0.01 ≈ subtle shift)
-            shakeVec = m_shakeOffset;
-        } else {
-            // Ortho: scale by ortho dimensions for pixel-space shake
-            Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
-            shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
+    auto&      mc        = m_nodeMatrixCache[{ pNode, std::string(cam_name) }];
+    const bool recompute = uniformMatricesShouldRecompute(! mc.valid,
+                                                          parallaxActive,
+                                                          shakeActive,
+                                                          pNode->TransEpoch(),
+                                                          mc.node_epoch,
+                                                          camera->VpEpoch(),
+                                                          mc.vp_epoch);
+
+    // Recompute-vs-cached counter (gated on WEKDE_DEBUG_UNIFORM): confirms a
+    // static scene logs ~100% cached after the first frame and a parallax
+    // scene logs ~100% recompute, without instrumenting the production path.
+    {
+        static const bool _unf_dbg = std::getenv("WEKDE_DEBUG_UNIFORM") != nullptr;
+        if (_unf_dbg) {
+            static uint64_t _unf_recompute = 0, _unf_cached = 0;
+            if (recompute)
+                ++_unf_recompute;
+            else
+                ++_unf_cached;
+            if ((_unf_recompute + _unf_cached) % 90 == 0) {
+                LOG_INFO("uniform matrix gate: recompute=%llu cached=%llu",
+                         (unsigned long long)_unf_recompute,
+                         (unsigned long long)_unf_cached);
+            }
         }
-        viewProTrans = viewProTrans *
-                       Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
     }
 
-    if (info.has_VP) {
-        updateOp(G_VP, ShaderValue::fromMatrix(viewProTrans));
-    }
-    if (reqM || reqMVP || reqMI || reqMVPI) {
-        Matrix4d modelTrans = pNode->ModelTrans();
-        if (hasNodeData && cam_name != "effect") {
-            const auto& nodeData = m_nodeDataMap.at(pNode);
-            if (m_parallax.enable) {
-                Vector3f nodePos = pNode->Translate();
-                Vector2f depth(&nodeData.parallaxDepth[0]);
+    if (! recompute) {
+        // Static fast path: re-upload the cached matrices, skipping the
+        // recompute AND both double 4x4 inverses.
+        if (info.has_VP && mc.has_vp) updateOp(G_VP, mc.vp);
+        if (reqM && mc.has_m) updateOp(G_M, mc.m);
+        if (reqAM && mc.has_am) updateOp(G_AM, mc.am);
+        if (reqMI && mc.has_mi) updateOp(G_MI, mc.mi);
+        if (reqMVP && mc.has_mvp) updateOp(G_MVP, mc.mvp);
+        if (reqMVPI && mc.has_mvpi) updateOp(G_MVPI, mc.mvpi);
+    } else {
+        WEK_PROFILE_SCOPE("UpdateUniforms::matrixRecompute");
+        Matrix4d viewProTrans = camera->GetViewProjectionMatrix();
+
+        // Camera shake: translate the view-projection so all scene objects shift together.
+        // Only apply to the global camera (cam_name empty) — per-node effect cameras and
+        // the "effect" camera render to intermediate RTs and must not be shaken.
+        if (m_shake.enable && cam_name.empty()) {
+            Vector2f shakeVec;
+            if (camera->IsPerspective()) {
+                // Perspective: m_shakeOffset already contains amplitude, use directly
+                // as world-space translation (typical amplitude 0.01 ≈ subtle shift)
+                shakeVec = m_shakeOffset;
+            } else {
+                // Ortho: scale by ortho dimensions for pixel-space shake
                 Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
-                // flip mouse y axis
-                Vector2f mouseVec =
-                    Scaling(1.0f, -1.0f) * (Vector2f { 0.5f, 0.5f } - Vector2f(&m_mousePos[0]));
-                mouseVec        = mouseVec.cwiseProduct(ortho) * m_parallax.mouseinfluence;
-                Vector3f camPos = camera->GetPosition().cast<float>();
-                // WE parallax: position-based + mouse-based shift, both
-                // scaled by per-layer parallaxDepth and scene amount.  The
-                // position-based term (nodePos - camPos) is intentional —
-                // WE's editor preview shows layers already at their shifted
-                // position (so authors place layers KNOWING about the
-                // parallax bake-in).  Removing it causes layers authored
-                // for the shifted position (e.g. 2866203962 'Cyberpunk' R
-                // below Lucy's chin) to render above their intended spot.
-                Vector2f paraVec =
-                    (nodePos.head<2>() - camPos.head<2>() + mouseVec).cwiseProduct(depth) *
-                    m_parallax.amount;
-                modelTrans =
-                    Affine3d(Translation3d(Vector3d(paraVec.x(), paraVec.y(), 0.0f))).matrix() *
-                    modelTrans;
+                shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
             }
+            viewProTrans =
+                viewProTrans *
+                Affine3d(Translation3d(Vector3d(shakeVec.x(), shakeVec.y(), 0.0f))).matrix();
         }
 
-        if (reqM) updateOp(G_M, ShaderValue::fromMatrix(modelTrans));
-        if (reqAM) updateOp(G_AM, ShaderValue::fromMatrix(modelTrans));
-        if (reqMI) updateOp(G_MI, ShaderValue::fromMatrix(modelTrans.inverse()));
+        if (info.has_VP) {
+            mc.vp     = ShaderValue::fromMatrix(viewProTrans);
+            mc.has_vp = true;
+            updateOp(G_VP, mc.vp);
+        }
+        if (reqM || reqMVP || reqMI || reqMVPI) {
+            Matrix4d modelTrans = pNode->ModelTrans();
+            if (hasNodeData && cam_name != "effect") {
+                const auto& nodeData = m_nodeDataMap.at(pNode);
+                if (m_parallax.enable) {
+                    Vector3f nodePos = pNode->Translate();
+                    Vector2f depth(&nodeData.parallaxDepth[0]);
+                    Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
+                    // flip mouse y axis
+                    Vector2f mouseVec =
+                        Scaling(1.0f, -1.0f) * (Vector2f { 0.5f, 0.5f } - Vector2f(&m_mousePos[0]));
+                    mouseVec        = mouseVec.cwiseProduct(ortho) * m_parallax.mouseinfluence;
+                    Vector3f camPos = camera->GetPosition().cast<float>();
+                    // WE parallax: position-based + mouse-based shift, both
+                    // scaled by per-layer parallaxDepth and scene amount.  The
+                    // position-based term (nodePos - camPos) is intentional —
+                    // WE's editor preview shows layers already at their shifted
+                    // position (so authors place layers KNOWING about the
+                    // parallax bake-in).  Removing it causes layers authored
+                    // for the shifted position (e.g. 2866203962 'Cyberpunk' R
+                    // below Lucy's chin) to render above their intended spot.
+                    Vector2f paraVec =
+                        (nodePos.head<2>() - camPos.head<2>() + mouseVec).cwiseProduct(depth) *
+                        m_parallax.amount;
+                    modelTrans =
+                        Affine3d(Translation3d(Vector3d(paraVec.x(), paraVec.y(), 0.0f))).matrix() *
+                        modelTrans;
+                }
+            }
 
-        // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
-        if (reqM && info.has_VP && ! reqMVP && cam_name.empty()) {
-            static std::set<SceneNode*> _mvp_sep_logged;
-            if (_mvp_sep_logged.insert(pNode).second) {
-                Vector4d center = viewProTrans * modelTrans * Vector4d(0, 0, 0, 1);
-                auto     t      = pNode->Translate();
-                auto     eyePos = camera->GetPosition();
-                LOG_INFO("M+VP diag id=%d translate=(%.1f,%.1f,%.1f) "
-                         "clip_center=(%.3f,%.3f,%.3f,%.3f) "
-                         "ndc=(%.3f,%.3f) eye=(%.3f,%.3f,%.3f) "
-                         "depth=%d cull=%s",
-                         pNode->ID(),
-                         t.x(),
-                         t.y(),
-                         t.z(),
-                         center.x(),
-                         center.y(),
-                         center.z(),
-                         center.w(),
-                         center.x() / center.w(),
-                         center.y() / center.w(),
-                         eyePos.x(),
-                         eyePos.y(),
-                         eyePos.z(),
-                         (int)material->depthTest,
-                         material->cullmode.c_str());
+            if (reqM) {
+                mc.m     = ShaderValue::fromMatrix(modelTrans);
+                mc.has_m = true;
+                updateOp(G_M, mc.m);
+            }
+            if (reqAM) {
+                mc.am     = ShaderValue::fromMatrix(modelTrans);
+                mc.has_am = true;
+                updateOp(G_AM, mc.am);
+            }
+            if (reqMI) {
+                mc.mi     = ShaderValue::fromMatrix(modelTrans.inverse());
+                mc.has_mi = true;
+                updateOp(G_MI, mc.mi);
+            }
+
+            // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
+            if (reqM && info.has_VP && ! reqMVP && cam_name.empty()) {
+                static std::set<SceneNode*> _mvp_sep_logged;
+                if (_mvp_sep_logged.insert(pNode).second) {
+                    Vector4d center = viewProTrans * modelTrans * Vector4d(0, 0, 0, 1);
+                    auto     t      = pNode->Translate();
+                    auto     eyePos = camera->GetPosition();
+                    LOG_INFO("M+VP diag id=%d translate=(%.1f,%.1f,%.1f) "
+                             "clip_center=(%.3f,%.3f,%.3f,%.3f) "
+                             "ndc=(%.3f,%.3f) eye=(%.3f,%.3f,%.3f) "
+                             "depth=%d cull=%s",
+                             pNode->ID(),
+                             t.x(),
+                             t.y(),
+                             t.z(),
+                             center.x(),
+                             center.y(),
+                             center.z(),
+                             center.w(),
+                             center.x() / center.w(),
+                             center.y() / center.w(),
+                             eyePos.x(),
+                             eyePos.y(),
+                             eyePos.z(),
+                             (int)material->depthTest,
+                             material->cullmode.c_str());
+                }
+            }
+            if (reqMVP) {
+                Matrix4d mvpTrans = viewProTrans * modelTrans;
+                mc.mvp            = ShaderValue::fromMatrix(mvpTrans);
+                mc.has_mvp        = true;
+                updateOp(G_MVP, mc.mvp);
+                if (reqMVPI) {
+                    mc.mvpi     = ShaderValue::fromMatrix(mvpTrans.inverse());
+                    mc.has_mvpi = true;
+                    updateOp(G_MVPI, mc.mvpi);
+                }
+                // One-time diagnostic: log MVP info for nodes with empty camera (final composites)
+                static std::set<SceneNode*> _mvp_logged;
+                if (cam_name.empty() && _mvp_logged.insert(pNode).second) {
+                    Vector4d center = mvpTrans * Vector4d(0, 0, 0, 1);
+                    auto     t      = pNode->Translate();
+                    LOG_INFO(
+                        "MVP diag id=%d cam='' translate=(%.1f,%.1f) model=[%.3f,%.3f,%.3f,%.3f] "
+                        "clip_center=(%.3f,%.3f) blend=%d",
+                        pNode->ID(),
+                        t.x(),
+                        t.y(),
+                        modelTrans(0, 0),
+                        modelTrans(1, 1),
+                        modelTrans(0, 3),
+                        modelTrans(1, 3),
+                        center.x() / center.w(),
+                        center.y() / center.w(),
+                        (int)material->blenmode);
+                }
+            }
+            if (reqETVP || reqETVPI) {
+                /*
+                Vector3d nodePos = pNode->Translate().cast<double>();
+                nodePos.z()      = 1.0f;
+                Matrix4d etvpTrans =
+                    viewProTrans * modelTrans * Affine3d(Eigen::Scaling(nodePos)).matrix();
+                if (reqETVPI) updateOp(G_ETVP, ShaderValue::fromMatrix(etvpTrans));
+                if (reqETVPI) updateOp(G_ETVPI, ShaderValue::fromMatrix(etvpTrans.inverse()));
+                */
             }
         }
-        if (reqMVP) {
-            Matrix4d mvpTrans = viewProTrans * modelTrans;
-            updateOp(G_MVP, ShaderValue::fromMatrix(mvpTrans));
-            if (reqMVPI) updateOp(G_MVPI, ShaderValue::fromMatrix(mvpTrans.inverse()));
-            // One-time diagnostic: log MVP info for nodes with empty camera (final composites)
-            static std::set<SceneNode*> _mvp_logged;
-            if (cam_name.empty() && _mvp_logged.insert(pNode).second) {
-                Vector4d center = mvpTrans * Vector4d(0, 0, 0, 1);
-                auto     t      = pNode->Translate();
-                LOG_INFO("MVP diag id=%d cam='' translate=(%.1f,%.1f) model=[%.3f,%.3f,%.3f,%.3f] "
-                         "clip_center=(%.3f,%.3f) blend=%d",
-                         pNode->ID(),
-                         t.x(),
-                         t.y(),
-                         modelTrans(0, 0),
-                         modelTrans(1, 1),
-                         modelTrans(0, 3),
-                         modelTrans(1, 3),
-                         center.x() / center.w(),
-                         center.y() / center.w(),
-                         (int)material->blenmode);
-            }
-        }
-        if (reqETVP || reqETVPI) {
-            /*
-            Vector3d nodePos = pNode->Translate().cast<double>();
-            nodePos.z()      = 1.0f;
-            Matrix4d etvpTrans =
-                viewProTrans * modelTrans * Affine3d(Eigen::Scaling(nodePos)).matrix();
-            if (reqETVPI) updateOp(G_ETVP, ShaderValue::fromMatrix(etvpTrans));
-            if (reqETVPI) updateOp(G_ETVPI, ShaderValue::fromMatrix(etvpTrans.inverse()));
-            */
-        }
+        mc.node_epoch = pNode->TransEpoch();
+        mc.vp_epoch   = camera->VpEpoch();
+        mc.valid      = true;
     }
+    // ---- end matrix/VP block; per-frame-volatile uniforms continue below ----
 
     //	g_EffectTextureProjectionMatrix
     // shadervs.push_back({"g_EffectTextureProjectionMatrixInverse",
