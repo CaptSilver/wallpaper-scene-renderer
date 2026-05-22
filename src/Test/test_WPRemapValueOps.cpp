@@ -180,34 +180,40 @@ TEST_SUITE("RemapValueOps kernels match the string oracle") {
     }
 }
 
-namespace {
+namespace
+{
 struct RVFixture {
-    std::vector<Particle> particles;
+    std::vector<Particle>               particles;
     std::array<ParticleControlpoint, 8> cps;
-    double time { 0.0 };
-    ParticleInfo info() {
+    double                              time { 0.0 };
+    ParticleInfo                        info() {
         return ParticleInfo {
-            .particles = std::span<Particle>(particles),
-            .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
-            .time = time, .time_pass = 0.016,
+                                   .particles = std::span<Particle>(particles),
+                                   .controlpoints = std::span<ParticleControlpoint>(cps.data(), cps.size()),
+                                   .time      = time,
+                                   .time_pass = 0.016,
         };
     }
     Particle& spawn() {
         Particle p;
-        p.lifetime = 0.5f; p.init.lifetime = 1.0f;          // LifetimePos = 0.5
-        p.alpha = 0.4f;    p.size = 20.0f;
-        p.color = Eigen::Vector3f(0.2f, 0.5f, 0.8f);
-        p.velocity = Eigen::Vector3f(3.0f, -4.0f, 12.0f);
-        p.rotation = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
+        p.lifetime        = 0.5f;
+        p.init.lifetime   = 1.0f; // LifetimePos = 0.5
+        p.alpha           = 0.4f;
+        p.size            = 20.0f;
+        p.color           = Eigen::Vector3f(0.2f, 0.5f, 0.8f);
+        p.velocity        = Eigen::Vector3f(3.0f, -4.0f, 12.0f);
+        p.rotation        = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
         p.angularVelocity = Eigen::Vector3f(0.5f, 0.0f, -0.5f);
-        p.position = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
-        p.random_seed = 0xdeadbeef;
+        p.position        = Eigen::Vector3f(10.0f, 0.0f, 0.0f);
+        p.random_seed     = 0xdeadbeef;
         particles.push_back(p);
         return particles.back();
     }
 };
 wpscene::ParticleInstanceoverride no_override() {
-    wpscene::ParticleInstanceoverride o; o.enabled = false; return o;
+    wpscene::ParticleInstanceoverride o;
+    o.enabled = false;
+    return o;
 }
 } // namespace
 
@@ -215,11 +221,12 @@ TEST_SUITE("remapvalue operator end-to-end equivalence") {
     // Alpha output from particlelifetime, linear, set — exercises the scalar
     // output path + the SetRemap operation.
     TEST_CASE("lifetime -> alpha, set, linear") {
-        RVFixture f; f.spawn();
-        json wpj = { {"name","remapvalue"}, {"input","particlelifetime"},
-                     {"output","alpha"}, {"operation","set"},
-                     {"outputrangemin",0.0}, {"outputrangemax",1.0} };
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        RVFixture f;
+        f.spawn();
+        json wpj = { { "name", "remapvalue" },  { "input", "particlelifetime" },
+                     { "output", "alpha" },     { "operation", "set" },
+                     { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto op  = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         op(f.info());
         // raw=LifetimePos=0.5; t=0.5; identity; mapped=0.5; blend=1; set => 0.5
         CHECK(f.particles[0].alpha == doctest::Approx(0.5f));
@@ -227,25 +234,28 @@ TEST_SUITE("remapvalue operator end-to-end equivalence") {
     // velocity magnitude -> size, multiply default — exercises reduce(magnitude)
     // + multiply default.
     TEST_CASE("velocity(magnitude) -> size, multiply default") {
-        RVFixture f; f.spawn();
-        json wpj = { {"name","remapvalue"}, {"input","particlevelocity"},
-                     {"inputcomponent","magnitude"}, {"output","size"},
-                     {"inputrangemin",0.0}, {"inputrangemax",13.0},
-                     {"outputrangemin",0.0}, {"outputrangemax",2.0} };
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        RVFixture f;
+        f.spawn();
+        json wpj = { { "name", "remapvalue" },          { "input", "particlevelocity" },
+                     { "inputcomponent", "magnitude" }, { "output", "size" },
+                     { "inputrangemin", 0.0 },          { "inputrangemax", 13.0 },
+                     { "outputrangemin", 0.0 },         { "outputrangemax", 2.0 } };
+        auto op  = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         // |v|=13; t=1; mapped=2; multiply: size*(1+(2-1)*1)=size*2 = 40
         op(f.info());
         CHECK(f.particles[0].size == doctest::Approx(40.0f));
     }
     // color vec3 broadcast vs single-axis outputcomponent.
     TEST_CASE("particlesystemtime -> color, single axis x") {
-        RVFixture f; f.spawn(); f.time = 1.0;
-        json wpj = { {"name","remapvalue"}, {"input","particlesystemtime"},
-                     {"output","particlecolor"}, {"operation","set"},
-                     {"outputcomponent","x"},
-                     {"inputrangemin",0.0}, {"inputrangemax",1.0},
-                     {"outputrangemin",0.0}, {"outputrangemax",1.0} };
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        RVFixture f;
+        f.spawn();
+        f.time   = 1.0;
+        json wpj = { { "name", "remapvalue" },      { "input", "particlesystemtime" },
+                     { "output", "particlecolor" }, { "operation", "set" },
+                     { "outputcomponent", "x" },    { "inputrangemin", 0.0 },
+                     { "inputrangemax", 1.0 },      { "outputrangemin", 0.0 },
+                     { "outputrangemax", 1.0 } };
+        auto op  = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         op(f.info());
         CHECK(f.particles[0].color.x() == doctest::Approx(1.0f)); // x set to mapped=1
         CHECK(f.particles[0].color.y() == doctest::Approx(0.5f)); // y untouched
@@ -255,36 +265,41 @@ TEST_SUITE("remapvalue operator end-to-end equivalence") {
     // `particlevelocity`; `setvelocity` prefix-sugar == output velocity + set.
     TEST_CASE("aliases resolve identically (color, velocity, setvelocity)") {
         // `setvelocity` (prefix sugar) -> output particlevelocity, operation set
-        RVFixture f; f.spawn();
-        json wpj = { {"name","remapvalue"}, {"input","particlesystemtime"},
-                     {"output","setvelocity"},
-                     {"inputrangemin",0.0}, {"inputrangemax",1.0},
-                     {"outputrangemin",0.0}, {"outputrangemax",0.0} };
-        f.time = 1.0;
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        RVFixture f;
+        f.spawn();
+        json wpj = { { "name", "remapvalue" },    { "input", "particlesystemtime" },
+                     { "output", "setvelocity" }, { "inputrangemin", 0.0 },
+                     { "inputrangemax", 1.0 },    { "outputrangemin", 0.0 },
+                     { "outputrangemax", 0.0 } };
+        f.time   = 1.0;
+        auto op  = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         op(f.info());
         // mapped=0; set => velocity broadcast to 0 on all axes
         CHECK(f.particles[0].velocity.norm() == doctest::Approx(0.0f));
     }
     // Unknown input -> raw stays 0 -> mapped=outMin; unknown output -> no-op.
     TEST_CASE("unknown input is a defined no-effect path") {
-        RVFixture f; f.spawn();
+        RVFixture f;
+        f.spawn();
         float before = f.particles[0].alpha;
-        json wpj = { {"name","remapvalue"}, {"input","notarealinput"},
-                     {"output","position"} }; // output unhandled
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        json  wpj    = { { "name", "remapvalue" },
+                         { "input", "notarealinput" },
+                         { "output", "position" } }; // output unhandled
+        auto  op     = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         op(f.info());
         CHECK(f.particles[0].alpha == doctest::Approx(before)); // untouched
     }
     // Control-point input + output round-trips through the cps span.
     TEST_CASE("controlpoint input/output uses the cps span") {
-        RVFixture f; f.spawn();
+        RVFixture f;
+        f.spawn();
         f.cps[0].resolved = Eigen::Vector3d(1.0, 0.0, 0.0);
-        json wpj = { {"name","remapvalue"}, {"input","distancetocontrolpoint"},
-                     {"inputcontrolpoint0",0}, {"output","alpha"}, {"operation","set"},
-                     {"inputrangemin",0.0}, {"inputrangemax",9.0},
-                     {"outputrangemin",0.0}, {"outputrangemax",1.0} };
-        auto op = WPParticleParser::genParticleOperatorOp(wpj, no_override());
+        json wpj          = { { "name", "remapvalue" },    { "input", "distancetocontrolpoint" },
+                              { "inputcontrolpoint0", 0 }, { "output", "alpha" },
+                              { "operation", "set" },      { "inputrangemin", 0.0 },
+                              { "inputrangemax", 9.0 },    { "outputrangemin", 0.0 },
+                              { "outputrangemax", 1.0 } };
+        auto op           = WPParticleParser::genParticleOperatorOp(wpj, no_override());
         op(f.info());
         // dist(|(10,0,0)-(1,0,0)|)=9; t=1; mapped=1; set => alpha 1
         CHECK(f.particles[0].alpha == doctest::Approx(1.0f));

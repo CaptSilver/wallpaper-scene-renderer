@@ -1312,9 +1312,21 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             const RemapComponent in_comp  = parseRemapComponent(inputcomponent);
             const RemapComponent out_comp = parseRemapComponent(outputcomponent);
 
-            return [in_kind, tx_kind, op_kind, out_kind, in_comp, out_comp,
-                    inMin, inMax, outMin, outMax, transforminputscale, transformoctaves,
-                    inputCP0, outputCP0, bw](const ParticleInfo& info) {
+            return [in_kind,
+                    tx_kind,
+                    op_kind,
+                    out_kind,
+                    in_comp,
+                    out_comp,
+                    inMin,
+                    inMax,
+                    outMin,
+                    outMax,
+                    transforminputscale,
+                    transformoctaves,
+                    inputCP0,
+                    outputCP0,
+                    bw](const ParticleInfo& info) {
                 const double in_span = (double)(inMax - inMin);
                 const double in_inv  = std::abs(in_span) > 1e-9 ? 1.0 / in_span : 0.0;
 
@@ -1324,12 +1336,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     // 1) Read the raw input as a scalar.
                     double raw = 0.0;
                     switch (in_kind) {
-                    case RemapInput::ParticleSystemTime:
-                        raw = info.time;
-                        break;
-                    case RemapInput::ParticleLifetime:
-                        raw = PM::LifetimePos(p);
-                        break;
+                    case RemapInput::ParticleSystemTime: raw = info.time; break;
+                    case RemapInput::ParticleLifetime: raw = PM::LifetimePos(p); break;
                     case RemapInput::ParticleVelocity:
                         raw = reduceComponent(p.velocity.cast<double>(), in_comp);
                         break;
@@ -1345,12 +1353,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     case RemapInput::ParticleColor:
                         raw = reduceComponent(p.color.cast<double>(), in_comp);
                         break;
-                    case RemapInput::ParticleSize:
-                        raw = p.size;
-                        break;
-                    case RemapInput::ParticleAlpha:
-                        raw = p.alpha;
-                        break;
+                    case RemapInput::ParticleSize: raw = p.size; break;
+                    case RemapInput::ParticleAlpha: raw = p.alpha; break;
                     case RemapInput::Speed:
                         // Source-enum variant of particlevelocity that always
                         // takes the magnitude.  Aliased here regardless of
@@ -1360,9 +1364,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     case RemapInput::AngularSpeed:
                         raw = p.angularVelocity.cast<double>().norm();
                         break;
-                    case RemapInput::MaxLifetime:
-                        raw = p.init.lifetime;
-                        break;
+                    case RemapInput::MaxLifetime: raw = p.init.lifetime; break;
                     case RemapInput::Runtime:
                         // `runtime` and `layertime` are distinct in the source
                         // enum but both resolve to "scene wall-clock since
@@ -1419,8 +1421,10 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                             Vector3d toward =
                                 info.controlpoints[inputCP0].resolved - p.position.cast<double>();
                             const double n = toward.norm();
-                            if (n > 1e-9) toward /= n;
-                            else          toward.setZero();
+                            if (n > 1e-9)
+                                toward /= n;
+                            else
+                                toward.setZero();
                             raw = reduceComponent(toward, in_comp);
                         }
                         break;
@@ -1465,9 +1469,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         raw = 0.0;
                         break;
                     }
-                    case RemapInput::Random:
-                        raw = p.RandomFloat();
-                        break;
+                    case RemapInput::Random: raw = p.RandomFloat(); break;
                     case RemapInput::Noise: {
                         // Per-particle smooth-noise input source.  Samples 3D
                         // Perlin noise at the particle's position offset by
@@ -1493,8 +1495,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         raw = std::clamp((sum / maxAmp + 1.0) * 0.5, 0.0, 1.0);
                         break;
                     }
-                    case RemapInput::Unknown:
-                        break; // raw stays 0 (matches no-branch-taken)
+                    case RemapInput::Unknown: break; // raw stays 0 (matches no-branch-taken)
                     }
 
                     // 2) Normalise to [0, 1] over the author's input range.
@@ -1551,12 +1552,8 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     //    axis (X/Y/Z); anything else (magnitude/all/...) falls
                     //    to the broadcast default, matching the current `else`.
                     switch (out_kind) {
-                    case RemapOutput::Alpha:
-                        p.alpha = (float)apply_scalar(p.alpha, mapped);
-                        break;
-                    case RemapOutput::Size:
-                        p.size = (float)apply_scalar(p.size, mapped);
-                        break;
+                    case RemapOutput::Alpha: p.alpha = (float)apply_scalar(p.alpha, mapped); break;
+                    case RemapOutput::Size: p.size = (float)apply_scalar(p.size, mapped); break;
                     case RemapOutput::Velocity: {
                         Vector3d v = p.velocity.cast<double>();
                         switch (out_comp) {
