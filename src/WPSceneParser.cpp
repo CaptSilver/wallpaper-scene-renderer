@@ -3445,6 +3445,151 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
     }
     objs.push_back(wpobj);
 }
+// Pre-scan all embedded SceneScript sources for two things:
+//   1. getLayer('name') references — layers that the script may toggle at
+//      runtime, so we keep them in the main render graph.
+//   2. engine.registerAsset('path') references — assets the script will
+//      instantiate at runtime via thisScene.createLayer(), which need
+//      pre-allocated scene nodes (C++-side pool, see below).
+void prescanScripts(ParseContext& context, const nlohmann::json& json) {
+    static const std::regex getLayerRe(R"(getLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
+    static const std::regex registerAssetRe(R"(registerAsset\s*\(\s*['"]([^'"]+)['"]\s*\))");
+    // WE's real createLayer accepts an object literal with an `image:`
+    // key directly — no registerAsset call required.  Extract those
+    // paths so we pre-allocate a pool for them too.  Non-greedy,
+    // dot-matches-all (C++ regex has ECMAScript semantics, so use
+    // [\s\S] to span newlines).
+    static const std::regex createLayerLiteralRe(
+        R"(createLayer\s*\(\s*\{[\s\S]*?(?:image|"image"|'image')\s*:\s*['"]([^'"]+)['"])");
+    // String form: createLayer('models/foo.json') — used by scripts like
+    // Naruto Shippuden 2800255344's audio-spectrum bar (passes the asset
+    // path directly without registerAsset).  Pre-register the path so
+    // the runtime can rent pool nodes instead of returning stubs.
+    static const std::regex createLayerStringRe(R"(createLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
+    // Script-managed pool pattern: `identifier + Pool . (pop|push|length)`.
+    // When present, the script expects createLayer to produce many
+    // long-lived layers it manages itself — an 8-slot backend pool is
+    // nowhere near enough.
+    static const std::regex scriptPoolRe(R"(\w*[Pp]ool\s*\.\s*(pop|push|length))");
+    // Workshop-id declaration: `__workshopId = 'NNN'` (top of every
+    // workshop-imported script).  Used to resolve bare paths like
+    // 'models/bar.json' to 'models/workshop/<id>/bar.json' when the bare
+    // path doesn't exist on disk.
+    static const std::regex workshopIdRe(R"(__workshopId\s*=\s*['"]([^'"]+)['"])");
+    // Integer slider maxes in the same script — used as pool-size hints.
+    // Matches `max: 400` but skips `max: 0.5` and `max: 1e10` (only `\d+`).
+    static const std::regex                    intMaxRe(R"(max\s*:\s*(\d+)\s*[,\n])");
+    std::function<void(const nlohmann::json&)> scan;
+    scan = [&](const nlohmann::json& j) {
+        if (j.is_string()) {
+            const std::string& s = j.get_ref<const std::string&>();
+            for (auto it = std::sregex_iterator(s.begin(), s.end(), getLayerRe);
+                 it != std::sregex_iterator();
+                 ++it) {
+                context.script_referenced_layers.insert((*it)[1].str());
+            }
+            for (auto it = std::sregex_iterator(s.begin(), s.end(), registerAssetRe);
+                 it != std::sregex_iterator();
+                 ++it) {
+                context.registered_asset_paths.insert((*it)[1].str());
+            }
+            // Collect paths this script creates via literal form.
+            std::vector<std::string> thisScriptPaths;
+            for (auto it = std::sregex_iterator(s.begin(), s.end(), createLayerLiteralRe);
+                 it != std::sregex_iterator();
+                 ++it) {
+                context.registered_asset_paths.insert((*it)[1].str());
+                thisScriptPaths.push_back((*it)[1].str());
+            }
+            // String form: createLayer('models/foo.json')
+            for (auto it = std::sregex_iterator(s.begin(), s.end(), createLayerStringRe);
+                 it != std::sregex_iterator();
+                 ++it) {
+                context.registered_asset_paths.insert((*it)[1].str());
+                thisScriptPaths.push_back((*it)[1].str());
+            }
+            // Workshop-id resolution: associate this script's createLayer
+            // paths with its `__workshopId = 'NNN'` declaration so we can
+            // fall back to `models/workshop/<id>/<file>.json` if the bare
+            // path doesn't exist on disk (Naruto Shippuden 2800255344's
+            // bar.json sits under workshop/2092495494).
+            {
+                std::smatch wm;
+                if (std::regex_search(s, wm, workshopIdRe)) {
+                    const std::string id = wm[1].str();
+                    for (const auto& p : thisScriptPaths) {
+                        context.script_asset_workshop_id[p] = id;
+                    }
+                }
+            }
+            // If this script manages its own pool, bump the backend pool
+            // size hint for everything it creates.
+            if (! thisScriptPaths.empty() && std::regex_search(s, scriptPoolRe)) {
+                size_t largestMax = 0;
+                for (auto it = std::sregex_iterator(s.begin(), s.end(), intMaxRe);
+                     it != std::sregex_iterator();
+                     ++it) {
+                    try {
+                        size_t v = std::stoull((*it)[1].str());
+                        if (v > largestMax) largestMax = v;
+                    } catch (...) {
+                    }
+                }
+                // 3x safety for multi-body scenes (e.g. 3body uses
+                // trailLength × 3 bodies).  Cap at 2048 per WE's
+                // documented layer limit.
+                size_t hint = std::min<size_t>(2048, std::max<size_t>(8, largestMax * 3));
+                for (const auto& p : thisScriptPaths) {
+                    auto& cur = context.asset_pool_size_hints[p];
+                    if (hint > cur) cur = hint;
+                }
+            }
+            // createLayer in a `for (...; i < N; ...)` loop — common pattern
+            // for batch-spawning bars/stars/rings (Naruto Shippuden's audio
+            // spectrum needs 64 bars).  Use the loop bound as a pool-size
+            // hint when no Pool.pop pattern is present.  Detect both
+            // `i < N` and `i <= N` forms.
+            if (! thisScriptPaths.empty()) {
+                // Locate every for-loop bound and pick the largest, capped
+                // at 2048 to match the explicit-pool path.
+                static const std::regex forBoundRe(R"(for\s*\([^)]*?\b\w+\s*<=?\s*(\d+))");
+                size_t                  largestBound = 0;
+                for (auto it = std::sregex_iterator(s.begin(), s.end(), forBoundRe);
+                     it != std::sregex_iterator();
+                     ++it) {
+                    try {
+                        size_t v = std::stoull((*it)[1].str());
+                        if (v > largestBound) largestBound = v;
+                    } catch (...) {
+                    }
+                }
+                if (largestBound > 8) {
+                    size_t hint = std::min<size_t>(2048, largestBound + 1);
+                    for (const auto& p : thisScriptPaths) {
+                        auto& cur = context.asset_pool_size_hints[p];
+                        if (hint > cur) cur = hint;
+                    }
+                }
+            }
+            return;
+        }
+        if (j.is_object()) {
+            for (auto& [k, v] : j.items()) scan(v);
+        } else if (j.is_array()) {
+            for (auto& v : j) scan(v);
+        }
+    };
+    scan(json);
+    if (! context.script_referenced_layers.empty()) {
+        LOG_INFO("Scripts reference %zu named layers", context.script_referenced_layers.size());
+    }
+    if (! context.registered_asset_paths.empty()) {
+        LOG_INFO("Scripts register %zu dynamic assets", context.registered_asset_paths.size());
+        for (const auto& p : context.registered_asset_paths) {
+            LOG_INFO("  asset: %s", p.c_str());
+        }
+    }
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3479,151 +3624,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     std::map<i32, size_t> json_order;
     size_t                obj_idx = 0;
 
-    // Pre-scan all embedded SceneScript sources for two things:
-    //   1. getLayer('name') references — layers that the script may toggle at
-    //      runtime, so we keep them in the main render graph.
-    //   2. engine.registerAsset('path') references — assets the script will
-    //      instantiate at runtime via thisScene.createLayer(), which need
-    //      pre-allocated scene nodes (C++-side pool, see below).
-    {
-        static const std::regex getLayerRe(R"(getLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
-        static const std::regex registerAssetRe(R"(registerAsset\s*\(\s*['"]([^'"]+)['"]\s*\))");
-        // WE's real createLayer accepts an object literal with an `image:`
-        // key directly — no registerAsset call required.  Extract those
-        // paths so we pre-allocate a pool for them too.  Non-greedy,
-        // dot-matches-all (C++ regex has ECMAScript semantics, so use
-        // [\s\S] to span newlines).
-        static const std::regex createLayerLiteralRe(
-            R"(createLayer\s*\(\s*\{[\s\S]*?(?:image|"image"|'image')\s*:\s*['"]([^'"]+)['"])");
-        // String form: createLayer('models/foo.json') — used by scripts like
-        // Naruto Shippuden 2800255344's audio-spectrum bar (passes the asset
-        // path directly without registerAsset).  Pre-register the path so
-        // the runtime can rent pool nodes instead of returning stubs.
-        static const std::regex createLayerStringRe(R"(createLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
-        // Script-managed pool pattern: `identifier + Pool . (pop|push|length)`.
-        // When present, the script expects createLayer to produce many
-        // long-lived layers it manages itself — an 8-slot backend pool is
-        // nowhere near enough.
-        static const std::regex scriptPoolRe(R"(\w*[Pp]ool\s*\.\s*(pop|push|length))");
-        // Workshop-id declaration: `__workshopId = 'NNN'` (top of every
-        // workshop-imported script).  Used to resolve bare paths like
-        // 'models/bar.json' to 'models/workshop/<id>/bar.json' when the bare
-        // path doesn't exist on disk.
-        static const std::regex workshopIdRe(R"(__workshopId\s*=\s*['"]([^'"]+)['"])");
-        // Integer slider maxes in the same script — used as pool-size hints.
-        // Matches `max: 400` but skips `max: 0.5` and `max: 1e10` (only `\d+`).
-        static const std::regex                    intMaxRe(R"(max\s*:\s*(\d+)\s*[,\n])");
-        std::function<void(const nlohmann::json&)> scan;
-        scan = [&](const nlohmann::json& j) {
-            if (j.is_string()) {
-                const std::string& s = j.get_ref<const std::string&>();
-                for (auto it = std::sregex_iterator(s.begin(), s.end(), getLayerRe);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    context.script_referenced_layers.insert((*it)[1].str());
-                }
-                for (auto it = std::sregex_iterator(s.begin(), s.end(), registerAssetRe);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    context.registered_asset_paths.insert((*it)[1].str());
-                }
-                // Collect paths this script creates via literal form.
-                std::vector<std::string> thisScriptPaths;
-                for (auto it = std::sregex_iterator(s.begin(), s.end(), createLayerLiteralRe);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    context.registered_asset_paths.insert((*it)[1].str());
-                    thisScriptPaths.push_back((*it)[1].str());
-                }
-                // String form: createLayer('models/foo.json')
-                for (auto it = std::sregex_iterator(s.begin(), s.end(), createLayerStringRe);
-                     it != std::sregex_iterator();
-                     ++it) {
-                    context.registered_asset_paths.insert((*it)[1].str());
-                    thisScriptPaths.push_back((*it)[1].str());
-                }
-                // Workshop-id resolution: associate this script's createLayer
-                // paths with its `__workshopId = 'NNN'` declaration so we can
-                // fall back to `models/workshop/<id>/<file>.json` if the bare
-                // path doesn't exist on disk (Naruto Shippuden 2800255344's
-                // bar.json sits under workshop/2092495494).
-                {
-                    std::smatch wm;
-                    if (std::regex_search(s, wm, workshopIdRe)) {
-                        const std::string id = wm[1].str();
-                        for (const auto& p : thisScriptPaths) {
-                            context.script_asset_workshop_id[p] = id;
-                        }
-                    }
-                }
-                // If this script manages its own pool, bump the backend pool
-                // size hint for everything it creates.
-                if (! thisScriptPaths.empty() && std::regex_search(s, scriptPoolRe)) {
-                    size_t largestMax = 0;
-                    for (auto it = std::sregex_iterator(s.begin(), s.end(), intMaxRe);
-                         it != std::sregex_iterator();
-                         ++it) {
-                        try {
-                            size_t v = std::stoull((*it)[1].str());
-                            if (v > largestMax) largestMax = v;
-                        } catch (...) {
-                        }
-                    }
-                    // 3x safety for multi-body scenes (e.g. 3body uses
-                    // trailLength × 3 bodies).  Cap at 2048 per WE's
-                    // documented layer limit.
-                    size_t hint = std::min<size_t>(2048, std::max<size_t>(8, largestMax * 3));
-                    for (const auto& p : thisScriptPaths) {
-                        auto& cur = context.asset_pool_size_hints[p];
-                        if (hint > cur) cur = hint;
-                    }
-                }
-                // createLayer in a `for (...; i < N; ...)` loop — common pattern
-                // for batch-spawning bars/stars/rings (Naruto Shippuden's audio
-                // spectrum needs 64 bars).  Use the loop bound as a pool-size
-                // hint when no Pool.pop pattern is present.  Detect both
-                // `i < N` and `i <= N` forms.
-                if (! thisScriptPaths.empty()) {
-                    // Locate every for-loop bound and pick the largest, capped
-                    // at 2048 to match the explicit-pool path.
-                    static const std::regex forBoundRe(R"(for\s*\([^)]*?\b\w+\s*<=?\s*(\d+))");
-                    size_t                  largestBound = 0;
-                    for (auto it = std::sregex_iterator(s.begin(), s.end(), forBoundRe);
-                         it != std::sregex_iterator();
-                         ++it) {
-                        try {
-                            size_t v = std::stoull((*it)[1].str());
-                            if (v > largestBound) largestBound = v;
-                        } catch (...) {
-                        }
-                    }
-                    if (largestBound > 8) {
-                        size_t hint = std::min<size_t>(2048, largestBound + 1);
-                        for (const auto& p : thisScriptPaths) {
-                            auto& cur = context.asset_pool_size_hints[p];
-                            if (hint > cur) cur = hint;
-                        }
-                    }
-                }
-                return;
-            }
-            if (j.is_object()) {
-                for (auto& [k, v] : j.items()) scan(v);
-            } else if (j.is_array()) {
-                for (auto& v : j) scan(v);
-            }
-        };
-        scan(json);
-        if (! context.script_referenced_layers.empty()) {
-            LOG_INFO("Scripts reference %zu named layers", context.script_referenced_layers.size());
-        }
-        if (! context.registered_asset_paths.empty()) {
-            LOG_INFO("Scripts register %zu dynamic assets", context.registered_asset_paths.size());
-            for (const auto& p : context.registered_asset_paths) {
-                LOG_INFO("  asset: %s", p.c_str());
-            }
-        }
-    }
+    // Pre-scan embedded SceneScript sources (layer refs, registered assets, pool-size hints).
+    prescanScripts(context, json);
 
     for (auto& obj : json.at("objects")) {
         if (obj.contains("id") && obj.at("id").is_number_integer()) {
