@@ -87,8 +87,8 @@ private:
     // write widens the current slot's hull; setCurrentSlot resets it at the
     // per-frame boundary; recordUpload flushes+copies only the hull (staging
     // is never cleared between frames, so the hull is always byte-valid).
-    std::vector<DirtySpan>           m_dirty;
-    std::vector<VirtualBlock>        m_virtual_blocks {};
+    std::vector<DirtySpan>    m_dirty;
+    std::vector<VirtualBlock> m_virtual_blocks {};
 
     VmaBufferParameters m_gpu_buf;
 };

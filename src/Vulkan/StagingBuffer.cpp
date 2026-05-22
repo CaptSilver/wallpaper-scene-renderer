@@ -315,8 +315,8 @@ bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
     } else {
         const VkDeviceSize atom = m_device.limits().nonCoherentAtomSize;
         const auto         r    = span.alignedRange(atom, stage.req_size);
-        copy_off  = r.offset;
-        copy_size = r.size;
+        copy_off                = r.offset;
+        copy_size               = r.size;
     }
 
     if (std::getenv("WEKDE_DEBUG_STAGING"))
