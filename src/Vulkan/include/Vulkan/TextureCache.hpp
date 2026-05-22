@@ -10,6 +10,7 @@
 #include "TexFormatVk.hpp"
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
+#include "StagingReuse.hpp"
 
 namespace wallpaper
 {
@@ -70,6 +71,11 @@ private:
 
     const Device&                m_device;
     Map<std::string, ImageSlots> m_tex_map;
+
+    // Persistent per-texture staging buffers reused by ReuploadTex (video
+    // frames) instead of reallocating a ~frame-sized buffer every frame.
+    // Indexed [slot][mip]; cleared in Clear().
+    Map<std::string, std::vector<std::vector<VmaBufferParameters>>> m_reupload_staging;
 
     struct QueryTex {
         idx                index { 0 };

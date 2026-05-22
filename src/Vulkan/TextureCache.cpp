@@ -598,6 +598,7 @@ TextureCache::~TextureCache() {};
 
 void TextureCache::Clear() {
     m_tex_map.clear();
+    m_reupload_staging.clear();
     m_query_texs.clear();
     m_query_map.clear();
 }
@@ -661,25 +662,37 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
 
     if (! m_tex_cmd) allocateCmd();
 
+    // Reuse persistent per-texture staging across frames (video re-upload),
+    // recreating a slot's buffer only when its payload grows.  Avoids a
+    // ~frame-sized alloc/free every frame; the WaitIdle below keeps reuse safe.
+    auto& key_pool = m_reupload_staging[key];
+    if (key_pool.size() < img_slots.slots.size()) key_pool.resize(img_slots.slots.size());
+
     for (usize i = 0; i < std::min(img_slots.slots.size(), image.slots.size()); i++) {
         auto& image_paras = img_slots.slots[i];
         auto& image_slot  = image.slots[i];
         if (image_slot.mipmaps.empty()) continue;
 
-        std::vector<VmaBufferParameters> stage_bufs;
-        std::vector<VkExtent3D>          extents;
+        const usize             mip_count  = image_slot.mipmaps.size();
+        auto&                   stage_bufs = key_pool[i];
+        std::vector<VkExtent3D> extents;
+        if (stage_bufs.size() < mip_count) stage_bufs.resize(mip_count);
 
-        for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
-            auto&               image_data = image_slot.mipmaps[j];
-            VmaBufferParameters buf;
-            (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, buf);
+        for (usize j = 0; j < mip_count; j++) {
+            auto& image_data = image_slot.mipmaps[j];
+            auto& buf        = stage_bufs[j];
+            if (! stagingBufferReusable(
+                    static_cast<bool>(buf.handle), buf.req_size, image_data.size)) {
+                VmaBufferParameters newbuf;
+                (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, newbuf);
+                buf = std::move(newbuf);
+            }
             {
                 void* v_data;
                 VVK_CHECK(buf.handle.MapMemory(&v_data));
                 memcpy(v_data, image_data.data.get(), (u32)image_data.size);
                 buf.handle.UnMapMemory();
             }
-            stage_bufs.emplace_back(std::move(buf));
             extents.push_back(VkExtent3D { (u32)image_data.width, (u32)image_data.height, 1 });
         }
 
@@ -696,7 +709,7 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
             VkImageSubresourceRange subresourceRange {
                 .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
                 .baseMipLevel   = 0,
-                .levelCount     = (uint32_t)stage_bufs.size(),
+                .levelCount     = (uint32_t)mip_count,
                 .baseArrayLayer = 0,
                 .layerCount     = 1,
             };
@@ -724,7 +737,7 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
                         .layerCount     = 1,
                     },
             };
-            for (usize j = 0; j < stage_bufs.size(); j++) {
+            for (usize j = 0; j < mip_count; j++) {
                 copy.imageSubresource.mipLevel = (u32)j;
                 copy.imageExtent               = extents[j];
                 m_tex_cmd.CopyBufferToImage(*stage_bufs[j].handle,
