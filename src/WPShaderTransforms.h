@@ -411,7 +411,7 @@ inline std::string FixImplicitConversions(const std::string& src) {
     {
         auto upgradeIfOutOfRange = [&result](const char* small_type,
                                              const char* big_type,
-                                             const char* oob_pattern,
+                                             const char* /*oob_pattern*/,
                                              const char* bare_swizzle) {
             static const std::regex re_decl_vec2(R"(\bvec2\s+(\w+)\s*;)");
             static const std::regex re_decl_vec3(R"(\bvec3\s+(\w+)\s*;)");
@@ -419,26 +419,50 @@ inline std::string FixImplicitConversions(const std::string& src) {
             const std::regex&       re_decl = (small_type[3] == '2') ? re_decl_vec2
                                             : (small_type[3] == '3') ? re_decl_vec3
                                                                       : re_decl_vec4;
-            std::vector<std::string> to_upgrade;
+            // Collect all names that are declared as small_type (via the hoisted re_decl).
+            std::set<std::string> decl_names;
             for (auto it = std::sregex_iterator(result.begin(), result.end(), re_decl);
                  it != std::sregex_iterator();
-                 ++it) {
-                std::string name = (*it)[1].str();
-                if (std::regex_search(result, std::regex(R"(\b)" + name + oob_pattern)))
-                    to_upgrade.push_back(std::move(name));
-            }
-            for (const auto& name : to_upgrade) {
-                // Upgrade the declaration (vec2 → vec4, etc.)
-                std::regex re(std::string(R"(\b)") + small_type + R"((\s+)" + name + R"(\s*;))");
-                result = std::regex_replace(result, re, std::string(big_type) + "$1");
-                // After upgrading, bare uses of this variable as a texture() coordinate
-                // are now too wide (e.g. texture(sampler2D, vec4) is invalid).
-                // Add a swizzle to bring it back to the original size.
-                // Only matches bare NAME with no following dot (i.e. no existing swizzle).
-                std::regex re_tex(R"(\btexture\s*\(\s*(\w+)\s*,\s*)" + name + R"(\s*\))");
-                result = std::regex_replace(
-                    result, re_tex, "texture($1, " + name + "." + bare_swizzle + ")");
-            }
+                 ++it)
+                decl_names.insert((*it)[1].str());
+
+            // Scan result once for OOB-accessed names (constant pattern, no per-name NFA).
+            // vec2 oob_pattern = \.[zwba]  →  captures any identifier accessed via .z/.w/.b/.a
+            // vec3 oob_pattern = \.[wa]    →  captures any identifier accessed via .w/.a
+            static const std::regex re_oob_vec2(R"(\b(\w+)\.[zwba])");
+            static const std::regex re_oob_vec3(R"(\b(\w+)\.[wa])");
+            const std::regex&       re_oob = (small_type[3] == '2') ? re_oob_vec2 : re_oob_vec3;
+            std::set<std::string>   oob_accessed;
+            for (auto it = std::sregex_iterator(result.begin(), result.end(), re_oob);
+                 it != std::sregex_iterator();
+                 ++it)
+                oob_accessed.insert((*it)[1].str());
+
+            // to_upgrade = declared as small_type AND accessed out-of-range.
+            std::set<std::string> to_upgrade;
+            for (const auto& n : decl_names)
+                if (oob_accessed.count(n))
+                    to_upgrade.insert(n);
+
+            if (to_upgrade.empty()) return;
+
+            // Upgrade declarations: one pass over result, filter by to_upgrade membership.
+            // Replaces the leading small_type token with big_type; remainder of match preserved.
+            const std::size_t type_len = std::string(small_type).size();
+            regexTransformAll(result, re_decl, [&](const std::smatch& m) -> std::string {
+                if (!to_upgrade.count(m[1].str())) return m[0].str();
+                return std::string(big_type) + m[0].str().substr(type_len);
+            });
+
+            // Fix bare texture() coord uses: one pass, filter coord arg by to_upgrade.
+            // texture(sampler, NAME) → texture(sampler, NAME.bare_swizzle)
+            static const std::regex re_tex_coord(
+                R"(\btexture\s*\(\s*(\w+)\s*,\s*(\w+)\s*\))");
+            regexTransformAll(result, re_tex_coord, [&](const std::smatch& m) -> std::string {
+                const std::string coord = m[2].str();
+                if (!to_upgrade.count(coord)) return m[0].str();
+                return "texture(" + m[1].str() + ", " + coord + "." + bare_swizzle + ")";
+            });
         };
         upgradeIfOutOfRange("vec2", "vec4", R"(\.[zwba])", "xy");
         upgradeIfOutOfRange("vec3", "vec4", R"(\.[wa])", "xyz");
