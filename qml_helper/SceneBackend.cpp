@@ -1795,6 +1795,7 @@ void SceneObject::setupTextScripts() {
     }
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
     m_jsEngine->globalObject().setProperty("engine", engineObj);
+    m_engineObj = m_jsEngine->globalObject().property("engine"); // cache the stored handle
 
     // Provide the 'shared' global for inter-script data sharing.
     // All scripts in the scene can read/write to this object.
@@ -1926,6 +1927,8 @@ void SceneObject::setupTextScripts() {
         "    }\n"
         "  };\n"
         "})();\n");
+    m_inputObj = m_jsEngine->globalObject().property("input");
+    m_cwpObj   = m_inputObj.property("cursorWorldPosition");
 
     // Mat3 / Mat4 — shared with tests via SceneScriptShimsJs.hpp.  Must come
     // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
@@ -3963,7 +3966,7 @@ void SceneObject::evaluateTextScripts() {
     double runtimeSecs = nowMs / 1000.0;
     double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.016, 2000);
     m_lastTextTickMs   = nowMs;
-    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
     engineObj.setProperty("fps", m_scene->getFps());
@@ -3974,10 +3977,8 @@ void SceneObject::evaluateTextScripts() {
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
-        QJSValue inputObj = m_jsEngine->globalObject().property("input");
-        QJSValue cwp      = inputObj.property("cursorWorldPosition");
-        cwp.setProperty("x", (double)m_cursorSceneX);
-        cwp.setProperty("y", (double)m_cursorSceneY);
+        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
+        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     static const bool s_textDiag = []() {
@@ -4091,7 +4092,7 @@ void SceneObject::evaluateColorScripts() {
     double runtimeSecs = nowMs / 1000.0;
     double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastColorTickMs, 0.033, 500);
     m_lastColorTickMs  = nowMs;
-    QJSValue engineObj = m_jsEngine->globalObject().property("engine");
+    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
     engineObj.setProperty("fps", m_scene->getFps());
@@ -4102,10 +4103,8 @@ void SceneObject::evaluateColorScripts() {
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
-        QJSValue inputObj = m_jsEngine->globalObject().property("input");
-        QJSValue cwp      = inputObj.property("cursorWorldPosition");
-        cwp.setProperty("x", (double)m_cursorSceneX);
-        cwp.setProperty("y", (double)m_cursorSceneY);
+        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
+        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     for (auto& state : m_colorScriptStates) {
@@ -4427,7 +4426,7 @@ void SceneObject::evaluatePropertyScripts() {
     double runtimeSecs   = nowMs / 1000.0;
     double frametime     = wallpaper::ComputeTickFrametime(nowMs, m_lastPropertyTickMs, 0.008, 250);
     m_lastPropertyTickMs = nowMs;
-    QJSValue engineObj   = m_jsEngine->globalObject().property("engine");
+    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
     engineObj.setProperty("fps", m_scene->getFps());
@@ -4439,10 +4438,8 @@ void SceneObject::evaluatePropertyScripts() {
 
     // Refresh cursor world position for scripts reading input.cursorWorldPosition
     {
-        QJSValue inputObj = m_jsEngine->globalObject().property("input");
-        QJSValue cwp      = inputObj.property("cursorWorldPosition");
-        cwp.setProperty("x", (double)m_cursorSceneX);
-        cwp.setProperty("y", (double)m_cursorSceneY);
+        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
+        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     // Refresh audio buffers in case property scripts use audio data
@@ -4456,16 +4453,15 @@ void SceneObject::evaluatePropertyScripts() {
     // meanwhile anyPlaying()-style polling would see stale "still playing"
     // and misbehave).  Clear the dirty flag once the two agree.
     if (! m_soundLayerStates.empty()) {
-        QJSValue engineObj2    = m_jsEngine->globalObject().property("engine");
-        QJSValue playingStates = engineObj2.property("_soundPlayingStates");
+        QJSValue playingStates = m_engineObj.property("_soundPlayingStates");
         if (playingStates.isUndefined()) {
             playingStates = m_jsEngine->newObject();
-            engineObj2.setProperty("_soundPlayingStates", playingStates);
+            m_engineObj.setProperty("_soundPlayingStates", playingStates);
         }
-        QJSValue dirtyMap = engineObj2.property("_soundPlayingStatesDirty");
+        QJSValue dirtyMap = m_engineObj.property("_soundPlayingStatesDirty");
         if (dirtyMap.isUndefined()) {
             dirtyMap = m_jsEngine->newObject();
-            engineObj2.setProperty("_soundPlayingStatesDirty", dirtyMap);
+            m_engineObj.setProperty("_soundPlayingStatesDirty", dirtyMap);
         }
         for (const auto& sls : m_soundLayerStates) {
             QString nameKey    = QString::fromStdString(sls.name);
@@ -4485,8 +4481,8 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
-    // Cache Vec3 constructor for efficient argument creation
-    QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
+    // m_vec3Fn cached in setupTextScripts — same handle the local re-fetch returned
+    QJSValue& vec3Fn = m_vec3Fn;
 
     // Drain puppet-animation keyframe events fired by the render thread
     // since the last tick, and dispatch each to the matching script's
@@ -5283,6 +5279,9 @@ void SceneObject::cleanupTextScripts() {
     m_vec2Fn                  = QJSValue();
     m_vec3Fn                  = QJSValue();
     m_vec4Fn                  = QJSValue();
+    m_engineObj               = QJSValue();
+    m_inputObj                = QJSValue();
+    m_cwpObj                  = QJSValue();
     // Drain the JS-side script array so a reload starts fresh.  The engine
     // itself stays alive; just its cached references need to clear.
     if (m_jsEngine) {

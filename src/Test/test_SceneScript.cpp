@@ -9713,3 +9713,150 @@ TEST_SUITE("Cached Vec ctor handle equivalence") {
         CHECK(std::abs(viaCall.property("x").toNumber() - viaEval.property("x").toNumber()) < 1e-7);
     }
 } // TEST_SUITE Cached Vec ctor handle equivalence
+
+// ------------------------------------------------------------------
+// Cached engine/input/cursorWorldPosition global handles.
+// The property, text, and color tick loops each fetched these from the
+// JS engine's global-object hash every tick even though they are set
+// once in setupTextScripts and never replaced.  Three new QJSValue
+// members (m_engineObj, m_inputObj, m_cwpObj) are grabbed once right
+// after each global is installed and used in place of the per-tick
+// globalObject().property() calls.
+//
+// The loop bodies live in a Vulkan-backed SceneObject (untestable
+// headlessly — same constraint as the scriptLoopShouldRun and Cached
+// Vec ctor suites above).  The contract is pinned at the seam: a
+// QJSValue grabbed from globalObject().property() right after
+// setProperty() must alias the same JS object so mutations via the
+// cached handle are visible through a fresh per-tick lookup.
+TEST_SUITE("Cached engine/input global handle aliasing") {
+    // Minimal harness: install just the globals the cache members hold,
+    // without needing the full setupTextScripts call chain.
+    struct EngineInputEnv {
+        QJSEngine engine;
+        EngineInputEnv() {
+            // Install Vec2 so `var input = { cursorWorldPosition: Vec2(0,0) }` works.
+            // The real code evaluates kVecClassesJs; for this test a minimal shim suffices.
+            engine.evaluate(
+                "function Vec2(x,y) { this.x=x||0; this.y=y||0; } "
+                "Vec2.prototype.add=function(o){return new Vec2(this.x+o.x,this.y+o.y);};");
+
+            // Install 'engine' exactly as setupTextScripts does.
+            QJSValue engineObj = engine.newObject();
+            engineObj.setProperty("runtime", 0.0);
+            engineObj.setProperty("fps", 30.0);
+            engine.globalObject().setProperty("engine", engineObj);
+
+            // Install 'input' + cursorWorldPosition exactly as the JS eval does.
+            engine.evaluate(
+                "var input = { cursorWorldPosition: new Vec2(0,0), "
+                "              cursorScreenPosition: new Vec2(0,0), "
+                "              cursorLeftDown: false };");
+        }
+    };
+
+    TEST_CASE("cached engine handle aliases the installed global object") {
+        EngineInputEnv env;
+
+        // Simulate the cache-grab in setupTextScripts.
+        QJSValue m_engineObj = env.engine.globalObject().property("engine");
+        REQUIRE(m_engineObj.isObject());
+
+        // Mutate via the cached handle (as the tick loops do).
+        m_engineObj.setProperty("runtime", 3.14);
+
+        // Prove the mutation is visible through a fresh per-tick lookup.
+        QJSValue live = env.engine.globalObject().property("engine");
+        CHECK(live.property("runtime").toNumber() == doctest::Approx(3.14));
+
+        // And via JS eval — the full round-trip.
+        QJSValue fromJs = env.engine.evaluate("engine.runtime");
+        CHECK(fromJs.toNumber() == doctest::Approx(3.14));
+    }
+
+    TEST_CASE("cached cursorWorldPosition handle aliases the input sub-object") {
+        EngineInputEnv env;
+
+        // Simulate the two-step cache in setupTextScripts.
+        QJSValue m_inputObj = env.engine.globalObject().property("input");
+        QJSValue m_cwpObj   = m_inputObj.property("cursorWorldPosition");
+        REQUIRE(m_inputObj.isObject());
+        REQUIRE(m_cwpObj.isObject());
+
+        // Write cursor position via the cached cwp handle (as tick loops do).
+        m_cwpObj.setProperty("x", 42.0);
+        m_cwpObj.setProperty("y", 99.0);
+
+        // Verify via a fresh globalObject().property() chain — same path the old code used.
+        QJSValue liveInput = env.engine.globalObject().property("input");
+        QJSValue liveCwp   = liveInput.property("cursorWorldPosition");
+        CHECK(liveCwp.property("x").toNumber() == doctest::Approx(42.0));
+        CHECK(liveCwp.property("y").toNumber() == doctest::Approx(99.0));
+
+        // Verify via JS eval (full round-trip a script would perform).
+        CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() ==
+              doctest::Approx(42.0));
+    }
+
+    TEST_CASE("cached cursorWorldPosition preserves Vec2 prototype methods") {
+        // The per-tick refresh mutates .x/.y in place.  The spec comment notes
+        // that this preserves the Vec2 prototype link — scripts that call
+        // input.cursorWorldPosition.add(...) must keep working after the cached
+        // handle writes .x/.y.  Prove the prototype is intact after a write.
+        EngineInputEnv env;
+        QJSValue m_inputObj = env.engine.globalObject().property("input");
+        QJSValue m_cwpObj   = m_inputObj.property("cursorWorldPosition");
+
+        m_cwpObj.setProperty("x", 3.0);
+        m_cwpObj.setProperty("y", 4.0);
+
+        // .add() is a Vec2 prototype method; if setProperty broke the prototype
+        // link, the call would throw.
+        QJSValue addResult =
+            env.engine.evaluate("input.cursorWorldPosition.add({x:1,y:0}).x");
+        CHECK(!addResult.isError());
+        CHECK(addResult.toNumber() == doctest::Approx(4.0));
+    }
+
+    TEST_CASE("m_vec3Fn member equals the property-loop local vec3Fn fetch") {
+        // The property loop had a local `QJSValue vec3Fn =
+        // globalObject().property("Vec3")` that was separate from m_vec3Fn (already
+        // populated by the color/shader-value cache from the same global slot).
+        // Prove they are the same callable object so replacing the local fetch
+        // with m_vec3Fn is safe.
+        MathEnv  env; // installs kVecClassesJs (the production shim)
+        QJSValue cachedVec3Fn = env.engine.globalObject().property("Vec3"); // m_vec3Fn
+        QJSValue localVec3Fn  = env.engine.globalObject().property("Vec3"); // the old local
+        // equals() tests JS object identity (same underlying JSC object).
+        CHECK(cachedVec3Fn.equals(localVec3Fn));
+        // Both are callable.
+        REQUIRE(cachedVec3Fn.isCallable());
+        // A Vec3 built from either handle has identical fields.
+        QJSValue va = cachedVec3Fn.call({ QJSValue(1.0), QJSValue(2.0), QJSValue(3.0) });
+        QJSValue vb = localVec3Fn.call({ QJSValue(1.0), QJSValue(2.0), QJSValue(3.0) });
+        CHECK(va.property("x").toNumber() == vb.property("x").toNumber());
+        CHECK(va.property("y").toNumber() == vb.property("y").toNumber());
+        CHECK(va.property("z").toNumber() == vb.property("z").toNumber());
+    }
+
+    TEST_CASE("engine cached handle survives multiple property mutations per tick") {
+        // In the property loop, the same cached engineObj handle has setProperty
+        // called on it multiple times per tick (runtime, frametime, fps, frameCount)
+        // plus again in the sound-state block.  Prove repeated mutation through
+        // one cached handle is visible, not shadowed.
+        EngineInputEnv env;
+        QJSValue m_engineObj = env.engine.globalObject().property("engine");
+
+        // Simulate multi-property tick update.
+        m_engineObj.setProperty("runtime",    1.0);
+        m_engineObj.setProperty("frametime",  0.008);
+        m_engineObj.setProperty("fps",        60.0);
+        m_engineObj.setProperty("frameCount", 42.0);
+
+        QJSValue live = env.engine.globalObject().property("engine");
+        CHECK(live.property("runtime").toNumber()    == doctest::Approx(1.0));
+        CHECK(live.property("frametime").toNumber()  == doctest::Approx(0.008));
+        CHECK(live.property("fps").toNumber()        == doctest::Approx(60.0));
+        CHECK(live.property("frameCount").toNumber() == doctest::Approx(42.0));
+    }
+} // TEST_SUITE Cached engine/input global handle aliasing

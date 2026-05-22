@@ -567,6 +567,15 @@ private:
     QJSValue m_vec2Fn;
     QJSValue m_vec3Fn;
     QJSValue m_vec4Fn;
+    // Cached handles to the 'engine' global JS object, the 'input' global,
+    // and the input.cursorWorldPosition Vec2 sub-object.  All three are
+    // installed once in setupTextScripts and never reassigned; caching them
+    // avoids three globalObject().property() hash lookups per tick across the
+    // property, text, and color loops.  Mirrors the m_vec2Fn/m_vec3Fn/m_vec4Fn
+    // pattern.  Cleared in cleanupTextScripts.
+    QJSValue m_engineObj; // globalObject().property("engine")
+    QJSValue m_inputObj;  // globalObject().property("input")
+    QJSValue m_cwpObj;    // m_inputObj.property("cursorWorldPosition")
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
     // Sound layer control state for SceneScript play/stop/pause API
