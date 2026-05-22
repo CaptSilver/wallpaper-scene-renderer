@@ -3750,6 +3750,34 @@ void computeGroupWorldTransforms(ParseContext& context, const nlohmann::json& js
         context.original_world_transforms[gi.id] = w;
     }
 }
+
+// Register the scene's built-in render targets (default FB, mip-mapped FB,
+// shadow atlas, reflection, reflection blur) sized to the scene ortho.
+void initSceneRenderTargets(ParseContext& context) {
+    context.scene->renderTargets[SpecTex_Default.data()] = {
+        .width  = context.ortho_w,
+        .height = context.ortho_h,
+        .bind   = { .enable = true, .screen = true },
+    };
+    context.scene->renderTargets[WE_MIP_MAPPED_FRAME_BUFFER.data()] = {
+        .width      = context.ortho_w,
+        .height     = context.ortho_h,
+        .has_mipmap = true,
+        .bind       = { .enable = true, .name = SpecTex_Default.data() }
+    };
+    context.scene->renderTargets[WE_SHADOW_ATLAS.data()] = {
+        .width  = 2048,
+        .height = 2048,
+    };
+    context.scene->renderTargets[WE_REFLECTION.data()] = {
+        .width  = context.ortho_w,
+        .height = context.ortho_h,
+    };
+    context.scene->renderTargets[WE_REFLECTION_BLUR.data()] = {
+        .width  = context.ortho_w,
+        .height = context.ortho_h,
+    };
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3833,31 +3861,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     linkGroupHierarchy(context, group_infos, deferred_group_links);
     computeGroupWorldTransforms(context, json, group_infos);
 
-    {
-        context.scene->renderTargets[SpecTex_Default.data()] = {
-            .width  = context.ortho_w,
-            .height = context.ortho_h,
-            .bind   = { .enable = true, .screen = true },
-        };
-        context.scene->renderTargets[WE_MIP_MAPPED_FRAME_BUFFER.data()] = {
-            .width      = context.ortho_w,
-            .height     = context.ortho_h,
-            .has_mipmap = true,
-            .bind       = { .enable = true, .name = SpecTex_Default.data() }
-        };
-        context.scene->renderTargets[WE_SHADOW_ATLAS.data()] = {
-            .width  = 2048,
-            .height = 2048,
-        };
-        context.scene->renderTargets[WE_REFLECTION.data()] = {
-            .width  = context.ortho_w,
-            .height = context.ortho_h,
-        };
-        context.scene->renderTargets[WE_REFLECTION_BLUR.data()] = {
-            .width  = context.ortho_w,
-            .height = context.ortho_h,
-        };
-    }
+    initSceneRenderTargets(context);
 
     context.scene->scene_id = scene_id;
 
