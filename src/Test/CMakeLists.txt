@@ -90,6 +90,7 @@ add_executable(backend_scene_tests
     test_DependencyGraph.cpp
     test_RenderGraph.cpp
     test_WorldCacheGate.cpp
+    test_ImagePayload.cpp
     test_AudioConsumerGate.cpp
     test_TextStyleMerge.cpp
     # Compile specific source files to avoid pulling in Vulkan
