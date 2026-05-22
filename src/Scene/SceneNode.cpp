@@ -21,6 +21,7 @@ Matrix4d SceneNode::GetLocalTrans() const {
 void SceneNode::UpdateTrans() {
     if (! m_dirty) return;
     m_dirty = false;
+    ++m_trans_epoch; // recomputed -> the world matrix may have changed
 
     if (m_parent) {
         m_parent->UpdateTrans();

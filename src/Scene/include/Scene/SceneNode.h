@@ -2,6 +2,7 @@
 #include <list>
 #include <vector>
 #include <memory>
+#include <cstdint>
 #include <Eigen/Dense>
 #include "SceneMesh.h"
 #include "SceneCamera.h"
@@ -147,11 +148,20 @@ public:
     void SetWorldTransform(const Eigen::Matrix4d& t) {
         m_trans = t;
         m_dirty = false;
+        ++m_trans_epoch; // proxy path bypasses UpdateTrans; keep the epoch live
     }
 
     // update self modle trans (will update parent before)
     void            UpdateTrans();
     Eigen::Matrix4d ModelTrans() const { return m_trans; };
+
+    // Monotonic "world transform changed" counter.  Bumped whenever
+    // UpdateTrans() actually recomputes (m_dirty was true) and on
+    // SetWorldTransform (the proxy-node path that bypasses UpdateTrans).  A
+    // consumer (the per-pass uniform updater) compares it against the value
+    // stored at the last upload to skip recomputing M / MVP and their double
+    // 4x4 inverses when the node has not moved.
+    uint64_t TransEpoch() const { return m_trans_epoch; }
 
     SceneMesh* Mesh() { return m_mesh.get(); }
     bool       HasMaterial() const { return m_mesh && m_mesh->Material() != nullptr; };
@@ -194,6 +204,7 @@ private:
 
     bool            m_dirty;
     Eigen::Matrix4d m_trans;
+    uint64_t        m_trans_epoch { 0 };
 
     Eigen::Vector3f m_translate { 0.0f, 0.0f, 0.0f };
     Eigen::Vector3f m_scale { 1.0f, 1.0f, 1.0f };

@@ -76,6 +76,12 @@ public:
     Eigen::Matrix4d GetViewMatrix() const;
     Eigen::Matrix4d GetViewProjectionMatrix() const;
 
+    // Monotonic "view-projection changed" counter, bumped in the single VP
+    // writer (CalculateViewProjectionMatrix).  Lets the per-pass uniform
+    // updater skip recomputing VP / MVP and the MVP inverse when the camera
+    // has not moved this frame.  An animating camera path bumps every frame.
+    std::uint64_t VpEpoch() const { return m_vp_epoch; }
+
     std::shared_ptr<SceneNode> GetAttachedNode() const { return m_node; }
 
     void Clone(const SceneCamera& cam) {
@@ -118,6 +124,7 @@ private:
 
     Eigen::Matrix4d m_viewMat { Eigen::Matrix4d::Identity() };
     Eigen::Matrix4d m_viewProjectionMat { Eigen::Matrix4d::Identity() };
+    std::uint64_t   m_vp_epoch { 0 };
 
     bool            m_direct_lookat { false };
     Eigen::Vector3d m_eye { Eigen::Vector3d::Zero() };

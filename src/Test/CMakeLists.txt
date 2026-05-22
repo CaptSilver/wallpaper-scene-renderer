@@ -32,6 +32,7 @@ add_executable(backend_scene_tests
     test_SceneCamera.cpp
     test_SceneNode.cpp
     test_UniformDirtyGate.cpp
+    test_TransformEpoch.cpp
     test_SceneLight.cpp
     test_SceneMesh.cpp
     test_SceneShader.cpp

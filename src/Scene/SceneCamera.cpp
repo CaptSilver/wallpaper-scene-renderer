@@ -83,6 +83,7 @@ void SceneCamera::CalculateViewProjectionMatrix() {
         // the correct mirror lookup.
         m_viewProjectionMat.row(1) *= -1.0;
     }
+    ++m_vp_epoch; // VP recomputed -> bump the change counter
 }
 
 void SceneCamera::Update() { CalculateViewProjectionMatrix(); }
