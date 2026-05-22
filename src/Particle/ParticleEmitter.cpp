@@ -34,7 +34,7 @@ inline u32 GetEmitNum(double& timer, float speed) {
     return num;
 }
 
-inline u32 Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool sort,
+inline void Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool sort,
                  SpwanOp Spwan) {
     u32  lastPartcle = 0;
     bool has_dead    = true;
@@ -65,8 +65,6 @@ inline u32 Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool s
                    (l_a && l_b && ! ParticleModify::IsNew(a) && ParticleModify::IsNew(b));
         });
     }
-
-    return i + 1;
 }
 
 inline Particle Spwan(GenParticleOp gen, std::vector<ParticleInitOp>& inis, double duration) {

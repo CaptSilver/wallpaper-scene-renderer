@@ -1001,7 +1001,6 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             };
 
         } else if (name == "oscillateposition") {
-            std::vector<Vector3f>         lastMove;
             FrequencyValue                fvx = FrequencyValue::ReadFromJson(wpj, name);
             std::array<FrequencyValue, 3> fxp = { fvx, fvx, fvx };
             return [=](const ParticleInfo& info) mutable {
