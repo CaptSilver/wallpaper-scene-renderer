@@ -340,6 +340,12 @@ if(BUILD_FUZZERS)
         ${SRC_DIR}
         ${SRC_DIR}/Scene/include
     )
+    # WPTexImageParser.cpp includes <stb_image.h>. The directory-scope
+    # include_directories(SYSTEM third_party) that used to satisfy this was
+    # removed in 3c55dea (target-scoped refactor); restore the path on this
+    # specific target. Mirrors the pattern backend_scene_tests uses.
+    target_include_directories(fuzz_WPTexImageParser SYSTEM PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party")
     target_link_libraries(fuzz_WPTexImageParser PRIVATE
         wpUtils wpFs ${LZ4_LIBRARIES} nlohmann_json
     )
@@ -431,6 +437,12 @@ if(BUILD_FUZZERS)
         ${SRC_DIR}/Scene/include
         ${SRC_DIR}/Particle/include
     )
+    # WPParticleParser.cpp transitively pulls Core/Random.hpp, which includes
+    # <effolkronium/random.hpp> in third_party. wpUtils marks third_party as
+    # SYSTEM PRIVATE so the path does not propagate to consumers; restore it on
+    # this target. Same pattern as fuzz_WPTexImageParser above.
+    target_include_directories(fuzz_WPParticleParser SYSTEM PRIVATE
+        "${CMAKE_SOURCE_DIR}/third_party")
     target_link_libraries(fuzz_WPParticleParser PRIVATE
         wpUtils wpFs wpParticle nlohmann_json
     )
