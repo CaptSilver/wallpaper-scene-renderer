@@ -72,6 +72,7 @@ add_executable(backend_scene_tests
     test_WPRopeCombos.cpp
     test_RopeMedian.cpp
     test_WPParticleOperators.cpp
+    test_WPRemapValueOps.cpp
     test_WPScenePostprocessing.cpp
     test_WPImageObject.cpp
     test_ParticleEmitter.cpp
