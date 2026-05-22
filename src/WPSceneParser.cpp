@@ -3590,43 +3590,17 @@ void prescanScripts(ParseContext& context, const nlohmann::json& json) {
         }
     }
 }
-} // namespace
 
-std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
-                                            fs::VFS& vfs, audio::SoundManager& sm,
-                                            const WPUserProperties& userProps) {
-    WEK_PROFILE_SCOPE("WPSceneParser::Parse");
-    // Set user properties context for the duration of parsing
-    UserPropertiesScope propsScope(&userProps);
+struct GroupInfo {
+    i32 id;
+    i32 parent_id;
+};
 
-    nlohmann::json json;
-    if (! PARSE_JSON(buf, json)) return nullptr;
-    wpscene::WPScene sc;
-    sc.FromJson(json);
-    //	LOG_INFO(nlohmann::json(sc).dump(4));
-
-    ParseContext context;
-    context.hide_pattern            = m_hide_pattern;
-    context.postprocessing_override = m_postprocessing_override;
-
-    std::vector<WPObjectVar> wp_objs;
-
-    // First pass: create group nodes (objects without image/particle/sound/light).
-    // These are structural containers that provide transforms for child objects.
-    struct GroupInfo {
-        i32 id;
-        i32 parent_id;
-    };
-    std::vector<GroupInfo> group_infos;
-
-    // Track each object's position in the JSON array so we can restore
-    // the intended Z-order after the two-pass group/image construction.
-    std::map<i32, size_t> json_order;
-    size_t                obj_idx = 0;
-
-    // Pre-scan embedded SceneScript sources (layer refs, registered assets, pool-size hints).
-    prescanScripts(context, json);
-
+// First pass: create group nodes (objects without image/particle/sound/light).
+// These are structural containers that provide transforms for child objects.
+void prescanGroups(ParseContext& context, const nlohmann::json& json, fs::VFS& vfs,
+                   std::vector<WPObjectVar>& wp_objs, std::vector<GroupInfo>& group_infos,
+                   std::map<i32, size_t>& json_order, size_t& obj_idx) {
     for (auto& obj : json.at("objects")) {
         if (obj.contains("id") && obj.at("id").is_number_integer()) {
             json_order[obj.at("id").get<i32>()] = obj_idx;
@@ -3672,6 +3646,38 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             }
         }
     }
+}
+} // namespace
+
+std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
+                                            fs::VFS& vfs, audio::SoundManager& sm,
+                                            const WPUserProperties& userProps) {
+    WEK_PROFILE_SCOPE("WPSceneParser::Parse");
+    // Set user properties context for the duration of parsing
+    UserPropertiesScope propsScope(&userProps);
+
+    nlohmann::json json;
+    if (! PARSE_JSON(buf, json)) return nullptr;
+    wpscene::WPScene sc;
+    sc.FromJson(json);
+    //	LOG_INFO(nlohmann::json(sc).dump(4));
+
+    ParseContext context;
+    context.hide_pattern            = m_hide_pattern;
+    context.postprocessing_override = m_postprocessing_override;
+
+    std::vector<WPObjectVar> wp_objs;
+    std::vector<GroupInfo>   group_infos;
+
+    // Track each object's position in the JSON array so we can restore
+    // the intended Z-order after the two-pass group/image construction.
+    std::map<i32, size_t> json_order;
+    size_t                obj_idx = 0;
+
+    // Pre-scan embedded SceneScript sources (layer refs, registered assets, pool-size hints).
+    prescanScripts(context, json);
+
+    prescanGroups(context, json, vfs, wp_objs, group_infos, json_order, obj_idx);
 
     // Create the image parser before the autosize ortho pre-pass so the
     // pre-pass populates its header cache, and subsequent ParseImageObj /
