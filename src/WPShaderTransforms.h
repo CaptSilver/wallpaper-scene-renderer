@@ -500,25 +500,34 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // of more than N components, truncate the swizzle to N.
         auto fixArithSwizzleTrunc = [&result](const std::set<std::string>& small_vars,
                                               int                          target_width) {
-            std::string swiz_chars = "xyzwrgbastpq";
-            for (const auto& v : small_vars) {
-                for (int sw = 4; sw > target_width; --sw) {
-                    // VAR OP WORD.XXXX  where XXXX has more than target_width components
-                    std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" + swiz_chars +
-                                  "]{" + std::to_string(sw) + "})\\b");
-                    regexTransformAll(result, re, [&](const std::smatch& m) {
-                        return m[1].str() + m[2].str() + m[3].str() + "." +
-                               m[4].str().substr(0, target_width);
-                    });
+            // One static forward+reverse pair per swizzle width (sw ∈ {3,4}).
+            // Captures any \w+ identifier; C++ filter checks group1/group4 ∈ small_vars.
+            static const std::regex re_fwd4(
+                R"(\b(\w+)(\s*[+\-*/]\s*)(\w+)\.([xyzwrgbastpq]{4})\b)");
+            static const std::regex re_rev4(
+                R"((\w+)\.([xyzwrgbastpq]{4})(\s*[+\-*/]\s*)\b(\w+)\b)");
+            static const std::regex re_fwd3(
+                R"(\b(\w+)(\s*[+\-*/]\s*)(\w+)\.([xyzwrgbastpq]{3})\b)");
+            static const std::regex re_rev3(
+                R"((\w+)\.([xyzwrgbastpq]{3})(\s*[+\-*/]\s*)\b(\w+)\b)");
 
-                    // Reverse: WORD.XXXX OP VAR
-                    std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(sw) +
-                                   "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
-                    regexTransformAll(result, re2, [&](const std::smatch& m) {
-                        return m[1].str() + "." + m[2].str().substr(0, target_width) + m[3].str() +
-                               m[4].str();
-                    });
-                }
+            for (int sw = 4; sw > target_width; --sw) {
+                const std::regex& re_fwd = (sw == 4) ? re_fwd4 : re_fwd3;
+                const std::regex& re_rev = (sw == 4) ? re_rev4 : re_rev3;
+
+                // VAR OP WORD.XXXX — filter: group1 (VAR) must be in small_vars
+                regexTransformAll(result, re_fwd, [&](const std::smatch& m) -> std::string {
+                    if (!small_vars.count(m[1].str())) return m[0].str();
+                    return m[1].str() + m[2].str() + m[3].str() + "." +
+                           m[4].str().substr(0, target_width);
+                });
+
+                // Reverse: WORD.XXXX OP VAR — filter: group4 (VAR) must be in small_vars
+                regexTransformAll(result, re_rev, [&](const std::smatch& m) -> std::string {
+                    if (!small_vars.count(m[4].str())) return m[0].str();
+                    return m[1].str() + "." + m[2].str().substr(0, target_width) +
+                           m[3].str() + m[4].str();
+                });
             }
         };
         // For arithmetic truncation, only consider local variable declarations
