@@ -2911,4 +2911,275 @@ TEST_SUITE("FixImplicitConversions.goldenCharacterization") {
                  "  float v = smoothstep(dist.x, dist.x + smoothing, thresh);\n"
                  "}\n");
     }
+
+    // Cluster: fixTrunc with multiple (dst,src) pairs — all four assignments in one
+    // result string must be truncated sequentially.  Validates the multi-pair sequential
+    // scan the B1 one-pass rewrite must preserve.
+    TEST_CASE("golden: multi-pair direct truncation — four assignments all converted") {
+        std::string in =
+            "void main() {\n"
+            "  vec4 c;\n"
+            "  vec3 b;\n"
+            "  vec2 a;\n"
+            "  vec2 d;\n"
+            "  a = b;\n"
+            "  a = c;\n"
+            "  d = b;\n"
+            "  d = c;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec4 c;\n"
+                 "  vec3 b;\n"
+                 "  vec2 a;\n"
+                 "  vec2 d;\n"
+                 "  a = b.xy;\n"
+                 "  a = c.xy;\n"
+                 "  d = b.xy;\n"
+                 "  d = c.xy;\n"
+                 "}\n");
+    }
+
+    // Cluster: fixTrunc shadowing guard — when a name appears in both the dst set and
+    // the src set (vec2 and vec4 declarations of the same identifier), the assignment
+    // must NOT be truncated.  The vec2-typed local is skipped; only the unambiguous
+    // vec2 `a` gets the .xy swizzle.
+    TEST_CASE("golden: fixTrunc shadowing guard — same name in dst and src left untouched") {
+        // `cursor` is declared as both vec2 (function param) and vec4 (local in main).
+        // fixTrunc must not truncate `cursor = ...` because `cursor` is in both vec2_vars
+        // and vec4_vars.  Only `a = cursor` (unambiguous vec2 dst, vec4 src) is rewritten.
+        std::string in =
+            "vec2 calcStroke(vec2 cursor) {\n"
+            "  return cursor;\n"
+            "}\n"
+            "void main() {\n"
+            "  vec4 cursor = u_mousePos;\n"
+            "  vec2 a;\n"
+            "  cursor = cursor;\n"
+            "  a = cursor;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // `cursor = cursor;` — dst cursor is in vec2_vars AND vec4_vars, so the guard fires
+        // and it is left unchanged.  `a = cursor;` — a is vec2 only, cursor is vec4, so it
+        // becomes `a = cursor.xy;`.
+        CHECK_EQ(out,
+                 "vec2 calcStroke(vec2 cursor) {\n"
+                 "  return cursor;\n"
+                 "}\n"
+                 "void main() {\n"
+                 "  vec4 cursor = u_mousePos;\n"
+                 "  vec2 a;\n"
+                 "  cursor = cursor;\n"
+                 "  a = cursor.xy;\n"
+                 "}\n");
+    }
+
+    // Cluster: same name `p` declared as vec3 in hsv2rgb and vec2 in main.
+    // fixArithSwizzleTrunc skips `p` for both trunc_vec2 and trunc_vec3 because it's
+    // in the shadow set.  fixArithSwizzleExpand fires for `p` in hsv2rgb (vec3 p OP .xx
+    // → .xxx).  main's `p + e.xyy` is handled by the broadcast pass (further down in the
+    // function), not by Trunc.
+    TEST_CASE("golden: shadowed name p — vec3/vec2 scoping via Expand, not Trunc") {
+        std::string in =
+            "vec3 hsv2rgb(vec3 p) {\n"
+            "  vec3 K = vec3(1.0);\n"
+            "  return p - K.xx;\n"
+            "}\n"
+            "void main() {\n"
+            "  vec2 p = vec2(0.5, 0.5);\n"
+            "  vec3 e = vec3(0.1);\n"
+            "  vec3 col = hsv2rgb(vec3(p, 0.0) + e.xyy);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // Both `p` names (vec3 param + vec2 local) land in the shadow set, so fixArithSwizzleTrunc
+        // and fixArithSwizzleExpand skip the `p` operand entirely.  K.xx is also left alone because
+        // the Expand pass finds `p` shadowed and does not fire for this expression.  The broadcast
+        // pass in main (vec3(p, 0.0) + e.xyy) does not match the Expand pattern either.
+        // Output is the input unchanged.
+        CHECK_EQ(out,
+                 "vec3 hsv2rgb(vec3 p) {\n"
+                 "  vec3 K = vec3(1.0);\n"
+                 "  return p - K.xx;\n"
+                 "}\n"
+                 "void main() {\n"
+                 "  vec2 p = vec2(0.5, 0.5);\n"
+                 "  vec3 e = vec3(0.1);\n"
+                 "  vec3 col = hsv2rgb(vec3(p, 0.0) + e.xyy);\n"
+                 "}\n");
+    }
+
+    // Cluster: upgradeIfOutOfRange for vec2 and vec3 paths — both declarations upgraded,
+    // both texture() calls gain their swizzle.
+    TEST_CASE("golden: vec2-to-vec4 and vec3-to-vec4 upgrade with texture swizzle") {
+        std::string in =
+            "in vec2 v_TexCoord;\n"
+            "in vec3 v_Normal;\n"
+            "uniform sampler2D s_tex;\n"
+            "void main() {\n"
+            "  float z = v_TexCoord.z;\n"
+            "  float w = v_Normal.w;\n"
+            "  vec4 c0 = texture(s_tex, v_TexCoord);\n"
+            "  vec4 c1 = texture(s_tex, v_Normal);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // v_TexCoord: .z access → upgraded to vec4; texture() gains .xy
+        // v_Normal: .w access → upgraded to vec4; texture() gains .xyz
+        CHECK_EQ(out,
+                 "in vec4 v_TexCoord;\n"
+                 "in vec4 v_Normal;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  float z = v_TexCoord.z;\n"
+                 "  float w = v_Normal.w;\n"
+                 "  vec4 c0 = texture(s_tex, v_TexCoord.xy);\n"
+                 "  vec4 c1 = texture(s_tex, v_Normal.xyz);\n"
+                 "}\n");
+    }
+
+    // Cluster: tex-scalar block — vec4 var assigned from texture() whose bare name
+    // appears in `float * vec4_var` arithmetic; bare use sites get .x appended but
+    // the declaration and any `in vec4` form are preserved.
+    TEST_CASE("golden: tex-scalar — vec4 texture var in float arithmetic gets .x at use site") {
+        std::string in =
+            "uniform float u_scale;\n"
+            "uniform sampler2D s_tex;\n"
+            "void main() {\n"
+            "  vec2 uv = v_TexCoord.xy;\n"
+            "  vec4 timer = texture(s_tex, uv);\n"
+            "  float off = u_scale * timer;\n"
+            "  float result = timer * u_scale + 1.0;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // `timer` is used in `u_scale * timer` — used_as_scalar = true.
+        // bare `timer` → `timer.x` at use sites; declaration preserved.
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec2 uv = v_TexCoord.xy;\n"
+                 "  vec4 timer = texture(s_tex, uv);\n"
+                 "  float off = u_scale * timer.x;\n"
+                 "  float result = timer.x * u_scale + 1.0;\n"
+                 "}\n");
+    }
+
+    // Cluster: fixArithSwizzleTrunc reverse pattern — WORD.xyzw OP vec2_var;
+    // the swizzle is on the left and the named variable is on the right.  Swizzle
+    // truncated from 4 to 2.
+    TEST_CASE("golden: arithmetic swizzle truncation — reverse operand order") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 a = vec2(0.0);\n"
+            "  vec4 b;\n"
+            "  vec2 r = b.xyzw + a;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // b.xyzw is on the left; a (vec2 local) is on the right.
+        // Reverse pattern fires: b.xyzw → b.xy.
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec2 a = vec2(0.0);\n"
+                 "  vec4 b;\n"
+                 "  vec2 r = b.xy + a;\n"
+                 "}\n");
+    }
+
+    // Cluster: fixArithSwizzleExpand skip-guard — when the matched variable position is
+    // immediately followed by a `.` in the original text, the guard returns the original
+    // match unchanged (prevents double-expansion).
+    TEST_CASE("golden: fixArithSwizzleExpand skips variable that already has a swizzle") {
+        // foo.rgb is a vec3 variable accessed with .rgb; the textRef[vEnd]=='.' guard fires
+        // because the matched `foo` is followed by a dot.  The expression is left unchanged.
+        // Note: this requires `foo` to be in local_vec3 (i.e. `vec3 foo = ...`).
+        std::string in =
+            "void main() {\n"
+            "  vec3 foo = vec3(1.0);\n"
+            "  vec3 K = vec3(0.5);\n"
+            "  vec3 r = foo.rgb - K.xx;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // `foo.rgb - K.xx`: the Expand pass matches `foo` as the left operand but
+        // textRef[vEnd] == '.' fires the skip-guard, so `foo.rgb` is left unchanged.
+        // `K` is the right operand; K.xx stays as-is because `K` is in local_vec3 but
+        // the Expand pass only fires when the LEFT operand is the named variable —
+        // K is the right operand here, so no expansion.  Output is unchanged.
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec3 foo = vec3(1.0);\n"
+                 "  vec3 K = vec3(0.5);\n"
+                 "  vec3 r = foo.rgb - K.xx;\n"
+                 "}\n");
+    }
+
+    // Cluster: upgradeIfOutOfRange with two independent variables — both upgraded,
+    // no cross-contamination between their texture() swizzles.
+    TEST_CASE("golden: two independent vec2-to-vec4 upgrades no cross-contamination") {
+        std::string in =
+            "in vec2 tc0;\n"
+            "in vec2 tc1;\n"
+            "uniform sampler2D s0;\n"
+            "uniform sampler2D s1;\n"
+            "void main() {\n"
+            "  float z0 = tc0.z;\n"
+            "  float z1 = tc1.z;\n"
+            "  vec4 c0 = texture(s0, tc0);\n"
+            "  vec4 c1 = texture(s1, tc1);\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // Both tc0 and tc1: .z access → upgraded to vec4; each texture() call gains .xy
+        CHECK_EQ(out,
+                 "in vec4 tc0;\n"
+                 "in vec4 tc1;\n"
+                 "uniform sampler2D s0;\n"
+                 "uniform sampler2D s1;\n"
+                 "void main() {\n"
+                 "  float z0 = tc0.z;\n"
+                 "  float z1 = tc1.z;\n"
+                 "  vec4 c0 = texture(s0, tc0.xy);\n"
+                 "  vec4 c1 = texture(s1, tc1.xy);\n"
+                 "}\n");
+    }
+
+    // Cluster: fixArithSwizzleTrunc forward-only path — named vec2 local is the LEFT
+    // operand; the wider swizzle (.xyzw, 4 components) is on the RIGHT.  Only the
+    // forward regex fires (VAR OP WORD.XXXX); no reverse pattern is present here.
+    TEST_CASE("golden: arithmetic swizzle truncation — forward operand order") {
+        std::string in =
+            "void main() {\n"
+            "  vec2 uv = vec2(0.5);\n"
+            "  vec4 col;\n"
+            "  vec2 r = uv * col.xyzw;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // uv (vec2 local, LEFT operand) OP col.xyzw (4-component swizzle, RIGHT) →
+        // forward Trunc fires: col.xyzw truncated to col.xy.
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec2 uv = vec2(0.5);\n"
+                 "  vec4 col;\n"
+                 "  vec2 r = uv * col.xy;\n"
+                 "}\n");
+    }
+
+    // Cluster: fixArithSwizzleExpand positive path — unshadowed vec3 local is the LEFT
+    // operand in arithmetic with a 2-component swizzle on the RIGHT; skip-guard does NOT
+    // fire because the variable has no trailing dot.  Swizzle expanded by repeating last char.
+    TEST_CASE("golden: arithmetic swizzle expansion — vec3 var widens narrow swizzle") {
+        std::string in =
+            "void main() {\n"
+            "  vec3 light = vec3(1.0);\n"
+            "  vec4 ambient;\n"
+            "  vec3 result = light + ambient.xy;\n"
+            "}\n";
+        std::string out = FixImplicitConversions(in);
+        // light (vec3 local, LEFT, no trailing dot — skip-guard does NOT fire) OP ambient.xy
+        // (2-component swizzle, RIGHT) → Expand fires: ambient.xy padded to ambient.xyy.
+        CHECK_EQ(out,
+                 "void main() {\n"
+                 "  vec3 light = vec3(1.0);\n"
+                 "  vec4 ambient;\n"
+                 "  vec3 result = light + ambient.xyy;\n"
+                 "}\n");
+    }
 }
