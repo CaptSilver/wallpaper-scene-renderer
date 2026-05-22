@@ -3778,6 +3778,12 @@ void initSceneRenderTargets(ParseContext& context) {
         .height = context.ortho_h,
     };
 }
+
+// Initialise the global shader-compiler (glslang) and text (FreeType) subsystems.
+void initShaderAndTextSubsystems() {
+    WPShaderParser::InitGlslang();
+    WPTextRenderer::Init();
+}
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -3865,8 +3871,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     context.scene->scene_id = scene_id;
 
-    WPShaderParser::InitGlslang();
-    WPTextRenderer::Init();
+    initShaderAndTextSubsystems();
 
     // Pre-allocate dynamic-asset pool nodes.  SceneScript calls
     // engine.registerAsset(path) to declare a dynamic image, then creates
