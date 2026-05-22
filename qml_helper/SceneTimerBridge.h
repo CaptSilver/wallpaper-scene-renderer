@@ -131,7 +131,7 @@ public:
                                            .arg(id)
                                            .arg(it->second.consecutiveInterrupts));
                         it->second.timer->stop();
-                        delete it->second.timer;
+                        it->second.timer->deleteLater(); // in-slot delete is unsafe; defer
                         m_timers.erase(it);
                         return;
                     }
@@ -143,7 +143,7 @@ public:
             // Re-lookup again (the disable branch above may have erased it).
             it = m_timers.find(id);
             if (it != m_timers.end() && it->second.timer->isSingleShot()) {
-                delete it->second.timer;
+                it->second.timer->deleteLater(); // in-slot delete is unsafe; defer
                 m_timers.erase(it);
             }
         });

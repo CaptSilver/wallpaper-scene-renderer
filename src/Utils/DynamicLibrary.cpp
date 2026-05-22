@@ -35,6 +35,7 @@ void DynamicLibrary::Close() {
 }
 
 void* DynamicLibrary::GetSymbolAddr(const char* name) const {
+    if (handle == nullptr) return nullptr;
     return reinterpret_cast<void*>(dlsym(handle, name));
 }
 

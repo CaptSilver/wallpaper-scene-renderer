@@ -161,6 +161,13 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
     auto glFramebufferTexture2D = (void (*)(
         GLenum, GLenum, GLenum, GLuint, GLint))eglGetProcAddress("glFramebufferTexture2D");
 
+    if (! glGenFramebuffers || ! glBindFramebuffer || ! glFramebufferTexture2D) {
+        LOG_ERROR("HWVideoTextureDecoder: GL framebuffer entry points unavailable "
+                  "(eglGetProcAddress returned null) — cannot create render FBO");
+        cleanupEGL();
+        return false;
+    }
+
     glGenTextures(1, &m_fboTex);
     glBindTexture(GL_TEXTURE_2D, m_fboTex);
     glTexImage2D(
@@ -312,6 +319,7 @@ void HWVideoTextureDecoder::renderFrame() {
         int      decIdx   = m_decodeIdx.load();
         uint8_t* buf      = m_buffers[decIdx].get();
         auto     glBindFB = (void (*)(GLenum, GLuint))eglGetProcAddress("glBindFramebuffer");
+        if (! glBindFB) return;
         glBindFB(0x8D40 /*GL_FRAMEBUFFER*/, m_fbo);
         glReadPixels(0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, buf);
         // libmpv renders video frames without alpha (no source channel) so the
