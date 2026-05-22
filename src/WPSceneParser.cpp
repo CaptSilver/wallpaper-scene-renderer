@@ -4283,61 +4283,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                          rawVisJson.c_str());
             }
         }
-    }
 
-    // Register dynamic-asset pool nodes in nodeNameToId / layerInitialStates.
-    // The main loop above iterates the raw scene.json objects only; pool
-    // nodes were synthesized in C++ and bypass that registration path.
-    // Without this, thisScene.getLayer('__pool_...') returns null and
-    // createLayer falls through to its stub.
-    for (const auto& [poolId, poolName] : pool_id_to_name) {
-        auto nodeIt = context.node_map.find(poolId);
-        if (nodeIt == context.node_map.end()) continue;
-        auto stateIt = nameToObjState.find(poolName);
-        if (stateIt == nameToObjState.end()) continue;
-        context.scene->nodeById[poolId]       = nodeIt->second.get();
-        context.scene->nodeNameToId[poolName] = poolId;
-        Scene::LayerInitialState lis;
-        lis.origin                                  = stateIt->second.origin;
-        lis.scale                                   = stateIt->second.scale;
-        lis.angles                                  = stateIt->second.angles;
-        lis.size                                    = stateIt->second.size;
-        lis.parallaxDepth                           = stateIt->second.parallaxDepth;
-        lis.visible                                 = stateIt->second.visible;
-        context.scene->layerInitialStates[poolName] = lis;
-    }
-
-    // Sync layerInitialStates visibility with user property bindings.
-    // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
-    // causing the JS proxy to think the node is visible when it's actually hidden.
-    // Also apply the binding's default visibility directly on the node itself —
-    // otherwise m_visible stays at the ctor default (true) until the first
-    // applyUserPropertyChanges() (which only fires on user-driven changes).
-    // This matters for scene-graph visibility inheritance: a hidden parent
-    // group (e.g. 24088 "人物" bound to timevarying==0 while default==1)
-    // must actually have m_visible=false at frame 0 so children stop rendering.
-    for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
-        for (const auto& binding : bindings) {
-            auto* node = binding.node;
-            if (! node) continue;
-            node->SetVisible(binding.defaultVisible);
-            for (auto& [layerName, lis] : context.scene->layerInitialStates) {
-                auto nameIt = context.scene->nodeNameToId.find(layerName);
-                if (nameIt != context.scene->nodeNameToId.end() && nameIt->second == node->ID()) {
-                    lis.visible = binding.defaultVisible;
-                }
-            }
-        }
-    }
-
-    // Extract property scripts from raw JSON.  Two attachment shapes:
-    //   - objects[N].<prop>                     → attachment=Object
-    //   - objects[N].animationlayers[M].<prop>  → attachment=AnimationLayer, idx=M
-    // The actual extraction lives in WPPropertyScriptExtract.hpp so tests
-    // can exercise both shapes without the full parser.
-    for (auto& obj : json.at("objects")) {
-        if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
-        i32         id = obj.at("id").get<i32>();
+        // Extract property scripts from raw JSON.  Two attachment shapes:
+        //   - objects[N].<prop>                     → attachment=Object
+        //   - objects[N].animationlayers[M].<prop>  → attachment=AnimationLayer, idx=M
+        // The actual extraction lives in WPPropertyScriptExtract.hpp so tests
+        // can exercise both shapes without the full parser.
         std::string layerName;
         if (obj.contains("name") && obj.at("name").is_string())
             layerName = obj.at("name").get<std::string>();
@@ -4412,6 +4363,51 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
                         sv.argShape = std::min<int>((int)sv.initialValue.size(), 4);
                         context.scene->shaderValueScripts.push_back(std::move(sv));
                     }
+                }
+            }
+        }
+    }
+
+    // Register dynamic-asset pool nodes in nodeNameToId / layerInitialStates.
+    // The main loop above iterates the raw scene.json objects only; pool
+    // nodes were synthesized in C++ and bypass that registration path.
+    // Without this, thisScene.getLayer('__pool_...') returns null and
+    // createLayer falls through to its stub.
+    for (const auto& [poolId, poolName] : pool_id_to_name) {
+        auto nodeIt = context.node_map.find(poolId);
+        if (nodeIt == context.node_map.end()) continue;
+        auto stateIt = nameToObjState.find(poolName);
+        if (stateIt == nameToObjState.end()) continue;
+        context.scene->nodeById[poolId]       = nodeIt->second.get();
+        context.scene->nodeNameToId[poolName] = poolId;
+        Scene::LayerInitialState lis;
+        lis.origin                                  = stateIt->second.origin;
+        lis.scale                                   = stateIt->second.scale;
+        lis.angles                                  = stateIt->second.angles;
+        lis.size                                    = stateIt->second.size;
+        lis.parallaxDepth                           = stateIt->second.parallaxDepth;
+        lis.visible                                 = stateIt->second.visible;
+        context.scene->layerInitialStates[poolName] = lis;
+    }
+
+    // Sync layerInitialStates visibility with user property bindings.
+    // User prop bindings may set nodes invisible AFTER layerInitialStates was populated,
+    // causing the JS proxy to think the node is visible when it's actually hidden.
+    // Also apply the binding's default visibility directly on the node itself —
+    // otherwise m_visible stays at the ctor default (true) until the first
+    // applyUserPropertyChanges() (which only fires on user-driven changes).
+    // This matters for scene-graph visibility inheritance: a hidden parent
+    // group (e.g. 24088 "人物" bound to timevarying==0 while default==1)
+    // must actually have m_visible=false at frame 0 so children stop rendering.
+    for (const auto& [propName, bindings] : context.scene->userPropVisBindings) {
+        for (const auto& binding : bindings) {
+            auto* node = binding.node;
+            if (! node) continue;
+            node->SetVisible(binding.defaultVisible);
+            for (auto& [layerName, lis] : context.scene->layerInitialStates) {
+                auto nameIt = context.scene->nodeNameToId.find(layerName);
+                if (nameIt != context.scene->nodeNameToId.end() && nameIt->second == node->ID()) {
+                    lis.visible = binding.defaultVisible;
                 }
             }
         }
