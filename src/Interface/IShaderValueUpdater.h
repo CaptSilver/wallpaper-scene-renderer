@@ -15,7 +15,7 @@ class ShaderValue;
 class SpriteAnimation;
 
 using sprite_map_t    = Map<usize, SpriteAnimation>;
-using UpdateUniformOp = std::function<void(std::string_view, ShaderValue)>;
+using UpdateUniformOp = std::function<void(std::string_view, const ShaderValue&)>;
 using ExistsUniformOp = std::function<bool(std::string_view)>;
 
 class IShaderValueUpdater : NoCopy, NoMove {

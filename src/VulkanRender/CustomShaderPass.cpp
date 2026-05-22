@@ -949,8 +949,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                             &vk_textures,
                             cam_override,
                             update_dyn_buf_op]() {
-            auto update_unf_op = [&block, buf, bufref](std::string_view       name,
-                                                       wallpaper::ShaderValue value) {
+            auto update_unf_op = [&block, buf, bufref](std::string_view              name,
+                                                       const wallpaper::ShaderValue& value) {
                 UpdateUniform(buf, *bufref, block, name, value);
             };
             // Re-upload constValues if they were modified at runtime (user property change)
