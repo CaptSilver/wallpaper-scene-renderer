@@ -25,10 +25,9 @@ namespace wallpaper
 //   * vpEpoch    != cachedVpEpoch   — the camera's view-projection changed.
 // parallaxActive / shakeActive keep the two volatile transform mutators out
 // of the static fast-path (the hard preservation requirement).
-inline bool uniformMatricesShouldRecompute(bool firstUpload, bool parallaxActive,
-                                           bool shakeActive, uint64_t nodeEpoch,
-                                           uint64_t cachedNodeEpoch, uint64_t vpEpoch,
-                                           uint64_t cachedVpEpoch) {
+inline bool uniformMatricesShouldRecompute(bool firstUpload, bool parallaxActive, bool shakeActive,
+                                           uint64_t nodeEpoch, uint64_t cachedNodeEpoch,
+                                           uint64_t vpEpoch, uint64_t cachedVpEpoch) {
     return firstUpload || parallaxActive || shakeActive || nodeEpoch != cachedNodeEpoch ||
            vpEpoch != cachedVpEpoch;
 }

@@ -46,8 +46,8 @@ TEST_SUITE("SceneNode transform epoch") {
     TEST_CASE("a parent move bumps the child epoch after the child UpdateTrans") {
         auto parent = std::make_shared<SceneNode>(
             Vector3f(1.f, 0.f, 0.f), Vector3f(1, 1, 1), Vector3f(0, 0, 0));
-        auto child = std::make_shared<SceneNode>(
-            Vector3f(0, 0, 0), Vector3f(1, 1, 1), Vector3f(0, 0, 0));
+        auto child =
+            std::make_shared<SceneNode>(Vector3f(0, 0, 0), Vector3f(1, 1, 1), Vector3f(0, 0, 0));
         parent->AppendChild(child);
         child->UpdateTrans();
         uint64_t c1 = child->TransEpoch();
@@ -97,9 +97,9 @@ TEST_SUITE("SceneCamera VP epoch") {
 // byte-identical-store invariant the gated re-upload relies on.
 TEST_SUITE("Cached matrix ShaderValue store is byte-identical") {
     TEST_CASE("fromMatrix store equals a fresh fromMatrix of the same matrix") {
-        Matrix4d m = Matrix4d::Identity();
-        m(0, 3)    = 12.0;
-        m(1, 3)    = -3.5;
+        Matrix4d m         = Matrix4d::Identity();
+        m(0, 3)            = 12.0;
+        m(1, 3)            = -3.5;
         ShaderValue stored = ShaderValue::fromMatrix(m); // what the cache holds
         ShaderValue fresh  = ShaderValue::fromMatrix(m); // a recompute on the dirty path
         REQUIRE(stored.size() == fresh.size());
@@ -109,9 +109,9 @@ TEST_SUITE("Cached matrix ShaderValue store is byte-identical") {
     }
 
     TEST_CASE("inverse store equals a fresh inverse of the same matrix") {
-        Matrix4d m = Matrix4d::Identity();
-        m(0, 0)    = 2.0;
-        m(1, 1)    = 4.0;
+        Matrix4d m         = Matrix4d::Identity();
+        m(0, 0)            = 2.0;
+        m(1, 1)            = 4.0;
         ShaderValue stored = ShaderValue::fromMatrix(m.inverse());
         ShaderValue fresh  = ShaderValue::fromMatrix(m.inverse());
         for (size_t i = 0; i < 16; ++i) CHECK(stored.data()[i] == fresh.data()[i]);
