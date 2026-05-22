@@ -61,7 +61,6 @@ add_executable(backend_scene_tests
     test_PassCacheAlias.cpp
     test_BlendModeFactors.cpp
     test_TexFormatVk.cpp
-    test_StagingDirtySpan.cpp
     test_SystemFontFallback.cpp
     ${SRC_DIR}/SystemFontFallback.cpp
     test_SceneImageEffectLayer.cpp

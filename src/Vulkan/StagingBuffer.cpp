@@ -1,6 +1,5 @@
 #include "StagingBuffer.hpp"
 #include <algorithm>
-#include <cstdlib>
 #include <cstring>
 #include "Util.hpp"
 #include "Device.hpp"
@@ -22,15 +21,11 @@ StagingBuffer::StagingBuffer(const Device& d, VkDeviceSize size, VkBufferUsageFl
       m_usage(usage),
       m_slot_count(slot_count == 0 ? 1 : slot_count),
       m_stage_raws(slot_count == 0 ? 1 : slot_count, nullptr),
-      m_stage_bufs(slot_count == 0 ? 1 : slot_count),
-      m_dirty(slot_count == 0 ? 1 : slot_count) {}
+      m_stage_bufs(slot_count == 0 ? 1 : slot_count) {}
 StagingBuffer::~StagingBuffer() {}
 
 void StagingBuffer::setCurrentSlot(size_t slot) {
-    if (slot < m_slot_count) {
-        m_current_slot = slot;
-        m_dirty[slot].reset();
-    }
+    if (slot < m_slot_count) m_current_slot = slot;
 }
 
 namespace
@@ -55,11 +50,11 @@ std::optional<VmaBufferParameters> CreateGpuBuffer(VmaAllocator allocator, VkBuf
 }
 
 void RecordCopyBuffer(const BufferParameters& dst_buf, const BufferParameters& src_buf,
-                      vvk::CommandBuffer& cmd, VkDeviceSize offset, VkDeviceSize size) {
+                      vvk::CommandBuffer& cmd) {
     VkBufferCopy copy {
-        .srcOffset = offset,
-        .dstOffset = offset,
-        .size      = size,
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size      = src_buf.req_size,
     };
     cmd.CopyBuffer(src_buf.handle, dst_buf.handle, copy);
 
@@ -250,7 +245,6 @@ bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> d
     VkDeviceSize size = std::min(ref.size - offset, data.size());
     uint8_t*     raw  = (uint8_t*)m_stage_raws[m_current_slot];
     std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
-    m_dirty[m_current_slot].extend(ref.offset + offset, size);
     return true;
 }
 
@@ -262,7 +256,6 @@ bool StagingBuffer::writeToBufAllSlots(const StagingBufferRef& ref, std::span<ui
         if (m_stage_raws[s] == nullptr) mapStageBuf(s);
         uint8_t* raw = (uint8_t*)m_stage_raws[s];
         std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
-        m_dirty[s].extend(ref.offset + offset, size);
     }
     return true;
 }
@@ -277,19 +270,12 @@ bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t s
         uint8_t* raw       = (uint8_t*)m_stage_raws[s];
         uint8_t* raw_begin = raw + ref.offset + offset;
         std::fill(raw_begin, raw_begin + size_, c);
-        m_dirty[s].extend(ref.offset + offset, size_);
     }
     return true;
 }
 
 bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
     auto& stage = m_stage_bufs[m_current_slot];
-
-    // A freshly (re)created GPU buffer is uninitialised, so its bytes OUTSIDE
-    // this frame's dirty span would be garbage after a partial copy.  Force a
-    // whole-buffer copy on the frame the GPU buffer is created (first upload,
-    // and the post-increaseBuf grow frame which drops m_gpu_buf.handle).
-    const bool gpu_buf_fresh = ! m_gpu_buf.handle;
     if (! m_gpu_buf.handle) {
         if (auto opt = CreateGpuBuffer(m_device.vma_allocator(), m_usage, stage.req_size);
             opt.has_value()) {
@@ -301,36 +287,9 @@ bool StagingBuffer::recordUpload(vvk::CommandBuffer& cmd) {
         stage.handle.UnMapMemory();
         m_stage_raws[m_current_slot] = nullptr;
     }
-
-    auto&        span     = m_dirty[m_current_slot];
-    VkDeviceSize copy_off = 0, copy_size = 0;
-    if (gpu_buf_fresh) {
-        copy_off  = 0;
-        copy_size = stage.req_size; // whole buffer: GPU side is uninitialised
-    } else if (span.empty()) {
-        // Nothing changed this frame (fully-cached static scene): the shared
-        // GPU buffer already holds valid data from a prior copy.  Skip the
-        // flush + copy + barrier entirely.
-        return true;
-    } else {
-        const VkDeviceSize atom = m_device.limits().nonCoherentAtomSize;
-        const auto         r    = span.alignedRange(atom, stage.req_size);
-        copy_off                = r.offset;
-        copy_size               = r.size;
-    }
-
-    if (std::getenv("WEKDE_DEBUG_STAGING"))
-        LOG_INFO("staging upload(%p) slot %zu: copy [%llu,+%llu) of req_size %zu (%s)",
-                 this,
-                 m_current_slot,
-                 (unsigned long long)copy_off,
-                 (unsigned long long)copy_size,
-                 stage.req_size,
-                 gpu_buf_fresh ? "whole/fresh" : "span");
-
-    VVK_CHECK_BOOL_RE(vmaFlushAllocation(
-        m_device.vma_allocator(), stage.handle.Allocation(), copy_off, copy_size));
-    RecordCopyBuffer(m_gpu_buf, stage, cmd, copy_off, copy_size);
+    VVK_CHECK_BOOL_RE(
+        vmaFlushAllocation(m_device.vma_allocator(), stage.handle.Allocation(), 0, VK_WHOLE_SIZE));
+    RecordCopyBuffer(m_gpu_buf, stage, cmd);
     return true;
 }
 
