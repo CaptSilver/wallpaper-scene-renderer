@@ -473,23 +473,21 @@ inline std::string FixImplicitConversions(const std::string& src) {
         auto fixTrunc = [&result](const std::set<std::string>& dst,
                                   const std::set<std::string>& src,
                                   const char*                  swizzle) {
-            for (const auto& d : dst) {
-                // Skip names that appear in BOTH width-sets (e.g. `cursor` is a
-                // vec2 function parameter elsewhere but a vec4 local here).
-                // Without scope tracking we can't tell which declaration the
-                // current assignment refers to; refuse to truncate rather than
-                // risk damaging the wider declaration's assignment.
-                // Driver: Game Of Life canvas_paint.frag — `vec4 cursor =
-                // u_mousePos;` in main(), with `vec2 cursor` parameter in
-                // calcStrokeInfluence.
-                if (src.count(d)) continue;
-                for (const auto& s : src) {
-                    if (d == s) continue;
-                    std::regex re("\\b(" + d + ")\\s*=\\s*(" + s + ")\\s*;");
-                    result =
-                        std::regex_replace(result, re, "$1 = $2." + std::string(swizzle) + ";");
-                }
-            }
+            // One constant pattern captures any `word = word ;` assignment.
+            // The replacer filters on: group1 in dst, group2 in src, group1 ≠ group2,
+            // and group1 not in src (the shadowing guard — same name at two widths
+            // means we can't tell which declaration the assignment refers to, so
+            // we refuse to truncate; driver: Game Of Life canvas_paint.frag —
+            // `vec4 cursor` in main(), `vec2 cursor` parameter in calcStrokeInfluence).
+            static const std::regex re(R"(\b(\w+)\s*=\s*(\w+)\s*;)");
+            std::string             sw(swizzle);
+            regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+                const std::string& d = m[1].str();
+                const std::string& s = m[2].str();
+                if (dst.count(d) && src.count(s) && d != s && !src.count(d))
+                    return d + " = " + s + "." + sw + ";";
+                return m[0].str();
+            });
         };
 
         fixTrunc(vec2_vars, vec3_vars, "xy");
