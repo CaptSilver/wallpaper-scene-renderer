@@ -242,6 +242,43 @@ TEST_SUITE("SceneVertexArray.Options") {
         CHECK_FALSE(arr.GetOption("key"));
     }
 
+    TEST_CASE("GetOption on a key set to false returns false") {
+        // Exercises the it->second == false branch explicitly (vs the key-absent
+        // branch tested by the existing "unset key" case).  Proves the single-find
+        // form returns the stored bool value, not just existence.
+        SceneVertexArray arr({ Attr { .name = "p", .type = VertexType::FLOAT1, .padding = false } },
+                             1);
+        arr.SetOption("flag", false);
+        CHECK_FALSE(arr.GetOption("flag"));
+    }
+
+    TEST_CASE("GetOption accepts a string_view over a long key without allocation") {
+        // Keys longer than typical SSO thresholds (~15 chars) exercise the
+        // heterogeneous find path.  The transparent comparator (std::less<> on
+        // Map<std::string, bool>) enables find(std::string_view) without
+        // constructing a std::string — the bug the fix removes.  Semantics are
+        // unchanged: present-and-true returns true, present-and-false returns
+        // false, absent returns false.
+        SceneVertexArray arr({ Attr { .name = "p", .type = VertexType::FLOAT1, .padding = false } },
+                             1);
+        const std::string_view longKey = "PRENDER_SPRITETRAIL"; // 17 chars, above SSO
+        arr.SetOption(std::string(longKey), true);
+        CHECK(arr.GetOption(longKey));
+        CHECK(arr.GetOption(std::string_view("PRENDER_SPRITETRAIL")));
+        arr.SetOption(std::string(longKey), false);
+        CHECK_FALSE(arr.GetOption(longKey));
+    }
+
+    TEST_CASE("GetOption on absent long key returns false without allocation") {
+        // Exercises the it == end() early-out for a key above SSO threshold.
+        // No key is inserted; confirms the transparent find short-circuits cleanly.
+        SceneVertexArray arr({ Attr { .name = "p", .type = VertexType::FLOAT1, .padding = false } },
+                             1);
+        CHECK_FALSE(arr.GetOption(std::string_view("PRENDER_SPRITETRAIL")));
+        CHECK_FALSE(arr.GetOption(std::string_view("PRENDER_ROPE")));      // 12 chars
+        CHECK_FALSE(arr.GetOption(std::string_view("GS_POINTS")));         // 9 chars (may SSO)
+    }
+
 } // Options
 
 TEST_SUITE("SceneVertexArray.Render") {

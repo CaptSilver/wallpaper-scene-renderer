@@ -126,7 +126,8 @@ SceneVertexArray::GetAttrOffsetMap() const {
 }
 
 bool SceneVertexArray::GetOption(std::string_view name) const {
-    return exists(m_options, name) && m_options.at(std::string(name));
+    auto it = m_options.find(name); // heterogeneous find via std::less<> — no allocation
+    return it != m_options.end() && it->second;
 }
 void SceneVertexArray::SetOption(std::string_view name, bool value) {
     m_options[std::string(name)] = value;
