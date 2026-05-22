@@ -577,31 +577,48 @@ inline std::string FixImplicitConversions(const std::string& src) {
         auto fixArithSwizzleExpand = [&result](const std::set<std::string>& large_vars,
                                                int                          var_width,
                                                int                          swizzle_width) {
-            std::string swiz_chars = "xyzwrgbastpq";
-            int         pad_count  = var_width - swizzle_width;
-            auto        padSwizzle = [&](const std::string& swiz) {
+            // One static forward+reverse pair per swizzle width (swizzle_width ∈ {2,3}).
+            // Captures any \w+ identifier; C++ filter checks group1/group4 ∈ large_vars.
+            static const std::regex re_fwd2(
+                R"(\b(\w+)(\s*[+\-*/]\s*)(\w+)\.([xyzwrgbastpq]{2})\b)");
+            static const std::regex re_rev2(
+                R"((\w+)\.([xyzwrgbastpq]{2})(\s*[+\-*/]\s*)\b(\w+)\b)");
+            static const std::regex re_fwd3(
+                R"(\b(\w+)(\s*[+\-*/]\s*)(\w+)\.([xyzwrgbastpq]{3})\b)");
+            static const std::regex re_rev3(
+                R"((\w+)\.([xyzwrgbastpq]{3})(\s*[+\-*/]\s*)\b(\w+)\b)");
+
+            const std::regex& re_fwd = (swizzle_width == 2) ? re_fwd2 : re_fwd3;
+            const std::regex& re_rev = (swizzle_width == 2) ? re_rev2 : re_rev3;
+
+            int  pad_count = var_width - swizzle_width;
+            auto padSwizzle = [pad_count](const std::string& swiz) {
                 std::string out  = swiz;
                 char        last = out.back();
                 for (int j = 0; j < pad_count; j++) out += last;
                 return out;
             };
-            for (const auto& v : large_vars) {
-                // VAR OP WORD.XX  (swizzle_width components, smaller than var_width)
-                std::regex re("\\b(" + v + ")(\\s*[+\\-*/]\\s*)(\\w+)\\.([" + swiz_chars + "]{" +
-                              std::to_string(swizzle_width) + "})\\b");
-                // Need to capture `result` ref for the swizzle-skip check
+
+            // VAR OP WORD.XX — filter: group1 (VAR) must be in large_vars.
+            // Skip-guard: if VAR is immediately followed by '.' in the original text,
+            // the variable already has a swizzle suffix — return the match unchanged.
+            {
                 const std::string& textRef = result;
-                regexTransformAll(result, re, [&](const std::smatch& m) -> std::string {
+                regexTransformAll(result, re_fwd, [&](const std::smatch& m) -> std::string {
+                    if (!large_vars.count(m[1].str())) return m[0].str();
                     size_t vEnd = (size_t)m.position() + m[1].length();
                     if (vEnd < textRef.size() && textRef[vEnd] == '.')
                         return m[0].str(); // skip: variable has swizzle
                     return m[1].str() + m[2].str() + m[3].str() + "." + padSwizzle(m[4].str());
                 });
+            }
 
-                // Reverse: WORD.XX OP VAR
-                std::regex re2("(\\w+)\\.([" + swiz_chars + "]{" + std::to_string(swizzle_width) +
-                               "})(\\s*[+\\-*/]\\s*)\\b(" + v + ")\\b");
-                regexTransformAll(result, re2, [&](const std::smatch& m) -> std::string {
+            // Reverse: WORD.XX OP VAR — filter: group4 (VAR) must be in large_vars.
+            // Skip-guard: same trailing-dot check on the VAR match end position.
+            {
+                const std::string& textRef = result;
+                regexTransformAll(result, re_rev, [&](const std::smatch& m) -> std::string {
+                    if (!large_vars.count(m[4].str())) return m[0].str();
                     size_t vStart = (size_t)m.position(4);
                     size_t vEnd   = vStart + m[4].length();
                     if (vEnd < textRef.size() && textRef[vEnd] == '.') return m[0].str(); // skip
