@@ -8,10 +8,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(PkgConfig REQUIRED)
 
 
-include_directories(SYSTEM third_party)
-
-link_libraries(Eigen3::Eigen)
-
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
 option(BUILD_TOOLS "Build pkg inspection / extraction tools (wp-pkg)" OFF)
 option(BUILD_FUZZERS "Build libFuzzer harnesses (requires Clang + sanitizers)" OFF)

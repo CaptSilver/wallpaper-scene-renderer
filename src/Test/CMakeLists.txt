@@ -139,6 +139,8 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/Vulkan/include
     ${DOCTEST_INCLUDE_DIR}
 )
+target_include_directories(backend_scene_tests SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/third_party")
 
 target_link_libraries(backend_scene_tests PRIVATE
     wpUtils

@@ -20,6 +20,8 @@ target_include_directories(${LIB_NAME}
     PRIVATE include/Audio
             ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/kissfft
 )
+target_include_directories(${LIB_NAME} SYSTEM PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party")
 target_compile_options(${LIB_NAME} PRIVATE ${warn_opts})
 
 # Live-rebind for system-audio capture: when libpulse headers are available we

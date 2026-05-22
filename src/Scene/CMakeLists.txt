@@ -15,6 +15,7 @@ SceneShader.cpp
 target_link_libraries(${LIB_NAME}
 PUBLIC
     wpUtils
+    Eigen3::Eigen
 PRIVATE
     wpFs
     wpParticle

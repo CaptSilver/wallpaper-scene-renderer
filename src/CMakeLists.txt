@@ -31,8 +31,6 @@ set(warn_opts
     ${WEK_WERROR_FLAGS}
     CACHE INTERNAL "")
 
-include_directories(.)
-
 add_subdirectory(Fs)
 add_subdirectory(Utils)
 add_subdirectory(Timer)
@@ -84,7 +82,7 @@ set(InteralLib
 target_link_libraries(
   ${PROJECT_NAME}
   PUBLIC wpUtils
-  PRIVATE ${InteralLib} nlohmann_json ${LZ4_LIBRARIES} ${MPV_LIBRARIES}
+  PRIVATE ${InteralLib} nlohmann_json Eigen3::Eigen ${LZ4_LIBRARIES} ${MPV_LIBRARIES}
           $<$<BOOL:${EGL_FOUND}>:${EGL_LIBRARIES}>
           $<$<BOOL:${GL_FOUND}>:${GL_LIBRARIES}>
           $<$<BOOL:${GBM_FOUND}>:${GBM_LIBRARIES}>
