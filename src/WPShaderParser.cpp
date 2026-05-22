@@ -366,10 +366,10 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
             "    return light;\n"
             "}\n";
 
-        std::regex  re_require("(^|\r?\n)#require (.+)(\r?\n)");
-        std::smatch m;
-        std::string tmp = src;
-        std::string result;
+        static const std::regex re_require(R"((^|\r?\n)#require (.+)(\r?\n))");
+        std::smatch             m;
+        std::string             tmp = src;
+        std::string             result;
         while (std::regex_search(tmp, m, re_require)) {
             result += m.prefix().str() + m[1].str();
             std::string req_name = m[2].str();
@@ -411,8 +411,8 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
     // (?:^|\s) lets us match "out vec2 foo;" at column 0 (no qualifier) as well as
     // "smooth out vec4 foo;" where the qualifier precedes the keyword.
     // The optional (\[\])? handles geometry shader array inputs (e.g., "in vec4 v_Color[];").
-    std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
-                     std::regex::ECMAScript | std::regex::multiline);
+    static const std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
+                                  std::regex::ECMAScript | std::regex::multiline);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
          it != std::sregex_iterator();
          it++) {
@@ -424,7 +424,8 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
         }
     }
 
-    std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))", std::regex::ECMAScript);
+    static const std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))",
+                                   std::regex::ECMAScript);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_tex);
          it != std::sregex_iterator();
          it++) {
@@ -481,7 +482,7 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
             }
         }
     }
-    std::regex re_hold(SHADER_PLACEHOLD.data());
+    static const std::regex re_hold(SHADER_PLACEHOLD.data());
 
     // LOG_INFO("insert: %s", insert_str.c_str());
     // return std::regex_replace(
