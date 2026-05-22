@@ -3648,6 +3648,48 @@ void prescanGroups(ParseContext& context, const nlohmann::json& json, fs::VFS& v
     }
 }
 
+// For autosize image objects, probe .tex headers to resolve the real ortho
+// dimensions (else the auto-ortho collapses to the 2x2 placeholder).
+// Accepts an unconditional call; the auto_ guard lives inside.
+void computeAutoOrthoSize(wpscene::WPScene& sc, const std::vector<WPObjectVar>& wp_objs,
+                          WPTexImageParser& imageParser) {
+    if (sc.general.orthogonalprojection.auto_) {
+        // For autosize image objects, WPImageObject::FromJson leaves size at
+        // the default (2,2) — the real dimensions are only resolved later in
+        // ParseImageObj when the texture parser is in scope.  Probe the .tex
+        // header here too so the auto-ortho measurement reflects the actual
+        // sprite/map dimensions instead of the default placeholder.  Without
+        // this the ortho collapses to 2x2 and every world-space-positioned
+        // image renders far outside clip space (Aesthetic City 843532366
+        // background was ~240,150 in a 2x2 ortho — entirely off-screen).
+        i32 w = 0, h = 0;
+        for (auto& obj : wp_objs) {
+            auto* img = std::get_if<wpscene::WPImageObject>(&obj);
+            if (img == nullptr) continue;
+            i32 iw = (i32)img->size.at(0);
+            i32 ih = (i32)img->size.at(1);
+            if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
+                ! img->material.textures.front().empty()) {
+                auto header = imageParser.ParseHeader(img->material.textures.front());
+                if (header.isSprite && header.spriteAnim.numFrames() > 0) {
+                    const auto& frame = header.spriteAnim.GetCurFrame();
+                    iw                = (i32)frame.width;
+                    ih                = (i32)frame.height;
+                } else if (header.mapWidth > 0 && header.mapHeight > 0) {
+                    iw = header.mapWidth;
+                    ih = header.mapHeight;
+                }
+            }
+            if (iw * ih > w * h) {
+                w = iw;
+                h = ih;
+            }
+        }
+        sc.general.orthogonalprojection.width  = w;
+        sc.general.orthogonalprojection.height = h;
+    }
+}
+
 // Pre-pass: collect every image id that appears in some COMPOSE layer's
 // `dependencies` list.  Stored on context so ParseImageObj can force
 // referenced images offscreen (so the compose layer's blend samples an
@@ -4906,41 +4948,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // re-opening .tex files.
     auto imageParser = std::make_unique<WPTexImageParser>(&vfs);
 
-    if (sc.general.orthogonalprojection.auto_) {
-        // For autosize image objects, WPImageObject::FromJson leaves size at
-        // the default (2,2) — the real dimensions are only resolved later in
-        // ParseImageObj when the texture parser is in scope.  Probe the .tex
-        // header here too so the auto-ortho measurement reflects the actual
-        // sprite/map dimensions instead of the default placeholder.  Without
-        // this the ortho collapses to 2x2 and every world-space-positioned
-        // image renders far outside clip space (Aesthetic City 843532366
-        // background was ~240,150 in a 2x2 ortho — entirely off-screen).
-        i32 w = 0, h = 0;
-        for (auto& obj : wp_objs) {
-            auto* img = std::get_if<wpscene::WPImageObject>(&obj);
-            if (img == nullptr) continue;
-            i32 iw = (i32)img->size.at(0);
-            i32 ih = (i32)img->size.at(1);
-            if (img->autosize && iw <= 2 && ih <= 2 && ! img->material.textures.empty() &&
-                ! img->material.textures.front().empty()) {
-                auto header = imageParser->ParseHeader(img->material.textures.front());
-                if (header.isSprite && header.spriteAnim.numFrames() > 0) {
-                    const auto& frame = header.spriteAnim.GetCurFrame();
-                    iw                = (i32)frame.width;
-                    ih                = (i32)frame.height;
-                } else if (header.mapWidth > 0 && header.mapHeight > 0) {
-                    iw = header.mapWidth;
-                    ih = header.mapHeight;
-                }
-            }
-            if (iw * ih > w * h) {
-                w = iw;
-                h = ih;
-            }
-        }
-        sc.general.orthogonalprojection.width  = w;
-        sc.general.orthogonalprojection.height = h;
-    }
+    computeAutoOrthoSize(sc, wp_objs, *imageParser);
 
     InitContext(context, vfs, sc, std::move(imageParser));
     ParseCamera(context, sc);
