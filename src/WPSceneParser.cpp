@@ -1133,16 +1133,13 @@ void InitContext(ParseContext&                     context,
     }
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
-
-    // Autosize resolution: when the image-model JSON declared "autosize": true
-    // and neither the model nor the scene object provided explicit dimensions,
-    // derive size from the first texture's sprite-frame metadata (or the
-    // texture's mapWidth/mapHeight for non-sprite pictures).  WPImageObject's
-    // FromJson intentionally leaves size at default (2,2) in that case so we
-    // can resolve here with the texture parser in scope.
+// Autosize resolution: when the image-model JSON declared "autosize": true
+// and neither the model nor the scene object provided explicit dimensions,
+// derive size from the first texture's sprite-frame metadata (or the
+// texture's mapWidth/mapHeight for non-sprite pictures).  WPImageObject's
+// FromJson intentionally leaves size at default (2,2) in that case so we
+// can resolve here with the texture parser in scope.
+void resolveImageAutosize(ParseContext& context, wpscene::WPImageObject& wpimgobj) {
     if (wpimgobj.autosize && context.scene && context.scene->imageParser &&
         ! wpimgobj.material.textures.empty()) {
         const auto& texName = wpimgobj.material.textures.front();
@@ -1166,6 +1163,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             }
         }
     }
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
 
     LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d size=(%.0f,%.0f) fullscreen=%d "
              "origin=(%.1f,%.1f)",
