@@ -59,4 +59,18 @@ TEST_SUITE("SceneLight") {
         CHECK(light.node() == node.get());
     }
 
+    // Per-light falloff exponent — Real-Time Earth (3557068717) authors 0.1
+    // for a soft long-tail falloff.  ComputePBRLightShadow reads it as
+    // `radiance = color * pow(saturate(1 - d/radius), exponent)`.  Default
+    // 1.0 (linear) keeps legacy scenes unchanged.
+    TEST_CASE("constructor stores exponent and exponent() returns it") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 100.0f, 2.0f, 0.1f);
+        CHECK(l.exponent() == doctest::Approx(0.1f));
+    }
+
+    TEST_CASE("exponent defaults to 1.0 (linear falloff) when not provided") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 100.0f, 2.0f);
+        CHECK(l.exponent() == doctest::Approx(1.0f));
+    }
+
 } // SceneLight

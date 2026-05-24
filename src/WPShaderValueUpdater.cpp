@@ -555,8 +555,25 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         for (auto& l : m_scene->lights) {
             if (i == 4) break;
             assert(l->node() != nullptr);
-            const auto& trans = l->node()->Translate();
-            std::copy(trans.begin(), trans.end(), lights.begin() + i * 4);
+            // Walk the parent chain so parented lights upload their WORLD
+            // translation, not the always-zero local Translate().  Real-Time
+            // Earth (3557068717) drives this: 2 point lights parented to the
+            // animated SUN m5 node — without world-position upload they read
+            // back as (0,0,0) and the planet's outward normals dot to zero,
+            // rendering the surface pure black.  UpdateTrans() is a no-op
+            // when not dirty, so the per-frame cost on flat scenes is one
+            // cache hit.
+            l->node()->UpdateTrans();
+            const auto& world = l->node()->ModelTrans();
+            lights[i * 4 + 0] = (float)world(0, 3);
+            lights[i * 4 + 1] = (float)world(1, 3);
+            lights[i * 4 + 2] = (float)world(2, 3);
+            // Pack per-light falloff exponent into .w — the modern WE pipeline
+            // convention.  PerformLighting_V1 reads it as the `exponent`
+            // argument to ComputePBRLightShadow's `pow(saturate(1-d/r), e)`
+            // falloff.  SceneLight defaults exponent to 1.0 (linear) for
+            // legacy scenes; Real-Time Earth authors 0.1 for soft long-tail.
+            lights[i * 4 + 3] = l->exponent();
             // Reflect light Y about the floor plane so the underside of
             // objects receives the dominant lighting in the reflection.
             if (reflect_lights) lights[i * 4 + 1] = -lights[i * 4 + 1];

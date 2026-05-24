@@ -18,6 +18,11 @@ class WPLightObject {
 public:
     bool                 FromJson(const nlohmann::json&, fs::VFS&);
     int32_t              id { 0 };
+    // JSON `parent` — scene-graph parent node id; -1 when authored at scene root.
+    // Real-Time Earth (3557068717) parents its 2 point lights to the animated
+    // SUN m5 node so the lights orbit with the computed sun position; without
+    // honoring this field the lights collapse at world origin (Earth's center).
+    int32_t              parent_id { -1 };
     std::string          name;
     std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> scale { 1.0f, 1.0f, 1.0f };
@@ -27,6 +32,12 @@ public:
     std::string          light;
     float                radius { 1000.0f };
     float                intensity { 1.0f };
+    // Per-light falloff power consumed by ComputePBRLightShadow as
+    // `radiance = color * pow(saturate(1 - d/radius), exponent)`.
+    // Default 1.0 (linear falloff) preserves the pre-2026-05 behavior for
+    // legacy scenes that don't author this field.  Real-Time Earth uses 0.1
+    // for a soft long-tail falloff that keeps most of the radius lit.
+    float                exponent { 1.0f };
     bool                 visible { true };
 };
 

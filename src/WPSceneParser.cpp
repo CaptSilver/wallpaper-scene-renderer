@@ -2744,14 +2744,29 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
     auto node = std::make_shared<SceneNode>(Vector3f(light_obj.origin.data()),
                                             Vector3f(light_obj.scale.data()),
                                             Vector3f(light_obj.angles.data()));
+    node->ID() = light_obj.id;
 
     context.scene->lights.emplace_back(std::make_unique<SceneLight>(
-        Vector3f(light_obj.color.data()), light_obj.radius, light_obj.intensity));
+        Vector3f(light_obj.color.data()),
+        light_obj.radius,
+        light_obj.intensity,
+        light_obj.exponent));
 
     auto& light = *(context.scene->lights.back());
     light.setNode(node);
 
-    context.scene->sceneGraph->AppendChild(node);
+    // Honor JSON `parent` — mirrors ParseImageObj/ParseModelObj/ParseParticleObj.
+    // Real-Time Earth (3557068717) parents its 2 sun-lights to the animated
+    // SUN m5 node (id 99) so the lights orbit with the script-computed sun
+    // position; without parent-chain attachment those lights collapse at
+    // world origin (Earth's center) and lit surfaces render pure black.
+    if (light_obj.parent_id >= 0 && context.node_map.count(light_obj.parent_id)) {
+        context.node_map.at(light_obj.parent_id)->AppendChild(node);
+    } else {
+        context.scene->sceneGraph->AppendChild(node);
+    }
+    // Register so subsequent objects can target this light as their parent.
+    context.node_map[light_obj.id] = node;
 }
 
 void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {

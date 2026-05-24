@@ -91,6 +91,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
     test_WPSceneParse.cpp
+    test_WPLightObject.cpp
     test_DependencyGraph.cpp
     test_RenderGraph.cpp
     test_WorldCacheGate.cpp

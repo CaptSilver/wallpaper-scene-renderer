@@ -257,6 +257,85 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     // order at the end of Parse (WPSceneParser.cpp:4430) so the two-pass
     // group/image construction can't scramble Z-order (blue-archive sortLayer
     // regression).  Groups keep this case glslang-free.
+    // Parented-light contract — Real-Time Earth (3557068717) drives this:
+    // the wallpaper authors 2 point lights as children of the animated SUN m5
+    // node (origin scripted from shared.sun_pos_*).  Before the parent+exponent
+    // honoring, ParseLightObj appended every light directly to sceneGraph and
+    // never read the JSON `parent` field — so parented lights collapsed at
+    // world origin (Earth's center) yielding pure-black planet surfaces.
+    //
+    // This test exercises the full end-to-end pipeline: WPLightObject parsing →
+    // ParseLightObj parent-chain lookup → SceneNode parent linkage → world
+    // matrix walk.  The fixture mirrors the structural shape of the
+    // Real-Time Earth scene (group + parented light + exponent) without any
+    // material/shader assets so the test stays Vulkan-free.
+    TEST_CASE("ParseLightObj honors JSON `parent` and exponent") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 99, "name": "GROUP",
+      "origin": "10 20 30", "scale": "1 1 1", "angles": "0 0 0",
+      "solid": true, "visible": true },
+    { "id": 272, "name": "",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "parent": 99,
+      "light": "lpoint",
+      "color": "1 1 1",
+      "radius": 3000.0, "intensity": 1.0, "exponent": 0.1,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_parented_light", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+
+        const auto& light = *scene->lights.front();
+        // Exponent flowed through WPLightObject → SceneLight constructor.
+        CHECK(light.exponent() == doctest::Approx(0.1f));
+
+        // The light's node MUST be a child of the GROUP node (id 99), NOT a
+        // direct child of sceneGraph.  Before the fix, every light went under
+        // sceneGraph regardless of `parent:` and this assertion fails.
+        auto* lnode = light.node();
+        REQUIRE(lnode != nullptr);
+        REQUIRE(lnode->Parent() != nullptr);
+
+        // Walk down sceneGraph to find the GROUP and confirm the light node
+        // sits beneath it.
+        std::function<SceneNode*(SceneNode*, i32)> findById =
+            [&](SceneNode* n, i32 id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* group = findById(scene->sceneGraph.get(), 99);
+        REQUIRE(group != nullptr);
+        bool light_under_group = false;
+        for (auto& c : group->GetChildren()) {
+            if (c.get() == lnode) light_under_group = true;
+        }
+        CHECK(light_under_group);
+
+        // After UpdateTrans(), the world matrix's translation column equals
+        // the parent's translation (since the light's local origin is 0,0,0).
+        // This is what WPShaderValueUpdater must upload into g_LightsPosition
+        // instead of the light's local Translate().
+        lnode->UpdateTrans();
+        const auto& m = lnode->ModelTrans();
+        CHECK(m(0, 3) == doctest::Approx(10.0f));
+        CHECK(m(1, 3) == doctest::Approx(20.0f));
+        CHECK(m(2, 3) == doctest::Approx(30.0f));
+    }
+
     TEST_CASE("multi-object scene: root child render order follows JSON order") {
         const char*         kSceneJson = R"JSON(
 {
