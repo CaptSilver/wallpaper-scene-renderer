@@ -548,12 +548,35 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (sstart_with(name, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) {
             LOG_INFO("link tex \"%s\"", name.c_str());
             int         wpid { -1 };
-            std::regex  reImgId { R"(_rt_imageLayerComposite_([0-9]+))" };
+            std::string suffix; // "a" or "b" or "" if missing
+            std::regex  reImgId { R"(_rt_imageLayerComposite_([0-9]+)(?:_([ab]))?)" };
             std::smatch match;
             if (std::regex_search(name, match, reImgId)) {
                 STRTONUM(std::string(match[1]), wpid);
+                if (match[2].matched) suffix = match[2].str();
             }
-            name = GenLinkTex((u32)wpid);
+            // `_b` is an undocumented WE convention used by some user-authored
+            // custom effects to mean "give me my parent layer's pre-effect
+            // base content" (analogous to the `framebuffer` material annotation).
+            // Route same-layer `_b` to the layer's static base texture so the
+            // effect doesn't self-feedback into a cumulative UV-drift cycle.
+            // Driver: Real-Time Earth (3557068717) id 424 `____________`
+            // scroll effect samples `_rt_imageLayerComposite_424_b` to scroll
+            // its source texture by UTC time-of-day phase.
+            //
+            // Cross-layer `_b` has no empirical precedent in any inspected
+            // wallpaper; if it appears, log it and fall back to the `_a`
+            // (GenLinkTex) route — same conservative behavior as missing-suffix.
+            if (suffix == "b" && pScene && pScene->imgIdToSourceTexture.count((i32)wpid)) {
+                name = pScene->imgIdToSourceTexture.at((i32)wpid);
+            } else {
+                if (suffix == "b") {
+                    LOG_INFO("cross-layer _b reference to id=%d with no "
+                             "imgIdToSourceTexture entry — falling back to _a route",
+                             wpid);
+                }
+                name = GenLinkTex((u32)wpid);
+            }
         } else if (sstart_with(name, WE_MIP_MAPPED_FRAME_BUFFER)) {
         } else if (sstart_with(name, WE_EFFECT_PPONG_PREFIX)) {
         } else if (sstart_with(name, WE_HALF_COMPO_BUFFER_PREFIX)) {
@@ -1170,6 +1193,18 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& vfs      = *context.vfs;
 
     resolveImageAutosize(context, wpimgobj);
+
+    // Register this layer's primary source texture so ParseSpecTexName can
+    // route `_rt_imageLayerComposite_<id>_b` references — an author-side
+    // convention some custom effects use — to the static base instead of the
+    // post-effect link RT.  See Scene::imgIdToSourceTexture doc for the
+    // self-feedback cycle this prevents (Real-Time Earth night-lights).
+    if (context.scene && ! wpimgobj.material.textures.empty()) {
+        const auto& baseTex = wpimgobj.material.textures.front();
+        if (! baseTex.empty() && ! IsSpecTex(baseTex)) {
+            context.scene->imgIdToSourceTexture[wpimgobj.id] = baseTex;
+        }
+    }
 
     LOG_INFO("ParseImageObj: id=%d name='%s' image='%s' visible=%d size=(%.0f,%.0f) fullscreen=%d "
              "origin=(%.1f,%.1f)",

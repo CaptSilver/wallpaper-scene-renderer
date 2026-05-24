@@ -232,6 +232,18 @@ public:
     std::unordered_map<i32, std::shared_ptr<WPPuppet>> nodePuppetMap;
     // Layer name → node ID mapping for thisScene.getLayer()
     std::unordered_map<std::string, i32> nodeNameToId;
+
+    // Image-layer id → static base texture name (e.g. "ynight_tm2k").  Populated
+    // during ParseImageObj from `wpimgobj.material.textures.front()`.  Read by
+    // ParseSpecTexName to route `_rt_imageLayerComposite_<id>_b` references —
+    // an undocumented WE convention some custom effects use to mean "my parent
+    // layer's pre-effect content" — to the layer's static base instead of the
+    // post-effect _rt_link_<id> that the `_a` suffix maps to.  Without this,
+    // a layer whose own effect samples its own `_b` reads back its own previous
+    // post-effect output (cumulative UV drift each frame).  Driver: Real-Time
+    // Earth (3557068717) id 424's `____________` UV-scroll effect samples
+    // `_rt_imageLayerComposite_424_b` to phase-shift its source by UTC time.
+    std::unordered_map<i32, std::string> imgIdToSourceTexture;
     // JSON-authored parent for each object ID — populated at parse time
     // straight from scene.json's `parent` field.  Used by
     // SerializeLayerInitialStates to emit `pn` (parent name) when the
