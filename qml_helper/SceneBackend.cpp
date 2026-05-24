@@ -1270,6 +1270,13 @@ static QJSValue makeCursorEvent(QJSEngine* engine, float sceneX, float sceneY) {
     QJSValue wp =
         engine->evaluate(QString("new Vec3(%1,%2,0)").arg((double)sceneX).arg((double)sceneY));
     ev.setProperty("worldPosition", wp);
+    // screenPosition as Vec2 — Real-Time Earth (3557068717) `视角控制`
+    // script's cursorDown(event) reads `event.screenPosition.x/.y` to seed
+    // lastMouseX/Y for drag-delta math; without this property the handler
+    // throws "cannot read property 'x' of undefined" and drag never starts.
+    QJSValue sp =
+        engine->evaluate(QString("new Vec2(%1,%2)").arg((double)sceneX).arg((double)sceneY));
+    ev.setProperty("screenPosition", sp);
     return ev;
 }
 
@@ -1930,6 +1937,7 @@ void SceneObject::setupTextScripts() {
         "})();\n");
     m_inputObj = m_jsEngine->globalObject().property("input");
     m_cwpObj   = m_inputObj.property("cursorWorldPosition");
+    m_cspObj   = m_inputObj.property("cursorScreenPosition");
 
     // Mat3 / Mat4 — shared with tests via SceneScriptShimsJs.hpp.  Must come
     // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
@@ -3989,10 +3997,16 @@ void SceneObject::evaluateTextScripts() {
     }
     engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
-    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    // Refresh cursor world/screen positions for scripts reading
+    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
+    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
+    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
+    // world for tooltip math) see a consistent live cursor each tick.
     {
         m_cwpObj.setProperty("x", (double)m_cursorSceneX);
         m_cwpObj.setProperty("y", (double)m_cursorSceneY);
+        m_cspObj.setProperty("x", (double)m_cursorSceneX);
+        m_cspObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     static const bool s_textDiag = []() {
@@ -4118,10 +4132,16 @@ void SceneObject::evaluateColorScripts() {
     }
     engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
-    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    // Refresh cursor world/screen positions for scripts reading
+    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
+    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
+    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
+    // world for tooltip math) see a consistent live cursor each tick.
     {
         m_cwpObj.setProperty("x", (double)m_cursorSceneX);
         m_cwpObj.setProperty("y", (double)m_cursorSceneY);
+        m_cspObj.setProperty("x", (double)m_cursorSceneX);
+        m_cspObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     for (auto& state : m_colorScriptStates) {
@@ -4456,10 +4476,16 @@ void SceneObject::evaluatePropertyScripts() {
     }
     engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
-    // Refresh cursor world position for scripts reading input.cursorWorldPosition
+    // Refresh cursor world/screen positions for scripts reading
+    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
+    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
+    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
+    // world for tooltip math) see a consistent live cursor each tick.
     {
         m_cwpObj.setProperty("x", (double)m_cursorSceneX);
         m_cwpObj.setProperty("y", (double)m_cursorSceneY);
+        m_cspObj.setProperty("x", (double)m_cursorSceneX);
+        m_cspObj.setProperty("y", (double)m_cursorSceneY);
     }
 
     // Refresh audio buffers in case property scripts use audio data
@@ -5302,6 +5328,7 @@ void SceneObject::cleanupTextScripts() {
     m_engineObj               = QJSValue();
     m_inputObj                = QJSValue();
     m_cwpObj                  = QJSValue();
+    m_cspObj                  = QJSValue();
     m_consoleObj              = QJSValue();
     m_cachedTimeOfDay         = -1.0;
     m_lastTimeOfDayMs         = -1;

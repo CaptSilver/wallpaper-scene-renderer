@@ -582,6 +582,12 @@ private:
     QJSValue m_engineObj;   // globalObject().property("engine")
     QJSValue m_inputObj;    // globalObject().property("input")
     QJSValue m_cwpObj;      // m_inputObj.property("cursorWorldPosition")
+    // input.cursorScreenPosition Vec2 — refreshed per-tick alongside m_cwpObj.
+    // Real-Time Earth (3557068717) `视角控制` drag/follow script reads it every
+    // frame to normalize the mouse position to [-1, 1] for camera rotation;
+    // before this, the value was init at (0, 0) and never updated, so the
+    // drag script saw a stationary cursor and Earth never rotated.
+    QJSValue m_cspObj;      // m_inputObj.property("cursorScreenPosition")
     QJSValue m_consoleObj;  // globalObject().property("console"); stable after setupTextScripts
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
 
