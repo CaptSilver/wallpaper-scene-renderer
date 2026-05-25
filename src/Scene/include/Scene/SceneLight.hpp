@@ -60,6 +60,14 @@ public:
     const std::array<float, 3>& cascadeDistances() const { return m_cascade_distances; }
     void setCascadeDistances(const std::array<float, 3>& d) { m_cascade_distances = d; }
 
+    // Returns true when this light should contribute to the volumetric chain
+    // this frame.  Composes the heuristic (density > 0 implicitly opts in
+    // unless `castvolumetrics:false` was authored) with the `WEKDE_VOLUMETRICS`
+    // env override (force-off shadows everything; force-on still requires
+    // density > 0 since a zero-density pass writes a zero buffer).  Body in
+    // SceneLight.cpp to keep the env-read TU-local.
+    bool castsVolumetrics() const;
+
     Eigen::Vector3f color() const { return m_color; }
     float           radius() const { return m_radius; }
     float           intensity() const { return m_intensity; }

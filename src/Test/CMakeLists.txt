@@ -124,6 +124,7 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/Scene/SceneIndexArray.cpp
     ${SRC_DIR}/Scene/SceneVertexArray.cpp
     ${SRC_DIR}/Scene/SceneShader.cpp
+    ${SRC_DIR}/Scene/SceneLight.cpp
     # End-to-end WPSceneParser::Parse() coverage (test_WPSceneParse.cpp) needs
     # the parser TU plus its transitive non-Vulkan deps.  WPShaderParser.cpp
     # transitively references glslang (host-CPU SPIR-V toolchain, NOT a Vulkan
