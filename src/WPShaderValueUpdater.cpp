@@ -651,3 +651,43 @@ std::vector<PendingAnimationEvent> WPShaderValueUpdater::DrainAnimationEvents() 
 }
 
 void WPShaderValueUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y }; }
+
+void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarOp& op) {
+    WEK_PROFILE_SCOPE("WPShaderValueUpdater::UpdateVolumetricLightUniforms");
+    if (! m_scene) return;
+    for (auto& l : m_scene->lights) {
+        if (! l) continue;
+        if (! l->castsVolumetrics()) continue;
+        // v1 cut: only Point + LPoint emit volumetric passes.
+        const auto kind = l->kind();
+        if (kind != SceneLight::LightKind::Point &&
+            kind != SceneLight::LightKind::LPoint) {
+            continue;
+        }
+        if (! l->node()) continue;
+        l->node()->UpdateTrans();
+        const auto& world = l->node()->ModelTrans();
+
+        // g_RenderVar0: shadowmap transforms - no shadow path in v1.
+        std::array<float, 4> r0 { 0.0f, 0.0f, 0.0f, 0.0f };
+        // g_RenderVar1: (radius, spot_inner, spot_outer, intensity).
+        // v1 only emits Point/LPoint; spot inner/outer stay at 0.
+        std::array<float, 4> r1 { l->radius(), 0.0f, 0.0f, l->intensity() };
+        // g_RenderVar2: (world_origin.xyz, density).
+        std::array<float, 4> r2 { (float)world(0, 3), (float)world(1, 3),
+                                  (float)world(2, 3), l->volumetric().density };
+        // g_RenderVar3: (forward.xyz, point_proj_info).
+        // Point/LPoint have no orientation; pack (0, 0, 1, 0) for shader-side
+        // determinism.
+        std::array<float, 4> r3 { 0.0f, 0.0f, 1.0f, 0.0f };
+        // g_RenderVar4: (color * intensity, volumetricsexponent).
+        const auto& ci = l->colorIntensity();
+        std::array<float, 4> r4 { ci[0], ci[1], ci[2], l->volumetric().exponent };
+
+        op(l.get(), 0, r0);
+        op(l.get(), 1, r1);
+        op(l.get(), 2, r2);
+        op(l.get(), 3, r3);
+        op(l.get(), 4, r4);
+    }
+}

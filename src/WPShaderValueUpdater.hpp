@@ -178,6 +178,15 @@ public:
 
     void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
 
+    // Volumetric per-light uniform upload.  Iterates Scene::lights, calls op()
+    // 5 times per volumetric light (slots 0..4 = g_RenderVar0..4).  v1 cuts at
+    // Point/LPoint; LSpot/LTube/LDirectional are parsed-but-not-uploaded until
+    // a future leg.  Safe to call zero or many times per frame - does not
+    // mutate updater state; reads Scene::lights + each light's transform.
+    // Calls UpdateTrans() on each volumetric light's node to walk the parent
+    // chain.
+    void UpdateVolumetricLightUniforms(const WritePerLightVarOp& op);
+
     // Get interpolated mouse position in normalized coordinates (0-1)
     std::array<float, 2> GetMousePosition() const { return m_mousePos; }
 
