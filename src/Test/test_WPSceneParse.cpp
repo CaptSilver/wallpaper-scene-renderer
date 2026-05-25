@@ -520,4 +520,136 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(light.cascadeDistances()[2] == doctest::Approx(300.0f));
     }
 
+    TEST_CASE("collisionmodel preview light parses with density=7.48, exp=4.0, exp(direct)=2.0") {
+        // Canonical reference — built-in WE preview at
+        // assets/scenes/particleelementpreviews/collisionmodel/scene.json.  The
+        // light is an lpoint with all volumetric fields populated and the
+        // cascade defaults (0/100/200).
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080 } },
+  "objects": [
+    { "id": 237, "name": "",
+      "origin": "611.30676 302.13736 2000.0",
+      "scale": "1 1 1",
+      "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1.00000 0.95686 0.87451",
+      "radius": 3000.0,
+      "intensity": 0.5,
+      "exponent": 2.0,
+      "density": 7.48,
+      "volumetricsexponent": 4.0,
+      "castshadow": true,
+      "cascadedistance0": 0.0,
+      "cascadedistance1": 100.0,
+      "cascadedistance2": 200.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_collisionmodel", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.kind() == SceneLight::LightKind::LPoint);
+        CHECK(light.exponent() == doctest::Approx(2.0f));
+        CHECK(light.radius() == doctest::Approx(3000.0f));
+        CHECK(light.intensity() == doctest::Approx(0.5f));
+        CHECK(light.volumetric().density == doctest::Approx(7.48f));
+        CHECK(light.volumetric().exponent == doctest::Approx(4.0f));
+        CHECK(light.volumetric().cast_volumetrics_explicit == false);
+        CHECK(light.castsVolumetrics() == true);
+        CHECK(light.castShadow() == true);
+        CHECK(light.cascadeDistances()[0] == doctest::Approx(0.0f));
+        CHECK(light.cascadeDistances()[1] == doctest::Approx(100.0f));
+        CHECK(light.cascadeDistances()[2] == doctest::Approx(200.0f));
+    }
+
+    TEST_CASE("workshop 3287715210 light parses with explicit castvolumetrics=true") {
+        // Workshop 3287715210 (发光少女 4K) — the only scene in the inventoried
+        // corpus carrying castvolumetrics: true explicitly.  Density + exp are
+        // the author-tuned values.
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080 } },
+  "objects": [
+    { "id": 100, "name": "stage_light",
+      "origin": "0 200 0",
+      "scale": "1 1 1",
+      "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1.0 0.8 0.6",
+      "radius": 1500.0,
+      "intensity": 1.5,
+      "castvolumetrics": true,
+      "density": 0.65,
+      "volumetricsexponent": 1.7,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_ws_3287715210", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.kind() == SceneLight::LightKind::LPoint);
+        CHECK(light.volumetric().cast_volumetrics_explicit == true);
+        CHECK(light.volumetric().cast_volumetrics_value == true);
+        CHECK(light.volumetric().density == doctest::Approx(0.65f));
+        CHECK(light.volumetric().exponent == doctest::Approx(1.7f));
+        CHECK(light.castsVolumetrics() == true);
+    }
+
+    TEST_CASE("real-time earth 3557068717 light parses with author-tuned density 0.31") {
+        // Workshop 3557068717 (Real-Time Earth) — one of the scenes in the
+        // inventoried corpus with volumetric fields.  Density 0.31 + exponent
+        // ~1.54.  Light is one of the sun lights parented to the SUN node;
+        // this test slices just the light entry (no parenting) since the
+        // parent linkage is exercised by the pre-existing parented-light test
+        // above.
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080 } },
+  "objects": [
+    { "id": 272, "name": "sun_light_a",
+      "origin": "0 0 0",
+      "scale": "1 1 1",
+      "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1.0 0.97 0.85",
+      "radius": 5000.0,
+      "intensity": 3.0,
+      "exponent": 0.1,
+      "density": 0.31,
+      "volumetricsexponent": 1.54,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_ws_3557068717", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.exponent() == doctest::Approx(0.1f));
+        CHECK(light.volumetric().density == doctest::Approx(0.31f));
+        CHECK(light.volumetric().exponent == doctest::Approx(1.54f));
+        CHECK(light.castsVolumetrics() == true);
+    }
+
 } // TEST_SUITE
