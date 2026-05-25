@@ -3,6 +3,7 @@
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 
+#include <array>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -11,12 +12,21 @@ namespace wallpaper
 {
 class SceneNode;
 class SceneShader;
+class SceneLight;
 class ShaderValue;
 class SpriteAnimation;
 
 using sprite_map_t    = Map<usize, SpriteAnimation>;
 using UpdateUniformOp = std::function<void(std::string_view, const ShaderValue&)>;
 using ExistsUniformOp = std::function<bool(std::string_view)>;
+
+// Per-light material-instance uniform writer for the volumetric upload loop.
+// `slot` is the index 0..4 of the `g_RenderVar*` uniform on the per-light
+// volumetrics_front / volumetrics_back material instance.  A later integration
+// step owns the implementation that resolves (light, slot) to the right
+// material's constantshadervalues.
+using WritePerLightVarOp =
+    std::function<void(SceneLight*, int, const std::array<float, 4>&)>;
 
 class IShaderValueUpdater : NoCopy, NoMove {
 public:
