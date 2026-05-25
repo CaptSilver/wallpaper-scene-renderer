@@ -375,4 +375,149 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(i10 < i20); // 10 declared before 20
     }
 
+    TEST_CASE("ParseLightObj reads density and routes through SceneLight predicate") {
+        // Mirrors a real preview scene: density=7.48, volumetricsexponent=4.0,
+        // no explicit castvolumetrics (heuristic opts in via density>0).
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 50, "name": "preview_light",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1 1 1",
+      "radius": 500.0, "intensity": 1.0,
+      "density": 7.48,
+      "volumetricsexponent": 4.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_density", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.kind() == SceneLight::LightKind::LPoint);
+        CHECK(light.volumetric().density == doctest::Approx(7.48f));
+        CHECK(light.volumetric().exponent == doctest::Approx(4.0f));
+        CHECK(light.volumetric().cast_volumetrics_explicit == false);
+        CHECK(light.castsVolumetrics() == true); // density>0 heuristic
+    }
+
+    TEST_CASE("ParseLightObj honors explicit castvolumetrics:false despite density>0") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 50, "name": "off_light",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1 1 1",
+      "radius": 500.0, "intensity": 1.0,
+      "castvolumetrics": false,
+      "density": 5.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_off", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.volumetric().cast_volumetrics_explicit == true);
+        CHECK(light.volumetric().cast_volumetrics_value == false);
+        CHECK(light.castsVolumetrics() == false);
+    }
+
+    TEST_CASE("ParseLightObj parses ltube / ldirectional / lspot kinds") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "t", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "ltube",        "color": "1 1 1", "radius": 100.0, "intensity": 1.0, "visible": true },
+    { "id": 11, "name": "d", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "ldirectional", "color": "1 1 1", "radius": 100.0, "intensity": 1.0, "visible": true },
+    { "id": 12, "name": "s", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lspot",        "color": "1 1 1", "radius": 100.0, "intensity": 1.0, "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_kinds", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 3);
+        CHECK(scene->lights[0]->kind() == SceneLight::LightKind::LTube);
+        CHECK(scene->lights[1]->kind() == SceneLight::LightKind::LDirectional);
+        CHECK(scene->lights[2]->kind() == SceneLight::LightKind::LSpot);
+    }
+
+    TEST_CASE("ParseLightObj falls back to Point on unknown kind string") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "u", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "unobtainable",
+      "color": "1 1 1", "radius": 100.0, "intensity": 1.0, "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_unknown_kind", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        CHECK(scene->lights[0]->kind() == SceneLight::LightKind::Point);
+    }
+
+    TEST_CASE("ParseLightObj reads castshadow and cascade distances") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "shadow_light",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint",
+      "color": "1 1 1", "radius": 100.0, "intensity": 1.0,
+      "castshadow": true,
+      "cascadedistance0": 10.0,
+      "cascadedistance1": 50.0,
+      "cascadedistance2": 300.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_shadow", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        const auto& light = *scene->lights.front();
+        CHECK(light.castShadow() == true);
+        CHECK(light.cascadeDistances()[0] == doctest::Approx(10.0f));
+        CHECK(light.cascadeDistances()[1] == doctest::Approx(50.0f));
+        CHECK(light.cascadeDistances()[2] == doctest::Approx(300.0f));
+    }
+
 } // TEST_SUITE

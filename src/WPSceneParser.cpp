@@ -28,6 +28,7 @@
 #include "Particle/ParticleSystem.h"
 
 #include "WPShaderValueUpdater.hpp"
+#include "WPLightKindParse.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPParticleObject.h"
 #include "wpscene/WPSoundObject.h"
@@ -2789,6 +2790,22 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
 
     auto& light = *(context.scene->lights.back());
     light.setNode(node);
+
+    // Volumetric-leg fields (parsed but inert until pipeline-integration
+    // lands).  The kind string drives per-frame light dispatch (legacy +
+    // modern arrays); the volumetric params + cast-shadow + cascade
+    // distances are consumed by the volumetric chain.  Current renderer
+    // only consumes Point/LPoint via the legacy g_LightsPosition arrays —
+    // the per-kind dispatch turns on in a later integration step.
+    light.setKind(parseLightKind(light_obj.light));
+    SceneLight::VolumetricParams vp;
+    vp.cast_volumetrics_explicit = light_obj.cast_volumetrics.has_value();
+    vp.cast_volumetrics_value    = light_obj.cast_volumetrics.value_or(false);
+    vp.density                   = light_obj.density;
+    vp.exponent                  = light_obj.volumetrics_exponent;
+    light.setVolumetric(vp);
+    light.setCastShadow(light_obj.cast_shadow);
+    light.setCascadeDistances(light_obj.cascade_distances);
 
     // Honor JSON `parent` — mirrors ParseImageObj/ParseModelObj/ParseParticleObj.
     // Real-Time Earth (3557068717) parents its 2 sun-lights to the animated
