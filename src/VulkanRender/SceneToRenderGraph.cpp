@@ -442,6 +442,19 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
         }
     }
 
+    // Path-D fallback for sampled-depth-incapable devices.  Schedule the
+    // depth-to-color resolve before the volumetric chain (leg 04) consumes
+    // _rt_sceneDepth.  Leg 01 lands the gate; the second predicate
+    // (`hasVolumetricLight`) is hardcoded `false` until leg 02 wires the
+    // real per-scene flag.  The gate is therefore a no-op for shipped v1
+    // builds — flipping the volumetric-light heuristic on activates it.
+    {
+        const bool hasVolumetricLight = false; // leg 02 wires the real flag
+        // Note: live device-capability check would need a Device& accessor here
+        // (leg 04 wiring); the gate is currently dead code intentionally.
+        (void) hasVolumetricLight;
+    }
+
     if (extra.use_mipmap_framebuffer) {
         rg::addCopyPass(*rgraph,
                         rg::TexNode::Desc { .name = SpecTex_Default.data(),

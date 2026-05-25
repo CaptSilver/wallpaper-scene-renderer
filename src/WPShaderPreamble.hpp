@@ -139,6 +139,27 @@ inline constexpr const char* kPreShaderCodeFrag = R"(
 #define gl_FragColor glOutColor
 out vec4 glOutColor;
 
+// Sample _rt_sceneDepth at half-res destination coordinate, taking the
+// near-most NDC z of the four full-res texels under each half-res pixel.
+// Under our regular-z baseline (REVERSEDEPTH=0) smaller = nearer, so we
+// take min; under reversed-z we take max.  Avoids the 1-pixel silhouette
+// halo that nearest-sampling a single texel produces at half-res.
+//
+// The sampler is bound NEAREST/CLAMP — see TextureCache::GetOrCreateDepthSampler.
+// Explicit textureLod(..., 0.0) reinforces the single-mip assumption.
+float weSampleSceneDepthMinGather(sampler2D srcDepth, vec2 uv) {
+    vec2 px = 1.0 / vec2(textureSize(srcDepth, 0));
+    float a = textureLod(srcDepth, uv + vec2(-0.5,-0.5)*px, 0.0).r;
+    float b = textureLod(srcDepth, uv + vec2( 0.5,-0.5)*px, 0.0).r;
+    float c = textureLod(srcDepth, uv + vec2(-0.5, 0.5)*px, 0.0).r;
+    float d = textureLod(srcDepth, uv + vec2( 0.5, 0.5)*px, 0.0).r;
+#if REVERSEDEPTH
+    return max(max(a,b), max(c,d));
+#else
+    return min(min(a,b), min(c,d));
+#endif
+}
+
 )";
 
 // Geometry shader: no attribute/varying defines needed.

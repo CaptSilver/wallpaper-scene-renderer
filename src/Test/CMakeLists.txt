@@ -18,6 +18,7 @@ add_executable(backend_scene_tests
     test_helpers.cpp
     test_WPShaderTransforms.cpp
     test_WPShaderInclude.cpp
+    test_WPShaderPreamble_DepthGather.cpp
     test_StringUtils.cpp
     test_Algorism.cpp
     test_WPUserProperties.cpp
@@ -62,6 +63,13 @@ add_executable(backend_scene_tests
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
     test_BlendModeFactors.cpp
+    test_CustomShaderPassDesc.cpp
+    test_CustomShaderPass_DepthBinding.cpp
+    test_DepthToColorResolvePass.cpp
+    test_SceneDepthFallbackGate.cpp
+    test_DeviceCaps.cpp
+    test_DepthSamplerConfig.cpp
+    test_DepthUsageFlags.cpp
     test_TexFormatVk.cpp
     test_SystemFontFallback.cpp
     ${SRC_DIR}/SystemFontFallback.cpp

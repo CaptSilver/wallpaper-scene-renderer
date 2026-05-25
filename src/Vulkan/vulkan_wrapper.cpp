@@ -462,6 +462,12 @@ VkPhysicalDeviceProperties PhysicalDevice::GetProperties() const noexcept {
     return props;
 }
 
+VkFormatProperties PhysicalDevice::GetFormatProperties(VkFormat fmt) const noexcept {
+    VkFormatProperties props;
+    dld->vkGetPhysicalDeviceFormatProperties(handle, fmt, &props);
+    return props;
+}
+
 void PhysicalDevice::GetProperties2KHR(VkPhysicalDeviceProperties2KHR& props) const noexcept {
     dld->vkGetPhysicalDeviceProperties2KHR(handle, &props);
 }

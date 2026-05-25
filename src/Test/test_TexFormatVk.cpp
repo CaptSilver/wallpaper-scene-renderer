@@ -42,4 +42,12 @@ TEST_SUITE("ToVkType(TextureFormat)") {
         CHECK(ToVkType(TextureFormat::RGB565) == VK_FORMAT_R5G6B5_UNORM_PACK16);
         CHECK(ToVkType(TextureFormat::RGBA1010102) == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
     }
+    TEST_CASE("R32F maps to VK_FORMAT_R32_SFLOAT") {
+        // Single-channel 32-bit float — used by the depth-to-color resolve
+        // RT (path D fallback in the volumetric chain).  R16F would lose
+        // ~3 bits of precision near the far plane (NDC z ≈ 1.0 quantises to
+        // ~1e-3 in R16F), which flickers the ray-march clamp on long-range
+        // scenes (default FarClip is 1000m).
+        CHECK(ToVkType(TextureFormat::R32F) == VK_FORMAT_R32_SFLOAT);
+    }
 }

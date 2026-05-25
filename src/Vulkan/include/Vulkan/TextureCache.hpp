@@ -25,6 +25,11 @@ namespace vulkan
 VkSamplerAddressMode ToVkType(TextureWrap);
 VkFilter             ToVkType(TextureFilter);
 
+// Depth-attachment sampler configuration.  NEAREST/CLAMP/no-compare; used to
+// sample _rt_sceneDepth in the volumetric chain.  Pure-data factory so unit
+// tests can pin the contract without a live device.
+VkSamplerCreateInfo GenDepthSamplerInfo();
+
 enum class TexUsage
 {
     COLOR,
@@ -63,6 +68,11 @@ public:
 
     void RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const;
 
+    // Lazily creates and caches a NEAREST/CLAMP/no-compare sampler used for
+    // sampling depth-attachment images (path A) and the depth-resolve color
+    // RT (path D).  Process-lifetime handle owned by this TextureCache.
+    VkSampler GetOrCreateDepthSampler();
+
 private:
     std::optional<VmaImageParameters> CreateTex(TextureKey);
     void                              allocateCmd();
@@ -87,6 +97,10 @@ private:
     };
     std::vector<std::unique_ptr<QueryTex>> m_query_texs;
     Map<std::string, QueryTex*>            m_query_map;
+
+    // Lazily-allocated depth sampler (NEAREST/CLAMP/no-compare).  See
+    // GetOrCreateDepthSampler().
+    vvk::Sampler m_depth_sampler;
 };
 
 } // namespace vulkan

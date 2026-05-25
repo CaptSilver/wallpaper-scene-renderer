@@ -31,6 +31,12 @@ public:
         bool flipCullMode { false };       // swap front/back cull (reflection reverses winding)
         bool useReflectionDepth { false }; // use separate depth buffer for reflection passes
 
+        // Volumetric / future depth-sampling chain.  When true, prepare()
+        // wires _rt_sceneDepth as an additional sampled binding even if the
+        // material JSON didn't name it in `textures` — used by passes whose
+        // descriptor set is constructed programmatically (volumetric front).
+        bool needsSceneDepth { false };
+
         // MSAA
         VkSampleCountFlagBits msaaSamples { VK_SAMPLE_COUNT_1_BIT };
         VkImageView           msaaColorView { VK_NULL_HANDLE };

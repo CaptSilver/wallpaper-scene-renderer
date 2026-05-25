@@ -56,6 +56,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.disableDepth       = desc.disableDepth;
     m_desc.flipCullMode       = desc.flipCullMode;
     m_desc.useReflectionDepth = desc.useReflectionDepth;
+    m_desc.needsSceneDepth    = desc.needsSceneDepth;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -81,7 +82,14 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         .arrayLayers = 1,
         .samples     = samples,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        // VK_IMAGE_USAGE_SAMPLED_BIT is appended iff the device advertises
+        // sampled-image support for D32_SFLOAT on optimal tiling (probed in
+        // Device::Create).  When the bit is absent we still allocate the
+        // attachment exactly as before; the path-D depth-to-color resolve
+        // pass produces the sampled view via a separate RT.
+        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                 (device.d32_sampleable() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -345,6 +353,23 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                      pm ? (size_t)pm->VertexCount() : 0u);
         }
     }
+    // If the pass declares needsSceneDepth, ensure WE_SCENE_DEPTH is present
+    // in the textures list (the descriptor binding logic below handles it
+    // from there).  Used by volumetric-front and future depth-aware passes
+    // that construct their descriptor set programmatically rather than via
+    // material JSON.
+    if (m_desc.needsSceneDepth) {
+        bool already = false;
+        for (auto& t : m_desc.textures) {
+            if (t == WE_SCENE_DEPTH) {
+                already = true;
+                break;
+            }
+        }
+        if (! already) {
+            m_desc.textures.emplace_back(WE_SCENE_DEPTH);
+        }
+    }
     m_desc.vk_textures.resize(m_desc.textures.size());
     for (usize i = 0; i < m_desc.textures.size(); i++) {
         auto& tex_name = m_desc.textures[i];
@@ -362,6 +387,45 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
         ImageSlotsRef img_slots;
         if (IsSpecTex(tex_name)) {
+            // Special-case _rt_sceneDepth (path A): under d32_sampleable
+            // we sample the existing depth attachment directly.  The image
+            // is owned by Scene::depthBuffer (a shared_ptr<void> carrying
+            // VmaImageParameters), not registered in scene.renderTargets,
+            // so the generic tex_cache().Query path below would fail.
+            // Under path D the resolve pass registers _rt_sceneDepthLinear
+            // in renderTargets and aliases _rt_sceneDepth to it, so the
+            // generic path handles path D unchanged.
+            if (tex_name == WE_SCENE_DEPTH && device.d32_sampleable() &&
+                scene.msaaSamples <= 1 && ! m_desc.useReflectionDepth) {
+                auto depth = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
+                if (depth && *depth->view != VK_NULL_HANDLE) {
+                    ImageParameters img;
+                    img.handle       = *depth->handle;
+                    img.view         = *depth->view;
+                    img.mip0_view    = *depth->view;
+                    img.sampler      = device.tex_cache().GetOrCreateDepthSampler();
+                    img.extent       = depth->extent;
+                    img.mipmap_level = 1;
+                    img_slots.slots  = { img };
+                    m_desc.vk_textures[i] = img_slots;
+                    continue; // bypass the renderTargets lookup
+                }
+                // depthBuffer not yet initialised: skip wiring this frame.
+                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested but "
+                         "scene.depthBuffer not initialised (skipping)");
+                continue;
+            }
+            else if (tex_name == WE_SCENE_DEPTH && m_desc.useReflectionDepth) {
+                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested in reflection "
+                         "pass — sampled-depth path disabled");
+                continue;
+            }
+            else if (tex_name == WE_SCENE_DEPTH && scene.msaaSamples > 1) {
+                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested but MSAA=%u "
+                         "active — sampled-depth path disabled in v1",
+                         scene.msaaSamples);
+                continue;
+            }
             if (scene.renderTargets.count(tex_name) == 0) continue;
             auto& rt  = scene.renderTargets.at(tex_name);
             auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
@@ -1149,7 +1213,17 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             .layerCount     = 1,
         };
 
-        // Transition UNDEFINED → TRANSFER_DST for the clear command
+        // The depth image arrives here in one of:
+        //   - VK_IMAGE_LAYOUT_UNDEFINED (first frame ever or first frame
+        //     after a Scene reload — the existing fast path)
+        //   - VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL (the path-A
+        //     consumer transition will leave it here at end-of-frame; we
+        //     re-arm it to ATTACHMENT_OPTIMAL via TRANSFER_DST + clear)
+        // Both transition into TRANSFER_DST_OPTIMAL for the clear command.
+        // Using UNDEFINED as oldLayout is permitted by spec regardless of
+        // actual prior layout — Vulkan treats it as "discard" — so we use
+        // UNDEFINED unconditionally here.  This keeps the barrier shape
+        // unchanged across the two paths.
         VkImageMemoryBarrier to_transfer {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext               = nullptr,

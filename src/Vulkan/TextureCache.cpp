@@ -47,6 +47,28 @@ VkFilter ToVkType(wallpaper::TextureFilter sam) {
     default: return VK_FILTER_NEAREST;
     }
 }
+
+VkSamplerCreateInfo GenDepthSamplerInfo() {
+    VkSamplerCreateInfo info { .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+                               .pNext            = nullptr,
+                               .flags            = 0,
+                               .magFilter        = VK_FILTER_NEAREST,
+                               .minFilter        = VK_FILTER_NEAREST,
+                               .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                               .addressModeU     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeV     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .addressModeW     = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                               .mipLodBias       = 0.0f,
+                               .anisotropyEnable = VK_FALSE,
+                               .maxAnisotropy    = 1.0f,
+                               .compareEnable    = VK_FALSE,
+                               .compareOp        = VK_COMPARE_OP_NEVER,
+                               .minLod           = 0.0f,
+                               .maxLod           = 0.0f,
+                               .borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+                               .unnormalizedCoordinates = VK_FALSE };
+    return info;
+}
 } // namespace vulkan
 } // namespace wallpaper
 
@@ -882,4 +904,16 @@ void TextureCache::RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParame
                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                         VK_DEPENDENCY_BY_REGION_BIT,
                         barrier);
+}
+
+VkSampler TextureCache::GetOrCreateDepthSampler() {
+    if (*m_depth_sampler != VK_NULL_HANDLE) {
+        return *m_depth_sampler;
+    }
+    auto info = GenDepthSamplerInfo();
+    if (m_device.handle().CreateSampler(info, m_depth_sampler) != VK_SUCCESS) {
+        LOG_ERROR("depth sampler creation failed");
+        return VK_NULL_HANDLE;
+    }
+    return *m_depth_sampler;
 }

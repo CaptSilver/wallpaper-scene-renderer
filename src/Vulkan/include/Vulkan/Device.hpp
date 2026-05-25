@@ -28,6 +28,11 @@ public:
     const auto&           device() const { return m_device; }
     const auto&           handle() const { return m_device; }
     const auto&           gpu() const { return m_gpu; }
+    // True iff this device advertises VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT on
+    // VK_FORMAT_D32_SFLOAT for optimal tiling.  Probed once at Device::Create.
+    // Consumers (volumetric chain, future SSAO/DOF) gate the depth-as-sampled
+    // path on this; when false, they emit a depth-to-color resolve fallback.
+    bool                  d32_sampleable() const { return m_d32_sampleable; }
     const auto&           limits() const { return m_limits; }
     float                 maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }
     VkSampleCountFlagBits maxMSAASamples() const {
@@ -70,6 +75,10 @@ private:
 
     // output extent
     VkExtent2D m_extent { 1, 1 };
+
+    // Probed in Device::Create from vkGetPhysicalDeviceFormatProperties on
+    // VK_FORMAT_D32_SFLOAT; invariant for a given device.
+    bool m_d32_sampleable { false };
 
     std::unique_ptr<TextureCache> m_tex_cache;
 };

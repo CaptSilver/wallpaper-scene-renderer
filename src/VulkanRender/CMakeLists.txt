@@ -4,6 +4,7 @@ add_library(${LIB_NAME}
 STATIC
 CopyPass.cpp
 CustomShaderPass.cpp
+DepthToColorResolvePass.cpp
 FinPass.cpp
 PrePass.cpp
 SceneToRenderGraph.cpp

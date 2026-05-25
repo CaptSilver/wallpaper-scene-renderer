@@ -146,6 +146,20 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         }
     }
 
+    // Probe whether VK_FORMAT_D32_SFLOAT supports sampled-image usage with
+    // optimal tiling.  This invariant gates the depth-sample path used by
+    // the volumetric chain (and any future SSAO/DOF).  On modern desktop
+    // GPUs (RADV, NVIDIA, Intel) the bit is set; on lavapipe and some
+    // mobile/headless drivers it is not, in which case downstream code
+    // emits a depth-to-color resolve fallback.
+    {
+        const VkFormatProperties fmt_props = inst.gpu().GetFormatProperties(VK_FORMAT_D32_SFLOAT);
+        device.m_d32_sampleable =
+            (fmt_props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+        LOG_INFO("D32_SFLOAT optimal-tiling sampled-image support: %s",
+                 device.m_d32_sampleable ? "yes" : "no");
+    }
+
     bool rq_surface = ! inst.offscreen();
     VVK_CHECK_BOOL_RE(vvk::Device::Create(device.m_device,
                                           *device.m_gpu,
