@@ -2819,6 +2819,21 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
     }
     // Register so subsequent objects can target this light as their parent.
     context.node_map[light_obj.id] = node;
+
+    // Diagnostic trail for future spot/tube/directional volumetric work.
+    // The current renderer only emits Point/LPoint into the volumetric chain;
+    // workshop scenes that author a non-Point light with volumetric fields
+    // are parsed but skipped.  Logging here gives future investigation a
+    // breadcrumb without changing behavior.
+    if (light.castsVolumetrics() &&
+        light.kind() != SceneLight::LightKind::Point &&
+        light.kind() != SceneLight::LightKind::LPoint) {
+        LOG_INFO("ParseLightObj: light id=%d kind=%d casts volumetrics "
+                 "(density=%.3f) but only Point/LPoint are emitted - skipped.",
+                 (int)light_obj.id,
+                 (int)light.kind(),
+                 (double)light.volumetric().density);
+    }
 }
 
 void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
