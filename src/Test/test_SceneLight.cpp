@@ -114,4 +114,24 @@ TEST_SUITE("SceneLight") {
         CHECK(got.exponent == doctest::Approx(4.0f));
     }
 
+    TEST_CASE("castShadow defaults false and round-trips") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        CHECK(l.castShadow() == false);
+        l.setCastShadow(true);
+        CHECK(l.castShadow() == true);
+    }
+
+    TEST_CASE("cascadeDistances defaults to 0/100/200 and round-trips") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        const auto& def = l.cascadeDistances();
+        CHECK(def[0] == doctest::Approx(0.0f));
+        CHECK(def[1] == doctest::Approx(100.0f));
+        CHECK(def[2] == doctest::Approx(200.0f));
+        l.setCascadeDistances(std::array<float, 3> { 10.0f, 50.0f, 300.0f });
+        const auto& got = l.cascadeDistances();
+        CHECK(got[0] == doctest::Approx(10.0f));
+        CHECK(got[1] == doctest::Approx(50.0f));
+        CHECK(got[2] == doctest::Approx(300.0f));
+    }
+
 } // SceneLight

@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <array>
 #include <vector>
 #include <memory>
 #include <Eigen/Dense>
@@ -54,6 +55,11 @@ public:
     const VolumetricParams& volumetric() const { return m_vol; }
     void setVolumetric(const VolumetricParams& v) { m_vol = v; }
 
+    bool                        castShadow() const { return m_cast_shadow; }
+    void                        setCastShadow(bool b) { m_cast_shadow = b; }
+    const std::array<float, 3>& cascadeDistances() const { return m_cascade_distances; }
+    void setCascadeDistances(const std::array<float, 3>& d) { m_cascade_distances = d; }
+
     Eigen::Vector3f color() const { return m_color; }
     float           radius() const { return m_radius; }
     float           intensity() const { return m_intensity; }
@@ -92,5 +98,7 @@ private:
 
     LightKind m_kind { LightKind::Point };
     VolumetricParams m_vol {};
+    bool                 m_cast_shadow { false };
+    std::array<float, 3> m_cascade_distances { 0.0f, 100.0f, 200.0f };
 };
 } // namespace wallpaper
