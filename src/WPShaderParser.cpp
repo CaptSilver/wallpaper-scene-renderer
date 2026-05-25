@@ -922,9 +922,14 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     (void)texs;
 
     // Translate WE geometry shader syntax to GLSL before preprocessing.
+    // Fragment units also pick up the HLSL clip()-statement rewrite so the
+    // volumetric-fog shader family (and any other material that ships HLSL
+    // clip()) translates cleanly.
     for (auto& unit : units) {
         if (unit.stage == ShaderType::GEOMETRY) {
             unit.src = TranslateGeometryShader(unit.src);
+        } else if (unit.stage == ShaderType::FRAGMENT) {
+            unit.src = TranslateHlslClip(unit.src);
         }
     }
 

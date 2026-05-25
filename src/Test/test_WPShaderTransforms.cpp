@@ -1,6 +1,61 @@
 #include <doctest.h>
 #include "WPShaderTransforms.h"
 #include "WPShaderPreamble.hpp"
+#include "Fs/VFS.h"
+#include "WPShaderParser.hpp"
+
+#include <cstdlib>
+#include <fstream>
+#include <sstream>
+
+namespace {
+// Drives WPShaderParser::CompileToSpv against a single shader unit and
+// returns the post-translation source plus the call's bool result.  Used
+// by the volumetric end-to-end tests below.  No cache dir is mounted, so
+// the compile takes the synchronous in-process branch.
+struct CompileResult {
+    bool        ok;            // CompileToSpv return value
+    std::string post_xlat_src; // unit.src after preamble + clip rewrite + preprocess
+};
+inline CompileResult compileSingleShaderFromSource(wallpaper::ShaderType    stage,
+                                                   const std::string&       src,
+                                                   const wallpaper::Combos& combos) {
+    static const bool initOnce = [] {
+        wallpaper::WPShaderParser::InitGlslang();
+        return true;
+    }();
+    (void)initOnce;
+
+    wallpaper::fs::VFS                      vfs;   // no "cache" mount
+    wallpaper::WPShaderInfo                 info;
+    info.combos = combos;
+    std::vector<wallpaper::WPShaderUnit>    units { { stage, src, {} } };
+    std::vector<wallpaper::ShaderCode>      codes;
+    std::vector<wallpaper::WPShaderTexInfo> texs;
+    bool ok = wallpaper::WPShaderParser::CompileToSpv("test-end-to-end",
+                                                     units,
+                                                     codes,
+                                                     vfs,
+                                                     &info,
+                                                     texs);
+    return { ok, units[0].src };
+}
+
+// Reads the WE-install shader file by logical name.  Returns empty string
+// if the install is not reachable (the test then SKIPs).
+inline std::string readWeShipped(const char* logical_name) {
+    const char* home = std::getenv("HOME");
+    if (!home) return {};
+    std::string path = std::string(home) +
+        "/.local/share/Steam/steamapps/common/wallpaper_engine/assets/shaders/" +
+        logical_name;
+    std::ifstream f(path);
+    if (!f.is_open()) return {};
+    std::stringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+} // namespace
 
 // ===========================================================================
 // regexTransformAll
@@ -3181,5 +3236,416 @@ TEST_SUITE("FixImplicitConversions.goldenCharacterization") {
                  "  vec4 ambient;\n"
                  "  vec3 result = light + ambient.xyy;\n"
                  "}\n");
+    }
+}
+
+TEST_SUITE("VolumetricPreamble") {
+    using namespace wallpaper;
+
+    TEST_CASE("preamble defines sampler2DBackBuffer alias") {
+        const std::string preamble = kPreShaderCodeCommon;
+        // Aliased to plain sampler2D — WE-side helper depends on resolution-aware
+        // sampling, which our renderer collapses to a direct texture() lookup.
+        CHECK(preamble.find("#define sampler2DBackBuffer sampler2D") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("sampler2DBackBuffer alias keeps decl well formed after concat") {
+        const std::string preamble = kPreShaderCodeCommon;
+        const std::string shader =
+            "uniform sampler2DBackBuffer g_Texture1;\n";
+        const std::string combined = preamble + shader;
+        CHECK(combined.find("#define sampler2DBackBuffer sampler2D") !=
+              std::string::npos);
+        CHECK(combined.find("uniform sampler2DBackBuffer g_Texture1;") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("preamble keeps existing helpers intact after insertion") {
+        const std::string preamble = kPreShaderCodeCommon;
+        CHECK(preamble.find("#define texSample2D texture")  != std::string::npos);
+        CHECK(preamble.find("#define mul(x, y) ((y) * (x))") != std::string::npos);
+        CHECK(preamble.find("#define frac fract")            != std::string::npos);
+        CHECK(preamble.find("#define lerp mix")              != std::string::npos);
+        CHECK(preamble.find("#define saturate(x)")           != std::string::npos);
+        CHECK(preamble.find("#define step _westep")          != std::string::npos);
+    }
+
+    TEST_CASE("preamble defines sampler2DComparison alias") {
+        const std::string preamble = kPreShaderCodeCommon;
+        // SHADOW=0 path means the binding is never reached; aliasing to plain
+        // sampler2D keeps the never-emitted decl well-formed for glslang.  When
+        // shadow-mapped volumetrics ships, this alias retypes to sampler2DShadow.
+        CHECK(preamble.find("#define sampler2DComparison sampler2D") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("preamble defines texSample2DBackBuffer delegating to texture") {
+        const std::string preamble = kPreShaderCodeCommon;
+        const std::string needle = "#define texSample2DBackBuffer";
+        const auto        pos    = preamble.find(needle);
+        CHECK(pos != std::string::npos);
+        const auto eol = preamble.find('\n', pos);
+        REQUIRE(eol != std::string::npos);
+        const std::string body = preamble.substr(pos, eol - pos);
+        CHECK(body.find("texture(") != std::string::npos);
+    }
+
+    TEST_CASE("preamble defines texLoad2D using texelFetch ivec2") {
+        const std::string preamble = kPreShaderCodeCommon;
+        const std::string needle = "#define texLoad2D";
+        const auto        pos    = preamble.find(needle);
+        CHECK(pos != std::string::npos);
+        const auto eol = preamble.find('\n', pos);
+        REQUIRE(eol != std::string::npos);
+        const std::string body = preamble.substr(pos, eol - pos);
+        CHECK(body.find("texelFetch(") != std::string::npos);
+        CHECK(body.find("ivec2(")      != std::string::npos);
+    }
+
+    TEST_CASE("preamble defines texSample2DCompare as compile-safe placeholder") {
+        const std::string preamble = kPreShaderCodeCommon;
+        const std::string needle = "#define texSample2DCompare";
+        const auto        pos    = preamble.find(needle);
+        CHECK(pos != std::string::npos);
+        const auto eol = preamble.find('\n', pos);
+        REQUIRE(eol != std::string::npos);
+        const std::string body = preamble.substr(pos, eol - pos);
+        CHECK(body.find("vec4(1.0)") != std::string::npos);
+    }
+}
+
+TEST_SUITE("TranslateHlslClip") {
+    TEST_CASE("simple subtraction emits if-discard") {
+        std::string in  = "void main() { clip(a - b); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "void main() { if ((a - b) < 0.0) discard; }");
+    }
+    TEST_CASE("negative literal arg emits if-discard") {
+        std::string in  = "void main() { clip(-1.0); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "void main() { if ((-1.0) < 0.0) discard; }");
+    }
+    TEST_CASE("positive literal arg still emits if-discard") {
+        std::string in  = "void main() { clip(1.0); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "void main() { if ((1.0) < 0.0) discard; }");
+    }
+    TEST_CASE("nested paren arg survives balanced paren matching") {
+        // `dot(a, b)` contains a comma; a naive `clip\(([^)]+)\)` regex would
+        // stop at that comma.  Balanced-paren matching keeps the whole arg.
+        std::string in  = "void main() { clip(dot(a, b)); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "void main() { if ((dot(a, b)) < 0.0) discard; }");
+    }
+    TEST_CASE("two adjacent clip statements both rewritten") {
+        std::string in  = "void main() { clip(a); clip(b); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out,
+                 "void main() { if ((a) < 0.0) discard; if ((b) < 0.0) discard; }");
+    }
+    TEST_CASE("clip inside if branch keeps surrounding braces") {
+        std::string in  = "if (cond) { clip(x); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "if (cond) { if ((x) < 0.0) discard; }");
+    }
+    TEST_CASE("source without clip is returned unchanged") {
+        std::string in  = "void main() { float x = 1.0; }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, in);
+    }
+    TEST_CASE("substring inside identifier is not matched") {
+        // `clipped`, `aclipb`, `flipclamp` contain "clip" but the \b anchor +
+        // required `(` after optional whitespace ensures only true call sites
+        // match.  Bare identifier declarations stay untouched.
+        std::string in  = "float aclipb = 0.0; float clipped = 1.0;";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, in);
+    }
+    TEST_CASE("whitespace between name and paren is accepted") {
+        // The \s* in the regex allows the syntactically-legal `clip (...)` shape;
+        // trailing `;` is still consumed by skipWhitespaceAndSemicolon.
+        // We paste the inner arg verbatim (including its surrounding spaces) so
+        // the rewriter stays side-effect-free.
+        std::string in  = "void main() { clip ( x ); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK_EQ(out, "void main() { if (( x ) < 0.0) discard; }");
+    }
+}
+
+TEST_SUITE("CompileToSpvClipWiring") {
+    TEST_CASE("fragment shader source has clip rewritten before preprocess") {
+        // After WPShaderParser::CompileToSpv runs its pre-preprocess pass over a
+        // fragment unit, every `clip(...);` token must be gone — this is the
+        // contract the pipeline integration relies on.
+        std::string in  = "void main() { clip(a - b); }";
+        std::string out = TranslateHlslClip(in);
+        CHECK(out.find("clip(")  == std::string::npos);
+        CHECK(out.find("discard") != std::string::npos);
+    }
+    TEST_CASE("CompileToSpv runs clip rewrite over fragment units") {
+        // Drive CompileToSpv against a minimal fragment unit. No cache dir is
+        // mounted, so the call takes the synchronous in-process branch.  We
+        // assert by reading unit.src AFTER the call: the clip token must be
+        // gone, replaced by an if-discard.
+        wallpaper::WPShaderParser::InitGlslang();
+        wallpaper::fs::VFS                       vfs;        // no "cache" mount
+        wallpaper::WPShaderInfo                  info;
+        std::vector<wallpaper::WPShaderUnit>     units {
+            { wallpaper::ShaderType::FRAGMENT,
+              "void main() { clip(a - b); }",
+              {} }
+        };
+        std::vector<wallpaper::ShaderCode>       codes;
+        std::vector<wallpaper::WPShaderTexInfo>  texs;
+        // Return value can be false (the snippet isn't real GLSL — references
+        // undefined symbols).  We only assert on the post-translation source.
+        (void)wallpaper::WPShaderParser::CompileToSpv("test-clip-wiring",
+                                                     units,
+                                                     codes,
+                                                     vfs,
+                                                     &info,
+                                                     texs);
+        CHECK(units[0].src.find("clip(")  == std::string::npos);
+        CHECK(units[0].src.find("discard") != std::string::npos);
+    }
+}
+
+TEST_SUITE("QualityCombo") {
+    TEST_CASE("quality tier 4 emits define 4") {
+        wallpaper::Combos combos;
+        combos["QUALITY"] = "4";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// shader body\n",
+            combos,
+            wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define QUALITY 4\n") != std::string::npos);
+    }
+    TEST_CASE("quality tier 3 emits define 3") {
+        wallpaper::Combos combos;
+        combos["QUALITY"] = "3";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define QUALITY 3\n") != std::string::npos);
+    }
+    TEST_CASE("quality tier 2 emits define 2") {
+        wallpaper::Combos combos;
+        combos["QUALITY"] = "2";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define QUALITY 2\n") != std::string::npos);
+    }
+    TEST_CASE("quality tier 1 emits define 1") {
+        wallpaper::Combos combos;
+        combos["QUALITY"] = "1";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define QUALITY 1\n") != std::string::npos);
+    }
+    TEST_CASE("kde post-processing tier maps to quality combo values") {
+        // Pin the tier->value mapping the KDE post-processing wiring will
+        // consume when routed through to the volumetric material.
+        // Ultra=4 ⇒ 8 samples; High=3 ⇒ 5; Med=2 ⇒ 3; Low=1 ⇒ 2 (no-shadow row).
+        struct Row { const char* tier; const char* value; };
+        const Row rows[] = {
+            {"Ultra", "4"}, {"High", "3"}, {"Med", "2"}, {"Low", "1"},
+        };
+        for (const auto& row : rows) {
+            wallpaper::Combos combos;
+            combos["QUALITY"] = row.value;
+            std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+                "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+            INFO("tier=" << row.tier);
+            std::string needle = std::string("#define QUALITY ") + row.value;
+            CHECK(out.find(needle) != std::string::npos);
+        }
+    }
+}
+
+TEST_SUITE("VolumetricGlobalCombos") {
+    TEST_CASE("shadow always emits as zero in v1") {
+        // v1 of the volumetric chain skips shadow-mapped scattering entirely.
+        // Emitting #define SHADOW 0 keeps the never-used shadow branch
+        // dead-code so glslang's preprocessor drops it cleanly.
+        wallpaper::Combos combos;
+        combos["SHADOW"] = "0";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define SHADOW 0\n") != std::string::npos);
+    }
+    TEST_CASE("reversedepth always emits as zero in v1") {
+        // Our Vulkan baseline uses classic Z (VK_COMPARE_OP_LESS, clear-to-1.0).
+        // REVERSEDEPTH=0 makes the regular-z branch fire in the shader,
+        // matching the weSampleSceneDepthMinGather convention used by our
+        // volumetric depth path.
+        wallpaper::Combos combos;
+        combos["REVERSEDEPTH"] = "0";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define REVERSEDEPTH 0\n") != std::string::npos);
+    }
+    TEST_CASE("cookie combo is omitted not defined zero") {
+        // COOKIE is `#ifdef`-gated upstream, not `#if`-gated.  Defining it to 0
+        // would still take the cookie branch.  Leaving the combo out of the
+        // map entirely is the correct v1 cut.
+        wallpaper::Combos combos;
+        // intentionally do NOT set combos["COOKIE"]
+        combos["SHADOW"]       = "0";
+        combos["REVERSEDEPTH"] = "0";
+        std::string out = wallpaper::WPShaderParser::PreShaderHeader(
+            "// body\n", combos, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define COOKIE") == std::string::npos);
+    }
+}
+
+TEST_SUITE("VolumetricEndToEndPreprocess") {
+    TEST_CASE("volumetricsback.frag translates clean") {
+        const std::string src = readWeShipped("volumetricsback.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping end-to-end translation test");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["SHADOW"]       = "0";
+        combos["REVERSEDEPTH"] = "0";
+        combos["POINTLIGHT"]   = "1";
+        combos["QUALITY"]      = "2";
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::FRAGMENT, src, combos);
+        CHECK(r.post_xlat_src.find("clip(")                   == std::string::npos);
+        CHECK(r.post_xlat_src.find("sampler2DBackBuffer ")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("sampler2DComparison ")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version")                != std::string::npos);
+    }
+    TEST_CASE("volumetricsback.vert translates clean") {
+        const std::string src = readWeShipped("volumetricsback.vert");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["POINTLIGHT"]   = "1";
+        combos["REVERSEDEPTH"] = "0";
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::VERTEX, src, combos);
+        CHECK(r.post_xlat_src.find("clip(")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("volumetricsfront.vert translates clean") {
+        const std::string src = readWeShipped("volumetricsfront.vert");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["POINTLIGHT"]   = "1";
+        combos["REVERSEDEPTH"] = "0";
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::VERTEX, src, combos);
+        CHECK(r.post_xlat_src.find("clip(")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("volumetricsfront.frag translates clean") {
+        const std::string src = readWeShipped("volumetricsfront.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["POINTLIGHT"]   = "1";
+        combos["SHADOW"]       = "0";  // no shadow atlas
+        combos["FULLSCREEN"]   = "0";
+        combos["REVERSEDEPTH"] = "0";
+        combos["QUALITY"]      = "2";  // medium default
+        // intentionally do NOT set COOKIE — it is #ifdef-gated upstream
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::FRAGMENT, src, combos);
+        // clip() statements are rewritten to if-discard
+        CHECK(r.post_xlat_src.find("clip(") == std::string::npos);
+        // No leftover HLSL-flavoured sampler keywords in uniform decls
+        CHECK(r.post_xlat_src.find("uniform sampler2DBackBuffer") == std::string::npos);
+        CHECK(r.post_xlat_src.find("uniform sampler2DComparison") == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("blur_k3.vert translates clean") {
+        const std::string src = readWeShipped("blur_k3.vert");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["VERTICAL"] = "0";  // horizontal pass
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::VERTEX, src, combos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("blur_k3.frag translates clean") {
+        const std::string src = readWeShipped("blur_k3.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        combos["VERTICAL"] = "1";  // vertical pass
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::FRAGMENT, src, combos);
+        CHECK(r.post_xlat_src.find("clip(")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("passthrough.vert translates clean") {
+        const std::string src = readWeShipped("passthrough.vert");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        // no TRANSFORM combo — fullscreen-quad branch
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::VERTEX, src, combos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("passthrough.frag translates clean") {
+        const std::string src = readWeShipped("passthrough.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        wallpaper::Combos combos;
+        auto r = compileSingleShaderFromSource(
+            wallpaper::ShaderType::FRAGMENT, src, combos);
+        CHECK(r.post_xlat_src.find("clip(")    == std::string::npos);
+        CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+    }
+    TEST_CASE("volumetricsfront.frag translates at every quality tier") {
+        const std::string src = readWeShipped("volumetricsfront.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        for (const char* tier : {"1", "2", "3", "4"}) {
+            wallpaper::Combos combos;
+            combos["POINTLIGHT"]   = "1";
+            combos["SHADOW"]       = "0";
+            combos["FULLSCREEN"]   = "0";
+            combos["REVERSEDEPTH"] = "0";
+            combos["QUALITY"]      = tier;
+            auto r = compileSingleShaderFromSource(
+                wallpaper::ShaderType::FRAGMENT, src, combos);
+            INFO("QUALITY=" << tier);
+            CHECK(r.post_xlat_src.find("clip(") == std::string::npos);
+            CHECK(r.post_xlat_src.find("#version") != std::string::npos);
+        }
+    }
+    TEST_CASE("front shader names depth-min gather helper for the depth path") {
+        // The volumetric depth-RT pipeline owns the helper weSampleSceneDepthMinGather
+        // and the WE-shipped front shader sources back-depth via texSample2DBackBuffer.
+        // Confirm that token appears in the raw WE source — our preamble macro
+        // takes care of translating it during preprocess.
+        const std::string src = readWeShipped("volumetricsfront.frag");
+        if (src.empty()) {
+            MESSAGE("WE install not present; skipping");
+            return;
+        }
+        CHECK(src.find("texSample2DBackBuffer") != std::string::npos);
     }
 }

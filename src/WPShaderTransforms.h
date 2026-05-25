@@ -2948,6 +2948,57 @@ inline std::string FixImplicitConversions(const std::string& src) {
 }
 
 // ---------------------------------------------------------------------------
+// TranslateHlslClip
+// ---------------------------------------------------------------------------
+// HLSL's `clip(expr);` is a statement that discards the fragment when expr is
+// negative.  The macro form `#define clip(x) if ((x) < 0.0) discard` breaks on
+// the trailing `;` left behind by the source — semicolons inside macro
+// expansion become orphan empty statements in some contexts.  A string
+// rewrite using findMatchingParen + skipWhitespaceAndSemicolon (the same
+// balanced-paren recipe TranslateGeometryShader uses for OUT.Append) is the
+// correct shape: it eats the `;` that follows the closing `)` and emits an
+// if-discard statement directly.
+//
+// Only matches whole identifiers (`\bclip\s*\(`) so substrings like `clipped`,
+// `flipclamp`, or `aclipb` are left untouched.
+inline std::string TranslateHlslClip(const std::string& src) {
+    static const std::regex re(R"(\bclip\s*\()");
+    std::string result;
+    result.reserve(src.size());
+
+    size_t pos = 0;
+    for (auto it = std::sregex_iterator(src.begin(), src.end(), re);
+         it != std::sregex_iterator();
+         ++it) {
+        const auto& m = *it;
+        // Append the inter-match preamble unchanged.
+        result.append(src, pos, (size_t)m.position() - pos);
+
+        // The match captures `clip` plus optional whitespace plus `(`.  The
+        // opening paren is the last char of the match.
+        size_t openParen  = (size_t)m.position() + m.length() - 1;
+        size_t afterClose = findMatchingParen(src, openParen);
+        if (afterClose == std::string::npos) {
+            // Unmatched — copy through verbatim and advance past the match.
+            result.append(src, (size_t)m.position(), m.length());
+            pos = (size_t)m.position() + m.length();
+            continue;
+        }
+        size_t innerBeg = openParen + 1;
+        size_t innerEnd = afterClose - 1; // position of ')'
+        size_t after    = skipWhitespaceAndSemicolon(src, afterClose);
+
+        std::string arg = src.substr(innerBeg, innerEnd - innerBeg);
+        result.append("if ((");
+        result.append(arg);
+        result.append(") < 0.0) discard;");
+        pos = after;
+    }
+    result.append(src, pos, std::string::npos);
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // FixFragmentGlPosition
 // ---------------------------------------------------------------------------
 // HLSL pixel shaders receive SV_Position which maps to window-space coords.

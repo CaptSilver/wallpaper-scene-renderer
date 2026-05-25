@@ -118,6 +118,16 @@ vec3  _westep(vec3  e, float x) { return step(e, vec3(x)); }
 vec4  _westep(vec4  e, float x) { return step(e, vec4(x)); }
 #define step _westep
 
+// HLSL→GLSL helpers used by the volumetric-fog shader family
+// (volumetricsfront, volumetricsback, blur_k3, passthrough).  These keep the
+// shipped WE source compilable without rewriting the shaders themselves;
+// runtime semantics are documented next to each line.
+#define sampler2DBackBuffer sampler2D
+#define sampler2DComparison sampler2D
+#define texSample2DBackBuffer(s, uv, res) texture((s), (uv))
+#define texLoad2D(t, uv, res) texelFetch((t), ivec2((uv) * (res).xy), 0)
+#define texSample2DCompare(s, uv, ref) vec4(1.0)
+
 #define float1 float
 #define float2 vec2
 #define float3 vec3
