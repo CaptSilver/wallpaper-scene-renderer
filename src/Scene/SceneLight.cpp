@@ -1,10 +1,12 @@
 #include "Scene/SceneLight.hpp"
 
+#include <cstdlib>
+#include <cstring>
+#include <string_view>
+
 namespace wallpaper
 {
 
-// Volumetric env override.  Wired into a real getenv() read in a follow-up
-// commit; until then the `Auto` default lets the heuristic run unmodified.
 namespace
 {
 enum class VolumetricsOverride : uint8_t
@@ -13,17 +15,32 @@ enum class VolumetricsOverride : uint8_t
     ForceOn  = 1,
     ForceOff = 2,
 };
-VolumetricsOverride g_volumetricsOverride { VolumetricsOverride::Auto };
+
+VolumetricsOverride parseEnvOverride() {
+    const char* v = std::getenv("WEKDE_VOLUMETRICS");
+    if (! v || *v == '\0') return VolumetricsOverride::Auto;
+    std::string_view s { v };
+    if (s == "force-off" || s == "0") return VolumetricsOverride::ForceOff;
+    if (s == "force-on"  || s == "1") return VolumetricsOverride::ForceOn;
+    if (s == "auto")                  return VolumetricsOverride::Auto;
+    return VolumetricsOverride::Auto;
+}
+
+VolumetricsOverride g_volumetricsOverride { parseEnvOverride() };
 } // namespace
 
+void SceneLight::_resetVolumetricsOverrideForTesting() {
+    g_volumetricsOverride = parseEnvOverride();
+}
+
 bool SceneLight::castsVolumetrics() const {
-    // Env override applies first so force-off acts as an unconditional
-    // kill-switch.  force-on still requires density>0 — a zero-density pass
-    // writes a zero buffer, so emitting it is wasted GPU work.
     switch (g_volumetricsOverride) {
-    case VolumetricsOverride::ForceOff: return false;
-    case VolumetricsOverride::ForceOn: return m_vol.density > 0.0f;
-    case VolumetricsOverride::Auto: break;
+    case VolumetricsOverride::ForceOff:
+        return false;
+    case VolumetricsOverride::ForceOn:
+        return m_vol.density > 0.0f;
+    case VolumetricsOverride::Auto:
+        break;
     }
     if (m_vol.cast_volumetrics_explicit) {
         return m_vol.cast_volumetrics_value && m_vol.density > 0.0f;

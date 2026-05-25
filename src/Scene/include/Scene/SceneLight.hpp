@@ -68,6 +68,13 @@ public:
     // SceneLight.cpp to keep the env-read TU-local.
     bool castsVolumetrics() const;
 
+    // Re-reads WEKDE_VOLUMETRICS from the current process environment and
+    // updates the TU-local override cache.  Test-only — the env is normally
+    // read once at module init.  Safe to call from doctest cases between
+    // setenv/unsetenv pairs; not thread-safe and not meant for production
+    // toggling.
+    static void _resetVolumetricsOverrideForTesting();
+
     Eigen::Vector3f color() const { return m_color; }
     float           radius() const { return m_radius; }
     float           intensity() const { return m_intensity; }

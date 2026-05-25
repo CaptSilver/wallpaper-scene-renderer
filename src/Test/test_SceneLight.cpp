@@ -3,6 +3,7 @@
 #include "Scene/SceneLight.hpp"
 #include "Scene/SceneNode.h"
 
+#include <cstdlib>
 #include <memory>
 
 using namespace wallpaper;
@@ -186,6 +187,94 @@ TEST_SUITE("SceneLight") {
         vp.density = 2.0f;
         l.setVolumetric(vp);
         CHECK(l.castsVolumetrics() == true);
+    }
+
+    TEST_CASE("env WEKDE_VOLUMETRICS=force-off suppresses density>0 + explicit:true") {
+        setenv("WEKDE_VOLUMETRICS", "force-off", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.cast_volumetrics_explicit = true;
+        vp.cast_volumetrics_value    = true;
+        vp.density                   = 5.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == false);
+        unsetenv("WEKDE_VOLUMETRICS");
+        SceneLight::_resetVolumetricsOverrideForTesting();
+    }
+
+    TEST_CASE("env WEKDE_VOLUMETRICS=force-on requires density>0 but ignores explicit:false") {
+        setenv("WEKDE_VOLUMETRICS", "force-on", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        // density=0 — still off.
+        {
+            SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 0.0f;
+            l.setVolumetric(vp);
+            CHECK(l.castsVolumetrics() == false);
+        }
+        // density>0 with explicit:false — force-on bypasses the suppression.
+        {
+            SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.cast_volumetrics_explicit = true;
+            vp.cast_volumetrics_value    = false;
+            vp.density                   = 5.0f;
+            l.setVolumetric(vp);
+            CHECK(l.castsVolumetrics() == true);
+        }
+        unsetenv("WEKDE_VOLUMETRICS");
+        SceneLight::_resetVolumetricsOverrideForTesting();
+    }
+
+    TEST_CASE("env WEKDE_VOLUMETRICS=auto matches the no-env default") {
+        setenv("WEKDE_VOLUMETRICS", "auto", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 5.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == true);  // heuristic on density>0
+        unsetenv("WEKDE_VOLUMETRICS");
+        SceneLight::_resetVolumetricsOverrideForTesting();
+    }
+
+    TEST_CASE("env WEKDE_VOLUMETRICS=invalid falls back to Auto") {
+        setenv("WEKDE_VOLUMETRICS", "garbage", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 5.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == true);  // heuristic still applies
+        unsetenv("WEKDE_VOLUMETRICS");
+        SceneLight::_resetVolumetricsOverrideForTesting();
+    }
+
+    TEST_CASE("env WEKDE_VOLUMETRICS aliases: 0 -> force-off, 1 -> force-on") {
+        setenv("WEKDE_VOLUMETRICS", "0", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        {
+            SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 5.0f;
+            l.setVolumetric(vp);
+            CHECK(l.castsVolumetrics() == false);  // 0 == force-off
+        }
+        setenv("WEKDE_VOLUMETRICS", "1", 1);
+        SceneLight::_resetVolumetricsOverrideForTesting();
+        {
+            SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.cast_volumetrics_explicit = true;
+            vp.cast_volumetrics_value    = false;
+            vp.density                   = 5.0f;
+            l.setVolumetric(vp);
+            CHECK(l.castsVolumetrics() == true);   // 1 == force-on
+        }
+        unsetenv("WEKDE_VOLUMETRICS");
+        SceneLight::_resetVolumetricsOverrideForTesting();
     }
 
 } // SceneLight
