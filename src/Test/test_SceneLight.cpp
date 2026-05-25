@@ -134,4 +134,58 @@ TEST_SUITE("SceneLight") {
         CHECK(got[2] == doctest::Approx(300.0f));
     }
 
+    TEST_CASE("castsVolumetrics: default-constructed light does not cast") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        CHECK(l.castsVolumetrics() == false);
+    }
+
+    TEST_CASE("castsVolumetrics: density>0 with no explicit flag casts via heuristic") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 5.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == true);
+    }
+
+    TEST_CASE("castsVolumetrics: density=0 with no explicit flag does not cast") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 0.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == false);
+    }
+
+    TEST_CASE("castsVolumetrics: explicit:false overrides density>0") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.cast_volumetrics_explicit = true;
+        vp.cast_volumetrics_value    = false;
+        vp.density                   = 5.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == false);
+    }
+
+    TEST_CASE("castsVolumetrics: explicit:true with density=0 still does not cast") {
+        // The predicate cheaply gates on density>0 even on explicit-true since a
+        // zero-density pass produces a zero buffer (wasted GPU work).
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.cast_volumetrics_explicit = true;
+        vp.cast_volumetrics_value    = true;
+        vp.density                   = 0.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == false);
+    }
+
+    TEST_CASE("castsVolumetrics: editor default density=2.0 casts via heuristic") {
+        // 5 of the 9 workshop scenes carrying volumetric fields use the
+        // editor's emit-on-toggle default density=2.0 without authoring
+        // castvolumetrics; the heuristic intentionally opts them in.
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 2.0f;
+        l.setVolumetric(vp);
+        CHECK(l.castsVolumetrics() == true);
+    }
+
 } // SceneLight
