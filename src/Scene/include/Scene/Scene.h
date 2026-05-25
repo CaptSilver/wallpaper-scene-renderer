@@ -188,6 +188,18 @@ public:
     };
     BloomConfig bloomConfig;
 
+    // Volumetric fog scene-level config — mirror of BloomConfig.  Populated by
+    // WPSceneParser at end-of-parse based on the per-light castsVolumetrics()
+    // predicate.  `enabled` short-circuits the 6-pass chain when no light wants
+    // fog; `globalDensityMultiplier` is a stub for a possible scene-global
+    // density modulator (a later integration step may plug it through, or
+    // remove the field if no source surfaces).
+    struct VolumetricsConfig {
+        bool  enabled                 { false };
+        float globalDensityMultiplier { 1.0f };
+    };
+    VolumetricsConfig volumetricsConfig;
+
     struct ReflectionBlurConfig {
         std::vector<std::shared_ptr<SceneNode>> nodes;
         std::vector<std::string>                outputs;
@@ -404,6 +416,12 @@ public:
             }
         }
     }
+
+    // Pointers to all lights where SceneLight::castsVolumetrics() is currently
+    // true.  Walks lights[] once; cheap enough to call at scene-build and at
+    // the start of each frame.  Pointers remain valid for the lifetime of
+    // Scene.
+    std::vector<SceneLight*> volumetricLights() const;
 
     // ===================================================================
     // Pending parent-change queue — drained at the start of

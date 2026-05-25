@@ -48,6 +48,61 @@ TEST_SUITE("Scene") {
         CHECK(f2->Height() == doctest::Approx(1080.0));
     }
 
+    TEST_CASE("VolumetricsConfig defaults: disabled, density multiplier 1.0") {
+        Scene s;
+        CHECK(s.volumetricsConfig.enabled == false);
+        CHECK(s.volumetricsConfig.globalDensityMultiplier == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("Scene::volumetricLights filters lights by castsVolumetrics() predicate") {
+        Scene s;
+        // Light 0: density=0 — should NOT appear in the filtered list.
+        s.lights.emplace_back(std::make_unique<SceneLight>(
+            Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f));
+        // Light 1: density=5 — heuristic opts in.
+        {
+            auto l = std::make_unique<SceneLight>(
+                Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 5.0f;
+            l->setVolumetric(vp);
+            s.lights.emplace_back(std::move(l));
+        }
+        // Light 2: density=2 (editor default) — heuristic opts in.
+        {
+            auto l = std::make_unique<SceneLight>(
+                Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 2.0f;
+            l->setVolumetric(vp);
+            s.lights.emplace_back(std::move(l));
+        }
+        // Light 3: explicit:false with density>0 — must be filtered out.
+        {
+            auto l = std::make_unique<SceneLight>(
+                Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.cast_volumetrics_explicit = true;
+            vp.cast_volumetrics_value    = false;
+            vp.density                   = 5.0f;
+            l->setVolumetric(vp);
+            s.lights.emplace_back(std::move(l));
+        }
+        auto vols = s.volumetricLights();
+        REQUIRE(vols.size() == 2);
+        // Pointers preserved in original order.
+        CHECK(vols[0] == s.lights[1].get());
+        CHECK(vols[1] == s.lights[2].get());
+    }
+
+    TEST_CASE("Scene::volumetricLights returns empty when no light casts") {
+        Scene s;
+        s.lights.emplace_back(std::make_unique<SceneLight>(
+            Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f));
+        auto vols = s.volumetricLights();
+        CHECK(vols.empty());
+    }
+
 } // Scene
 
 // ===========================================================================

@@ -112,4 +112,13 @@ std::string Scene::SerializeLayerInitialStates() const {
     return j.dump();
 }
 
+std::vector<SceneLight*> Scene::volumetricLights() const {
+    std::vector<SceneLight*> out;
+    out.reserve(lights.size());
+    for (const auto& l : lights) {
+        if (l && l->castsVolumetrics()) out.push_back(l.get());
+    }
+    return out;
+}
+
 } // namespace wallpaper
