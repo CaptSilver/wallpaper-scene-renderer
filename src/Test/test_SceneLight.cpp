@@ -73,4 +73,21 @@ TEST_SUITE("SceneLight") {
         CHECK(l.exponent() == doctest::Approx(1.0f));
     }
 
+    TEST_CASE("LightKind defaults to Point") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        CHECK(l.kind() == SceneLight::LightKind::Point);
+    }
+
+    TEST_CASE("setKind round-trips through getter") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        l.setKind(SceneLight::LightKind::LPoint);
+        CHECK(l.kind() == SceneLight::LightKind::LPoint);
+        l.setKind(SceneLight::LightKind::LSpot);
+        CHECK(l.kind() == SceneLight::LightKind::LSpot);
+        l.setKind(SceneLight::LightKind::LTube);
+        CHECK(l.kind() == SceneLight::LightKind::LTube);
+        l.setKind(SceneLight::LightKind::LDirectional);
+        CHECK(l.kind() == SceneLight::LightKind::LDirectional);
+    }
+
 } // SceneLight

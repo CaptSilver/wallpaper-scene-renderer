@@ -21,6 +21,22 @@ public:
     }
     ~SceneLight() = default;
 
+    // Light kind discriminator.  Default `Point` preserves pre-volumetric
+    // behavior for tests + scenes whose JSON omits the `light` string.  Modern
+    // workshop scenes serialize one of `lpoint` / `lspot` / `ltube` /
+    // `ldirectional` (the editor sprite filenames); the legacy `point` value
+    // remains the catch-all for unknown strings.
+    enum class LightKind : uint8_t {
+        Point,
+        LPoint,
+        LSpot,
+        LTube,
+        LDirectional,
+    };
+
+    LightKind kind() const { return m_kind; }
+    void      setKind(LightKind k) { m_kind = k; }
+
     Eigen::Vector3f color() const { return m_color; }
     float           radius() const { return m_radius; }
     float           intensity() const { return m_intensity; }
@@ -56,5 +72,7 @@ private:
 
     Eigen::Vector3f            m_premultiplied_color { Eigen::Vector3f::Zero() };
     std::shared_ptr<SceneNode> m_node { nullptr };
+
+    LightKind m_kind { LightKind::Point };
 };
 } // namespace wallpaper
