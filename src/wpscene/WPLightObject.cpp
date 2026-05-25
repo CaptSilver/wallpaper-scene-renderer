@@ -31,5 +31,8 @@ bool WPLightObject::FromJson(const nlohmann::json& json, fs::VFS&) {
     GET_JSON_NAME_VALUE_NOWARN(json, "cascadedistance0",    cascade_distances[0]);
     GET_JSON_NAME_VALUE_NOWARN(json, "cascadedistance1",    cascade_distances[1]);
     GET_JSON_NAME_VALUE_NOWARN(json, "cascadedistance2",    cascade_distances[2]);
+    if (json.contains("castvolumetrics") && json.at("castvolumetrics").is_boolean()) {
+        cast_volumetrics = json.at("castvolumetrics").get<bool>();
+    }
     return true;
 }

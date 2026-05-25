@@ -165,4 +165,85 @@ TEST_SUITE("WPLightObject") {
         CHECK(light.cascade_distances[1] == doctest::Approx(100.0f));
         CHECK(light.cascade_distances[2] == doctest::Approx(200.0f));
     }
+
+    TEST_CASE("FromJson parses explicit castvolumetrics:true") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "castvolumetrics": true,
+            "density": 0.65,
+            "volumetricsexponent": 1.7
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        REQUIRE(light.cast_volumetrics.has_value());
+        CHECK(light.cast_volumetrics.value() == true);
+        CHECK(light.density == doctest::Approx(0.65f));
+        CHECK(light.volumetrics_exponent == doctest::Approx(1.7f));
+    }
+
+    TEST_CASE("FromJson parses explicit castvolumetrics:false") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "castvolumetrics": false,
+            "density": 5.0
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        REQUIRE(light.cast_volumetrics.has_value());
+        CHECK(light.cast_volumetrics.value() == false);
+    }
+
+    TEST_CASE("FromJson leaves cast_volumetrics absent when JSON omits the field") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "density": 7.48
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.cast_volumetrics.has_value() == false);
+    }
+
+    TEST_CASE("FromJson ignores non-boolean castvolumetrics") {
+        // Defensive: malformed scene.json passes some non-bool value.
+        // We accept the absence rather than coercing.
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "castvolumetrics": "yes"
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.cast_volumetrics.has_value() == false);
+    }
 }

@@ -2,6 +2,7 @@
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
 #include <array>
+#include <optional>
 #include <vector>
 #include "WPPuppet.hpp"
 
@@ -59,6 +60,11 @@ public:
     // serialization (0/100/200) so a light that omits the keys round-trips
     // identically to the authored values.
     std::array<float, 3> cascade_distances { 0.0f, 100.0f, 200.0f };
+    // `castvolumetrics` — absent-vs-explicit-false distinguishes "JSON omitted
+    // the field (apply density heuristic)" from "JSON authored false (always
+    // off, suppress heuristic)".  Parsed via direct json.at() since
+    // GET_JSON_NAME_VALUE_NOWARN doesn't compose with std::optional<bool>.
+    std::optional<bool>  cast_volumetrics {};
 };
 
 } // namespace wpscene
