@@ -652,7 +652,15 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(light.castsVolumetrics() == true);
     }
 
-    TEST_CASE("Scene::volumetricsConfig.enabled flips true when any light casts") {
+    TEST_CASE("Scene::volumetricsConfig flips chain off when shader assets are absent") {
+        // With the post-parse material-attach step (LoadMaterial against the
+        // VFS) failing for an empty assets mount, the chain gracefully
+        // disables itself — the per-light enumeration ran and produced the
+        // expected entry count, but the chain was wired down because
+        // volumetricsback/volumetricsfront/blur_k3/passthrough shaders
+        // weren't loadable.  Production wallpapers always carry the WE shader
+        // assets so the chain stays enabled there; this test simply locks
+        // the no-asset failure path so a malformed install can't crash.
         const char* kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
@@ -674,7 +682,12 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         WPSceneParser       parser;
         auto                scene = parser.Parse("scene_enabled", kJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
-        CHECK(scene->volumetricsConfig.enabled == true);
+        // The per-light enumeration ran during parse — failOut in
+        // attachVolumetricMaterials then cleared per_light + disabled the
+        // chain because the empty VFS has no shader files.  Predicate-only
+        // observable: enabled is now false, per_light is empty.
+        CHECK(scene->volumetricsConfig.enabled == false);
+        CHECK(scene->volumetricsConfig.per_light.empty());
     }
 
     TEST_CASE("Scene::volumetricsConfig.enabled stays false when no light casts") {

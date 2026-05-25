@@ -41,6 +41,18 @@ constexpr std::string_view WE_SCENE_DEPTH { "_rt_sceneDepth" };
 constexpr std::string_view WE_SCENE_DEPTH_LINEAR { "_rt_sceneDepthLinear" };
 constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
 constexpr std::string_view WE_REFLECTION_BLUR { "_rt_Reflection_blur" };
+// Volumetric scattering render-target identifiers.  WE_VOLUMETRICS_BACK is the
+// per-light back-face entry/exit depth buffer; WE_VOLUMETRICS_LIGHT_BUFFER and
+// its `_b` ping-pong counterpart accumulate per-pixel scatter contributions
+// before the blur/combine stages.  Consumers: the per-light volumetric chain
+// emitted by BuildVolumetricNodes.
+constexpr std::string_view WE_VOLUMETRICS_BACK { "_rt_volumetricsBack" };
+constexpr std::string_view WE_VOLUMETRICS_LIGHT_BUFFER { "_rt_volumetricsLightBuffer" };
+constexpr std::string_view WE_VOLUMETRICS_LIGHT_BUFFER_B { "_rt_volumetricsLightBufferB" };
+// Scene-occluder closest-z, sampled by the volumetric ray-march as an
+// integration ceiling.  Semantically identical to WE_SCENE_DEPTH — both
+// resolve to the main depth attachment under the d32-sampleable path.
+constexpr std::string_view WE_VOLUMETRICS_SINGLE { "_rt_volumetricsSingle" };
 constexpr std::string_view WE_BUFFER_PREFIX { "_rt_buffer" };
 
 constexpr std::string_view WE_BLOOM_PREFIX { "_rt_Bloom_" };

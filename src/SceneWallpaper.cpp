@@ -35,6 +35,7 @@
 #include "RenderGraph/RenderGraph.hpp"
 
 #include "VulkanRender/SceneToRenderGraph.hpp"
+#include "VulkanRender/VolumetricChain.hpp"
 #include "VulkanRender/VulkanRender.hpp"
 #include "WPTextRenderer.hpp"
 #include "WPPuppet.hpp" // for getLayerBoneIndex attachment lookup
@@ -735,6 +736,21 @@ private:
                 auto mousePos = wpUpdater->GetMousePosition();
                 scene->paritileSys->UpdateMouseControlPoints(mousePos,
                                                              { scene->ortho[0], scene->ortho[1] });
+            }
+
+            // Per-frame volumetric tick: recompute is_inside_this_frame from
+            // the live camera and push per-light uniforms onto the volumetric
+            // surface materials.  Cheap no-op when volumetricsConfig.enabled
+            // is false (the vast majority of scenes); kept here — between the
+            // mouse-particle drain and Emitt() — so the render-graph rebuild
+            // downstream sees up-to-date is_inside_this_frame when it picks
+            // front vs fullscreen for each light this frame.
+            {
+                auto* wpUpdater =
+                    static_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get());
+                if (wpUpdater) {
+                    vulkan::PumpVolumetricFrame(*scene, *wpUpdater);
+                }
             }
 
             // Audio-reactive emit-rate push.  For each subsystem whose source

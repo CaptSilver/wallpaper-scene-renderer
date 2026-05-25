@@ -2,10 +2,21 @@
 
 #include "Scene/Scene.h"
 #include "Scene/SceneCamera.h"
+#include "Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
 
+#include <cmath>
 #include <memory>
 #include <utility>
+
+namespace wallpaper
+{
+// Forward declaration of the file-local proxy-mesh generator that lives at
+// namespace scope in WPSceneParser.cpp.  Exposed (non-anonymous namespace) so
+// the doctest below can drive it directly without standing up the full parser
+// + scene-build pipeline that InitContext requires.
+void GenVolumeSphereMesh(SceneMesh& mesh);
+} // namespace wallpaper
 
 using namespace wallpaper;
 
@@ -104,6 +115,52 @@ TEST_SUITE("Scene") {
     }
 
 } // Scene
+
+TEST_SUITE("Scene_DefaultVolumeSphere") {
+    TEST_CASE("default_volume_sphere is empty on a bare Scene (populated by InitContext)") {
+        // Bare ctor leaves the field default-constructed — no vertex arrays,
+        // no index arrays.  The populator runs in WPSceneParser::InitContext.
+        Scene s;
+        CHECK(s.default_volume_sphere.VertexCount() == 0);
+        CHECK(s.default_volume_sphere.IndexCount() == 0);
+    }
+
+    TEST_CASE("GenVolumeSphereMesh produces a non-empty vertex + index array") {
+        Scene s;
+        GenVolumeSphereMesh(s.default_volume_sphere);
+        // VertexCount / IndexCount on SceneMesh return the number of vertex
+        // and index ARRAYS (not vertices); the populator should add exactly
+        // one of each.
+        CHECK(s.default_volume_sphere.VertexCount() == 1);
+        CHECK(s.default_volume_sphere.IndexCount() == 1);
+        const auto& va = s.default_volume_sphere.GetVertexArray(0);
+        const auto& ia = s.default_volume_sphere.GetIndexArray(0);
+        // Icosahedron: 12 vertices, 20 triangles (60 index slots).
+        CHECK(va.VertexCount() == 12u);
+        CHECK(ia.DataCount() == 60u);
+    }
+
+    TEST_CASE("all icosahedron vertices lie on a unit sphere") {
+        Scene s;
+        GenVolumeSphereMesh(s.default_volume_sphere);
+        const auto& va    = s.default_volume_sphere.GetVertexArray(0);
+        const float* data = va.Data();
+        REQUIRE(data != nullptr);
+        REQUIRE(va.VertexCount() == 12u);
+        // SceneVertexArray pads each FLOAT3 attribute to 4 floats by default
+        // (RealAttributeSize: padding=true -> 4); OneSize() reflects the real
+        // per-vertex stride.
+        const std::size_t stride = va.OneSize();
+        REQUIRE(stride >= 3u);
+        for (std::size_t i = 0; i < va.VertexCount(); ++i) {
+            const float x   = data[i * stride + 0];
+            const float y   = data[i * stride + 1];
+            const float z   = data[i * stride + 2];
+            const float len = std::sqrt(x * x + y * y + z * z);
+            CHECK(len == doctest::Approx(1.0f).epsilon(1e-5));
+        }
+    }
+} // Scene_DefaultVolumeSphere
 
 // ===========================================================================
 // Pending-parent-change queue + ApplyPendingParentChanges drain

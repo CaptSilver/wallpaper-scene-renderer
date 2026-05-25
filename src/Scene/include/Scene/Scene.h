@@ -150,6 +150,12 @@ public:
     bool first_frame_ok { false };
 
     SceneMesh default_effect_mesh;
+    // Proxy mesh for per-light volumetric scattering passes.  A 12-vertex / 20-
+    // triangle unit icosphere centred at origin; the per-light pass scales and
+    // translates this into a world-space light-volume bound.  Populated by
+    // GenVolumeSphereMesh in WPSceneParser::InitContext, paralleling
+    // default_effect_mesh.
+    SceneMesh default_volume_sphere;
 
     std::unique_ptr<ParticleSystem> paritileSys;
 
@@ -170,6 +176,15 @@ public:
 
     // HDR content pipeline: when true, render targets use RGBA16F and FinPass tonemaps
     bool hdrContent { false };
+
+    // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/
+    // "low"/""), after the plugin-level override is applied on top of
+    // scene.general.orthogonalprojection.postprocessing.  Stored on Scene so
+    // downstream pipeline-build code (volumetric chain QUALITY combo) can
+    // read the resolved tier without re-walking the override/scene-json
+    // resolution logic that lives in WPSceneParser.cpp.  Empty when neither
+    // the scene nor the override sets a value.
+    std::string resolved_postprocessing;
 
     // MSAA: 1=off, 2/4/8=sample count (maps to VkSampleCountFlagBits)
     u32 msaaSamples { 1 };
@@ -197,6 +212,32 @@ public:
     struct VolumetricsConfig {
         bool  enabled                 { false };
         float globalDensityMultiplier { 1.0f };
+        // QUALITY combo emitted into the per-light volumetric materials,
+        // sourced from the per-wallpaper post-processing tier.  Default 2
+        // ("medium" tier); the ray-march step count for each tier is
+        // determined inside the volumetricsfront.frag shader.  Resolved at
+        // scene-build time by BuildVolumetricNodes from
+        // Scene::resolved_postprocessing.
+        uint32_t quality { 2 };
+        // Per-volumetric-light state: the light pointer (non-owning — Scene
+        // owns the unique_ptr), the three pre-built SceneNodes that the per-
+        // light passes rasterise (back proxy, front proxy, fullscreen
+        // alternate for camera-inside-volume), and the per-frame
+        // camera-inside flag set by TickVolumetricSelection.  Populated by
+        // BuildVolumetricNodes at scene-build time; iterated by the volumetric
+        // chain emission code at render-graph-build time.
+        struct PerLight {
+            SceneLight*                light { nullptr };
+            std::shared_ptr<SceneNode> back_node;
+            std::shared_ptr<SceneNode> front_node;
+            std::shared_ptr<SceneNode> fullscreen_node;
+            bool                       is_inside_this_frame { false };
+        };
+        std::vector<PerLight>      per_light;
+        // Global single-instance nodes for the post-per-light chain stages.
+        std::shared_ptr<SceneNode> blur_h_node;
+        std::shared_ptr<SceneNode> blur_v_node;
+        std::shared_ptr<SceneNode> combine_node;
     };
     VolumetricsConfig volumetricsConfig;
 
@@ -422,6 +463,14 @@ public:
     // the start of each frame.  Pointers remain valid for the lifetime of
     // Scene.
     std::vector<SceneLight*> volumetricLights() const;
+
+    // Update per_light[i].is_inside_this_frame based on the camera's current
+    // world position vs each light's world origin + radius.  Called from the
+    // render-thread per-frame tick before the volumetric uniform pump.  No-op
+    // when volumetricsConfig.per_light is empty or activeCamera is null.
+    // A camera AT exactly the surface (distance == radius) is treated as
+    // outside so the front-face geometry path stays in control.
+    void TickVolumetricSelection();
 
     // ===================================================================
     // Pending parent-change queue — drained at the start of

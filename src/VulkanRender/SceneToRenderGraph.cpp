@@ -7,6 +7,7 @@
 #include "Core/MapSet.hpp"
 
 #include "VulkanRender/AllPasses.hpp"
+#include "VulkanRender/VolumetricChain.hpp"
 
 using namespace wallpaper;
 namespace wallpaper::rg
@@ -431,6 +432,16 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
             });
     }
 
+    // Volumetric fog chain — runs between the main scene + link resolution
+    // and bloom, so bloom can pick up the scatter contribution.  Hard-skipped
+    // when no light wants fog (enabled=false), when per_light is empty (the
+    // force-off env path leaves it that way), or in reflection passes (the
+    // chain reads the main scene depth, not the reflected one).
+    if (scene.activeCamera != nullptr) {
+        vulkan::ExtraInfoVolumetrics vol_extra { .scene = &scene, .rgraph = rgraph.get() };
+        vulkan::emitVolumetricChain(*rgraph, scene, *scene.activeCamera, vol_extra);
+    }
+
     // Bloom post-processing: copy scene → bloom input, then 4 bloom passes
     if (scene.bloomConfig.enabled && ! scene.bloomConfig.nodes.empty()) {
         LOG_INFO("adding %zu bloom passes", scene.bloomConfig.nodes.size());
@@ -443,15 +454,13 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     }
 
     // Path-D fallback for sampled-depth-incapable devices.  Schedule the
-    // depth-to-color resolve before the volumetric chain (leg 04) consumes
-    // _rt_sceneDepth.  Leg 01 lands the gate; the second predicate
-    // (`hasVolumetricLight`) is hardcoded `false` until leg 02 wires the
-    // real per-scene flag.  The gate is therefore a no-op for shipped v1
-    // builds — flipping the volumetric-light heuristic on activates it.
+    // depth-to-color resolve before the volumetric chain consumes
+    // _rt_sceneDepth.  The activation predicate is the volumetric-chain
+    // enabled flag.
     {
-        const bool hasVolumetricLight = false; // leg 02 wires the real flag
-        // Note: live device-capability check would need a Device& accessor here
-        // (leg 04 wiring); the gate is currently dead code intentionally.
+        const bool hasVolumetricLight = scene.volumetricsConfig.enabled;
+        // Note: device-capability check would need a Device& accessor here
+        // before this can do real work; the gate is documentation today.
         (void) hasVolumetricLight;
     }
 

@@ -40,6 +40,8 @@ add_executable(backend_scene_tests
     test_SceneMesh.cpp
     test_SceneShader.cpp
     test_Scene.cpp
+    test_Scene_VolumetricsTick.cpp
+    test_SceneToRenderGraph_Volumetrics.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp
@@ -65,6 +67,7 @@ add_executable(backend_scene_tests
     test_BlendModeFactors.cpp
     test_CustomShaderPassDesc.cpp
     test_CustomShaderPass_DepthBinding.cpp
+    test_CustomShaderPass_ForceClearOutput.cpp
     test_DepthToColorResolvePass.cpp
     test_SceneDepthFallbackGate.cpp
     test_DeviceCaps.cpp
@@ -134,6 +137,18 @@ add_executable(backend_scene_tests
     # mirroring fuzz_WPShaderParser.  No vkCreate*-class device symbol is
     # pulled in (the fixture scene loads no materials/shaders).
     ${SRC_DIR}/WPSceneParser.cpp
+    ${SRC_DIR}/VulkanRender/VolumetricChain.cpp
+    # CustomShaderPass: ctor/dtor + Desc copy live here; required so the test
+    # target can instantiate CustomShaderPass through the RenderGraph::addPass
+    # template (the volumetric chain emitters do).  The Vulkan device-side code
+    # (prepare/execute/destory) is never called from tests, so no real GPU
+    # interaction occurs — the heavy headers are compile-only.
+    ${SRC_DIR}/VulkanRender/CustomShaderPass.cpp
+    # Tiny stubs for the per-pass RT dump globals (live in VulkanRender.cpp,
+    # which is too heavy to pull in to the headless test binary).  They are
+    # never read — CustomShaderPass::execute() is the sole consumer and tests
+    # never call it.
+    test_CustomShaderPass_stubs.cpp
     ${SRC_DIR}/WPShaderParser.cpp
     ${SRC_DIR}/WPShaderValueUpdater.cpp
     ${SRC_DIR}/WPTextRenderer.cpp

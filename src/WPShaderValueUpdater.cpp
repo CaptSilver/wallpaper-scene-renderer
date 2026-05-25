@@ -5,6 +5,7 @@
 #include "Scene/SceneCamera.h"
 #include "SpriteAnimation.hpp"
 #include "SpecTexs.hpp"
+#include "Audio/AudioAnalyzer.h"
 #include "Core/ArrayHelper.hpp"
 #include "Utils/Algorism.h"
 #include "Utils/SceneProfiler.h"

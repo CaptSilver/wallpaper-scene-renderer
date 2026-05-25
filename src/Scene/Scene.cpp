@@ -5,6 +5,7 @@
 #include "Interface/IShaderValueUpdater.h"
 #include "Particle/ParticleSystem.h"
 
+#include <Eigen/Dense>
 #include <nlohmann/json.hpp>
 
 namespace wallpaper
@@ -119,6 +120,36 @@ std::vector<SceneLight*> Scene::volumetricLights() const {
         if (l && l->castsVolumetrics()) out.push_back(l.get());
     }
     return out;
+}
+
+void Scene::TickVolumetricSelection() {
+    if (volumetricsConfig.per_light.empty()) return;
+    if (activeCamera == nullptr) return;
+    const auto            eye_d = activeCamera->GetPosition();
+    const Eigen::Vector3f eye(static_cast<float>(eye_d.x()),
+                              static_cast<float>(eye_d.y()),
+                              static_cast<float>(eye_d.z()));
+    for (auto& pl : volumetricsConfig.per_light) {
+        if (pl.light == nullptr) {
+            pl.is_inside_this_frame = false;
+            continue;
+        }
+        auto* lnode = pl.light->node();
+        if (lnode == nullptr) {
+            pl.is_inside_this_frame = false;
+            continue;
+        }
+        lnode->UpdateTrans();
+        const Eigen::Matrix4d world = lnode->ModelTrans();
+        const Eigen::Vector3f world_origin(static_cast<float>(world(0, 3)),
+                                           static_cast<float>(world(1, 3)),
+                                           static_cast<float>(world(2, 3)));
+        const float d2     = (eye - world_origin).squaredNorm();
+        const float radius = pl.light->radius();
+        // Strict less-than: surface points (distance == radius) are treated
+        // as outside so the front-face geometry path takes over.
+        pl.is_inside_this_frame = d2 < (radius * radius);
+    }
 }
 
 } // namespace wallpaper

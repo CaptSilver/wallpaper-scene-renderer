@@ -16,6 +16,16 @@ namespace wallpaper
 namespace vulkan
 {
 
+// Pure load-op selector for the per-pass output RT.  Returns CLEAR when:
+//   - force_clear is set (per-light volumetric back-depth path), OR
+//   - the RT has not yet been touched this frame (scene.clearedRTs check).
+// Otherwise returns LOAD.  Pure on its two inputs — no Vulkan state.
+inline VkAttachmentLoadOp SelectOutputLoadOp(bool force_clear, bool rt_already_cleared) {
+    if (force_clear) return VK_ATTACHMENT_LOAD_OP_CLEAR;
+    return rt_already_cleared ? VK_ATTACHMENT_LOAD_OP_LOAD
+                              : VK_ATTACHMENT_LOAD_OP_CLEAR;
+}
+
 class CustomShaderPass : public VulkanPass {
 public:
     struct Desc {
@@ -36,6 +46,13 @@ public:
         // material JSON didn't name it in `textures` — used by passes whose
         // descriptor set is constructed programmatically (volumetric front).
         bool needsSceneDepth { false };
+
+        // Re-clear the output RT at pass-start every frame regardless of
+        // scene.clearedRTs state.  Used by the per-light volumetric back-depth
+        // emission where multiple lights share _rt_volumetricsBack and the
+        // one-shot clearedRTs gate would leak earlier lights' depth values
+        // into later lights' integration math.
+        bool force_clear_output { false };
 
         // MSAA
         VkSampleCountFlagBits msaaSamples { VK_SAMPLE_COUNT_1_BIT };

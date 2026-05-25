@@ -57,6 +57,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.flipCullMode       = desc.flipCullMode;
     m_desc.useReflectionDepth = desc.useReflectionDepth;
     m_desc.needsSceneDepth    = desc.needsSceneDepth;
+    m_desc.force_clear_output = desc.force_clear_output;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -395,7 +396,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             // Under path D the resolve pass registers _rt_sceneDepthLinear
             // in renderTargets and aliases _rt_sceneDepth to it, so the
             // generic path handles path D unchanged.
-            if (tex_name == WE_SCENE_DEPTH && device.d32_sampleable() &&
+            //
+            // _rt_volumetricsSingle is the WE shader's hidden-default key for
+            // the same scene-occluder closest-z buffer (used by the volumetric
+            // ray-march as an integration ceiling); we alias it onto the same
+            // depth attachment under each of the path-A / reflection / MSAA
+            // branches below.
+            const bool is_depth_alias =
+                (tex_name == WE_SCENE_DEPTH) || (tex_name == WE_VOLUMETRICS_SINGLE);
+            if (is_depth_alias && device.d32_sampleable() &&
                 scene.msaaSamples <= 1 && ! m_desc.useReflectionDepth) {
                 auto depth = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
                 if (depth && *depth->view != VK_NULL_HANDLE) {
@@ -411,18 +420,21 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     continue; // bypass the renderTargets lookup
                 }
                 // depthBuffer not yet initialised: skip wiring this frame.
-                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested but "
-                         "scene.depthBuffer not initialised (skipping)");
+                LOG_INFO("CSP_PREPARE: %s requested but "
+                         "scene.depthBuffer not initialised (skipping)",
+                         tex_name.c_str());
                 continue;
             }
-            else if (tex_name == WE_SCENE_DEPTH && m_desc.useReflectionDepth) {
-                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested in reflection "
-                         "pass — sampled-depth path disabled");
+            else if (is_depth_alias && m_desc.useReflectionDepth) {
+                LOG_INFO("CSP_PREPARE: %s requested in reflection "
+                         "pass — sampled-depth path disabled",
+                         tex_name.c_str());
                 continue;
             }
-            else if (tex_name == WE_SCENE_DEPTH && scene.msaaSamples > 1) {
-                LOG_INFO("CSP_PREPARE: _rt_sceneDepth requested but MSAA=%u "
+            else if (is_depth_alias && scene.msaaSamples > 1) {
+                LOG_INFO("CSP_PREPARE: %s requested but MSAA=%u "
                          "active — sampled-depth path disabled in v1",
+                         tex_name.c_str(),
                          scene.msaaSamples);
                 continue;
             }
@@ -757,11 +769,14 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             //      this, the eye.tex on Naruto Shippuden 2800255344 (orange
             //      RGB at alpha=0 corners) produced an orange halo around
             //      the sun.  See test_BlendModeFactors "Blend math".
-            if (scene.clearedRTs.count(m_desc.output) == 0) {
-                loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            const bool rt_already_cleared = scene.clearedRTs.count(m_desc.output) != 0;
+            loadOp = SelectOutputLoadOp(m_desc.force_clear_output, rt_already_cleared);
+            // Only the implicit "first-writer" path participates in the
+            // one-shot tracking; force_clear is per-emission and must not
+            // mutate clearedRTs (otherwise the next non-forced writer would
+            // see "already cleared" and pick LOAD).
+            if (! m_desc.force_clear_output && ! rt_already_cleared) {
                 scene.clearedRTs.insert(m_desc.output);
-            } else {
-                loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             }
         }
         // MSAA: only for _rt_default (the final composited output).

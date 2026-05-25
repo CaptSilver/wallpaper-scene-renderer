@@ -61,3 +61,22 @@ TEST_SUITE("SpecTexs") {
     }
 
 } // TEST_SUITE
+
+TEST_SUITE("SpecTexs_Volumetrics") {
+    TEST_CASE("WE_VOLUMETRICS_BACK is _rt_volumetricsBack and IsSpecTex-true") {
+        CHECK(WE_VOLUMETRICS_BACK == std::string_view("_rt_volumetricsBack"));
+        CHECK(IsSpecTex(WE_VOLUMETRICS_BACK));
+    }
+    TEST_CASE("WE_VOLUMETRICS_LIGHT_BUFFER is _rt_volumetricsLightBuffer") {
+        CHECK(WE_VOLUMETRICS_LIGHT_BUFFER == std::string_view("_rt_volumetricsLightBuffer"));
+        CHECK(IsSpecTex(WE_VOLUMETRICS_LIGHT_BUFFER));
+    }
+    TEST_CASE("WE_VOLUMETRICS_LIGHT_BUFFER_B is _rt_volumetricsLightBufferB") {
+        CHECK(WE_VOLUMETRICS_LIGHT_BUFFER_B == std::string_view("_rt_volumetricsLightBufferB"));
+        CHECK(IsSpecTex(WE_VOLUMETRICS_LIGHT_BUFFER_B));
+    }
+    TEST_CASE("WE_VOLUMETRICS_SINGLE is _rt_volumetricsSingle and IsSpecTex-true") {
+        CHECK(WE_VOLUMETRICS_SINGLE == std::string_view("_rt_volumetricsSingle"));
+        CHECK(IsSpecTex(WE_VOLUMETRICS_SINGLE));
+    }
+} // SpecTexs_Volumetrics

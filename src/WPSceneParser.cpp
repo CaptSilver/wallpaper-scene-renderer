@@ -39,6 +39,8 @@
 
 #include "WPTextRenderer.hpp"
 
+#include "VulkanRender/VolumetricChain.hpp"
+
 #include "Fs/VFS.h"
 
 #include <algorithm>
@@ -172,6 +174,51 @@ struct ParseContext {
 using WPObjectVar =
     std::variant<wpscene::WPImageObject, wpscene::WPParticleObject, wpscene::WPSoundObject,
                  wpscene::WPLightObject, wpscene::WPModelObject, wpscene::WPTextObject>;
+
+namespace wallpaper
+{
+// Generate a 12-vertex / 20-triangle icosahedron inscribed in a unit sphere
+// centred at origin (vertex norms are 1.0 to within FP epsilon).  Used as the
+// proxy mesh for per-light volumetric scattering bounds — the per-light pass
+// scales by the light's radius and translates by its world origin.  Lives at
+// namespace scope (not in the anonymous namespace below) so the doctest suite
+// can forward-declare + drive it directly without standing up InitContext.
+void GenVolumeSphereMesh(SceneMesh& mesh) {
+    constexpr float t       = 1.6180339887498949f; // (1 + sqrt(5)) / 2
+    const float     kInvLen = 1.0f / std::sqrt(1.0f + t * t);
+    // Twelve icosahedron vertex positions (three orthogonal golden rectangles).
+    const std::array<std::array<float, 3>, 12> base = { {
+        { { -1,  t,  0 } }, { {  1,  t,  0 } }, { { -1, -t,  0 } }, { {  1, -t,  0 } },
+        { {  0, -1,  t } }, { {  0,  1,  t } }, { {  0, -1, -t } }, { {  0,  1, -t } },
+        { {  t,  0, -1 } }, { {  t,  0,  1 } }, { { -t,  0, -1 } }, { { -t,  0,  1 } },
+    } };
+    SceneVertexArray va(
+        { { std::string(WE_IN_POSITION), VertexType::FLOAT3 } },
+        base.size());
+    std::vector<float> positions;
+    positions.reserve(base.size() * 3);
+    for (const auto& v : base) {
+        positions.push_back(v[0] * kInvLen);
+        positions.push_back(v[1] * kInvLen);
+        positions.push_back(v[2] * kInvLen);
+    }
+    va.SetVertex(WE_IN_POSITION, positions);
+    mesh.AddVertexArray(std::move(va));
+
+    // Twenty triangle faces, CCW winding from outside.
+    static constexpr std::array<uint32_t, 60> idx { {
+        0, 11,  5,    0,  5,  1,    0,  1,  7,    0,  7, 10,    0, 10, 11,
+        1,  5,  9,    5, 11,  4,   11, 10,  2,   10,  7,  6,    7,  1,  8,
+        3,  9,  4,    3,  4,  2,    3,  2,  6,    3,  6,  8,    3,  8,  9,
+        4,  9,  5,    2,  4, 11,    6,  2, 10,    8,  6,  7,    9,  8,  1,
+    } };
+    // Index-array capacity is triangle-count * 3 (see SceneIndexArray ctor);
+    // Assign writes idx.size() uint32_t entries starting at slot 0.
+    SceneIndexArray ia(idx.size() / 3);
+    ia.Assign(0, std::span<const uint32_t> { idx.data(), idx.size() });
+    mesh.AddIndexArray(std::move(ia));
+}
+} // namespace wallpaper
 
 namespace
 {
@@ -585,6 +632,12 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         } else if (sstart_with(name, WE_FULL_COMPO_BUFFER_PREFIX)) {
         } else if (name == WE_SHADOW_ATLAS) {
         } else if (name == WE_REFLECTION) {
+        } else if (name == WE_VOLUMETRICS_SINGLE) {
+            // Hidden-default texture declared by WE's volumetricsfront.frag —
+            // the scene-occluder closest-z buffer used by the ray-march as an
+            // integration ceiling.  Aliased to the main depth attachment at
+            // descriptor-binding time in CustomShaderPass::prepare(); no
+            // separate render-target registration needed here.
         } else if (sstart_with(name, WE_BUFFER_PREFIX)) {
         } else if (sstart_with(name, WE_BLOOM_PREFIX)) {
         } else if (pScene && pScene->renderTargets.count(name) > 0) {
@@ -776,6 +829,12 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
                               name.c_str(),
                               offscreenName.c_str());
                 }
+            } else if (name == WE_VOLUMETRICS_SINGLE || name == WE_SCENE_DEPTH) {
+                // Scene-depth aliases — not registered as ordinary render
+                // targets.  CustomShaderPass::prepare() binds the main depth
+                // attachment directly under the d32-sampleable path (or the
+                // path-D resolve output via WE_SCENE_DEPTH_LINEAR).  Skipping
+                // the renderTargets lookup avoids a spurious LOG_ERROR.
             } else if (pScene->renderTargets.count(name) == 0) {
                 LOG_ERROR("%s not found in render targets", name.c_str());
             } else {
@@ -1095,6 +1154,7 @@ void InitContext(ParseContext&                     context,
     scene.paritileSys->gener = std::make_unique<WPParticleRawGener>();
     scene.shaderValueUpdater = std::make_unique<WPShaderValueUpdater>(&scene);
     GenCardMesh(scene.default_effect_mesh, { 2, 2 });
+    GenVolumeSphereMesh(scene.default_volume_sphere);
     context.shader_updater = static_cast<WPShaderValueUpdater*>(scene.shaderValueUpdater.get());
 
     scene.clearColor = { sc.general.clearcolor[0],
@@ -4996,6 +5056,77 @@ void finalizeParse(ParseContext& context) {
         LOG_INFO("Scene has audio-reactive particles: emit-rate scan enabled");
 }
 
+// Attach SceneMaterial to every volumetric SceneNode that BuildVolumetricNodes
+// constructed.  Each material is built from the wpscene::WPMaterial templates
+// in VolumetricChain.cpp (shader name, blend mode, cull mode, depth state,
+// QUALITY combo etc.) and then compiled via LoadMaterial — which lives in this
+// TU's anon namespace, hence the helper lives here too rather than in
+// VolumetricChain.cpp.
+//
+// Failure path: any LoadMaterial false-return turns the volumetric chain off
+// for the scene (clears per_light + flips enabled=false) and returns early.
+// The render-graph emission code (emitVolumetricChain) hard-skips when
+// !enabled, so the chain becomes inert gracefully rather than crashing on
+// half-attached materials.
+void attachVolumetricMaterials(ParseContext& context) {
+    auto& scene = *context.scene;
+    auto& vfs   = *context.vfs;
+
+    // Disabling the chain mid-attach leaves any successfully-attached
+    // shader_updater node-data entries from the same parse hanging — same
+    // tradeoff as the bloom block above.  The chain emitter checks `enabled`
+    // first, so those entries are never read.
+    auto failOut = [&scene](const char* shader_name) {
+        LOG_ERROR("volumetric: failed to load material for '%s' — disabling chain", shader_name);
+        scene.volumetricsConfig.enabled = false;
+        scene.volumetricsConfig.per_light.clear();
+        scene.volumetricsConfig.blur_h_node.reset();
+        scene.volumetricsConfig.blur_v_node.reset();
+        scene.volumetricsConfig.combine_node.reset();
+    };
+
+    // Helper that compiles+attaches one material to a node's mesh.  Returns
+    // false on LoadMaterial failure so the caller can short-circuit.
+    auto attachOne = [&](SceneNode* node, wpscene::WPMaterial wpmat) -> bool {
+        if (! node || ! node->Mesh()) return true; // node-without-mesh shouldn't happen but stay safe
+        WPShaderInfo shaderInfo;
+        shaderInfo.baseConstSvs = context.global_base_uniforms;
+        SceneMaterial     material;
+        WPShaderValueData svData;
+        if (! LoadMaterial(vfs, wpmat, &scene, node, &material, &svData, &shaderInfo)) {
+            failOut(wpmat.shader.c_str());
+            return false;
+        }
+        LoadConstvalue(material, wpmat, shaderInfo);
+        node->Mesh()->AddMaterial(std::move(material));
+        if (context.shader_updater) {
+            context.shader_updater->SetNodeData(node, svData);
+        }
+        return true;
+    };
+
+    const uint32_t quality = scene.volumetricsConfig.quality;
+
+    for (auto& pl : scene.volumetricsConfig.per_light) {
+        if (! attachOne(pl.back_node.get(), vulkan::buildVolumetricBackMaterial(quality)))
+            return;
+        if (! attachOne(pl.front_node.get(), vulkan::buildVolumetricFrontMaterial(quality)))
+            return;
+        if (! attachOne(pl.fullscreen_node.get(),
+                        vulkan::buildVolumetricFullscreenMaterial(quality)))
+            return;
+    }
+    if (! attachOne(scene.volumetricsConfig.blur_h_node.get(),
+                    vulkan::buildVolumetricBlurMaterial(0)))
+        return;
+    if (! attachOne(scene.volumetricsConfig.blur_v_node.get(),
+                    vulkan::buildVolumetricBlurMaterial(1)))
+        return;
+    if (! attachOne(scene.volumetricsConfig.combine_node.get(),
+                    vulkan::buildVolumetricCombineMaterial()))
+        return;
+}
+
 } // namespace
 
 std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std::string& buf,
@@ -5083,11 +5214,34 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // Volumetric scene-level enable flag.  True iff any light's
     // castsVolumetrics() predicate is true at scene-build time.  Pipeline-
     // integration uses this as a single short-circuit to skip the volumetric
-    // chain when no light wants fog.
+    // chain when no light wants fog.  Each qualifying light gets a PerLight
+    // entry pushed onto volumetricsConfig.per_light — BuildVolumetricNodes
+    // then iterates that vector to construct the back/front/fullscreen
+    // SceneNodes + the global blur/combine nodes + the half-res RT entries.
     for (const auto& l : context.scene->lights) {
         if (l && l->castsVolumetrics()) {
             context.scene->volumetricsConfig.enabled = true;
-            break;
+            Scene::VolumetricsConfig::PerLight pl;
+            pl.light = l.get();
+            context.scene->volumetricsConfig.per_light.push_back(std::move(pl));
+        }
+    }
+    if (context.scene->volumetricsConfig.enabled) {
+        // Resolve the per-scene post-processing tier (plugin-level override
+        // wins over scene.json's general.orthogonalprojection.postprocessing)
+        // and stash it on Scene so BuildVolumetricNodes can pick the QUALITY
+        // combo value baked into the per-light volumetric materials.  Done
+        // unconditionally for the volumetric path (vs. the bloom site's
+        // pp-local) because volumetrics can be enabled without bloom — we
+        // must not fall through to the empty string in that case.
+        context.scene->resolved_postprocessing =
+            context.postprocessing_override.empty()
+                ? sc.general.orthogonalprojection.postprocessing
+                : context.postprocessing_override;
+
+        vulkan::BuildVolumetricNodes(*context.scene);
+        if (context.scene->volumetricsConfig.enabled) {
+            attachVolumetricMaterials(context);
         }
     }
 

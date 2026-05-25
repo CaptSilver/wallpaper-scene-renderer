@@ -19,10 +19,11 @@
 #include "Scene/UniformDirtyGate.h" // uniformMatricesShouldRecompute
 #include "SpriteAnimation.hpp"
 #include "WPPuppet.hpp"
-#include "Audio/AudioAnalyzer.h"
 
 namespace wallpaper
 {
+
+namespace audio { class AudioAnalyzer; }
 
 class Scene;
 
