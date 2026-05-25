@@ -90,4 +90,28 @@ TEST_SUITE("SceneLight") {
         CHECK(l.kind() == SceneLight::LightKind::LDirectional);
     }
 
+    TEST_CASE("VolumetricParams default-constructs to absent/zero/linear") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        const auto& v = l.volumetric();
+        CHECK(v.cast_volumetrics_explicit == false);
+        CHECK(v.cast_volumetrics_value == false);
+        CHECK(v.density == doctest::Approx(0.0f));
+        CHECK(v.exponent == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("setVolumetric round-trips POD through getter") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.cast_volumetrics_explicit = true;
+        vp.cast_volumetrics_value    = true;
+        vp.density                   = 7.48f;
+        vp.exponent                  = 4.0f;
+        l.setVolumetric(vp);
+        const auto& got = l.volumetric();
+        CHECK(got.cast_volumetrics_explicit == true);
+        CHECK(got.cast_volumetrics_value == true);
+        CHECK(got.density == doctest::Approx(7.48f));
+        CHECK(got.exponent == doctest::Approx(4.0f));
+    }
+
 } // SceneLight

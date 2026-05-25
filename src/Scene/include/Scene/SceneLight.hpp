@@ -37,6 +37,23 @@ public:
     LightKind kind() const { return m_kind; }
     void      setKind(LightKind k) { m_kind = k; }
 
+    // Volumetric-leg fields parsed from light JSON object's
+    // `castvolumetrics`/`density`/`volumetricsexponent`.  `_explicit` flag
+    // distinguishes "JSON authored castvolumetrics" (either true OR false —
+    // either form was intentional) from "JSON omitted the field" (heuristic
+    // applies via density>0).  Density=0 with no explicit flag means the
+    // light does not participate in volumetrics; density>0 with no explicit
+    // flag opts in.
+    struct VolumetricParams {
+        bool  cast_volumetrics_explicit { false };
+        bool  cast_volumetrics_value    { false };
+        float density                   { 0.0f };
+        float exponent                  { 1.0f };
+    };
+
+    const VolumetricParams& volumetric() const { return m_vol; }
+    void setVolumetric(const VolumetricParams& v) { m_vol = v; }
+
     Eigen::Vector3f color() const { return m_color; }
     float           radius() const { return m_radius; }
     float           intensity() const { return m_intensity; }
@@ -74,5 +91,6 @@ private:
     std::shared_ptr<SceneNode> m_node { nullptr };
 
     LightKind m_kind { LightKind::Point };
+    VolumetricParams m_vol {};
 };
 } // namespace wallpaper
