@@ -1,6 +1,7 @@
 #pragma once
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
+#include <array>
 #include <vector>
 #include "WPPuppet.hpp"
 
@@ -39,6 +40,25 @@ public:
     // for a soft long-tail falloff that keeps most of the radius lit.
     float                exponent { 1.0f };
     bool                 visible { true };
+    // Volumetric-related fields parsed from the light JSON object.  All four
+    // are NOWARN-parsed: most authored lights omit them entirely (no opt-in to
+    // volumetric contribution), and the warn would flood the logs.
+    //
+    // density default 0.0f intentionally diverges from the editor's
+    // emit-on-toggle default 2.0 — when the JSON omits the field entirely,
+    // the light does not participate in volumetrics.  The editor's 2.0
+    // serializes when the author actually toggled the volumetric checkbox
+    // (those scenes will land with density=2.0 here and opt in via the
+    // heuristic).
+    float                density { 0.0f };
+    float                volumetrics_exponent { 1.0f };
+    bool                 cast_shadow { false };
+    // cascadedistance0/1/2 — directional-light cascaded shadow split distances.
+    // Stored as one packed array; FromJson reads three independent scalars
+    // into the three slots.  Defaults match the collisionmodel preview's
+    // serialization (0/100/200) so a light that omits the keys round-trips
+    // identically to the authored values.
+    std::array<float, 3> cascade_distances { 0.0f, 100.0f, 200.0f };
 };
 
 } // namespace wpscene

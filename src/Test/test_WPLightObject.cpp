@@ -83,4 +83,86 @@ TEST_SUITE("WPLightObject") {
         REQUIRE(light.FromJson(j, vfs));
         CHECK(light.parent_id == 42);
     }
+
+    TEST_CASE("FromJson parses density and volumetricsexponent") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "density": 7.48,
+            "volumetricsexponent": 4.0
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.density == doctest::Approx(7.48f));
+        CHECK(light.volumetrics_exponent == doctest::Approx(4.0f));
+    }
+
+    TEST_CASE("FromJson defaults density=0 and volumetrics_exponent=1.0 when absent") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.density == doctest::Approx(0.0f));
+        CHECK(light.volumetrics_exponent == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("FromJson parses castshadow and cascade distances") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0,
+            "castshadow": true,
+            "cascadedistance0": 10.0,
+            "cascadedistance1": 50.0,
+            "cascadedistance2": 300.0
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.cast_shadow == true);
+        CHECK(light.cascade_distances[0] == doctest::Approx(10.0f));
+        CHECK(light.cascade_distances[1] == doctest::Approx(50.0f));
+        CHECK(light.cascade_distances[2] == doctest::Approx(300.0f));
+    }
+
+    TEST_CASE("FromJson defaults cast_shadow=false and cascade_distances=0/100/200") {
+        fs::VFS    vfs;
+        const auto j = nlohmann::json::parse(R"({
+            "id": 50,
+            "light": "lpoint",
+            "color": "1 1 1",
+            "origin": "0 0 0",
+            "scale": "1 1 1",
+            "angles": "0 0 0",
+            "radius": 500.0,
+            "intensity": 1.0
+        })");
+        WPLightObject light;
+        REQUIRE(light.FromJson(j, vfs));
+        CHECK(light.cast_shadow == false);
+        CHECK(light.cascade_distances[0] == doctest::Approx(0.0f));
+        CHECK(light.cascade_distances[1] == doctest::Approx(100.0f));
+        CHECK(light.cascade_distances[2] == doctest::Approx(200.0f));
+    }
 }
