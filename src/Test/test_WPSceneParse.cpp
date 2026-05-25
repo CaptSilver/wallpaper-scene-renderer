@@ -652,4 +652,50 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(light.castsVolumetrics() == true);
     }
 
+    TEST_CASE("Scene::volumetricsConfig.enabled flips true when any light casts") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "off", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint", "color": "1 1 1", "radius": 100.0, "intensity": 1.0,
+      "visible": true },
+    { "id": 11, "name": "on", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint", "color": "1 1 1", "radius": 100.0, "intensity": 1.0,
+      "density": 5.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_enabled", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->volumetricsConfig.enabled == true);
+    }
+
+    TEST_CASE("Scene::volumetricsConfig.enabled stays false when no light casts") {
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "off", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint", "color": "1 1 1", "radius": 100.0, "intensity": 1.0,
+      "visible": true }
+  ]
+}
+)JSON";
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_disabled", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->volumetricsConfig.enabled == false);
+    }
+
 } // TEST_SUITE

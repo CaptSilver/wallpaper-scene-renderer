@@ -5065,5 +5065,16 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     finalizeParse(context);
 
+    // Volumetric scene-level enable flag.  True iff any light's
+    // castsVolumetrics() predicate is true at scene-build time.  Pipeline-
+    // integration uses this as a single short-circuit to skip the volumetric
+    // chain when no light wants fog.
+    for (const auto& l : context.scene->lights) {
+        if (l && l->castsVolumetrics()) {
+            context.scene->volumetricsConfig.enabled = true;
+            break;
+        }
+    }
+
     return context.scene;
 }
