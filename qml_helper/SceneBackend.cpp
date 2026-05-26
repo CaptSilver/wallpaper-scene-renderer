@@ -3519,41 +3519,7 @@ void SceneObject::setupEngineGlobals() {
                          "};\n");
     m_consoleObj = m_jsEngine->globalObject().property("console");
 
-    // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
-    m_timerBridge = new SceneTimerBridge(
-        m_jsEngine,
-        this,
-        /* postFire */
-        [this](int id, bool error, const QString& msg) {
-            if (error) {
-                LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
-            }
-            flushJsConsole(m_jsEngine, "timer");
-        },
-        /* guardedCall */
-        [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
-            // Arms m_jsWatchdog (~250ms budget), runs the callback, disarms, and
-            // clears the interrupt latch — the SAME bracket the tick loops use. A
-            // runaway timer body now trips the watchdog and unwinds instead of
-            // freezing the GUI thread; an interrupted INTERVAL latches off after K
-            // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
-            return callJsGuarded(call, outInterrupted);
-        });
-    m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
-    m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
-                         "delay || 0, false); }\n"
-                         "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
-                         "delay || 0, true); }\n"
-                         "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
-                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
-                         // WE scripts call these as engine-namespaced too — most commonly
-                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
-                         // Vibes 3293999899 fires this 29 times).  Alias to the same
-                         // _timerBridge so cancellation IDs interoperate across spellings.
-                         "engine.setTimeout    = setTimeout;\n"
-                         "engine.setInterval   = setInterval;\n"
-                         "engine.clearTimeout  = clearTimeout;\n"
-                         "engine.clearInterval = clearInterval;\n");
+    installTimerBridge();
 
     // Engine method stubs
     m_jsEngine->evaluate("engine.isDesktopDevice = function() { return true; };\n"
@@ -3900,6 +3866,44 @@ void SceneObject::setupEngineGlobals() {
                          "  builder.finish = function() { return builder; };\n"
                          "  return builder;\n"
                          "}\n");
+}
+
+void SceneObject::installTimerBridge() {
+    // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
+    m_timerBridge = new SceneTimerBridge(
+        m_jsEngine,
+        this,
+        /* postFire */
+        [this](int id, bool error, const QString& msg) {
+            if (error) {
+                LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
+            }
+            flushJsConsole(m_jsEngine, "timer");
+        },
+        /* guardedCall */
+        [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
+            // Arms m_jsWatchdog (~250ms budget), runs the callback, disarms, and
+            // clears the interrupt latch — the SAME bracket the tick loops use. A
+            // runaway timer body now trips the watchdog and unwinds instead of
+            // freezing the GUI thread; an interrupted INTERVAL latches off after K
+            // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
+            return callJsGuarded(call, outInterrupted);
+        });
+    m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
+    m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
+                         "delay || 0, false); }\n"
+                         "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
+                         "delay || 0, true); }\n"
+                         "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
+                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
+                         // WE scripts call these as engine-namespaced too — most commonly
+                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
+                         // Vibes 3293999899 fires this 29 times).  Alias to the same
+                         // _timerBridge so cancellation IDs interoperate across spellings.
+                         "engine.setTimeout    = setTimeout;\n"
+                         "engine.setInterval   = setInterval;\n"
+                         "engine.clearTimeout  = clearTimeout;\n"
+                         "engine.clearInterval = clearInterval;\n");
 }
 
 void SceneObject::refreshAudioBuffers() {
