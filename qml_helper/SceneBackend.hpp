@@ -306,6 +306,7 @@ private:
     void installTimerBridge();
     void buildLayerProxyStates();
     void buildSoundStates();
+    void buildCursorTargets();
     void refreshJsUserProperties();
     void fireApplyUserProperties();
     // Fires the "applyGeneralSettings" scene event (distinct from
