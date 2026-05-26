@@ -3751,6 +3751,61 @@ void assembleTextEffectChain(ParseContext&                           context,
     }
 }
 
+// Register every text layer — not just ones with a bundled textScript —
+// so dynamic `thisLayer.text = "..."` writes from property scripts can
+// find the tl entry and re-rasterize via setTextUpdate → reuploadTexture.
+// The wallpaper 2866203962 music player paints track title/artist this
+// way; empty-text-at-parse layers used to be placeholders (no tl entry)
+// and dropped every update silently.
+void registerTextLayerInfo(ParseContext& context, const wpscene::WPTextObject& textObj,
+                            const std::string& fontData, const std::string& texKey,
+                            const std::string& initialText, i32 texW, i32 texH) {
+    TextLayerInfo tli;
+    tli.id                = textObj.id;
+    tli.fontData          = fontData;
+    tli.fontName          = textObj.font;
+    tli.pointsize         = textObj.pointsize;
+    tli.texWidth          = texW;
+    tli.texHeight         = texH;
+    tli.padding           = textObj.padding;
+    tli.halign            = textObj.horizontalalign;
+    tli.valign            = textObj.verticalalign;
+    tli.currentText       = initialText;
+    tli.textureKey        = texKey;
+    tli.script            = textObj.textScript;
+    tli.scriptProperties  = textObj.textScriptProperties;
+    tli.pointsizeUserProp = textObj.pointsizeUserProp;
+    context.scene->textLayers.push_back(std::move(tli));
+    LOG_INFO("  registered text layer id=%d for script evaluation%s",
+             textObj.id,
+             textObj.textScript.empty() ? " (runtime-text only)" : "");
+}
+
+// Add to parent or root
+void attachTextNodeToScene(ParseContext& context, const wpscene::WPTextObject& textObj,
+                            const std::shared_ptr<SceneNode>& spNode, bool hasEffect) {
+    if (textObj.parent_id >= 0 && context.node_map.count(textObj.parent_id)) {
+        context.node_map.at(textObj.parent_id)->AppendChild(spNode);
+        // Effect-layer base pass must render at identity into its per-layer
+        // pingpong RT — disconnect the parent transform chain so parent group
+        // translates/rotations don't displace the mesh into the pingpong's
+        // off-canvas region.  Authored parent transform is preserved on the
+        // FINAL composite via parent_proxy (set above).  Mirrors ParseImageObj
+        // (`disconnect_parent = isOffscreen || (hasEffect && !isCompose)`).
+        if (hasEffect) {
+            spNode->InheritParent(SceneNode());
+        }
+    } else {
+        context.scene->sceneGraph->AppendChild(spNode);
+    }
+    context.node_map[textObj.id] = spNode;
+
+    LOG_INFO("  ParseTextObj id=%d completed (parent_cleared=%d)",
+             textObj.id,
+             (int)(hasEffect && textObj.parent_id >= 0 &&
+                   context.node_map.count(textObj.parent_id) > 0));
+}
+
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& vfs = *context.vfs;
 
@@ -3826,54 +3881,8 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         assembleTextEffectChain(context, textObj, spNode, texW, texH, shaderInfo, imgBlendMode);
     }
 
-    // Register every text layer — not just ones with a bundled textScript —
-    // so dynamic `thisLayer.text = "..."` writes from property scripts can
-    // find the tl entry and re-rasterize via setTextUpdate → reuploadTexture.
-    // The wallpaper 2866203962 music player paints track title/artist this
-    // way; empty-text-at-parse layers used to be placeholders (no tl entry)
-    // and dropped every update silently.
-    {
-        TextLayerInfo tli;
-        tli.id                = textObj.id;
-        tli.fontData          = fontData;
-        tli.fontName          = textObj.font;
-        tli.pointsize         = textObj.pointsize;
-        tli.texWidth          = texW;
-        tli.texHeight         = texH;
-        tli.padding           = textObj.padding;
-        tli.halign            = textObj.horizontalalign;
-        tli.valign            = textObj.verticalalign;
-        tli.currentText       = initialText;
-        tli.textureKey        = texKey;
-        tli.script            = textObj.textScript;
-        tli.scriptProperties  = textObj.textScriptProperties;
-        tli.pointsizeUserProp = textObj.pointsizeUserProp;
-        context.scene->textLayers.push_back(std::move(tli));
-        LOG_INFO("  registered text layer id=%d for script evaluation%s",
-                 textObj.id,
-                 textObj.textScript.empty() ? " (runtime-text only)" : "");
-    }
-    // Add to parent or root
-    if (textObj.parent_id >= 0 && context.node_map.count(textObj.parent_id)) {
-        context.node_map.at(textObj.parent_id)->AppendChild(spNode);
-        // Effect-layer base pass must render at identity into its per-layer
-        // pingpong RT — disconnect the parent transform chain so parent group
-        // translates/rotations don't displace the mesh into the pingpong's
-        // off-canvas region.  Authored parent transform is preserved on the
-        // FINAL composite via parent_proxy (set above).  Mirrors ParseImageObj
-        // (`disconnect_parent = isOffscreen || (hasEffect && !isCompose)`).
-        if (hasEffect) {
-            spNode->InheritParent(SceneNode());
-        }
-    } else {
-        context.scene->sceneGraph->AppendChild(spNode);
-    }
-    context.node_map[textObj.id] = spNode;
-
-    LOG_INFO("  ParseTextObj id=%d completed (parent_cleared=%d)",
-             textObj.id,
-             (int)(hasEffect && textObj.parent_id >= 0 &&
-                   context.node_map.count(textObj.parent_id) > 0));
+    registerTextLayerInfo(context, textObj, fontData, texKey, initialText, texW, texH);
+    attachTextNodeToScene(context, textObj, spNode, hasEffect);
 }
 
 template<typename T>
