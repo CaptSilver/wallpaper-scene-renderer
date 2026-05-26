@@ -1884,6 +1884,177 @@ void attachMaterialAndUserBindings(ParseContext&                     context,
     context.shader_updater->SetNodeData(spImgNode.get(), svData);
 }
 
+void computeWorldTransformAndAttachments(ParseContext&                 context,
+                                         const wpscene::WPImageObject& wpimgobj,
+                                         const SceneNode*              spImgNode,
+                                         const WPMdl*                  puppet) {
+    Eigen::Matrix4d local = spImgNode->GetLocalTrans();
+    // Track this node's puppet so its children can resolve their
+    // "attachment" field against this puppet's MDAT attachment table.
+    if (puppet && puppet->puppet) {
+        context.node_puppet[wpimgobj.id] = puppet->puppet;
+        // Persist into Scene so SceneScript thisLayer.getBoneIndex() can
+        // resolve attachment-name → bone index at runtime.  The parser's
+        // own node_puppet map is transient; this is the runtime mirror.
+        context.scene->nodePuppetMap[wpimgobj.id] = puppet->puppet;
+    }
+
+    if (wpimgobj.parent_id >= 0) {
+        // scene.json stores each child's "attachment" = name of an MDAT
+        // attachment point in the PARENT puppet's skeleton (e.g. "head",
+        // "hair back", "Attachment").  If the parent has a puppet with a
+        // matching attachment, anchor this child to that attachment's
+        // transform — that's how WE rigs hair to head, body to pelvis, etc.
+        // Otherwise fall back to the parent's mesh center.
+        Eigen::Matrix4d parent_chain = Eigen::Matrix4d::Identity();
+        if (context.original_world_transforms.count(wpimgobj.parent_id)) {
+            parent_chain = context.original_world_transforms[wpimgobj.parent_id];
+        }
+        // Resolve parent's puppet (may be null for non-puppet parents
+        // or unknown parent ids).  Used both for diagnostic logging
+        // below and for the actual composition via composeAttachedChildWorld.
+        std::shared_ptr<WPPuppet> parent_puppet;
+        {
+            auto pit = context.node_puppet.find(wpimgobj.parent_id);
+            if (pit != context.node_puppet.end()) parent_puppet = pit->second;
+        }
+
+        // Diagnostic: dump where the named attachment's transform lives
+        // in the parent's MDL bounds vs the parent's scene.json size.
+        // The "scaled" line shows what the offset would be if the
+        // attachment translation were proportionally remapped from MDL
+        // pixel units to scene-size units.  No effect on rendering;
+        // grep for "ATT " in the sceneviewer log.
+        if (parent_puppet && ! wpimgobj.attachment.empty()) {
+            if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
+                if (att->bone_index < parent_puppet->bones.size()) {
+                    Eigen::Matrix4d attMat = att->transform.matrix().cast<double>();
+                    auto            bit    = context.node_mdl_bounds.find(wpimgobj.parent_id);
+                    auto            sit    = context.node_scene_size.find(wpimgobj.parent_id);
+                    auto            nit    = context.node_name_for_log.find(wpimgobj.parent_id);
+                    const char*     parent_name =
+                        (nit != context.node_name_for_log.end()) ? nit->second.c_str() : "?";
+                    double tx   = attMat(0, 3);
+                    double ty   = attMat(1, 3);
+                    double tz   = attMat(2, 3);
+                    double xmin = 0, ymin = 0, span_x = 1, span_y = 1;
+                    bool   have_bounds = bit != context.node_mdl_bounds.end();
+                    bool   have_size   = sit != context.node_scene_size.end();
+                    if (have_bounds) {
+                        xmin   = bit->second[0];
+                        ymin   = bit->second[1];
+                        span_x = bit->second[3] - bit->second[0];
+                        span_y = bit->second[4] - bit->second[1];
+                    }
+                    if (have_bounds && have_size && span_x > 0 && span_y > 0) {
+                        double ratio_x = sit->second[0] / span_x;
+                        double ratio_y = sit->second[1] / span_y;
+                        LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d ('%s')",
+                                 wpimgobj.id,
+                                 wpimgobj.name.c_str(),
+                                 wpimgobj.attachment.c_str(),
+                                 wpimgobj.parent_id,
+                                 parent_name);
+                        LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
+                        LOG_INFO("  parent mdl_span=(%.0f,%.0f) scene_size=(%.0f,%.0f) "
+                                 "ratio=(%.2f,%.2f)",
+                                 span_x,
+                                 span_y,
+                                 sit->second[0],
+                                 sit->second[1],
+                                 ratio_x,
+                                 ratio_y);
+                        LOG_INFO("  attMat if scaled to scene-size = (%.2f, %.2f)",
+                                 tx * ratio_x,
+                                 ty * ratio_y);
+                        LOG_INFO("  norm_in_parent_mdl = (%.0f%%, %.0f%%)",
+                                 span_x > 0 ? (tx - xmin) / span_x * 100.0 : 0.0,
+                                 span_y > 0 ? (ty - ymin) / span_y * 100.0 : 0.0);
+                        LOG_INFO("  parent_world=(%.1f,%.1f) -> with raw attMat: (%.1f,%.1f)",
+                                 parent_chain(0, 3),
+                                 parent_chain(1, 3),
+                                 parent_chain(0, 3) + tx,
+                                 parent_chain(1, 3) + ty);
+                    } else {
+                        LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d "
+                                 "(no parent bounds/size cached)",
+                                 wpimgobj.id,
+                                 wpimgobj.name.c_str(),
+                                 wpimgobj.attachment.c_str(),
+                                 wpimgobj.parent_id);
+                        LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
+                    }
+                }
+            }
+        }
+
+        auto compose_result =
+            composeAttachedChildWorld(parent_chain, parent_puppet, wpimgobj.attachment, local);
+        context.original_world_transforms[wpimgobj.id] = compose_result.world;
+
+        // ATT diagnostic — one line per attached child whose attachment
+        // resolves on the parent puppet.  Logs the bone index and the
+        // bone's bind-pose world translation alongside the composed
+        // world.  Grep "ATT compose " for puppet/attachment debugging
+        // on future wallpapers.
+        if (compose_result.attachment_resolved && parent_puppet) {
+            if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
+                if (att->bone_index < parent_puppet->bones.size()) {
+                    auto bone_wt =
+                        parent_puppet->bones[att->bone_index].world_transform.translation();
+                    LOG_INFO("ATT compose id=%d name='%s' attach='%s' bone=%u "
+                             "boneW=(%.1f,%.1f) att=(%.1f,%.1f) local=(%.1f,%.1f) "
+                             "-> world=(%.1f,%.1f)",
+                             wpimgobj.id,
+                             wpimgobj.name.c_str(),
+                             wpimgobj.attachment.c_str(),
+                             att->bone_index,
+                             bone_wt.x(),
+                             bone_wt.y(),
+                             att->transform.translation().x(),
+                             att->transform.translation().y(),
+                             local(0, 3),
+                             local(1, 3),
+                             compose_result.world(0, 3),
+                             compose_result.world(1, 3));
+                }
+            }
+        }
+    } else {
+        context.original_world_transforms[wpimgobj.id] = local;
+    }
+
+    // POS dump: log final world (x,y), name, parent, attachment, local
+    // origin, size.  Grep for "POS " in the sceneviewer log.
+    {
+        const auto& w = context.original_world_transforms[wpimgobj.id];
+        LOG_INFO("POS id=%d name='%s' world=(%.1f,%.1f) parent=%d attach='%s' "
+                 "local=(%.1f,%.1f) size=(%.0f,%.0f) autosize=%d puppet='%s'",
+                 wpimgobj.id,
+                 wpimgobj.name.c_str(),
+                 (float)w(0, 3),
+                 (float)w(1, 3),
+                 wpimgobj.parent_id,
+                 wpimgobj.attachment.c_str(),
+                 wpimgobj.origin[0],
+                 wpimgobj.origin[1],
+                 wpimgobj.size[0],
+                 wpimgobj.size[1],
+                 (int)wpimgobj.autosize,
+                 wpimgobj.puppet.c_str());
+    }
+
+    // Legacy child_attachment_transforms — kept for children that don't
+    // name a specific attachment (falls back to bone[0]).  Will likely
+    // become unused once all children rely on the scene.json
+    // "attachment" field.
+    Eigen::Matrix4d attach = context.original_world_transforms[wpimgobj.id];
+    if (puppet && puppet->puppet && ! puppet->puppet->bones.empty()) {
+        attach = attach * puppet->puppet->bones[0].transform.matrix().cast<double>();
+    }
+    context.child_attachment_transforms[wpimgobj.id] = attach;
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1953,173 +2124,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // onto the puppet's root bone (head) instead of the mesh center.  Bone
     // offsets do NOT compound through the chain — only the direct puppet
     // parent's bone[0] applies to a given child.
-    {
-        Eigen::Matrix4d local = spImgNode->GetLocalTrans();
-        // Track this node's puppet so its children can resolve their
-        // "attachment" field against this puppet's MDAT attachment table.
-        if (puppet && puppet->puppet) {
-            context.node_puppet[wpimgobj.id] = puppet->puppet;
-            // Persist into Scene so SceneScript thisLayer.getBoneIndex() can
-            // resolve attachment-name → bone index at runtime.  The parser's
-            // own node_puppet map is transient; this is the runtime mirror.
-            context.scene->nodePuppetMap[wpimgobj.id] = puppet->puppet;
-        }
-
-        if (wpimgobj.parent_id >= 0) {
-            // scene.json stores each child's "attachment" = name of an MDAT
-            // attachment point in the PARENT puppet's skeleton (e.g. "head",
-            // "hair back", "Attachment").  If the parent has a puppet with a
-            // matching attachment, anchor this child to that attachment's
-            // transform — that's how WE rigs hair to head, body to pelvis, etc.
-            // Otherwise fall back to the parent's mesh center.
-            Eigen::Matrix4d parent_chain = Eigen::Matrix4d::Identity();
-            if (context.original_world_transforms.count(wpimgobj.parent_id)) {
-                parent_chain = context.original_world_transforms[wpimgobj.parent_id];
-            }
-            // Resolve parent's puppet (may be null for non-puppet parents
-            // or unknown parent ids).  Used both for diagnostic logging
-            // below and for the actual composition via composeAttachedChildWorld.
-            std::shared_ptr<WPPuppet> parent_puppet;
-            {
-                auto pit = context.node_puppet.find(wpimgobj.parent_id);
-                if (pit != context.node_puppet.end()) parent_puppet = pit->second;
-            }
-
-            // Diagnostic: dump where the named attachment's transform lives
-            // in the parent's MDL bounds vs the parent's scene.json size.
-            // The "scaled" line shows what the offset would be if the
-            // attachment translation were proportionally remapped from MDL
-            // pixel units to scene-size units.  No effect on rendering;
-            // grep for "ATT " in the sceneviewer log.
-            if (parent_puppet && ! wpimgobj.attachment.empty()) {
-                if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
-                    if (att->bone_index < parent_puppet->bones.size()) {
-                        Eigen::Matrix4d attMat = att->transform.matrix().cast<double>();
-                        auto            bit    = context.node_mdl_bounds.find(wpimgobj.parent_id);
-                        auto            sit    = context.node_scene_size.find(wpimgobj.parent_id);
-                        auto            nit    = context.node_name_for_log.find(wpimgobj.parent_id);
-                        const char*     parent_name =
-                            (nit != context.node_name_for_log.end()) ? nit->second.c_str() : "?";
-                        double tx   = attMat(0, 3);
-                        double ty   = attMat(1, 3);
-                        double tz   = attMat(2, 3);
-                        double xmin = 0, ymin = 0, span_x = 1, span_y = 1;
-                        bool   have_bounds = bit != context.node_mdl_bounds.end();
-                        bool   have_size   = sit != context.node_scene_size.end();
-                        if (have_bounds) {
-                            xmin   = bit->second[0];
-                            ymin   = bit->second[1];
-                            span_x = bit->second[3] - bit->second[0];
-                            span_y = bit->second[4] - bit->second[1];
-                        }
-                        if (have_bounds && have_size && span_x > 0 && span_y > 0) {
-                            double ratio_x = sit->second[0] / span_x;
-                            double ratio_y = sit->second[1] / span_y;
-                            LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d ('%s')",
-                                     wpimgobj.id,
-                                     wpimgobj.name.c_str(),
-                                     wpimgobj.attachment.c_str(),
-                                     wpimgobj.parent_id,
-                                     parent_name);
-                            LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
-                            LOG_INFO("  parent mdl_span=(%.0f,%.0f) scene_size=(%.0f,%.0f) "
-                                     "ratio=(%.2f,%.2f)",
-                                     span_x,
-                                     span_y,
-                                     sit->second[0],
-                                     sit->second[1],
-                                     ratio_x,
-                                     ratio_y);
-                            LOG_INFO("  attMat if scaled to scene-size = (%.2f, %.2f)",
-                                     tx * ratio_x,
-                                     ty * ratio_y);
-                            LOG_INFO("  norm_in_parent_mdl = (%.0f%%, %.0f%%)",
-                                     span_x > 0 ? (tx - xmin) / span_x * 100.0 : 0.0,
-                                     span_y > 0 ? (ty - ymin) / span_y * 100.0 : 0.0);
-                            LOG_INFO("  parent_world=(%.1f,%.1f) -> with raw attMat: (%.1f,%.1f)",
-                                     parent_chain(0, 3),
-                                     parent_chain(1, 3),
-                                     parent_chain(0, 3) + tx,
-                                     parent_chain(1, 3) + ty);
-                        } else {
-                            LOG_INFO("ATT child id=%d name='%s' attach='%s' parent_id=%d "
-                                     "(no parent bounds/size cached)",
-                                     wpimgobj.id,
-                                     wpimgobj.name.c_str(),
-                                     wpimgobj.attachment.c_str(),
-                                     wpimgobj.parent_id);
-                            LOG_INFO("  attMat raw trans=(%.2f, %.2f, %.2f)", tx, ty, tz);
-                        }
-                    }
-                }
-            }
-
-            auto compose_result =
-                composeAttachedChildWorld(parent_chain, parent_puppet, wpimgobj.attachment, local);
-            context.original_world_transforms[wpimgobj.id] = compose_result.world;
-
-            // ATT diagnostic — one line per attached child whose attachment
-            // resolves on the parent puppet.  Logs the bone index and the
-            // bone's bind-pose world translation alongside the composed
-            // world.  Grep "ATT compose " for puppet/attachment debugging
-            // on future wallpapers.
-            if (compose_result.attachment_resolved && parent_puppet) {
-                if (auto* att = parent_puppet->findAttachment(wpimgobj.attachment)) {
-                    if (att->bone_index < parent_puppet->bones.size()) {
-                        auto bone_wt =
-                            parent_puppet->bones[att->bone_index].world_transform.translation();
-                        LOG_INFO("ATT compose id=%d name='%s' attach='%s' bone=%u "
-                                 "boneW=(%.1f,%.1f) att=(%.1f,%.1f) local=(%.1f,%.1f) "
-                                 "-> world=(%.1f,%.1f)",
-                                 wpimgobj.id,
-                                 wpimgobj.name.c_str(),
-                                 wpimgobj.attachment.c_str(),
-                                 att->bone_index,
-                                 bone_wt.x(),
-                                 bone_wt.y(),
-                                 att->transform.translation().x(),
-                                 att->transform.translation().y(),
-                                 local(0, 3),
-                                 local(1, 3),
-                                 compose_result.world(0, 3),
-                                 compose_result.world(1, 3));
-                    }
-                }
-            }
-        } else {
-            context.original_world_transforms[wpimgobj.id] = local;
-        }
-
-        // POS dump: log final world (x,y), name, parent, attachment, local
-        // origin, size.  Grep for "POS " in the sceneviewer log.
-        {
-            const auto& w = context.original_world_transforms[wpimgobj.id];
-            LOG_INFO("POS id=%d name='%s' world=(%.1f,%.1f) parent=%d attach='%s' "
-                     "local=(%.1f,%.1f) size=(%.0f,%.0f) autosize=%d puppet='%s'",
-                     wpimgobj.id,
-                     wpimgobj.name.c_str(),
-                     (float)w(0, 3),
-                     (float)w(1, 3),
-                     wpimgobj.parent_id,
-                     wpimgobj.attachment.c_str(),
-                     wpimgobj.origin[0],
-                     wpimgobj.origin[1],
-                     wpimgobj.size[0],
-                     wpimgobj.size[1],
-                     (int)wpimgobj.autosize,
-                     wpimgobj.puppet.c_str());
-        }
-
-        // Legacy child_attachment_transforms — kept for children that don't
-        // name a specific attachment (falls back to bone[0]).  Will likely
-        // become unused once all children rely on the scene.json
-        // "attachment" field.
-        Eigen::Matrix4d attach = context.original_world_transforms[wpimgobj.id];
-        if (puppet && puppet->puppet && ! puppet->puppet->bones.empty()) {
-            attach = attach * puppet->puppet->bones[0].transform.matrix().cast<double>();
-        }
-        context.child_attachment_transforms[wpimgobj.id] = attach;
-    }
+    computeWorldTransformAndAttachments(context, wpimgobj, spImgNode.get(), puppet.get());
 
     if (hasEffect) {
         auto& scene = *context.scene;
