@@ -1751,459 +1751,7 @@ void SceneObject::setupTextScripts() {
         soundLayerControls.empty())
         return;
 
-    m_jsEngine = new QJSEngine(this);
-
-    // Start the runaway-script watchdog now that the engine exists.  It stays
-    // disarmed until a JS dispatch site arms it; the monitor thread is joined in
-    // cleanupTextScripts() BEFORE m_jsEngine is deleted (A3-T2).
-    m_jsWatchdog.start();
-    // A reload via setSource() re-runs setupTextScripts on the same SceneObject:
-    // reset the interrupt back-off so a fresh scene is not pre-disabled by a
-    // previous wallpaper's runaway.
-    m_consecutivePropInterrupts  = 0;
-    m_propertyScriptsDisabled    = false;
-    m_consecutiveTextInterrupts  = 0;
-    m_textScriptsDisabled        = false;
-    m_consecutiveColorInterrupts = 0;
-    m_colorScriptsDisabled       = false;
-
-    // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
-    // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
-    // to the QJSEngine which we own; newQObject wraps without taking ownership
-    // (QJSEngine::ObjectOwnership::CppOwnership by default for child QObjects).
-    m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
-
-    // Provide a minimal 'engine' global with runtime and timeOfDay
-    m_runtimeTimer.start();
-    QJSValue engineObj = m_jsEngine->newObject();
-    engineObj.setProperty("frametime", 0.016); // overwritten per tick
-    engineObj.setProperty("runtime", 0.0);
-    engineObj.setProperty("timeOfDay", 0.0);
-    // Real render-thread FPS measured wall-clock by FpsCounter (rolling 500ms
-    // window).  0 until the first frame has been drawn.  Scripts wanting an
-    // accurate FPS readout should read this directly rather than measuring
-    // their own invocation cadence (which can drift from the render rate).
-    engineObj.setProperty("fps", 0.0);
-    // Monotonic tick counter (incremented by evaluatePropertyScripts — see
-    // m_propFrameCount).  Lets scripts branch on "first tick", count
-    // intervals without accumulating runtime drift, etc.
-    engineObj.setProperty("frameCount", 0.0);
-    // Timezone info.  `timeZone` is UTC offset in minutes (positive east of
-    // UTC); `timeZoneName` is the IANA zone id when available, falling back
-    // to the abbreviation.  Lets clock/date wallpapers render in the user's
-    // locale without the script doing its own IANA lookup.
-    {
-        QTimeZone tz        = QTimeZone::systemTimeZone();
-        int       offsetMin = tz.offsetFromUtc(QDateTime::currentDateTime()) / 60;
-        QString   id        = tz.id().isEmpty() ? tz.abbreviation(QDateTime::currentDateTime())
-                                                : QString::fromUtf8(tz.id());
-        engineObj.setProperty("timeZone", (double)offsetMin);
-        engineObj.setProperty("timeZoneName", id);
-    }
-    engineObj.setProperty("userProperties", m_jsEngine->newObject());
-    m_jsEngine->globalObject().setProperty("engine", engineObj);
-    m_engineObj = m_jsEngine->globalObject().property("engine"); // cache the stored handle
-
-    // Provide the 'shared' global for inter-script data sharing.
-    // All scripts in the scene can read/write to this object.
-    m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
-    // Default shared values for common script patterns
-    m_jsEngine->evaluate("shared.volume = 1.0;\n");
-
-    // Provide a 'console' object that forwards to C++ logging
-    m_jsEngine->evaluate("var console = {\n"
-                         "  log: function() {\n"
-                         "    var args = Array.prototype.slice.call(arguments);\n"
-                         "    var msg = args.map(function(a){ return String(a); }).join(' ');\n"
-                         "    if (!console._buf) console._buf = [];\n"
-                         "    console._buf.push(msg);\n"
-                         "  },\n"
-                         "  warn: function() { console.log.apply(console, arguments); },\n"
-                         "  error: function() { console.log.apply(console, arguments); }\n"
-                         "};\n");
-    m_consoleObj = m_jsEngine->globalObject().property("console");
-
-    // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
-    m_timerBridge = new SceneTimerBridge(
-        m_jsEngine,
-        this,
-        /* postFire */
-        [this](int id, bool error, const QString& msg) {
-            if (error) {
-                LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
-            }
-            flushJsConsole(m_jsEngine, "timer");
-        },
-        /* guardedCall */
-        [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
-            // Arms m_jsWatchdog (~250ms budget), runs the callback, disarms, and
-            // clears the interrupt latch — the SAME bracket the tick loops use. A
-            // runaway timer body now trips the watchdog and unwinds instead of
-            // freezing the GUI thread; an interrupted INTERVAL latches off after K
-            // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
-            return callJsGuarded(call, outInterrupted);
-        });
-    m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
-    m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
-                         "delay || 0, false); }\n"
-                         "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
-                         "delay || 0, true); }\n"
-                         "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
-                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
-                         // WE scripts call these as engine-namespaced too — most commonly
-                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
-                         // Vibes 3293999899 fires this 29 times).  Alias to the same
-                         // _timerBridge so cancellation IDs interoperate across spellings.
-                         "engine.setTimeout    = setTimeout;\n"
-                         "engine.setInterval   = setInterval;\n"
-                         "engine.clearTimeout  = clearTimeout;\n"
-                         "engine.clearInterval = clearInterval;\n");
-
-    // Engine method stubs
-    m_jsEngine->evaluate("engine.isDesktopDevice = function() { return true; };\n"
-                         "engine.isMobileDevice = function() { return false; };\n"
-                         "engine.isTabletDevice = function() { return false; };\n"
-                         "engine.isWallpaper = function() { return true; };\n"
-                         "engine.isScreensaver = function() { return false; };\n"
-                         "engine.isRunningInEditor = function() { return false; };\n");
-
-    // Screen/canvas resolution, orientation, and input stubs for property scripts
-    {
-        auto orthoSize = m_scene->getOrthoSize();
-        bool portrait  = orthoSize[1] > orthoSize[0];
-        m_jsEngine->evaluate(QString("engine.screenResolution = { x: %1, y: %2 };\n"
-                                     "engine.canvasSize = { x: %1, y: %2 };\n"
-                                     "engine.isPortrait = function() { return %3; };\n"
-                                     "engine.isLandscape = function() { return %4; };\n")
-                                 .arg(orthoSize[0])
-                                 .arg(orthoSize[1])
-                                 .arg(portrait ? "true" : "false")
-                                 .arg(portrait ? "false" : "true"));
-    }
-
-    // Vec2 / Vec3 / Vec4 — canonical shim in SceneScriptShimsJs.hpp.
-    // Defined first so the input / String.match / localStorage block below
-    // and the Mat3/Mat4 / _Internal / script-identity shims that follow can
-    // all reference Vec2/Vec3 freely.
-    m_jsEngine->evaluate(wek::qml_helper::kVecClassesJs);
-    // Cache the Vec ctor handles for the color/shader-value tick loops (see
-    // SceneBackend.hpp).  Grabbed here, right after kVecClassesJs installs them,
-    // so the per-tick loops never re-fetch from the global object or string-
-    // compile a "VecN(...)" call.
-    m_vec2Fn = m_jsEngine->globalObject().property("Vec2");
-    m_vec3Fn = m_jsEngine->globalObject().property("Vec3");
-    m_vec4Fn = m_jsEngine->globalObject().property("Vec4");
-
-    m_jsEngine->evaluate(
-        // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain
-        // objects) so wallpapers that compose them — Game of Life
-        // (3453251764) tooltip layer does
-        // `return input.cursorWorldPosition.add(new Vec2(offX, offY))`
-        // every tick — find the .add/.subtract/etc. methods.  The per-frame
-        // refresh below mutates .x/.y in place, which preserves the Vec2
-        // prototype link.
-        "var input = { cursorWorldPosition: Vec2(0, 0),\n"
-        "  cursorScreenPosition: Vec2(0, 0),\n"
-        "  cursorLeftDown: false };\n"
-        // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
-        "var _origMatch = String.prototype.match;\n"
-        "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
-        // localStorage — backed by __sceneBridge for disk persistence.
-        // WE defines two locations: GLOBAL (shared) and SCREEN (per-scene).
-        // Scripts that omit the argument default to SCREEN (the solar system
-        // wallpaper's icon-state save/load flow relies on this — without a
-        // `loc` arg it expects per-scene persistence so switching to another
-        // wallpaper doesn't inherit the last wallpaper's icon state).
-        "var localStorage = (function() {\n"
-        "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
-        "  return {\n"
-        "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
-        "    get: function(key, loc) {\n"
-        "      return __sceneBridge ? __sceneBridge.lsGet(_loc(loc), String(key)) : undefined;\n"
-        "    },\n"
-        "    set: function(key, value, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsSet(_loc(loc), String(key), value);\n"
-        "    },\n"
-        "    remove: function(key, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
-        "    },\n"
-        "    'delete': function(key, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
-        "    },\n"
-        "    clear: function(loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsClear(_loc(loc));\n"
-        "    }\n"
-        "  };\n"
-        "})();\n");
-    m_inputObj = m_jsEngine->globalObject().property("input");
-    m_cwpObj   = m_inputObj.property("cursorWorldPosition");
-    m_cspObj   = m_inputObj.property("cursorScreenPosition");
-
-    // Mat3 / Mat4 — shared with tests via SceneScriptShimsJs.hpp.  Must come
-    // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
-    m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
-
-    // Pre-populate common `shared.X` slots so scripts can safely chain-read
-    // them on the first tick before any partner script has written them.
-    // Several wallpapers ship scripts that unconditionally access
-    // `shared.NESTED.field` and throw "cannot read property of undefined"
-    // when NESTED was never created.  Drivers:
-    //   - Starscape (3047596375): `shared.camera.targetAngles.subtract(...)`
-    //   - Game of Life (3453251764): `shared.autoDraw.cursorDown`,
-    //     `shared.currentBrush.hue`, etc. — 124 inline scripts share state.
-    // Empty objects let `typeof shared.X.Y === 'undefined'` short-circuit
-    // correctly; populated camera fields default to common orbit baselines.
-    m_jsEngine->evaluate(
-        "if (!shared.camera) {\n"
-        "  shared.camera = {\n"
-        "    mode: 'orbital',\n"
-        "    targetPosition: new Vec3(0, 0, 0),\n"
-        "    targetAngles:   new Vec2(0, 90),\n"
-        "    targetDistance: 0,\n"
-        "    currentPosition: new Vec3(0, 0, 0),\n"
-        "    currentAngles:   new Vec2(0, 90),\n"
-        "    currentDistance: 0,\n"
-        "    isDragging: false,\n"
-        "    mouseInput: true\n"
-        "  };\n"
-        "}\n"
-        "if (!shared.autoDraw)    shared.autoDraw    = {};\n"
-        "if (!shared.brushEditor) shared.brushEditor = {};\n"
-        "if (!shared.brushes)     shared.brushes     = [];\n"
-        "if (!shared.currentBrush) shared.currentBrush = {\n"
-        "  hue: 0, saturation: 0, value: 0,\n"
-        "  hardness: 1, size: 1, spacing: 1,\n"
-        "  brush_type: 0, draw_mode: 0,\n"
-        "  hi_vel: 0, lo_vel: 0, pat: 0, tex: 0,\n"
-        "  stroke_type: 0, brush: 0, hi: 0\n"
-        "};\n");
-
-    // IMaterial proxy — defines _materialValueCache + _makeMaterialProxy.
-    // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
-    m_jsEngine->evaluate(wek::qml_helper::kMaterialProxyJs);
-
-    // Layer-hierarchy shim — defines _installHierarchyMethods,
-    // _installSoundHierarchyStubs, _hierarchyResolveId, _linkupHierarchy.
-    // Layer factories below call _installHierarchyMethods on each proxy.
-    m_jsEngine->evaluate(wek::qml_helper::kHierarchyProxyJs);
-
-    // `_Internal` helper namespace — updateScriptProperties /
-    // convertUserProperties / stringifyConfig.  Requires Vec3.
-    m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
-
-    // engine.scriptId / scriptName / getScriptHash() placeholders.  These
-    // are rewritten to stable scene-level values in setScriptIdentity()
-    // AFTER all property scripts have been loaded (see that call site near
-    // the end of setupTextScripts).
-    m_jsEngine->evaluate("engine.scriptId = 0;\n"
-                         "engine.scriptName = 'scene';\n"
-                         "engine.getScriptHash = function() { return '0'; };\n");
-
-    // Cursor aliases on `engine`: scripts that live outside a layer IIFE
-    // (init scripts, color scripts, scene.on update handlers) commonly
-    // want `engine.cursorWorldPosition` etc. instead of digging into the
-    // per-IIFE `input` object.  We share the same underlying {x,y}
-    // sub-objects, so a single C++ update refreshes both surfaces.
-    //
-    // cursorLeftDown is a primitive boolean that can't be aliased by
-    // object-reference; expose it as a getter that reads through.
-    //
-    // cursorHitTest(x, y) walks the live layer list in reverse (topmost
-    // first) and returns the first visible AABB-containing proxy, or
-    // null.  Parallax / rotation aren't accounted for — it's a coarse
-    // quick-pick, not a full render-state hit test.
-    m_jsEngine->evaluate(
-        "engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
-        "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
-        "Object.defineProperty(engine, 'cursorLeftDown', {\n"
-        "  get: function() { return input.cursorLeftDown; },\n"
-        "  enumerable: true\n"
-        "});\n"
-        "engine.cursorHitTest = function(x, y) {\n"
-        "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
-        "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
-        "  if (typeof _layerList === 'undefined') return null;\n"
-        "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
-        "    var L = _layerList[i];\n"
-        "    if (!L || !L.visible) continue;\n"
-        "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
-        "    var o = L.origin, s = L.scale;\n"
-        "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
-        "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
-        "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
-        "  }\n"
-        "  return null;\n"
-        "};\n");
-
-    // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
-    m_jsEngine->evaluate(
-        "var WEMath = {\n"
-        "  PI: Math.PI,\n"
-        "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
-        "  mix: function(a, b, t) { return a + (b - a) * t; },\n"
-        "  clamp: function(v, lo, hi) { return Math.min(Math.max(v, lo), hi); },\n"
-        "  smoothstep: function(edge0, edge1, x) {\n"
-        "    var t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);\n"
-        "    return t * t * (3 - 2 * t);\n"
-        "  },\n"
-        "  fract: function(x) { return x - Math.floor(x); },\n"
-        "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
-        "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
-        "  abs: function(x) { return Math.abs(x); },\n"
-        "  pow: function(base, exp) { return Math.pow(base, exp); },\n"
-        // GLSL-style mod: always non-negative, unlike JS % for negative x
-        "  mod: function(x, y) { return x - y * Math.floor(x / y); },\n"
-        "  degToRad: function(d) { return d * Math.PI / 180; },\n"
-        "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
-        // Random helpers: WE wallpapers commonly call randomFloat/randomInteger
-        "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
-        "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min "
-        "+ 1)); },\n"
-        "  min: function(a, b) { return Math.min(a, b); },\n"
-        "  max: function(a, b) { return Math.max(a, b); },\n"
-        "  floor: function(x) { return Math.floor(x); },\n"
-        "  ceil: function(x) { return Math.ceil(x); },\n"
-        "  round: function(x) { return Math.round(x); },\n"
-        "  sqrt: function(x) { return Math.sqrt(x); },\n"
-        "  sin: function(x) { return Math.sin(x); },\n"
-        "  cos: function(x) { return Math.cos(x); },\n"
-        "  tan: function(x) { return Math.tan(x); },\n"
-        "  asin: function(x) { return Math.asin(x); },\n"
-        "  acos: function(x) { return Math.acos(x); },\n"
-        "  atan: function(x) { return Math.atan(x); },\n"
-        "  atan2: function(y, x) { return Math.atan2(y, x); },\n"
-        "  log: function(x) { return Math.log(x); },\n"
-        "  exp: function(x) { return Math.exp(x); }\n"
-        "};\n"
-        // camelCase aliases and constant forms matching WE's official API
-        "WEMath.smoothStep = WEMath.smoothstep;\n"
-        "WEMath.deg2rad = Math.PI / 180;\n"
-        "WEMath.rad2deg = 180 / Math.PI;\n"
-        // WEVector module: 2D angle↔vector conversion.
-        // Matches WE's bundled jsmodules/wevector.js: angles are in DEGREES on
-        // both sides — angleVector2(deg) and vectorAngle2 returns degrees.
-        // Author scripts (e.g. Naruto Shippuden 2800255344) compute `angle =
-        // 360 * (i / N)` and feed that to angleVector2; treating it as radians
-        // scrambles the spectrum-ring layout.
-        "var WEVector = {\n"
-        "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return Vec2(Math.cos(r), Math.sin(r)); },\n"
-        "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x) * WEMath.rad2deg; }\n"
-        "};\n");
-
-    // engine.colorScheme: a Vec3 (= primary) with four additional Vec3
-    // sub-colors hung off it — `primary`, `secondary`, `tertiary`, `text`,
-    // `highContrast`.  Keeping the top-level a Vec3 preserves back-compat
-    // for scripts that read `engine.colorScheme.x / .y / .z` directly.
-    //
-    // Defaults: all primary/secondary/tertiary = white, text = black (assuming
-    // light background), highContrast = black.  refreshJsUserProperties()
-    // rebuilds the bundle from the schemecolor user property when set;
-    // without richer palette input only `primary` changes — the rest stay
-    // at defaults.
-    m_jsEngine->evaluate(
-        "function _buildColorScheme(primary) {\n"
-        "  var cs = Vec3(primary.x, primary.y, primary.z);\n"
-        "  cs.primary      = Vec3(primary.x, primary.y, primary.z);\n"
-        "  cs.secondary    = Vec3(1, 1, 1);\n"
-        "  cs.tertiary     = Vec3(1, 1, 1);\n"
-        "  cs.text         = Vec3(0, 0, 0);\n"
-        "  cs.highContrast = Vec3(0, 0, 0);\n"
-        "  return cs;\n"
-        "}\n"
-        "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));\n");
-
-    // Populate engine.userProperties with defaults from project.json first,
-    // then apply QML-side overrides (if any). Must run AFTER Vec3 is defined
-    // so colorScheme derivation works.
-    {
-        std::string defaultsJson = m_scene->getUserPropertiesJson();
-        if (! defaultsJson.empty() && defaultsJson != "{}") {
-            // Full JS-literal escape (see JsStringEscape.hpp / F18).
-            QString escaped =
-                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(defaultsJson));
-            m_jsEngine->evaluate(QString("(function(){"
-                                         "var p=JSON.parse('%1');"
-                                         "var up=engine.userProperties;"
-                                         "for(var k in p) up[k]=p[k];"
-                                         "})()")
-                                     .arg(escaped));
-        }
-    }
-    refreshJsUserProperties();
-
-    // engine.openUserShortcut(name) — delegates through __sceneBridge to the
-    // C++ slot which emits userShortcutRequested (mapped to MPRIS in the
-    // main plugin) and fires a `userShortcut` event on the scene bus.
-    m_jsEngine->evaluate("engine.openUserShortcut = function(name) {\n"
-                         "  if (typeof name !== 'string' || !name) return;\n"
-                         "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
-                         "    __sceneBridge.openUserShortcut(name);\n"
-                         "};\n");
-
-    // engine.registerAsset — describes a dynamic asset; a pool of hidden
-    // scene nodes is pre-allocated by WPSceneParser (Scene::assetPools).
-    // engine._assetPools is populated later when _layerInitStates is read —
-    // until then, registerAsset just returns a descriptor.  createLayer
-    // below pops from the pool at runtime.
-    m_jsEngine->evaluate("engine._assetPools = {};\n"
-                         "engine.registerAsset = function(path) { return { __asset: path }; };\n");
-
-    // createScriptProperties() — WE SceneScript API for declaring user-configurable properties
-    // Returns a chainable builder:
-    // createScriptProperties().addSlider({name,value,...}).addCheckbox(...) After chaining, the
-    // result object has properties accessible by name (e.g. scriptProperties.mode)
-    // createScriptProperties: chainable builder that exposes each defined
-    // property via a getter/setter pair.  Writes fire the optional
-    // `onChange` callback with the new value (and `this` bound to the
-    // builder).  Same-value writes are suppressed — essential because
-    // WE wallpapers use mutual-exclusion patterns where one checkbox's
-    // onChange writes `false` to its siblings; without the suppression
-    // the siblings re-fire their own onChange and infinite-recurse.
-    // Lucy Clock's date-format checkboxes rely on this.
-    m_jsEngine->evaluate("function createScriptProperties() {\n"
-                         "  var _values = {};\n"
-                         "  var _onChange = {};\n"
-                         "  var builder = {};\n"
-                         "  function addProp(def) {\n"
-                         "    if (!def) return builder;\n"
-                         "    var n = def.name || def.n;\n"
-                         "    if (!n) return builder;\n"
-                         "    _values[n] = def.value;\n"
-                         "    if (def.onChange && typeof def.onChange === 'function') {\n"
-                         "      _onChange[n] = def.onChange;\n"
-                         "    }\n"
-                         "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
-                         "      Object.defineProperty(builder, n, {\n"
-                         "        get: function() { return _values[n]; },\n"
-                         "        set: function(v) {\n"
-                         "          if (_values[n] === v) return;\n"
-                         "          _values[n] = v;\n"
-                         "          var h = _onChange[n];\n"
-                         "          if (h) {\n"
-                         "            try { h.call(builder, v); }\n"
-                         "            catch (e) {\n"
-                         "              if (typeof console !== 'undefined' && console.log)\n"
-                         "                console.log('scriptProperty onChange error on ' + n\n"
-                         "                            + ': ' + (e && e.message));\n"
-                         "            }\n"
-                         "          }\n"
-                         "        },\n"
-                         "        enumerable: true, configurable: true\n"
-                         "      });\n"
-                         "    }\n"
-                         "    return builder;\n"
-                         "  }\n"
-                         "  builder.addCheckbox = addProp;\n"
-                         "  builder.addSlider = addProp;\n"
-                         "  builder.addCombo = addProp;\n"
-                         "  builder.addText = addProp;\n"
-                         "  builder.addTextInput = addProp;\n"
-                         "  builder.addColor = addProp;\n"
-                         "  builder.addFile = addProp;\n"
-                         "  builder.addDirectory = addProp;\n"
-                         "  builder.finish = function() { return builder; };\n"
-                         "  return builder;\n"
-                         "}\n");
+    setupEngineGlobals();
 
     // Inject layer initial states from scene parsing
     {
@@ -3896,6 +3444,462 @@ void SceneObject::setupTextScripts() {
         if (m_scene) m_scene->setHasScriptAudio(hasScriptAudio);
         if (hasScriptAudio) LOG_INFO("SceneScript registered audio buffers -> FFT gate enabled");
     }
+}
+
+void SceneObject::setupEngineGlobals() {
+    m_jsEngine = new QJSEngine(this);
+
+    // Start the runaway-script watchdog now that the engine exists.  It stays
+    // disarmed until a JS dispatch site arms it; the monitor thread is joined in
+    // cleanupTextScripts() BEFORE m_jsEngine is deleted (A3-T2).
+    m_jsWatchdog.start();
+    // A reload via setSource() re-runs setupTextScripts on the same SceneObject:
+    // reset the interrupt back-off so a fresh scene is not pre-disabled by a
+    // previous wallpaper's runaway.
+    m_consecutivePropInterrupts  = 0;
+    m_propertyScriptsDisabled    = false;
+    m_consecutiveTextInterrupts  = 0;
+    m_textScriptsDisabled        = false;
+    m_consecutiveColorInterrupts = 0;
+    m_colorScriptsDisabled       = false;
+
+    // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
+    // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
+    // to the QJSEngine which we own; newQObject wraps without taking ownership
+    // (QJSEngine::ObjectOwnership::CppOwnership by default for child QObjects).
+    m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
+
+    // Provide a minimal 'engine' global with runtime and timeOfDay
+    m_runtimeTimer.start();
+    QJSValue engineObj = m_jsEngine->newObject();
+    engineObj.setProperty("frametime", 0.016); // overwritten per tick
+    engineObj.setProperty("runtime", 0.0);
+    engineObj.setProperty("timeOfDay", 0.0);
+    // Real render-thread FPS measured wall-clock by FpsCounter (rolling 500ms
+    // window).  0 until the first frame has been drawn.  Scripts wanting an
+    // accurate FPS readout should read this directly rather than measuring
+    // their own invocation cadence (which can drift from the render rate).
+    engineObj.setProperty("fps", 0.0);
+    // Monotonic tick counter (incremented by evaluatePropertyScripts — see
+    // m_propFrameCount).  Lets scripts branch on "first tick", count
+    // intervals without accumulating runtime drift, etc.
+    engineObj.setProperty("frameCount", 0.0);
+    // Timezone info.  `timeZone` is UTC offset in minutes (positive east of
+    // UTC); `timeZoneName` is the IANA zone id when available, falling back
+    // to the abbreviation.  Lets clock/date wallpapers render in the user's
+    // locale without the script doing its own IANA lookup.
+    {
+        QTimeZone tz        = QTimeZone::systemTimeZone();
+        int       offsetMin = tz.offsetFromUtc(QDateTime::currentDateTime()) / 60;
+        QString   id        = tz.id().isEmpty() ? tz.abbreviation(QDateTime::currentDateTime())
+                                                : QString::fromUtf8(tz.id());
+        engineObj.setProperty("timeZone", (double)offsetMin);
+        engineObj.setProperty("timeZoneName", id);
+    }
+    engineObj.setProperty("userProperties", m_jsEngine->newObject());
+    m_jsEngine->globalObject().setProperty("engine", engineObj);
+    m_engineObj = m_jsEngine->globalObject().property("engine"); // cache the stored handle
+
+    // Provide the 'shared' global for inter-script data sharing.
+    // All scripts in the scene can read/write to this object.
+    m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
+    // Default shared values for common script patterns
+    m_jsEngine->evaluate("shared.volume = 1.0;\n");
+
+    // Provide a 'console' object that forwards to C++ logging
+    m_jsEngine->evaluate("var console = {\n"
+                         "  log: function() {\n"
+                         "    var args = Array.prototype.slice.call(arguments);\n"
+                         "    var msg = args.map(function(a){ return String(a); }).join(' ');\n"
+                         "    if (!console._buf) console._buf = [];\n"
+                         "    console._buf.push(msg);\n"
+                         "  },\n"
+                         "  warn: function() { console.log.apply(console, arguments); },\n"
+                         "  error: function() { console.log.apply(console, arguments); }\n"
+                         "};\n");
+    m_consoleObj = m_jsEngine->globalObject().property("console");
+
+    // Timer bridge: setTimeout / setInterval / clearTimeout / clearInterval
+    m_timerBridge = new SceneTimerBridge(
+        m_jsEngine,
+        this,
+        /* postFire */
+        [this](int id, bool error, const QString& msg) {
+            if (error) {
+                LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
+            }
+            flushJsConsole(m_jsEngine, "timer");
+        },
+        /* guardedCall */
+        [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
+            // Arms m_jsWatchdog (~250ms budget), runs the callback, disarms, and
+            // clears the interrupt latch — the SAME bracket the tick loops use. A
+            // runaway timer body now trips the watchdog and unwinds instead of
+            // freezing the GUI thread; an interrupted INTERVAL latches off after K
+            // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
+            return callJsGuarded(call, outInterrupted);
+        });
+    m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
+    m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
+                         "delay || 0, false); }\n"
+                         "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
+                         "delay || 0, true); }\n"
+                         "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
+                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
+                         // WE scripts call these as engine-namespaced too — most commonly
+                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
+                         // Vibes 3293999899 fires this 29 times).  Alias to the same
+                         // _timerBridge so cancellation IDs interoperate across spellings.
+                         "engine.setTimeout    = setTimeout;\n"
+                         "engine.setInterval   = setInterval;\n"
+                         "engine.clearTimeout  = clearTimeout;\n"
+                         "engine.clearInterval = clearInterval;\n");
+
+    // Engine method stubs
+    m_jsEngine->evaluate("engine.isDesktopDevice = function() { return true; };\n"
+                         "engine.isMobileDevice = function() { return false; };\n"
+                         "engine.isTabletDevice = function() { return false; };\n"
+                         "engine.isWallpaper = function() { return true; };\n"
+                         "engine.isScreensaver = function() { return false; };\n"
+                         "engine.isRunningInEditor = function() { return false; };\n");
+
+    // Screen/canvas resolution, orientation, and input stubs for property scripts
+    {
+        auto orthoSize = m_scene->getOrthoSize();
+        bool portrait  = orthoSize[1] > orthoSize[0];
+        m_jsEngine->evaluate(QString("engine.screenResolution = { x: %1, y: %2 };\n"
+                                     "engine.canvasSize = { x: %1, y: %2 };\n"
+                                     "engine.isPortrait = function() { return %3; };\n"
+                                     "engine.isLandscape = function() { return %4; };\n")
+                                 .arg(orthoSize[0])
+                                 .arg(orthoSize[1])
+                                 .arg(portrait ? "true" : "false")
+                                 .arg(portrait ? "false" : "true"));
+    }
+
+    // Vec2 / Vec3 / Vec4 — canonical shim in SceneScriptShimsJs.hpp.
+    // Defined first so the input / String.match / localStorage block below
+    // and the Mat3/Mat4 / _Internal / script-identity shims that follow can
+    // all reference Vec2/Vec3 freely.
+    m_jsEngine->evaluate(wek::qml_helper::kVecClassesJs);
+    // Cache the Vec ctor handles for the color/shader-value tick loops (see
+    // SceneBackend.hpp).  Grabbed here, right after kVecClassesJs installs them,
+    // so the per-tick loops never re-fetch from the global object or string-
+    // compile a "VecN(...)" call.
+    m_vec2Fn = m_jsEngine->globalObject().property("Vec2");
+    m_vec3Fn = m_jsEngine->globalObject().property("Vec3");
+    m_vec4Fn = m_jsEngine->globalObject().property("Vec4");
+
+    m_jsEngine->evaluate(
+        // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain
+        // objects) so wallpapers that compose them — Game of Life
+        // (3453251764) tooltip layer does
+        // `return input.cursorWorldPosition.add(new Vec2(offX, offY))`
+        // every tick — find the .add/.subtract/etc. methods.  The per-frame
+        // refresh below mutates .x/.y in place, which preserves the Vec2
+        // prototype link.
+        "var input = { cursorWorldPosition: Vec2(0, 0),\n"
+        "  cursorScreenPosition: Vec2(0, 0),\n"
+        "  cursorLeftDown: false };\n"
+        // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
+        "var _origMatch = String.prototype.match;\n"
+        "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
+        // localStorage — backed by __sceneBridge for disk persistence.
+        // WE defines two locations: GLOBAL (shared) and SCREEN (per-scene).
+        // Scripts that omit the argument default to SCREEN (the solar system
+        // wallpaper's icon-state save/load flow relies on this — without a
+        // `loc` arg it expects per-scene persistence so switching to another
+        // wallpaper doesn't inherit the last wallpaper's icon state).
+        "var localStorage = (function() {\n"
+        "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
+        "  return {\n"
+        "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
+        "    get: function(key, loc) {\n"
+        "      return __sceneBridge ? __sceneBridge.lsGet(_loc(loc), String(key)) : undefined;\n"
+        "    },\n"
+        "    set: function(key, value, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsSet(_loc(loc), String(key), value);\n"
+        "    },\n"
+        "    remove: function(key, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
+        "    },\n"
+        "    'delete': function(key, loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
+        "    },\n"
+        "    clear: function(loc) {\n"
+        "      if (__sceneBridge) __sceneBridge.lsClear(_loc(loc));\n"
+        "    }\n"
+        "  };\n"
+        "})();\n");
+    m_inputObj = m_jsEngine->globalObject().property("input");
+    m_cwpObj   = m_inputObj.property("cursorWorldPosition");
+    m_cspObj   = m_inputObj.property("cursorScreenPosition");
+
+    // Mat3 / Mat4 — shared with tests via SceneScriptShimsJs.hpp.  Must come
+    // AFTER Vec2/Vec3 (Mat4.translation returns a Vec3; Mat3.translation a Vec2).
+    m_jsEngine->evaluate(wek::qml_helper::kMatricesJs);
+
+    // Pre-populate common `shared.X` slots so scripts can safely chain-read
+    // them on the first tick before any partner script has written them.
+    // Several wallpapers ship scripts that unconditionally access
+    // `shared.NESTED.field` and throw "cannot read property of undefined"
+    // when NESTED was never created.  Drivers:
+    //   - Starscape (3047596375): `shared.camera.targetAngles.subtract(...)`
+    //   - Game of Life (3453251764): `shared.autoDraw.cursorDown`,
+    //     `shared.currentBrush.hue`, etc. — 124 inline scripts share state.
+    // Empty objects let `typeof shared.X.Y === 'undefined'` short-circuit
+    // correctly; populated camera fields default to common orbit baselines.
+    m_jsEngine->evaluate(
+        "if (!shared.camera) {\n"
+        "  shared.camera = {\n"
+        "    mode: 'orbital',\n"
+        "    targetPosition: new Vec3(0, 0, 0),\n"
+        "    targetAngles:   new Vec2(0, 90),\n"
+        "    targetDistance: 0,\n"
+        "    currentPosition: new Vec3(0, 0, 0),\n"
+        "    currentAngles:   new Vec2(0, 90),\n"
+        "    currentDistance: 0,\n"
+        "    isDragging: false,\n"
+        "    mouseInput: true\n"
+        "  };\n"
+        "}\n"
+        "if (!shared.autoDraw)    shared.autoDraw    = {};\n"
+        "if (!shared.brushEditor) shared.brushEditor = {};\n"
+        "if (!shared.brushes)     shared.brushes     = [];\n"
+        "if (!shared.currentBrush) shared.currentBrush = {\n"
+        "  hue: 0, saturation: 0, value: 0,\n"
+        "  hardness: 1, size: 1, spacing: 1,\n"
+        "  brush_type: 0, draw_mode: 0,\n"
+        "  hi_vel: 0, lo_vel: 0, pat: 0, tex: 0,\n"
+        "  stroke_type: 0, brush: 0, hi: 0\n"
+        "};\n");
+
+    // IMaterial proxy — defines _materialValueCache + _makeMaterialProxy.
+    // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
+    m_jsEngine->evaluate(wek::qml_helper::kMaterialProxyJs);
+
+    // Layer-hierarchy shim — defines _installHierarchyMethods,
+    // _installSoundHierarchyStubs, _hierarchyResolveId, _linkupHierarchy.
+    // Layer factories below call _installHierarchyMethods on each proxy.
+    m_jsEngine->evaluate(wek::qml_helper::kHierarchyProxyJs);
+
+    // `_Internal` helper namespace — updateScriptProperties /
+    // convertUserProperties / stringifyConfig.  Requires Vec3.
+    m_jsEngine->evaluate(wek::qml_helper::kInternalNamespaceJs);
+
+    // engine.scriptId / scriptName / getScriptHash() placeholders.  These
+    // are rewritten to stable scene-level values in setScriptIdentity()
+    // AFTER all property scripts have been loaded (see that call site near
+    // the end of setupTextScripts).
+    m_jsEngine->evaluate("engine.scriptId = 0;\n"
+                         "engine.scriptName = 'scene';\n"
+                         "engine.getScriptHash = function() { return '0'; };\n");
+
+    // Cursor aliases on `engine`: scripts that live outside a layer IIFE
+    // (init scripts, color scripts, scene.on update handlers) commonly
+    // want `engine.cursorWorldPosition` etc. instead of digging into the
+    // per-IIFE `input` object.  We share the same underlying {x,y}
+    // sub-objects, so a single C++ update refreshes both surfaces.
+    //
+    // cursorLeftDown is a primitive boolean that can't be aliased by
+    // object-reference; expose it as a getter that reads through.
+    //
+    // cursorHitTest(x, y) walks the live layer list in reverse (topmost
+    // first) and returns the first visible AABB-containing proxy, or
+    // null.  Parallax / rotation aren't accounted for — it's a coarse
+    // quick-pick, not a full render-state hit test.
+    m_jsEngine->evaluate(
+        "engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
+        "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
+        "Object.defineProperty(engine, 'cursorLeftDown', {\n"
+        "  get: function() { return input.cursorLeftDown; },\n"
+        "  enumerable: true\n"
+        "});\n"
+        "engine.cursorHitTest = function(x, y) {\n"
+        "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
+        "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
+        "  if (typeof _layerList === 'undefined') return null;\n"
+        "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
+        "    var L = _layerList[i];\n"
+        "    if (!L || !L.visible) continue;\n"
+        "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
+        "    var o = L.origin, s = L.scale;\n"
+        "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
+        "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
+        "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
+        "  }\n"
+        "  return null;\n"
+        "};\n");
+
+    // WEMath module: lerp, mix, clamp, smoothstep, random, and GLSL-style helpers
+    m_jsEngine->evaluate(
+        "var WEMath = {\n"
+        "  PI: Math.PI,\n"
+        "  lerp: function(a, b, t) { return a + (b - a) * t; },\n"
+        "  mix: function(a, b, t) { return a + (b - a) * t; },\n"
+        "  clamp: function(v, lo, hi) { return Math.min(Math.max(v, lo), hi); },\n"
+        "  smoothstep: function(edge0, edge1, x) {\n"
+        "    var t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);\n"
+        "    return t * t * (3 - 2 * t);\n"
+        "  },\n"
+        "  fract: function(x) { return x - Math.floor(x); },\n"
+        "  sign: function(x) { return x > 0 ? 1 : (x < 0 ? -1 : 0); },\n"
+        "  step: function(edge, x) { return x < edge ? 0 : 1; },\n"
+        "  abs: function(x) { return Math.abs(x); },\n"
+        "  pow: function(base, exp) { return Math.pow(base, exp); },\n"
+        // GLSL-style mod: always non-negative, unlike JS % for negative x
+        "  mod: function(x, y) { return x - y * Math.floor(x / y); },\n"
+        "  degToRad: function(d) { return d * Math.PI / 180; },\n"
+        "  radToDeg: function(r) { return r * 180 / Math.PI; },\n"
+        // Random helpers: WE wallpapers commonly call randomFloat/randomInteger
+        "  randomFloat: function(min, max) { return min + Math.random() * (max - min); },\n"
+        "  randomInteger: function(min, max) { return Math.floor(min + Math.random() * (max - min "
+        "+ 1)); },\n"
+        "  min: function(a, b) { return Math.min(a, b); },\n"
+        "  max: function(a, b) { return Math.max(a, b); },\n"
+        "  floor: function(x) { return Math.floor(x); },\n"
+        "  ceil: function(x) { return Math.ceil(x); },\n"
+        "  round: function(x) { return Math.round(x); },\n"
+        "  sqrt: function(x) { return Math.sqrt(x); },\n"
+        "  sin: function(x) { return Math.sin(x); },\n"
+        "  cos: function(x) { return Math.cos(x); },\n"
+        "  tan: function(x) { return Math.tan(x); },\n"
+        "  asin: function(x) { return Math.asin(x); },\n"
+        "  acos: function(x) { return Math.acos(x); },\n"
+        "  atan: function(x) { return Math.atan(x); },\n"
+        "  atan2: function(y, x) { return Math.atan2(y, x); },\n"
+        "  log: function(x) { return Math.log(x); },\n"
+        "  exp: function(x) { return Math.exp(x); }\n"
+        "};\n"
+        // camelCase aliases and constant forms matching WE's official API
+        "WEMath.smoothStep = WEMath.smoothstep;\n"
+        "WEMath.deg2rad = Math.PI / 180;\n"
+        "WEMath.rad2deg = 180 / Math.PI;\n"
+        // WEVector module: 2D angle↔vector conversion.
+        // Matches WE's bundled jsmodules/wevector.js: angles are in DEGREES on
+        // both sides — angleVector2(deg) and vectorAngle2 returns degrees.
+        // Author scripts (e.g. Naruto Shippuden 2800255344) compute `angle =
+        // 360 * (i / N)` and feed that to angleVector2; treating it as radians
+        // scrambles the spectrum-ring layout.
+        "var WEVector = {\n"
+        "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return Vec2(Math.cos(r), Math.sin(r)); },\n"
+        "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x) * WEMath.rad2deg; }\n"
+        "};\n");
+
+    // engine.colorScheme: a Vec3 (= primary) with four additional Vec3
+    // sub-colors hung off it — `primary`, `secondary`, `tertiary`, `text`,
+    // `highContrast`.  Keeping the top-level a Vec3 preserves back-compat
+    // for scripts that read `engine.colorScheme.x / .y / .z` directly.
+    //
+    // Defaults: all primary/secondary/tertiary = white, text = black (assuming
+    // light background), highContrast = black.  refreshJsUserProperties()
+    // rebuilds the bundle from the schemecolor user property when set;
+    // without richer palette input only `primary` changes — the rest stay
+    // at defaults.
+    m_jsEngine->evaluate(
+        "function _buildColorScheme(primary) {\n"
+        "  var cs = Vec3(primary.x, primary.y, primary.z);\n"
+        "  cs.primary      = Vec3(primary.x, primary.y, primary.z);\n"
+        "  cs.secondary    = Vec3(1, 1, 1);\n"
+        "  cs.tertiary     = Vec3(1, 1, 1);\n"
+        "  cs.text         = Vec3(0, 0, 0);\n"
+        "  cs.highContrast = Vec3(0, 0, 0);\n"
+        "  return cs;\n"
+        "}\n"
+        "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));\n");
+
+    // Populate engine.userProperties with defaults from project.json first,
+    // then apply QML-side overrides (if any). Must run AFTER Vec3 is defined
+    // so colorScheme derivation works.
+    {
+        std::string defaultsJson = m_scene->getUserPropertiesJson();
+        if (! defaultsJson.empty() && defaultsJson != "{}") {
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(defaultsJson));
+            m_jsEngine->evaluate(QString("(function(){"
+                                         "var p=JSON.parse('%1');"
+                                         "var up=engine.userProperties;"
+                                         "for(var k in p) up[k]=p[k];"
+                                         "})()")
+                                     .arg(escaped));
+        }
+    }
+    refreshJsUserProperties();
+
+    // engine.openUserShortcut(name) — delegates through __sceneBridge to the
+    // C++ slot which emits userShortcutRequested (mapped to MPRIS in the
+    // main plugin) and fires a `userShortcut` event on the scene bus.
+    m_jsEngine->evaluate("engine.openUserShortcut = function(name) {\n"
+                         "  if (typeof name !== 'string' || !name) return;\n"
+                         "  if (__sceneBridge && __sceneBridge.openUserShortcut)\n"
+                         "    __sceneBridge.openUserShortcut(name);\n"
+                         "};\n");
+
+    // engine.registerAsset — describes a dynamic asset; a pool of hidden
+    // scene nodes is pre-allocated by WPSceneParser (Scene::assetPools).
+    // engine._assetPools is populated later when _layerInitStates is read —
+    // until then, registerAsset just returns a descriptor.  createLayer
+    // below pops from the pool at runtime.
+    m_jsEngine->evaluate("engine._assetPools = {};\n"
+                         "engine.registerAsset = function(path) { return { __asset: path }; };\n");
+
+    // createScriptProperties() — WE SceneScript API for declaring user-configurable properties
+    // Returns a chainable builder:
+    // createScriptProperties().addSlider({name,value,...}).addCheckbox(...) After chaining, the
+    // result object has properties accessible by name (e.g. scriptProperties.mode)
+    // createScriptProperties: chainable builder that exposes each defined
+    // property via a getter/setter pair.  Writes fire the optional
+    // `onChange` callback with the new value (and `this` bound to the
+    // builder).  Same-value writes are suppressed — essential because
+    // WE wallpapers use mutual-exclusion patterns where one checkbox's
+    // onChange writes `false` to its siblings; without the suppression
+    // the siblings re-fire their own onChange and infinite-recurse.
+    // Lucy Clock's date-format checkboxes rely on this.
+    m_jsEngine->evaluate("function createScriptProperties() {\n"
+                         "  var _values = {};\n"
+                         "  var _onChange = {};\n"
+                         "  var builder = {};\n"
+                         "  function addProp(def) {\n"
+                         "    if (!def) return builder;\n"
+                         "    var n = def.name || def.n;\n"
+                         "    if (!n) return builder;\n"
+                         "    _values[n] = def.value;\n"
+                         "    if (def.onChange && typeof def.onChange === 'function') {\n"
+                         "      _onChange[n] = def.onChange;\n"
+                         "    }\n"
+                         "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
+                         "      Object.defineProperty(builder, n, {\n"
+                         "        get: function() { return _values[n]; },\n"
+                         "        set: function(v) {\n"
+                         "          if (_values[n] === v) return;\n"
+                         "          _values[n] = v;\n"
+                         "          var h = _onChange[n];\n"
+                         "          if (h) {\n"
+                         "            try { h.call(builder, v); }\n"
+                         "            catch (e) {\n"
+                         "              if (typeof console !== 'undefined' && console.log)\n"
+                         "                console.log('scriptProperty onChange error on ' + n\n"
+                         "                            + ': ' + (e && e.message));\n"
+                         "            }\n"
+                         "          }\n"
+                         "        },\n"
+                         "        enumerable: true, configurable: true\n"
+                         "      });\n"
+                         "    }\n"
+                         "    return builder;\n"
+                         "  }\n"
+                         "  builder.addCheckbox = addProp;\n"
+                         "  builder.addSlider = addProp;\n"
+                         "  builder.addCombo = addProp;\n"
+                         "  builder.addText = addProp;\n"
+                         "  builder.addTextInput = addProp;\n"
+                         "  builder.addColor = addProp;\n"
+                         "  builder.addFile = addProp;\n"
+                         "  builder.addDirectory = addProp;\n"
+                         "  builder.finish = function() { return builder; };\n"
+                         "  return builder;\n"
+                         "}\n");
 }
 
 void SceneObject::refreshAudioBuffers() {

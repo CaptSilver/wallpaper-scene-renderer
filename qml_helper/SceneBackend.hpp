@@ -302,6 +302,7 @@ public:
 private:
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
+    void setupEngineGlobals();
     void refreshJsUserProperties();
     void fireApplyUserProperties();
     // Fires the "applyGeneralSettings" scene event (distinct from
