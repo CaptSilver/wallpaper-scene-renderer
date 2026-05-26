@@ -2055,6 +2055,370 @@ void computeWorldTransformAndAttachments(ParseContext&                 context,
     context.child_attachment_transforms[wpimgobj.id] = attach;
 }
 
+void assembleEffectChain(ParseContext&                     context,
+                         wpscene::WPImageObject&           wpimgobj,
+                         const std::shared_ptr<SceneNode>& spImgNode,
+                         SceneMesh&                        effct_final_mesh,
+                         const ShaderValueMap&             baseConstSvs,
+                         const WPMdl*                      puppet,
+                         BlendMode                         imgBlendMode,
+                         bool                              isOffscreen,
+                         bool                              effectOffscreen,
+                         bool                              isCompose) {
+    auto& vfs   = *context.vfs;
+    auto& scene = *context.scene;
+    // currently use addr for unique
+    std::string nodeAddr = getAddr(spImgNode.get());
+    // set camera to attatch effect
+    if (isCompose) {
+        // For compose effects, use scene ortho dimensions (works for both
+        // ortho and perspective scenes; perspective activeCamera Width/Height
+        // defaults to 1.0 which is too small).
+        i32 cw = context.ortho_w > 0 ? context.ortho_w : (i32)scene.activeCamera->Width();
+        i32 ch = context.ortho_h > 0 ? context.ortho_h : (i32)scene.activeCamera->Height();
+        scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(cw, ch, -1.0f, 1.0f);
+        scene.cameras.at(nodeAddr)->AttatchNode(scene.activeCamera->GetAttachedNode());
+        if (scene.linkedCameras.count("global") == 0) scene.linkedCameras["global"] = {};
+        scene.linkedCameras.at("global").push_back(nodeAddr);
+    } else {
+        // applly scale to crop
+        i32 w                   = (i32)wpimgobj.size[0];
+        i32 h                   = (i32)wpimgobj.size[1];
+        scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(w, h, -1.0f, 1.0f);
+        scene.cameras.at(nodeAddr)->AttatchNode(context.effect_camera_node);
+    }
+    spImgNode->SetCamera(nodeAddr);
+    std::string effect_ppong_a, effect_ppong_b;
+    effect_ppong_a = WE_EFFECT_PPONG_PREFIX_A.data() + nodeAddr;
+    effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
+    // set image effect
+    auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(
+        spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
+    {
+        imgEffectLayer->SetFinalBlend(imgBlendMode);
+        imgEffectLayer->SetOffscreen(effectOffscreen);
+        // Compose layer with copybackground:false — author intent is "do
+        // NOT capture _rt_default into the pingpong" (e.g. Nightingale
+        // 3470764447 id=249 with colorBlendMode=21 BlendReflect, where
+        // capturing the screen amplifies the day-character's blue TV-glow
+        // into a hard-edged blue rectangle at the layer's bbox).  Force
+        // passthrough so SceneToRenderGraph takes the alternate path that
+        // (a) skips the composelayer.frag base-pass screen capture, and
+        // (b) honors copybackground=false to also skip the implicit copy.
+        // The pingpong stays cleared, BlendReflect over a transparent
+        // pingpong = no-op, no blue box.
+        const bool forcePassthroughForCopyBg = isCompose && ! wpimgobj.copybackground;
+        imgEffectLayer->SetPassthrough(
+            isCompose && (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
+        imgEffectLayer->SetComposeLayer(isCompose);
+        imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
+        // Only visible (non-offscreen) nodes inherit the parent-group
+        // transform.  Offscreen dependency nodes render into their own
+        // fixed-size RTs and must stay centered — applying the parent
+        // group's position would displace their content out of frame.
+        // Synthesized-passthrough-only compose layers also use offscreen
+        // routing, so they shouldn't inherit parent transforms either.
+        imgEffectLayer->SetInheritParent(! effectOffscreen && wpimgobj.parent_id >= 0 &&
+                                         context.node_map.count(wpimgobj.parent_id) > 0);
+        // Create proxy node with parent's baked world transform.
+        // Parent world nodes may have been reset to identity for their own
+        // effect chains, so the live parent chain no longer carries the
+        // correct transform.  The proxy preserves it.
+        if (! effectOffscreen && wpimgobj.parent_id >= 0 &&
+            context.original_world_transforms.count(wpimgobj.parent_id)) {
+            auto proxy = std::make_shared<SceneNode>();
+            // Resolve the attachment anchor the same way original_world_
+            // transforms does above: start from the parent's mesh center,
+            // then apply the named MDAT attachment from the parent's
+            // puppet if one is present.
+            Eigen::Matrix4d parent_chain =
+                context.original_world_transforms[wpimgobj.parent_id];
+            if (! wpimgobj.attachment.empty()) {
+                auto pit = context.node_puppet.find(wpimgobj.parent_id);
+                if (pit != context.node_puppet.end() && pit->second) {
+                    if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
+                        if (att->bone_index < pit->second->bones.size()) {
+                            Eigen::Matrix4d bone_world = pit->second->bones[att->bone_index]
+                                                             .world_transform.matrix()
+                                                             .cast<double>();
+                            parent_chain = parent_chain * bone_world *
+                                           att->transform.matrix().cast<double>();
+                        }
+                    }
+                }
+            }
+            proxy->SetWorldTransform(parent_chain);
+            imgEffectLayer->SetParentProxy(std::move(proxy));
+        }
+        imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
+        imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
+        imgEffectLayer->FinalNode().SetVisibilityOwner(spImgNode.get());
+        // When a shape-quad has Z-rotation, the rotated quad may not cover
+        // the full viewport.  Scale the final node so the rotated rectangle
+        // still contains every viewport corner (prevents hard-edge artefacts).
+        // Only for shape-quads (image.empty()) — regular images should not
+        // be enlarged to cover the viewport.
+        if (! isOffscreen && wpimgobj.image.empty() && std::abs(wpimgobj.angles[2]) > 0.01f) {
+            float theta = std::abs(wpimgobj.angles[2]);
+            float ct = std::cos(theta), st = std::sin(theta);
+            float cx = wpimgobj.origin[0], cy = wpimgobj.origin[1];
+            float vw = (float)context.ortho_w, vh = (float)context.ortho_h;
+            // Max distance from quad center to any viewport corner
+            float max_hx = std::max(cx, vw - cx);
+            float max_hy = std::max(cy, vh - cy);
+            // Effective half-dimensions (mesh size × node scale)
+            float hw = (wpimgobj.size[0] / 2.0f) * wpimgobj.scale[0];
+            float hh = (wpimgobj.size[1] / 2.0f) * wpimgobj.scale[1];
+            if (hw > 0.0f && hh > 0.0f) {
+                float s = std::max((max_hx * ct + max_hy * st) / hw,
+                                   (max_hx * st + max_hy * ct) / hh);
+                if (s > 1.01f) {
+                    s       = std::min(s, 3.0f);
+                    auto sc = imgEffectLayer->FinalNode().Scale();
+                    imgEffectLayer->FinalNode().SetScale(sc * s);
+                    LOG_INFO("  rotation coverage: angle=%.1f° scale=%.3f",
+                             theta * 180.0f / 3.14159265f,
+                             s);
+                }
+            }
+        }
+        if (isCompose) {
+        } else {
+            spImgNode->CopyTrans(SceneNode());
+        }
+        scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
+        // Register for property script transform redirection.
+        scene.nodeEffectLayerMap[wpimgobj.id] = imgEffectLayer.get();
+    }
+    // set renderTarget for ping-pong operate
+    {
+        scene.renderTargets[effect_ppong_a] = {
+            .width      = (uint16_t)wpimgobj.size[0],
+            .height     = (uint16_t)wpimgobj.size[1],
+            .allowReuse = true,
+            // Mip chain on pingpongs is NOT enabled.  Tried for halo
+            // softening on Naruto 2800255344's spin compose; the GPU's
+            // anisotropic-derivative LOD selection at the rotated quad
+            // produced visible stairstep pixelation worse than the halo
+            // it was meant to soften.  Other wallpapers (Lucy, NieR 2B,
+            // Itachi, SAO, Portal, Cyberpunk Lucy) showed no visible
+            // softening either since their compose passes don't downsample.
+            // The mip0_view / split-view infrastructure in Vulkan/Parameters
+            // and TextureCache::CreateImage stays in place — required if a
+            // future RT path ever enables multi-mip — but the per-pingpong
+            // opt-in here is off.
+        };
+        if (wpimgobj.fullscreen) {
+            scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
+        }
+        scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
+        if (effectOffscreen) {
+            // Dedicated RT for the final output of invisible dependency nodes
+            // (and synthesized-passthrough-only compose layers).  Sized to
+            // match the layer's pingpong so the link RT is a 1:1 copy of
+            // the captured region.
+            scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
+                scene.renderTargets.at(effect_ppong_a);
+        }
+    }
+
+    int32_t i_eff = -1;
+    for (const auto& wpeffobj : wpimgobj.effects) {
+        i_eff++;
+        if (! wpeffobj.visible) {
+            i_eff--;
+            continue;
+        }
+        std::shared_ptr<SceneImageEffect> imgEffect = std::make_shared<SceneImageEffect>();
+
+        // this will be replace when resolve, use here to get rt info
+        const std::string inRT { effect_ppong_a };
+
+        // fbo name map and effect command
+        std::string effaddr = getAddr(imgEffectLayer.get());
+
+        std::unordered_map<std::string, std::string> fboMap;
+        {
+            fboMap["previous"] = inRT;
+            for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
+                const auto& wpfbo  = wpeffobj.fbos.at(i);
+                std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
+                if (wpimgobj.fullscreen) {
+                    scene.renderTargets[rtname]      = { 2, 2, true };
+                    scene.renderTargets[rtname].bind = {
+                        .enable = true,
+                        .screen = true,
+                        .scale  = 1.0 / wpfbo.scale,
+                    };
+                } else {
+                    // i+2 for not override object's rt
+                    scene.renderTargets[rtname] = {
+                        .width      = (uint16_t)(wpimgobj.size[0] / (float)wpfbo.scale),
+                        .height     = (uint16_t)(wpimgobj.size[1] / (float)wpfbo.scale),
+                        .allowReuse = true
+                    };
+                }
+                fboMap[wpfbo.name] = rtname;
+            }
+        }
+        // load! effect commands
+        {
+            for (const auto& el : wpeffobj.commands) {
+                SceneImageEffect::CmdType cmdType;
+                if (el.command == "copy") {
+                    cmdType = SceneImageEffect::CmdType::Copy;
+                } else if (el.command == "swap") {
+                    cmdType = SceneImageEffect::CmdType::Swap;
+                } else {
+                    LOG_ERROR("Unknown effect command: %s", el.command.c_str());
+                    continue;
+                }
+                if (fboMap.count(el.target) + fboMap.count(el.source) < 2) {
+                    LOG_ERROR("Unknown effect command dst or src: %s %s",
+                              el.target.c_str(),
+                              el.source.c_str());
+                    continue;
+                }
+                imgEffect->commands.push_back({ .cmd      = cmdType,
+                                                .dst      = fboMap[el.target],
+                                                .src      = fboMap[el.source],
+                                                .afterpos = el.afterpos });
+            }
+        }
+
+        bool eff_mat_ok { true };
+
+        for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
+            wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
+            std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
+            if (wpeffobj.passes.size() > i_mat) {
+                const auto& wppass = wpeffobj.passes.at(i_mat);
+                wpmat.MergePass(wppass);
+                // Set rendertarget, in and out
+                for (const auto& el : wppass.bind) {
+                    if (fboMap.count(el.name) == 0) {
+                        LOG_ERROR("fbo %s not found", el.name.c_str());
+                        continue;
+                    }
+                    if (wpmat.textures.size() <= (usize)el.index)
+                        wpmat.textures.resize((usize)el.index + 1);
+                    wpmat.textures[(usize)el.index] = fboMap[el.name];
+                }
+                if (! wppass.target.empty()) {
+                    if (fboMap.count(wppass.target) == 0) {
+                        LOG_ERROR("fbo %s not found", wppass.target.c_str());
+                    } else {
+                        matOutRT = fboMap.at(wppass.target);
+                    }
+                }
+            }
+            if (wpmat.textures.size() == 0) wpmat.textures.resize(1);
+            if (wpmat.textures.at(0).empty()) {
+                wpmat.textures[0] = inRT;
+            }
+            auto         spEffNode  = std::make_shared<SceneNode>();
+            std::string  effmataddr = getAddr(spEffNode.get());
+            WPShaderInfo wpEffShaderInfo;
+            wpEffShaderInfo.baseConstSvs = baseConstSvs;
+            // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
+            // don't re-apply g_Color4 (would double-count alpha and re-tint)
+            if (wpmat.combos.count("BLENDMODE") != 0) {
+                wpEffShaderInfo.baseConstSvs["g_Color4"] =
+                    std::array<float, 4> { 1.0f, 1.0f, 1.0f, 1.0f };
+            }
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            SceneMaterial     material;
+            WPShaderValueData svData;
+            if (! LoadMaterial(vfs,
+                               wpmat,
+                               context.scene.get(),
+                               spEffNode.get(),
+                               &material,
+                               &svData,
+                               &wpEffShaderInfo)) {
+                eff_mat_ok = false;
+                break;
+            }
+
+            // load glname from alias and load to constvalue
+            LoadConstvalue(material, wpmat, wpEffShaderInfo);
+            auto spMesh = std::make_shared<SceneMesh>();
+            {
+                svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
+                if (puppet && wpmat.use_puppet) {
+                    svData.puppet_layer = WPPuppetLayer(puppet->puppet);
+                    svData.puppet_layer.prepared(wpimgobj.puppet_layers);
+                }
+            }
+            spMesh->AddMaterial(std::move(material));
+            spEffNode->AddMesh(spMesh);
+
+            // Register user property bindings for effect material uniforms
+            if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
+                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                    std::string glname;
+                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
+                        glname = wpEffShaderInfo.alias.at(shaderConstName);
+                    } else {
+                        for (const auto& el : wpEffShaderInfo.alias) {
+                            if (el.second.substr(2) == shaderConstName) {
+                                glname = el.second;
+                                break;
+                            }
+                        }
+                    }
+                    if (glname.empty()) glname = shaderConstName;
+                    context.scene->userPropUniformBindings[propName].push_back(
+                        { spMesh->Material(), glname });
+                    LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
+                             propName.c_str(),
+                             glname.c_str(),
+                             wpimgobj.id);
+                }
+            }
+
+            context.shader_updater->SetNodeData(spEffNode.get(), svData);
+            spEffNode->SetVisibilityOwner(spImgNode.get());
+            imgEffect->nodes.push_back({ matOutRT, spEffNode });
+        }
+
+        if (eff_mat_ok) {
+            imgEffect->name = wpeffobj.name;
+            imgEffectLayer->AddEffect(imgEffect);
+            LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
+                     i_eff,
+                     wpeffobj.name.c_str(),
+                     imgEffect->nodes.size());
+        } else {
+            LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
+        }
+    }
+    // Store effect names per layer for SceneScript getEffect()
+    {
+        std::vector<std::string> effNames;
+        for (size_t i = 0; i < imgEffectLayer->EffectCount(); i++) {
+            effNames.push_back(imgEffectLayer->GetEffect(i)->name);
+        }
+        if (! effNames.empty()) {
+            context.scene->layerEffectNames[wpimgobj.name] = std::move(effNames);
+        }
+    }
+    LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",
+             wpimgobj.id,
+             imgEffectLayer->EffectCount(),
+             (int)isCompose,
+             (int)isOffscreen);
+
+    // In perspective scenes, flat image layers need the ortho overlay camera
+    // for their final composite (not the perspective camera).
+    if (scene.cameras.count("global_ortho") && ! wpimgobj.perspective) {
+        imgEffectLayer->SetFinalCamera("global_ortho");
+    }
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -2127,357 +2491,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     computeWorldTransformAndAttachments(context, wpimgobj, spImgNode.get(), puppet.get());
 
     if (hasEffect) {
-        auto& scene = *context.scene;
-        // currently use addr for unique
-        std::string nodeAddr = getAddr(spImgNode.get());
-        // set camera to attatch effect
-        if (isCompose) {
-            // For compose effects, use scene ortho dimensions (works for both
-            // ortho and perspective scenes; perspective activeCamera Width/Height
-            // defaults to 1.0 which is too small).
-            i32 cw = context.ortho_w > 0 ? context.ortho_w : (i32)scene.activeCamera->Width();
-            i32 ch = context.ortho_h > 0 ? context.ortho_h : (i32)scene.activeCamera->Height();
-            scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(cw, ch, -1.0f, 1.0f);
-            scene.cameras.at(nodeAddr)->AttatchNode(scene.activeCamera->GetAttachedNode());
-            if (scene.linkedCameras.count("global") == 0) scene.linkedCameras["global"] = {};
-            scene.linkedCameras.at("global").push_back(nodeAddr);
-        } else {
-            // applly scale to crop
-            i32 w                   = (i32)wpimgobj.size[0];
-            i32 h                   = (i32)wpimgobj.size[1];
-            scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(w, h, -1.0f, 1.0f);
-            scene.cameras.at(nodeAddr)->AttatchNode(context.effect_camera_node);
-        }
-        spImgNode->SetCamera(nodeAddr);
-        std::string effect_ppong_a, effect_ppong_b;
-        effect_ppong_a = WE_EFFECT_PPONG_PREFIX_A.data() + nodeAddr;
-        effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
-        // set image effect
-        auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(
-            spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
-        {
-            imgEffectLayer->SetFinalBlend(imgBlendMode);
-            imgEffectLayer->SetOffscreen(effectOffscreen);
-            // Compose layer with copybackground:false — author intent is "do
-            // NOT capture _rt_default into the pingpong" (e.g. Nightingale
-            // 3470764447 id=249 with colorBlendMode=21 BlendReflect, where
-            // capturing the screen amplifies the day-character's blue TV-glow
-            // into a hard-edged blue rectangle at the layer's bbox).  Force
-            // passthrough so SceneToRenderGraph takes the alternate path that
-            // (a) skips the composelayer.frag base-pass screen capture, and
-            // (b) honors copybackground=false to also skip the implicit copy.
-            // The pingpong stays cleared, BlendReflect over a transparent
-            // pingpong = no-op, no blue box.
-            const bool forcePassthroughForCopyBg = isCompose && ! wpimgobj.copybackground;
-            imgEffectLayer->SetPassthrough(
-                isCompose && (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
-            imgEffectLayer->SetComposeLayer(isCompose);
-            imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
-            // Only visible (non-offscreen) nodes inherit the parent-group
-            // transform.  Offscreen dependency nodes render into their own
-            // fixed-size RTs and must stay centered — applying the parent
-            // group's position would displace their content out of frame.
-            // Synthesized-passthrough-only compose layers also use offscreen
-            // routing, so they shouldn't inherit parent transforms either.
-            imgEffectLayer->SetInheritParent(! effectOffscreen && wpimgobj.parent_id >= 0 &&
-                                             context.node_map.count(wpimgobj.parent_id) > 0);
-            // Create proxy node with parent's baked world transform.
-            // Parent world nodes may have been reset to identity for their own
-            // effect chains, so the live parent chain no longer carries the
-            // correct transform.  The proxy preserves it.
-            if (! effectOffscreen && wpimgobj.parent_id >= 0 &&
-                context.original_world_transforms.count(wpimgobj.parent_id)) {
-                auto proxy = std::make_shared<SceneNode>();
-                // Resolve the attachment anchor the same way original_world_
-                // transforms does above: start from the parent's mesh center,
-                // then apply the named MDAT attachment from the parent's
-                // puppet if one is present.
-                Eigen::Matrix4d parent_chain =
-                    context.original_world_transforms[wpimgobj.parent_id];
-                if (! wpimgobj.attachment.empty()) {
-                    auto pit = context.node_puppet.find(wpimgobj.parent_id);
-                    if (pit != context.node_puppet.end() && pit->second) {
-                        if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
-                            if (att->bone_index < pit->second->bones.size()) {
-                                Eigen::Matrix4d bone_world = pit->second->bones[att->bone_index]
-                                                                 .world_transform.matrix()
-                                                                 .cast<double>();
-                                parent_chain = parent_chain * bone_world *
-                                               att->transform.matrix().cast<double>();
-                            }
-                        }
-                    }
-                }
-                proxy->SetWorldTransform(parent_chain);
-                imgEffectLayer->SetParentProxy(std::move(proxy));
-            }
-            imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
-            imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
-            imgEffectLayer->FinalNode().SetVisibilityOwner(spImgNode.get());
-            // When a shape-quad has Z-rotation, the rotated quad may not cover
-            // the full viewport.  Scale the final node so the rotated rectangle
-            // still contains every viewport corner (prevents hard-edge artefacts).
-            // Only for shape-quads (image.empty()) — regular images should not
-            // be enlarged to cover the viewport.
-            if (! isOffscreen && wpimgobj.image.empty() && std::abs(wpimgobj.angles[2]) > 0.01f) {
-                float theta = std::abs(wpimgobj.angles[2]);
-                float ct = std::cos(theta), st = std::sin(theta);
-                float cx = wpimgobj.origin[0], cy = wpimgobj.origin[1];
-                float vw = (float)context.ortho_w, vh = (float)context.ortho_h;
-                // Max distance from quad center to any viewport corner
-                float max_hx = std::max(cx, vw - cx);
-                float max_hy = std::max(cy, vh - cy);
-                // Effective half-dimensions (mesh size × node scale)
-                float hw = (wpimgobj.size[0] / 2.0f) * wpimgobj.scale[0];
-                float hh = (wpimgobj.size[1] / 2.0f) * wpimgobj.scale[1];
-                if (hw > 0.0f && hh > 0.0f) {
-                    float s = std::max((max_hx * ct + max_hy * st) / hw,
-                                       (max_hx * st + max_hy * ct) / hh);
-                    if (s > 1.01f) {
-                        s       = std::min(s, 3.0f);
-                        auto sc = imgEffectLayer->FinalNode().Scale();
-                        imgEffectLayer->FinalNode().SetScale(sc * s);
-                        LOG_INFO("  rotation coverage: angle=%.1f° scale=%.3f",
-                                 theta * 180.0f / 3.14159265f,
-                                 s);
-                    }
-                }
-            }
-            if (isCompose) {
-            } else {
-                spImgNode->CopyTrans(SceneNode());
-            }
-            scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
-            // Register for property script transform redirection.
-            scene.nodeEffectLayerMap[wpimgobj.id] = imgEffectLayer.get();
-        }
-        // set renderTarget for ping-pong operate
-        {
-            scene.renderTargets[effect_ppong_a] = {
-                .width      = (uint16_t)wpimgobj.size[0],
-                .height     = (uint16_t)wpimgobj.size[1],
-                .allowReuse = true,
-                // Mip chain on pingpongs is NOT enabled.  Tried for halo
-                // softening on Naruto 2800255344's spin compose; the GPU's
-                // anisotropic-derivative LOD selection at the rotated quad
-                // produced visible stairstep pixelation worse than the halo
-                // it was meant to soften.  Other wallpapers (Lucy, NieR 2B,
-                // Itachi, SAO, Portal, Cyberpunk Lucy) showed no visible
-                // softening either since their compose passes don't downsample.
-                // The mip0_view / split-view infrastructure in Vulkan/Parameters
-                // and TextureCache::CreateImage stays in place — required if a
-                // future RT path ever enables multi-mip — but the per-pingpong
-                // opt-in here is off.
-            };
-            if (wpimgobj.fullscreen) {
-                scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
-            }
-            scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
-            if (effectOffscreen) {
-                // Dedicated RT for the final output of invisible dependency nodes
-                // (and synthesized-passthrough-only compose layers).  Sized to
-                // match the layer's pingpong so the link RT is a 1:1 copy of
-                // the captured region.
-                scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
-                    scene.renderTargets.at(effect_ppong_a);
-            }
-        }
-
-        int32_t i_eff = -1;
-        for (const auto& wpeffobj : wpimgobj.effects) {
-            i_eff++;
-            if (! wpeffobj.visible) {
-                i_eff--;
-                continue;
-            }
-            std::shared_ptr<SceneImageEffect> imgEffect = std::make_shared<SceneImageEffect>();
-
-            // this will be replace when resolve, use here to get rt info
-            const std::string inRT { effect_ppong_a };
-
-            // fbo name map and effect command
-            std::string effaddr = getAddr(imgEffectLayer.get());
-
-            std::unordered_map<std::string, std::string> fboMap;
-            {
-                fboMap["previous"] = inRT;
-                for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
-                    const auto& wpfbo  = wpeffobj.fbos.at(i);
-                    std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
-                    if (wpimgobj.fullscreen) {
-                        scene.renderTargets[rtname]      = { 2, 2, true };
-                        scene.renderTargets[rtname].bind = {
-                            .enable = true,
-                            .screen = true,
-                            .scale  = 1.0 / wpfbo.scale,
-                        };
-                    } else {
-                        // i+2 for not override object's rt
-                        scene.renderTargets[rtname] = {
-                            .width      = (uint16_t)(wpimgobj.size[0] / (float)wpfbo.scale),
-                            .height     = (uint16_t)(wpimgobj.size[1] / (float)wpfbo.scale),
-                            .allowReuse = true
-                        };
-                    }
-                    fboMap[wpfbo.name] = rtname;
-                }
-            }
-            // load! effect commands
-            {
-                for (const auto& el : wpeffobj.commands) {
-                    SceneImageEffect::CmdType cmdType;
-                    if (el.command == "copy") {
-                        cmdType = SceneImageEffect::CmdType::Copy;
-                    } else if (el.command == "swap") {
-                        cmdType = SceneImageEffect::CmdType::Swap;
-                    } else {
-                        LOG_ERROR("Unknown effect command: %s", el.command.c_str());
-                        continue;
-                    }
-                    if (fboMap.count(el.target) + fboMap.count(el.source) < 2) {
-                        LOG_ERROR("Unknown effect command dst or src: %s %s",
-                                  el.target.c_str(),
-                                  el.source.c_str());
-                        continue;
-                    }
-                    imgEffect->commands.push_back({ .cmd      = cmdType,
-                                                    .dst      = fboMap[el.target],
-                                                    .src      = fboMap[el.source],
-                                                    .afterpos = el.afterpos });
-                }
-            }
-
-            bool eff_mat_ok { true };
-
-            for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
-                wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
-                std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
-                if (wpeffobj.passes.size() > i_mat) {
-                    const auto& wppass = wpeffobj.passes.at(i_mat);
-                    wpmat.MergePass(wppass);
-                    // Set rendertarget, in and out
-                    for (const auto& el : wppass.bind) {
-                        if (fboMap.count(el.name) == 0) {
-                            LOG_ERROR("fbo %s not found", el.name.c_str());
-                            continue;
-                        }
-                        if (wpmat.textures.size() <= (usize)el.index)
-                            wpmat.textures.resize((usize)el.index + 1);
-                        wpmat.textures[(usize)el.index] = fboMap[el.name];
-                    }
-                    if (! wppass.target.empty()) {
-                        if (fboMap.count(wppass.target) == 0) {
-                            LOG_ERROR("fbo %s not found", wppass.target.c_str());
-                        } else {
-                            matOutRT = fboMap.at(wppass.target);
-                        }
-                    }
-                }
-                if (wpmat.textures.size() == 0) wpmat.textures.resize(1);
-                if (wpmat.textures.at(0).empty()) {
-                    wpmat.textures[0] = inRT;
-                }
-                auto         spEffNode  = std::make_shared<SceneNode>();
-                std::string  effmataddr = getAddr(spEffNode.get());
-                WPShaderInfo wpEffShaderInfo;
-                wpEffShaderInfo.baseConstSvs = baseConstSvs;
-                // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
-                // don't re-apply g_Color4 (would double-count alpha and re-tint)
-                if (wpmat.combos.count("BLENDMODE") != 0) {
-                    wpEffShaderInfo.baseConstSvs["g_Color4"] =
-                        std::array<float, 4> { 1.0f, 1.0f, 1.0f, 1.0f };
-                }
-                wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
-                    ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-                wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
-                    ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-                SceneMaterial     material;
-                WPShaderValueData svData;
-                if (! LoadMaterial(vfs,
-                                   wpmat,
-                                   context.scene.get(),
-                                   spEffNode.get(),
-                                   &material,
-                                   &svData,
-                                   &wpEffShaderInfo)) {
-                    eff_mat_ok = false;
-                    break;
-                }
-
-                // load glname from alias and load to constvalue
-                LoadConstvalue(material, wpmat, wpEffShaderInfo);
-                auto spMesh = std::make_shared<SceneMesh>();
-                {
-                    svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
-                    if (puppet && wpmat.use_puppet) {
-                        svData.puppet_layer = WPPuppetLayer(puppet->puppet);
-                        svData.puppet_layer.prepared(wpimgobj.puppet_layers);
-                    }
-                }
-                spMesh->AddMaterial(std::move(material));
-                spEffNode->AddMesh(spMesh);
-
-                // Register user property bindings for effect material uniforms
-                if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
-                    for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
-                        std::string glname;
-                        if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
-                            glname = wpEffShaderInfo.alias.at(shaderConstName);
-                        } else {
-                            for (const auto& el : wpEffShaderInfo.alias) {
-                                if (el.second.substr(2) == shaderConstName) {
-                                    glname = el.second;
-                                    break;
-                                }
-                            }
-                        }
-                        if (glname.empty()) glname = shaderConstName;
-                        context.scene->userPropUniformBindings[propName].push_back(
-                            { spMesh->Material(), glname });
-                        LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
-                                 propName.c_str(),
-                                 glname.c_str(),
-                                 wpimgobj.id);
-                    }
-                }
-
-                context.shader_updater->SetNodeData(spEffNode.get(), svData);
-                spEffNode->SetVisibilityOwner(spImgNode.get());
-                imgEffect->nodes.push_back({ matOutRT, spEffNode });
-            }
-
-            if (eff_mat_ok) {
-                imgEffect->name = wpeffobj.name;
-                imgEffectLayer->AddEffect(imgEffect);
-                LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
-                         i_eff,
-                         wpeffobj.name.c_str(),
-                         imgEffect->nodes.size());
-            } else {
-                LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
-            }
-        }
-        // Store effect names per layer for SceneScript getEffect()
-        {
-            std::vector<std::string> effNames;
-            for (size_t i = 0; i < imgEffectLayer->EffectCount(); i++) {
-                effNames.push_back(imgEffectLayer->GetEffect(i)->name);
-            }
-            if (! effNames.empty()) {
-                context.scene->layerEffectNames[wpimgobj.name] = std::move(effNames);
-            }
-        }
-        LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",
-                 wpimgobj.id,
-                 imgEffectLayer->EffectCount(),
-                 (int)isCompose,
-                 (int)isOffscreen);
-
-        // In perspective scenes, flat image layers need the ortho overlay camera
-        // for their final composite (not the perspective camera).
-        if (scene.cameras.count("global_ortho") && ! wpimgobj.perspective) {
-            imgEffectLayer->SetFinalCamera("global_ortho");
-        }
+        assembleEffectChain(context, wpimgobj, spImgNode, effct_final_mesh, baseConstSvs,
+                            puppet.get(), imgBlendMode, isOffscreen, effectOffscreen, isCompose);
     }
 
     // In perspective scenes, flat image layers without effects use the ortho
