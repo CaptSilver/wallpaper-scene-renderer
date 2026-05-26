@@ -3362,6 +3362,56 @@ std::optional<TextRasterResult> rasterizeAndRegisterText(
     return TextRasterResult{ std::move(textImage), std::move(texKey), std::move(initialText) };
 }
 
+// Build material: genericimage2 shader with text texture
+wpscene::WPMaterial buildTextWpMaterial(const std::string& texKey) {
+    wpscene::WPMaterial wpMat;
+    wpMat.shader   = "genericimage2";
+    wpMat.blending = "translucent";
+    wpMat.textures.push_back(texKey);
+    // Enable the VERSION combo path so the fragment shader applies our
+    // g_Color4 (authored `color` × alpha) — without it, genericimage2 only
+    // multiplies by g_Brightness/g_UserAlpha and authored colors are
+    // silently dropped.  e.g. wallpaper 2866203962 VHS Time/Date text is
+    // authored yellow (1,1,0) but was rendering white because VERSION was
+    // not set.
+    wpMat.combos["VERSION"] = 1;
+    return wpMat;
+}
+
+// Keep the authored scale.  Apply the WE `anchor` field (separate from
+// halign/valign — `anchor: "right"` etc.) as a translation of the
+// origin: empirical match against wallpaper 2866203962 id=402 (track
+// title, anchor=right, maxwidth=500, authored origin (2518, 1237))
+// shows WE places the TEXT HORIZONTAL CENTER at origin.x + maxwidth/2
+// (and symmetrically for "left"/"top"/"bottom").  Without this offset
+// the track title lands ~240 scene units LEFT of where WE puts it
+// under the music player icons.
+std::array<float, 3> computeAnchorAdjustedOrigin(const wpscene::WPTextObject& textObj,
+                                                  bool                        autosize_canvas) {
+    std::array<float, 3> adjOrigin = textObj.origin;
+    if (autosize_canvas && textObj.maxwidth > 0.0f) {
+        float halfW = textObj.maxwidth * 0.5f;
+        if (textObj.anchor == "right")
+            adjOrigin[0] += halfW;
+        else if (textObj.anchor == "left")
+            adjOrigin[0] -= halfW;
+        // top/bottom would shift Y; no known wallpaper uses those yet.
+    }
+    return adjOrigin;
+}
+
+std::shared_ptr<SceneNode> createTextSceneNode(const wpscene::WPTextObject&   textObj,
+                                               const std::array<float, 3>& adjOrigin) {
+    auto spNode  = std::make_shared<SceneNode>(Vector3f(adjOrigin.data()),
+                                              Vector3f(textObj.scale.data()),
+                                              Vector3f(textObj.angles.data()));
+    spNode->ID() = textObj.id;
+    // Honour the scene.json `visible` field — scripts can flip this at
+    // runtime via `thisLayer.visible = true` once the layer is discovered.
+    spNode->SetVisible(textObj.visible);
+    return spNode;
+}
+
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& vfs = *context.vfs;
 
@@ -3413,43 +3463,9 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& texKey      = rasterResult->texKey;
     auto& initialText = rasterResult->initialText;
 
-    // Build material: genericimage2 shader with text texture
-    wpscene::WPMaterial wpMat;
-    wpMat.shader   = "genericimage2";
-    wpMat.blending = "translucent";
-    wpMat.textures.push_back(texKey);
-    // Enable the VERSION combo path so the fragment shader applies our
-    // g_Color4 (authored `color` × alpha) — without it, genericimage2 only
-    // multiplies by g_Brightness/g_UserAlpha and authored colors are
-    // silently dropped.  e.g. wallpaper 2866203962 VHS Time/Date text is
-    // authored yellow (1,1,0) but was rendering white because VERSION was
-    // not set.
-    wpMat.combos["VERSION"] = 1;
-
-    // Keep the authored scale.  Apply the WE `anchor` field (separate from
-    // halign/valign — `anchor: "right"` etc.) as a translation of the
-    // origin: empirical match against wallpaper 2866203962 id=402 (track
-    // title, anchor=right, maxwidth=500, authored origin (2518, 1237))
-    // shows WE places the TEXT HORIZONTAL CENTER at origin.x + maxwidth/2
-    // (and symmetrically for "left"/"top"/"bottom").  Without this offset
-    // the track title lands ~240 scene units LEFT of where WE puts it
-    // under the music player icons.
-    std::array<float, 3> adjOrigin = textObj.origin;
-    if (autosize_canvas && textObj.maxwidth > 0.0f) {
-        float halfW = textObj.maxwidth * 0.5f;
-        if (textObj.anchor == "right")
-            adjOrigin[0] += halfW;
-        else if (textObj.anchor == "left")
-            adjOrigin[0] -= halfW;
-        // top/bottom would shift Y; no known wallpaper uses those yet.
-    }
-    auto spNode  = std::make_shared<SceneNode>(Vector3f(adjOrigin.data()),
-                                              Vector3f(textObj.scale.data()),
-                                              Vector3f(textObj.angles.data()));
-    spNode->ID() = textObj.id;
-    // Honour the scene.json `visible` field — scripts can flip this at
-    // runtime via `thisLayer.visible = true` once the layer is discovered.
-    spNode->SetVisible(textObj.visible);
+    auto wpMat     = buildTextWpMaterial(texKey);
+    auto adjOrigin = computeAnchorAdjustedOrigin(textObj, autosize_canvas);
+    auto spNode    = createTextSceneNode(textObj, adjOrigin);
 
     // Load material
     SceneMaterial     material;
