@@ -2419,6 +2419,83 @@ void assembleEffectChain(ParseContext&                     context,
     }
 }
 
+void applyFlatPerspectiveOrthoCamera(const ParseContext& context,
+                                     const wpscene::WPImageObject& wpimgobj,
+                                     const std::shared_ptr<SceneNode>& spImgNode,
+                                     bool hasEffect) {
+    // In perspective scenes, flat image layers without effects use the ortho
+    // overlay camera instead of the perspective camera.  This makes SceneScript
+    // origin values (UV coordinates in [-0.5, 0.5]) map correctly to screen space.
+    if (! hasEffect && context.scene->activeCamera->IsPerspective() && ! wpimgobj.perspective &&
+        context.scene->cameras.count("global_ortho")) {
+        spImgNode->SetCamera("global_ortho");
+    }
+}
+
+void ensureBareDependencyOffscreenRT(ParseContext& context,
+                                     const wpscene::WPImageObject& wpimgobj,
+                                     bool isOffscreen,
+                                     bool hasEffect) {
+    // Invisible nodes without effects still need an offscreen RT so their output
+    // can be referenced via link tex by compose layers.
+    if (isOffscreen && ! hasEffect) {
+        auto& scene = *context.scene;
+        // Clamp to >=1px: a 0-dimension RT fails Vulkan image creation
+        // (VK_ERROR_INITIALIZATION_FAILED).  hasArea already excludes 0x0 from
+        // the speculative isOffscreen above, but a layer forced offscreen as a
+        // compose dependency could still arrive here zero-sized.
+        scene.renderTargets[GenOffscreenRT(wpimgobj.id)] = {
+            .width      = (uint16_t)std::max(1.0f, wpimgobj.size[0]),
+            .height     = (uint16_t)std::max(1.0f, wpimgobj.size[1]),
+            .allowReuse = true,
+        };
+        LOG_INFO("  created offscreen RT '%s' for id=%d (%dx%d)",
+                 GenOffscreenRT(wpimgobj.id).c_str(),
+                 wpimgobj.id,
+                 (int)wpimgobj.size[0],
+                 (int)wpimgobj.size[1]);
+    }
+}
+
+void attachNodeToScene(ParseContext& context,
+                       const wpscene::WPImageObject& wpimgobj,
+                       const std::shared_ptr<SceneNode>& spImgNode,
+                       bool isOffscreen,
+                       bool hasEffect,
+                       bool isCompose) {
+    // Add to parent node if this object has a parent, otherwise to root scene graph
+    if (wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id)) {
+        context.node_map.at(wpimgobj.parent_id)->AppendChild(spImgNode);
+        // Disconnect parent-chain transform for nodes whose base pass uses a
+        // per-node effect camera at origin:
+        //   - Offscreen nodes render to dedicated RTs with the "effect" camera.
+        //   - Non-compose effect images render their base pass to pingpong_a
+        //     with a per-image ortho camera attached to effect_camera_node
+        //     (at origin).  Leaving the parent chain attached would place
+        //     the image's world position outside [-1,1] NDC (e.g. characters
+        //     positioned at scene center (1920,1080) when camera ortho is
+        //     sized to the image), clipping all geometry.  CopyTrans(identity)
+        //     earlier reset the local transform; clearing the parent here
+        //     completes the reset so ModelTrans = identity for this pass.
+        // Compose layers keep the parent chain — their base pass renders to
+        // the scene-sized compose RT via the scene ortho camera, so world
+        // position is correct there.
+        bool disconnect_parent = isOffscreen || (hasEffect && ! isCompose);
+        if (disconnect_parent) {
+            spImgNode->InheritParent(SceneNode());
+        }
+        LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
+                 wpimgobj.id,
+                 wpimgobj.parent_id,
+                 (int)disconnect_parent);
+    } else {
+        context.scene->sceneGraph->AppendChild(spImgNode);
+        LOG_INFO("  ParseImageObj id=%d completed, added to scene graph", wpimgobj.id);
+    }
+    // Register this node in the map so other objects can reference it as parent
+    context.node_map[wpimgobj.id] = spImgNode;
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -2495,64 +2572,9 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                             puppet.get(), imgBlendMode, isOffscreen, effectOffscreen, isCompose);
     }
 
-    // In perspective scenes, flat image layers without effects use the ortho
-    // overlay camera instead of the perspective camera.  This makes SceneScript
-    // origin values (UV coordinates in [-0.5, 0.5]) map correctly to screen space.
-    if (! hasEffect && context.scene->activeCamera->IsPerspective() && ! wpimgobj.perspective &&
-        context.scene->cameras.count("global_ortho")) {
-        spImgNode->SetCamera("global_ortho");
-    }
-
-    // Invisible nodes without effects still need an offscreen RT so their output
-    // can be referenced via link tex by compose layers.
-    if (isOffscreen && ! hasEffect) {
-        auto& scene = *context.scene;
-        // Clamp to >=1px: a 0-dimension RT fails Vulkan image creation
-        // (VK_ERROR_INITIALIZATION_FAILED).  hasArea already excludes 0x0 from
-        // the speculative isOffscreen above, but a layer forced offscreen as a
-        // compose dependency could still arrive here zero-sized.
-        scene.renderTargets[GenOffscreenRT(wpimgobj.id)] = {
-            .width      = (uint16_t)std::max(1.0f, wpimgobj.size[0]),
-            .height     = (uint16_t)std::max(1.0f, wpimgobj.size[1]),
-            .allowReuse = true,
-        };
-        LOG_INFO("  created offscreen RT '%s' for id=%d (%dx%d)",
-                 GenOffscreenRT(wpimgobj.id).c_str(),
-                 wpimgobj.id,
-                 (int)wpimgobj.size[0],
-                 (int)wpimgobj.size[1]);
-    }
-    // Add to parent node if this object has a parent, otherwise to root scene graph
-    if (wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id)) {
-        context.node_map.at(wpimgobj.parent_id)->AppendChild(spImgNode);
-        // Disconnect parent-chain transform for nodes whose base pass uses a
-        // per-node effect camera at origin:
-        //   - Offscreen nodes render to dedicated RTs with the "effect" camera.
-        //   - Non-compose effect images render their base pass to pingpong_a
-        //     with a per-image ortho camera attached to effect_camera_node
-        //     (at origin).  Leaving the parent chain attached would place
-        //     the image's world position outside [-1,1] NDC (e.g. characters
-        //     positioned at scene center (1920,1080) when camera ortho is
-        //     sized to the image), clipping all geometry.  CopyTrans(identity)
-        //     earlier reset the local transform; clearing the parent here
-        //     completes the reset so ModelTrans = identity for this pass.
-        // Compose layers keep the parent chain — their base pass renders to
-        // the scene-sized compose RT via the scene ortho camera, so world
-        // position is correct there.
-        bool disconnect_parent = isOffscreen || (hasEffect && ! isCompose);
-        if (disconnect_parent) {
-            spImgNode->InheritParent(SceneNode());
-        }
-        LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
-                 wpimgobj.id,
-                 wpimgobj.parent_id,
-                 (int)disconnect_parent);
-    } else {
-        context.scene->sceneGraph->AppendChild(spImgNode);
-        LOG_INFO("  ParseImageObj id=%d completed, added to scene graph", wpimgobj.id);
-    }
-    // Register this node in the map so other objects can reference it as parent
-    context.node_map[wpimgobj.id] = spImgNode;
+    applyFlatPerspectiveOrthoCamera(context, wpimgobj, spImgNode, hasEffect);
+    ensureBareDependencyOffscreenRT(context, wpimgobj, isOffscreen, hasEffect);
+    attachNodeToScene(context, wpimgobj, spImgNode, isOffscreen, hasEffect, isCompose);
 }
 
 struct ParticleChildPtr {
