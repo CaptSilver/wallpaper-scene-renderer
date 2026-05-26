@@ -7712,6 +7712,40 @@ TEST_SUITE("JS watchdog back-off policy (A3-T2)") {
         wd.stop();
     }
 
+    TEST_CASE("start() is safe under concurrent callers (no double-spawn)") {
+        // The pre-fix start() did an acquire-load → release-store with no lock,
+        // so two concurrent callers could both pass the running-flag check and
+        // both move-assign over a joinable m_thread → std::terminate.  The
+        // mutex-protected fix serialises the spawn so only the first wins.
+        // Race-window maximiser: barrier both threads before the start() call.
+        JsWatchdog       wd;
+        std::atomic<int> ready { 0 };
+        std::atomic<int> go { 0 };
+        auto             worker = [&] {
+            ready.fetch_add(1, std::memory_order_acq_rel);
+            while (go.load(std::memory_order_acquire) == 0) {
+            }
+            wd.start();
+        };
+        std::thread t1(worker);
+        std::thread t2(worker);
+        while (ready.load(std::memory_order_acquire) < 2) {
+        }
+        go.store(1, std::memory_order_release);
+        t1.join();
+        t2.join();
+        // Surviving here means no terminate fired; start() is idempotent under
+        // contention and the second call short-circuited.  arm/disarm must
+        // still work against the single spawned monitor thread.
+        QJSEngine engine;
+        wd.arm(&engine, 30);
+        QJSValue r = engine.evaluate("(function(){ while(true){} })").call();
+        CHECK(wd.disarm() == true);
+        CHECK(r.isError() == true);
+        engine.setInterrupted(false);
+        wd.stop();
+    }
+
     // Item 05 — the shared back-off helper (SceneObject::applyInterruptBackoff) is
     // a thin wrapper over shouldDisableAfterInterrupts + a disabled flag + a timer
     // stop.  scenescript_tests can't build SceneObject, so this fixture is a

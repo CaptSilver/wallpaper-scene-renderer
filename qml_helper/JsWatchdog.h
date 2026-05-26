@@ -61,9 +61,15 @@ public:
     JsWatchdog(const JsWatchdog&)            = delete;
     JsWatchdog& operator=(const JsWatchdog&) = delete;
 
-    // Lazily start the monitor thread.  Idempotent.
+    // Lazily start the monitor thread.  Idempotent — and safe under concurrent
+    // callers: the mutex serialises the running-flag check and thread spawn so
+    // two concurrent start() calls can't both pass the check and both
+    // move-assign over a joinable m_thread (which would call std::terminate).
+    // After a matched stop() the second start() validly re-spawns since stop()
+    // joins m_thread before returning.
     void start() {
-        if (m_running.load(std::memory_order_acquire)) return;
+        std::lock_guard<std::mutex> lk(m_mtx);
+        if (m_running.load(std::memory_order_relaxed)) return;
         m_running.store(true, std::memory_order_release);
         m_thread = std::thread([this] {
             monitorLoop();

@@ -182,11 +182,11 @@ public:
             LOG_ERROR("can't stop sound device");
         }*/
     }
-    float Volume() const { return m_volume; }
-    bool  Muted() const { return m_muted; }
-    void  SetMuted(bool v) { m_muted = v; }
+    float Volume() const { return m_volume.load(std::memory_order_relaxed); }
+    bool  Muted() const { return m_muted.load(std::memory_order_relaxed); }
+    void  SetMuted(bool v) { m_muted.store(v, std::memory_order_relaxed); }
 
-    void SetVolume(float v) { m_volume = v; };
+    void SetVolume(float v) { m_volume.store(v, std::memory_order_relaxed); };
 
     using SpectrumCallback = std::function<void(const float*, uint32_t, uint32_t)>;
     void SetSpectrumCallback(SpectrumCallback cb) { m_spectrum_callback = std::move(cb); }
@@ -232,6 +232,10 @@ public:
         {
             std::unique_lock<std::mutex> lock { m_mutex };
 
+            // Snapshot the atomic volume once per frame — the writer
+            // (SetVolume from the main looper) races the audio-thread reader,
+            // but the per-channel mix loop wants a stable scalar.
+            const float volume   = m_volume.load(std::memory_order_relaxed);
             float* pBuffer_float = reinterpret_cast<float*>(m_frameBuffer.data());
             for (size_t i = 0; i < m_channels.size(); i++) {
                 ma_uint64 framesReaded =
@@ -240,7 +244,7 @@ public:
                     m_channels[i].end = true;
                 } else {
                     for (size_t s = 0; s < framesSize; s++)
-                        m_mixBuffer[s] += m_volume * pBuffer_float[s];
+                        m_mixBuffer[s] += volume * pBuffer_float[s];
                 }
             }
             m_channels.erase(std::remove_if(m_channels.begin(),
@@ -250,7 +254,7 @@ public:
                                             }),
                              m_channels.end());
         }
-        if (m_muted) {
+        if (m_muted.load(std::memory_order_relaxed)) {
             std::memset(pOutput, 0, framesByteSize);
         } else {
             std::memcpy(pOutput, m_mixBuffer.data(), framesByteSize);
@@ -290,8 +294,12 @@ private:
     std::mutex        m_mutex;     // for operating channel vector
     std::atomic<bool> m_running { false };
 
-    float m_volume { 1.0f };
-    bool  m_muted { false };
+    // Atomic so SetVolume/SetMuted (called from the main looper) don't tear
+    // against the audio-thread data callback's reads inside ProcessFrame.
+    // Relaxed is sufficient — these are independent values, not gating any
+    // other read.
+    std::atomic<float> m_volume { 1.0f };
+    std::atomic<bool>  m_muted { false };
 
     std::vector<ChannelWrap> m_channels;
     std::vector<uint8_t>     m_frameBuffer;
