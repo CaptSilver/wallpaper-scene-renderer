@@ -3465,91 +3465,29 @@ TextEffectBlend adjustBlendForTextEffects(const wpscene::WPTextObject& textObj, 
     return TextEffectBlend{ hasEffect, imgBlendMode };
 }
 
-void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
-    auto& vfs = *context.vfs;
-
-    LOG_INFO("ParseTextObj: id=%d name='%s' font='%s' text='%s' visible=%d",
-             textObj.id,
-             textObj.name.c_str(),
-             textObj.font.c_str(),
-             textObj.textValue.c_str(),
-             (int)textObj.visible);
-
-    // For invisible, empty text, or system font objects, create a placeholder node
-    // so SceneScript can discover the layer via getLayer(). Scripts may set text
-    // dynamically or toggle visibility at runtime.
-    auto createPlaceholderNode = [&]() {
-        auto spNode  = std::make_shared<SceneNode>(Vector3f(textObj.origin.data()),
-                                                  Vector3f(textObj.scale.data()),
-                                                  Vector3f(textObj.angles.data()));
-        spNode->ID() = textObj.id;
-        spNode->SetVisible(textObj.visible);
-        context.scene->sceneGraph->AppendChild(spNode);
-        context.node_map[textObj.id] = spNode;
-        LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
-    };
-
-    // Empty font -> no rasterization possible.  Placeholder keeps getLayer() working.
-    if (textObj.font.empty()) {
-        LOG_INFO("  empty font, creating placeholder");
-        createPlaceholderNode();
-        return;
-    }
-
-    auto fontResult = loadTextFontData(vfs, textObj);
-    if (! fontResult) {
-        createPlaceholderNode();
-        return;
-    }
-    auto& fontData = fontResult->fontData;
-
-    auto canvas          = resolveTextCanvasSize(textObj);
-    i32  texW            = canvas.texW;
-    i32  texH            = canvas.texH;
-    bool autosize_canvas = canvas.autosize_canvas;
-
-    auto rasterResult = rasterizeAndRegisterText(context, textObj, fontData, texW, texH);
-    if (! rasterResult) {
-        return;
-    }
-    auto& textImage   = rasterResult->textImage;
-    auto& texKey      = rasterResult->texKey;
-    auto& initialText = rasterResult->initialText;
-
-    auto wpMat     = buildTextWpMaterial(texKey);
-    auto adjOrigin = computeAnchorAdjustedOrigin(textObj, autosize_canvas);
-    auto spNode    = createTextSceneNode(textObj, adjOrigin);
-
-    auto baseMat = loadTextBaseMaterial(context, textObj, wpMat, spNode.get());
-    if (! baseMat) {
-        return;
-    }
-    auto& material   = baseMat->material;
-    auto& svData     = baseMat->svData;
-    auto& shaderInfo = baseMat->shaderInfo;
-
-    auto [hasEffect, imgBlendMode] = adjustBlendForTextEffects(textObj, material);
-
-    // Mesh — position it so the authored origin matches WE's anchor point.
-    //
-    // WE anchors text at the origin according to halign/valign:
-    //   halign=left   → origin is at the text's LEFT edge
-    //   halign=center → origin is at text CENTER (default)
-    //   halign=right  → origin is at text's RIGHT edge
-    //   valign=top    → origin is at TOP edge (Y-up: shift mesh down)
-    //   valign=bottom → origin is at BOTTOM edge
-    //
-    // Our GenCardMesh centers the mesh on origin, which misplaces text for
-    // any non-center alignment (the Cyberpunk VHS Time/Date uses left/top —
-    // authored at (2510, 940) should be the top-left corner of the text so
-    // text extends right+down from there into the region right of Lucy's
-    // cheek).  Apply the anchor shift for ALL text layers, not just autosize.
-    //
-    // For autosize text, we additionally scan the rasterized image for
-    // tight pixel bounds — the mesh then covers ONLY the occupied text
-    // region, with UVs mapped to that sub-rect of the canvas.  Keeps the
-    // authored `scale` meaningful (it scales the visible glyphs, not the
-    // padded canvas).
+// Mesh — position it so the authored origin matches WE's anchor point.
+//
+// WE anchors text at the origin according to halign/valign:
+//   halign=left   → origin is at the text's LEFT edge
+//   halign=center → origin is at text CENTER (default)
+//   halign=right  → origin is at text's RIGHT edge
+//   valign=top    → origin is at TOP edge (Y-up: shift mesh down)
+//   valign=bottom → origin is at BOTTOM edge
+//
+// Our GenCardMesh centers the mesh on origin, which misplaces text for
+// any non-center alignment (the Cyberpunk VHS Time/Date uses left/top —
+// authored at (2510, 940) should be the top-left corner of the text so
+// text extends right+down from there into the region right of Lucy's
+// cheek).  Apply the anchor shift for ALL text layers, not just autosize.
+//
+// For autosize text, we additionally scan the rasterized image for
+// tight pixel bounds — the mesh then covers ONLY the occupied text
+// region, with UVs mapped to that sub-rect of the canvas.  Keeps the
+// authored `scale` meaningful (it scales the visible glyphs, not the
+// padded canvas).
+std::shared_ptr<SceneMesh> buildTextMesh(const wpscene::WPTextObject& textObj,
+                                         const std::shared_ptr<Image>& textImage,
+                                         i32 texW, i32 texH, bool autosize_canvas) {
     auto spMesh = std::make_shared<SceneMesh>();
     {
         float anchor_nx = 0.0f, anchor_ny = 0.0f;
@@ -3653,6 +3591,75 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         (void)content_nx;
         (void)content_ny;
     }
+    return spMesh;
+}
+
+void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
+    auto& vfs = *context.vfs;
+
+    LOG_INFO("ParseTextObj: id=%d name='%s' font='%s' text='%s' visible=%d",
+             textObj.id,
+             textObj.name.c_str(),
+             textObj.font.c_str(),
+             textObj.textValue.c_str(),
+             (int)textObj.visible);
+
+    // For invisible, empty text, or system font objects, create a placeholder node
+    // so SceneScript can discover the layer via getLayer(). Scripts may set text
+    // dynamically or toggle visibility at runtime.
+    auto createPlaceholderNode = [&]() {
+        auto spNode  = std::make_shared<SceneNode>(Vector3f(textObj.origin.data()),
+                                                  Vector3f(textObj.scale.data()),
+                                                  Vector3f(textObj.angles.data()));
+        spNode->ID() = textObj.id;
+        spNode->SetVisible(textObj.visible);
+        context.scene->sceneGraph->AppendChild(spNode);
+        context.node_map[textObj.id] = spNode;
+        LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
+    };
+
+    // Empty font -> no rasterization possible.  Placeholder keeps getLayer() working.
+    if (textObj.font.empty()) {
+        LOG_INFO("  empty font, creating placeholder");
+        createPlaceholderNode();
+        return;
+    }
+
+    auto fontResult = loadTextFontData(vfs, textObj);
+    if (! fontResult) {
+        createPlaceholderNode();
+        return;
+    }
+    auto& fontData = fontResult->fontData;
+
+    auto canvas          = resolveTextCanvasSize(textObj);
+    i32  texW            = canvas.texW;
+    i32  texH            = canvas.texH;
+    bool autosize_canvas = canvas.autosize_canvas;
+
+    auto rasterResult = rasterizeAndRegisterText(context, textObj, fontData, texW, texH);
+    if (! rasterResult) {
+        return;
+    }
+    auto& textImage   = rasterResult->textImage;
+    auto& texKey      = rasterResult->texKey;
+    auto& initialText = rasterResult->initialText;
+
+    auto wpMat     = buildTextWpMaterial(texKey);
+    auto adjOrigin = computeAnchorAdjustedOrigin(textObj, autosize_canvas);
+    auto spNode    = createTextSceneNode(textObj, adjOrigin);
+
+    auto baseMat = loadTextBaseMaterial(context, textObj, wpMat, spNode.get());
+    if (! baseMat) {
+        return;
+    }
+    auto& material   = baseMat->material;
+    auto& svData     = baseMat->svData;
+    auto& shaderInfo = baseMat->shaderInfo;
+
+    auto [hasEffect, imgBlendMode] = adjustBlendForTextEffects(textObj, material);
+
+    auto spMesh = buildTextMesh(textObj, textImage, texW, texH, autosize_canvas);
     spMesh->AddMaterial(std::move(material));
     spNode->AddMesh(spMesh);
 
