@@ -305,6 +305,7 @@ private:
     void setupEngineGlobals();
     void installTimerBridge();
     void buildLayerProxyStates();
+    void buildSoundStates();
     void refreshJsUserProperties();
     void fireApplyUserProperties();
     // Fires the "applyGeneralSettings" scene event (distinct from

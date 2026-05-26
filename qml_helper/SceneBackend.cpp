@@ -1755,232 +1755,7 @@ void SceneObject::setupTextScripts() {
 
     buildLayerProxyStates();
 
-    // Sound layer control infrastructure for SceneScript play/stop/pause API
-    {
-        auto soundLayers = m_scene->getSoundLayerControls();
-        m_soundLayerStates.clear();
-        m_soundLayerNameToIndex.clear();
-
-        if (! soundLayers.empty()) {
-            // Build _soundLayerStates JSON for JS side
-            QString statesJson = "{\n";
-            for (int32_t i = 0; i < (int32_t)soundLayers.size(); i++) {
-                const auto&     sl = soundLayers[i];
-                SoundLayerState sls;
-                sls.index = i;
-                sls.name  = sl.name;
-                m_soundLayerStates.push_back(std::move(sls));
-                m_soundLayerNameToIndex[sl.name] = i;
-
-                // Full JS-literal escape — sl.name is interpolated into the
-                // single-quoted key of the _soundLayerStates object literal
-                // (same hazard class as F18 / JsStringEscape.hpp).
-                QString nameEsc =
-                    wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sl.name));
-                if (i > 0) statesJson += ",\n";
-                statesJson += QString("  '%1': { idx: %2, vol: %3, silent: %4 }")
-                                  .arg(nameEsc)
-                                  .arg(i)
-                                  .arg(sl.initialVolume, 0, 'f', 3)
-                                  .arg(sl.startsilent ? "true" : "false");
-            }
-            statesJson += "\n}";
-
-            m_jsEngine->evaluate(QString("var _soundLayerStates = %1;\n").arg(statesJson));
-
-            // Sound playing states object — updated by C++ before each eval
-            m_jsEngine->evaluate("engine._soundPlayingStates = {};\n");
-
-            // Sound layer proxy factory with dirty tracking and command queue
-            m_jsEngine->evaluate(
-                "var _soundLayerCache = {};\n"
-                "function _makeSoundLayerProxy(name) {\n"
-                "  var info = _soundLayerStates[name];\n"
-                "  if (!info) return null;\n"
-                "  var _s = { name: name, volume: info.vol, _dirty: {}, _cmds: [] };\n"
-                "  var p = {};\n"
-                "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, "
-                "enumerable:true });\n"
-                "  Object.defineProperty(p, 'volume', {\n"
-                "    get: function(){ return _s.volume; },\n"
-                "    set: function(v){ _s.volume = v; _s._dirty.volume = true; },\n"
-                "    enumerable: true\n"
-                "  });\n"
-                // Update _soundPlayingStates synchronously on play/pause/stop
-                // so subsequent isPlaying() reads within the same tick are
-                // consistent.  C++ drains the _cmds queue AFTER the script
-                // pass, AND the stream state can take one more render tick
-                // to reflect the command, so without this shadow a
-                // wallpaper script that pauses and then reads isPlaying()
-                // would see stale "still playing" and act on it (on
-                // 2866203962 playerplay.origin.update's anyPlaying() uses
-                // the reading to side-effect playStatus=true, which
-                // triggers skip() when C++ finally reports paused).
-                //
-                // `_soundPlayingStatesDirty[name] = true` blocks the next
-                // C++ refresh from overwriting our shadow until C++
-                // actually matches the intended state.
-                "  p.play = function(){ _s._cmds.push('play');\n"
-                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
-                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
-                "    engine._soundPlayingStates[name] = true;\n"
-                "    engine._soundPlayingStatesDirty[name] = true; };\n"
-                "  p.stop = function(){ _s._cmds.push('stop');\n"
-                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
-                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
-                "    engine._soundPlayingStates[name] = false;\n"
-                "    engine._soundPlayingStatesDirty[name] = true; };\n"
-                "  p.pause = function(){ _s._cmds.push('pause');\n"
-                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
-                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
-                "    engine._soundPlayingStates[name] = false;\n"
-                "    engine._soundPlayingStatesDirty[name] = true; };\n"
-                "  p.isPlaying = function(){\n"
-                "    return !!(engine._soundPlayingStates && engine._soundPlayingStates[name]);\n"
-                "  };\n"
-                "  // No-op stubs for properties that only apply to image layers\n"
-                "  Object.defineProperty(p, 'origin', { get: function(){return {x:0,y:0,z:0};}, "
-                "set: function(){}, enumerable:true });\n"
-                "  Object.defineProperty(p, 'scale', { get: function(){return {x:1,y:1,z:1};}, "
-                "set: function(){}, enumerable:true });\n"
-                "  Object.defineProperty(p, 'angles', { get: function(){return {x:0,y:0,z:0};}, "
-                "set: function(){}, enumerable:true });\n"
-                "  Object.defineProperty(p, 'visible', { get: function(){return true;}, set: "
-                "function(){}, enumerable:true });\n"
-                "  Object.defineProperty(p, 'alpha', { get: function(){return 1;}, set: "
-                "function(){}, enumerable:true });\n"
-                "  p.getTextureAnimation = function(){\n"
-                "    return { rate: 0, frameCount: 1, _frame: 0,\n"
-                "      getFrame: function(){ return this._frame; },\n"
-                "      setFrame: function(f){ this._frame = f; },\n"
-                "      play: function(){ this.rate = 1; },\n"
-                "      pause: function(){ this.rate = 0; },\n"
-                "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
-                "      isPlaying: function(){ return this.rate > 0; }\n"
-                "    };\n"
-                "  };\n"
-                "  // Sound-layer proxy getVideoTexture: same functional shape as image\n"
-                "  // proxies — scripts that probe any layer type should get a usable\n"
-                "  // object rather than undefined.  Bridge returns 0/no-op when the\n"
-                "  // sound layer has no associated video (typical case).\n"
-                "  p.getVideoTexture = function() {\n"
-                "    var name = _s.name;\n"
-                "    var _rate = 1.0;\n"
-                "    var o = {\n"
-                "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); "
-                "},\n"
-                "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || "
-                "0); },\n"
-                "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
-                "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
-                "      pause: function(){ __sceneBridge.videoPause(name); },\n"
-                "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
-                "    };\n"
-                "    Object.defineProperty(o, 'duration', {\n"
-                "      get: function(){ return __sceneBridge.videoGetDuration(name); }, "
-                "enumerable:true });\n"
-                "    Object.defineProperty(o, 'rate', {\n"
-                "      get: function(){ return _rate; },\n"
-                "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, "
-                "_rate); },\n"
-                "      enumerable:true });\n"
-                "    return o;\n"
-                "  };\n"
-                "  // Volume animation controller (getAnimation returns same interface as WE)\n"
-                "  if (!_s._animCtrl) _s._animCtrl = {};\n"
-                "  p.getAnimation = function(animName) {\n"
-                "    if (_s._animCtrl[animName]) return _s._animCtrl[animName];\n"
-                "    var ctrl = { _playing: false, _name: animName,\n"
-                "      play:  function(){ this._playing = true;  _s._cmds.push('anim_play:'  + "
-                "animName); },\n"
-                "      pause: function(){ this._playing = false; _s._cmds.push('anim_pause:' + "
-                "animName); },\n"
-                "      stop:  function(){ this._playing = false; _s._cmds.push('anim_stop:'  + "
-                "animName); },\n"
-                "      isPlaying: function(){ return this._playing; }\n"
-                "    };\n"
-                "    _s._animCtrl[animName] = ctrl;\n"
-                "    return ctrl;\n"
-                "  };\n"
-                "  p._state = _s;\n"
-                // Sound-layer hierarchy stubs — no transform, methods no-op.
-                "  _installSoundHierarchyStubs(p);\n"
-                "  return p;\n"
-                "}\n");
-
-            // Patch thisScene.getLayer to check sound layers too
-            m_jsEngine->evaluate("var _origGetLayer = thisScene.getLayer;\n"
-                                 "thisScene.getLayer = function(name) {\n"
-                                 "  // Check image layers first\n"
-                                 "  var r = _origGetLayer(name);\n"
-                                 "  if (r) return r;\n"
-                                 "  // Then check sound layers\n"
-                                 "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
-                                 "  if (_soundLayerStates[name]) {\n"
-                                 "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
-                                 "    return _soundLayerCache[name];\n"
-                                 "  }\n"
-                                 "  console.log('getLayer: unknown layer: ' + name);\n"
-                                 "  return _nullProxy;\n"
-                                 "};\n");
-
-            // thisScene.enumerateLayers — returns array of proxies for all layers
-            m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"
-                                 "  var layers = [];\n"
-                                 "  // Image layers\n"
-                                 "  for (var name in _layerInitStates) {\n"
-                                 "    layers.push(thisScene.getLayer(name));\n"
-                                 "  }\n"
-                                 "  // Sound layers\n"
-                                 "  for (var name in _soundLayerStates) {\n"
-                                 "    layers.push(thisScene.getLayer(name));\n"
-                                 "  }\n"
-                                 "  return layers;\n"
-                                 "};\n");
-
-            // Diagnostic: test enumerateLayers to verify sound layers are discoverable
-            {
-                QJSValue testResult = m_jsEngine->evaluate(
-                    "var _testLayers = thisScene.enumerateLayers();\n"
-                    "var _testMp3 = _testLayers.filter(function(e){ return e && e.name && "
-                    "e.name.toLowerCase().indexOf('.mp3') >= 0; });\n"
-                    "'total=' + _testLayers.length + ' mp3=' + _testMp3.length + ' names=[' + "
-                    "_testMp3.map(function(e){return e.name;}).join('|') + ']';\n");
-                LOG_INFO("enumerateLayers test: %s", qPrintable(testResult.toString()));
-            }
-
-            // Collect dirty sound layer commands for C++ dispatch
-            m_jsEngine->evaluate("function _collectDirtySoundLayers() {\n"
-                                 "  var updates = [];\n"
-                                 "  for (var name in _soundLayerCache) {\n"
-                                 "    var s = _soundLayerCache[name]._state;\n"
-                                 "    var hasDirty = Object.keys(s._dirty).length > 0;\n"
-                                 "    var hasCmds = s._cmds.length > 0;\n"
-                                 "    if (!hasDirty && !hasCmds) continue;\n"
-                                 "    updates.push({ name: name, dirty: s._dirty,\n"
-                                 "      volume: s.volume, cmds: s._cmds });\n"
-                                 "    s._dirty = {};\n"
-                                 "    s._cmds = [];\n"
-                                 "  }\n"
-                                 "  return updates;\n"
-                                 "}\n");
-
-            m_collectDirtySoundLayersFn =
-                m_jsEngine->globalObject().property("_collectDirtySoundLayers");
-
-            LOG_INFO("setupTextScripts: %zu sound layers registered for SceneScript API",
-                     soundLayers.size());
-        } else {
-            // Still provide enumerateLayers even when there are no sound layers
-            m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"
-                                 "  var layers = [];\n"
-                                 "  for (var name in _layerInitStates) {\n"
-                                 "    layers.push(thisScene.getLayer(name));\n"
-                                 "  }\n"
-                                 "  return layers;\n"
-                                 "};\n");
-        }
-    }
+    buildSoundStates();
 
     // Eager linkup of layer-hierarchy parent/child references.  Walks
     // _layerInitStates one final time and resolves each `pn` (parent
@@ -3907,6 +3682,235 @@ void SceneObject::buildLayerProxyStates() {
                                "  var id = _layerNameToId[key];\n"
                                "  return (typeof id === 'number') ? id : -1;\n"
                                "};\n");
+    }
+}
+
+void SceneObject::buildSoundStates() {
+    // Sound layer control infrastructure for SceneScript play/stop/pause API
+    {
+        auto soundLayers = m_scene->getSoundLayerControls();
+        m_soundLayerStates.clear();
+        m_soundLayerNameToIndex.clear();
+
+        if (! soundLayers.empty()) {
+            // Build _soundLayerStates JSON for JS side
+            QString statesJson = "{\n";
+            for (int32_t i = 0; i < (int32_t)soundLayers.size(); i++) {
+                const auto&     sl = soundLayers[i];
+                SoundLayerState sls;
+                sls.index = i;
+                sls.name  = sl.name;
+                m_soundLayerStates.push_back(std::move(sls));
+                m_soundLayerNameToIndex[sl.name] = i;
+
+                // Full JS-literal escape — sl.name is interpolated into the
+                // single-quoted key of the _soundLayerStates object literal
+                // (same hazard class as F18 / JsStringEscape.hpp).
+                QString nameEsc =
+                    wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sl.name));
+                if (i > 0) statesJson += ",\n";
+                statesJson += QString("  '%1': { idx: %2, vol: %3, silent: %4 }")
+                                  .arg(nameEsc)
+                                  .arg(i)
+                                  .arg(sl.initialVolume, 0, 'f', 3)
+                                  .arg(sl.startsilent ? "true" : "false");
+            }
+            statesJson += "\n}";
+
+            m_jsEngine->evaluate(QString("var _soundLayerStates = %1;\n").arg(statesJson));
+
+            // Sound playing states object — updated by C++ before each eval
+            m_jsEngine->evaluate("engine._soundPlayingStates = {};\n");
+
+            // Sound layer proxy factory with dirty tracking and command queue
+            m_jsEngine->evaluate(
+                "var _soundLayerCache = {};\n"
+                "function _makeSoundLayerProxy(name) {\n"
+                "  var info = _soundLayerStates[name];\n"
+                "  if (!info) return null;\n"
+                "  var _s = { name: name, volume: info.vol, _dirty: {}, _cmds: [] };\n"
+                "  var p = {};\n"
+                "  Object.defineProperty(p, 'name', { get: function(){return _s.name;}, "
+                "enumerable:true });\n"
+                "  Object.defineProperty(p, 'volume', {\n"
+                "    get: function(){ return _s.volume; },\n"
+                "    set: function(v){ _s.volume = v; _s._dirty.volume = true; },\n"
+                "    enumerable: true\n"
+                "  });\n"
+                // Update _soundPlayingStates synchronously on play/pause/stop
+                // so subsequent isPlaying() reads within the same tick are
+                // consistent.  C++ drains the _cmds queue AFTER the script
+                // pass, AND the stream state can take one more render tick
+                // to reflect the command, so without this shadow a
+                // wallpaper script that pauses and then reads isPlaying()
+                // would see stale "still playing" and act on it (on
+                // 2866203962 playerplay.origin.update's anyPlaying() uses
+                // the reading to side-effect playStatus=true, which
+                // triggers skip() when C++ finally reports paused).
+                //
+                // `_soundPlayingStatesDirty[name] = true` blocks the next
+                // C++ refresh from overwriting our shadow until C++
+                // actually matches the intended state.
+                "  p.play = function(){ _s._cmds.push('play');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = true;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
+                "  p.stop = function(){ _s._cmds.push('stop');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = false;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
+                "  p.pause = function(){ _s._cmds.push('pause');\n"
+                "    if (!engine._soundPlayingStates) engine._soundPlayingStates = {};\n"
+                "    if (!engine._soundPlayingStatesDirty) engine._soundPlayingStatesDirty = {};\n"
+                "    engine._soundPlayingStates[name] = false;\n"
+                "    engine._soundPlayingStatesDirty[name] = true; };\n"
+                "  p.isPlaying = function(){\n"
+                "    return !!(engine._soundPlayingStates && engine._soundPlayingStates[name]);\n"
+                "  };\n"
+                "  // No-op stubs for properties that only apply to image layers\n"
+                "  Object.defineProperty(p, 'origin', { get: function(){return {x:0,y:0,z:0};}, "
+                "set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'scale', { get: function(){return {x:1,y:1,z:1};}, "
+                "set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'angles', { get: function(){return {x:0,y:0,z:0};}, "
+                "set: function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'visible', { get: function(){return true;}, set: "
+                "function(){}, enumerable:true });\n"
+                "  Object.defineProperty(p, 'alpha', { get: function(){return 1;}, set: "
+                "function(){}, enumerable:true });\n"
+                "  p.getTextureAnimation = function(){\n"
+                "    return { rate: 0, frameCount: 1, _frame: 0,\n"
+                "      getFrame: function(){ return this._frame; },\n"
+                "      setFrame: function(f){ this._frame = f; },\n"
+                "      play: function(){ this.rate = 1; },\n"
+                "      pause: function(){ this.rate = 0; },\n"
+                "      stop: function(){ this.rate = 0; this._frame = 0; },\n"
+                "      isPlaying: function(){ return this.rate > 0; }\n"
+                "    };\n"
+                "  };\n"
+                "  // Sound-layer proxy getVideoTexture: same functional shape as image\n"
+                "  // proxies — scripts that probe any layer type should get a usable\n"
+                "  // object rather than undefined.  Bridge returns 0/no-op when the\n"
+                "  // sound layer has no associated video (typical case).\n"
+                "  p.getVideoTexture = function() {\n"
+                "    var name = _s.name;\n"
+                "    var _rate = 1.0;\n"
+                "    var o = {\n"
+                "      getCurrentTime: function(){ return __sceneBridge.videoGetCurrentTime(name); "
+                "},\n"
+                "      setCurrentTime: function(t){ __sceneBridge.videoSetCurrentTime(name, +t || "
+                "0); },\n"
+                "      isPlaying: function(){ return !!__sceneBridge.videoIsPlaying(name); },\n"
+                "      play:  function(){ __sceneBridge.videoPlay(name); },\n"
+                "      pause: function(){ __sceneBridge.videoPause(name); },\n"
+                "      stop:  function(){ __sceneBridge.videoStop(name); }\n"
+                "    };\n"
+                "    Object.defineProperty(o, 'duration', {\n"
+                "      get: function(){ return __sceneBridge.videoGetDuration(name); }, "
+                "enumerable:true });\n"
+                "    Object.defineProperty(o, 'rate', {\n"
+                "      get: function(){ return _rate; },\n"
+                "      set: function(v){ _rate = +v || 1.0; __sceneBridge.videoSetRate(name, "
+                "_rate); },\n"
+                "      enumerable:true });\n"
+                "    return o;\n"
+                "  };\n"
+                "  // Volume animation controller (getAnimation returns same interface as WE)\n"
+                "  if (!_s._animCtrl) _s._animCtrl = {};\n"
+                "  p.getAnimation = function(animName) {\n"
+                "    if (_s._animCtrl[animName]) return _s._animCtrl[animName];\n"
+                "    var ctrl = { _playing: false, _name: animName,\n"
+                "      play:  function(){ this._playing = true;  _s._cmds.push('anim_play:'  + "
+                "animName); },\n"
+                "      pause: function(){ this._playing = false; _s._cmds.push('anim_pause:' + "
+                "animName); },\n"
+                "      stop:  function(){ this._playing = false; _s._cmds.push('anim_stop:'  + "
+                "animName); },\n"
+                "      isPlaying: function(){ return this._playing; }\n"
+                "    };\n"
+                "    _s._animCtrl[animName] = ctrl;\n"
+                "    return ctrl;\n"
+                "  };\n"
+                "  p._state = _s;\n"
+                // Sound-layer hierarchy stubs — no transform, methods no-op.
+                "  _installSoundHierarchyStubs(p);\n"
+                "  return p;\n"
+                "}\n");
+
+            // Patch thisScene.getLayer to check sound layers too
+            m_jsEngine->evaluate("var _origGetLayer = thisScene.getLayer;\n"
+                                 "thisScene.getLayer = function(name) {\n"
+                                 "  // Check image layers first\n"
+                                 "  var r = _origGetLayer(name);\n"
+                                 "  if (r) return r;\n"
+                                 "  // Then check sound layers\n"
+                                 "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
+                                 "  if (_soundLayerStates[name]) {\n"
+                                 "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
+                                 "    return _soundLayerCache[name];\n"
+                                 "  }\n"
+                                 "  console.log('getLayer: unknown layer: ' + name);\n"
+                                 "  return _nullProxy;\n"
+                                 "};\n");
+
+            // thisScene.enumerateLayers — returns array of proxies for all layers
+            m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"
+                                 "  var layers = [];\n"
+                                 "  // Image layers\n"
+                                 "  for (var name in _layerInitStates) {\n"
+                                 "    layers.push(thisScene.getLayer(name));\n"
+                                 "  }\n"
+                                 "  // Sound layers\n"
+                                 "  for (var name in _soundLayerStates) {\n"
+                                 "    layers.push(thisScene.getLayer(name));\n"
+                                 "  }\n"
+                                 "  return layers;\n"
+                                 "};\n");
+
+            // Diagnostic: test enumerateLayers to verify sound layers are discoverable
+            {
+                QJSValue testResult = m_jsEngine->evaluate(
+                    "var _testLayers = thisScene.enumerateLayers();\n"
+                    "var _testMp3 = _testLayers.filter(function(e){ return e && e.name && "
+                    "e.name.toLowerCase().indexOf('.mp3') >= 0; });\n"
+                    "'total=' + _testLayers.length + ' mp3=' + _testMp3.length + ' names=[' + "
+                    "_testMp3.map(function(e){return e.name;}).join('|') + ']';\n");
+                LOG_INFO("enumerateLayers test: %s", qPrintable(testResult.toString()));
+            }
+
+            // Collect dirty sound layer commands for C++ dispatch
+            m_jsEngine->evaluate("function _collectDirtySoundLayers() {\n"
+                                 "  var updates = [];\n"
+                                 "  for (var name in _soundLayerCache) {\n"
+                                 "    var s = _soundLayerCache[name]._state;\n"
+                                 "    var hasDirty = Object.keys(s._dirty).length > 0;\n"
+                                 "    var hasCmds = s._cmds.length > 0;\n"
+                                 "    if (!hasDirty && !hasCmds) continue;\n"
+                                 "    updates.push({ name: name, dirty: s._dirty,\n"
+                                 "      volume: s.volume, cmds: s._cmds });\n"
+                                 "    s._dirty = {};\n"
+                                 "    s._cmds = [];\n"
+                                 "  }\n"
+                                 "  return updates;\n"
+                                 "}\n");
+
+            m_collectDirtySoundLayersFn =
+                m_jsEngine->globalObject().property("_collectDirtySoundLayers");
+
+            LOG_INFO("setupTextScripts: %zu sound layers registered for SceneScript API",
+                     soundLayers.size());
+        } else {
+            // Still provide enumerateLayers even when there are no sound layers
+            m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"
+                                 "  var layers = [];\n"
+                                 "  for (var name in _layerInitStates) {\n"
+                                 "    layers.push(thisScene.getLayer(name));\n"
+                                 "  }\n"
+                                 "  return layers;\n"
+                                 "};\n");
+        }
     }
 }
 
