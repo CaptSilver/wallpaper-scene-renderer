@@ -48,4 +48,9 @@ bool SceneLight::castsVolumetrics() const {
     return m_vol.density > 0.0f;
 }
 
+bool SceneLight::isVolumetricEmitterCandidate() const {
+    if (! castsVolumetrics()) return false;
+    return m_kind == LightKind::Point || m_kind == LightKind::LPoint;
+}
+
 } // namespace wallpaper

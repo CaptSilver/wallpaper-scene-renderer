@@ -114,10 +114,14 @@ std::string Scene::SerializeLayerInitialStates() const {
 }
 
 std::vector<SceneLight*> Scene::volumetricLights() const {
+    // Predicate matches the parse-side push into volumetricsConfig.per_light
+    // and the per-frame uniform writer's filter (single source of truth at
+    // SceneLight::isVolumetricEmitterCandidate).  Anything returned here is
+    // a kind the renderer will actually emit a pass for.
     std::vector<SceneLight*> out;
     out.reserve(lights.size());
     for (const auto& l : lights) {
-        if (l && l->castsVolumetrics()) out.push_back(l.get());
+        if (l && l->isVolumetricEmitterCandidate()) out.push_back(l.get());
     }
     return out;
 }

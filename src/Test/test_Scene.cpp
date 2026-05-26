@@ -65,7 +65,8 @@ TEST_SUITE("Scene") {
         CHECK(s.volumetricsConfig.globalDensityMultiplier == doctest::Approx(1.0f));
     }
 
-    TEST_CASE("Scene::volumetricLights filters lights by castsVolumetrics() predicate") {
+    TEST_CASE("Scene::volumetricLights filters lights by isVolumetricEmitterCandidate "
+              "predicate (castsVolumetrics + kind)") {
         Scene s;
         // Light 0: density=0 — should NOT appear in the filtered list.
         s.lights.emplace_back(std::make_unique<SceneLight>(
@@ -112,6 +113,32 @@ TEST_SUITE("Scene") {
             Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f));
         auto vols = s.volumetricLights();
         CHECK(vols.empty());
+    }
+
+    TEST_CASE("Scene::volumetricLights filters non-Point/LPoint kinds") {
+        // Predicate intentionally matches the per-frame uniform writer: the
+        // chain only emits Point/LPoint today, so an LSpot/LTube/LDirectional
+        // light authoring volumetric fields must NOT appear in the accessor
+        // (else a future caller would route uniforms to a no-op pass).
+        Scene s;
+        auto mkLight = [](SceneLight::LightKind k) {
+            auto l = std::make_unique<SceneLight>(
+                Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 5.0f;
+            l->setVolumetric(vp);
+            l->setKind(k);
+            return l;
+        };
+        s.lights.emplace_back(mkLight(SceneLight::LightKind::Point));
+        s.lights.emplace_back(mkLight(SceneLight::LightKind::LSpot));
+        s.lights.emplace_back(mkLight(SceneLight::LightKind::LPoint));
+        s.lights.emplace_back(mkLight(SceneLight::LightKind::LTube));
+        s.lights.emplace_back(mkLight(SceneLight::LightKind::LDirectional));
+        auto vols = s.volumetricLights();
+        REQUIRE(vols.size() == 2);
+        CHECK(vols[0] == s.lights[0].get()); // Point
+        CHECK(vols[1] == s.lights[2].get()); // LPoint
     }
 
 } // Scene

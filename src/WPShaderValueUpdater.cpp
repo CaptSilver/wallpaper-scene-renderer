@@ -658,13 +658,10 @@ void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarO
     if (! m_scene) return;
     for (auto& l : m_scene->lights) {
         if (! l) continue;
-        if (! l->castsVolumetrics()) continue;
-        // v1 cut: only Point + LPoint emit volumetric passes.
-        const auto kind = l->kind();
-        if (kind != SceneLight::LightKind::Point &&
-            kind != SceneLight::LightKind::LPoint) {
-            continue;
-        }
+        // Single predicate (cast-flag + kind ∈ {Point, LPoint}) so this
+        // writer agrees with parser-side per_light gating + the public
+        // Scene::volumetricLights() accessor.
+        if (! l->isVolumetricEmitterCandidate()) continue;
         if (! l->node()) continue;
         l->node()->UpdateTrans();
         const auto& world = l->node()->ModelTrans();

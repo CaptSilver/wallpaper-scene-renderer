@@ -189,6 +189,49 @@ TEST_SUITE("SceneLight") {
         CHECK(l.castsVolumetrics() == true);
     }
 
+    TEST_CASE("isVolumetricEmitterCandidate: castsVolumetrics + Point is true") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 2.0f;
+        l.setVolumetric(vp);
+        // Default kind is Point.
+        REQUIRE(l.castsVolumetrics() == true);
+        CHECK(l.isVolumetricEmitterCandidate() == true);
+    }
+
+    TEST_CASE("isVolumetricEmitterCandidate: castsVolumetrics + LPoint is true") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        SceneLight::VolumetricParams vp;
+        vp.density = 2.0f;
+        l.setVolumetric(vp);
+        l.setKind(SceneLight::LightKind::LPoint);
+        CHECK(l.isVolumetricEmitterCandidate() == true);
+    }
+
+    TEST_CASE("isVolumetricEmitterCandidate: castsVolumetrics but LSpot/LTube/LDir is false") {
+        // Predicate gate matches the per-frame uniform writer: today the chain
+        // only emits Point/LPoint, so non-Point lights with volumetric fields
+        // must be filtered out before pipeline construction.
+        for (auto k : { SceneLight::LightKind::LSpot,
+                        SceneLight::LightKind::LTube,
+                        SceneLight::LightKind::LDirectional }) {
+            SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+            SceneLight::VolumetricParams vp;
+            vp.density = 5.0f;
+            l.setVolumetric(vp);
+            l.setKind(k);
+            REQUIRE(l.castsVolumetrics() == true);
+            CHECK(l.isVolumetricEmitterCandidate() == false);
+        }
+    }
+
+    TEST_CASE("isVolumetricEmitterCandidate: no-cast Point is false") {
+        SceneLight l(Eigen::Vector3f(1, 1, 1), 1.0f, 1.0f);
+        // density=0 (default) — does not cast even though kind is Point.
+        REQUIRE(l.castsVolumetrics() == false);
+        CHECK(l.isVolumetricEmitterCandidate() == false);
+    }
+
     TEST_CASE("env WEKDE_VOLUMETRICS=force-off suppresses density>0 + explicit:true") {
         setenv("WEKDE_VOLUMETRICS", "force-off", 1);
         SceneLight::_resetVolumetricsOverrideForTesting();

@@ -68,6 +68,13 @@ public:
     // SceneLight.cpp to keep the env-read TU-local.
     bool castsVolumetrics() const;
 
+    // True iff the light both wants to cast volumetrics AND the renderer
+    // supports its kind in the volumetric chain.  Today the chain only emits
+    // Point + LPoint passes — LSpot/LTube/LDirectional are parsed but skipped.
+    // Single source of truth for the predicate so parser-side filtering,
+    // Scene::volumetricLights(), and the per-frame uniform writer all agree.
+    bool isVolumetricEmitterCandidate() const;
+
     // Re-reads WEKDE_VOLUMETRICS from the current process environment and
     // updates the TU-local override cache.  Test-only — the env is normally
     // read once at module init.  Safe to call from doctest cases between

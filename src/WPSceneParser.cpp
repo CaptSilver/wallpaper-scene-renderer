@@ -5075,18 +5075,13 @@ void attachVolumetricMaterials(ParseContext& context) {
     // Disabling the chain mid-attach leaves any successfully-attached
     // shader_updater node-data entries from the same parse hanging — same
     // tradeoff as the bloom block above.  The chain emitter checks `enabled`
-    // first, so those entries are never read.
-    auto failOut = [&scene](const char* shader_name) {
-        LOG_ERROR("volumetric: failed to load material for '%s' — disabling chain", shader_name);
-        scene.volumetricsConfig.enabled = false;
-        scene.volumetricsConfig.per_light.clear();
-        scene.volumetricsConfig.blur_h_node.reset();
-        scene.volumetricsConfig.blur_v_node.reset();
-        scene.volumetricsConfig.combine_node.reset();
-    };
+    // first, so those entries are never read.  Cleanup runs AFTER the per_light
+    // iteration completes: doing it inside the loop (e.g., per_light.clear())
+    // would invalidate the range-for's iterator while it still holds `pl`.
 
     // Helper that compiles+attaches one material to a node's mesh.  Returns
-    // false on LoadMaterial failure so the caller can short-circuit.
+    // false on LoadMaterial failure; the caller tracks which shader failed
+    // and runs the disable+clear post-iteration.
     auto attachOne = [&](SceneNode* node, wpscene::WPMaterial wpmat) -> bool {
         if (! node || ! node->Mesh()) return true; // node-without-mesh shouldn't happen but stay safe
         WPShaderInfo shaderInfo;
@@ -5094,7 +5089,6 @@ void attachVolumetricMaterials(ParseContext& context) {
         SceneMaterial     material;
         WPShaderValueData svData;
         if (! LoadMaterial(vfs, wpmat, &scene, node, &material, &svData, &shaderInfo)) {
-            failOut(wpmat.shader.c_str());
             return false;
         }
         LoadConstvalue(material, wpmat, shaderInfo);
@@ -5105,26 +5099,49 @@ void attachVolumetricMaterials(ParseContext& context) {
         return true;
     };
 
-    const uint32_t quality = scene.volumetricsConfig.quality;
+    const uint32_t quality        = scene.volumetricsConfig.quality;
+    const char*    failed_shader  = nullptr;
 
     for (auto& pl : scene.volumetricsConfig.per_light) {
-        if (! attachOne(pl.back_node.get(), vulkan::buildVolumetricBackMaterial(quality)))
-            return;
-        if (! attachOne(pl.front_node.get(), vulkan::buildVolumetricFrontMaterial(quality)))
-            return;
+        if (! attachOne(pl.back_node.get(), vulkan::buildVolumetricBackMaterial(quality))) {
+            failed_shader = "volumetricsback";
+            break;
+        }
+        if (! attachOne(pl.front_node.get(), vulkan::buildVolumetricFrontMaterial(quality))) {
+            failed_shader = "volumetricsfront";
+            break;
+        }
         if (! attachOne(pl.fullscreen_node.get(),
-                        vulkan::buildVolumetricFullscreenMaterial(quality)))
-            return;
+                        vulkan::buildVolumetricFullscreenMaterial(quality))) {
+            failed_shader = "volumetricsfullscreen";
+            break;
+        }
     }
-    if (! attachOne(scene.volumetricsConfig.blur_h_node.get(),
-                    vulkan::buildVolumetricBlurMaterial(0)))
-        return;
-    if (! attachOne(scene.volumetricsConfig.blur_v_node.get(),
-                    vulkan::buildVolumetricBlurMaterial(1)))
-        return;
-    if (! attachOne(scene.volumetricsConfig.combine_node.get(),
-                    vulkan::buildVolumetricCombineMaterial()))
-        return;
+    if (! failed_shader &&
+        ! attachOne(scene.volumetricsConfig.blur_h_node.get(),
+                    vulkan::buildVolumetricBlurMaterial(0))) {
+        failed_shader = "blur_h";
+    }
+    if (! failed_shader &&
+        ! attachOne(scene.volumetricsConfig.blur_v_node.get(),
+                    vulkan::buildVolumetricBlurMaterial(1))) {
+        failed_shader = "blur_v";
+    }
+    if (! failed_shader &&
+        ! attachOne(scene.volumetricsConfig.combine_node.get(),
+                    vulkan::buildVolumetricCombineMaterial())) {
+        failed_shader = "combine";
+    }
+
+    if (failed_shader) {
+        LOG_ERROR("volumetric: failed to load material for '%s' — disabling chain",
+                  failed_shader);
+        scene.volumetricsConfig.enabled = false;
+        scene.volumetricsConfig.per_light.clear();
+        scene.volumetricsConfig.blur_h_node.reset();
+        scene.volumetricsConfig.blur_v_node.reset();
+        scene.volumetricsConfig.combine_node.reset();
+    }
 }
 
 } // namespace
@@ -5212,14 +5229,19 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     finalizeParse(context);
 
     // Volumetric scene-level enable flag.  True iff any light's
-    // castsVolumetrics() predicate is true at scene-build time.  Pipeline-
-    // integration uses this as a single short-circuit to skip the volumetric
-    // chain when no light wants fog.  Each qualifying light gets a PerLight
-    // entry pushed onto volumetricsConfig.per_light — BuildVolumetricNodes
-    // then iterates that vector to construct the back/front/fullscreen
-    // SceneNodes + the global blur/combine nodes + the half-res RT entries.
+    // isVolumetricEmitterCandidate() predicate is true at scene-build time
+    // (castsVolumetrics() AND kind ∈ {Point, LPoint} — the chain doesn't
+    // emit LSpot/LTube/LDirectional today and would otherwise rasterise
+    // zero-uniform no-op passes).  ParseLightObj already logs the skip
+    // breadcrumb for non-Point lights that authored volumetric fields.
+    // Pipeline-integration uses `enabled` as a single short-circuit to skip
+    // the volumetric chain when no light wants fog.  Each qualifying light
+    // gets a PerLight entry pushed onto volumetricsConfig.per_light —
+    // BuildVolumetricNodes then iterates that vector to construct the
+    // back/front/fullscreen SceneNodes + the global blur/combine nodes +
+    // the half-res RT entries.
     for (const auto& l : context.scene->lights) {
-        if (l && l->castsVolumetrics()) {
+        if (l && l->isVolumetricEmitterCandidate()) {
             context.scene->volumetricsConfig.enabled = true;
             Scene::VolumetricsConfig::PerLight pl;
             pl.light = l.get();
