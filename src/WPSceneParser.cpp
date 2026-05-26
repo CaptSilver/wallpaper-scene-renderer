@@ -1474,26 +1474,22 @@ std::optional<BlendMode> applyColorBlendOverride(ParseContext&            contex
     return colorBlendOverride;
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
+struct ImageEffectCounts {
+    int32_t count_eff;
+    bool    hasEffect;
+};
 
-    resolveImageAutosize(context, wpimgobj);
-
-    applyImagePreRoutingDefaults(context, wpimgobj);
-
-    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
-
-    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
-    if (! colorBlendOverrideOpt) return;
-    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
-
-    // Count effects after colorBlendMode may have added one
+ImageEffectCounts countVisibleEffects(const wpscene::WPImageObject& wpimgobj) {
     int32_t count_eff = 0;
     for (const auto& wpeffobj : wpimgobj.effects) {
         if (wpeffobj.visible) count_eff++;
     }
-    bool hasEffect = count_eff > 0;
+    return { count_eff, count_eff > 0 };
+}
+
+// Returns true if a placeholder was registered and the caller must early-return.
+bool registerScriptHostPlaceholderIfNoEffectFullscreen(
+    ParseContext& context, const wpscene::WPImageObject& wpimgobj, bool hasEffect) {
     // No-effect fullscreen layer: skip rendering BUT still register a bare
     // placeholder node so SceneScript can find this layer via
     // thisScene.getLayer(name).  Wallpapers (e.g. 3470764447 Nightingale "后处理层")
@@ -1520,8 +1516,28 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                  "placeholder (no rendering)",
                  wpimgobj.id,
                  wpimgobj.name.c_str());
-        return;
+        return true;
     }
+    return false;
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
+
+    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
+
+    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
+    if (! colorBlendOverrideOpt) return;
+    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
+
+    // Count effects after colorBlendMode may have added one
+    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
+    if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
 
     bool hasPuppet = ! wpimgobj.puppet.empty();
     (void)hasPuppet;
