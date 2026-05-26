@@ -1348,12 +1348,7 @@ void logPuppetDiagnostics(ParseContext& context, const wpscene::WPImageObject& w
     }
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
-
-    resolveImageAutosize(context, wpimgobj);
-
+void applyImagePreRoutingDefaults(ParseContext& context, wpscene::WPImageObject& wpimgobj) {
     // Register this layer's primary source texture so ParseSpecTexName can
     // route `_rt_imageLayerComposite_<id>_b` references — an author-side
     // convention some custom effects use — to the static base instead of the
@@ -1384,6 +1379,15 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         wpimgobj.size = { (float)context.ortho_w, (float)context.ortho_h };
         LOG_INFO("  shape-quad size fallback: %dx%d", context.ortho_w, context.ortho_h);
     }
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
 
     // Invisible nodes are processed as offscreen dependency nodes:
     // their output is written to a per-node RT (not the main scene output) so
