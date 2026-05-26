@@ -1753,6 +1753,55 @@ std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&            
                                std::move(baseConstSvs) };
 }
 
+// Returns spMesh; populates effct_final_mesh in-place. effct_final_mesh MUST
+// be default-constructed by the caller and lives on the caller's stack.
+std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
+                                          const SceneMaterial&    material,
+                                          WPShaderValueData&      svData,
+                                          const WPMdl*            puppet,
+                                          bool                    hasEffect,
+                                          SceneMesh&              effct_final_mesh) {
+    // mesh
+    auto  spMesh = std::make_shared<SceneMesh>();
+    auto& mesh   = *spMesh;
+
+    {
+        // deal with pow of 2
+        std::array<float, 2> mapRate { 1.0f, 1.0f };
+        if (! wpimgobj.nopadding &&
+            exists(material.customShader.constValues, WE_GLTEX_RESOLUTION_NAMES[0])) {
+            const auto& r = material.customShader.constValues.at(WE_GLTEX_RESOLUTION_NAMES[0]);
+            mapRate       = { r[2] / r[0], r[3] / r[1] };
+        }
+
+        if (puppet) {
+            if (hasEffect) {
+                GenCardMesh(
+                    mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
+                WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet);
+
+                wpscene::WPImageEffect puppet_effect;
+                wpscene::WPMaterial    puppet_mat;
+                puppet_mat             = wpimgobj.material;
+                puppet_mat.textures[0] = "";
+                WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
+                puppet_effect.materials.push_back(puppet_mat);
+                wpimgobj.effects.push_back(puppet_effect);
+            } else {
+                svData.puppet_layer = WPPuppetLayer(puppet->puppet);
+                svData.puppet_layer.prepared(wpimgobj.puppet_layers);
+                WPMdlParser::GenPuppetMesh(mesh, *puppet);
+            }
+        }
+        if (! puppet) {
+            GenCardMesh(mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
+            GenCardMesh(effct_final_mesh,
+                        { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] });
+        }
+    }
+    return spMesh;
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1799,45 +1848,11 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     WPShaderInfo      shaderInfo   = std::move(baseMatResult->shaderInfo);
     ShaderValueMap    baseConstSvs = std::move(baseMatResult->baseConstSvs);
 
-    // mesh
     SceneMesh effct_final_mesh {};
-    auto      spMesh = std::make_shared<SceneMesh>();
+    auto      spMesh = buildImageMesh(wpimgobj, material, svData, puppet.get(), hasEffect,
+                                      effct_final_mesh);
     auto&     mesh   = *spMesh;
 
-    {
-        // deal with pow of 2
-        std::array<float, 2> mapRate { 1.0f, 1.0f };
-        if (! wpimgobj.nopadding &&
-            exists(material.customShader.constValues, WE_GLTEX_RESOLUTION_NAMES[0])) {
-            const auto& r = material.customShader.constValues.at(WE_GLTEX_RESOLUTION_NAMES[0]);
-            mapRate       = { r[2] / r[0], r[3] / r[1] };
-        }
-
-        if (puppet) {
-            if (hasEffect) {
-                GenCardMesh(
-                    mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
-                WPMdlParser::GenPuppetMesh(effct_final_mesh, *puppet);
-
-                wpscene::WPImageEffect puppet_effect;
-                wpscene::WPMaterial    puppet_mat;
-                puppet_mat             = wpimgobj.material;
-                puppet_mat.textures[0] = "";
-                WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
-                puppet_effect.materials.push_back(puppet_mat);
-                wpimgobj.effects.push_back(puppet_effect);
-            } else {
-                svData.puppet_layer = WPPuppetLayer(puppet->puppet);
-                svData.puppet_layer.prepared(wpimgobj.puppet_layers);
-                WPMdlParser::GenPuppetMesh(mesh, *puppet);
-            }
-        }
-        if (! puppet) {
-            GenCardMesh(mesh, { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] }, mapRate);
-            GenCardMesh(effct_final_mesh,
-                        { (uint16_t)wpimgobj.size[0], (uint16_t)wpimgobj.size[1] });
-        }
-    }
     // Apply colorBlendMode hardware override if set
     if (colorBlendOverride != BlendMode::Disable) {
         material.blenmode = colorBlendOverride;
