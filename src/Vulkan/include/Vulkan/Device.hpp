@@ -5,10 +5,24 @@
 #include "Parameters.hpp"
 #include "TextureCache.hpp"
 
+#include <vector>
+
 namespace wallpaper
 {
 namespace vulkan
 {
+
+namespace queue_selection
+{
+// First family that appears in BOTH lists, else UINT32_MAX.  Used by
+// Device::ChooseDeviceQueue to pick a single graphics+present family — that
+// keeps the command pool, render submit queue, and present queue on the same
+// family so command buffers don't get submitted cross-family
+// (VUID-vkQueueSubmit-pCommandBuffers-00074).  Pure function — unit-tested
+// in test_DeviceQueueSelection.cpp.
+uint32_t FindUnifiedFamily(const std::vector<uint32_t>& graphics,
+                           const std::vector<uint32_t>& present);
+} // namespace queue_selection
 
 class PipelineParameters;
 

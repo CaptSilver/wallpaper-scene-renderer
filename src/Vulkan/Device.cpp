@@ -18,6 +18,19 @@ void EnumateDeviceExts(const vvk::PhysicalDevice& gpu, wallpaper::Set<std::strin
 
 } // namespace
 
+namespace wallpaper::vulkan::queue_selection
+{
+uint32_t FindUnifiedFamily(const std::vector<uint32_t>& graphics,
+                           const std::vector<uint32_t>& present) {
+    for (auto g : graphics) {
+        for (auto p : present) {
+            if (g == p) return g;
+        }
+    }
+    return UINT32_MAX;
+}
+} // namespace wallpaper::vulkan::queue_selection
+
 bool Device::CheckGPU(vvk::PhysicalDevice gpu, std::span<const Extension> exts,
                       VkSurfaceKHR surface) {
     std::vector<VkDeviceQueueCreateInfo> queues;
@@ -55,27 +68,26 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
 
     auto props = m_gpu.GetQueueFamilyProperties();
 
-    std::vector<uint32_t> graphic_indexs, present_indexs;
+    std::vector<uint32_t> graphic_indexs;
     uint32_t              index = 0;
     for (auto& prop : props) {
         if (prop.queueFlags & VK_QUEUE_GRAPHICS_BIT) graphic_indexs.push_back(index);
         index++;
     };
-    m_graphics_queue.family_index           = graphic_indexs.front();
-    const static float defaultQueuePriority = 0.0f;
-    {
-        VkDeviceQueueCreateInfo info {
-            .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = m_graphics_queue.family_index,
-            .queueCount       = 1,
-            .pQueuePriorities = &defaultQueuePriority,
-        };
-        queues.push_back(info);
-    }
-    m_present_queue.family_index = graphic_indexs.front();
+    // Default: first graphics family for both render and present.  When a
+    // surface is provided we prefer a graphics family that ALSO supports
+    // presentation — that lets the command pool, the render submit queue, and
+    // the present queue all share a family.  Without this preference we'd
+    // submit command buffers (allocated from the graphics-family pool) to a
+    // present queue from a DIFFERENT family, which violates
+    // VUID-vkQueueSubmit-pCommandBuffers-00074 on split-queue GPUs.
+    m_graphics_queue.family_index = graphic_indexs.front();
+    m_present_queue.family_index  = graphic_indexs.front();
     if (surface) {
+        std::vector<uint32_t> present_indexs;
         index = 0;
         for (auto& prop : props) {
+            (void)prop;
             bool ok { false };
             VVK_CHECK(m_gpu.GetSurfaceSupportKHR(index, surface, ok))
             if (ok) present_indexs.push_back(index);
@@ -83,16 +95,40 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
         };
         if (present_indexs.empty()) {
             LOG_ERROR("not find present queue");
-        } else if (graphic_indexs.front() != present_indexs.front()) {
-            m_present_queue.family_index = present_indexs.front();
-            VkDeviceQueueCreateInfo info {
-                .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = m_present_queue.family_index,
-                .queueCount       = 1,
-                .pQueuePriorities = &defaultQueuePriority,
-            };
-            queues.push_back(info);
+        } else {
+            const uint32_t unified =
+                queue_selection::FindUnifiedFamily(graphic_indexs, present_indexs);
+            if (unified != UINT32_MAX) {
+                m_graphics_queue.family_index = unified;
+                m_present_queue.family_index  = unified;
+            } else {
+                // No graphics-and-present family — proper handling needs a
+                // second command pool from the present family + a queue-family
+                // ownership transfer in FinPass.  Real desktop GPUs all expose
+                // at least one graphics+present family, so this branch is a
+                // best-effort fallback rather than a tested code path.
+                LOG_ERROR("no graphics queue family supports surface presentation - "
+                          "renderer may submit cross-family (VUID-vkQueueSubmit-00074)");
+                m_present_queue.family_index = present_indexs.front();
+            }
         }
+    }
+    const static float      defaultQueuePriority = 0.0f;
+    VkDeviceQueueCreateInfo gi {
+        .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = m_graphics_queue.family_index,
+        .queueCount       = 1,
+        .pQueuePriorities = &defaultQueuePriority,
+    };
+    queues.push_back(gi);
+    if (m_present_queue.family_index != m_graphics_queue.family_index) {
+        VkDeviceQueueCreateInfo pi {
+            .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+            .queueFamilyIndex = m_present_queue.family_index,
+            .queueCount       = 1,
+            .pQueuePriorities = &defaultQueuePriority,
+        };
+        queues.push_back(pi);
     }
     return queues;
 }
