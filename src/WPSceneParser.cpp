@@ -1800,6 +1800,64 @@ std::optional<TextFontLoadResult> loadTextFontData(fs::VFS& vfs, const wpscene::
     return TextFontLoadResult{ std::move(fontData), std::move(fontLoadedFrom) };
 }
 
+struct TextCanvasSize {
+    i32  texW;
+    i32  texH;
+    bool autosize_canvas;
+};
+
+// Resolve a sane rasterization canvas size.  Wallpapers that rely on
+// SceneScript to fill text at runtime commonly declare `size: [2, 2]`
+// (or similar placeholder) in scene.json, meaning "autosize" — the mesh
+// is meant to match the rasterized text bounds at render time.  Fall
+// back to a canvas driven by the authored `maxwidth` (soft wrap boundary)
+// and by the authored pointsize so 1–8 lines of text fit comfortably.
+TextCanvasSize resolveTextCanvasSize(const wpscene::WPTextObject& textObj) {
+    const float kDpi                  = WPTextRenderer::kRasterDpiScale;
+    i32         texW                  = static_cast<i32>(textObj.size[0]);
+    i32         texH                  = static_cast<i32>(textObj.size[1]);
+    const i32   placeholder_threshold = 8;
+    // Promote to autosize when the declared maxwidth dwarfs the canvas size —
+    // Game of Life (3453251764) Tooltip is size 18×18 (just above the
+    // 8-pixel placeholder threshold) but declares maxwidth=500, signaling
+    // the author wants the canvas to grow to fit the text.  Without this
+    // branch, the 18×18 (at 2× DPI = 36×36) texture clipped runtime-set
+    // tooltips like "Stamp" to ~3 visible characters.
+    const bool maxwidth_dwarfs_size =
+        (textObj.maxwidth > 0.0f && textObj.maxwidth > std::max(texW, texH) * 4.0f);
+    const bool autosize_canvas =
+        (texW <= placeholder_threshold || texH <= placeholder_threshold || maxwidth_dwarfs_size);
+    if (autosize_canvas) {
+        // Matches WPTextRenderer's DPI multiplier — see WPTextRenderer.cpp
+        // rationale (scene ortho targets Retina-scale 4K, not 96 DPI viewer).
+        i32 px = static_cast<i32>(textObj.pointsize * 96.0f / 72.0f * kDpi + 0.5f);
+        if (px < 12) px = 12;
+        // Prefer maxwidth (the author's own wrapping hint); fall back to a
+        // generous 2048 otherwise.  Clamp to 4096 so pathological maxwidth
+        // declarations don't blow up the canvas.
+        i32 mw = (textObj.maxwidth > 0.0f) ? static_cast<i32>(textObj.maxwidth * kDpi) : 0;
+        if (mw <= 0) mw = 2048;
+        mw   = std::min(mw, 4096);
+        texW = mw;
+        // Line height at our DPI: pointsize * 96/72 * DPI * ~1.4.
+        // Allow up to 8 lines for long titles.
+        texH = std::max(static_cast<i32>(px * 1.4f * 8), 192);
+    } else {
+        // Explicit canvas size from the model JSON (e.g. 2866203962 VHS
+        // Time/Date = 931×153).  The author sized this as if rendered at
+        // 1× DPI, but WPTextRenderer scales glyphs by kRasterDpiScale.
+        // Scale the canvas by the same factor so 2-line dynamic text
+        // (time + date) doesn't clip at the bottom of the texture.
+        texW = static_cast<i32>(texW * kDpi);
+        texH = static_cast<i32>(texH * kDpi);
+    }
+    if (texW <= 0 || texH <= 0) {
+        texW = 512;
+        texH = 128;
+    }
+    return TextCanvasSize{ texW, texH, autosize_canvas };
+}
+
 // Returns spMesh; populates effct_final_mesh in-place. effct_final_mesh MUST
 // be default-constructed by the caller and lives on the caller's stack.
 std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
@@ -3286,54 +3344,10 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     }
     auto& fontData = fontResult->fontData;
 
-    // Resolve a sane rasterization canvas size.  Wallpapers that rely on
-    // SceneScript to fill text at runtime commonly declare `size: [2, 2]`
-    // (or similar placeholder) in scene.json, meaning "autosize" — the mesh
-    // is meant to match the rasterized text bounds at render time.  Fall
-    // back to a canvas driven by the authored `maxwidth` (soft wrap boundary)
-    // and by the authored pointsize so 1–8 lines of text fit comfortably.
-    const float kDpi                  = WPTextRenderer::kRasterDpiScale;
-    i32         texW                  = static_cast<i32>(textObj.size[0]);
-    i32         texH                  = static_cast<i32>(textObj.size[1]);
-    const i32   placeholder_threshold = 8;
-    // Promote to autosize when the declared maxwidth dwarfs the canvas size —
-    // Game of Life (3453251764) Tooltip is size 18×18 (just above the
-    // 8-pixel placeholder threshold) but declares maxwidth=500, signaling
-    // the author wants the canvas to grow to fit the text.  Without this
-    // branch, the 18×18 (at 2× DPI = 36×36) texture clipped runtime-set
-    // tooltips like "Stamp" to ~3 visible characters.
-    const bool maxwidth_dwarfs_size =
-        (textObj.maxwidth > 0.0f && textObj.maxwidth > std::max(texW, texH) * 4.0f);
-    const bool autosize_canvas =
-        (texW <= placeholder_threshold || texH <= placeholder_threshold || maxwidth_dwarfs_size);
-    if (autosize_canvas) {
-        // Matches WPTextRenderer's DPI multiplier — see WPTextRenderer.cpp
-        // rationale (scene ortho targets Retina-scale 4K, not 96 DPI viewer).
-        i32 px = static_cast<i32>(textObj.pointsize * 96.0f / 72.0f * kDpi + 0.5f);
-        if (px < 12) px = 12;
-        // Prefer maxwidth (the author's own wrapping hint); fall back to a
-        // generous 2048 otherwise.  Clamp to 4096 so pathological maxwidth
-        // declarations don't blow up the canvas.
-        i32 mw = (textObj.maxwidth > 0.0f) ? static_cast<i32>(textObj.maxwidth * kDpi) : 0;
-        if (mw <= 0) mw = 2048;
-        mw   = std::min(mw, 4096);
-        texW = mw;
-        // Line height at our DPI: pointsize * 96/72 * DPI * ~1.4.
-        // Allow up to 8 lines for long titles.
-        texH = std::max(static_cast<i32>(px * 1.4f * 8), 192);
-    } else {
-        // Explicit canvas size from the model JSON (e.g. 2866203962 VHS
-        // Time/Date = 931×153).  The author sized this as if rendered at
-        // 1× DPI, but WPTextRenderer scales glyphs by kRasterDpiScale.
-        // Scale the canvas by the same factor so 2-line dynamic text
-        // (time + date) doesn't clip at the bottom of the texture.
-        texW = static_cast<i32>(texW * kDpi);
-        texH = static_cast<i32>(texH * kDpi);
-    }
-    if (texW <= 0 || texH <= 0) {
-        texW = 512;
-        texH = 128;
-    }
+    auto canvas          = resolveTextCanvasSize(textObj);
+    i32  texW            = canvas.texW;
+    i32  texH            = canvas.texH;
+    bool autosize_canvas = canvas.autosize_canvas;
 
     // Runtime text: if the declared text is empty but the layer is addressable
     // by SceneScript (via name + getLayer), still build the full plumbing —
