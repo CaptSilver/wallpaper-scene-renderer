@@ -189,7 +189,14 @@ public:
     void SetVolume(float v) { m_volume.store(v, std::memory_order_relaxed); };
 
     using SpectrumCallback = std::function<void(const float*, uint32_t, uint32_t)>;
-    void SetSpectrumCallback(SpectrumCallback cb) { m_spectrum_callback = std::move(cb); }
+    // Spectrum callback is reassigned from the main looper and invoked from
+    // the audio thread inside ProcessFrame. Take a dedicated mutex on both
+    // sides so a move-assign can't tear into the audio thread's in-flight
+    // read of std::function internals.
+    void SetSpectrumCallback(SpectrumCallback cb) {
+        std::lock_guard<std::mutex> lock(m_spectrum_callback_mutex);
+        m_spectrum_callback = std::move(cb);
+    }
     void MountChannel(std::shared_ptr<Channel> chn) {
         ChannelWrap chnw;
         chnw.chn = chn;
@@ -259,8 +266,17 @@ public:
         } else {
             std::memcpy(pOutput, m_mixBuffer.data(), framesByteSize);
         }
-        if (m_spectrum_callback) {
-            m_spectrum_callback(m_mixBuffer.data(), frameCount, phyChannels);
+        // Copy under lock, invoke unlocked — keeps the callback body off
+        // the critical mix path (m_mutex). A torn read of the std::function
+        // via concurrent SetSpectrumCallback would dereference a moved-from
+        // lambda capture.
+        SpectrumCallback cb_copy;
+        {
+            std::lock_guard<std::mutex> lock(m_spectrum_callback_mutex);
+            cb_copy = m_spectrum_callback;
+        }
+        if (cb_copy) {
+            cb_copy(m_mixBuffer.data(), frameCount, phyChannels);
         }
     }
     // Test-only: force-running so ProcessFrame won't bail.  Real devices
@@ -304,7 +320,11 @@ private:
     std::vector<ChannelWrap> m_channels;
     std::vector<uint8_t>     m_frameBuffer;
     std::vector<float>       m_mixBuffer;
-    SpectrumCallback         m_spectrum_callback;
+
+    // Independent mutex so SetSpectrumCallback doesn't contend with the
+    // per-frame channel-mix lock on m_mutex.
+    std::mutex       m_spectrum_callback_mutex;
+    SpectrumCallback m_spectrum_callback;
 };
 
 } // namespace miniaudio

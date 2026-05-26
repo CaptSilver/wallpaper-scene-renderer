@@ -232,3 +232,41 @@ TEST_SUITE("miniaudio::Device::ProcessFrame") {
         for (auto v : outBuf) CHECK(v == doctest::Approx(0.0f));
     }
 } // miniaudio::Device::ProcessFrame
+
+// SetSpectrumCallback can be reassigned from the main looper while the audio
+// thread is mid-invoke inside ProcessFrame. Without a dedicated mutex around
+// the assign + the copy-before-invoke, the std::function read can race a
+// move-assign and tear into freed lambda capture. Stress both threads to pin
+// the contract.
+#include <thread>
+TEST_SUITE("miniaudio::Device::SetSpectrumCallback") {
+    TEST_CASE("concurrent SetSpectrumCallback + ProcessFrame is race-free") {
+        miniaudio::Device dev;
+        dev.TestSetRunning(true);
+
+        std::atomic<bool>     stop { false };
+        std::atomic<uint64_t> cb_invocations { 0 };
+
+        std::thread audio([&] {
+            std::vector<float> outBuf(2 * 128);
+            while (! stop.load(std::memory_order_relaxed)) {
+                dev.ProcessFrame(outBuf.data(), 128, 2);
+            }
+        });
+
+        for (int i = 0; i < 4096; ++i) {
+            dev.SetSpectrumCallback(
+                [&cb_invocations](const float*, uint32_t, uint32_t) {
+                    cb_invocations.fetch_add(1, std::memory_order_relaxed);
+                });
+            // Force a teardown of the captured std::function periodically so
+            // the audio thread sees both populated and empty states.
+            if ((i & 0x3F) == 0) dev.SetSpectrumCallback({});
+        }
+        stop.store(true, std::memory_order_relaxed);
+        audio.join();
+
+        // No crash, no TSan trip. Exact count is implementation-defined.
+        CHECK(cb_invocations.load() > 0);
+    }
+}
