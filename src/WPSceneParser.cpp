@@ -1753,6 +1753,53 @@ std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&            
                                std::move(baseConstSvs) };
 }
 
+struct TextFontLoadResult {
+    std::string fontData;
+    std::string fontLoadedFrom;
+};
+
+// Try to load text-object font data from VFS, with systemfont fallback.
+// Returns std::nullopt if the font could not be loaded (caller should create
+// a placeholder node and abort the parse).
+std::optional<TextFontLoadResult> loadTextFontData(fs::VFS& vfs, const wpscene::WPTextObject& textObj) {
+    std::string fontData;
+    std::string fontLoadedFrom;
+    // Load font from VFS — try /assets/ prefix first (PKG assets), then bare path.
+    // For Windows-style systemfont_* names (e.g. systemfont_consolas), fall back
+    // to a metric-compatible Linux font (Liberation / DejaVu) via
+    // ResolveSystemFontFallback so wallpapers using system fonts still render
+    // text rather than vanishing into a placeholder.
+    if (textObj.font.find("systemfont") != std::string::npos) {
+        const std::string sysPath = ResolveSystemFontFallback(textObj.font);
+        if (! sysPath.empty()) {
+            fontData       = ReadSystemFile(sysPath);
+            fontLoadedFrom = sysPath;
+            LOG_INFO("  systemfont '%s' resolved to %s", textObj.font.c_str(), sysPath.c_str());
+        }
+        if (fontData.empty()) {
+            LOG_INFO("  systemfont '%s' has no available fallback, creating placeholder",
+                     textObj.font.c_str());
+            return std::nullopt;
+        }
+    } else if (vfs.Contains("/assets/" + textObj.font)) {
+        fontData       = fs::GetFileContent(vfs, "/assets/" + textObj.font);
+        fontLoadedFrom = "/assets/" + textObj.font;
+    } else if (vfs.Contains("/" + textObj.font)) {
+        fontData       = fs::GetFileContent(vfs, "/" + textObj.font);
+        fontLoadedFrom = "/" + textObj.font;
+    }
+    if (fontData.empty()) {
+        LOG_ERROR("  failed to load font: %s", textObj.font.c_str());
+        // Still register a placeholder so SceneScript getLayer() works.
+        return std::nullopt;
+    }
+    LOG_INFO("  text id=%d font loaded from %s (%zu bytes)",
+             textObj.id,
+             fontLoadedFrom.c_str(),
+             fontData.size());
+    return TextFontLoadResult{ std::move(fontData), std::move(fontLoadedFrom) };
+}
+
 // Returns spMesh; populates effct_final_mesh in-place. effct_final_mesh MUST
 // be default-constructed by the caller and lives on the caller's stack.
 std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
@@ -3232,43 +3279,12 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
         return;
     }
 
-    // Load font from VFS — try /assets/ prefix first (PKG assets), then bare path.
-    // For Windows-style systemfont_* names (e.g. systemfont_consolas), fall back
-    // to a metric-compatible Linux font (Liberation / DejaVu) via
-    // ResolveSystemFontFallback so wallpapers using system fonts still render
-    // text rather than vanishing into a placeholder.
-    std::string fontData;
-    std::string fontLoadedFrom;
-    if (textObj.font.find("systemfont") != std::string::npos) {
-        const std::string sysPath = ResolveSystemFontFallback(textObj.font);
-        if (! sysPath.empty()) {
-            fontData       = ReadSystemFile(sysPath);
-            fontLoadedFrom = sysPath;
-            LOG_INFO("  systemfont '%s' resolved to %s", textObj.font.c_str(), sysPath.c_str());
-        }
-        if (fontData.empty()) {
-            LOG_INFO("  systemfont '%s' has no available fallback, creating placeholder",
-                     textObj.font.c_str());
-            createPlaceholderNode();
-            return;
-        }
-    } else if (vfs.Contains("/assets/" + textObj.font)) {
-        fontData       = fs::GetFileContent(vfs, "/assets/" + textObj.font);
-        fontLoadedFrom = "/assets/" + textObj.font;
-    } else if (vfs.Contains("/" + textObj.font)) {
-        fontData       = fs::GetFileContent(vfs, "/" + textObj.font);
-        fontLoadedFrom = "/" + textObj.font;
-    }
-    if (fontData.empty()) {
-        LOG_ERROR("  failed to load font: %s", textObj.font.c_str());
-        // Still register a placeholder so SceneScript getLayer() works.
+    auto fontResult = loadTextFontData(vfs, textObj);
+    if (! fontResult) {
         createPlaceholderNode();
         return;
     }
-    LOG_INFO("  text id=%d font loaded from %s (%zu bytes)",
-             textObj.id,
-             fontLoadedFrom.c_str(),
-             fontData.size());
+    auto& fontData = fontResult->fontData;
 
     // Resolve a sane rasterization canvas size.  Wallpapers that rely on
     // SceneScript to fill text at runtime commonly declare `size: [2, 2]`
