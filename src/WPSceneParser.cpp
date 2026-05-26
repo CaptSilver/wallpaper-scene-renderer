@@ -3443,6 +3443,28 @@ std::shared_ptr<SceneNode> createTextSceneNode(const wpscene::WPTextObject&   te
     return spNode;
 }
 
+struct TextEffectBlend {
+    bool      hasEffect;
+    BlendMode imgBlendMode;
+};
+
+// Count effects + disable base material blend if it will be the first effect node
+TextEffectBlend adjustBlendForTextEffects(const wpscene::WPTextObject& textObj, SceneMaterial& material) {
+    // Count effects
+    int32_t count_eff = 0;
+    for (const auto& eff : textObj.effects) {
+        if (eff.visible) count_eff++;
+    }
+    bool hasEffect = count_eff > 0;
+
+    // Disable base material blend if it will be the first effect node
+    auto imgBlendMode = material.blenmode;
+    if (hasEffect) {
+        material.blenmode = BlendMode::Normal;
+    }
+    return TextEffectBlend{ hasEffect, imgBlendMode };
+}
+
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& vfs = *context.vfs;
 
@@ -3506,18 +3528,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& svData     = baseMat->svData;
     auto& shaderInfo = baseMat->shaderInfo;
 
-    // Count effects
-    int32_t count_eff = 0;
-    for (const auto& eff : textObj.effects) {
-        if (eff.visible) count_eff++;
-    }
-    bool hasEffect = count_eff > 0;
-
-    // Disable base material blend if it will be the first effect node
-    auto imgBlendMode = material.blenmode;
-    if (hasEffect) {
-        material.blenmode = BlendMode::Normal;
-    }
+    auto [hasEffect, imgBlendMode] = adjustBlendForTextEffects(textObj, material);
 
     // Mesh — position it so the authored origin matches WE's anchor point.
     //
