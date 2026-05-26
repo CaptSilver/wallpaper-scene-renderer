@@ -55,6 +55,7 @@
 #include <regex>
 #include <unordered_set>
 #include <variant>
+#include <optional>
 #include <Eigen/Dense>
 
 using namespace wallpaper;
@@ -1435,16 +1436,9 @@ ImageOffscreenRouting computeOffscreenRouting(const ParseContext&            con
     return { isOffscreen, isScriptedLayer };
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
-
-    resolveImageAutosize(context, wpimgobj);
-
-    applyImagePreRoutingDefaults(context, wpimgobj);
-
-    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
-
+std::optional<BlendMode> applyColorBlendOverride(ParseContext&            context,
+                                                 wpscene::WPImageObject& wpimgobj) {
+    auto& vfs = *context.vfs;
     // colorBlendMode: prefer hardware blend when a direct equivalent exists;
     // fall back to shader-based effectpassthrough for complex modes.
     // The override is applied after LoadMaterial (material not yet in scope).
@@ -1463,7 +1457,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
             nlohmann::json         json;
             if (! PARSE_JSON(
                     fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"), json))
-                return;
+                return std::nullopt;
             colorMat.FromJson(json);
             colorMat.combos["BONECOUNT"] = 1;
             colorMat.combos["BLENDMODE"] = wpimgobj.colorBlendMode;
@@ -1477,6 +1471,22 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                  wpimgobj.colorBlendMode,
                  colorBlendOverride != BlendMode::Disable);
     }
+    return colorBlendOverride;
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
+
+    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
+
+    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
+    if (! colorBlendOverrideOpt) return;
+    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
 
     // Count effects after colorBlendMode may have added one
     int32_t count_eff = 0;
