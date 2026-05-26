@@ -1585,42 +1585,10 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
     return ComposePassthroughResult { isCompose, synthesizedPassthroughOnly };
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
-
-    resolveImageAutosize(context, wpimgobj);
-
-    applyImagePreRoutingDefaults(context, wpimgobj);
-
-    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
-
-    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
-    if (! colorBlendOverrideOpt) return;
-    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
-
-    // Count effects after colorBlendMode may have added one
-    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
-    if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
-
-    bool hasPuppet = ! wpimgobj.puppet.empty();
-    (void)hasPuppet;
-
-    auto composeResult = synthesizePassthroughForCompose(context, wpimgobj, count_eff, hasEffect);
-    if (! composeResult) return;
-    bool isCompose                  = composeResult->isCompose;
-    bool synthesizedPassthroughOnly = composeResult->synthesizedPassthroughOnly;
-
-    // Synthesized-passthrough-only layers behave as offscreen for routing
-    // purposes (so the final write lands in `_rt_offscreen_<id>` instead of
-    // `_rt_default`), but the worldNode itself must stay non-offscreen so the
-    // composelayer base-pass still runs and captures the FB into pingpong.
-    const bool effectOffscreen = isOffscreen || synthesizedPassthroughOnly;
-
-    std::unique_ptr<WPMdl> puppet = loadPuppetModel(context, wpimgobj);
-
-    logPuppetDiagnostics(context, wpimgobj, puppet.get());
-
+std::shared_ptr<SceneNode> createImageNode(ParseContext& context,
+                                           const wpscene::WPImageObject& wpimgobj,
+                                           bool isOffscreen,
+                                           bool isScriptedLayer) {
     // wpimgobj.origin[1] = context.ortho_h - wpimgobj.origin[1];
     auto spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
                                                  Vector3f(wpimgobj.scale.data()),
@@ -1687,6 +1655,46 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
         }
     }
     spImgNode->SetOffscreen(isOffscreen);
+    return spImgNode;
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
+
+    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
+
+    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
+    if (! colorBlendOverrideOpt) return;
+    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
+
+    // Count effects after colorBlendMode may have added one
+    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
+    if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
+
+    bool hasPuppet = ! wpimgobj.puppet.empty();
+    (void)hasPuppet;
+
+    auto composeResult = synthesizePassthroughForCompose(context, wpimgobj, count_eff, hasEffect);
+    if (! composeResult) return;
+    bool isCompose                  = composeResult->isCompose;
+    bool synthesizedPassthroughOnly = composeResult->synthesizedPassthroughOnly;
+
+    // Synthesized-passthrough-only layers behave as offscreen for routing
+    // purposes (so the final write lands in `_rt_offscreen_<id>` instead of
+    // `_rt_default`), but the worldNode itself must stay non-offscreen so the
+    // composelayer base-pass still runs and captures the FB into pingpong.
+    const bool effectOffscreen = isOffscreen || synthesizedPassthroughOnly;
+
+    std::unique_ptr<WPMdl> puppet = loadPuppetModel(context, wpimgobj);
+
+    logPuppetDiagnostics(context, wpimgobj, puppet.get());
+
+    auto spImgNode = createImageNode(context, wpimgobj, isOffscreen, isScriptedLayer);
 
     SceneMaterial     material;
     WPShaderValueData svData;
