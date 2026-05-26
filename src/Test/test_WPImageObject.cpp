@@ -234,6 +234,83 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(obj.dependencies[1] == 20);
     }
 
+    // ---- shape-quad blend override for DIRECTDRAW effects ------------------
+    // Shape-quad objects host procedural effect shaders (lightshafts, lensflare,
+    // motionblur).  When an effect pass authors DIRECTDRAW=1, the shader does
+    // `albedo = vec4(0)` and emits premultiplied RGB (`fxColor * intensity * fx`)
+    // alongside `alpha = fx`.  The default Translucent blend then re-multiplies
+    // by alpha producing `fx² * fxColor + (1-fx) * dst` — rays appear as dim
+    // dark stripes that *darken* the background instead of brightening it.
+    // Force additive blending on shape-quads whose effects opt into DIRECTDRAW.
+    // Driver: Glowing Girl 4K (3287715210) "光束 - 径向" lightshafts pass.
+    TEST_CASE("shape-quad with DIRECTDRAW=1 effect pass forces additive blend") {
+        auto vfs       = makeAssetsVfs({
+            { "effects/lightshafts/effect.json",
+              R"({
+                "passes": [{ "material": "materials/effects/lightshafts.json" }]
+            })" },
+            { "materials/effects/lightshafts.json",
+              R"({
+                "passes": [{ "shader": "effects/lightshafts", "blending": "normal" }]
+            })" },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 470, "name": "rays", "shape": "quad",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
+            "effects": [{
+                "file": "effects/lightshafts/effect.json",
+                "id": 471, "visible": true,
+                "passes": [{ "combos": { "DIRECTDRAW": 1, "RAYMODE": 1, "RENDERING": 1 } }]
+            }]
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.material.blending == "additive");
+    }
+
+    TEST_CASE("shape-quad with DIRECTDRAW=0 effect pass keeps default translucent blend") {
+        // Counter-pin: only DIRECTDRAW=1 triggers the override — DIRECTDRAW=0
+        // shaders read g_Texture0 and composite internally with mix(), so the
+        // hardware Translucent path is correct for them.
+        auto vfs       = makeAssetsVfs({
+            { "effects/foo/effect.json",
+              R"({
+                "passes": [{ "material": "materials/effects/foo.json" }]
+            })" },
+            { "materials/effects/foo.json",
+              R"({
+                "passes": [{ "shader": "effects/foo", "blending": "normal" }]
+            })" },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 470, "name": "fx", "shape": "quad",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
+            "effects": [{
+                "file": "effects/foo/effect.json",
+                "id": 471, "visible": true,
+                "passes": [{ "combos": { "DIRECTDRAW": 0 } }]
+            }]
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.material.blending == "translucent");
+    }
+
+    TEST_CASE("shape-quad without effects keeps default translucent blend") {
+        // No effects at all → no DIRECTDRAW combo to inspect → keep default.
+        auto vfs       = makeAssetsVfs({});
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 99, "name": "plain-quad", "shape": "quad",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100"
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.material.blending == "translucent");
+    }
+
     // ---- CollectComposeDependencyIds: pre-pass filter --------------------
     // The WPSceneParser pre-pass that forces dependent images offscreen
     // consumes only *compose-layer* dependencies and ignores self-references.

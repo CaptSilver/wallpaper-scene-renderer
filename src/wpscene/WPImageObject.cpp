@@ -372,6 +372,31 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
                 effects.push_back(std::move(wpeff));
             }
         }
+        // Shape-quad effects with DIRECTDRAW=1 (e.g. effects/lightshafts in
+        // 3287715210) have shaders that already premultiply the output RGB
+        // by the mask/alpha and the inner ApplyBlending often resolves to
+        // additive math (BLENDMODE=31 → `A + B*opacity`).  The straight-
+        // alpha Translucent blend then re-multiplies by alpha producing
+        // `fx² * fxColor` AND darkens the background by `(1-fx)` — rays
+        // appear as dim/dark stripes instead of the authored bright beams.
+        // Switch the synthetic material to additive so the final composite
+        // uses `src + dst` and preserves both the authored ray brightness
+        // and the background.  The lightshafts/lensflare/motionblur effect
+        // family all share this DIRECTDRAW + procedural shape-quad pattern.
+        for (const auto& eff : effects) {
+            bool eff_uses_directdraw = false;
+            for (const auto& pass : eff.passes) {
+                auto it = pass.combos.find("DIRECTDRAW");
+                if (it != pass.combos.end() && it->second != 0) {
+                    eff_uses_directdraw = true;
+                    break;
+                }
+            }
+            if (eff_uses_directdraw) {
+                material.blending = "additive";
+                break;
+            }
+        }
         if (json.contains("config")) {
             const auto& jConf = json.at("config");
             GET_JSON_NAME_VALUE_NOWARN(jConf, "passthrough", config.passthrough);
