@@ -1753,6 +1753,37 @@ std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&            
                                std::move(baseConstSvs) };
 }
 
+struct TextBaseMaterial {
+    SceneMaterial     material;
+    WPShaderValueData svData;
+    WPShaderInfo      shaderInfo;
+};
+
+// Load material
+std::optional<TextBaseMaterial> loadTextBaseMaterial(ParseContext&                 context,
+                                                     const wpscene::WPTextObject&  textObj,
+                                                     wpscene::WPMaterial&          wpMat,
+                                                     SceneNode*                    spNodeRaw) {
+    auto&             vfs = *context.vfs;
+    SceneMaterial     material;
+    WPShaderValueData svData;
+    WPShaderInfo      shaderInfo;
+    shaderInfo.baseConstSvs             = context.global_base_uniforms;
+    shaderInfo.baseConstSvs["g_Color4"] = std::array<float, 4> {
+        textObj.color[0], textObj.color[1], textObj.color[2], textObj.alpha
+    };
+    shaderInfo.baseConstSvs["g_UserAlpha"]  = textObj.alpha;
+    shaderInfo.baseConstSvs["g_Brightness"] = textObj.brightness;
+
+    if (! LoadMaterial(
+            vfs, wpMat, context.scene.get(), spNodeRaw, &material, &svData, &shaderInfo)) {
+        LOG_ERROR("  load text material failed");
+        return std::nullopt;
+    }
+    LoadConstvalue(material, wpMat, shaderInfo);
+    return TextBaseMaterial { std::move(material), std::move(svData), std::move(shaderInfo) };
+}
+
 struct TextFontLoadResult {
     std::string fontData;
     std::string fontLoadedFrom;
@@ -3467,23 +3498,13 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto adjOrigin = computeAnchorAdjustedOrigin(textObj, autosize_canvas);
     auto spNode    = createTextSceneNode(textObj, adjOrigin);
 
-    // Load material
-    SceneMaterial     material;
-    WPShaderValueData svData;
-    WPShaderInfo      shaderInfo;
-    shaderInfo.baseConstSvs             = context.global_base_uniforms;
-    shaderInfo.baseConstSvs["g_Color4"] = std::array<float, 4> {
-        textObj.color[0], textObj.color[1], textObj.color[2], textObj.alpha
-    };
-    shaderInfo.baseConstSvs["g_UserAlpha"]  = textObj.alpha;
-    shaderInfo.baseConstSvs["g_Brightness"] = textObj.brightness;
-
-    if (! LoadMaterial(
-            vfs, wpMat, context.scene.get(), spNode.get(), &material, &svData, &shaderInfo)) {
-        LOG_ERROR("  load text material failed");
+    auto baseMat = loadTextBaseMaterial(context, textObj, wpMat, spNode.get());
+    if (! baseMat) {
         return;
     }
-    LoadConstvalue(material, wpMat, shaderInfo);
+    auto& material   = baseMat->material;
+    auto& svData     = baseMat->svData;
+    auto& shaderInfo = baseMat->shaderInfo;
 
     // Count effects
     int32_t count_eff = 0;
