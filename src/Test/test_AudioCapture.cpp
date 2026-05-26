@@ -3,6 +3,7 @@
 #include "Audio/AudioCapture.h"
 #include "Audio/AudioAnalyzer.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <memory>
 #include <string_view>
@@ -75,5 +76,29 @@ TEST_SUITE("AudioCapture") {
                 (void)cap.IsActive();
             }
         }
+    }
+
+    TEST_CASE("after Init failure, no orphan worker thread blocks Stop()") {
+        // When ConnectPulse fails AFTER pa_threaded_mainloop_start (e.g.
+        // pa_context_new returns null or pa_context_connect fails), the
+        // mainloop used to keep running idle for the full scene lifetime —
+        // the original ConnectPulse exited the PALock without stopping +
+        // freeing paLoop, leaving cleanup to Stop()/dtor much later. Fix
+        // cleans up in-place; destruction should be fast even when Init
+        // failed half-way.
+        if (wekde_audio_device_optin()) {
+            MESSAGE("WEKDE_HAS_AUDIO_DEVICE=1 — Init is expected to succeed, skipping");
+            return;
+        }
+        auto cap      = std::make_unique<AudioCapture>();
+        auto analyzer = std::make_shared<AudioAnalyzer>();
+        (void)cap->Init(analyzer); // expected to fail in distrobox
+        const auto t0 = std::chrono::steady_clock::now();
+        cap.reset();
+        const auto elapsed_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0)
+                .count();
+        CHECK(elapsed_ms < 500);
     }
 }

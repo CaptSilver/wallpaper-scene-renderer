@@ -208,35 +208,51 @@ struct AudioCapture::Impl {
             paLoop = nullptr;
             return false;
         }
+        // If anything inside the PALock block fails, set failed=true so the
+        // post-lock cleanup can stop and free the now-orphan threaded
+        // mainloop. Without it, the idle PA worker thread runs for the full
+        // scene lifetime until Stop() eventually disposes of it (the
+        // previous early-returns from inside PALock leaked paLoop).
+        bool failed = false;
         {
             PALock lk(paLoop);
             paContext = pa_context_new(pa_threaded_mainloop_get_api(paLoop), kPulseClientName);
-            if (! paContext) return false;
-            pa_context_set_state_callback(paContext, paContextStateCb, this);
-            if (pa_context_connect(paContext, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
-                pa_context_unref(paContext);
-                paContext = nullptr;
-                return false;
-            }
-            while (true) {
-                pa_context_state_t st = pa_context_get_state(paContext);
-                if (st == PA_CONTEXT_READY) {
-                    paReady = true;
-                    break;
+            if (! paContext) {
+                failed = true;
+            } else {
+                pa_context_set_state_callback(paContext, paContextStateCb, this);
+                if (pa_context_connect(paContext, nullptr, PA_CONTEXT_NOFLAGS, nullptr) < 0) {
+                    pa_context_unref(paContext);
+                    paContext = nullptr;
+                    failed    = true;
+                } else {
+                    while (true) {
+                        pa_context_state_t st = pa_context_get_state(paContext);
+                        if (st == PA_CONTEXT_READY) {
+                            paReady = true;
+                            break;
+                        }
+                        if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) break;
+                        pa_threaded_mainloop_wait(paLoop);
+                    }
+                    if (paReady) {
+                        pa_context_set_subscribe_callback(paContext, paSubscribeCb, this);
+                        pa_operation* op = pa_context_subscribe(
+                            paContext,
+                            static_cast<pa_subscription_mask_t>(PA_SUBSCRIPTION_MASK_SERVER |
+                                                                PA_SUBSCRIPTION_MASK_SINK),
+                            nullptr,
+                            nullptr);
+                        if (op) pa_operation_unref(op);
+                    }
                 }
-                if (st == PA_CONTEXT_FAILED || st == PA_CONTEXT_TERMINATED) break;
-                pa_threaded_mainloop_wait(paLoop);
             }
-            if (paReady) {
-                pa_context_set_subscribe_callback(paContext, paSubscribeCb, this);
-                pa_operation* op = pa_context_subscribe(
-                    paContext,
-                    static_cast<pa_subscription_mask_t>(PA_SUBSCRIPTION_MASK_SERVER |
-                                                        PA_SUBSCRIPTION_MASK_SINK),
-                    nullptr,
-                    nullptr);
-                if (op) pa_operation_unref(op);
-            }
+        }
+        if (failed) {
+            pa_threaded_mainloop_stop(paLoop);
+            pa_threaded_mainloop_free(paLoop);
+            paLoop = nullptr;
+            return false;
         }
         return paReady;
     }
