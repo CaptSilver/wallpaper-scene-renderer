@@ -2,6 +2,7 @@
 
 #include "Utils/Logging.h"
 #include "GraphicsPipeline.hpp"
+#include "PipelineCacheIO.hpp"
 
 using namespace wallpaper::vulkan;
 
@@ -234,6 +235,39 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         allocatorInfo.instance               = *inst.inst();
         VVK_CHECK_BOOL_RE(vvk::CreateVmaAllocator(allocatorInfo, device.m_allocator));
     }
+    {
+        // Best-effort pipeline cache.  Failure here is non-fatal — the renderer
+        // works without it, just at the cost of recompiling SPIR-V on every
+        // scene reload (50-200 graphics pipelines per scene).
+        const auto        path = pipeline_cache_io::PathFromEnv();
+        std::vector<char> blob;
+        if (! path.empty()) {
+            blob = pipeline_cache_io::Read(path);
+            if (! blob.empty() &&
+                ! pipeline_cache_io::HeaderMatches(blob, device.m_gpu.GetProperties())) {
+                LOG_INFO(
+                    "pipeline cache: header mismatch (driver/GPU changed) - discarding %zu bytes",
+                    blob.size());
+                blob.clear();
+            }
+        }
+        VkPipelineCacheCreateInfo pc_ci {
+            .sType           = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+            .pNext           = nullptr,
+            .flags           = 0,
+            .initialDataSize = blob.size(),
+            .pInitialData    = blob.empty() ? nullptr : blob.data(),
+        };
+        VkResult res = device.m_device.CreatePipelineCache(pc_ci, device.m_pipeline_cache);
+        if (res != VK_SUCCESS) {
+            LOG_ERROR("pipeline cache: vkCreatePipelineCache failed (%s) - continuing without",
+                      vvk::ToString(res));
+            // m_pipeline_cache stays default-constructed -> *m_pipeline_cache == VK_NULL_HANDLE,
+            // which vkCreateGraphicsPipelines accepts.
+        } else if (! blob.empty()) {
+            LOG_INFO("pipeline cache: loaded %zu bytes from %s", blob.size(), path.c_str());
+        }
+    }
     device.m_tex_cache = std::make_unique<TextureCache>(device);
     return true;
 }
@@ -246,7 +280,27 @@ VkDeviceSize Device::GetUsage() const {
     return total;
 }
 
-void Device::Destroy() { VVK_CHECK(m_device.WaitIdle()); }
+void Device::Destroy() {
+    VVK_CHECK(m_device.WaitIdle());
+    // Persist pipeline cache before its Handle dtor destroys it.  WaitIdle()
+    // above ensures no driver thread is still touching the cache.  Failures
+    // here are non-fatal — worst case we recompile on next launch.
+    if (m_pipeline_cache) {
+        size_t bytes = 0;
+        if (m_device.GetPipelineCacheData(*m_pipeline_cache, &bytes, nullptr) == VK_SUCCESS &&
+            bytes > 0) {
+            std::vector<char> blob(bytes);
+            if (m_device.GetPipelineCacheData(*m_pipeline_cache, &bytes, blob.data()) ==
+                VK_SUCCESS) {
+                const auto path = pipeline_cache_io::PathFromEnv();
+                if (! path.empty() &&
+                    pipeline_cache_io::Write(path, blob.data(), bytes)) {
+                    LOG_INFO("pipeline cache: persisted %zu bytes to %s", bytes, path.c_str());
+                }
+            }
+        }
+    }
+}
 
 Device::Device(): m_tex_cache(std::make_unique<TextureCache>(*this)) {}
 Device::~Device() {};

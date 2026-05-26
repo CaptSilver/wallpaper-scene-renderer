@@ -240,7 +240,8 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
         .layout              = *pipeline.layout,
         .renderPass          = *pass,
     };
-    VVK_CHECK_BOOL_RE(device.handle().CreateGraphicsPipeline(create, pipeline.handle));
+    VVK_CHECK_BOOL_RE(
+        device.handle().CreateGraphicsPipeline(create, device.pipeline_cache(), pipeline.handle));
     pipeline.pass = std::move(pass);
     return true;
 }

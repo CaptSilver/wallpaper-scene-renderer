@@ -7,6 +7,7 @@ STATIC
 Instance.cpp
 Device.cpp
 GraphicsPipeline.cpp
+PipelineCacheIO.cpp
 Shader.cpp
 StagingBuffer.cpp
 Swapchain.cpp

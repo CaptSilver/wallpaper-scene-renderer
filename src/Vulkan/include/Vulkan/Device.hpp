@@ -59,6 +59,12 @@ public:
     }
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }
+    // VkPipelineCache shared across all vkCreateGraphicsPipelines calls.
+    // Loaded from $XDG_CACHE_HOME/wallpaper-scene-renderer/pipeline.cache at
+    // Create() (header-validated against driver vendor/device/UUID) and
+    // persisted back in Destroy().  Returns VK_NULL_HANDLE if creation
+    // failed — vkCreateGraphicsPipelines accepts that fallback.
+    VkPipelineCache pipeline_cache() const { return *m_pipeline_cache; }
     const auto& swapchain() const { return m_swapchain; }
     Swapchain&  mut_swapchain() { return m_swapchain; }
     const auto& out_extent() const { return m_extent; }
@@ -83,7 +89,8 @@ private:
 
     Swapchain m_swapchain;
 
-    vvk::CommandPool m_command_pool;
+    vvk::CommandPool    m_command_pool;
+    vvk::PipelineCache  m_pipeline_cache;
 
     QueueParameters m_graphics_queue;
     QueueParameters m_present_queue;

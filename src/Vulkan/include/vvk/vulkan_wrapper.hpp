@@ -139,6 +139,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCreateGraphicsPipelines             vkCreateGraphicsPipelines {};
     PFN_vkCreateImage                         vkCreateImage {};
     PFN_vkCreateImageView                     vkCreateImageView {};
+    PFN_vkCreatePipelineCache                 vkCreatePipelineCache {};
     PFN_vkCreatePipelineLayout                vkCreatePipelineLayout {};
     PFN_vkCreateQueryPool                     vkCreateQueryPool {};
     PFN_vkCreateRenderPass                    vkCreateRenderPass {};
@@ -158,6 +159,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkDestroyImage                        vkDestroyImage {};
     PFN_vkDestroyImageView                    vkDestroyImageView {};
     PFN_vkDestroyPipeline                     vkDestroyPipeline {};
+    PFN_vkDestroyPipelineCache                vkDestroyPipelineCache {};
     PFN_vkDestroyPipelineLayout               vkDestroyPipelineLayout {};
     PFN_vkDestroyQueryPool                    vkDestroyQueryPool {};
     PFN_vkDestroyRenderPass                   vkDestroyRenderPass {};
@@ -176,6 +178,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkGetFenceStatus                      vkGetFenceStatus {};
     PFN_vkGetImageMemoryRequirements          vkGetImageMemoryRequirements {};
     PFN_vkGetMemoryFdKHR                      vkGetMemoryFdKHR {};
+    PFN_vkGetPipelineCacheData                vkGetPipelineCacheData {};
     PFN_vkGetPipelineExecutablePropertiesKHR  vkGetPipelineExecutablePropertiesKHR {};
     PFN_vkGetPipelineExecutableStatisticsKHR  vkGetPipelineExecutableStatisticsKHR {};
     PFN_vkGetQueryPoolResults                 vkGetQueryPoolResults {};
@@ -291,6 +294,7 @@ void Destroy(VkInstance, VkDebugUtilsMessengerEXT, const InstanceDispatch&) noex
 void Destroy(VkInstance, VkSurfaceKHR, const InstanceDispatch&) noexcept;
 void Destroy(VkDevice, VkCommandPool, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkPipeline, const DeviceDispatch&) noexcept;
+void Destroy(VkDevice, VkPipelineCache, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkPipelineLayout, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkRenderPass, const DeviceDispatch&) noexcept;
 void Destroy(VkDevice, VkDescriptorSetLayout, const DeviceDispatch&) noexcept;
@@ -310,6 +314,7 @@ using DebugUtilsMessenger = Handle<VkDebugUtilsMessengerEXT, VkInstance, Instanc
 using DescriptorSetLayout = Handle<VkDescriptorSetLayout, VkDevice, DeviceDispatch>;
 using SurfaceKHR          = Handle<VkSurfaceKHR, VkInstance, InstanceDispatch>;
 using Pipeline            = Handle<VkPipeline, VkDevice, DeviceDispatch>;
+using PipelineCache       = Handle<VkPipelineCache, VkDevice, DeviceDispatch>;
 using PipelineLayout      = Handle<VkPipelineLayout, VkDevice, DeviceDispatch>;
 using RenderPass          = Handle<VkRenderPass, VkDevice, DeviceDispatch>;
 using Sampler             = Handle<VkSampler, VkDevice, DeviceDispatch>;
@@ -491,8 +496,14 @@ public:
     VkResult CreateCommandPool(const VkCommandPoolCreateInfo& ci, CommandPool&) const;
     VkResult CreateDescriptorSetLayout(const VkDescriptorSetLayoutCreateInfo& ci,
                                        DescriptorSetLayout&) const noexcept;
-    VkResult CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci,
+    VkResult CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, VkPipelineCache cache,
                                     Pipeline&) const noexcept;
+
+    VkResult CreatePipelineCache(const VkPipelineCacheCreateInfo& ci, PipelineCache&) const noexcept;
+
+    VkResult GetPipelineCacheData(VkPipelineCache cache, size_t* size, void* data) const noexcept {
+        return dld->vkGetPipelineCacheData(handle, cache, size, data);
+    }
 
     VkResult CreateRenderPass(const VkRenderPassCreateInfo& ci, RenderPass&) const noexcept;
 
