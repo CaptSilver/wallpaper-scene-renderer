@@ -155,3 +155,90 @@ TEST_SUITE("WPTextRenderer Init/Shutdown race") {
         CHECK(render_count.load() > 0);
     }
 }
+
+TEST_SUITE("WPTextRenderer::RenderText — guard clauses") {
+    TEST_CASE("empty fontData returns nullptr (logged, not crashed)") {
+        // Scripts that lose their font ref must not crash the renderer.
+        auto img = WPTextRenderer::RenderText("", 16.f, "X", 32, 32, "center", "center", 0);
+        CHECK(img == nullptr);
+    }
+
+    TEST_CASE("zero or negative dimensions return nullptr") {
+        // FontData with garbage — first dimension guard fires before we
+        // ever reach FT_New_Memory_Face, so garbage is fine here.
+        std::string fake_font(256, '\0');
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 0, 32, "center", "center", 0)
+              == nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, 0, "center", "center", 0)
+              == nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", -1, 32, "center", "center", 0)
+              == nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, -10, "center", "center", 0)
+              == nullptr);
+    }
+
+    TEST_CASE("invalid font bytes return nullptr (FT_New_Memory_Face fails)") {
+        // Random garbage in fontData passes the empty-guard but fails FT
+        // parsing. The renderer must return nullptr cleanly, not raise.
+        std::string garbage(1024, '\xFF');
+        auto        img =
+            WPTextRenderer::RenderText(garbage, 16.f, "hello", 64, 64, "center", "center", 0);
+        CHECK(img == nullptr);
+    }
+}
+
+TEST_SUITE("WPTextRenderer::RenderText — empty-text fast path") {
+    // text=="" returns a transparent canvas of the requested width/height
+    // without touching FreeType. Verifies the contract scripts rely on for
+    // clearing labels (per WPTextRenderer.cpp:119-145).
+    //
+    // Production order: fontData-empty -> nullptr; (w|h)<=0 -> nullptr;
+    // text-empty -> transparent canvas. So the empty-text path requires
+    // non-empty fontData (the bytes are never parsed because we return
+    // before FT_New_Memory_Face). A single placeholder byte is enough.
+    TEST_CASE("empty text returns transparent canvas of requested size") {
+        const std::string nonEmptyFontPlaceholder = "x"; // never parsed
+        auto              img                     = WPTextRenderer::RenderText(
+            nonEmptyFontPlaceholder, 16.f, "", 64, 32, "center", "center", 0);
+        REQUIRE(img != nullptr);
+        CHECK(img->header.width  == 64);
+        CHECK(img->header.height == 32);
+        CHECK(img->header.mapWidth  == 64);
+        CHECK(img->header.mapHeight == 32);
+        CHECK(img->header.count == 1);
+        CHECK(img->header.format == TextureFormat::RGBA8);
+        REQUIRE(img->slots.size() == 1);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        CHECK(img->slots[0].mipmaps[0].width  == 64);
+        CHECK(img->slots[0].mipmaps[0].height == 32);
+        CHECK(img->slots[0].mipmaps[0].size   == 64 * 32 * 4);
+        // Buffer is zero-initialised → alpha == 0 everywhere → fully
+        // transparent. Sample a few bytes to confirm.
+        const uint8_t* data = img->slots[0].mipmaps[0].data.get();
+        REQUIRE(data != nullptr);
+        CHECK(data[0]            == 0);   // R first pixel
+        CHECK(data[3]            == 0);   // A first pixel
+        CHECK(data[64 * 32 * 4 - 1] == 0);   // A last pixel
+    }
+
+    TEST_CASE("empty text honours requested dimensions exactly (1x1)") {
+        // Layout helpers depend on dimensions being preserved through the
+        // empty-text path (no padding compensation, no minimum sizes).
+        const std::string nonEmptyFontPlaceholder = "x";
+        auto              img                     = WPTextRenderer::RenderText(
+            nonEmptyFontPlaceholder, 16.f, "", 1, 1, "top", "top", 0);
+        REQUIRE(img != nullptr);
+        CHECK(img->header.width  == 1);
+        CHECK(img->header.height == 1);
+    }
+}
+
+TEST_SUITE("WPTextRenderer::kRasterDpiScale") {
+    TEST_CASE("constant is 2.0f (super-sampling factor synced with ParseTextObj)") {
+        // Two callers depend on this constant being identical: WPTextRenderer
+        // scales pointsize by kRasterDpiScale * (96/72), and ParseTextObj
+        // multiplies the authored canvas by kRasterDpiScale so glyphs don't
+        // clip. Changing one without the other silently misaligns text.
+        CHECK(WPTextRenderer::kRasterDpiScale == 2.0f);
+    }
+}

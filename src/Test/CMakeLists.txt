@@ -6,6 +6,14 @@ enable_testing()
 # src/CMakeLists.txt is a sibling and doesn't propagate the imported target).
 find_package(Freetype REQUIRED)
 
+# libmpv for the VideoTextureDecoder lifecycle test.  The PkgConfig module is
+# enabled at the submodule root, so pkg_check_modules works here too — same
+# pattern as the sibling src/CMakeLists.txt.  The test binary stays runnable
+# without a real video file: the open() branches are gated on WEKDE_HAS_VIDEO;
+# the offline cases never touch libmpv at runtime (constructor + destructor +
+# triple-buffer indices), they just need the headers/symbols at link time.
+pkg_check_modules(MPV REQUIRED mpv)
+
 set(DOCTEST_INCLUDE_DIR
     "${CMAKE_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
 set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
@@ -58,6 +66,8 @@ add_executable(backend_scene_tests
     test_AudioCapture.cpp
     test_BinaryStream.cpp
     test_VFS.cpp
+    test_WPPkgFs.cpp
+    ${SRC_DIR}/WPPkgFs.cpp
     test_SoundStreamSeek.cpp
     test_WPVolumeAnimation.cpp
     test_WPPropertyAnimation.cpp
@@ -109,6 +119,7 @@ add_executable(backend_scene_tests
     test_WPLightObject.cpp
     test_WPLightKindParse.cpp
     test_WPShaderValueUpdater_Volumetric.cpp
+    test_WPShaderValueUpdater_Uniforms.cpp
     test_DependencyGraph.cpp
     test_RenderGraph.cpp
     test_WorldCacheGate.cpp
@@ -116,6 +127,12 @@ add_executable(backend_scene_tests
     test_AudioConsumerGate.cpp
     test_TextStyleMerge.cpp
     test_WarmCacheTexSlots.cpp
+    test_VideoTextureDecoder.cpp
+    # VideoTextureDecoder.cpp: SW video texture decoder (libmpv triple-buffer).
+    # Pulled in directly (not via wescene-renderer) because the latter drags
+    # the entire Vulkan device chain. The TU's only non-stdlib dep is libmpv,
+    # added via MPV_LIBRARIES below.
+    ${SRC_DIR}/VideoTextureDecoder.cpp
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
@@ -169,6 +186,8 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/VulkanRender/include
     ${SRC_DIR}/Vulkan/include
     ${DOCTEST_INCLUDE_DIR}
+    # libmpv headers (mpv/client.h, mpv/render.h) — VideoTextureDecoder.cpp.
+    ${MPV_INCLUDE_DIRS}
 )
 target_include_directories(backend_scene_tests SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party")
@@ -190,6 +209,8 @@ target_link_libraries(backend_scene_tests PRIVATE
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
     nlohmann_json
+    # libmpv — VideoTextureDecoder.cpp (test_VideoTextureDecoder.cpp).
+    ${MPV_LIBRARIES}
 )
 
 target_compile_options(backend_scene_tests PRIVATE ${warn_opts})

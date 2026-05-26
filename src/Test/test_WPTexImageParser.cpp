@@ -762,10 +762,10 @@ TEST_SUITE("WPTexImageParser") {
         mountTex(vfs, "test_oom_cap", std::move(buf));
 
         WPTexImageParser parser(&vfs);
-        // Expect nullptr (LZ4_decompress_safe will fail on garbage) but not a
-        // crash and not an OOM — we proved this by reaching here.
-        (void)parser.Parse("test_oom_cap");
-        CHECK(true);
+        // Expect nullptr (LZ4_decompress_safe will fail on the 16-byte
+        // garbage with decompressed_size at cap), and no crash / no OOM
+        // (proved by reaching here).
+        CHECK(parser.Parse("test_oom_cap") == nullptr);
     }
 
     TEST_CASE("Zero src_size returns nullptr") {

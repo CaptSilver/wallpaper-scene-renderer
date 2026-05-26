@@ -36,7 +36,9 @@ TEST_SUITE("Scene") {
     TEST_CASE("UpdateLinkedCamera with no-match name is a no-op") {
         Scene s;
         s.UpdateLinkedCamera("missing"); // neither linkedCameras nor cameras populated
-        CHECK(true);                     // no crash
+        // No-op contract: maps stay empty + no crash.
+        CHECK(s.linkedCameras.empty());
+        CHECK(s.cameras.empty());
     }
 
     TEST_CASE("UpdateLinkedCamera clones the source camera's width/height to followers") {
