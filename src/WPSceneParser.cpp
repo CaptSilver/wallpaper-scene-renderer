@@ -3306,6 +3306,62 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
     LOG_INFO("  ParseModelObj id=%d completed, %zu submeshes", model_obj.id, mdl.submeshes.size());
 }
 
+struct TextRasterResult {
+    std::shared_ptr<Image> textImage;
+    std::string            texKey;
+    std::string            initialText;
+};
+
+// Rasterize text with WPTextRenderer, register the resulting image with the
+// scene's image parser, and add a SceneTexture entry under a unique key.
+// Returns std::nullopt if rasterization failed (caller should bail).
+std::optional<TextRasterResult> rasterizeAndRegisterText(
+    ParseContext& context, const wpscene::WPTextObject& textObj,
+    const std::string& fontData, i32 texW, i32 texH) {
+    // Runtime text: if the declared text is empty but the layer is addressable
+    // by SceneScript (via name + getLayer), still build the full plumbing —
+    // mesh, material, texture, textLayers entry — using " " as the initial
+    // rasterized content.  Scripts will set thisLayer.text later, and the
+    // text update path (SceneWallpaper setTextUpdate → reuploadTexture) will
+    // do the right thing ONLY if the tl entry exists.  Empty placeholder
+    // nodes (no entry) silently drop the update.
+    std::string initialText = textObj.textValue.empty() ? std::string(" ") : textObj.textValue;
+
+    // Rasterize text
+    auto textImage = WPTextRenderer::RenderText(fontData,
+                                                textObj.pointsize,
+                                                initialText,
+                                                texW,
+                                                texH,
+                                                textObj.horizontalalign,
+                                                textObj.verticalalign,
+                                                textObj.padding);
+    if (! textImage) {
+        LOG_ERROR("  text rasterization failed");
+        return std::nullopt;
+    }
+
+    // Register texture with a unique key
+    std::string texKey = "_text_" + std::to_string(textObj.id);
+    textImage->key     = texKey;
+
+    auto* imgParser = dynamic_cast<WPTexImageParser*>(context.scene->imageParser.get());
+    if (imgParser) {
+        imgParser->RegisterImage(texKey, textImage);
+    }
+
+    // Register in scene textures
+    SceneTexture stex;
+    stex.url                        = texKey;
+    stex.sample                     = { TextureWrap::CLAMP_TO_EDGE,
+                                        TextureWrap::CLAMP_TO_EDGE,
+                                        TextureFilter::LINEAR,
+                                        TextureFilter::LINEAR };
+    context.scene->textures[texKey] = stex;
+
+    return TextRasterResult{ std::move(textImage), std::move(texKey), std::move(initialText) };
+}
+
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& vfs = *context.vfs;
 
@@ -3349,47 +3405,13 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     i32  texH            = canvas.texH;
     bool autosize_canvas = canvas.autosize_canvas;
 
-    // Runtime text: if the declared text is empty but the layer is addressable
-    // by SceneScript (via name + getLayer), still build the full plumbing —
-    // mesh, material, texture, textLayers entry — using " " as the initial
-    // rasterized content.  Scripts will set thisLayer.text later, and the
-    // text update path (SceneWallpaper setTextUpdate → reuploadTexture) will
-    // do the right thing ONLY if the tl entry exists.  Empty placeholder
-    // nodes (no entry) silently drop the update.
-    std::string initialText = textObj.textValue.empty() ? std::string(" ") : textObj.textValue;
-    const bool  text_is_script_driven = textObj.textValue.empty();
-
-    // Rasterize text
-    auto textImage = WPTextRenderer::RenderText(fontData,
-                                                textObj.pointsize,
-                                                initialText,
-                                                texW,
-                                                texH,
-                                                textObj.horizontalalign,
-                                                textObj.verticalalign,
-                                                textObj.padding);
-    if (! textImage) {
-        LOG_ERROR("  text rasterization failed");
+    auto rasterResult = rasterizeAndRegisterText(context, textObj, fontData, texW, texH);
+    if (! rasterResult) {
         return;
     }
-
-    // Register texture with a unique key
-    std::string texKey = "_text_" + std::to_string(textObj.id);
-    textImage->key     = texKey;
-
-    auto* imgParser = dynamic_cast<WPTexImageParser*>(context.scene->imageParser.get());
-    if (imgParser) {
-        imgParser->RegisterImage(texKey, textImage);
-    }
-
-    // Register in scene textures
-    SceneTexture stex;
-    stex.url                        = texKey;
-    stex.sample                     = { TextureWrap::CLAMP_TO_EDGE,
-                                        TextureWrap::CLAMP_TO_EDGE,
-                                        TextureFilter::LINEAR,
-                                        TextureFilter::LINEAR };
-    context.scene->textures[texKey] = stex;
+    auto& textImage   = rasterResult->textImage;
+    auto& texKey      = rasterResult->texKey;
+    auto& initialText = rasterResult->initialText;
 
     // Build material: genericimage2 shader with text texture
     wpscene::WPMaterial wpMat;
@@ -3761,8 +3783,6 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
                  textObj.id,
                  textObj.textScript.empty() ? " (runtime-text only)" : "");
     }
-    (void)text_is_script_driven; // reserved for future diagnostics
-
     // Add to parent or root
     if (textObj.parent_id >= 0 && context.node_map.count(textObj.parent_id)) {
         context.node_map.at(textObj.parent_id)->AppendChild(spNode);
