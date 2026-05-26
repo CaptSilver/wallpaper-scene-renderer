@@ -3918,6 +3918,38 @@ void SceneObject::buildCursorTargets() {
         "};\n");
 }
 
+void SceneObject::refreshEngineTickGlobals(qint64& lastTickMs, double frametimeFallback,
+                                           int64_t frametimeClampMs) {
+    qint64 nowMs       = m_runtimeTimer.elapsed();
+    double runtimeSecs = nowMs / 1000.0;
+    double frametime   = wallpaper::ComputeTickFrametime(nowMs, lastTickMs, frametimeFallback,
+                                                         frametimeClampMs);
+    lastTickMs         = nowMs;
+    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
+    engineObj.setProperty("runtime", runtimeSecs);
+    engineObj.setProperty("frametime", frametime);
+    engineObj.setProperty("fps", m_scene->getFps());
+    // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight.  Cached at 1Hz —
+    // the value is seconds-resolution so a fresh QTime::currentTime() syscall per
+    // tick repeats the same value for hundreds of consecutive ticks.
+    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
+        QTime now         = QTime::currentTime();
+        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
+        m_lastTimeOfDayMs = nowMs;
+    }
+    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
+
+    // Refresh cursor world/screen positions for scripts reading
+    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
+    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
+    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
+    // world for tooltip math) see a consistent live cursor each tick.
+    m_cwpObj.setProperty("x", (double)m_cursorSceneX);
+    m_cwpObj.setProperty("y", (double)m_cursorSceneY);
+    m_cspObj.setProperty("x", (double)m_cursorSceneX);
+    m_cspObj.setProperty("y", (double)m_cursorSceneY);
+}
+
 void SceneObject::refreshAudioBuffers() {
     if (! m_jsEngine) return;
 
@@ -3999,35 +4031,7 @@ void SceneObject::evaluateTextScripts() {
     // delta (close to real frametime).  `engine.fps` comes from the render
     // thread's wall-clock FpsCounter and is the value scripts should poll for
     // accurate FPS readouts.
-    qint64 nowMs       = m_runtimeTimer.elapsed();
-    double runtimeSecs = nowMs / 1000.0;
-    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastTextTickMs, 0.016, 2000);
-    m_lastTextTickMs   = nowMs;
-    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
-    engineObj.setProperty("runtime", runtimeSecs);
-    engineObj.setProperty("frametime", frametime);
-    engineObj.setProperty("fps", m_scene->getFps());
-    // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight.  Cached at 1Hz —
-    // the value is seconds-resolution so a fresh QTime::currentTime() syscall per
-    // tick repeats the same value for hundreds of consecutive ticks.
-    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
-        QTime now         = QTime::currentTime();
-        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-        m_lastTimeOfDayMs = nowMs;
-    }
-    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
-
-    // Refresh cursor world/screen positions for scripts reading
-    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
-    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
-    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
-    // world for tooltip math) see a consistent live cursor each tick.
-    {
-        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
-        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
-        m_cspObj.setProperty("x", (double)m_cursorSceneX);
-        m_cspObj.setProperty("y", (double)m_cursorSceneY);
-    }
+    refreshEngineTickGlobals(m_lastTextTickMs, 0.016, 2000);
 
     static const bool s_textDiag = []() {
         const char* v = std::getenv("WEKDE_SCRIPT_DIAG");
@@ -4136,33 +4140,7 @@ void SceneObject::evaluateColorScripts() {
 
     // Update engine globals (color timer is 33ms but report real dt so the
     // value stays correct if the tick rate is ever changed).
-    qint64 nowMs       = m_runtimeTimer.elapsed();
-    double runtimeSecs = nowMs / 1000.0;
-    double frametime   = wallpaper::ComputeTickFrametime(nowMs, m_lastColorTickMs, 0.033, 500);
-    m_lastColorTickMs  = nowMs;
-    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
-    engineObj.setProperty("runtime", runtimeSecs);
-    engineObj.setProperty("frametime", frametime);
-    engineObj.setProperty("fps", m_scene->getFps());
-
-    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
-        QTime now         = QTime::currentTime();
-        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-        m_lastTimeOfDayMs = nowMs;
-    }
-    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
-
-    // Refresh cursor world/screen positions for scripts reading
-    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
-    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
-    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
-    // world for tooltip math) see a consistent live cursor each tick.
-    {
-        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
-        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
-        m_cspObj.setProperty("x", (double)m_cursorSceneX);
-        m_cspObj.setProperty("y", (double)m_cursorSceneY);
-    }
+    refreshEngineTickGlobals(m_lastColorTickMs, 0.033, 500);
 
     for (auto& state : m_colorScriptStates) {
         // Pass current color as a full Vec3 so scripts can use both .x/.y/.z and .r/.g/.b.
@@ -4479,34 +4457,8 @@ void SceneObject::evaluatePropertyScripts() {
     // elapsed time — hardcoding a fixed value makes animation speed track
     // the timer rate, not real time, and caused a 4× speed regression in
     // dino_run-style wallpapers when the property timer was raised to 120Hz.
-    qint64 nowMs         = m_runtimeTimer.elapsed();
-    double runtimeSecs   = nowMs / 1000.0;
-    double frametime     = wallpaper::ComputeTickFrametime(nowMs, m_lastPropertyTickMs, 0.008, 250);
-    m_lastPropertyTickMs = nowMs;
-    QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
-    engineObj.setProperty("runtime", runtimeSecs);
-    engineObj.setProperty("frametime", frametime);
-    engineObj.setProperty("fps", m_scene->getFps());
-    engineObj.setProperty("frameCount", (double)++m_propFrameCount);
-
-    if (m_cachedTimeOfDay < 0.0 || nowMs - m_lastTimeOfDayMs >= 1000) {
-        QTime now         = QTime::currentTime();
-        m_cachedTimeOfDay = (now.hour() * 3600 + now.minute() * 60 + now.second()) / 86400.0;
-        m_lastTimeOfDayMs = nowMs;
-    }
-    engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
-
-    // Refresh cursor world/screen positions for scripts reading
-    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
-    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
-    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
-    // world for tooltip math) see a consistent live cursor each tick.
-    {
-        m_cwpObj.setProperty("x", (double)m_cursorSceneX);
-        m_cwpObj.setProperty("y", (double)m_cursorSceneY);
-        m_cspObj.setProperty("x", (double)m_cursorSceneX);
-        m_cspObj.setProperty("y", (double)m_cursorSceneY);
-    }
+    refreshEngineTickGlobals(m_lastPropertyTickMs, 0.008, 250);
+    m_engineObj.setProperty("frameCount", (double)++m_propFrameCount);
 
     // Refresh audio buffers in case property scripts use audio data
     refreshAudioBuffers();

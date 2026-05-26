@@ -307,6 +307,8 @@ private:
     void buildLayerProxyStates();
     void buildSoundStates();
     void buildCursorTargets();
+    void refreshEngineTickGlobals(qint64& lastTickMs, double frametimeFallback,
+                                  int64_t frametimeClampMs);
     void refreshJsUserProperties();
     void fireApplyUserProperties();
     // Fires the "applyGeneralSettings" scene event (distinct from
