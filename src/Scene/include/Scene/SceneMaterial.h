@@ -27,12 +27,11 @@ struct SceneMaterialCustomShader {
 
 struct SceneMaterial {
 public:
-    SceneMaterial()                     = default;
-    SceneMaterial(const SceneMaterial&) = default;
-    SceneMaterial(SceneMaterial&& o)
-        : name(std::move(o.name)),
-          textures(std::move(o.textures)),
-          defines(std::move(o.defines)) {};
+    SceneMaterial()                                = default;
+    SceneMaterial(const SceneMaterial&)            = default;
+    SceneMaterial(SceneMaterial&&)                 = default;
+    SceneMaterial& operator=(const SceneMaterial&) = default;
+    SceneMaterial& operator=(SceneMaterial&&)      = default;
 
     std::string              name;
     std::vector<std::string> textures;
