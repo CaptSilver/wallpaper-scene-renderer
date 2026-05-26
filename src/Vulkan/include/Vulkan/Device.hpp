@@ -46,6 +46,7 @@ public:
     const auto& vma_allocator() const { return *m_allocator; }
     const auto& cmd_pool() const { return m_command_pool; }
     const auto& swapchain() const { return m_swapchain; }
+    Swapchain&  mut_swapchain() { return m_swapchain; }
     const auto& out_extent() const { return m_extent; }
     void        set_out_extent(VkExtent2D v) { m_extent = v; }
 

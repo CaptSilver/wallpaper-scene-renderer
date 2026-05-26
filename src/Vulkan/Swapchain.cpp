@@ -152,3 +152,61 @@ bool Swapchain::Create(Device& device, VkSurfaceKHR surface, VkExtent2D extent, 
     }
     return true;
 }
+
+bool Swapchain::Recreate(Device& device, VkSurfaceKHR surface, VkExtent2D extent) {
+    SwapChainSupportDetails swap_details;
+    if (! querySwapChainSupport(device.gpu(), surface, swap_details)) return false;
+
+    m_format = chooseSwapSurfaceFormat(swap_details.formats);
+
+    auto& surfaceCapabilities = swap_details.capabilities;
+
+    uint32_t image_count = surfaceCapabilities.minImageCount + 1;
+    if (surfaceCapabilities.maxImageCount > 0 && image_count > surfaceCapabilities.maxImageCount)
+        image_count = surfaceCapabilities.maxImageCount;
+    m_extent       = GetSwapChainExtent(surfaceCapabilities, extent);
+    m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+
+    // Hand the driver the old swapchain so it can recycle pool memory.
+    // The image views referencing the old swapchain's images must be
+    // dropped before the old handle is destroyed (Vulkan validation).
+    vvk::SwapchainKHR old_handle = std::move(m_handle);
+    m_images.clear();
+    m_imageviews.clear();
+
+    VkSwapchainCreateInfoKHR sci {
+        .sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+        .pNext            = nullptr,
+        .surface          = surface,
+        .minImageCount    = image_count,
+        .imageFormat      = m_format.format,
+        .imageColorSpace  = m_format.colorSpace,
+        .imageExtent      = m_extent,
+        .imageArrayLayers = 1,
+        .imageUsage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .preTransform     = surfaceCapabilities.currentTransform,
+        .compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+        .presentMode      = m_present_mode,
+        .clipped          = true,
+        .oldSwapchain     = *old_handle,
+    };
+
+    VVK_CHECK_BOOL_RE(device.device().CreateSwapchainKHR(sci, m_handle));
+    {
+        std::vector<VkImage> images;
+        VVK_CHECK_BOOL_RE(m_handle.GetImages(images));
+        std::transform(images.begin(), images.end(), std::back_inserter(m_images), [&](auto image) {
+            ImageParameters image_paras {};
+            image_paras.handle = image;
+            image_paras.extent = { m_extent.width, m_extent.height, 1 };
+            if (auto opt = CreateSwapImageView(device.device(), m_format.format, image);
+                opt.has_value()) {
+                m_imageviews.emplace_back(std::move(opt.value()));
+                image_paras.view = *m_imageviews.back();
+            }
+            return image_paras;
+        });
+    }
+    return true;
+}

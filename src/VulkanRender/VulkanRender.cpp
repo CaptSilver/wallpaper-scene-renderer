@@ -21,6 +21,7 @@
 #include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
 #include "Vulkan/Swapchain.hpp"
+#include "Vulkan/SwapchainPolicy.hpp"
 #include "Vulkan/VulkanExSwapchain.hpp"
 
 #include "VulkanPass.hpp"
@@ -130,6 +131,10 @@ struct VulkanRender::Impl {
     bool m_device_lost { false };
     bool m_hdr_output { false };
     bool m_hdr_content { false };
+    // Set when Acquire or Present returns VK_ERROR_OUT_OF_DATE_KHR (Wayland
+    // resize / output unplug). Consumed at the start of the next
+    // drawFrameSwapchain to drop in a fresh swapchain via Swapchain::Recreate.
+    bool m_swapchain_needs_recreate { false };
 
     std::unique_ptr<VulkanExSwapchain>              m_ex_swapchain;
     std::array<RenderingResources, kFramesInFlight> m_rendering_resources;
@@ -1176,6 +1181,32 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
     VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
 
+    // If the previous frame's Acquire/Present saw OUT_OF_DATE (Wayland
+    // resize, output unplug, etc.), recreate the swapchain before doing
+    // any further work. The half-signaled image-available semaphore from
+    // the failed Acquire must also be replaced (no way to "unsignal" it).
+    if (m_swapchain_needs_recreate) {
+        // Make sure no GPU work is still reading the old swapchain images.
+        VVK_CHECK_DEVICE_LOST(m_device->handle().WaitIdle());
+        const VkExtent2D ext = m_device->swapchain().extent();
+        if (! m_device->mut_swapchain().Recreate(
+                *m_device, *m_instance.surface(), ext)) {
+            LOG_ERROR("Swapchain::Recreate failed after OUT_OF_DATE — skipping frame");
+            return;
+        }
+        m_sem_image_available[slot].reset();
+        VkSemaphoreCreateInfo sem_ci {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+            .pNext = nullptr,
+            .flags = 0,
+        };
+        VVK_CHECK_VOID_RE(
+            m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available[slot]));
+        m_swapchain_needs_recreate = false;
+        // Skip rendering this frame; let the next one go against the new chain.
+        return;
+    }
+
     // Point m_dyn_buf's staging writes at this slot before we begin
     // recording.  update_op lambdas called during execute() will hit the
     // selected slot; recordUpload / gpuBuf likewise.
@@ -1183,11 +1214,21 @@ void VulkanRender::Impl::drawFrameSwapchain() {
 
     uint32_t image_index = 0;
     {
-        VVK_CHECK_VOID_RE(m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
-                                                                 vk_wait_time,
-                                                                 *m_sem_image_available[slot],
-                                                                 {},
-                                                                 &image_index));
+        VkResult acq = m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
+                                                              vk_wait_time,
+                                                              *m_sem_image_available[slot],
+                                                              {},
+                                                              &image_index);
+        const SwapResult sr = classifySwapResult(acq);
+        if (sr == SwapResult::NeedsRecreate) {
+            m_swapchain_needs_recreate = true;
+            return;
+        }
+        if (sr == SwapResult::Fatal) {
+            LOG_ERROR("AcquireNextImageKHR fatal: %s", vvk::ToString(acq));
+            if (acq == VK_ERROR_DEVICE_LOST) m_device_lost = true;
+            return;
+        }
     }
     const auto& image = m_device->swapchain().images()[image_index];
 
@@ -1254,7 +1295,20 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .pSwapchains        = m_device->swapchain().handle().address(),
         .pImageIndices      = &image_index,
     };
-    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Present(present_info));
+    {
+        VkResult pres = m_device->present_queue().handle.Present(present_info);
+        const SwapResult sr = classifySwapResult(pres);
+        if (sr == SwapResult::NeedsRecreate) {
+            // Work is already submitted; just trigger recreate before the
+            // next frame. Fall through to the normal frame epilogue so the
+            // screenshot/dump readback still runs against this frame.
+            m_swapchain_needs_recreate = true;
+        } else if (sr == SwapResult::Fatal) {
+            LOG_ERROR("QueuePresent fatal: %s", vvk::ToString(pres));
+            if (pres == VK_ERROR_DEVICE_LOST) m_device_lost = true;
+            return;
+        }
+    }
 
     // Screenshot/pass-dump readback needs the JUST-SUBMITTED work to have
     // completed.  No more queue WaitIdle — wait locally on this slot's
