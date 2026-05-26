@@ -1753,290 +1753,7 @@ void SceneObject::setupTextScripts() {
 
     setupEngineGlobals();
 
-    // Inject layer initial states from scene parsing
-    {
-        std::string initJson = m_scene->getLayerInitialStatesJson();
-        if (! initJson.empty()) {
-            // Full JS-literal escape (see JsStringEscape.hpp / F18).
-            QString escaped =
-                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(initJson));
-            m_jsEngine->evaluate(
-                QString("var _layerInitStates = JSON.parse('%1');\n").arg(escaped));
-        } else {
-            m_jsEngine->evaluate("var _layerInitStates = {};\n");
-        }
-    }
-
-    // Extract _ortho from init states and store scene ortho for JS
-    // (also used by C++ for cursorClick hit-testing)
-    m_jsEngine->evaluate("var _sceneOrtho = _layerInitStates._ortho || [1920, 1080];\n"
-                         "delete _layerInitStates._ortho;\n"
-                         // Extract asset pools — these are per-asset arrays of pool layer
-                         // names.  createLayer/destroyLayer use them to rent hidden nodes.
-                         "if (_layerInitStates._assetPools) {\n"
-                         "  for (var k in _layerInitStates._assetPools)\n"
-                         "    engine._assetPools[k] = _layerInitStates._assetPools[k].slice();\n"
-                         "  delete _layerInitStates._assetPools;\n"
-                         "}\n"
-                         "engine._assetLive = {};\n");
-
-    // thisScene.getLayer() and thisLayer infrastructure
-    // Layer proxies use Object.defineProperty for dirty tracking
-    m_jsEngine->evaluate(wek::qml_helper::kLayerProxyJs);
-    // _applyLayerLiteral is shared with scenescript_tests via
-    // SceneScriptShimsJs.hpp — evaluated as a separate top-level statement
-    // so the production QJSEngine sees the exact same source string the
-    // tests do.
-    m_jsEngine->evaluate(wek::qml_helper::kApplyLayerLiteralJs);
-    m_jsEngine->evaluate(wek::qml_helper::kLayerRuntimeJs);
-
-    // Batched property-script dispatch: `_runAllPropertyScripts` replaces
-    // the per-script C++->JS .call boundary (670 calls/tick on solar system)
-    // with ONE call.  Entries live in `_allPropertyScripts` as plain objects
-    // with kind/fn/proxy/current-value fields; the loop sets `thisLayer`,
-    // wraps each fn in try/catch, and applies the same change-threshold
-    // compares that C++ used to do — only scripts whose output actually
-    // changed contribute to the returned flat array (stride 4: idx, v1, v2, v3).
-    //
-    // Source lives in PropertyScriptDispatchJs.hpp so scenescript_tests can
-    // evaluate the exact same JS against its own QJSEngine without drift.
-    // Kind values match PropertyScriptState::Kind: 0=Visible, 1=Vec3, 2=Alpha.
-    m_jsEngine->evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
-
-    // Store references to JS dispatch functions for C++ calls
-    m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
-    m_fireSceneEventFn     = m_jsEngine->globalObject().property("_fireSceneEvent");
-    m_hasSceneListenersFn  = m_jsEngine->globalObject().property("_hasSceneListeners");
-
-    // Scene-level property control (bloom, clear color, camera, lighting)
-    {
-        std::string sceneJson = m_scene->getSceneInitialStateJson();
-        if (! sceneJson.empty()) {
-            // Full JS-literal escape (see JsStringEscape.hpp / F18).
-            QString escaped =
-                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sceneJson));
-            m_jsEngine->evaluate(QString("var _sceneInit = JSON.parse('%1');\n").arg(escaped));
-        } else {
-            m_jsEngine->evaluate("var _sceneInit = {cc:[0,0,0],bloom:false,bs:2,bt:0.65,"
-                                 "ac:[0.2,0.2,0.2],sc:[0.3,0.3,0.3],persp:false,fov:0,"
-                                 "eye:[0,0,1],ctr:[0,0,0],up:[0,1,0],lights:[]};\n");
-        }
-        m_jsEngine->evaluate(
-            "var _sceneState = {\n"
-            "  clearColor: {x:_sceneInit.cc[0], y:_sceneInit.cc[1], z:_sceneInit.cc[2]},\n"
-            "  bloomEnabled: _sceneInit.bloom,\n"
-            "  bloomStrength: _sceneInit.bs,\n"
-            "  bloomThreshold: _sceneInit.bt,\n"
-            "  ambientColor: {x:_sceneInit.ac[0], y:_sceneInit.ac[1], z:_sceneInit.ac[2]},\n"
-            "  skylightColor: {x:_sceneInit.sc[0], y:_sceneInit.sc[1], z:_sceneInit.sc[2]},\n"
-            "  isPerspective: _sceneInit.persp,\n"
-            "  cameraFov: _sceneInit.fov,\n"
-            "  cameraEye: {x:_sceneInit.eye[0], y:_sceneInit.eye[1], z:_sceneInit.eye[2]},\n"
-            "  cameraCenter: {x:_sceneInit.ctr[0], y:_sceneInit.ctr[1], z:_sceneInit.ctr[2]},\n"
-            "  cameraUp: {x:_sceneInit.up[0], y:_sceneInit.up[1], z:_sceneInit.up[2]},\n"
-            "  _dirty: {}\n"
-            "};\n"
-            // Build light proxies with per-light dirty tracking
-            "_sceneState.lights = _sceneInit.lights.map(function(l) {\n"
-            "  var _s = { color:{x:l.c[0],y:l.c[1],z:l.c[2]},\n"
-            "    radius:l.r, intensity:l.i,\n"
-            "    position:{x:l.p[0],y:l.p[1],z:l.p[2]}, _dirty:{} };\n"
-            "  var p = {};\n"
-            "  ['color','position'].forEach(function(prop) {\n"
-            "    Object.defineProperty(p, prop, {\n"
-            "      get: function(){ return _s[prop]; },\n"
-            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
-            "      enumerable: true\n"
-            "    });\n"
-            "  });\n"
-            "  ['radius','intensity'].forEach(function(prop) {\n"
-            "    Object.defineProperty(p, prop, {\n"
-            "      get: function(){ return _s[prop]; },\n"
-            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
-            "      enumerable: true\n"
-            "    });\n"
-            "  });\n"
-            "  p._state = _s;\n"
-            "  return p;\n"
-            "});\n"
-            // Extend thisScene with dirty-tracked scene properties
-            "['clearColor','ambientColor','skylightColor','cameraEye','cameraCenter','cameraUp']."
-            "forEach(function(prop) {\n"
-            "  Object.defineProperty(thisScene, prop, {\n"
-            "    get: function(){ return _sceneState[prop]; },\n"
-            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
-            "    enumerable: true\n"
-            "  });\n"
-            "});\n"
-            "['bloomStrength','bloomThreshold','cameraFov'].forEach(function(prop) {\n"
-            "  Object.defineProperty(thisScene, prop, {\n"
-            "    get: function(){ return _sceneState[prop]; },\n"
-            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
-            "    enumerable: true\n"
-            "  });\n"
-            "});\n"
-            // Read-only properties
-            "Object.defineProperty(thisScene, 'bloomEnabled', {\n"
-            "  get: function(){ return _sceneState.bloomEnabled; }, enumerable: true\n"
-            "});\n"
-            "Object.defineProperty(thisScene, 'isPerspective', {\n"
-            "  get: function(){ return _sceneState.isPerspective; }, enumerable: true\n"
-            "});\n"
-            // getLights() returns the pre-built light proxy array
-            "thisScene.getLights = function() { return _sceneState.lights; };\n"
-            // _collectDirtyScene — returns null if nothing dirty, else dirty update object
-            "function _collectDirtyScene() {\n"
-            "  var d = _sceneState._dirty;\n"
-            "  var keys = Object.keys(d);\n"
-            "  var dirtyLights = [];\n"
-            "  for (var i = 0; i < _sceneState.lights.length; i++) {\n"
-            "    var ls = _sceneState.lights[i]._state;\n"
-            "    var ld = ls._dirty;\n"
-            "    if (Object.keys(ld).length > 0) {\n"
-            "      dirtyLights.push({idx:i, dirty:ld,\n"
-            "        color:ls.color, radius:ls.radius,\n"
-            "        intensity:ls.intensity, position:ls.position});\n"
-            "      ls._dirty = {};\n"
-            "    }\n"
-            "  }\n"
-            "  if (keys.length === 0 && dirtyLights.length === 0) return null;\n"
-            "  var r = {dirty:d, lights:dirtyLights};\n"
-            "  if (d.clearColor) r.clearColor = _sceneState.clearColor;\n"
-            "  if (d.bloomStrength) r.bloomStrength = _sceneState.bloomStrength;\n"
-            "  if (d.bloomThreshold) r.bloomThreshold = _sceneState.bloomThreshold;\n"
-            "  if (d.ambientColor) r.ambientColor = _sceneState.ambientColor;\n"
-            "  if (d.skylightColor) r.skylightColor = _sceneState.skylightColor;\n"
-            "  if (d.cameraFov) r.cameraFov = _sceneState.cameraFov;\n"
-            "  if (d.cameraEye) r.cameraEye = _sceneState.cameraEye;\n"
-            "  if (d.cameraCenter) r.cameraCenter = _sceneState.cameraCenter;\n"
-            "  if (d.cameraUp) r.cameraUp = _sceneState.cameraUp;\n"
-            "  _sceneState._dirty = {};\n"
-            "  return r;\n"
-            "}\n");
-        m_collectDirtySceneFn = m_jsEngine->globalObject().property("_collectDirtyScene");
-    }
-
-    // Get node name→id map for thisScene.getLayer() dispatch
-    m_nodeNameToId = m_scene->getNodeNameToIdMap();
-
-    // Expose node id ↔ name maps to JS so scripts can look layers up by id
-    // (thisScene.getLayerByID) and get a layer's id-index
-    // (thisScene.getLayerIndex).  Also provides thisScene.getLayerCount.
-    {
-        QString idToName   = "var _layerIdToName = {";
-        QString nameToId   = "var _layerNameToId = {";
-        bool    first      = true;
-        for (const auto& [name, id] : m_nodeNameToId) {
-            // Full JS-literal escape — these names are interpolated into the
-            // single-quoted keys/values of the object literals below; a name
-            // with a backslash or U+2028/U+2029 would otherwise break the
-            // literal (same hazard class as F18 / JsStringEscape.hpp).
-            QString nameEsc =
-                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(name));
-            if (! first) {
-                idToName += ",";
-                nameToId += ",";
-            }
-            idToName += QString("'%1':'%2'").arg(id).arg(nameEsc);
-            nameToId += QString("'%1':%2").arg(nameEsc).arg(id);
-            first     = false;
-        }
-        idToName += "};\n";
-        nameToId += "};\n";
-        // thisScene.getCameraTransforms() builds view + projection Mat4s
-        // from the existing cameraEye/Center/Up/Fov scene properties and
-        // canvasSize aspect ratio.  setCameraTransforms() writes an input
-        // object back onto the scripted camera properties; it prefers
-        // high-level fields (eye / center / up / fov) when present, and
-        // falls back to extracting the eye from a view matrix's translation
-        // column when only `view` is supplied.  Scripts that want full
-        // control still have the per-axis scene properties as the primary
-        // interface — these methods are a convenience wrapper.
-        m_jsEngine->evaluate(
-            "thisScene.getCameraTransforms = function() {\n"
-            "  var eye    = thisScene.cameraEye;\n"
-            "  var center = thisScene.cameraCenter;\n"
-            "  var up     = thisScene.cameraUp;\n"
-            "  var ex = eye.x, ey = eye.y, ez = eye.z;\n"
-            "  var fx = center.x - ex, fy = center.y - ey, fz = center.z - ez;\n"
-            "  var flen = Math.sqrt(fx*fx + fy*fy + fz*fz) || 1;\n"
-            "  fx /= flen; fy /= flen; fz /= flen;\n"
-            "  var rx = fy*up.z - fz*up.y, ry = fz*up.x - fx*up.z, rz = fx*up.y - fy*up.x;\n"
-            "  var rlen = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1;\n"
-            "  rx /= rlen; ry /= rlen; rz /= rlen;\n"
-            "  var ux = ry*fz - rz*fy, uy = rz*fx - rx*fz, uz = rx*fy - ry*fx;\n"
-            "  var view = new Mat4();\n"
-            "  view.m[0]=rx;  view.m[1]=ux;  view.m[2] =-fx; view.m[3] =0;\n"
-            "  view.m[4]=ry;  view.m[5]=uy;  view.m[6] =-fy; view.m[7] =0;\n"
-            "  view.m[8]=rz;  view.m[9]=uz;  view.m[10]=-fz; view.m[11]=0;\n"
-            "  view.m[12]=-(rx*ex+ry*ey+rz*ez);\n"
-            "  view.m[13]=-(ux*ex+uy*ey+uz*ez);\n"
-            "  view.m[14]= (fx*ex+fy*ey+fz*ez);\n"
-            "  view.m[15]=1;\n"
-            "  var proj = new Mat4();\n"
-            "  var fovDeg = thisScene.cameraFov || 60;\n"
-            "  var fRad   = fovDeg * Math.PI / 180;\n"
-            "  var f      = 1.0 / Math.tan(fRad * 0.5);\n"
-            "  var aspect = (engine.canvasSize && engine.canvasSize.x && engine.canvasSize.y)\n"
-            "             ? engine.canvasSize.x / engine.canvasSize.y : 1.0;\n"
-            "  var near = 0.1, far = 10000;\n"
-            "  proj.m[0]=f/aspect; proj.m[5]=f;\n"
-            "  proj.m[10]=(far+near)/(near-far);\n"
-            "  proj.m[11]=-1;\n"
-            "  proj.m[14]=(2*far*near)/(near-far);\n"
-            "  proj.m[15]=0;\n"
-            // High-level fields (eye/center/up/fov) alongside the matrices.
-            // Driver: Starscape (3047596375) ships `camera =
-            // thisScene.getCameraTransforms(); camera.eye.subtract(...)` —
-            // returning only {view, projection} produced "subtract of
-            // undefined" at ~30Hz.  Pass through fresh Vec3 copies so
-            // scripts mutate them locally without aliasing scene state.
-            "  return {\n"
-            "    view: view, projection: proj,\n"
-            "    eye:    new Vec3(eye.x, eye.y, eye.z),\n"
-            "    center: new Vec3(center.x, center.y, center.z),\n"
-            "    up:     new Vec3(up.x, up.y, up.z),\n"
-            "    fov:    fovDeg\n"
-            "  };\n"
-            "};\n"
-            "thisScene.setCameraTransforms = function(t) {\n"
-            "  if (!t) return;\n"
-            "  if (t.eye    !== undefined) thisScene.cameraEye    = t.eye;\n"
-            "  if (t.center !== undefined) thisScene.cameraCenter = t.center;\n"
-            "  if (t.up     !== undefined) thisScene.cameraUp     = t.up;\n"
-            "  if (t.fov    !== undefined) thisScene.cameraFov    = t.fov;\n"
-            "  if (t.view   !== undefined && t.view.m && t.eye === undefined) {\n"
-            // Naive inverse: pull eye out of the view matrix's translation.
-            // Full basis decomposition would touch center/up too, but those
-            // are typically set together with eye by scripts that build a
-            // view matrix from scratch.
-            "    thisScene.cameraEye = { x: -t.view.m[12], y: -t.view.m[13], z:  t.view.m[14] };\n"
-            "  }\n"
-            "};\n");
-
-        m_jsEngine->evaluate(idToName + nameToId
-                             + "thisScene.getLayerByID = function(id) {\n"
-                               "  var name = _layerIdToName[id];\n"
-                               "  return name ? thisScene.getLayer(name) : null;\n"
-                               "};\n"
-                               "thisScene.getLayerCount = function() {\n"
-                               "  return Object.keys(_layerInitStates).length;\n"
-                               "};\n"
-                               // Override the earlier stub (which read a
-                               // never-set _index) with a real id lookup.
-                               // Accepts either a name string or a layer
-                               // proxy (Blue Archive 2764537029 visualizer
-                               // calls `getLayerIndex(thisLayer)` with the
-                               // proxy directly).
-                               "thisScene.getLayerIndex = function(arg) {\n"
-                               "  var key = arg;\n"
-                               "  if (arg && typeof arg === 'object' && typeof arg.name === 'string')\n"
-                               "    key = arg.name;\n"
-                               "  if (typeof key !== 'string') return -1;\n"
-                               "  var id = _layerNameToId[key];\n"
-                               "  return (typeof id === 'number') ? id : -1;\n"
-                               "};\n");
-    }
+    buildLayerProxyStates();
 
     // Sound layer control infrastructure for SceneScript play/stop/pause API
     {
@@ -3904,6 +3621,293 @@ void SceneObject::installTimerBridge() {
                          "engine.setInterval   = setInterval;\n"
                          "engine.clearTimeout  = clearTimeout;\n"
                          "engine.clearInterval = clearInterval;\n");
+}
+
+void SceneObject::buildLayerProxyStates() {
+    // Inject layer initial states from scene parsing
+    {
+        std::string initJson = m_scene->getLayerInitialStatesJson();
+        if (! initJson.empty()) {
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(initJson));
+            m_jsEngine->evaluate(
+                QString("var _layerInitStates = JSON.parse('%1');\n").arg(escaped));
+        } else {
+            m_jsEngine->evaluate("var _layerInitStates = {};\n");
+        }
+    }
+
+    // Extract _ortho from init states and store scene ortho for JS
+    // (also used by C++ for cursorClick hit-testing)
+    m_jsEngine->evaluate("var _sceneOrtho = _layerInitStates._ortho || [1920, 1080];\n"
+                         "delete _layerInitStates._ortho;\n"
+                         // Extract asset pools — these are per-asset arrays of pool layer
+                         // names.  createLayer/destroyLayer use them to rent hidden nodes.
+                         "if (_layerInitStates._assetPools) {\n"
+                         "  for (var k in _layerInitStates._assetPools)\n"
+                         "    engine._assetPools[k] = _layerInitStates._assetPools[k].slice();\n"
+                         "  delete _layerInitStates._assetPools;\n"
+                         "}\n"
+                         "engine._assetLive = {};\n");
+
+    // thisScene.getLayer() and thisLayer infrastructure
+    // Layer proxies use Object.defineProperty for dirty tracking
+    m_jsEngine->evaluate(wek::qml_helper::kLayerProxyJs);
+    // _applyLayerLiteral is shared with scenescript_tests via
+    // SceneScriptShimsJs.hpp — evaluated as a separate top-level statement
+    // so the production QJSEngine sees the exact same source string the
+    // tests do.
+    m_jsEngine->evaluate(wek::qml_helper::kApplyLayerLiteralJs);
+    m_jsEngine->evaluate(wek::qml_helper::kLayerRuntimeJs);
+
+    // Batched property-script dispatch: `_runAllPropertyScripts` replaces
+    // the per-script C++->JS .call boundary (670 calls/tick on solar system)
+    // with ONE call.  Entries live in `_allPropertyScripts` as plain objects
+    // with kind/fn/proxy/current-value fields; the loop sets `thisLayer`,
+    // wraps each fn in try/catch, and applies the same change-threshold
+    // compares that C++ used to do — only scripts whose output actually
+    // changed contribute to the returned flat array (stride 4: idx, v1, v2, v3).
+    //
+    // Source lives in PropertyScriptDispatchJs.hpp so scenescript_tests can
+    // evaluate the exact same JS against its own QJSEngine without drift.
+    // Kind values match PropertyScriptState::Kind: 0=Visible, 1=Vec3, 2=Alpha.
+    m_jsEngine->evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
+
+    // Store references to JS dispatch functions for C++ calls
+    m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
+    m_fireSceneEventFn     = m_jsEngine->globalObject().property("_fireSceneEvent");
+    m_hasSceneListenersFn  = m_jsEngine->globalObject().property("_hasSceneListeners");
+
+    // Scene-level property control (bloom, clear color, camera, lighting)
+    {
+        std::string sceneJson = m_scene->getSceneInitialStateJson();
+        if (! sceneJson.empty()) {
+            // Full JS-literal escape (see JsStringEscape.hpp / F18).
+            QString escaped =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(sceneJson));
+            m_jsEngine->evaluate(QString("var _sceneInit = JSON.parse('%1');\n").arg(escaped));
+        } else {
+            m_jsEngine->evaluate("var _sceneInit = {cc:[0,0,0],bloom:false,bs:2,bt:0.65,"
+                                 "ac:[0.2,0.2,0.2],sc:[0.3,0.3,0.3],persp:false,fov:0,"
+                                 "eye:[0,0,1],ctr:[0,0,0],up:[0,1,0],lights:[]};\n");
+        }
+        m_jsEngine->evaluate(
+            "var _sceneState = {\n"
+            "  clearColor: {x:_sceneInit.cc[0], y:_sceneInit.cc[1], z:_sceneInit.cc[2]},\n"
+            "  bloomEnabled: _sceneInit.bloom,\n"
+            "  bloomStrength: _sceneInit.bs,\n"
+            "  bloomThreshold: _sceneInit.bt,\n"
+            "  ambientColor: {x:_sceneInit.ac[0], y:_sceneInit.ac[1], z:_sceneInit.ac[2]},\n"
+            "  skylightColor: {x:_sceneInit.sc[0], y:_sceneInit.sc[1], z:_sceneInit.sc[2]},\n"
+            "  isPerspective: _sceneInit.persp,\n"
+            "  cameraFov: _sceneInit.fov,\n"
+            "  cameraEye: {x:_sceneInit.eye[0], y:_sceneInit.eye[1], z:_sceneInit.eye[2]},\n"
+            "  cameraCenter: {x:_sceneInit.ctr[0], y:_sceneInit.ctr[1], z:_sceneInit.ctr[2]},\n"
+            "  cameraUp: {x:_sceneInit.up[0], y:_sceneInit.up[1], z:_sceneInit.up[2]},\n"
+            "  _dirty: {}\n"
+            "};\n"
+            // Build light proxies with per-light dirty tracking
+            "_sceneState.lights = _sceneInit.lights.map(function(l) {\n"
+            "  var _s = { color:{x:l.c[0],y:l.c[1],z:l.c[2]},\n"
+            "    radius:l.r, intensity:l.i,\n"
+            "    position:{x:l.p[0],y:l.p[1],z:l.p[2]}, _dirty:{} };\n"
+            "  var p = {};\n"
+            "  ['color','position'].forEach(function(prop) {\n"
+            "    Object.defineProperty(p, prop, {\n"
+            "      get: function(){ return _s[prop]; },\n"
+            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+            "      enumerable: true\n"
+            "    });\n"
+            "  });\n"
+            "  ['radius','intensity'].forEach(function(prop) {\n"
+            "    Object.defineProperty(p, prop, {\n"
+            "      get: function(){ return _s[prop]; },\n"
+            "      set: function(v){ _s[prop] = v; _s._dirty[prop] = true; },\n"
+            "      enumerable: true\n"
+            "    });\n"
+            "  });\n"
+            "  p._state = _s;\n"
+            "  return p;\n"
+            "});\n"
+            // Extend thisScene with dirty-tracked scene properties
+            "['clearColor','ambientColor','skylightColor','cameraEye','cameraCenter','cameraUp']."
+            "forEach(function(prop) {\n"
+            "  Object.defineProperty(thisScene, prop, {\n"
+            "    get: function(){ return _sceneState[prop]; },\n"
+            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+            "    enumerable: true\n"
+            "  });\n"
+            "});\n"
+            "['bloomStrength','bloomThreshold','cameraFov'].forEach(function(prop) {\n"
+            "  Object.defineProperty(thisScene, prop, {\n"
+            "    get: function(){ return _sceneState[prop]; },\n"
+            "    set: function(v){ _sceneState[prop] = v; _sceneState._dirty[prop] = true; },\n"
+            "    enumerable: true\n"
+            "  });\n"
+            "});\n"
+            // Read-only properties
+            "Object.defineProperty(thisScene, 'bloomEnabled', {\n"
+            "  get: function(){ return _sceneState.bloomEnabled; }, enumerable: true\n"
+            "});\n"
+            "Object.defineProperty(thisScene, 'isPerspective', {\n"
+            "  get: function(){ return _sceneState.isPerspective; }, enumerable: true\n"
+            "});\n"
+            // getLights() returns the pre-built light proxy array
+            "thisScene.getLights = function() { return _sceneState.lights; };\n"
+            // _collectDirtyScene — returns null if nothing dirty, else dirty update object
+            "function _collectDirtyScene() {\n"
+            "  var d = _sceneState._dirty;\n"
+            "  var keys = Object.keys(d);\n"
+            "  var dirtyLights = [];\n"
+            "  for (var i = 0; i < _sceneState.lights.length; i++) {\n"
+            "    var ls = _sceneState.lights[i]._state;\n"
+            "    var ld = ls._dirty;\n"
+            "    if (Object.keys(ld).length > 0) {\n"
+            "      dirtyLights.push({idx:i, dirty:ld,\n"
+            "        color:ls.color, radius:ls.radius,\n"
+            "        intensity:ls.intensity, position:ls.position});\n"
+            "      ls._dirty = {};\n"
+            "    }\n"
+            "  }\n"
+            "  if (keys.length === 0 && dirtyLights.length === 0) return null;\n"
+            "  var r = {dirty:d, lights:dirtyLights};\n"
+            "  if (d.clearColor) r.clearColor = _sceneState.clearColor;\n"
+            "  if (d.bloomStrength) r.bloomStrength = _sceneState.bloomStrength;\n"
+            "  if (d.bloomThreshold) r.bloomThreshold = _sceneState.bloomThreshold;\n"
+            "  if (d.ambientColor) r.ambientColor = _sceneState.ambientColor;\n"
+            "  if (d.skylightColor) r.skylightColor = _sceneState.skylightColor;\n"
+            "  if (d.cameraFov) r.cameraFov = _sceneState.cameraFov;\n"
+            "  if (d.cameraEye) r.cameraEye = _sceneState.cameraEye;\n"
+            "  if (d.cameraCenter) r.cameraCenter = _sceneState.cameraCenter;\n"
+            "  if (d.cameraUp) r.cameraUp = _sceneState.cameraUp;\n"
+            "  _sceneState._dirty = {};\n"
+            "  return r;\n"
+            "}\n");
+        m_collectDirtySceneFn = m_jsEngine->globalObject().property("_collectDirtyScene");
+    }
+
+    // Get node name→id map for thisScene.getLayer() dispatch
+    m_nodeNameToId = m_scene->getNodeNameToIdMap();
+
+    // Expose node id ↔ name maps to JS so scripts can look layers up by id
+    // (thisScene.getLayerByID) and get a layer's id-index
+    // (thisScene.getLayerIndex).  Also provides thisScene.getLayerCount.
+    {
+        QString idToName   = "var _layerIdToName = {";
+        QString nameToId   = "var _layerNameToId = {";
+        bool    first      = true;
+        for (const auto& [name, id] : m_nodeNameToId) {
+            // Full JS-literal escape — these names are interpolated into the
+            // single-quoted keys/values of the object literals below; a name
+            // with a backslash or U+2028/U+2029 would otherwise break the
+            // literal (same hazard class as F18 / JsStringEscape.hpp).
+            QString nameEsc =
+                wek::qml_helper::escapeForJsSingleQuoted(QString::fromStdString(name));
+            if (! first) {
+                idToName += ",";
+                nameToId += ",";
+            }
+            idToName += QString("'%1':'%2'").arg(id).arg(nameEsc);
+            nameToId += QString("'%1':%2").arg(nameEsc).arg(id);
+            first     = false;
+        }
+        idToName += "};\n";
+        nameToId += "};\n";
+        // thisScene.getCameraTransforms() builds view + projection Mat4s
+        // from the existing cameraEye/Center/Up/Fov scene properties and
+        // canvasSize aspect ratio.  setCameraTransforms() writes an input
+        // object back onto the scripted camera properties; it prefers
+        // high-level fields (eye / center / up / fov) when present, and
+        // falls back to extracting the eye from a view matrix's translation
+        // column when only `view` is supplied.  Scripts that want full
+        // control still have the per-axis scene properties as the primary
+        // interface — these methods are a convenience wrapper.
+        m_jsEngine->evaluate(
+            "thisScene.getCameraTransforms = function() {\n"
+            "  var eye    = thisScene.cameraEye;\n"
+            "  var center = thisScene.cameraCenter;\n"
+            "  var up     = thisScene.cameraUp;\n"
+            "  var ex = eye.x, ey = eye.y, ez = eye.z;\n"
+            "  var fx = center.x - ex, fy = center.y - ey, fz = center.z - ez;\n"
+            "  var flen = Math.sqrt(fx*fx + fy*fy + fz*fz) || 1;\n"
+            "  fx /= flen; fy /= flen; fz /= flen;\n"
+            "  var rx = fy*up.z - fz*up.y, ry = fz*up.x - fx*up.z, rz = fx*up.y - fy*up.x;\n"
+            "  var rlen = Math.sqrt(rx*rx + ry*ry + rz*rz) || 1;\n"
+            "  rx /= rlen; ry /= rlen; rz /= rlen;\n"
+            "  var ux = ry*fz - rz*fy, uy = rz*fx - rx*fz, uz = rx*fy - ry*fx;\n"
+            "  var view = new Mat4();\n"
+            "  view.m[0]=rx;  view.m[1]=ux;  view.m[2] =-fx; view.m[3] =0;\n"
+            "  view.m[4]=ry;  view.m[5]=uy;  view.m[6] =-fy; view.m[7] =0;\n"
+            "  view.m[8]=rz;  view.m[9]=uz;  view.m[10]=-fz; view.m[11]=0;\n"
+            "  view.m[12]=-(rx*ex+ry*ey+rz*ez);\n"
+            "  view.m[13]=-(ux*ex+uy*ey+uz*ez);\n"
+            "  view.m[14]= (fx*ex+fy*ey+fz*ez);\n"
+            "  view.m[15]=1;\n"
+            "  var proj = new Mat4();\n"
+            "  var fovDeg = thisScene.cameraFov || 60;\n"
+            "  var fRad   = fovDeg * Math.PI / 180;\n"
+            "  var f      = 1.0 / Math.tan(fRad * 0.5);\n"
+            "  var aspect = (engine.canvasSize && engine.canvasSize.x && engine.canvasSize.y)\n"
+            "             ? engine.canvasSize.x / engine.canvasSize.y : 1.0;\n"
+            "  var near = 0.1, far = 10000;\n"
+            "  proj.m[0]=f/aspect; proj.m[5]=f;\n"
+            "  proj.m[10]=(far+near)/(near-far);\n"
+            "  proj.m[11]=-1;\n"
+            "  proj.m[14]=(2*far*near)/(near-far);\n"
+            "  proj.m[15]=0;\n"
+            // High-level fields (eye/center/up/fov) alongside the matrices.
+            // Driver: Starscape (3047596375) ships `camera =
+            // thisScene.getCameraTransforms(); camera.eye.subtract(...)` —
+            // returning only {view, projection} produced "subtract of
+            // undefined" at ~30Hz.  Pass through fresh Vec3 copies so
+            // scripts mutate them locally without aliasing scene state.
+            "  return {\n"
+            "    view: view, projection: proj,\n"
+            "    eye:    new Vec3(eye.x, eye.y, eye.z),\n"
+            "    center: new Vec3(center.x, center.y, center.z),\n"
+            "    up:     new Vec3(up.x, up.y, up.z),\n"
+            "    fov:    fovDeg\n"
+            "  };\n"
+            "};\n"
+            "thisScene.setCameraTransforms = function(t) {\n"
+            "  if (!t) return;\n"
+            "  if (t.eye    !== undefined) thisScene.cameraEye    = t.eye;\n"
+            "  if (t.center !== undefined) thisScene.cameraCenter = t.center;\n"
+            "  if (t.up     !== undefined) thisScene.cameraUp     = t.up;\n"
+            "  if (t.fov    !== undefined) thisScene.cameraFov    = t.fov;\n"
+            "  if (t.view   !== undefined && t.view.m && t.eye === undefined) {\n"
+            // Naive inverse: pull eye out of the view matrix's translation.
+            // Full basis decomposition would touch center/up too, but those
+            // are typically set together with eye by scripts that build a
+            // view matrix from scratch.
+            "    thisScene.cameraEye = { x: -t.view.m[12], y: -t.view.m[13], z:  t.view.m[14] };\n"
+            "  }\n"
+            "};\n");
+
+        m_jsEngine->evaluate(idToName + nameToId
+                             + "thisScene.getLayerByID = function(id) {\n"
+                               "  var name = _layerIdToName[id];\n"
+                               "  return name ? thisScene.getLayer(name) : null;\n"
+                               "};\n"
+                               "thisScene.getLayerCount = function() {\n"
+                               "  return Object.keys(_layerInitStates).length;\n"
+                               "};\n"
+                               // Override the earlier stub (which read a
+                               // never-set _index) with a real id lookup.
+                               // Accepts either a name string or a layer
+                               // proxy (Blue Archive 2764537029 visualizer
+                               // calls `getLayerIndex(thisLayer)` with the
+                               // proxy directly).
+                               "thisScene.getLayerIndex = function(arg) {\n"
+                               "  var key = arg;\n"
+                               "  if (arg && typeof arg === 'object' && typeof arg.name === 'string')\n"
+                               "    key = arg.name;\n"
+                               "  if (typeof key !== 'string') return -1;\n"
+                               "  var id = _layerNameToId[key];\n"
+                               "  return (typeof id === 'number') ? id : -1;\n"
+                               "};\n");
+    }
 }
 
 void SceneObject::refreshAudioBuffers() {
