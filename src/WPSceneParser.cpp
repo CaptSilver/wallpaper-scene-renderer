@@ -1658,6 +1658,101 @@ std::shared_ptr<SceneNode> createImageNode(ParseContext& context,
     return spImgNode;
 }
 
+struct ImageBaseMaterial {
+    SceneMaterial     material;
+    WPShaderValueData svData;
+    WPShaderInfo      shaderInfo;
+    ShaderValueMap    baseConstSvs;
+};
+
+std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&                 context,
+                                                       const wpscene::WPImageObject& wpimgobj,
+                                                       SceneNode*                    spImgNode,
+                                                       bool                          hasEffect,
+                                                       const WPMdl*                  puppet) {
+    auto&             vfs = *context.vfs;
+    SceneMaterial     material;
+    WPShaderValueData svData;
+
+    ShaderValueMap baseConstSvs = context.global_base_uniforms;
+    WPShaderInfo   shaderInfo;
+    {
+        if (! hasEffect) {
+            svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
+            if (puppet) {
+                WPMdlParser::AddPuppetShaderInfo(shaderInfo, *puppet);
+            }
+        }
+
+        baseConstSvs["g_Color4"] = std::array<float, 4> {
+            wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2], wpimgobj.alpha
+        };
+        baseConstSvs["g_UserAlpha"]  = wpimgobj.alpha;
+        baseConstSvs["g_Brightness"] = wpimgobj.brightness;
+        // WE flat.frag reads g_Color (vec3) and g_Alpha (float) as separate
+        // uniforms — distinct from the g_Color4 vec4 used by image shaders.
+        // Without explicit values, GLSL leaves them zero-initialized which
+        // happens to match WE's solidlayer convention (transparent placeholder)
+        // but breaks every other use of `flat` (e.g. shape-quads with authored
+        // color).  Populate both unconditionally; for solidlayer placeholders
+        // override g_Alpha=0 so the per-image effect chain reads a clean
+        // (0,0,0,0) base instead of an opaque colored quad.
+        baseConstSvs["g_Color"] =
+            std::array<float, 3> { wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2] };
+        baseConstSvs["g_Alpha"] = wpimgobj.solidlayer ? 0.0f : wpimgobj.alpha;
+
+        shaderInfo.baseConstSvs = baseConstSvs;
+
+        if (! LoadMaterial(vfs,
+                           wpimgobj.material,
+                           context.scene.get(),
+                           spImgNode,
+                           &material,
+                           &svData,
+                           &shaderInfo)) {
+            LOG_ERROR(
+                "load imageobj id=%d '%s' material failed", wpimgobj.id, wpimgobj.name.c_str());
+            return std::nullopt;
+        };
+        LoadConstvalue(material, wpimgobj.material, shaderInfo);
+    }
+
+    for (const auto& cs : wpimgobj.material.constantshadervalues) {
+        const auto&               name  = cs.first;
+        const std::vector<float>& value = cs.second;
+        std::string               glname;
+        if (shaderInfo.alias.count(name) != 0) {
+            glname = shaderInfo.alias.at(name);
+        } else {
+            for (const auto& el : shaderInfo.alias) {
+                if (el.second.substr(2) == name) {
+                    glname = el.second;
+                    break;
+                }
+            }
+        }
+        if (glname.empty()) {
+            // Not a renderer error — WE editor often lets authors expose
+            // material settings in the UI that their custom shader never
+            // actually declares as uniforms.  Solar system (3662790108) floods
+            // the journal with ~984 "Color"/"Alpha" misses per load, plus
+            // per-planet "Shadow Strength|阴影强度" etc. from `dqss2` effect,
+            // because none of those uniforms exist in the compiled GLSL.
+            // Keep it at INFO so a future shader-parser gap still surfaces
+            // (searchable via `ShaderValue:`) without drowning real errors.
+            LOG_INFO("ShaderValue: '%s' has no matching GLSL uniform (author default, skipped)",
+                     name.c_str());
+        } else {
+            material.customShader.constValues[glname] = value;
+        }
+    }
+
+    return ImageBaseMaterial { std::move(material),
+                               std::move(svData),
+                               std::move(shaderInfo),
+                               std::move(baseConstSvs) };
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1696,81 +1791,13 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     auto spImgNode = createImageNode(context, wpimgobj, isOffscreen, isScriptedLayer);
 
-    SceneMaterial     material;
-    WPShaderValueData svData;
-
-    ShaderValueMap baseConstSvs = context.global_base_uniforms;
-    WPShaderInfo   shaderInfo;
-    {
-        if (! hasEffect) {
-            svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
-            if (puppet) {
-                WPMdlParser::AddPuppetShaderInfo(shaderInfo, *puppet);
-            }
-        }
-
-        baseConstSvs["g_Color4"] = std::array<float, 4> {
-            wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2], wpimgobj.alpha
-        };
-        baseConstSvs["g_UserAlpha"]  = wpimgobj.alpha;
-        baseConstSvs["g_Brightness"] = wpimgobj.brightness;
-        // WE flat.frag reads g_Color (vec3) and g_Alpha (float) as separate
-        // uniforms — distinct from the g_Color4 vec4 used by image shaders.
-        // Without explicit values, GLSL leaves them zero-initialized which
-        // happens to match WE's solidlayer convention (transparent placeholder)
-        // but breaks every other use of `flat` (e.g. shape-quads with authored
-        // color).  Populate both unconditionally; for solidlayer placeholders
-        // override g_Alpha=0 so the per-image effect chain reads a clean
-        // (0,0,0,0) base instead of an opaque colored quad.
-        baseConstSvs["g_Color"] =
-            std::array<float, 3> { wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2] };
-        baseConstSvs["g_Alpha"] = wpimgobj.solidlayer ? 0.0f : wpimgobj.alpha;
-
-        shaderInfo.baseConstSvs = baseConstSvs;
-
-        if (! LoadMaterial(vfs,
-                           wpimgobj.material,
-                           context.scene.get(),
-                           spImgNode.get(),
-                           &material,
-                           &svData,
-                           &shaderInfo)) {
-            LOG_ERROR(
-                "load imageobj id=%d '%s' material failed", wpimgobj.id, wpimgobj.name.c_str());
-            return;
-        };
-        LoadConstvalue(material, wpimgobj.material, shaderInfo);
-    }
-
-    for (const auto& cs : wpimgobj.material.constantshadervalues) {
-        const auto&               name  = cs.first;
-        const std::vector<float>& value = cs.second;
-        std::string               glname;
-        if (shaderInfo.alias.count(name) != 0) {
-            glname = shaderInfo.alias.at(name);
-        } else {
-            for (const auto& el : shaderInfo.alias) {
-                if (el.second.substr(2) == name) {
-                    glname = el.second;
-                    break;
-                }
-            }
-        }
-        if (glname.empty()) {
-            // Not a renderer error — WE editor often lets authors expose
-            // material settings in the UI that their custom shader never
-            // actually declares as uniforms.  Solar system (3662790108) floods
-            // the journal with ~984 "Color"/"Alpha" misses per load, plus
-            // per-planet "Shadow Strength|阴影强度" etc. from `dqss2` effect,
-            // because none of those uniforms exist in the compiled GLSL.
-            // Keep it at INFO so a future shader-parser gap still surfaces
-            // (searchable via `ShaderValue:`) without drowning real errors.
-            LOG_INFO("ShaderValue: '%s' has no matching GLSL uniform (author default, skipped)",
-                     name.c_str());
-        } else {
-            material.customShader.constValues[glname] = value;
-        }
-    }
+    auto baseMatResult =
+        loadImageBaseMaterial(context, wpimgobj, spImgNode.get(), hasEffect, puppet.get());
+    if (! baseMatResult) return;
+    SceneMaterial     material     = std::move(baseMatResult->material);
+    WPShaderValueData svData       = std::move(baseMatResult->svData);
+    WPShaderInfo      shaderInfo   = std::move(baseMatResult->shaderInfo);
+    ShaderValueMap    baseConstSvs = std::move(baseMatResult->baseConstSvs);
 
     // mesh
     SceneMesh effct_final_mesh {};
