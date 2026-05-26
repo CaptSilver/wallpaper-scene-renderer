@@ -9,14 +9,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace wallpaper
 {
 
+// FT_Library is a process-global FreeType resource. Init/Shutdown run on
+// the parser thread (per Parse() boundary); RenderText runs on the render
+// thread. Without serialisation, Shutdown can free the library while
+// RenderText holds a live FT_Face that references it. The mutex covers
+// the full RenderText body so an in-use face outlives any concurrent
+// Shutdown.
+static std::mutex s_ftLibMutex;
 static FT_Library s_ftLib = nullptr;
 
 void WPTextRenderer::Init() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
     if (s_ftLib != nullptr) return;
     FT_Error err = FT_Init_FreeType(&s_ftLib);
     if (err) {
@@ -26,6 +35,7 @@ void WPTextRenderer::Init() {
 }
 
 void WPTextRenderer::Shutdown() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
     if (s_ftLib) {
         FT_Done_FreeType(s_ftLib);
         s_ftLib = nullptr;
@@ -79,12 +89,21 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                                                   const std::string& text, i32 width, i32 height,
                                                   const std::string& halign,
                                                   const std::string& valign, i32 padding) {
+    // Hold the FT_Library mutex for the full body: the FT_Face created
+    // below references s_ftLib internally, and a concurrent Shutdown that
+    // freed the library while we still held the face would invalidate it
+    // mid-raster.
+    std::lock_guard<std::mutex> ftLock(s_ftLibMutex);
     if (! s_ftLib) {
-        // Lazy init — scene parser shuts down after Parse(), but render thread
-        // needs FreeType for dynamic text re-rasterization
-        Init();
-        if (! s_ftLib) {
-            LOG_ERROR("WPTextRenderer: FreeType init failed");
+        // Lazy init — scene parser shuts down after Parse(), but render
+        // thread needs FreeType for dynamic text re-rasterization.
+        // We're already holding s_ftLibMutex, so call FT_Init_FreeType
+        // directly instead of recursing through Init() (which would
+        // re-take the same mutex).
+        FT_Error err = FT_Init_FreeType(&s_ftLib);
+        if (err) {
+            LOG_ERROR("WPTextRenderer: FreeType lazy init failed: %d", err);
+            s_ftLib = nullptr;
             return nullptr;
         }
     }

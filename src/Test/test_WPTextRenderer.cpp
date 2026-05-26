@@ -123,3 +123,35 @@ TEST_SUITE("WPTextRenderer::DecodeUtf8 — stream behavior") {
         CHECK(cps[4] == uint32_t('c'));
     }
 }
+
+#include <atomic>
+#include <thread>
+
+// FT_Library is a process-global FreeType resource. Parser thread runs
+// Init/Shutdown around each Parse(); render thread calls RenderText
+// per text-layer-update. Without serialisation, a parser-thread Shutdown
+// can free the library while the render thread holds a live FT_Face
+// referencing it. The mutex guard inside WPTextRenderer must serialise
+// both. Empty-text exercise is enough to keep the lazy-init re-check
+// honest; full raster would also work but isn't needed to prove the race.
+TEST_SUITE("WPTextRenderer Init/Shutdown race") {
+    TEST_CASE("parallel Init/Shutdown + RenderText does not crash") {
+        std::atomic<bool> stop { false };
+        std::atomic<int>  render_count { 0 };
+        std::thread       render([&] {
+            while (! stop.load(std::memory_order_relaxed)) {
+                auto img =
+                    WPTextRenderer::RenderText("", 16.f, "", 32, 32, "center", "center", 0);
+                (void)img;
+                render_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+        for (int i = 0; i < 64; ++i) {
+            WPTextRenderer::Init();
+            WPTextRenderer::Shutdown();
+        }
+        stop.store(true, std::memory_order_relaxed);
+        render.join();
+        CHECK(render_count.load() > 0);
+    }
+}
