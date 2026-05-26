@@ -30,6 +30,7 @@ add_executable(backend_scene_tests
     test_WPSceneAttachmentCompose.cpp
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
+    test_WPTextRenderer.cpp
     test_SceneCamera.cpp
     test_SceneNode.cpp
     test_UniformDirtyGate.cpp

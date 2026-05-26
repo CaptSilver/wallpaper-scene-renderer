@@ -32,38 +32,8 @@ void WPTextRenderer::Shutdown() {
     }
 }
 
-// Decode one UTF-8 codepoint, advance ptr. Returns 0 on error/end.
-static uint32_t DecodeUtf8(const char*& p, const char* end) {
-    if (p >= end) return 0;
-    auto     b  = static_cast<uint8_t>(*p);
-    uint32_t cp = 0;
-    int      n  = 0;
-    if (b < 0x80) {
-        cp = b;
-        n  = 0;
-    } else if ((b & 0xE0) == 0xC0) {
-        cp = b & 0x1F;
-        n  = 1;
-    } else if ((b & 0xF0) == 0xE0) {
-        cp = b & 0x0F;
-        n  = 2;
-    } else if ((b & 0xF8) == 0xF0) {
-        cp = b & 0x07;
-        n  = 3;
-    } else {
-        ++p;
-        return 0xFFFD; // replacement char
-    }
-    ++p;
-    for (int i = 0; i < n; ++i) {
-        if (p >= end) return 0xFFFD;
-        b = static_cast<uint8_t>(*p);
-        if ((b & 0xC0) != 0x80) return 0xFFFD;
-        cp = (cp << 6) | (b & 0x3F);
-        ++p;
-    }
-    return cp;
-}
+// DecodeUtf8 now lives header-inline at WPTextRenderer::DecodeUtf8 so the
+// validation can be tested directly without linking the full wpScene library.
 
 // Split text into lines by '\n'
 static std::vector<std::string> SplitLines(const std::string& text) {
@@ -97,7 +67,7 @@ static int MeasureLineWidth(FT_Face face, const std::string& line) {
     const char* p     = line.data();
     const char* end   = p + line.size();
     while (p < end) {
-        uint32_t cp = DecodeUtf8(p, end);
+        uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
         if (cp == 0) break;
         if (FT_Load_Char(face, cp, FT_LOAD_DEFAULT) != 0) continue;
         pen_x += EffectiveAdvance(face->glyph);
@@ -227,7 +197,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         const char* p   = line.data();
         const char* end = p + line.size();
         while (p < end) {
-            uint32_t cp = DecodeUtf8(p, end);
+            uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
             if (cp == 0) break;
             if (FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) continue;
 
