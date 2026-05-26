@@ -1381,14 +1381,13 @@ void applyImagePreRoutingDefaults(ParseContext& context, wpscene::WPImageObject&
     }
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
+struct ImageOffscreenRouting {
+    bool isOffscreen;
+    bool isScriptedLayer;
+};
 
-    resolveImageAutosize(context, wpimgobj);
-
-    applyImagePreRoutingDefaults(context, wpimgobj);
-
+ImageOffscreenRouting computeOffscreenRouting(const ParseContext&            context,
+                                              const wpscene::WPImageObject& wpimgobj) {
     // Invisible nodes are processed as offscreen dependency nodes:
     // their output is written to a per-node RT (not the main scene output) so
     // that compose layers can reference it via _rt_imageLayerComposite_XXX_a → _rt_link_XXX.
@@ -1432,6 +1431,19 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                  wpimgobj.id,
                  wpimgobj.name.c_str());
     }
+
+    return { isOffscreen, isScriptedLayer };
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
+
+    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
 
     // colorBlendMode: prefer hardware blend when a direct equivalent exists;
     // fall back to shader-based effectpassthrough for complex modes.
