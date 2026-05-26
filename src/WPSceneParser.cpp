@@ -1823,6 +1823,67 @@ BlendMode applyFinalBlendOverride(SceneMaterial&                material,
     return imgBlendMode;
 }
 
+void attachMaterialAndUserBindings(ParseContext&                     context,
+                                   const wpscene::WPImageObject&     wpimgobj,
+                                   const std::shared_ptr<SceneNode>& spImgNode,
+                                   const std::shared_ptr<SceneMesh>& spMesh,
+                                   SceneMesh&                        mesh,
+                                   SceneMaterial&&                   material,
+                                   const WPShaderInfo&               shaderInfo,
+                                   const WPShaderValueData&          svData) {
+    // Base material keeps its declared blend (typically Translucent) even
+    // when it's the first node of an effect chain.  Combined with the
+    // CLEAR-on-first-write logic in CustomShaderPass.cpp (which initialises
+    // each effect pingpong to (0,0,0,0) before the base render), Translucent
+    // resolves alpha=0 source pixels to (0,0,0,0) instead of leaking the
+    // texture's underlying RGB into the pingpong.  Without this, the eye
+    // texture on Naruto Shippuden 2800255344 (orange RGB at alpha=0 corners)
+    // bled an orange halo through bilinear filtering at the alpha boundary.
+    // See test_BlendModeFactors "Blend math — pingpong initialization" for
+    // the property pin.
+    mesh.AddMaterial(std::move(material));
+    spImgNode->AddMesh(spMesh);
+
+    // Record usershadervalue bindings for runtime user property updates
+    // Must be done after AddMaterial since material is moved
+    if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
+        for (auto& [propName, shaderConstName] : wpimgobj.material.userShaderBindings) {
+            std::string glname;
+            if (shaderInfo.alias.count(shaderConstName) != 0) {
+                glname = shaderInfo.alias.at(shaderConstName);
+            } else {
+                for (const auto& el : shaderInfo.alias) {
+                    if (el.second.substr(2) == shaderConstName) {
+                        glname = el.second;
+                        break;
+                    }
+                }
+            }
+            if (glname.empty()) glname = shaderConstName;
+            context.scene->userPropUniformBindings[propName].push_back(
+                { spMesh->Material(), glname });
+            LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
+                     propName.c_str(),
+                     glname.c_str(),
+                     wpimgobj.id);
+        }
+    }
+
+    // Record color script for SceneScript evaluation
+    if (! wpimgobj.colorScript.empty() && spMesh->Material()) {
+        SceneColorScript csi;
+        csi.id               = wpimgobj.id;
+        csi.material         = spMesh->Material();
+        csi.script           = wpimgobj.colorScript;
+        csi.scriptProperties = wpimgobj.colorScriptProperties;
+        csi.initialColor     = wpimgobj.color;
+        context.scene->colorScripts.push_back(std::move(csi));
+        LOG_INFO("  color script registered for id=%d", wpimgobj.id);
+    }
+
+    context.shader_updater->SetNodeData(spImgNode.get(), svData);
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1876,57 +1937,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     auto imgBlendMode = applyFinalBlendOverride(material, colorBlendOverride, hasEffect, isCompose, wpimgobj);
 
-    // Base material keeps its declared blend (typically Translucent) even
-    // when it's the first node of an effect chain.  Combined with the
-    // CLEAR-on-first-write logic in CustomShaderPass.cpp (which initialises
-    // each effect pingpong to (0,0,0,0) before the base render), Translucent
-    // resolves alpha=0 source pixels to (0,0,0,0) instead of leaking the
-    // texture's underlying RGB into the pingpong.  Without this, the eye
-    // texture on Naruto Shippuden 2800255344 (orange RGB at alpha=0 corners)
-    // bled an orange halo through bilinear filtering at the alpha boundary.
-    // See test_BlendModeFactors "Blend math — pingpong initialization" for
-    // the property pin.
-    mesh.AddMaterial(std::move(material));
-    spImgNode->AddMesh(spMesh);
-
-    // Record usershadervalue bindings for runtime user property updates
-    // Must be done after AddMaterial since material is moved
-    if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
-        for (auto& [propName, shaderConstName] : wpimgobj.material.userShaderBindings) {
-            std::string glname;
-            if (shaderInfo.alias.count(shaderConstName) != 0) {
-                glname = shaderInfo.alias.at(shaderConstName);
-            } else {
-                for (const auto& el : shaderInfo.alias) {
-                    if (el.second.substr(2) == shaderConstName) {
-                        glname = el.second;
-                        break;
-                    }
-                }
-            }
-            if (glname.empty()) glname = shaderConstName;
-            context.scene->userPropUniformBindings[propName].push_back(
-                { spMesh->Material(), glname });
-            LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
-                     propName.c_str(),
-                     glname.c_str(),
-                     wpimgobj.id);
-        }
-    }
-
-    // Record color script for SceneScript evaluation
-    if (! wpimgobj.colorScript.empty() && spMesh->Material()) {
-        SceneColorScript csi;
-        csi.id               = wpimgobj.id;
-        csi.material         = spMesh->Material();
-        csi.script           = wpimgobj.colorScript;
-        csi.scriptProperties = wpimgobj.colorScriptProperties;
-        csi.initialColor     = wpimgobj.color;
-        context.scene->colorScripts.push_back(std::move(csi));
-        LOG_INFO("  color script registered for id=%d", wpimgobj.id);
-    }
-
-    context.shader_updater->SetNodeData(spImgNode.get(), svData);
+    attachMaterialAndUserBindings(context, wpimgobj, spImgNode, spMesh, mesh, std::move(material),
+                                  shaderInfo, svData);
 
     // Compute and save this node's original world transform before effects
     // potentially reset it to identity.  Children that inherit_parent use
