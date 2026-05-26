@@ -1791,10 +1791,12 @@ void SceneObject::setupTextScripts() {
                          "  }\n"
                          "};\n");
 
-    // Audio resolution constants
-    engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
-    engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
-    engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
+    // Audio resolution constants. setupEngineGlobals() cached the engine
+    // handle in m_engineObj; the local `engineObj` lives only inside that
+    // function (extract chain commits d62e965 / 56afc1f).
+    m_engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
+    m_engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
+    m_engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
 
     // Media playback event constants (WE SceneScript MediaPlaybackEvent)
     m_jsEngine->evaluate("var MediaPlaybackEvent = { CYCLIC: -1, PLAYBACK_STOPPED: 0, "
@@ -1805,7 +1807,7 @@ void SceneObject::setupTextScripts() {
     // retains; refreshAudioBuffers() fills it from the analyzer each tick.
     {
         QJSValue regFn = m_jsEngine->evaluate(wek::qml_helper::kRegisterAudioBuffersJs);
-        engineObj.setProperty("registerAudioBuffers", regFn);
+        m_engineObj.setProperty("registerAudioBuffers", regFn);
     }
 
     // Wallpaper Engine SceneScript API stubs
@@ -4668,6 +4670,10 @@ void SceneObject::evaluatePropertyScripts() {
     // to enumerate via QJSValue.property iteration (Object.keys under the
     // hood), but only done when diagnostics are on.
     if (s_scriptDiag && (s_diagTick % 90 == 0)) {
+        // refreshEngineTickGlobals owns runtimeSecs; recompute here since
+        // the diagnostic is in evaluatePropertyScripts and the helper's
+        // local is out of scope (extract chain commit 56afc1f).
+        const double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
         QJSValue shared = m_jsEngine->globalObject().property("shared");
         QJSValue keysFn =
             m_jsEngine->evaluate("(function(o){var k=[]; for(var n in o) k.push(n); return k;})");
