@@ -1249,6 +1249,42 @@ void resolveImageAutosize(ParseContext& context, wpscene::WPImageObject& wpimgob
     }
 }
 
+std::unique_ptr<WPMdl> loadPuppetModel(ParseContext& context, const wpscene::WPImageObject& wpimgobj) {
+    auto& vfs = *context.vfs;
+    std::unique_ptr<WPMdl> puppet;
+    if (! wpimgobj.puppet.empty()) {
+        puppet = std::make_unique<WPMdl>();
+        if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
+            // Downgrade when the file is simply missing from the pkg
+            // (author bundling error).  The image-object renders as a
+            // regular quad without the puppet skeleton.  Driver: Persona
+            // 5 (2955378002) ships `models/1x1_puppet.mdl` references but
+            // doesn't include the file.
+            bool missing = ! vfs.Contains("/assets/" + wpimgobj.puppet);
+            if (missing) {
+                LOG_INFO("puppet file missing, treating as plain image: %s",
+                         wpimgobj.puppet.c_str());
+            } else {
+                LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
+            }
+            puppet = nullptr;
+        } else if (! puppet->is_puppet || ! puppet->puppet) {
+            // scene.json declared this file under "puppet:" but the MDL parsed
+            // cleanly as a non-puppet mesh (flag 9/11/15/39): WPMdlParser's
+            // non-puppet branch never instantiates the WPPuppet shared_ptr.
+            // Fall back to the regular image-quad path instead of dereferencing
+            // the null bones vector below.
+            LOG_INFO("non-puppet MDL referenced as puppet, falling back to image quad: %s",
+                     wpimgobj.puppet.c_str());
+            puppet = nullptr;
+        } else if (puppet->puppet->bones.size() == 0) {
+            LOG_ERROR("puppet has no bones: %s", wpimgobj.puppet.c_str());
+            puppet = nullptr;
+        }
+    }
+    return puppet;
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1457,37 +1493,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     // composelayer base-pass still runs and captures the FB into pingpong.
     const bool effectOffscreen = isOffscreen || synthesizedPassthroughOnly;
 
-    std::unique_ptr<WPMdl> puppet;
-    if (! wpimgobj.puppet.empty()) {
-        puppet = std::make_unique<WPMdl>();
-        if (! WPMdlParser::Parse(wpimgobj.puppet, vfs, *puppet)) {
-            // Downgrade when the file is simply missing from the pkg
-            // (author bundling error).  The image-object renders as a
-            // regular quad without the puppet skeleton.  Driver: Persona
-            // 5 (2955378002) ships `models/1x1_puppet.mdl` references but
-            // doesn't include the file.
-            bool missing = ! vfs.Contains("/assets/" + wpimgobj.puppet);
-            if (missing) {
-                LOG_INFO("puppet file missing, treating as plain image: %s",
-                         wpimgobj.puppet.c_str());
-            } else {
-                LOG_ERROR("parse puppet failed: %s", wpimgobj.puppet.c_str());
-            }
-            puppet = nullptr;
-        } else if (! puppet->is_puppet || ! puppet->puppet) {
-            // scene.json declared this file under "puppet:" but the MDL parsed
-            // cleanly as a non-puppet mesh (flag 9/11/15/39): WPMdlParser's
-            // non-puppet branch never instantiates the WPPuppet shared_ptr.
-            // Fall back to the regular image-quad path instead of dereferencing
-            // the null bones vector below.
-            LOG_INFO("non-puppet MDL referenced as puppet, falling back to image quad: %s",
-                     wpimgobj.puppet.c_str());
-            puppet = nullptr;
-        } else if (puppet->puppet->bones.size() == 0) {
-            LOG_ERROR("puppet has no bones: %s", wpimgobj.puppet.c_str());
-            puppet = nullptr;
-        }
-    }
+    std::unique_ptr<WPMdl> puppet = loadPuppetModel(context, wpimgobj);
 
     // Diagnostic: capture MDL vertex bounds + scene.json size so a child's
     // attachment-resolution log can compare attMat coordinates against the
