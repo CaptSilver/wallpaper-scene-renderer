@@ -3594,6 +3594,163 @@ std::shared_ptr<SceneMesh> buildTextMesh(const wpscene::WPTextObject& textObj,
     return spMesh;
 }
 
+// Assemble the per-text-layer effect chain when textObj.effects is non-empty:
+// create a per-layer camera + pingpong RTs, build the SceneImageEffectLayer,
+// load each visible effect's materials/passes, and register user-property
+// uniform bindings.  Mirrors the image-side assembleEffectChain.
+void assembleTextEffectChain(ParseContext&                           context,
+                              const wpscene::WPTextObject&           textObj,
+                              const std::shared_ptr<SceneNode>&      spNode,
+                              i32                                    texW,
+                              i32                                    texH,
+                              const WPShaderInfo&                    shaderInfo,
+                              BlendMode                              imgBlendMode) {
+    auto& vfs     = *context.vfs;
+    auto& scene   = *context.scene;
+    std::string nodeAddr = getAddr(spNode.get());
+
+    i32 w                   = texW;
+    i32 h                   = texH;
+    scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(w, h, -1.0f, 1.0f);
+    scene.cameras.at(nodeAddr)->AttatchNode(context.effect_camera_node);
+    spNode->SetCamera(nodeAddr);
+
+    std::string effect_ppong_a = WE_EFFECT_PPONG_PREFIX_A.data() + nodeAddr;
+    std::string effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
+
+    SceneMesh effctFinalMesh {};
+    GenCardMesh(effctFinalMesh, { static_cast<uint16_t>(w), static_cast<uint16_t>(h) });
+
+    auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(spNode.get(),
+                                                                  static_cast<float>(w),
+                                                                  static_cast<float>(h),
+                                                                  effect_ppong_a,
+                                                                  effect_ppong_b);
+    {
+        imgEffectLayer->SetFinalBlend(imgBlendMode);
+        imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effctFinalMesh);
+        imgEffectLayer->FinalNode().CopyTrans(*spNode);
+        imgEffectLayer->FinalNode().SetVisibilityOwner(spNode.get());
+        spNode->CopyTrans(SceneNode());
+        scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
+        // Register for property script transform redirection.
+        scene.nodeEffectLayerMap[spNode->ID()] = imgEffectLayer.get();
+        // NOTE: text-effect layers do NOT use SetInheritParent /
+        // SetParentProxy like image-effect layers do.  The text origin
+        // script (driver: 3363252053 Date layer) computes ABSOLUTE
+        // scene-ortho coordinates (e.g. `value.x = scriptProperties.x *
+        // engine.canvasSize.x`), so the final composite's authored local
+        // is already in world space.  Re-applying parent_chain would
+        // double-shift the composite into the wrong position.  Only the
+        // base-pass mesh (below) needs parent-chain disconnected so it
+        // fills the pingpong at identity.
+    }
+    scene.renderTargets[effect_ppong_a] = {
+        .width      = static_cast<uint16_t>(w),
+        .height     = static_cast<uint16_t>(h),
+        .allowReuse = true,
+    };
+    scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
+
+    ShaderValueMap baseConstSvs = shaderInfo.baseConstSvs;
+
+    int32_t i_eff = -1;
+    for (const auto& wpeffobj : textObj.effects) {
+        i_eff++;
+        if (! wpeffobj.visible) {
+            i_eff--;
+            continue;
+        }
+
+        auto              imgEffect = std::make_shared<SceneImageEffect>();
+        const std::string inRT { effect_ppong_a };
+
+        std::string                                  effaddr = getAddr(imgEffectLayer.get());
+        std::unordered_map<std::string, std::string> fboMap;
+        fboMap["previous"] = inRT;
+        for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
+            const auto& wpfbo  = wpeffobj.fbos.at(i);
+            std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
+            scene.renderTargets[rtname] = {
+                .width      = static_cast<uint16_t>(w / static_cast<float>(wpfbo.scale)),
+                .height     = static_cast<uint16_t>(h / static_cast<float>(wpfbo.scale)),
+                .allowReuse = true
+            };
+            fboMap[wpfbo.name] = rtname;
+        }
+
+        bool eff_mat_ok = true;
+        for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
+            wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
+            std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
+            if (wpeffobj.passes.size() > i_mat) {
+                const auto& wppass = wpeffobj.passes.at(i_mat);
+                wpmat.MergePass(wppass);
+                for (const auto& el : wppass.bind) {
+                    if (fboMap.count(el.name) == 0) continue;
+                    if (wpmat.textures.size() <= static_cast<usize>(el.index))
+                        wpmat.textures.resize(static_cast<usize>(el.index) + 1);
+                    wpmat.textures[static_cast<usize>(el.index)] = fboMap[el.name];
+                }
+                if (! wppass.target.empty() && fboMap.count(wppass.target))
+                    matOutRT = fboMap.at(wppass.target);
+            }
+            if (wpmat.textures.empty()) wpmat.textures.resize(1);
+            if (wpmat.textures.at(0).empty()) wpmat.textures[0] = inRT;
+
+            auto         spEffNode = std::make_shared<SceneNode>();
+            WPShaderInfo wpEffShaderInfo;
+            wpEffShaderInfo.baseConstSvs = baseConstSvs;
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+
+            SceneMaterial     effMaterial;
+            WPShaderValueData effSvData;
+            if (! LoadMaterial(vfs,
+                               wpmat,
+                               context.scene.get(),
+                               spEffNode.get(),
+                               &effMaterial,
+                               &effSvData,
+                               &wpEffShaderInfo)) {
+                eff_mat_ok = false;
+                break;
+            }
+            LoadConstvalue(effMaterial, wpmat, wpEffShaderInfo);
+            auto spEffMesh = std::make_shared<SceneMesh>();
+            spEffMesh->AddMaterial(std::move(effMaterial));
+            spEffNode->AddMesh(spEffMesh);
+
+            // Register user property bindings for text effect material uniforms
+            if (! wpmat.userShaderBindings.empty() && spEffMesh->Material()) {
+                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                    std::string glname;
+                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
+                        glname = wpEffShaderInfo.alias.at(shaderConstName);
+                    } else {
+                        for (const auto& el : wpEffShaderInfo.alias) {
+                            if (el.second.substr(2) == shaderConstName) {
+                                glname = el.second;
+                                break;
+                            }
+                        }
+                    }
+                    if (glname.empty()) glname = shaderConstName;
+                    context.scene->userPropUniformBindings[propName].push_back(
+                        { spEffMesh->Material(), glname });
+                }
+            }
+
+            context.shader_updater->SetNodeData(spEffNode.get(), effSvData);
+            spEffNode->SetVisibilityOwner(spNode.get());
+            imgEffect->nodes.push_back({ matOutRT, spEffNode });
+        }
+        if (eff_mat_ok) imgEffectLayer->AddEffect(imgEffect);
+    }
+}
+
 void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& vfs = *context.vfs;
 
@@ -3666,149 +3823,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     context.shader_updater->SetNodeData(spNode.get(), svData);
 
     if (hasEffect) {
-        auto&       scene    = *context.scene;
-        std::string nodeAddr = getAddr(spNode.get());
-
-        i32 w                   = texW;
-        i32 h                   = texH;
-        scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(w, h, -1.0f, 1.0f);
-        scene.cameras.at(nodeAddr)->AttatchNode(context.effect_camera_node);
-        spNode->SetCamera(nodeAddr);
-
-        std::string effect_ppong_a = WE_EFFECT_PPONG_PREFIX_A.data() + nodeAddr;
-        std::string effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
-
-        SceneMesh effctFinalMesh {};
-        GenCardMesh(effctFinalMesh, { static_cast<uint16_t>(w), static_cast<uint16_t>(h) });
-
-        auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(spNode.get(),
-                                                                      static_cast<float>(w),
-                                                                      static_cast<float>(h),
-                                                                      effect_ppong_a,
-                                                                      effect_ppong_b);
-        {
-            imgEffectLayer->SetFinalBlend(imgBlendMode);
-            imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effctFinalMesh);
-            imgEffectLayer->FinalNode().CopyTrans(*spNode);
-            imgEffectLayer->FinalNode().SetVisibilityOwner(spNode.get());
-            spNode->CopyTrans(SceneNode());
-            scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
-            // Register for property script transform redirection.
-            scene.nodeEffectLayerMap[spNode->ID()] = imgEffectLayer.get();
-            // NOTE: text-effect layers do NOT use SetInheritParent /
-            // SetParentProxy like image-effect layers do.  The text origin
-            // script (driver: 3363252053 Date layer) computes ABSOLUTE
-            // scene-ortho coordinates (e.g. `value.x = scriptProperties.x *
-            // engine.canvasSize.x`), so the final composite's authored local
-            // is already in world space.  Re-applying parent_chain would
-            // double-shift the composite into the wrong position.  Only the
-            // base-pass mesh (below) needs parent-chain disconnected so it
-            // fills the pingpong at identity.
-        }
-        scene.renderTargets[effect_ppong_a] = {
-            .width      = static_cast<uint16_t>(w),
-            .height     = static_cast<uint16_t>(h),
-            .allowReuse = true,
-        };
-        scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
-
-        ShaderValueMap baseConstSvs = shaderInfo.baseConstSvs;
-
-        int32_t i_eff = -1;
-        for (const auto& wpeffobj : textObj.effects) {
-            i_eff++;
-            if (! wpeffobj.visible) {
-                i_eff--;
-                continue;
-            }
-
-            auto              imgEffect = std::make_shared<SceneImageEffect>();
-            const std::string inRT { effect_ppong_a };
-
-            std::string                                  effaddr = getAddr(imgEffectLayer.get());
-            std::unordered_map<std::string, std::string> fboMap;
-            fboMap["previous"] = inRT;
-            for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
-                const auto& wpfbo  = wpeffobj.fbos.at(i);
-                std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
-                scene.renderTargets[rtname] = {
-                    .width      = static_cast<uint16_t>(w / static_cast<float>(wpfbo.scale)),
-                    .height     = static_cast<uint16_t>(h / static_cast<float>(wpfbo.scale)),
-                    .allowReuse = true
-                };
-                fboMap[wpfbo.name] = rtname;
-            }
-
-            bool eff_mat_ok = true;
-            for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
-                wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
-                std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
-                if (wpeffobj.passes.size() > i_mat) {
-                    const auto& wppass = wpeffobj.passes.at(i_mat);
-                    wpmat.MergePass(wppass);
-                    for (const auto& el : wppass.bind) {
-                        if (fboMap.count(el.name) == 0) continue;
-                        if (wpmat.textures.size() <= static_cast<usize>(el.index))
-                            wpmat.textures.resize(static_cast<usize>(el.index) + 1);
-                        wpmat.textures[static_cast<usize>(el.index)] = fboMap[el.name];
-                    }
-                    if (! wppass.target.empty() && fboMap.count(wppass.target))
-                        matOutRT = fboMap.at(wppass.target);
-                }
-                if (wpmat.textures.empty()) wpmat.textures.resize(1);
-                if (wpmat.textures.at(0).empty()) wpmat.textures[0] = inRT;
-
-                auto         spEffNode = std::make_shared<SceneNode>();
-                WPShaderInfo wpEffShaderInfo;
-                wpEffShaderInfo.baseConstSvs = baseConstSvs;
-                wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
-                    ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-                wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
-                    ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-
-                SceneMaterial     effMaterial;
-                WPShaderValueData effSvData;
-                if (! LoadMaterial(vfs,
-                                   wpmat,
-                                   context.scene.get(),
-                                   spEffNode.get(),
-                                   &effMaterial,
-                                   &effSvData,
-                                   &wpEffShaderInfo)) {
-                    eff_mat_ok = false;
-                    break;
-                }
-                LoadConstvalue(effMaterial, wpmat, wpEffShaderInfo);
-                auto spEffMesh = std::make_shared<SceneMesh>();
-                spEffMesh->AddMaterial(std::move(effMaterial));
-                spEffNode->AddMesh(spEffMesh);
-
-                // Register user property bindings for text effect material uniforms
-                if (! wpmat.userShaderBindings.empty() && spEffMesh->Material()) {
-                    for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
-                        std::string glname;
-                        if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
-                            glname = wpEffShaderInfo.alias.at(shaderConstName);
-                        } else {
-                            for (const auto& el : wpEffShaderInfo.alias) {
-                                if (el.second.substr(2) == shaderConstName) {
-                                    glname = el.second;
-                                    break;
-                                }
-                            }
-                        }
-                        if (glname.empty()) glname = shaderConstName;
-                        context.scene->userPropUniformBindings[propName].push_back(
-                            { spEffMesh->Material(), glname });
-                    }
-                }
-
-                context.shader_updater->SetNodeData(spEffNode.get(), effSvData);
-                spEffNode->SetVisibilityOwner(spNode.get());
-                imgEffect->nodes.push_back({ matOutRT, spEffNode });
-            }
-            if (eff_mat_ok) imgEffectLayer->AddEffect(imgEffect);
-        }
+        assembleTextEffectChain(context, textObj, spNode, texW, texH, shaderInfo, imgBlendMode);
     }
 
     // Register every text layer — not just ones with a bundled textScript —
