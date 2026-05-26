@@ -33,7 +33,11 @@ void registerHalfResRT(Scene& scene, std::string_view key) {
     rt.bind       = { .enable = true, .screen = true, .scale = 0.5 };
 }
 
-std::shared_ptr<SceneMesh> cloneAsSceneMesh(const SceneMesh& src) {
+// Wraps a fresh SceneMesh around src's vertex/index data (SceneMesh holds the
+// data via shared_ptr — ChangeMeshDataFrom is a shallow ptr assign, not a deep
+// copy).  The returned mesh carries an independent material + dirty flag, which
+// is the actually-desired behavior; only the geometry is shared.
+std::shared_ptr<SceneMesh> aliasMeshData(const SceneMesh& src) {
     auto m = std::make_shared<SceneMesh>();
     m->ChangeMeshDataFrom(src);
     return m;
@@ -167,13 +171,13 @@ void BuildVolumetricNodes(Scene& scene) {
         const Eigen::Vector3f angles(0.0f, 0.0f, 0.0f);
 
         auto back = std::make_shared<SceneNode>(origin, scale, angles);
-        back->AddMesh(cloneAsSceneMesh(scene.default_volume_sphere));
+        back->AddMesh(aliasMeshData(scene.default_volume_sphere));
 
         auto front = std::make_shared<SceneNode>(origin, scale, angles);
-        front->AddMesh(cloneAsSceneMesh(scene.default_volume_sphere));
+        front->AddMesh(aliasMeshData(scene.default_volume_sphere));
 
         auto fullscreen = std::make_shared<SceneNode>();
-        fullscreen->AddMesh(cloneAsSceneMesh(scene.default_effect_mesh));
+        fullscreen->AddMesh(aliasMeshData(scene.default_effect_mesh));
 
         pl.back_node       = back;
         pl.front_node      = front;
@@ -183,15 +187,15 @@ void BuildVolumetricNodes(Scene& scene) {
     auto& cfg = scene.volumetricsConfig;
     if (! cfg.blur_h_node) {
         cfg.blur_h_node = std::make_shared<SceneNode>();
-        cfg.blur_h_node->AddMesh(cloneAsSceneMesh(scene.default_effect_mesh));
+        cfg.blur_h_node->AddMesh(aliasMeshData(scene.default_effect_mesh));
     }
     if (! cfg.blur_v_node) {
         cfg.blur_v_node = std::make_shared<SceneNode>();
-        cfg.blur_v_node->AddMesh(cloneAsSceneMesh(scene.default_effect_mesh));
+        cfg.blur_v_node->AddMesh(aliasMeshData(scene.default_effect_mesh));
     }
     if (! cfg.combine_node) {
         cfg.combine_node = std::make_shared<SceneNode>();
-        cfg.combine_node->AddMesh(cloneAsSceneMesh(scene.default_effect_mesh));
+        cfg.combine_node->AddMesh(aliasMeshData(scene.default_effect_mesh));
     }
 
     registerHalfResRT(scene, WE_VOLUMETRICS_BACK);

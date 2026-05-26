@@ -40,6 +40,17 @@ TEST_SUITE("AudioAnalyzer.Basic") {
         CHECK_FALSE(a.HasData());
     }
 
+    TEST_CASE("FeedPcm with frameCount=0 is a no-op (HasData stays false)") {
+        // miniaudio's STARTED notification can fire FeedPcm with frameCount=0;
+        // the function should early-return without touching writePos so
+        // Process() still observes an empty ring.
+        AudioAnalyzer a;
+        float         dummy = 0.0f;
+        a.FeedPcm(&dummy, /*frameCount=*/0, /*channels=*/2);
+        a.Process();
+        CHECK_FALSE(a.HasData());
+    }
+
     TEST_CASE("Process below FFT_SIZE leaves HasData false") {
         AudioAnalyzer a;
         auto          pcm = makeSineStereo(440.f, FFT_SIZE - 1);

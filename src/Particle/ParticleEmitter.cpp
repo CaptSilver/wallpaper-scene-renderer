@@ -55,8 +55,15 @@ inline void Emitt(std::vector<Particle>& particles, u32 num, u32 maxcount, bool 
         }
     }
 
-    if (sort) {
-        // old << new << dead
+    if (sort && i > 0) {
+        // old << new << dead.  Skipping when no particles were emitted is
+        // safe: the parent ParticleSystem resets IsNew() before calling
+        // Emitt, so num==0 means no new IsNew()==true particles entered the
+        // population and the partition's only remaining work would be moving
+        // newly-dead particles to the tail.  Consumers iterate-and-check
+        // LifetimeOk per element, so that delayed move is a cache-locality
+        // wash, not a correctness loss — and the no-emit case is the dominant
+        // tick for sort:true subsystems that have reached steady state.
         std::stable_sort(particles.begin(), particles.end(), [](const auto& a, const auto& b) {
             bool l_a = ParticleModify::LifetimeOk(a);
             bool l_b = ParticleModify::LifetimeOk(b);

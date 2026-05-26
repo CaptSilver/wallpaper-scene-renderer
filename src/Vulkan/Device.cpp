@@ -181,9 +181,12 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         }
     }
     {
+        // No TRANSIENT_BIT: the per-frame render command buffers live for the
+        // whole session (1+kFramesInFlight), so the "short-lived" hint would
+        // mislead the driver allocator.  RESET_COMMAND_BUFFER_BIT plus the
+        // CB.Begin(ONE_TIME_SUBMIT) call sites already provide per-CB reset.
         VkCommandPoolCreateInfo info { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-                                       .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
-                                                VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+                                       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
                                        .queueFamilyIndex = device.m_graphics_queue.family_index };
         VVK_CHECK_BOOL_RE(device.m_device.CreateCommandPool(info, device.m_command_pool));
     }

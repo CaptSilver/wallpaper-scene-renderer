@@ -147,6 +147,7 @@ void AudioAnalyzer::FeedPcm(const float* interleavedStereo, uint32_t frameCount,
                             uint32_t channels) {
     // Write interleaved stereo samples into ring buffer (SPSC: single producer)
     // If mono, duplicate to L+R; if >2 channels, take first 2
+    if (frameCount == 0) return; // miniaudio's empty STARTED callback hits here
     uint32_t wp = m_impl->writePos.load(std::memory_order_relaxed);
     for (uint32_t f = 0; f < frameCount; f++) {
         float l, r;

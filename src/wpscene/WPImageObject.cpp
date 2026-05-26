@@ -393,7 +393,15 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
                 }
             }
             if (eff_uses_directdraw) {
-                material.blending = "additive";
+                // Only override the default translucent blend.  WPMaterial
+                // defaults `blending` to "translucent" and the shape-quad
+                // branch above doesn't touch it, so this guard is a no-op
+                // today — but it keeps a future shape-quad path that pre-sets
+                // a non-default blend (e.g. "normal" for a custom effect)
+                // from being silently clobbered.
+                if (material.blending == "translucent") {
+                    material.blending = "additive";
+                }
                 break;
             }
         }
