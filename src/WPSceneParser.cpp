@@ -1521,27 +1521,17 @@ bool registerScriptHostPlaceholderIfNoEffectFullscreen(
     return false;
 }
 
-void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
-    auto& wpimgobj = img_obj;
-    auto& vfs      = *context.vfs;
+struct ComposePassthroughResult {
+    bool isCompose;
+    bool synthesizedPassthroughOnly;
+};
 
-    resolveImageAutosize(context, wpimgobj);
-
-    applyImagePreRoutingDefaults(context, wpimgobj);
-
-    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
-
-    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
-    if (! colorBlendOverrideOpt) return;
-    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
-
-    // Count effects after colorBlendMode may have added one
-    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
-    if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
-
-    bool hasPuppet = ! wpimgobj.puppet.empty();
-    (void)hasPuppet;
-
+// Returns nullopt on PARSE_JSON failure (caller must early-return).
+// May mutate count_eff/hasEffect/wpimgobj.effects when a passthrough is synthesized.
+std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
+    ParseContext& context, wpscene::WPImageObject& wpimgobj, int32_t& count_eff,
+    bool& hasEffect) {
+    auto& vfs = *context.vfs;
     // `projectlayer` is WE's "entire project as a layer": it uses the same
     // composelayer material with passthrough, plus projectlayer/autosize, and the
     // layer carries copybackground.  Functionally it is a fullscreen
@@ -1589,9 +1579,38 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                      wpimgobj.id);
         } else {
             LOG_ERROR("compose layer id=%d: failed to load effectpassthrough.json", wpimgobj.id);
-            return;
+            return std::nullopt;
         }
     }
+    return ComposePassthroughResult { isCompose, synthesizedPassthroughOnly };
+}
+
+void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
+    auto& wpimgobj = img_obj;
+    auto& vfs      = *context.vfs;
+
+    resolveImageAutosize(context, wpimgobj);
+
+    applyImagePreRoutingDefaults(context, wpimgobj);
+
+    const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
+
+    auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
+    if (! colorBlendOverrideOpt) return;
+    BlendMode colorBlendOverride = *colorBlendOverrideOpt;
+
+    // Count effects after colorBlendMode may have added one
+    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
+    if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
+
+    bool hasPuppet = ! wpimgobj.puppet.empty();
+    (void)hasPuppet;
+
+    auto composeResult = synthesizePassthroughForCompose(context, wpimgobj, count_eff, hasEffect);
+    if (! composeResult) return;
+    bool isCompose                  = composeResult->isCompose;
+    bool synthesizedPassthroughOnly = composeResult->synthesizedPassthroughOnly;
+
     // Synthesized-passthrough-only layers behave as offscreen for routing
     // purposes (so the final write lands in `_rt_offscreen_<id>` instead of
     // `_rt_default`), but the worldNode itself must stay non-offscreen so the
