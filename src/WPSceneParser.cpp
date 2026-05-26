@@ -1802,6 +1802,27 @@ std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
     return spMesh;
 }
 
+BlendMode applyFinalBlendOverride(SceneMaterial&                material,
+                                  BlendMode                     colorBlendOverride,
+                                  bool                          hasEffect,
+                                  bool                          isCompose,
+                                  const wpscene::WPImageObject& wpimgobj) {
+    // Apply colorBlendMode hardware override if set
+    if (colorBlendOverride != BlendMode::Disable) {
+        material.blenmode = colorBlendOverride;
+    }
+    // material blendmode for last step to use
+    auto imgBlendMode = material.blenmode;
+    if (hasEffect) {
+        LOG_INFO("  ParseImageObj id=%d: finalBlend=%d hasEffect=1 isCompose=%d passthrough=%d",
+                 wpimgobj.id,
+                 (int)imgBlendMode,
+                 isCompose,
+                 isCompose && wpimgobj.config.passthrough);
+    }
+    return imgBlendMode;
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1853,19 +1874,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                       effct_final_mesh);
     auto&     mesh   = *spMesh;
 
-    // Apply colorBlendMode hardware override if set
-    if (colorBlendOverride != BlendMode::Disable) {
-        material.blenmode = colorBlendOverride;
-    }
-    // material blendmode for last step to use
-    auto imgBlendMode = material.blenmode;
-    if (hasEffect) {
-        LOG_INFO("  ParseImageObj id=%d: finalBlend=%d hasEffect=1 isCompose=%d passthrough=%d",
-                 wpimgobj.id,
-                 (int)imgBlendMode,
-                 isCompose,
-                 isCompose && wpimgobj.config.passthrough);
-    }
+    auto imgBlendMode = applyFinalBlendOverride(material, colorBlendOverride, hasEffect, isCompose, wpimgobj);
+
     // Base material keeps its declared blend (typically Translucent) even
     // when it's the first node of an effect chain.  Combined with the
     // CLEAR-on-first-write logic in CustomShaderPass.cpp (which initialises
