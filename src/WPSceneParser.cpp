@@ -1285,6 +1285,69 @@ std::unique_ptr<WPMdl> loadPuppetModel(ParseContext& context, const wpscene::WPI
     return puppet;
 }
 
+void logPuppetDiagnostics(ParseContext& context, const wpscene::WPImageObject& wpimgobj,
+                          const WPMdl* puppet) {
+    // Diagnostic: capture MDL vertex bounds + scene.json size so a child's
+    // attachment-resolution log can compare attMat coordinates against the
+    // parent's MDL space and scene size.  Helps identify which coordinate
+    // space MDAT attachment matrices live in (MDL-pixel vs scene-size).
+    if (puppet && ! puppet->vertexs.empty()) {
+        float xmin = std::numeric_limits<float>::infinity();
+        float ymin = std::numeric_limits<float>::infinity();
+        float zmin = std::numeric_limits<float>::infinity();
+        float xmax = -std::numeric_limits<float>::infinity();
+        float ymax = -std::numeric_limits<float>::infinity();
+        float zmax = -std::numeric_limits<float>::infinity();
+        for (const auto& v : puppet->vertexs) {
+            xmin = std::min(xmin, v.position[0]);
+            ymin = std::min(ymin, v.position[1]);
+            zmin = std::min(zmin, v.position[2]);
+            xmax = std::max(xmax, v.position[0]);
+            ymax = std::max(ymax, v.position[1]);
+            zmax = std::max(zmax, v.position[2]);
+        }
+        context.node_mdl_bounds[wpimgobj.id]   = { xmin, ymin, zmin, xmax, ymax, zmax };
+        context.node_scene_size[wpimgobj.id]   = { wpimgobj.size[0], wpimgobj.size[1] };
+        context.node_name_for_log[wpimgobj.id] = wpimgobj.name;
+        LOG_INFO("MDL bounds id=%d name='%s' x=[%.1f,%.1f] y=[%.1f,%.1f] span=(%.0f,%.0f) "
+                 "scene_size=(%.0f,%.0f) ratio=(%.2f,%.2f) attachments=%zu",
+                 wpimgobj.id,
+                 wpimgobj.name.c_str(),
+                 xmin,
+                 xmax,
+                 ymin,
+                 ymax,
+                 xmax - xmin,
+                 ymax - ymin,
+                 wpimgobj.size[0],
+                 wpimgobj.size[1],
+                 (xmax - xmin) > 0 ? wpimgobj.size[0] / (xmax - xmin) : 0.0f,
+                 (ymax - ymin) > 0 ? wpimgobj.size[1] / (ymax - ymin) : 0.0f,
+                 puppet->puppet ? puppet->puppet->attachments.size() : 0u);
+        if (puppet->puppet) {
+            for (const auto& att : puppet->puppet->attachments) {
+                const auto& m  = att.transform.matrix();
+                float       nx = (xmax - xmin) > 0 ? (m(0, 3) - xmin) / (xmax - xmin) : 0.0f;
+                float       ny = (ymax - ymin) > 0 ? (m(1, 3) - ymin) / (ymax - ymin) : 0.0f;
+                LOG_INFO("  ATT '%s' trans=(%.2f, %.2f, %.2f) bone[0]_trans=(%.2f, %.2f) "
+                         "norm_in_mdl=(%.0f%%, %.0f%%)",
+                         att.name.c_str(),
+                         m(0, 3),
+                         m(1, 3),
+                         m(2, 3),
+                         puppet->puppet->bones.empty()
+                             ? 0.0f
+                             : puppet->puppet->bones[0].transform.matrix()(0, 3),
+                         puppet->puppet->bones.empty()
+                             ? 0.0f
+                             : puppet->puppet->bones[0].transform.matrix()(1, 3),
+                         nx * 100.0f,
+                         ny * 100.0f);
+            }
+        }
+    }
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
@@ -1495,65 +1558,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     std::unique_ptr<WPMdl> puppet = loadPuppetModel(context, wpimgobj);
 
-    // Diagnostic: capture MDL vertex bounds + scene.json size so a child's
-    // attachment-resolution log can compare attMat coordinates against the
-    // parent's MDL space and scene size.  Helps identify which coordinate
-    // space MDAT attachment matrices live in (MDL-pixel vs scene-size).
-    if (puppet && ! puppet->vertexs.empty()) {
-        float xmin = std::numeric_limits<float>::infinity();
-        float ymin = std::numeric_limits<float>::infinity();
-        float zmin = std::numeric_limits<float>::infinity();
-        float xmax = -std::numeric_limits<float>::infinity();
-        float ymax = -std::numeric_limits<float>::infinity();
-        float zmax = -std::numeric_limits<float>::infinity();
-        for (const auto& v : puppet->vertexs) {
-            xmin = std::min(xmin, v.position[0]);
-            ymin = std::min(ymin, v.position[1]);
-            zmin = std::min(zmin, v.position[2]);
-            xmax = std::max(xmax, v.position[0]);
-            ymax = std::max(ymax, v.position[1]);
-            zmax = std::max(zmax, v.position[2]);
-        }
-        context.node_mdl_bounds[wpimgobj.id]   = { xmin, ymin, zmin, xmax, ymax, zmax };
-        context.node_scene_size[wpimgobj.id]   = { wpimgobj.size[0], wpimgobj.size[1] };
-        context.node_name_for_log[wpimgobj.id] = wpimgobj.name;
-        LOG_INFO("MDL bounds id=%d name='%s' x=[%.1f,%.1f] y=[%.1f,%.1f] span=(%.0f,%.0f) "
-                 "scene_size=(%.0f,%.0f) ratio=(%.2f,%.2f) attachments=%zu",
-                 wpimgobj.id,
-                 wpimgobj.name.c_str(),
-                 xmin,
-                 xmax,
-                 ymin,
-                 ymax,
-                 xmax - xmin,
-                 ymax - ymin,
-                 wpimgobj.size[0],
-                 wpimgobj.size[1],
-                 (xmax - xmin) > 0 ? wpimgobj.size[0] / (xmax - xmin) : 0.0f,
-                 (ymax - ymin) > 0 ? wpimgobj.size[1] / (ymax - ymin) : 0.0f,
-                 puppet->puppet ? puppet->puppet->attachments.size() : 0u);
-        if (puppet->puppet) {
-            for (const auto& att : puppet->puppet->attachments) {
-                const auto& m  = att.transform.matrix();
-                float       nx = (xmax - xmin) > 0 ? (m(0, 3) - xmin) / (xmax - xmin) : 0.0f;
-                float       ny = (ymax - ymin) > 0 ? (m(1, 3) - ymin) / (ymax - ymin) : 0.0f;
-                LOG_INFO("  ATT '%s' trans=(%.2f, %.2f, %.2f) bone[0]_trans=(%.2f, %.2f) "
-                         "norm_in_mdl=(%.0f%%, %.0f%%)",
-                         att.name.c_str(),
-                         m(0, 3),
-                         m(1, 3),
-                         m(2, 3),
-                         puppet->puppet->bones.empty()
-                             ? 0.0f
-                             : puppet->puppet->bones[0].transform.matrix()(0, 3),
-                         puppet->puppet->bones.empty()
-                             ? 0.0f
-                             : puppet->puppet->bones[0].transform.matrix()(1, 3),
-                         nx * 100.0f,
-                         ny * 100.0f);
-            }
-        }
-    }
+    logPuppetDiagnostics(context, wpimgobj, puppet.get());
 
     // wpimgobj.origin[1] = context.ortho_h - wpimgobj.origin[1];
     auto spImgNode = std::make_shared<SceneNode>(Vector3f(wpimgobj.origin.data()),
