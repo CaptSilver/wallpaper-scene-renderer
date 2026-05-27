@@ -33,6 +33,7 @@ add_executable(backend_scene_tests
     test_ParticleModify.cpp
     test_ParticleSystem.cpp
     test_ParticleTrail.cpp
+    test_SceneClockClamp.cpp
     test_AudioRateMultiplier.cpp
     test_WPPuppet.cpp
     test_WPSceneAttachmentCompose.cpp

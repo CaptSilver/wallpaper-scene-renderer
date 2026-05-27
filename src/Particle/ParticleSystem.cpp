@@ -233,6 +233,12 @@ void ParticleSubSystem::Emitt() {
     // like 15 — a 66ms frame otherwise emits 33 particles at once, visible
     // as a pulse of new stars on screen).  A cap of 32ms spreads bursts over
     // at most two render ticks at 60fps target.
+    //
+    // NOTE: SceneWallpaper's render-thread tick now sub-ticks the simulation
+    // in <= 32ms steps (see computeSubTickPlan), so scene.frameTime never
+    // exceeds this cap at the call site in production.  This clamp is a
+    // defensive no-op in that path; kept as belt-and-suspenders for any
+    // future caller that bypasses the sub-tick loop.
     constexpr double kMaxParticleFrameTime = 0.032;
     double           frameTime             = std::min(m_sys.scene.frameTime, kMaxParticleFrameTime);
     // Dynamic multiplier is 1.0 when no script is driving this subsystem.

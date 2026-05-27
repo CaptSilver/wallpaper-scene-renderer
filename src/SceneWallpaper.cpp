@@ -10,6 +10,7 @@
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
+#include "Scene/SubTickPlan.hpp"
 #include "Scene/WorldCacheGate.h"
 #include "Scene/TextStyleMerge.hpp"
 #include "Particle/ParticleSystem.h"
@@ -753,33 +754,15 @@ private:
                 }
             }
 
-            // Audio-reactive emit-rate push.  For each subsystem whose source
-            // emitter authored audioprocessingmode != 0, sample the bass band
-            // of the FFT spectrum and push a multiplier into Emitt's rate_eff.
-            // Smoothing state lives on the subsystem so attack/decay survives
-            // across frames.  Skipped entirely (no map walk, no spectrum span
-            // fetch) when no subsystem is audio-reactive (the vast majority of
-            // scenes); the flag is OR'd over particleSubByNodeId once at scene
-            // build.
-            if (scene->hasAudioReactiveParticles) {
-                auto                   analyzer  = scene->audioAnalyzer;
-                std::span<const float> specLeft  = analyzer && analyzer->HasData()
-                                                       ? analyzer->GetRawSpectrum(16, 0)
-                                                       : std::span<const float> {};
-                std::span<const float> specRight = analyzer && analyzer->HasData()
-                                                       ? analyzer->GetRawSpectrum(16, 1)
-                                                       : std::span<const float> {};
-                double                 dt        = scene->frameTime;
-                for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
-                    if (! sub || ! sub->IsAudioReactive()) continue;
-                    auto r = audio_reactive::computeRateMultiplier(
-                        specLeft, specRight, sub->AudioSmoothedRef(), dt, sub->AudioParams());
-                    sub->AudioSmoothedRef() = r.newSmoothed;
-                    sub->SetAudioRateMultiplier(r.multiplier);
-                }
-            }
-
-            scene->paritileSys->Emitt();
+            // Audio-reactive emit-rate push + particle Emitt are now driven
+            // by the sub-tick loop below (after dt_scene is computed).  The
+            // loop subdivides a stretched (TTY-switch / suspend wake) frame
+            // into <= 32ms chunks so every per-frame reader of scene.frameTime
+            // (CP velocity divisor at ParticleSystem.cpp:180, trail timestamps
+            // at ParticleSystem.cpp:485, g_Time shader uniform, camera path
+            // animation) sees a consistent clock.  The push + Emitt MUST run
+            // inside each sub-step so audio multiplier + emission rate stay in
+            // lockstep with the per-step dt.
 
             // Auto-hide pool particle nodes whose burst has played out.
             // SceneScript pool-particle assets (e.g. dino_run's coinget)
@@ -1359,12 +1342,59 @@ private:
             double dt_scene =
                 SelectFrameDt(m_init_info.deterministic, m_init_info.fixed_dt, dt_wall) * m_speed;
 
-            // Tick property animations (alpha.animation keyframe tracks).
-            // Advances time on playing tracks, evaluates, writes resulting
-            // value into the target node's material const (g_UserAlpha for
-            // "alpha").  Driven by render-thread frame time so it stays in
-            // lockstep with visuals.
-            tickPropertyAnimations(dt_scene);
+            // Tick property animations + audio-reactive push + PassFrameTime
+            // + particle Emitt in <= 32ms sub-steps so every consumer of the
+            // scene clock sees the same per-step value.  Previously dt_scene
+            // could be up to 100ms (wall-clock clamp) while Emitt's internal
+            // clamp limited emission to 32ms — diverging the scene clock from
+            // the particle clock on any stalled frame (TTY switch, suspend
+            // wake, compile first frame).  Now one clock: scene.frameTime
+            // bounded per step; scene.elapsingTime accumulates to full
+            // dt_scene across sub-steps (so g_Time stays on the wall clock).
+            //
+            // drawFrame + the post-draw bookkeeping (worldCacheRebuild,
+            // deviceLost, m_scene_time.store) run ONCE per render call after
+            // the loop — saturating the render thread with N draws on a long
+            // stall would defeat the catch-up.
+            constexpr double kMaxFixedTick = 0.032;
+            auto             subTickPlan   = computeSubTickPlan(dt_scene, kMaxFixedTick);
+            for (double step : subTickPlan) {
+                tickPropertyAnimations(step);
+
+                // Audio-reactive emit-rate push.  For each subsystem whose
+                // source emitter authored audioprocessingmode != 0, sample
+                // the bass band of the FFT spectrum and push a multiplier
+                // into Emitt's rate_eff.  Smoothing state lives on the
+                // subsystem so attack/decay survives across frames.  Skipped
+                // entirely (no map walk, no spectrum span fetch) when no
+                // subsystem is audio-reactive (the vast majority of scenes);
+                // the flag is OR'd over particleSubByNodeId once at scene
+                // build.
+                if (scene->hasAudioReactiveParticles) {
+                    auto                   analyzer = scene->audioAnalyzer;
+                    std::span<const float> specLeft = analyzer && analyzer->HasData()
+                                                          ? analyzer->GetRawSpectrum(16, 0)
+                                                          : std::span<const float> {};
+                    std::span<const float> specRight = analyzer && analyzer->HasData()
+                                                           ? analyzer->GetRawSpectrum(16, 1)
+                                                           : std::span<const float> {};
+                    for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
+                        if (! sub || ! sub->IsAudioReactive()) continue;
+                        auto r = audio_reactive::computeRateMultiplier(specLeft,
+                                                                       specRight,
+                                                                       sub->AudioSmoothedRef(),
+                                                                       step,
+                                                                       sub->AudioParams());
+                        sub->AudioSmoothedRef() = r.newSmoothed;
+                        sub->SetAudioRateMultiplier(r.multiplier);
+                    }
+                }
+
+                // PassFrameTime BEFORE Emitt so Emitt's read of
+                // scene.frameTime sees the sub-step value (<= kMaxFixedTick).
+                scene->PassFrameTime(step);
+                scene->paritileSys->Emitt();
+            }
 
             // Frame-exact screenshot: when a target frame is armed and the
             // monotonic counter has reached it, set the readback path NOW so
@@ -1444,7 +1474,10 @@ private:
                 return;
             }
 
-            scene->PassFrameTime(dt_scene);
+            // scene->PassFrameTime is now driven by the sub-tick loop above
+            // (one call per sub-step, summing to dt_scene); reading the
+            // accumulated elapsingTime here is the canonical export point
+            // for SceneScript and friends.
             m_scene_time.store(scene->elapsingTime, std::memory_order_relaxed);
 
             // DIAG: log elapsingTime vs wall clock drift
