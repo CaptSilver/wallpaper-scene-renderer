@@ -89,6 +89,7 @@ add_executable(backend_scene_tests
     test_DepthSamplerConfig.cpp
     test_DepthUsageFlags.cpp
     test_TextureCache_SamplerDedup.cpp
+    test_TextureCache_LoadStaging.cpp
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
     test_PipelineCacheIO.cpp

@@ -15,6 +15,7 @@
 #include "include/Vulkan/Parameters.hpp"
 #include "vvk/vulkan_wrapper.hpp"
 #include "TexFormatVk.hpp" // ToVkType(TextureFormat) — testable mapping (BC1 1-bit alpha)
+#include "TextureCacheDetail.hpp" // MEM4: mipOffsets / packedTotalBytes / bytesPerBlockForFormat
 #include "ImagePayload.h"  // mayReleaseDecodedPayload / releaseDecodedPayload
 
 #include <cstdio>
@@ -344,6 +345,96 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
     return std::nullopt;
 }
 
+// MEM4: copy mip levels from a single packed staging buffer to the
+// destination image.  Mirrors CopyImageData's shape (begin/barrier-in/N
+// CopyBufferToImage/barrier-out/end/submit) but takes one staging buffer
+// + per-mip bufferOffset instead of N independent buffers.  The
+// VkBufferImageCopy::bufferOffset values must be multiples of the
+// format's texel block size — see bytesPerBlockForFormat() in
+// Vulkan/TextureCacheDetail.hpp.
+inline VkResult CopyImageDataWithOffsets(const BufferParameters&        staging,
+                                         std::span<const std::size_t>   mip_offsets,
+                                         std::span<const VkExtent3D>    in_exts,
+                                         const vvk::Queue&              queue,
+                                         vvk::CommandBuffer&            cmd,
+                                         const ImageParameters&         image) {
+    VkResult result;
+    do {
+        result = cmd.Begin(VkCommandBufferBeginInfo {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        });
+        if (result != VK_SUCCESS) break;
+
+        VkImageSubresourceRange subresourceRange {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = (uint32_t)mip_offsets.size(),
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        };
+        {
+            VkImageMemoryBarrier in_bar {
+                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext            = nullptr,
+                .srcAccessMask    = VK_ACCESS_MEMORY_WRITE_BIT,
+                .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
+                .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .image            = image.handle,
+                .subresourceRange = subresourceRange,
+            };
+            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_DEPENDENCY_BY_REGION_BIT,
+                                in_bar);
+        }
+        VkBufferImageCopy copy {
+            .imageSubresource =
+                VkImageSubresourceLayers {
+                    .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                    .baseArrayLayer = 0,
+                    .layerCount     = 1,
+                },
+        };
+        for (usize i = 0; i < mip_offsets.size(); i++) {
+            copy.bufferOffset              = (VkDeviceSize)mip_offsets[i];
+            copy.imageSubresource.mipLevel = (u32)i;
+            copy.imageExtent               = in_exts[i];
+            cmd.CopyBufferToImage(
+                staging.handle, image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copy);
+        }
+        {
+            VkImageMemoryBarrier out_bar {
+                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext            = nullptr,
+                .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .image            = image.handle,
+                .subresourceRange = subresourceRange,
+            };
+            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                VK_DEPENDENCY_BY_REGION_BIT,
+                                out_bar);
+        }
+        result = cmd.End();
+        if (result != VK_SUCCESS) break;
+
+        VkSubmitInfo sub_info {
+            .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .pNext              = nullptr,
+            .commandBufferCount = 1,
+            .pCommandBuffers    = cmd.address(),
+        };
+        result = queue.Submit(sub_info);
+    } while (false);
+    return result;
+}
+
 inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
                               std::span<const VkExtent3D> in_exts, const vvk::Queue& queue,
                               vvk::CommandBuffer& cmd, const ImageParameters& image) {
@@ -535,31 +626,56 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         } else
             break;
 
-        std::vector<VmaBufferParameters> stage_bufs;
-        std::vector<VkExtent3D>          extents;
-
-        for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
-            auto&               image_data = image_slot.mipmaps[j];
-            VmaBufferParameters buf;
-            (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, buf);
-            {
-                void* v_data;
-                VVK_CHECK(buf.handle.MapMemory(&v_data));
-                memcpy(v_data, image_data.data.get(), (u32)image_data.size);
-                buf.handle.UnMapMemory();
-            }
-            stage_bufs.emplace_back(std::move(buf));
-            extents.push_back(VkExtent3D { (u32)image_data.width, (u32)image_data.height, 1 });
+        // MEM4: pack all mip levels into one CPU-only VMA staging buffer
+        // sized to the sum of mip byte counts; record one
+        // vkCmdCopyBufferToImage per mip pointing at this single buffer
+        // with the appropriate VkBufferImageCopy::bufferOffset.  Drops
+        // per-texture allocation count from N mips → 1, eliminating the
+        // VmaAllocation metadata overhead and page-rounding waste of the
+        // legacy per-mip path.  Bit-exact: same bytes from same source to
+        // same image — vkCmdCopyBufferToImage validates each
+        // VkBufferImageCopy independently.
+        //
+        // Alignment: bufferOffset must be a multiple of the format's
+        // texel block size (1 for uncompressed; 8 for BC1/BC4; 16 for
+        // BC2/BC3/BC5/BC6H/BC7).  detail::bytesPerBlockForFormat returns
+        // the right value for every format the engine loads, and
+        // detail::mipOffsets rounds each per-mip starting offset up.
+        std::vector<std::size_t> mip_sizes;
+        mip_sizes.reserve(image_slot.mipmaps.size());
+        for (const auto& mip : image_slot.mipmaps) {
+            mip_sizes.push_back(mip.size);
         }
 
-        CopyImageData(transform<VmaBufferParameters>(stage_bufs,
-                                                     [](BufferParameters e) {
-                                                         return e;
-                                                     }),
-                      extents,
-                      m_device.graphics_queue().handle,
-                      m_tex_cmd,
-                      image_paras);
+        const std::size_t blockSize = detail::bytesPerBlockForFormat(format);
+        const auto        offsets   = detail::mipOffsets(mip_sizes, blockSize);
+        const std::size_t total     = detail::packedTotalBytes(mip_sizes, offsets);
+
+        VmaBufferParameters staging;
+        (void)CreateStagingBuffer(m_device.vma_allocator(), total, staging);
+        {
+            void* v_data = nullptr;
+            VVK_CHECK(staging.handle.MapMemory(&v_data));
+            auto* dst = static_cast<std::uint8_t*>(v_data);
+            for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
+                const auto& image_data = image_slot.mipmaps[j];
+                memcpy(dst + offsets[j], image_data.data.get(), (u32)image_data.size);
+            }
+            staging.handle.UnMapMemory();
+        }
+
+        std::vector<VkExtent3D> extents;
+        extents.reserve(image_slot.mipmaps.size());
+        for (const auto& mip : image_slot.mipmaps) {
+            extents.push_back(VkExtent3D { (u32)mip.width, (u32)mip.height, 1 });
+        }
+
+        CopyImageDataWithOffsets(staging,
+                                 offsets,
+                                 extents,
+                                 m_device.graphics_queue().handle,
+                                 m_tex_cmd,
+                                 image_paras);
 
         m_device.handle().WaitIdle();
     }
