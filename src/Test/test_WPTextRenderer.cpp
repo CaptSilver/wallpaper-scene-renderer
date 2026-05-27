@@ -242,3 +242,93 @@ TEST_SUITE("WPTextRenderer::kRasterDpiScale") {
         CHECK(WPTextRenderer::kRasterDpiScale == 2.0f);
     }
 }
+
+// ---------- bitmap ownership ----------
+//
+// A canary counter for `operator new[]` calls.  std::vector's allocator uses
+// `operator new` (single-object form), NOT `operator new[]`, so a `new T[]`
+// expression is uniquely identifiable.  The pre-fix RenderText pattern
+// allocated a fresh `uint8_t[bufSize]` and full-bitmap memcpy'd into it just
+// so ImageDataPtr could carry a `delete[]`-deleter — the redundant copy.
+// Post-fix, the buffer is owned by a `shared_ptr<vector<uint8_t>>` captured
+// in the type-erased deleter; `operator new[]` is no longer called from
+// RenderText.
+//
+// The override forwards to the standard allocator, so it is safe to leave
+// in place for the whole test binary — only the counter is observable.
+namespace wek_q5_alloc_canary
+{
+inline std::atomic<int>& counter() {
+    static std::atomic<int> n { 0 };
+    return n;
+}
+} // namespace wek_q5_alloc_canary
+
+void* operator new[](std::size_t n) {
+    wek_q5_alloc_canary::counter().fetch_add(1, std::memory_order_relaxed);
+    return ::operator new(n);
+}
+void operator delete[](void* p) noexcept { ::operator delete(p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
+
+TEST_SUITE("WPTextRenderer bitmap ownership") {
+    TEST_CASE("RenderText does not allocate a redundant uint8_t[] buffer") {
+        // Pin the no-redundant-copy invariant: the rasterized bitmap is owned
+        // by a vector (via a shared_ptr<vector> captured in the ImageDataPtr
+        // deleter); RenderText must NOT call `new uint8_t[bufSize]` to
+        // duplicate the buffer.  vector's allocator goes through
+        // `operator new`, NOT `operator new[]`, so the canary catches only
+        // the `new T[]` expression that the pre-fix code used.
+        //
+        // Exercise the empty-text fast path — non-empty fontData + empty text
+        // returns a transparent canvas without touching FreeType.  Same
+        // ownership pattern as the main path (both sites used
+        // `new uint8_t[bufSize]` + delete[]-deleter pre-fix).
+        const std::string fontPlaceholder = "x"; // never parsed
+        const int         before          = wek_q5_alloc_canary::counter().load();
+        auto              img =
+            WPTextRenderer::RenderText(fontPlaceholder, 16.f, "", 64, 32, "center", "center", 0);
+        const int delta = wek_q5_alloc_canary::counter().load() - before;
+        REQUIRE(img != nullptr);
+        // Pre-fix: 1 (the `new uint8_t[bufSize]()` at WPTextRenderer.cpp:138).
+        // Post-fix: 0 (buffer owned by make_shared<vector>).
+        CHECK(delta == 0);
+    }
+
+    TEST_CASE("rendered image data outlives the RenderText scope") {
+        // Sanity: the ImageDataPtr must keep the bytes alive after RenderText
+        // returns — the consumer (TextureCache::ReuploadTex) reads from
+        // data.get() after RenderText has unwound.  The pre-fix delete[]
+        // deleter satisfied this; the post-fix shared_ptr<vector> capture
+        // satisfies it too (deleter holds the shared_ptr by value).
+        const std::string fontPlaceholder = "x";
+        auto              img =
+            WPTextRenderer::RenderText(fontPlaceholder, 16.f, "", 64, 32, "center", "center", 0);
+        REQUIRE(img != nullptr);
+        REQUIRE(img->slots.size() == 1);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        const uint8_t* data = img->slots[0].mipmaps[0].data.get();
+        REQUIRE(data != nullptr);
+        // Read after RenderText returned.  Bytes are zero (empty-text → fully
+        // transparent canvas).  Pre-fix: delete[]-owned.  Post-fix:
+        // shared_ptr<vector>-owned.  Both valid.
+        CHECK(data[0] == 0);
+        CHECK(data[64 * 32 * 4 - 1] == 0);
+    }
+
+    TEST_CASE("releasing ImageDataPtr frees the underlying bytes (no leak)") {
+        // Build many images and drop them.  doctest itself can't observe
+        // heap state, but preflight's --sanitize=address leg catches a leak
+        // deterministically.  A bug where the deleter failed to drop its
+        // captured shared_ptr (e.g., capture-by-reference of a local) would
+        // surface as a 1000-vector LeakSanitizer report.
+        const std::string fontPlaceholder = "x";
+        for (int i = 0; i < 1000; ++i) {
+            auto img = WPTextRenderer::RenderText(
+                fontPlaceholder, 16.f, "", 128, 128, "center", "center", 0);
+            REQUIRE(img != nullptr);
+            // img drops here → ImageDataPtr drops → deleter fires →
+            // shared_ptr<vector> refcount hits zero → vector dtor frees.
+        }
+    }
+}

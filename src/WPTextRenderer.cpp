@@ -135,9 +135,13 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         mipmap.width  = width;
         mipmap.height = height;
         mipmap.size   = static_cast<isize>(bufSize);
-        auto* rawBuf  = new uint8_t[bufSize](); // zero-initialised → RGBA=(0,0,0,0)
-        mipmap.data   = ImageDataPtr(rawBuf, [](uint8_t* p) {
-            delete[] p;
+        // Own the buffer via shared_ptr<vector> captured in ImageDataPtr's
+        // type-erased deleter — vector zero-initialises to RGBA=(0,0,0,0),
+        // matching the previous `new uint8_t[bufSize]()` value-init.
+        auto bufHolder = std::make_shared<std::vector<uint8_t>>(bufSize, 0);
+        mipmap.data    = ImageDataPtr(bufHolder->data(), [bufHolder](uint8_t*) {
+            // Buffer is owned by the captured shared_ptr<vector>;
+            // its destructor frees the bytes when the deleter dies.
         });
         slot.mipmaps.push_back(std::move(mipmap));
         img.slots.push_back(std::move(slot));
@@ -173,9 +177,15 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     if (usableW < 1) usableW = 1;
     if (usableH < 1) usableH = 1;
 
-    // Allocate RGBA buffer (white text, alpha = coverage)
-    usize                bufSize = static_cast<usize>(width) * static_cast<usize>(height) * 4;
-    std::vector<uint8_t> buf(bufSize, 0);
+    // Allocate RGBA buffer (white text, alpha = coverage).  Own via a
+    // shared_ptr<vector> so the final ImageDataPtr can keep the bytes alive
+    // without an extra new[]+memcpy.  `buf` stays a reference so the existing
+    // raster body (buf[idx + n] = ...) is unchanged.  The vector is never
+    // resize()/reserve()-ed after construction; bufHolder->data() is stable
+    // for its lifetime.
+    usize bufSize   = static_cast<usize>(width) * static_cast<usize>(height) * 4;
+    auto  bufHolder = std::make_shared<std::vector<uint8_t>>(bufSize, 0);
+    auto& buf       = *bufHolder;
 
     i32 ascender  = static_cast<i32>(face->size->metrics.ascender >> 6);
     i32 descender = static_cast<i32>(face->size->metrics.descender >> 6); // negative
@@ -268,10 +278,14 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     mipmap.height = height;
     mipmap.size   = static_cast<isize>(bufSize);
 
-    auto* rawBuf = new uint8_t[bufSize];
-    std::memcpy(rawBuf, buf.data(), bufSize);
-    mipmap.data = ImageDataPtr(rawBuf, [](uint8_t* p) {
-        delete[] p;
+    // Hand the existing shared_ptr<vector>'s buffer to ImageDataPtr.  The
+    // captured shared_ptr keeps the vector (and the bytes) alive until the
+    // consumer releases the ImageDataPtr — typically right after ReuploadTex
+    // (TextureCache.cpp) stages the bytes into a Vulkan staging buffer.
+    // Replaces a `new uint8_t[bufSize]` + full-bitmap memcpy that the
+    // delete[]-deleter pattern previously required.
+    mipmap.data = ImageDataPtr(bufHolder->data(), [bufHolder](uint8_t*) {
+        // Buffer is owned by the captured shared_ptr<vector>.
     });
 
     slot.mipmaps.push_back(std::move(mipmap));
