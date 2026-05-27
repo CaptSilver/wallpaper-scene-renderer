@@ -1715,10 +1715,16 @@ inline std::string FixImplicitConversions(const std::string& src) {
              it != std::sregex_iterator();
              ++it)
             wide_varyings.insert((*it)[1].str());
-        for (const auto& name : wide_varyings) {
-            // Match texture(SAMPLER, NAME) where NAME is NOT followed by '.'
-            std::regex re_tex(R"(\btexture\s*\(\s*(\w+)\s*,\s*)" + name + R"(\s*\))");
-            result = std::regex_replace(result, re_tex, "texture($1, " + name + ".xy)");
+
+        if (! wide_varyings.empty()) {
+            // One constant pattern, filter by group2 (the coord identifier)
+            // against wide_varyings.  Replaces per-name NFA build inside the loop.
+            static const std::regex re_tex(
+                R"(\btexture\s*\(\s*(\w+)\s*,\s*(\w+)\s*\))");
+            regexTransformAll(result, re_tex, [&](const std::smatch& m) -> std::string {
+                if (! wide_varyings.count(m[2].str())) return m[0].str();
+                return "texture(" + m[1].str() + ", " + m[2].str() + ".xy)";
+            });
         }
     }
 

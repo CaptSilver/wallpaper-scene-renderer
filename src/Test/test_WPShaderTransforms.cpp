@@ -4,6 +4,8 @@
 #include "Fs/VFS.h"
 #include "WPShaderParser.hpp"
 
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -971,6 +973,127 @@ TEST_SUITE("FixImplicitConversions") {
         auto        result = FixImplicitConversions(in);
         // vec2 is correct size — the "in vec[34]" regex doesn't match vec2
         CHECK(result.find("texture(g_Tex, v_UV)") != std::string::npos);
+    }
+
+    // --- Pattern 15: multi-varying texture-coord fixup (N >= 3) ---
+    //
+    // Pins behaviour of the wide-varying loop: every "in vec3/vec4" varying
+    // used bare in texture() gets .xy; vec2 varyings and varyings with an
+    // existing swizzle / index are left alone; sampler arg is preserved verbatim
+    // for each match.
+
+    TEST_CASE("texture with 8 wide varyings each gets .xy exactly once") {
+        std::string in =
+            "in vec4 v0; in vec4 v1; in vec3 v2; in vec3 v3;\n"
+            "in vec4 v4; in vec3 v5; in vec4 v6; in vec3 v7;\n"
+            "void main() {\n"
+            "  vec4 a = texture(g_T0, v0);\n"
+            "  vec4 b = texture(g_T1, v1);\n"
+            "  vec4 c = texture(g_T2, v2);\n"
+            "  vec4 d = texture(g_T3, v3);\n"
+            "  vec4 e = texture(g_T4, v4);\n"
+            "  vec4 f = texture(g_T5, v5);\n"
+            "  vec4 g = texture(g_T6, v6);\n"
+            "  vec4 h = texture(g_T7, v7);\n"
+            "}";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_T0, v0.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T1, v1.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T2, v2.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T3, v3.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T4, v4.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T5, v5.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T6, v6.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T7, v7.xy)") != std::string::npos);
+        // Each varying must be rewritten exactly once — no .xy.xy double-swizzle.
+        CHECK(result.find(".xy.xy") == std::string::npos);
+    }
+
+    TEST_CASE("mixed wide + vec2 + already-swizzled varyings — only bare wide get .xy") {
+        std::string in =
+            "in vec4 v_wide;\n"
+            "in vec2 v_uv;\n"
+            "in vec3 v_other;\n"
+            "void main() {\n"
+            "  vec4 a = texture(g_T0, v_wide);\n"          // rewrite
+            "  vec4 b = texture(g_T1, v_uv);\n"            // skip (vec2)
+            "  vec4 c = texture(g_T2, v_other.xy);\n"      // skip (already swizzled)
+            "  vec4 d = texture(g_T3, v_other);\n"         // rewrite
+            "}";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_T0, v_wide.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T1, v_uv)") != std::string::npos);
+        CHECK(result.find("texture(g_T1, v_uv.xy)") == std::string::npos);
+        CHECK(result.find("texture(g_T2, v_other.xy)") != std::string::npos);
+        CHECK(result.find("texture(g_T2, v_other.xy.xy)") == std::string::npos);
+        CHECK(result.find("texture(g_T3, v_other.xy)") != std::string::npos);
+    }
+
+    TEST_CASE("wide varying with .xyz / [i] suffix NOT double-swizzled") {
+        // Verifies the spec's "negative case" note — the original regex
+        // anchored on `<name>\s*\)`, i.e. only matched bare-name-then-close-paren.
+        // The hoisted version must match the same shape via `(\w+)\s*\)`.
+        std::string in =
+            "in vec4 v_uv;\n"
+            "void main() {\n"
+            "  vec4 a = texture(g_T0, v_uv.xyz);\n"   // suffix → don't touch
+            "  vec4 b = texture(g_T1, v_uv[0]);\n"    // index → don't touch
+            "  vec4 c = texture(g_T2, v_uv);\n"       // bare → rewrite
+            "}";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_T0, v_uv.xyz)") != std::string::npos);
+        CHECK(result.find("texture(g_T0, v_uv.xyz.xy)") == std::string::npos);
+        CHECK(result.find("texture(g_T1, v_uv[0])") != std::string::npos);
+        CHECK(result.find("texture(g_T1, v_uv[0].xy)") == std::string::npos);
+        CHECK(result.find("texture(g_T2, v_uv.xy)") != std::string::npos);
+    }
+
+    TEST_CASE("texture call with sampler-arg only — no wide varyings → no-op") {
+        // Empty wide_varyings set must early-out; result identical to input.
+        std::string in =
+            "in vec2 v_uv;\n"
+            "void main() {\n"
+            "  vec4 a = texture(g_T0, v_uv);\n"
+            "}";
+        auto result = FixImplicitConversions(in);
+        CHECK(result.find("texture(g_T0, v_uv)") != std::string::npos);
+        CHECK(result.find(".xy)") == std::string::npos);
+    }
+
+    TEST_CASE("PERF: 8 wide varyings, 50 texture calls — record elapsed micros") {
+        // Build a synthetic shader: 8 wide varyings, 50 texture() calls
+        // distributing through them.  Pre-hoist this paid N x NFA build cost
+        // per call; post-hoist pays 1x amortised across the run.
+        std::string in = "in vec4 v0; in vec4 v1; in vec3 v2; in vec3 v3;\n"
+                         "in vec4 v4; in vec3 v5; in vec4 v6; in vec3 v7;\n"
+                         "void main() {\n";
+        for (int i = 0; i < 50; ++i) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "  vec4 t%d = texture(g_T%d, v%d);\n",
+                          i, i % 8, i % 8);
+            in += buf;
+        }
+        in += "}";
+
+        const auto t0 = std::chrono::steady_clock::now();
+        const int  iterations = 20;
+        for (int i = 0; i < iterations; ++i) {
+            auto result = FixImplicitConversions(in);
+            // Defeat dead-code elimination — assert on something that must hold.
+            REQUIRE(result.find("texture(g_T0, v0.xy)") != std::string::npos);
+        }
+        const auto t1     = std::chrono::steady_clock::now();
+        const auto micros =
+            std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        MESSAGE("FixImplicitConversions 8-varying / 50-call * "
+                << iterations << " iter: " << micros << " us total ("
+                << (micros / iterations) << " us avg)");
+
+        // Sanity floor only — guards against a future regression that turns
+        // this back into per-name NFA rebuild.  Generous bound (10 s) to
+        // absorb debug-build + libstdc++ ECMAScript NFA-build cost variability
+        // across distrobox / lavapipe / native runs.
+        CHECK(micros < 10'000'000);
     }
 
     // --- Pattern 16: const TYPE = texture() → remove const ---
