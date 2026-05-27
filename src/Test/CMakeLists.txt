@@ -81,6 +81,7 @@ add_executable(backend_scene_tests
     test_CustomShaderPassDesc.cpp
     test_CustomShaderPass_DepthBinding.cpp
     test_CustomShaderPass_ForceClearOutput.cpp
+    test_CustomShaderPass_ScratchReuse.cpp
     test_DepthToColorResolvePass.cpp
     test_SceneDepthFallbackGate.cpp
     test_DeviceCaps.cpp

@@ -147,6 +147,29 @@ private:
     bool m_can_cache { false };
     bool m_uses_time_uniforms { false };
     bool m_samples_mutable_texture { false };
+
+    // Per-pass scratch storage reused across execute() calls.
+    //
+    // Pre-reserved at end of prepare() to m_desc.vk_textures.size() (+1 for the
+    // descriptor-writes vector to host the UBO writeset).  clear()ed at the top
+    // of each execute() — std::vector::clear() preserves capacity per
+    // [vector.modifiers]/p1, so subsequent push_backs hit no allocator while
+    // size() <= capacity().
+    //
+    // Invariant (load-bearing): m_image_infos_scratch must NEVER reallocate
+    // during execute(): m_descriptor_writes_scratch stores raw pImageInfo
+    // pointers into it (&m_image_infos_scratch.back()).  Reserving capacity
+    // in prepare() guarantees no realloc; the unit test pins this contract.
+    // If a future maintainer changes the reserve or removes the prepare-time
+    // bound, the test fails before shipping the dangling-pImageInfo bug.
+    //
+    // Storage choice: per-pass member.  Single-threaded record path,
+    // prepare-time-bounded capacity, lifetime is local to the class.  A
+    // thread_local alternative is a one-line swap if profiling later flags
+    // per-pass capacity as resident-memory pressure.
+    std::vector<VkImageMemoryBarrier>  m_image_barriers_scratch;
+    std::vector<VkDescriptorImageInfo> m_image_infos_scratch;
+    std::vector<VkWriteDescriptorSet>  m_descriptor_writes_scratch;
 };
 
 } // namespace vulkan

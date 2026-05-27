@@ -374,6 +374,15 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
     }
     m_desc.vk_textures.resize(m_desc.textures.size());
+    // Pre-reserve per-pass scratch capacity to the prepare-time texture count
+    // + 1 for the UBO writeset.  std::vector::reserve allocates once and never
+    // reallocates while size() <= capacity(), so execute() never hits the
+    // allocator on subsequent frames AND pImageInfo pointers into
+    // m_image_infos_scratch remain stable across push_back (which the batched
+    // PushDescriptorSetKHR(array) below depends on).
+    m_image_barriers_scratch.reserve(m_desc.vk_textures.size());
+    m_image_infos_scratch.reserve(m_desc.vk_textures.size() + 1);
+    m_descriptor_writes_scratch.reserve(m_desc.vk_textures.size() + 1);
     for (usize i = 0; i < m_desc.textures.size(); i++) {
         auto& tex_name = m_desc.textures[i];
         if (tex_name.empty()) continue;
@@ -1293,80 +1302,80 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         .baseArrayLayer = 0,
         .layerCount     = VK_REMAINING_ARRAY_LAYERS,
     };
-    // Batch image barriers for better performance
-    std::vector<VkImageMemoryBarrier> image_barriers;
-    image_barriers.reserve(m_desc.vk_textures.size());
+    // Reuse the three per-pass scratch vectors (declared in the header,
+    // reserved in prepare()).  Capacity is preserved across calls, so
+    // clear() is O(0) for trivial types and no allocator hit.
+    m_image_barriers_scratch.clear();
+    m_image_infos_scratch.clear();
+    m_descriptor_writes_scratch.clear();
 
     for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
         auto& slot    = m_desc.vk_textures[i];
         int   binding = m_desc.vk_tex_binding[i];
         if (binding < 0) continue;
+
+        VkSampler   sampler;
+        VkImageView view;
         if (slot.slots.empty()) {
             // Shader declares this texture binding but no texture was loaded.
             // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
             // Vulkan validation error VUID-vkCmdDraw-None-08114.
-            if (m_desc.vk_fallback_tex.sampler) {
-                VkDescriptorImageInfo desc_img { m_desc.vk_fallback_tex.sampler,
-                                                 m_desc.vk_fallback_tex.view,
-                                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-                VkWriteDescriptorSet  wset {
-                     .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                     .pNext           = nullptr,
-                     .dstSet          = {},
-                     .dstBinding      = (uint32_t)binding,
-                     .descriptorCount = 1,
-                     .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                     .pImageInfo      = &desc_img,
-                };
-                cmd.PushDescriptorSetKHR(
-                    VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
-            }
-            continue;
-        }
-        auto&                 img = slot.getActive();
-        VkDescriptorImageInfo desc_img { img.sampler,
-                                         img.view,
-                                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet  wset {
-             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-             .pNext           = nullptr,
-             .dstSet          = {},
-             .dstBinding      = (uint32_t)binding,
-             .descriptorCount = 1,
-             .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             .pImageInfo      = &desc_img,
-        };
-        cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+            if (! m_desc.vk_fallback_tex.sampler) continue;
+            sampler = m_desc.vk_fallback_tex.sampler;
+            view    = m_desc.vk_fallback_tex.view;
+        } else {
+            auto& img = slot.getActive();
+            sampler   = img.sampler;
+            view      = img.view;
 
-        image_barriers.push_back(VkImageMemoryBarrier {
-            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-            .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .image            = img.handle,
-            .subresourceRange = base_srang,
+            m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
+                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                .pNext            = nullptr,
+                .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+                .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+                .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .image            = img.handle,
+                .subresourceRange = base_srang,
+            });
+        }
+
+        // Push the image-info FIRST so its address is stable for the
+        // matching write below.  Capacity reserved at prepare-time →
+        // no realloc → addresses stay valid until the final array push.
+        m_image_infos_scratch.push_back(
+            VkDescriptorImageInfo { sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+        m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
+            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext           = nullptr,
+            .dstSet          = {},
+            .dstBinding      = (uint32_t)binding,
+            .descriptorCount = 1,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo      = &m_image_infos_scratch.back(),
         });
     }
 
     // Single batched barrier call instead of one per texture
-    if (! image_barriers.empty()) {
+    if (! m_image_barriers_scratch.empty()) {
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                             VK_DEPENDENCY_BY_REGION_BIT,
                             {},
                             {},
-                            image_barriers);
+                            m_image_barriers_scratch);
     }
 
+    // Append the UBO writeset (scope-local desc_buf, alive through the push
+    // call below).
+    VkDescriptorBufferInfo desc_buf {};
     if (m_desc.ubo_buf) {
-        VkDescriptorBufferInfo desc_buf {
+        desc_buf = {
             rr.dyn_buf->gpuBuf(),
             m_desc.ubo_buf.offset,
             m_desc.ubo_buf.size,
         };
-        VkWriteDescriptorSet wset {
+        m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
             .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .pNext           = nullptr,
             .dstSet          = {},
@@ -1374,8 +1383,15 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             .descriptorCount = 1,
             .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
             .pBufferInfo     = &desc_buf,
-        };
-        cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.layout, 0, wset);
+        });
+    }
+
+    // The one push — replaces N+1 driver round-trips with 1.
+    if (! m_descriptor_writes_scratch.empty()) {
+        cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                 *m_desc.pipeline.layout,
+                                 0,
+                                 m_descriptor_writes_scratch);
     }
 
     // Clear values indexed by attachment:
