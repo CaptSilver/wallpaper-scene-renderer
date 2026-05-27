@@ -8,12 +8,19 @@ namespace wallpaper
 namespace audio
 {
 
+// MPSC ring buffer (multi-producer, single-consumer).  Two miniaudio data
+// callback threads can call FeedPcm concurrently — AudioCapture's PipeWire
+// monitor thread and SoundManager's playback spectrum tap.  Producers
+// serialize via an internal mutex around the ring write; the consumer
+// (Process) remains lock-free, observing committed writes via a writePos
+// acquire load.
 class AudioAnalyzer {
 public:
     AudioAnalyzer();
     ~AudioAnalyzer();
 
-    // Called from audio thread (miniaudio data_callback) — lock-free
+    // Called from audio thread (miniaudio data_callback).  MPSC: concurrent
+    // producers serialize via an internal mutex; consumer is unaffected.
     void FeedPcm(const float* interleavedStereo, uint32_t frameCount, uint32_t channels);
 
     // Called once per render frame — runs FFT on accumulated samples

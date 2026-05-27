@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 using namespace wallpaper::audio;
@@ -20,7 +21,16 @@ constexpr uint32_t NUM_BINS         = FFT_SIZE / 2 + 1; // 257
 constexpr uint32_t NUM_BANDS_64     = 64;
 constexpr uint32_t NUM_BANDS_32     = 32;
 constexpr uint32_t NUM_BANDS_16     = 16;
-constexpr uint32_t RING_SIZE        = 8192; // ~85ms at 48kHz stereo
+// RING_SIZE: floats held in the producer→consumer ring.  Sized so the
+// consumer (one Process per render frame, reads the latest FFT_SIZE*2 = 1024
+// floats) has comfortable headroom against the producer's ~10ms miniaudio
+// ticks before the producer laps the consumer's read window.  Must remain a
+// power of two so wp % RING_SIZE lowers to an AND with RING_SIZE - 1.
+//   8192 floats ≈ 4096 stereo frames ≈ 85ms at 48kHz — too tight for any
+// stall over ~75ms (compositor hiccup, TTY-switch, suspend wake).  Widened to
+// 32768 floats ≈ 16384 stereo frames ≈ 340ms at 48kHz; the consumer can fall
+// up to ~330ms behind before reading torn samples.
+constexpr uint32_t RING_SIZE        = 32768; // ~340ms at 48kHz stereo
 constexpr float    SMOOTHING_ATTACK = 0.8f;
 constexpr float    SMOOTHING_DECAY  = 0.4f;
 constexpr float    MIN_FREQ         = 20.0f;
@@ -83,10 +93,19 @@ struct BandMapping {
 } // namespace
 
 struct AudioAnalyzer::Impl {
-    // SPSC ring buffer for lock-free PCM transfer from audio thread
+    // MPSC ring buffer for PCM transfer from the audio threads.  Two miniaudio
+    // data callbacks may call FeedPcm concurrently — AudioCapture's PipeWire
+    // monitor (AudioCapture.cpp captureCallback) and SoundManager's playback
+    // spectrum tap (SoundManager.cpp SetSpectrumCallback closure).  The
+    // PROPERTY_SYSTEM_AUDIO_CAPTURE toggle briefly leaves both active during
+    // the transition window, racing on ring[wp % RING_SIZE].  feedMutex
+    // serializes the producers so their ring stores never interleave; the
+    // consumer (Process) reads lock-free via writePos acquire and is
+    // unaffected by this mutex.
     std::array<float, RING_SIZE> ring {};
     std::atomic<uint32_t>        writePos { 0 };
     uint32_t                     readPos { 0 };
+    std::mutex                   feedMutex;
 
     // FFT state
     kiss_fftr_cfg                      fftCfg { nullptr };
@@ -145,10 +164,15 @@ AudioAnalyzer::~AudioAnalyzer() = default;
 
 void AudioAnalyzer::FeedPcm(const float* interleavedStereo, uint32_t frameCount,
                             uint32_t channels) {
-    // Write interleaved stereo samples into ring buffer (SPSC: single producer)
-    // If mono, duplicate to L+R; if >2 channels, take first 2
+    // Write interleaved stereo samples into ring buffer.  MPSC: AudioCapture's
+    // PipeWire monitor and SoundManager's playback spectrum tap may both call
+    // here during the audio-capture toggle window; feedMutex serializes their
+    // writes so ring[wp % RING_SIZE] stores never interleave.  The consumer
+    // (Process) is lock-free via writePos acquire and never blocks on this
+    // mutex.  If mono, duplicate to L+R; if >2 channels, take first 2.
     if (frameCount == 0) return; // miniaudio's empty STARTED callback hits here
-    uint32_t wp = m_impl->writePos.load(std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(m_impl->feedMutex);
+    uint32_t                    wp = m_impl->writePos.load(std::memory_order_relaxed);
     for (uint32_t f = 0; f < frameCount; f++) {
         float l, r;
         if (channels >= 2) {

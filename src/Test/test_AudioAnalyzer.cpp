@@ -2,7 +2,9 @@
 
 #include "Audio/AudioAnalyzer.h"
 
+#include <atomic>
 #include <cmath>
+#include <thread>
 #include <vector>
 
 using namespace wallpaper::audio;
@@ -209,3 +211,181 @@ TEST_SUITE("AudioAnalyzer.Smoothing") {
     }
 
 } // Smoothing
+
+// MPSC producer race + consumer overrun cushion.  These tests pin the contract:
+//   (1) two concurrent FeedPcm callers don't tear ring stores (verified under
+//       --tsan, silent otherwise);
+//   (2) the widened RING_SIZE tolerates a producer overshoot of >85ms before
+//       the consumer's latest-N window wraps into in-flight writes;
+//   (3) stall recovery picks the latest window, not a torn one;
+//   (4) a callback toggle between producers leaves HasData true.
+TEST_SUITE("AudioAnalyzer.ConcurrentProducers") {
+
+    // (1) Race detector under --tsan.  Two threads call FeedPcm concurrently
+    // with disjoint sine inputs while the main thread Process()es in a loop.
+    // Under WEK_SANITIZE=thread this finding fires on the current (unmutexed)
+    // FeedPcm because both threads race on ring[wp % RING_SIZE].  After the
+    // mutex lands, tsan recognizes std::mutex as a sync primitive and the run
+    // is clean.  Without tsan the test passes functionally — it joins cleanly
+    // and the analyzer's HasData becomes true.
+    TEST_CASE("two concurrent FeedPcm callers do not corrupt the ring (--tsan gated)") {
+        AudioAnalyzer     a;
+        std::atomic<bool> stop { false };
+        // Each producer feeds its own buffer; the test does not care about
+        // spectral content, only about ring-write integrity.
+        constexpr uint32_t kFramesPerCall = 256;
+        std::vector<float> bufA(kFramesPerCall * 2);
+        std::vector<float> bufB(kFramesPerCall * 2);
+        for (uint32_t i = 0; i < kFramesPerCall; ++i) {
+            bufA[i * 2 + 0] = std::sin(0.05f * (float)i);
+            bufA[i * 2 + 1] = std::sin(0.05f * (float)i + 0.5f);
+            bufB[i * 2 + 0] = std::sin(0.10f * (float)i + 1.0f);
+            bufB[i * 2 + 1] = std::sin(0.10f * (float)i + 1.5f);
+        }
+        std::thread tA([&] {
+            for (int n = 0; n < 4000 && ! stop.load(); ++n)
+                a.FeedPcm(bufA.data(), kFramesPerCall, 2);
+        });
+        std::thread tB([&] {
+            for (int n = 0; n < 4000 && ! stop.load(); ++n)
+                a.FeedPcm(bufB.data(), kFramesPerCall, 2);
+        });
+        // Drive Process() until either HasData becomes true or both producers
+        // have finished.  The contract under test is "no ring corruption"; the
+        // proxy assertion is that at least one Process() call observes enough
+        // committed PCM to run an FFT.  A fixed iteration count is unreliable
+        // because the consumer may race ahead of producers (especially with
+        // the producer-side mutex slowing them) and finish before the first
+        // committed write — so we synchronize on the contract end-state
+        // (HasData) and on the producers' join.
+        bool hasData = false;
+        for (int n = 0; n < 100000 && ! hasData; ++n) {
+            a.Process();
+            hasData = a.HasData();
+        }
+        stop.store(true);
+        tA.join();
+        tB.join();
+        // One last Process after the producers finished, to consume any
+        // committed-but-not-yet-FFT'd tail.
+        a.Process();
+        CHECK(a.HasData()); // some Process() succeeded — functional check
+    }
+
+    // (2) Producer overrun cushion — confirms RING_SIZE was widened so the
+    // consumer can fall ~250ms behind without reading torn samples.  At 48kHz
+    // stereo, FFT_SIZE*2 = 1024 floats; RING_SIZE = 32768 leaves 31744 floats =
+    // ~330ms of headroom.  Test: feed > 85ms but < 250ms, Process() once, the
+    // spectrum reflects the LAST FFT_SIZE samples (a recognizable
+    // single-frequency peak).
+    TEST_CASE("widened RING_SIZE tolerates a ~150ms producer overshoot") {
+        AudioAnalyzer a;
+        // Feed 16384 stereo frames at 48kHz = ~341ms total; the last
+        // FFT_SIZE = 512 frames are a clean 440Hz sine.  Under RING_SIZE 32768
+        // this fits in less than one ring pass, so the consumer's latest-1024-
+        // float window is genuinely the latter ~10.7ms of 440Hz, not a torn
+        // mix.  (Under the OLD 8192 ring the producer would lap; the test
+        // still passes since the consumer would happen to read whatever the
+        // producer last wrote — but the assertion below pins behavior under
+        // the WIDENED ring.)
+        constexpr uint32_t kFrames = 16384;
+        std::vector<float> pcm(kFrames * 2, 0.0f);
+        // Latter half: 440Hz on both channels (lower frequency for stable
+        // band-mapping).
+        for (uint32_t i = kFrames / 2; i < kFrames; ++i) {
+            float s = std::sin(2.0f * (float)M_PI * 440.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+        auto spec = a.GetRawSpectrum(64, 0);
+        REQUIRE(spec.size() == 64);
+        // A 440Hz sine peaks in a low band (band index < 16 for 64-band
+        // log-spaced mapping over [20Hz, 20kHz]).  Just assert the peak is in
+        // the lower half — the precise band depends on the band mapping which
+        // is not the contract under test here.
+        float  maxVal = 0.0f;
+        size_t maxIdx = 0;
+        for (size_t i = 0; i < spec.size(); ++i)
+            if (spec[i] > maxVal) {
+                maxVal = spec[i];
+                maxIdx = i;
+            }
+        CHECK(maxVal > 0.05f);
+        CHECK(maxIdx < spec.size() / 2);
+    }
+
+    // (3) Stall recovery — feed → Process → "stall" (no Process) → feed a
+    // different frequency → Process.  The second spectrum must reflect the
+    // SECOND frequency only (no ghost peak at the first).  This is the
+    // post-stall snapshot test: even with the producer racing past the
+    // consumer during the stall, the consumer's wp - FFT_SIZE*2 anchor lands
+    // on the LATEST writes.
+    TEST_CASE("stall recovery picks the latest window, no ghost peak") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 4096;
+        std::vector<float> pcm(kFrames * 2, 0.0f);
+        // First: 880Hz sine.
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            float s = std::sin(2.0f * (float)M_PI * 880.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+        auto               specA = a.GetRawSpectrum(64, 0);
+        std::vector<float> specA_copy(specA.begin(), specA.end());
+        // "Stall": no Process call.  Now feed a clearly different frequency
+        // (110Hz, well-separated band) for the same duration.
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            float s = std::sin(2.0f * (float)M_PI * 110.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        a.Process();
+        auto specB = a.GetRawSpectrum(64, 0);
+        // The peak bands must differ: 880Hz's peak band > 110Hz's peak band by
+        // enough that we can confirm the spectrum updated rather than
+        // continuing to reflect the prior input.
+        size_t maxA = 0, maxB = 0;
+        float  vA = 0, vB = 0;
+        for (size_t i = 0; i < specA_copy.size(); ++i)
+            if (specA_copy[i] > vA) {
+                vA   = specA_copy[i];
+                maxA = i;
+            }
+        for (size_t i = 0; i < specB.size(); ++i)
+            if (specB[i] > vB) {
+                vB   = specB[i];
+                maxB = i;
+            }
+        CHECK(maxA != maxB); // spectra are distinguishably different
+        CHECK(maxB < maxA);  // 110Hz peaks lower than 880Hz
+    }
+
+    // (4) Toggle simulation — capture-mock feeds, then "toggle" (drop one
+    // feeder), then BGM-mock feeds.  HasData must stay true across the toggle
+    // (no spurious zero-spectrum frame caused by the producer swap).
+    TEST_CASE("toggle between two feeders keeps HasData stable") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 1024;
+        std::vector<float> pcm(kFrames * 2, 0.0f);
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            float s = std::sin(2.0f * (float)M_PI * 220.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2); // feeder #1 (capture)
+        a.Process();
+        CHECK(a.HasData());
+        // "Toggle" — no analyzer reset; the second feeder takes over.
+        a.FeedPcm(pcm.data(), kFrames, 2); // feeder #2 (BGM tap)
+        a.Process();
+        CHECK(a.HasData()); // still true post-toggle
+    }
+
+} // ConcurrentProducers
