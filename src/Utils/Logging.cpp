@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdarg>
 #include <filesystem>
+#include <iterator>
 
 #include "Sha.hpp"
 
@@ -15,6 +16,18 @@ Sink        getSink() { return g_sink; }
 } // namespace wallpaper_log_test
 
 void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
+    // Defensive clamp: level_names/level_fmt are sized to match the
+    // LOGLEVEL_* enum (currently 2 entries); a future enumerator added
+    // without updating both tables would otherwise dereference an OOB
+    // constexpr-array slot and either print garbage or SIGSEGV inside
+    // fprintf's %s expansion. Clamp into the highest defined level so the
+    // offending call surfaces as an ERROR-shaped log line — loud enough
+    // that the missing table row is obvious in the stderr stream.
+    constexpr int kLevelCount = static_cast<int>(std::size(level_names));
+    static_assert(std::size(level_fmt) == std::size(level_names),
+                  "level_fmt and level_names must have matching counts");
+    if (level < 0 || level >= kLevelCount) level = LOGLEVEL_ERROR;
+
     std::va_list args;
     std::fprintf(stderr, level_fmt[level], level_names[level], file, line);
     {
