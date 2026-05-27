@@ -745,6 +745,10 @@ struct FrequencyValue {
         GET_JSON_NAME_VALUE_NOWARN(j, "scalemax", v.scalemax);
         GET_JSON_NAME_VALUE_NOWARN(j, "phasemin", v.phasemin);
         GET_JSON_NAME_VALUE_NOWARN(j, "phasemax", v.phasemax);
+        // Collapse a degenerate or inverted window so GenFrequency can call
+        // Random::get(phasemin, phasemax) without violating its min < max
+        // invariant.  Mirrors the frequencymax pattern five lines above.
+        if (v.phasemax <= v.phasemin) v.phasemax = v.phasemin;
         GET_JSON_NAME_VALUE_NOWARN(j, "mask", v.mask);
         return v;
     };
@@ -762,8 +766,18 @@ struct FrequencyValue {
         if (st.reset) {
             st.frequency = Random::get(frequencymin, frequencymax);
             st.scale     = Random::get(scalemin, scalemax);
-            st.phase     = (float)Random::get((double)phasemin, phasemax + 2.0 * M_PI);
-            st.reset     = false;
+            // Phase ∈ [phasemin, phasemax].  No +2π — the old code widened
+            // narrow user-authored windows (e.g., phasemin=0/phasemax=0.1
+            // for "nearly synchronized") by a fixed 2π, silently destroying
+            // the tight-sync semantics.  Default 0..2π is preserved by
+            // cos/sin periodicity, so the bug was invisible until a user
+            // authored a narrow window.
+            if (phasemax <= phasemin) {
+                st.phase = phasemin; // degenerate or inverted: all particles share phase
+            } else {
+                st.phase = (float)Random::get((double)phasemin, (double)phasemax);
+            }
+            st.reset = false;
         }
     }
     inline double GetScale(uint32_t index, double time) {

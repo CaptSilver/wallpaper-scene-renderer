@@ -813,17 +813,15 @@ TEST_SUITE("FrequencyValue GetMove M_PI multipliers") {
                               .time_pass     = 1.0,
         };
         op(info);
-        // Note: `oscillateposition` regenerates st.phase from Random::get(0, 2π).
-        // So the phase in storage isn't 0 even though phasemin=phasemax=0.
-        // From src line 763: `st.phase = (float)Random::get((double)phasemin, phasemax + 2.0 * M_PI);`
-        // → phase ∈ [0, 2π] regardless.  We can't pin del=0.
-        //
-        // Instead pin a different boundary: at st.scale=0 (scalemin=scalemax=0) the
-        // entire del=0.  Then any mutation in L775-777 still leaves del=0.  Equivalent.
-        //
-        // Best observable: test stability over many samples — del should average near 0.
-        // Skip this branch's deterministic test.
+        // GenFrequency now collapses phasemin == phasemax to a fixed phase
+        // (st.phase = phasemin = 0), so at time=0.0 we have sin(2π*0 + 0) = 0
+        // and del = 0 — del==0 is pinnable directly.  Position should be
+        // unchanged from its initial (0,0,0).  Leave the isfinite check as a
+        // smoke against any future NaN regression.
         CHECK(std::isfinite(ps[0].position.x()));
+        CHECK(ps[0].position.x() == doctest::Approx(0.0f).epsilon(1e-5));
+        CHECK(ps[0].position.y() == doctest::Approx(0.0f).epsilon(1e-5));
+        CHECK(ps[0].position.z() == doctest::Approx(0.0f).epsilon(1e-5));
     }
     TEST_CASE("oscillateposition scalemin=scalemax=0: del=0 at any time/phase") {
         // st.scale = lerp((cos+1)/2, 0, 0) = 0.  GetMove returns -1*0*... = 0 always.
@@ -855,6 +853,219 @@ TEST_SUITE("FrequencyValue GetMove M_PI multipliers") {
         CHECK(ps[0].position.z() == doctest::Approx(9.0f).epsilon(0.001));
     }
 }
+
+// ============================================================================
+// FrequencyValue::GenFrequency phase window
+// ============================================================================
+//
+// Phase init at GenFrequency used to draw st.phase from
+// Random::get(phasemin, phasemax + 2π), widening user-authored windows by a
+// fixed 2π.  Default (0..2π) was invisible because cos/sin is 2π-periodic;
+// narrow windows (e.g., 0..0.1 for "nearly synchronized" oscillators)
+// silently lost their tight coupling.  These cases pin the post-fix
+// behavior: phase ∈ [phasemin, phasemax].
+//
+// Phase is private; we probe it via oscillateposition's del at t=0:
+//   del = -scale * w * sin(w*0 + phase) * timepass = -scale * w * sin(phase) * timepass
+// For small phase, sin(phase) ≈ phase, so del is monotonic in phase.
+
+TEST_SUITE("FrequencyValue phase window") {
+
+    // Tight window [0, 0.1]: all 100 particles should cluster, observed
+    // via their del's spread.  Pre-fix: phase ∈ [0, 0.1 + 2π) → del
+    // spreads across the full sin range.  Post-fix: phase ∈ [0, 0.1] →
+    // del clusters in a narrow band proportional to phase.
+    TEST_CASE("tight phase window: 100 particles cluster within 0.1 rad") {
+        // Seed for reproducibility; helps debug if a future regression hits.
+        Random::seed(0x9F1Eu);
+
+        // oscillateposition with mask=1,1,1, scale=1..1, frequency=2π,
+        // so w = 2π and sin(phase) at t=0 = sin(phase).  timepass=1.0
+        // so del = -1 * 1 * 2π * sin(phase) * 1 ≈ -2π * phase for small
+        // phases.
+        json j = { { "name", "oscillateposition" },
+                   { "frequencymin", static_cast<double>(2 * M_PI) },
+                   { "frequencymax", static_cast<double>(2 * M_PI) },
+                   { "scalemin", 1.0 }, { "scalemax", 1.0 },
+                   { "phasemin", 0.0 }, { "phasemax", 0.1 },
+                   { "mask", "1 1 1" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+
+        std::vector<Particle> ps;
+        ps.reserve(100);
+        for (int i = 0; i < 100; i++) {
+            Particle p     = makeParticle();
+            p.position     = Eigen::Vector3f(0, 0, 0);
+            p.lifetime     = 1.0f;
+            p.init.lifetime = 1.0f;
+            ps.push_back(p);
+        }
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 1.0,
+        };
+        op(info);
+
+        // Collect particle positions; for tight phases (≤ 0.1) the abs
+        // del is at most |-2π * 0.1| ≈ 0.628.  Range across 100
+        // particles should be SMALL (well under 1.0 — pre-fix would be
+        // ~12.6 since 2π * 2 from the full circle of phase wrap).
+        float maxAbs = 0.0f;
+        float minPos = std::numeric_limits<float>::infinity();
+        float maxPos = -std::numeric_limits<float>::infinity();
+        for (auto& p : ps) {
+            maxAbs = std::max(maxAbs, std::fabs(p.position.x()));
+            minPos = std::min(minPos, p.position.x());
+            maxPos = std::max(maxPos, p.position.x());
+        }
+        // Post-fix: all particles' x within ~[-0.7, 0]; range < 1.0.
+        // Pre-fix: phase wraps the full circle so x spans [-2π, 2π]
+        // → range > 6.0.  Assert post-fix bound (a generous 1.0
+        // leaves slack for sampling without colliding with the
+        // ~6.28 pre-fix value).
+        CHECK((maxPos - minPos) < 1.0f);
+        // Sanity: max abs is at most the worst-case sin(0.1) × 2π ≈ 0.628.
+        // Generously allow up to 1.0 for the test to be robust to scalemin
+        // drift.
+        CHECK(maxAbs < 1.0f);
+    }
+
+    // Default window [0, 2π]: distribution should sweep the full
+    // monotone-decreasing arc of cos.  Probe via oscillatesize's alpha
+    // multiplier ((cos(phase)+1)/2 × (scalemax-scalemin)+scalemin).  At
+    // scalemin=0, scalemax=1: alpha *= (cos(phase)+1)/2 which sweeps
+    // [0, 1] as phase walks [0, π] and [1, 0] as phase walks [π, 2π].
+    // Across 100 random phases over [0, 2π) we expect the alphas to
+    // sample most of [0, 1].  Pre- and post-fix should look the same
+    // here (default phase window's behaviour is preserved by
+    // cos/sin periodicity).
+    TEST_CASE("default phase window [0, 2π]: distribution sweeps full alpha range") {
+        Random::seed(0xA110u);
+        json j = { { "name", "oscillatealpha" },
+                   { "frequencymin", 1.0 }, { "frequencymax", 1.0 },
+                   { "scalemin", 0.0 }, { "scalemax", 1.0 },
+                   { "phasemin", 0.0 },
+                   { "phasemax", static_cast<double>(2 * M_PI) } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+
+        std::vector<Particle> ps;
+        ps.reserve(100);
+        for (int i = 0; i < 100; i++) {
+            Particle p      = makeParticle();
+            p.alpha         = 1.0f;
+            p.lifetime      = 1.0f;
+            p.init.lifetime = 1.0f;
+            ps.push_back(p);
+        }
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 0.016,
+        };
+        op(info);
+
+        // Expect at least one alpha near 0 (phase near π) and one near
+        // 1 (phase near 0 or 2π) across 100 samples.  Pre-fix and post-
+        // fix both pass — default window is preserved by periodicity.
+        float minA = 1.0f, maxA = 0.0f;
+        for (auto& p : ps) {
+            minA = std::min(minA, p.alpha);
+            maxA = std::max(maxA, p.alpha);
+        }
+        CHECK(minA < 0.2f); // hit close to zero somewhere
+        CHECK(maxA > 0.8f); // hit close to one somewhere
+    }
+
+    // Degenerate window [1.5, 1.5]: collapse to fixed phase.  All 50
+    // particles should land on the same x position (the post-fix guard
+    // returns phasemin rather than UB'ing Random::get(1.5, 1.5)).
+    TEST_CASE("degenerate window phasemin == phasemax: all particles same phase") {
+        Random::seed(0xC0DEu);
+        json j = { { "name", "oscillateposition" },
+                   { "frequencymin", static_cast<double>(2 * M_PI) },
+                   { "frequencymax", static_cast<double>(2 * M_PI) },
+                   { "scalemin", 1.0 }, { "scalemax", 1.0 },
+                   { "phasemin", 1.5 }, { "phasemax", 1.5 },
+                   { "mask", "1 1 1" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+
+        std::vector<Particle> ps;
+        ps.reserve(50);
+        for (int i = 0; i < 50; i++) {
+            Particle p      = makeParticle();
+            p.position      = Eigen::Vector3f(0, 0, 0);
+            p.lifetime      = 1.0f;
+            p.init.lifetime = 1.0f;
+            ps.push_back(p);
+        }
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 1.0,
+        };
+        op(info);
+
+        // Expected x: del = -1 * 1 * 2π * sin(1.5) * 1 ≈ -6.265.  Across
+        // all 50 particles, x should be IDENTICAL (no random spread).
+        const float refX = ps[0].position.x();
+        for (size_t i = 1; i < ps.size(); ++i) {
+            CHECK(ps[i].position.x() == doctest::Approx(refX).epsilon(1e-5));
+        }
+        // Sanity: refX is the expected sin(1.5) ≈ 0.997 → del ≈ -2π × 0.997 ≈ -6.27.
+        CHECK(refX == doctest::Approx(-2.0 * M_PI * std::sin(1.5)).epsilon(0.01));
+    }
+
+    // Inverted window (phasemin > phasemax): should also collapse to
+    // phasemin (defensive against user-authored bad JSON).  The ReadFromJson
+    // clamp normalizes phasemax = phasemin, then GenFrequency sees the
+    // degenerate case.
+    TEST_CASE("inverted window phasemax < phasemin: clamps to phasemin (defensive)") {
+        Random::seed(0xBADAu);
+        json j = { { "name", "oscillateposition" },
+                   { "frequencymin", static_cast<double>(2 * M_PI) },
+                   { "frequencymax", static_cast<double>(2 * M_PI) },
+                   { "scalemin", 1.0 }, { "scalemax", 1.0 },
+                   { "phasemin", 1.5 }, { "phasemax", 0.5 }, // inverted
+                   { "mask", "1 1 1" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, emptyOverride());
+
+        std::vector<Particle> ps;
+        ps.reserve(20);
+        for (int i = 0; i < 20; i++) {
+            Particle p      = makeParticle();
+            p.position      = Eigen::Vector3f(0, 0, 0);
+            p.lifetime      = 1.0f;
+            p.init.lifetime = 1.0f;
+            ps.push_back(p);
+        }
+        std::vector<ParticleControlpoint> cps_storage;
+        auto                              cps = defaultCps(cps_storage);
+        ParticleInfo                      info {
+                              .particles     = std::span<Particle>(ps),
+                              .controlpoints = cps,
+                              .time          = 0.0,
+                              .time_pass     = 1.0,
+        };
+        op(info);
+        // Inverted window → clamp phasemax up to phasemin = 1.5; all
+        // particles share phase = 1.5; del = -2π * sin(1.5).
+        const float refX = ps[0].position.x();
+        for (size_t i = 1; i < ps.size(); ++i) {
+            CHECK(ps[i].position.x() == doctest::Approx(refX).epsilon(1e-5));
+        }
+        CHECK(refX == doctest::Approx(-2.0 * M_PI * std::sin(1.5)).epsilon(0.01));
+    }
+} // TEST_SUITE FrequencyValue phase window
 
 // ============================================================================
 // turbulence noiseRate — L1042 (`std::abs(timescale * scale * 2.0)`)
