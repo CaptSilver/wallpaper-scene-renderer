@@ -8,6 +8,7 @@
 #include "Spv.hpp"
 #include "TextureCache.hpp"
 #include "Utils/Logging.h"
+#include "Utils/SceneProfiler.h"
 #include <cstdlib>
 #include <memory>
 #include <string>
@@ -18,6 +19,34 @@
 
 using namespace wallpaper;
 using namespace wallpaper::vulkan;
+
+namespace
+{
+
+// Returns true when post-emit SPIR-V validation should run.  In Debug builds
+// we always validate (catches glslang internal bugs early); in Release
+// builds validation is opt-in via WEK_DEBUG_SHADERS=1 to avoid the per-emit
+// serial validator cost on cold scene-load paths (50-200 materials per
+// scene, all running through the parser thread).  Reading the env once
+// and caching keeps the per-call cost to a static branch.
+bool ShouldValidateSpvImpl() {
+#ifdef NDEBUG
+    static const bool kEnabled = []() {
+        const char* env = std::getenv("WEK_DEBUG_SHADERS");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+    return kEnabled;
+#else
+    return true;
+#endif
+}
+
+} // namespace
+
+namespace wallpaper::vulkan::detail
+{
+bool ShouldValidateSpv() { return ShouldValidateSpvImpl(); }
+} // namespace wallpaper::vulkan::detail
 
 #define _VK_FORMAT_1(s, sign, type, x)          VK_FORMAT_##x##s##sign##type;
 #define _VK_FORMAT_2(s, sign, type, x, y)       VK_FORMAT_##x##s##y##s##sign##type;
@@ -443,6 +472,7 @@ bool wallpaper::vulkan::GenReflect(std::span<const std::vector<uint>> codes,
 bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit> compUnits,
                                                   const ShaderCompOpt&            opt,
                                                   std::vector<Uni_ShaderSpv>&     spvs) {
+    WEK_PROFILE_SCOPE("Vulkan::CompileAndLinkShaderUnits");
     glslang::TProgram program;
     EShMessages       emsg;
     SetMessageOptions(opt, emsg);
@@ -473,7 +503,7 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
 
     spv::SpvBuildLogger logger;
     glslang::SpvOptions spvOptions;
-    spvOptions.validate          = true;
+    spvOptions.validate          = wallpaper::vulkan::detail::ShouldValidateSpv();
     spvOptions.generateDebugInfo = false;
 
     spvs.clear();

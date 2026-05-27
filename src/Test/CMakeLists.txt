@@ -103,6 +103,7 @@ add_executable(backend_scene_tests
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
     test_PipelineCacheIO.cpp
+    test_Shader.cpp
     test_FenceWaitRetry.cpp
     ${SRC_DIR}/VulkanRender/FenceWaitRetry.cpp
     test_VulkanDebugCallbackGate.cpp
