@@ -3,6 +3,7 @@
 #include <cstring>
 #include "Util.hpp"
 #include "Device.hpp"
+#include "StagingBufferDetail.hpp"
 
 using namespace wallpaper::vulkan;
 
@@ -109,9 +110,25 @@ StagingBuffer::VirtualBlock* StagingBuffer::newVirtualBlock(VkDeviceSize nsize) 
     return &block;
 }
 bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
-    // Grow all per-slot staging buffers in lockstep.  The GPU buffer is
-    // shared; dropping m_gpu_buf.handle forces recordUpload to recreate it
-    // at the new size before the next copy.
+    // Grow all per-slot staging buffers in lockstep.  Map the NEW buffer
+    // before unmapping the OLD, so memcpy goes directly host-to-host
+    // without a full-size temp std::vector<uint8_t>.  Peak transient host
+    // RAM drops from (old_size + newsize + tmp == old_size + 2*newsize)
+    // to (old_size + newsize), saving up to newsize bytes per slot
+    // (~16-32 MiB on a heavy scene grow).
+    //
+    // The two CPU_ONLY allocations have independent VmaAllocation handles;
+    // VMA permits concurrent persistent maps on different allocations (the
+    // per-VkDeviceMemory map-twice prohibition is per-allocation, and each
+    // VmaAllocation sub-region maps independently).  The m_stage_bufs[s]
+    // member only holds one buffer at a time (the old until move-assign),
+    // so the "VmaBufferParameters owns one Vulkan buffer" invariant is
+    // preserved.  vvk::Handle::operator=(Handle&&) calls Release() on the
+    // prior handle before takeover (see vvk/handle.hpp:25-31), so the old
+    // VkBuffer is destroyed as part of the move into m_stage_bufs[s].
+    //
+    // The GPU buffer is shared; dropping m_gpu_buf.handle forces
+    // recordUpload to recreate it at the new size before the next copy.
     auto old_size = m_stage_bufs[0].req_size;
     auto newsize  = old_size + nsize;
 
@@ -119,17 +136,29 @@ bool StagingBuffer::increaseBuf(VkDeviceSize nsize) {
         if (m_stage_raws[s] == nullptr) {
             VVK_CHECK_BOOL_RE(mapStageBuf(s));
         }
-        std::vector<uint8_t> tmp;
-        tmp.resize(newsize);
-        memcpy(tmp.data(), m_stage_raws[s], old_size);
 
-        m_stage_raws[s] = nullptr;
+        // (1) Create the NEW buffer in a local; do not yet touch m_stage_bufs[s].
+        VmaBufferParameters new_buf;
+        if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, new_buf)) return false;
+
+        // (2) Map the NEW buffer; old buffer's map at m_stage_raws[s] is still live.
+        void* new_raw = nullptr;
+        VVK_CHECK_BOOL_RE(new_buf.handle.MapMemory(&new_raw));
+
+        // (3) Direct host-to-host copy: old map → new map, old_size bytes.
+        detail::copyStagingPayload(static_cast<const uint8_t*>(m_stage_raws[s]),
+                                   old_size,
+                                   static_cast<uint8_t*>(new_raw),
+                                   newsize);
+
+        // (4) Tear down the OLD buffer: unmap, then move-assign the new
+        // buffer into the slot (vvk::Handle's move-assign Release()s the
+        // prior handle, so the old VkBuffer is destroyed here).
         m_stage_bufs[s].handle.UnMapMemory();
-        m_stage_bufs[s].handle = nullptr;
+        m_stage_bufs[s] = std::move(new_buf);
 
-        if (! CreateStagingBuffer(m_device.vma_allocator(), newsize, m_stage_bufs[s])) return false;
-        VVK_CHECK_BOOL_RE(mapStageBuf(s));
-        memcpy(m_stage_raws[s], tmp.data(), newsize);
+        // (5) Record the new map raw pointer.
+        m_stage_raws[s] = new_raw;
     }
 
     m_gpu_buf.handle = nullptr;

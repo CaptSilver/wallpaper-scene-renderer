@@ -45,6 +45,7 @@ add_executable(backend_scene_tests
     test_UniformDirtyGate.cpp
     test_FramebufferCache.cpp
     test_StagingReuse.cpp
+    test_StagingBufferIncrease.cpp
     test_TransformEpoch.cpp
     test_SceneLight.cpp
     test_SceneMesh.cpp
