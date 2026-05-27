@@ -662,6 +662,11 @@ void WPShaderValueUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y
 void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarOp& op) {
     WEK_PROFILE_SCOPE("WPShaderValueUpdater::UpdateVolumetricLightUniforms");
     if (! m_scene) return;
+    // candidate_idx aligns with WPSceneParser-populated
+    // volumetricsConfig.per_light: both arrays are built by walking
+    // scene.lights with the same isVolumetricEmitterCandidate() predicate in
+    // the same order, so the Nth emitter here is per_light[N] over there.
+    int candidate_idx = 0;
     for (auto& l : m_scene->lights) {
         if (! l) continue;
         // Single predicate (cast-flag + kind ∈ {Point, LPoint}) so this
@@ -688,10 +693,11 @@ void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarO
         const auto& ci = l->colorIntensity();
         std::array<float, 4> r4 { ci[0], ci[1], ci[2], l->volumetric().exponent };
 
-        op(l.get(), 0, r0);
-        op(l.get(), 1, r1);
-        op(l.get(), 2, r2);
-        op(l.get(), 3, r3);
-        op(l.get(), 4, r4);
+        op(l.get(), candidate_idx, 0, r0);
+        op(l.get(), candidate_idx, 1, r1);
+        op(l.get(), candidate_idx, 2, r2);
+        op(l.get(), candidate_idx, 3, r3);
+        op(l.get(), candidate_idx, 4, r4);
+        ++candidate_idx;
     }
 }

@@ -10,6 +10,7 @@
 #include "wpscene/WPMaterial.h"
 
 #include <array>
+#include <cassert>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -445,13 +446,18 @@ void PumpVolumetricFrame(Scene& scene, WPShaderValueUpdater& updater) {
     // crosses the light boundary).  Back-pass writes depth only and has no
     // need for these slots.
     updater.UpdateVolumetricLightUniforms(
-        [&scene](SceneLight* l, int slot, const std::array<float, 4>& v) {
-            for (auto& pl : scene.volumetricsConfig.per_light) {
-                if (pl.light != l) continue;
-                writePerLightVarToNode(pl.front_node.get(), slot, v);
-                writePerLightVarToNode(pl.fullscreen_node.get(), slot, v);
-                break;
-            }
+        [&scene](SceneLight* l, int candidate_idx, int slot, const std::array<float, 4>& v) {
+            // candidate_idx aligns with per_light index by construction —
+            // both arrays are populated by walking scene.lights with the
+            // same isVolumetricEmitterCandidate() predicate.  Bounds guard
+            // is belt-and-braces against a future re-ordering of the
+            // parser pass; the assert keeps the contract loud in debug.
+            if (candidate_idx < 0 || candidate_idx >= (int)scene.volumetricsConfig.per_light.size())
+                return;
+            auto& pl = scene.volumetricsConfig.per_light[(size_t)candidate_idx];
+            assert(pl.light == l && "per_light index/candidate desync");
+            writePerLightVarToNode(pl.front_node.get(), slot, v);
+            writePerLightVarToNode(pl.fullscreen_node.get(), slot, v);
         });
 }
 

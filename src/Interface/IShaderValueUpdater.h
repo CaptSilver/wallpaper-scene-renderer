@@ -21,12 +21,14 @@ using UpdateUniformOp = std::function<void(std::string_view, const ShaderValue&)
 using ExistsUniformOp = std::function<bool(std::string_view)>;
 
 // Per-light material-instance uniform writer for the volumetric upload loop.
+// `candidate_idx` is the running index (0..N-1) of volumetric-emitter
+// candidates in scene.lights order — aligns with WPSceneParser's
+// volumetricsConfig.per_light vector by construction (both populated by
+// walking scene.lights with the same isVolumetricEmitterCandidate() filter).
 // `slot` is the index 0..4 of the `g_RenderVar*` uniform on the per-light
-// volumetrics_front / volumetrics_back material instance.  A later integration
-// step owns the implementation that resolves (light, slot) to the right
-// material's constantshadervalues.
-using WritePerLightVarOp =
-    std::function<void(SceneLight*, int, const std::array<float, 4>&)>;
+// volumetrics_front / volumetrics_back material instance.
+using WritePerLightVarOp = std::function<void(SceneLight*, int /*candidate_idx*/, int /*slot*/,
+                                              const std::array<float, 4>&)>;
 
 class IShaderValueUpdater : NoCopy, NoMove {
 public:
