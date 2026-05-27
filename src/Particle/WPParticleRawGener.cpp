@@ -1,4 +1,5 @@
 #include "WPParticleRawGener.h"
+#include "WPParticleRawGener_TestHooks.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -23,6 +24,13 @@ struct WPGOption {
 
 namespace
 {
+// Per-thread probe slot for the rope-gen scratch buffers.  Captured at the
+// START of each rope-gen call (before clear/resize), so the test suite can
+// observe the carry-over capacity from the previous call on this thread.
+// On the local-scratch path the entry-capacity is always 0; under the
+// thread_local promotion it retains the high-water mark across calls.
+thread_local wallpaper::test_hooks::RopeScratchProbe g_lastRopeProbe {};
+
 inline void AssignVertexTimes(std::span<float> dst, std::span<const float> src, uint num) noexcept {
     const uint dst_one_size = dst.size() / num;
     for (uint i = 0; i < num; i++) {
@@ -197,12 +205,29 @@ inline size_t GenRopeParticleData(std::span<const Particle> particles, const Vec
     const auto totle_size = one_size * 4;
     size_t     seg_count  = 0;
 
-    // Collect alive particle indices to connect consecutive alive ones
-    std::vector<size_t> alive;
+    // Collect alive particle indices to connect consecutive alive ones.
+    // GenGLData runs only on the render thread, so a function-local
+    // thread_local retains capacity across frames safely — same justification
+    // as s_medianScratch in the GS rope path below.  After the first warm
+    // frame, reserve() is a no-op and no allocation occurs.
+    static thread_local std::vector<size_t> alive;
+    alive.clear();
     alive.reserve(particles.size());
     for (size_t i = 0; i < particles.size(); i++) {
         if (ParticleModify::LifetimeOk(particles[i])) alive.push_back(i);
     }
+
+    // Probe slot for the test_hooks suite (cheap: 6 word writes).  Records
+    // actual capacity of the scratch vector USED in this call: under static
+    // thread_local the capacity retains the high-water across same-thread
+    // calls.  Non-GS path uses only `alive`; positions/seg_lens slots
+    // zeroed for completeness.
+    g_lastRopeProbe.alive_capacity     = alive.capacity();
+    g_lastRopeProbe.alive_data         = alive.data();
+    g_lastRopeProbe.positions_capacity = 0;
+    g_lastRopeProbe.positions_data     = nullptr;
+    g_lastRopeProbe.seg_lens_capacity  = 0;
+    g_lastRopeProbe.seg_lens_data      = nullptr;
 
     float trail_length = (float)alive.size();
 
@@ -292,8 +317,13 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
     float*                data = storage.data();
 
     // Collect alive particle indices to connect consecutive alive ones
-    // (dead particles in the middle don't break the rope chain)
-    std::vector<size_t> alive;
+    // (dead particles in the middle don't break the rope chain).
+    // GenGLData runs only on the render thread, so a function-local
+    // thread_local retains capacity across frames safely — same
+    // justification as s_medianScratch a few lines below.  After the
+    // first warm frame, reserve() is a no-op and no allocation occurs.
+    static thread_local std::vector<size_t> alive;
+    alive.clear();
     alive.reserve(particles.size());
     for (size_t i = 0; i < particles.size(); i++) {
         if (ParticleModify::LifetimeOk(particles[i])) alive.push_back(i);
@@ -301,8 +331,12 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
 
     float trail_length = (float)alive.size();
 
-    // Precompute positions for Catmull-Rom tangent calculation
-    std::vector<Vector3f> positions(alive.size());
+    // Precompute positions for Catmull-Rom tangent calculation.  resize() on
+    // shrink keeps capacity; on grow it default-constructs new tail elements
+    // which the write loop immediately overwrites — identical observable
+    // semantics to `std::vector<Vector3f> positions(n)`.
+    static thread_local std::vector<Vector3f> positions;
+    positions.resize(alive.size());
     for (size_t i = 0; i < alive.size(); i++)
         positions[i] = Vector3f { particles[alive[i]].position } + inst_pos;
 
@@ -313,10 +347,26 @@ inline size_t GenRopeParticleDataGS(std::span<const Particle> particles, const V
     // stable array neighbors and the ribbon draws a long diagonal streak to
     // its new home.  Skip segments whose length is a strong outlier vs. the
     // surrounding neighborhood.
-    std::vector<float> seg_lens(alive.size() > 1 ? alive.size() - 1 : 0);
+    // Segment lengths feed the median-outlier guard below.  Same render-thread
+    // ownership story as `alive` and `positions` — promoted to thread_local
+    // for capacity retention; resize() preserves the existing buffer when
+    // shrinking and only allocates when growing past the prior high-water.
+    static thread_local std::vector<float> seg_lens;
+    seg_lens.resize(alive.size() > 1 ? alive.size() - 1 : 0);
     for (size_t ai = 1; ai < alive.size(); ai++) {
         seg_lens[ai - 1] = (positions[ai] - positions[ai - 1]).norm();
     }
+
+    // Probe slot for test_hooks: records the actual capacity of each scratch
+    // vector used in this call.  Under static thread_local the capacity
+    // retains the high-water across same-thread calls.
+    g_lastRopeProbe.alive_capacity     = alive.capacity();
+    g_lastRopeProbe.alive_data         = alive.data();
+    g_lastRopeProbe.positions_capacity = positions.capacity();
+    g_lastRopeProbe.positions_data     = positions.data();
+    g_lastRopeProbe.seg_lens_capacity  = seg_lens.capacity();
+    g_lastRopeProbe.seg_lens_data      = seg_lens.data();
+
     // Spec 11 — median over a reused scratch buffer; no per-frame `sorted` copy
     // allocation, and seg_lens is left in original order for the outlier loop
     // below.  GenGLData runs only on the render thread, so a function-local
@@ -777,3 +827,30 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
         si.SetRenderDataCount(particle_num * 6 / 2);
     }
 }
+
+namespace wallpaper::test_hooks
+{
+
+RopeScratchProbe GetLastRopeScratchProbe() noexcept {
+    return g_lastRopeProbe;
+}
+
+std::size_t TestGenRopeParticleData(std::span<const Particle> particles,
+                                    const Eigen::Vector3f& inst_pos, SceneVertexArray& sv,
+                                    std::size_t start_idx, float anc_alpha) {
+    WPGOption                                          opt {};
+    static const ParticleRawGenSpecOp                  s_noop_specOp =
+        [](const Particle&, const ParticleRawGenSpec&) {};
+    return GenRopeParticleData(particles, inst_pos, s_noop_specOp, opt, sv, start_idx, anc_alpha);
+}
+
+std::size_t TestGenRopeParticleDataGS(std::span<const Particle> particles,
+                                      const Eigen::Vector3f& inst_pos, SceneVertexArray& sv,
+                                      std::size_t start_idx, float anc_alpha) {
+    WPGOption                                          opt {};
+    static const ParticleRawGenSpecOp                  s_noop_specOp =
+        [](const Particle&, const ParticleRawGenSpec&) {};
+    return GenRopeParticleDataGS(particles, inst_pos, s_noop_specOp, opt, sv, start_idx, anc_alpha);
+}
+
+} // namespace wallpaper::test_hooks

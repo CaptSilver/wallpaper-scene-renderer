@@ -108,6 +108,7 @@ add_executable(backend_scene_tests
     test_WPMapSequenceParse.cpp
     test_WPRopeCombos.cpp
     test_RopeMedian.cpp
+    test_RopeScratchThreadLocal.cpp
     test_WPParticleOperators.cpp
     test_WPRemapValueOps.cpp
     test_WPScenePostprocessing.cpp
