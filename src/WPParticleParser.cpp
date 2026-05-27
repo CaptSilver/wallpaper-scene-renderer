@@ -7,6 +7,7 @@
 #include "Particle/HsvColor.h"
 #include "Particle/ParticleCollision.h"
 #include "Particle/RemapValueOps.hpp"
+#include <cassert>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -751,7 +752,12 @@ struct FrequencyValue {
         if (storage.size() < s) storage.resize(2 * s, StorageRandom {});
     }
     inline void GenFrequency(Particle& p, uint32_t index) {
-        auto& st = storage.at(index);
+        // operator[] (not .at) — every per-particle call site is preceded by
+        // CheckAndResize(particles.size()) at the operator factory's lambda
+        // (oscillatealpha/size/position).  Bounds check is dead in release;
+        // the debug assert catches a future regression.
+        assert(index < storage.size());
+        auto& st = storage[index];
         if (! PM::LifetimeOk(p)) st.reset = true;
         if (st.reset) {
             st.frequency = Random::get(frequencymin, frequencymax);
@@ -761,13 +767,15 @@ struct FrequencyValue {
         }
     }
     inline double GetScale(uint32_t index, double time) {
-        const auto& st = storage.at(index);
+        assert(index < storage.size());
+        const auto& st = storage[index];
         double      f  = st.frequency / (2.0f * M_PI);
         double      w  = 2.0f * M_PI * f;
         return algorism::lerp((std::cos(w * time + st.phase) + 1.0f) * 0.5f, scalemin, scalemax);
     }
     inline double GetMove(uint32_t index, double time, double timePass) {
-        const auto& st = storage.at(index);
+        assert(index < storage.size());
+        const auto& st = storage[index];
         double      f  = st.frequency / (2.0f * M_PI);
         double      w  = 2.0f * M_PI * f;
         return -1.0f * st.scale * w * std::sin(w * time + st.phase) * timePass;
@@ -1901,25 +1909,43 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             GET_JSON_NAME_VALUE_NOWARN(wpj, "maxspeed", maxspeed);
             BlendWindow bw = BlendWindow::FromJson(wpj);
             return [=](const ParticleInfo& info) {
+                const usize  N  = info.particles.size();
                 const double n2 = (double)neighborthreshold * neighborthreshold;
                 const double s2 = (double)separationthreshold * separationthreshold;
-                for (usize i = 0; i < info.particles.size(); i++) {
+
+                // SS8.1 — hoist per-particle Vector3d casts to a thread_local
+                // SoA scratch built ONCE before the i-loop.  The inner j-loop
+                // reads from scratch instead of re-casting Vector3f -> Vec3d
+                // up to 3 times per (i, j) pair (sumSep/sumAli/sumCoh).  Cast
+                // count: 3N^2 -> 2N.  Particle ticks are render-thread only,
+                // so thread_local is safe (same property as the median
+                // scratch in WPParticleRawGener.cpp).
+                static thread_local std::vector<Vector3d> s_pos_d;
+                static thread_local std::vector<Vector3d> s_vel_d;
+                s_pos_d.resize(N);
+                s_vel_d.resize(N);
+                for (usize k = 0; k < N; ++k) {
+                    s_pos_d[k] = info.particles[k].position.cast<double>();
+                    s_vel_d[k] = info.particles[k].velocity.cast<double>();
+                }
+
+                for (usize i = 0; i < N; i++) {
                     auto& p = info.particles[i];
                     if (! PM::LifetimeOk(p)) continue;
                     Vector3d sumSep(0, 0, 0), sumAli(0, 0, 0), sumCoh(0, 0, 0);
                     int      nN = 0, nS = 0;
-                    Vector3d ppos = p.position.cast<double>();
-                    Vector3d pvel = p.velocity.cast<double>();
-                    for (usize j = 0; j < info.particles.size(); j++) {
+                    const Vector3d& ppos = s_pos_d[i];
+                    const Vector3d& pvel = s_vel_d[i];
+                    for (usize j = 0; j < N; j++) {
                         if (i == j) continue;
                         auto& q = info.particles[j];
                         if (! PM::LifetimeOk(q)) continue;
-                        Vector3d d  = q.position.cast<double>() - ppos;
+                        Vector3d d  = s_pos_d[j] - ppos;
                         double   sd = d.squaredNorm();
                         if (sd >= n2) continue;
                         nN++;
-                        sumAli += q.velocity.cast<double>();
-                        sumCoh += q.position.cast<double>();
+                        sumAli += s_vel_d[j];
+                        sumCoh += s_pos_d[j];
                         if (sd < s2 && sd > 1e-12) {
                             double dist = std::sqrt(sd);
                             sumSep -= (d / dist) * (separationthreshold - dist);

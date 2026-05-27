@@ -124,6 +124,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserDeepKill.cpp
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
+    test_WPParticleParser_SS8.cpp
     test_WPSceneParse.cpp
     test_WPLightObject.cpp
     test_WPLightKindParse.cpp
