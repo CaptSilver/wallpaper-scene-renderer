@@ -39,6 +39,13 @@ public:
 
     bool HasData() const;
 
+    // Test-only: cumulative count of FFT windows computed since construction.
+    // Under 50% overlap, one Process() call may run multiple FFTs (one per
+    // FFT_SIZE-stereo-frame stride that fits in the available samples).
+    // Exposed for doctest assertions on the overlap contract; production code
+    // should use the spectrum APIs above.
+    uint64_t WindowsProcessedForTest() const;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

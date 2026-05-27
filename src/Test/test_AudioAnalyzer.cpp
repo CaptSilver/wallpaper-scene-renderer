@@ -68,13 +68,19 @@ TEST_SUITE("AudioAnalyzer.Basic") {
         a.Process();
         REQUIRE(a.HasData());
 
-        // All 64 bands should have been written — none equals NaN, all in [0, ~1].
+        // All 64 bands should have been written — none equals NaN, all bounded.
+        // Bound is the soft-saturator asymptote (sqrt(x)/(1+0.4*sqrt(x)) → 2.5);
+        // before 50% overlap the smoothing pass clamped a single window to
+        // ~0.8 * raw so values stayed under 1, but a multi-window pass
+        // converges much closer to the unsmoothed peak (which the saturator
+        // intentionally caps below 2.5, not 1.0 — see SPECTRUM_GAIN comment in
+        // AudioAnalyzer.cpp).
         auto raw64L = a.GetRawSpectrum(64, 0);
         REQUIRE(raw64L.size() == 64);
         for (float v : raw64L) {
             CHECK(std::isfinite(v));
             CHECK(v >= 0.0f);
-            CHECK(v <= 1.0f);
+            CHECK(v <= 2.5f);
         }
     }
 
@@ -389,3 +395,115 @@ TEST_SUITE("AudioAnalyzer.ConcurrentProducers") {
     }
 
 } // ConcurrentProducers
+
+// 50% overlap.  Process() previously ran a single FFT on the latest 1024 floats
+// and then set readPos = wp, discarding every sample older than the window and
+// the FFT input itself.  Under 50% overlap, Process loops while the unread span
+// is at least one FFT window (FFT_SIZE * 2 = 1024 floats), advancing readPos by
+// FFT_SIZE per FFT (= half-window stride, Hanning's COLA reconstruction point).
+// Pins: (1) one Process call runs MULTIPLE FFTs when the ring carries multiple
+// strides of unread data; (2) across N steady-state ticks the cumulative FFT
+// count is roughly 2N (one FFT per FFT_SIZE-stereo-frame stride; 800 frames/tick
+// @ 48kHz/60fps → ~3 strides/tick, robustly ≥ 2/tick); (3) a low-frequency tone
+// has observable bass-band energy across consecutive overlapping windows.
+TEST_SUITE("AudioAnalyzer.Process overlap") {
+    // (1) One Process call now runs MULTIPLE FFT windows when enough unread
+    // data is present.  Feed 4*FFT_SIZE stereo frames = 4096 floats in one shot.
+    // Pre-fix: exactly 1 FFT; readPos = wp afterward.  Post-fix (50% overlap,
+    // FFT_SIZE-float stride): the while-loop runs floor((4096 - 1024)/512) + 1
+    // = 7 FFTs and leaves 512 unread floats behind.
+    TEST_CASE("one Process call runs multiple FFT windows when ring holds several strides") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = FFT_SIZE * 4; // 2048 stereo frames = 4096 floats
+        std::vector<float> pcm(kFrames * 2, 0.0f);
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            float s        = std::sin(2.0f * (float)M_PI * 440.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        const uint64_t before = a.WindowsProcessedForTest();
+        a.Process();
+        const uint64_t windowsThisCall = a.WindowsProcessedForTest() - before;
+        REQUIRE(a.HasData());
+        // Under 50% overlap with 4096 unread floats, expect 7 FFTs in this one
+        // call.  Pre-fix code runs exactly 1.  Assert at least 2 to fail loudly
+        // on the single-window path while staying robust to stride tweaks.
+        CHECK(windowsThisCall >= 2);
+    }
+
+    // (2) Across N consecutive Process calls under continuous steady-state
+    // input (~one render tick of audio per call), the cumulative FFT count is
+    // ~2-3N, NOT N.  Pre-fix: exactly N (one FFT per Process; the residual
+    // ~288 stereo frames per tick are written then immediately discarded by
+    // readPos = wp).  Post-fix: each tick contributes (1600 / FFT_SIZE - 1) ≈
+    // 2-3 FFTs, well above 2N for N consecutive ticks.
+    TEST_CASE("cumulative FFT count across N ticks is >= 2N under continuous input") {
+        AudioAnalyzer a;
+        // 800 stereo frames = 1 render tick @ 48kHz/60fps = 1600 floats fed.
+        // One FFT consumes 1024 floats with FFT_SIZE-float stride, so each tick
+        // adds 1600/512 = 3 strides (rounding-dependent; ≥ 2 robustly).
+        constexpr uint32_t kFramesPerTick = 800;
+        constexpr int      kTicks         = 20;
+        std::vector<float> pcm(kFramesPerTick * 2, 0.0f);
+        for (uint32_t i = 0; i < kFramesPerTick; ++i) {
+            float s        = std::sin(2.0f * (float)M_PI * 60.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        const uint64_t before = a.WindowsProcessedForTest();
+        for (int t = 0; t < kTicks; ++t) {
+            a.FeedPcm(pcm.data(), kFramesPerTick, 2);
+            a.Process();
+        }
+        const uint64_t windows = a.WindowsProcessedForTest() - before;
+        REQUIRE(a.HasData());
+        // Pre-fix: exactly N = 20.  Post-fix: ~2-3 * N = 40-60.  Assert >= 2N
+        // (the task's contract; ~2N at 50% overlap, ~3N for 1600-float ticks).
+        CHECK(windows >= (uint64_t)(2 * kTicks));
+    }
+
+    // (3) Bass-frequency energy is observable across overlapping windows.
+    // Feed a steady low-frequency (60Hz) sinusoid for several ticks; the
+    // smoothed bass band of the 16-band spectrum (band 0 covers ~20-30Hz, band
+    // 1 covers ~30-45Hz on the log-spaced map; 60Hz lands in band 2-3).  Pin
+    // that some low band carries non-trivial energy after enough overlapping
+    // windows accumulate — pre-fix this is noisy and partially under-resolved;
+    // post-fix the smoothing pass converges cleanly because multiple
+    // overlapping FFTs catch coherent phase information per tick.
+    TEST_CASE("bass-band energy observable across overlapping windows") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFramesPerTick = 800;
+        constexpr int      kTicks         = 30;
+        std::vector<float> pcm(kFramesPerTick * 2, 0.0f);
+        for (uint32_t i = 0; i < kFramesPerTick; ++i) {
+            // 60Hz fundamental — bass content.  Use amplitude 0.8 to ensure
+            // the smoothed band lands well above the noise floor.
+            float s        = 0.8f * std::sin(2.0f * (float)M_PI * 60.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 0] = s;
+            pcm[i * 2 + 1] = s;
+        }
+        for (int t = 0; t < kTicks; ++t) {
+            a.FeedPcm(pcm.data(), kFramesPerTick, 2);
+            a.Process();
+        }
+        REQUIRE(a.HasData());
+        auto spec16 = a.GetRawSpectrum(16, 0);
+        REQUIRE(spec16.size() == 16);
+        // A 60Hz tone peaks in the lowest few bands of the log-spaced map.
+        // Confirm at least one of bands 0-3 has visible energy (> 0.05) and
+        // that the peak overall sits in the lower half of the spectrum.
+        float lowBandEnergy = 0.0f;
+        for (size_t b = 0; b < 4; ++b) lowBandEnergy = std::max(lowBandEnergy, spec16[b]);
+        CHECK(lowBandEnergy > 0.05f);
+        size_t maxIdx = 0;
+        float  vMax   = 0.0f;
+        for (size_t i = 0; i < spec16.size(); ++i)
+            if (spec16[i] > vMax) {
+                vMax   = spec16[i];
+                maxIdx = i;
+            }
+        CHECK(maxIdx < spec16.size() / 2);
+    }
+
+} // Process overlap

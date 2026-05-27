@@ -142,6 +142,11 @@ struct AudioAnalyzer::Impl {
 
     bool hasData { false };
 
+    // Test-only: cumulative count of FFT windows computed since construction.
+    // Incremented inside the Process loop once per FFT (i.e. once per
+    // FFT_SIZE-stereo-frame overlap stride).  Read by WindowsProcessedForTest().
+    uint64_t windowsProcessed { 0 };
+
     Impl() {
         fftCfg = kiss_fftr_alloc((int)FFT_SIZE, 0, nullptr, nullptr);
         bandMap.Compute(sampleRate);
@@ -157,7 +162,100 @@ struct AudioAnalyzer::Impl {
             dst[i * 4] = src[i];
         }
     }
+
+    // Single FFT window starting at rp_start (ring index in float units;
+    // caller validated wp - rp_start >= FFT_SIZE * 2).  Reads
+    // ring[(rp_start + i*2) % RING_SIZE] for i in [0, FFT_SIZE), applies
+    // Hanning, runs kiss_fftr, accumulates magnitudes into smoothL64/R64 via
+    // the existing exponential filter, and refreshes rawL/R{64,32,16} +
+    // padL/R{64,32,16}.  Called in a loop by Process() — each successive call
+    // shares half its window with the previous one (50% Hanning-COLA overlap).
+    void DoOneFFTWindow(uint32_t rp_start);
 };
+
+void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
+    // Deinterleave + apply Hanning window
+    for (uint32_t i = 0; i < FFT_SIZE; i++) {
+        uint32_t idx = (rp_start + i * 2) % RING_SIZE;
+        windowedL[i] = ring[idx] * g_hanning.w[i];
+        windowedR[i] = ring[(idx + 1) % RING_SIZE] * g_hanning.w[i];
+    }
+    windowsProcessed++;
+
+    // FFT
+    kiss_fftr(fftCfg, windowedL.data(), freqL.data());
+    kiss_fftr(fftCfg, windowedR.data(), freqR.data());
+
+    // Magnitude
+    float norm = 2.0f / (float)FFT_SIZE;
+    for (uint32_t k = 0; k < NUM_BINS; k++) {
+        float reL = freqL[k].r, imL = freqL[k].i;
+        float reR = freqR[k].r, imR = freqR[k].i;
+        magL[k] = std::sqrt(reL * reL + imL * imL) * norm;
+        magR[k] = std::sqrt(reR * reR + imR * imR) * norm;
+    }
+
+    // Map bins to 64 log-spaced bands
+    for (uint32_t b = 0; b < NUM_BANDS_64; b++) {
+        uint32_t lo = bandMap.edges[b];
+        uint32_t hi = bandMap.edges[b + 1];
+        if (hi <= lo) hi = lo + 1;
+        if (hi > NUM_BINS) hi = NUM_BINS;
+        float sumL = 0, sumR = 0;
+        for (uint32_t k = lo; k < hi; k++) {
+            sumL += magL[k];
+            sumR += magR[k];
+        }
+        float n = (float)(hi - lo);
+        // Gain + soft saturate for perceptual scaling: raw FFT magnitudes are
+        // small (0.01-0.05 for typical music); apply gain and sqrt for
+        // perceptual loudness.  We then pass through x/(1+x) for a smooth
+        // asymptote ~1.0 — never hits hard 1.0 so stacked audio-reactive
+        // effects (see chromatic_aberration comment above) don't clamp.
+        auto softSat = [](float x) {
+            x = std::sqrt(std::max(x, 0.0f));
+            return x / (1.0f + x * 0.4f);
+        };
+        float newL = softSat(sumL / n * SPECTRUM_GAIN);
+        float newR = softSat(sumR / n * SPECTRUM_GAIN);
+
+        // Exponential smoothing: fast attack, slow decay
+        if (newL >= smoothL64[b])
+            smoothL64[b] = newL * SMOOTHING_ATTACK + smoothL64[b] * (1.0f - SMOOTHING_ATTACK);
+        else
+            smoothL64[b] = newL * (1.0f - SMOOTHING_DECAY) + smoothL64[b] * SMOOTHING_DECAY;
+
+        if (newR >= smoothR64[b])
+            smoothR64[b] = newR * SMOOTHING_ATTACK + smoothR64[b] * (1.0f - SMOOTHING_ATTACK);
+        else
+            smoothR64[b] = newR * (1.0f - SMOOTHING_DECAY) + smoothR64[b] * SMOOTHING_DECAY;
+
+        rawL64[b] = smoothL64[b];
+        rawR64[b] = smoothR64[b];
+    }
+
+    // 32 bands = pairwise average of 64
+    for (uint32_t b = 0; b < NUM_BANDS_32; b++) {
+        rawL32[b] = (rawL64[b * 2] + rawL64[b * 2 + 1]) * 0.5f;
+        rawR32[b] = (rawR64[b * 2] + rawR64[b * 2 + 1]) * 0.5f;
+    }
+
+    // 16 bands = pairwise average of 32
+    for (uint32_t b = 0; b < NUM_BANDS_16; b++) {
+        rawL16[b] = (rawL32[b * 2] + rawL32[b * 2 + 1]) * 0.5f;
+        rawR16[b] = (rawR32[b * 2] + rawR32[b * 2 + 1]) * 0.5f;
+    }
+
+    // Generate std140-padded output
+    PadSpectrum(rawL16.data(), padL16.data(), NUM_BANDS_16);
+    PadSpectrum(rawR16.data(), padR16.data(), NUM_BANDS_16);
+    PadSpectrum(rawL32.data(), padL32.data(), NUM_BANDS_32);
+    PadSpectrum(rawR32.data(), padR32.data(), NUM_BANDS_32);
+    PadSpectrum(rawL64.data(), padL64.data(), NUM_BANDS_64);
+    PadSpectrum(rawR64.data(), padR64.data(), NUM_BANDS_64);
+
+    hasData = true;
+}
 
 AudioAnalyzer::AudioAnalyzer(): m_impl(std::make_unique<Impl>()) {}
 AudioAnalyzer::~AudioAnalyzer() = default;
@@ -192,102 +290,32 @@ void AudioAnalyzer::Process() {
     WEK_PROFILE_SCOPE("AudioAnalyzer::Process");
     auto& d = *m_impl;
 
-    // Read latest FFT_SIZE stereo frames from ring buffer
+    // 50% overlap: run AS MANY FFT windows as fit in the unread span, advancing
+    // readPos by FFT_SIZE per window (half of the 2*FFT_SIZE-float window — the
+    // standard Hanning COLA reconstruction stride).  Multi-window-per-tick
+    // integrates into the existing exponential smoothing so the smoothed
+    // spectrum becomes phase-coherent at no extra accumulator state.  Previously
+    // Process jumped readPos = wp after one FFT, discarding both the FFT's input
+    // and the ~288 stereo frames written per render tick that fell outside the
+    // 1024-float window — bass content (40-150Hz, period 6.7-25ms straddling the
+    // 10.7ms FFT window) was under-resolved as each FFT caught a different
+    // phase of the bass.  Made safe by RING_SIZE = 32768 (T6 widening): the
+    // consumer's working span can grow to ~330ms before the producer laps.
     uint32_t wp = d.writePos.load(std::memory_order_acquire);
     uint32_t rp = d.readPos;
 
     uint32_t available = wp - rp; // wraps correctly for unsigned
     if (available < FFT_SIZE * 2) {
-        // Not enough data yet
+        // Not enough data yet for even one FFT window
         return;
     }
 
-    // Skip to latest FFT_SIZE frames worth of stereo samples
-    if (available > FFT_SIZE * 2) {
-        rp = wp - FFT_SIZE * 2;
+    while (wp - rp >= FFT_SIZE * 2) {
+        d.DoOneFFTWindow(rp);
+        rp += FFT_SIZE; // 50% overlap stride (half a window)
     }
-
-    // Deinterleave + apply Hanning window
-    for (uint32_t i = 0; i < FFT_SIZE; i++) {
-        uint32_t idx   = (rp + i * 2) % RING_SIZE;
-        d.windowedL[i] = d.ring[idx] * g_hanning.w[i];
-        d.windowedR[i] = d.ring[(idx + 1) % RING_SIZE] * g_hanning.w[i];
-    }
-    d.readPos = wp;
-
-    // FFT
-    kiss_fftr(d.fftCfg, d.windowedL.data(), d.freqL.data());
-    kiss_fftr(d.fftCfg, d.windowedR.data(), d.freqR.data());
-
-    // Magnitude
-    float norm = 2.0f / (float)FFT_SIZE;
-    for (uint32_t k = 0; k < NUM_BINS; k++) {
-        float reL = d.freqL[k].r, imL = d.freqL[k].i;
-        float reR = d.freqR[k].r, imR = d.freqR[k].i;
-        d.magL[k] = std::sqrt(reL * reL + imL * imL) * norm;
-        d.magR[k] = std::sqrt(reR * reR + imR * imR) * norm;
-    }
-
-    // Map bins to 64 log-spaced bands
-    for (uint32_t b = 0; b < NUM_BANDS_64; b++) {
-        uint32_t lo = d.bandMap.edges[b];
-        uint32_t hi = d.bandMap.edges[b + 1];
-        if (hi <= lo) hi = lo + 1;
-        if (hi > NUM_BINS) hi = NUM_BINS;
-        float sumL = 0, sumR = 0;
-        for (uint32_t k = lo; k < hi; k++) {
-            sumL += d.magL[k];
-            sumR += d.magR[k];
-        }
-        float n = (float)(hi - lo);
-        // Gain + soft saturate for perceptual scaling: raw FFT magnitudes are
-        // small (0.01-0.05 for typical music); apply gain and sqrt for
-        // perceptual loudness.  We then pass through x/(1+x) for a smooth
-        // asymptote ~1.0 — never hits hard 1.0 so stacked audio-reactive
-        // effects (see chromatic_aberration comment above) don't clamp.
-        auto softSat = [](float x) {
-            x = std::sqrt(std::max(x, 0.0f));
-            return x / (1.0f + x * 0.4f);
-        };
-        float newL = softSat(sumL / n * SPECTRUM_GAIN);
-        float newR = softSat(sumR / n * SPECTRUM_GAIN);
-
-        // Exponential smoothing: fast attack, slow decay
-        if (newL >= d.smoothL64[b])
-            d.smoothL64[b] = newL * SMOOTHING_ATTACK + d.smoothL64[b] * (1.0f - SMOOTHING_ATTACK);
-        else
-            d.smoothL64[b] = newL * (1.0f - SMOOTHING_DECAY) + d.smoothL64[b] * SMOOTHING_DECAY;
-
-        if (newR >= d.smoothR64[b])
-            d.smoothR64[b] = newR * SMOOTHING_ATTACK + d.smoothR64[b] * (1.0f - SMOOTHING_ATTACK);
-        else
-            d.smoothR64[b] = newR * (1.0f - SMOOTHING_DECAY) + d.smoothR64[b] * SMOOTHING_DECAY;
-
-        d.rawL64[b] = d.smoothL64[b];
-        d.rawR64[b] = d.smoothR64[b];
-    }
-
-    // 32 bands = pairwise average of 64
-    for (uint32_t b = 0; b < NUM_BANDS_32; b++) {
-        d.rawL32[b] = (d.rawL64[b * 2] + d.rawL64[b * 2 + 1]) * 0.5f;
-        d.rawR32[b] = (d.rawR64[b * 2] + d.rawR64[b * 2 + 1]) * 0.5f;
-    }
-
-    // 16 bands = pairwise average of 32
-    for (uint32_t b = 0; b < NUM_BANDS_16; b++) {
-        d.rawL16[b] = (d.rawL32[b * 2] + d.rawL32[b * 2 + 1]) * 0.5f;
-        d.rawR16[b] = (d.rawR32[b * 2] + d.rawR32[b * 2 + 1]) * 0.5f;
-    }
-
-    // Generate std140-padded output
-    Impl::PadSpectrum(d.rawL16.data(), d.padL16.data(), NUM_BANDS_16);
-    Impl::PadSpectrum(d.rawR16.data(), d.padR16.data(), NUM_BANDS_16);
-    Impl::PadSpectrum(d.rawL32.data(), d.padL32.data(), NUM_BANDS_32);
-    Impl::PadSpectrum(d.rawR32.data(), d.padR32.data(), NUM_BANDS_32);
-    Impl::PadSpectrum(d.rawL64.data(), d.padL64.data(), NUM_BANDS_64);
-    Impl::PadSpectrum(d.rawR64.data(), d.padR64.data(), NUM_BANDS_64);
-
-    d.hasData = true;
+    d.readPos = rp; // next-start, NOT wp — leaves residual (< FFT_SIZE*2 floats)
+                    // for the next call to combine with new samples
 }
 
 std::span<const float> AudioAnalyzer::GetSpectrum16Left() const { return m_impl->padL16; }
@@ -312,3 +340,5 @@ std::span<const float> AudioAnalyzer::GetRawSpectrum(int resolution, int channel
 }
 
 bool AudioAnalyzer::HasData() const { return m_impl->hasData; }
+
+uint64_t AudioAnalyzer::WindowsProcessedForTest() const { return m_impl->windowsProcessed; }
