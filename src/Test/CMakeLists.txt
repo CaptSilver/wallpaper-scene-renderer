@@ -90,6 +90,7 @@ add_executable(backend_scene_tests
     test_PipelineCacheIO.cpp
     test_FenceWaitRetry.cpp
     ${SRC_DIR}/VulkanRender/FenceWaitRetry.cpp
+    test_VulkanDebugCallbackGate.cpp
     test_DeviceQueueSelection.cpp
     test_SystemFontFallback.cpp
     ${SRC_DIR}/SystemFontFallback.cpp

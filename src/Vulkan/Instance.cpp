@@ -1,8 +1,9 @@
 #include "Instance.hpp"
 #include "Device.hpp"
 
-#include <cstdio>
+#include <cstdlib>
 #include "Utils/Logging.h"
+#include "Vulkan/DebugCallback.hpp"
 
 using namespace wallpaper::vulkan;
 
@@ -10,7 +11,9 @@ using namespace wallpaper::vulkan;
 
 constexpr std::array<InstanceLayer, 0> base_inst_layers {};
 
-constexpr std::array base_inst_exts { Extension { true, VK_EXT_DEBUG_UTILS_EXTENSION_NAME } };
+// kDebugUtilsExt (VK_EXT_debug_utils, required=false) lives in
+// Vulkan/DebugCallback.hpp so the test target can lock the
+// "required-bit stays false" contract directly.
 
 namespace
 {
@@ -19,11 +22,15 @@ VkBool32 DebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT     
                                      VkDebugUtilsMessageTypeFlagsEXT             messageType,
                                      const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                                      void*                                       pUserData) {
+    // INFO+VERBOSE are not subscribed via messageSeverity (see
+    // debugCallbackMessageSeverity() in DebugCallback.hpp), so this body
+    // only ever sees WARN+ERROR.  Threshold check below is belt-and-braces
+    // in case a future patch widens the mask.
     VkBool32 result = VK_FALSE;
-    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-        result |= VK_TRUE;
-
-        std::printf("validation layer: %s\n", pCallbackData->pMessage);
+    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        const bool is_error = messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        if (is_error) result |= VK_TRUE;
+        LOG_INFO("vulkan validation %s: %s", is_error ? "ERROR" : "WARN", pCallbackData->pMessage);
     }
     return result;
 }
@@ -33,11 +40,8 @@ vvk::DebugUtilsMessenger SetupDebugCallback(vvk::Instance& instance) {
         .sType           = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
         .pNext           = nullptr,
         .flags           = 0,
-        .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
-                           VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT,
-        .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        .messageSeverity = debugCallbackMessageSeverity(),
+        .messageType     = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
                        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
                        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
         .pfnUserCallback = DebugUtilsMessengerCallback,
@@ -159,7 +163,7 @@ bool Instance::Create(Instance& inst, std::span<const Extension> instExts,
 
     EnumateExts(inst.m_extensions, inst.m_dld);
     Set<std::string> exts, layers;
-    std::array       test_exts_array { std::span<const Extension>(base_inst_exts), instExts };
+    std::array       test_exts_array { std::span<const Extension>(kDebugUtilsExt), instExts };
     for (auto& test_exts : test_exts_array) {
         for (auto& ext : test_exts) {
             bool ok = inst.supportExt(ext.name);
@@ -192,7 +196,17 @@ bool Instance::Create(Instance& inst, std::span<const Extension> instExts,
     VVK_CHECK_BOOL_RE(CreatInstance(&inst.m_vinst, exts_vec, layers_vec, inst.m_dld));
     vvk::Load(*inst.m_vinst, inst.m_dld);
 
-    inst.m_debug_utils = SetupDebugCallback(inst.m_vinst);
+    // Set up the debug-utils messenger only when validation is actually
+    // wanted (CLI/--valid-layer, QML m_enable_valid, or WEKDE_VULKAN_VALIDATION
+    // env var) AND the optional extension was successfully resolved.
+    // Without these, m_debug_utils stays default-constructed (a destructor-
+    // safe empty vvk handle), the validation layer pays no formatting
+    // cost, and drivers without VK_EXT_debug_utils still initialise.
+    const bool has_valid_layer = exists(layers, std::string(VALIDATION_LAYER_NAME));
+    const bool has_debug_utils = exists(exts, std::string(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
+    if (has_debug_utils && shouldEnableDebugCallback(std::getenv, has_valid_layer)) {
+        inst.m_debug_utils = SetupDebugCallback(inst.m_vinst);
+    }
 
     // VK_CHECK_RESULT_ACT(return false, CreatInstance(&inst.m_inst, exts_vec, layers_vec));
     // VK_CHECK_RESULT_ACT(return false, setupDebugCallback(&inst.m_inst, inst.m_debug_utils));
