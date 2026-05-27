@@ -623,3 +623,177 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         CHECK(kerned <= unkern);
     }
 }
+
+// -------- FT_Load_Glyph failure logging --------
+//
+// Splits the previously-conflated "missing codepoint" (idx == 0, benign,
+// LOG_INFO) and "FT_Load_Glyph fail" (pathological — corrupt glyf, OOM,
+// unsupported variable-axis combo, LOG_ERROR) error classes.  Two
+// independent rate-limited counters; this suite verifies the split is
+// honest by exercising both paths and asserting the correct counter
+// fires (and the other stays at zero).
+
+TEST_SUITE("WPTextRenderer FT_Load_Glyph failure logging") {
+    static std::string loadHostFont() {
+        const std::string path = wallpaper::ResolveSystemFontFallback("systemfont_sans");
+        if (path.empty()) return {};
+        return wallpaper::ReadSystemFile(path);
+    }
+
+    // Mutate a copy of `fontBytes` (expected: Liberation Sans or another
+    // standard TTF) so that some real glyphs in the file fail
+    // FT_Load_Glyph while the cmap and table directory still parse.
+    //
+    // Strategy: walk the `loca` table (long form: uint32 entries) to find
+    // each real glyph's byte range inside the `glyf` table, then overwrite
+    // a swathe of those glyph records with bytes that produce an invalid
+    // composite-glyph descriptor.  Glyph format:
+    //   int16 numberOfContours
+    //   int16 xMin/yMin/xMax/yMax
+    //   [contours / components ...]
+    // numberOfContours < 0 marks a composite glyph; subsequent bytes are
+    // a chain of (uint16 flags, uint16 glyphIndex, [args...]) entries
+    // continued until a flags entry without the MORE_COMPONENTS bit (0x20).
+    // We write numberOfContours = -1 (composite) and follow with a flags
+    // byte 0xFF (every flag bit set, including a bogus glyph index range
+    // and unsupported argument formats) so FreeType's composite walker
+    // hits an invalid component before completion and returns an error
+    // such as FT_Err_Invalid_Composite.  This is more reliable than
+    // poisoning `loca` directly: FT computes glyph length from adjacent
+    // loca entries, and matching 0xFFFFFFFE pairs yield length 0 which FT
+    // treats as a blank glyph (no error).
+    //
+    // Returns empty string when mutation isn't possible (tables missing,
+    // file too small, short loca format).
+    static std::string mutateLiberationSansGlyfTable(std::string fontBytes) {
+        auto rd16 = [](const char* p) -> uint16_t {
+            auto b = reinterpret_cast<const uint8_t*>(p);
+            return uint16_t((uint16_t(b[0]) << 8) | uint16_t(b[1]));
+        };
+        auto rd32 = [](const char* p) -> uint32_t {
+            auto b = reinterpret_cast<const uint8_t*>(p);
+            return (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16) |
+                   (uint32_t(b[2]) << 8) | uint32_t(b[3]);
+        };
+        if (fontBytes.size() < 12) return {};
+        uint32_t numTables = rd16(fontBytes.data() + 4);
+        if (fontBytes.size() < 12 + size_t(numTables) * 16) return {};
+        uint32_t headOffset = 0, headLen = 0;
+        uint32_t locaOffset = 0, locaLen = 0;
+        uint32_t glyfOffset = 0, glyfLen = 0;
+        for (uint32_t i = 0; i < numTables; ++i) {
+            const char* entry = fontBytes.data() + 12 + i * 16;
+            uint32_t    off   = rd32(entry + 8);
+            uint32_t    len   = rd32(entry + 12);
+            if (std::memcmp(entry, "head", 4) == 0) {
+                headOffset = off;
+                headLen    = len;
+            } else if (std::memcmp(entry, "loca", 4) == 0) {
+                locaOffset = off;
+                locaLen    = len;
+            } else if (std::memcmp(entry, "glyf", 4) == 0) {
+                glyfOffset = off;
+                glyfLen    = len;
+            }
+        }
+        if (headOffset == 0 || locaOffset == 0 || glyfOffset == 0) return {};
+        // `head.indexToLocFormat` sits at byte 50 of the head table.
+        // 0 = short (uint16 entries scaled by 2), 1 = long (uint32 entries).
+        if (size_t(headOffset) + 52 > fontBytes.size()) return {};
+        if (headLen < 52) return {};
+        uint16_t locFormat = rd16(fontBytes.data() + headOffset + 50);
+        if (locFormat != 1) return {};
+        if (locaLen < 8) return {};
+        const uint32_t entryCount = locaLen / 4u;
+        // Walk loca[1..N], corrupt each real (non-empty) glyph record.
+        // Skip glyph 0 (.notdef) so the missing-codepoint fallback still
+        // gets a valid replacement glyph.
+        const uint32_t startIdx = 1u;
+        const uint32_t endIdx   = std::min(entryCount - 1, 256u);
+        if (endIdx <= startIdx) return {};
+        int corruptedCount = 0;
+        for (uint32_t i = startIdx; i < endIdx; ++i) {
+            uint32_t off0 = rd32(fontBytes.data() + locaOffset + i * 4);
+            uint32_t off1 = rd32(fontBytes.data() + locaOffset + (i + 1) * 4);
+            if (off1 <= off0) continue; // empty glyph
+            if (size_t(glyfOffset) + off1 > fontBytes.size()) continue;
+            if (off1 - off0 < 12) continue; // too short to be a real glyph
+            char* gp = fontBytes.data() + glyfOffset + off0;
+            // numberOfContours = -1 (int16, big-endian) → composite glyph
+            gp[0] = char(0xFF);
+            gp[1] = char(0xFF);
+            // xMin/yMin/xMax/yMax (8 bytes) — leave bounding box garbage
+            // The composite walker reads (flags, glyphIndex) pairs from
+            // offset 10; we set flags = 0xFFFF (every bit set, includes
+            // ARG_1_AND_2_ARE_WORDS, WE_HAVE_A_SCALE, MORE_COMPONENTS,
+            // WE_HAVE_INSTRUCTIONS, ...) and glyphIndex = 0xFFFF
+            // (out-of-range glyph reference).  FreeType's composite
+            // resolver must reject these.
+            gp[10] = char(0xFF);
+            gp[11] = char(0xFF);
+            gp[12] = char(0xFF);
+            gp[13] = char(0xFF);
+            ++corruptedCount;
+        }
+        if (corruptedCount == 0) return {};
+        return fontBytes;
+    }
+
+    TEST_CASE("FT_Load_Glyph failure: rate-limited LOG_ERROR fires at multiples of 32") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        auto corrupted = mutateLiberationSansGlyfTable(fontData);
+        if (corrupted.empty() || corrupted == fontData) {
+            MESSAGE("glyf-table mutator could not corrupt this Liberation Sans; skipping");
+            return;
+        }
+        WPTextRenderer::TEST_resetLoadGlyphFailLogCounter();
+        // 100 render calls with the corrupt font + a Latin string wide
+        // enough to land at least one glyph in the corrupted window.
+        // Some glyphs in "Hello world" may avoid the corruption — that's
+        // fine, we only need >= 1 failure per call to drive the counter.
+        for (int i = 0; i < 100; ++i) {
+            auto img = WPTextRenderer::RenderText(
+                corrupted, 16.f, "Hello world", 256, 64, "center", "center", 0);
+            (void)img; // may be partial; assertion is on the log counter
+        }
+        const int logged = WPTextRenderer::TEST_getLoadGlyphFailLogCount();
+        // Rate-limit: every 32nd CALL that has any glyph failure logs
+        // once.  100 calls all with failures → 4 logs (ticks 0, 32, 64,
+        // 96).  Loose bounds defend against ticks already advanced by
+        // an earlier test in the same process.
+        CHECK(logged >= 1);
+        CHECK(logged <= 6);
+    }
+
+    TEST_CASE("benign miss (idx == 0, CJK in Latin font): does NOT fire LOG_ERROR counter") {
+        // The whole point of splitting the error class: missing
+        // codepoint (idx==0) routes to the EXISTING missing-glyph
+        // LOG_INFO path; the NEW LOG_ERROR counter must stay at 0.
+        ::setenv("WEKDE_TEXT_CJK_FALLBACK", "0", 1); // force .notdef path
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        WPTextRenderer::TEST_resetLoadGlyphFailLogCounter();
+        std::string cjk = "\xE4\xB8\xAD"; // U+4E2D '中'
+        for (int i = 0; i < 100; ++i) {
+            (void)WPTextRenderer::RenderText(
+                fontData, 16.f, cjk, 32, 32, "center", "center", 0);
+        }
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        // Missing-glyph (benign) counter MUST fire — proves the test
+        // setup actually triggered the idx==0 path.
+        CHECK(WPTextRenderer::TEST_getMissingGlyphLogCount() >= 1);
+        // LOAD-GLYPH-FAIL (pathological) counter MUST stay at zero —
+        // the .notdef glyph load succeeds; no FT_Load_Glyph error is
+        // signalled.
+        CHECK(WPTextRenderer::TEST_getLoadGlyphFailLogCount() == 0);
+    }
+}

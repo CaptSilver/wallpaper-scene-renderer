@@ -155,6 +155,15 @@ std::atomic<int> s_fallbackProbeCount { 0 };
 std::atomic<int> s_missingGlyphLogTick { 0 };
 std::atomic<int> s_missingGlyphLogFired { 0 };
 
+// Rate-limit state for the per-call FT_Load_Glyph FAILURE LOG_ERROR.
+// Distinct from the missing-glyph (idx==0) machinery above: this fires on
+// pathological errors — corrupt glyf, OOM, unsupported variable-axis combo —
+// where the glyph index resolved but the load itself failed.  User-facing
+// symptom is a missing letter mid-word; root cause is font corruption or
+// unsupported FreeType feature, not script coverage.
+std::atomic<int> s_loadGlyphFailLogTick { 0 };
+std::atomic<int> s_loadGlyphFailLogFired { 0 };
+
 // Query the legacy `kern` table for the (prevIdx, idx) pair.  Returns the
 // horizontal kerning in pixels (already grid-fitted by FT_KERNING_DEFAULT
 // and the >>6 6.6-fixed-point shift).  Caller MUST gate on hasKerning ==
@@ -312,8 +321,14 @@ static int EffectiveAdvance(FT_GlyphSlot g) {
 // Measure the pixel width of a single line — kerned variant.  Must match
 // the raster loop's pen advance byte-for-byte (same FT_Get_Char_Index →
 // kerning delta → FT_Load_Glyph sequence) or right/center alignment drifts
-// by the cumulative kerning.
-static int MeasureLineWidth(FT_Face face, const std::string& line) {
+// by the cumulative kerning.  If FT_Load_Glyph fails (pathological — corrupt
+// glyf, OOM), this measure and the raster loop both skip the same glyph for
+// the same FT_Error reason, so the cumulative pen_x stays consistent across
+// both paths.  The `loadGlyphFails` out-param accumulates into the raster-loop
+// counter that drives the LOG_ERROR rate-limit; we do not double-log
+// measurement-time failures.
+static int MeasureLineWidth(FT_Face face, const std::string& line, int& loadGlyphFails,
+                            FT_Error& lastLoadGlyphErr) {
     const bool  hasKerning = FT_HAS_KERNING(face);
     int         pen_x      = 0;
     FT_UInt     prevIdx    = 0;
@@ -327,8 +342,11 @@ static int MeasureLineWidth(FT_Face face, const std::string& line) {
         // .notdef glyph's metrics — the raster loop also rasterizes it,
         // and the two paths must agree on the width.
         pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-        if (FT_Load_Glyph(face, idx, FT_LOAD_DEFAULT) != 0) {
-            prevIdx = idx;
+        FT_Error glyphErr = FT_Load_Glyph(face, idx, FT_LOAD_DEFAULT);
+        if (glyphErr != 0) {
+            ++loadGlyphFails;
+            lastLoadGlyphErr = glyphErr;
+            prevIdx          = idx;
             continue;
         }
         pen_x += EffectiveAdvance(face->glyph);
@@ -470,8 +488,10 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // Kerning is queried once per call (cheap — single FT_HAS_KERNING flag
     // bit).  Both MeasureLineWidth and the raster loop honour the same
     // hasKerning verdict so alignment stays in sync.
-    const bool hasKerning            = FT_HAS_KERNING(face);
-    int        missingGlyphsThisCall = 0;
+    const bool hasKerning             = FT_HAS_KERNING(face);
+    int        missingGlyphsThisCall  = 0;
+    int        loadGlyphFailsThisCall = 0;
+    FT_Error   lastLoadGlyphErr       = 0;
     // Re-read the env var on every call rather than caching in a static —
     // the test suite toggles WEKDE_TEXT_CJK_FALLBACK between cases, so a
     // process-lifetime cache would lock in the first value seen.  The
@@ -484,7 +504,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         const auto& line = lines[li];
         if (line.empty()) continue;
 
-        i32 lineWidth = MeasureLineWidth(face, line);
+        i32 lineWidth = MeasureLineWidth(face, line, loadGlyphFailsThisCall, lastLoadGlyphErr);
 
         // Horizontal offset
         i32 startX;
@@ -540,8 +560,16 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             // the call returns 0 — FT_Get_Kerning won't find the pair —
             // and pen_x is unaffected.  Cross-face kerning is HarfBuzz scope.
             pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-            if (FT_Load_Glyph(faceToUse, idx, FT_LOAD_RENDER) != 0) {
-                prevIdx = idx;
+            // FT_Load_Glyph failure — pathological (not idx==0 which is benign
+            // and routes to the LOG_INFO path below).  MeasureLineWidth on the
+            // same face + same idx will skip the same glyph, so alignment stays
+            // consistent.  Counter is read after the line-loop and rate-limited
+            // to ~1 LOG_ERROR per 32 calls.
+            FT_Error glyphErr = FT_Load_Glyph(faceToUse, idx, FT_LOAD_RENDER);
+            if (glyphErr != 0) {
+                ++loadGlyphFailsThisCall;
+                lastLoadGlyphErr = glyphErr;
+                prevIdx          = idx;
                 continue;
             }
 
@@ -584,6 +612,25 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                      "emitted) in text \"%.32s\" — font may not cover the script",
                      missingGlyphsThisCall,
                      text.c_str());
+        }
+    }
+
+    // Rate-limited FT_Load_Glyph-failure LOG_ERROR.  Distinct error class from
+    // the missing-glyph LOG_INFO above: the glyph index resolved but loading
+    // failed (corrupt glyf data, OOM, unsupported variable-axis combo, etc.).
+    // Same 32-tick modulo rate-limit so a single corrupt font + multi-line text
+    // doesn't flood the journal.  FT_Error value is included so a font packager
+    // can match against freetype/fterrors.h.
+    if (loadGlyphFailsThisCall > 0) {
+        int n = s_loadGlyphFailLogTick.fetch_add(1, std::memory_order_relaxed);
+        if ((n & 31) == 0) {
+            s_loadGlyphFailLogFired.fetch_add(1, std::memory_order_relaxed);
+            LOG_ERROR("WPTextRenderer: %d glyph(s) failed FT_Load_Glyph "
+                      "(last FT_Error=%d) in text \"%.32s\" — "
+                      "font may be corrupt or unsupported variant",
+                      loadGlyphFailsThisCall,
+                      (int)lastLoadGlyphErr,
+                      text.c_str());
         }
     }
 
@@ -686,7 +733,9 @@ int WPTextRenderer::TEST_measureLineWidthWithKerning(const std::string& fontData
                                       &face);
     if (err || ! face) return -1;
     FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
-    int w = MeasureLineWidth(face, line);
+    int      loadFails = 0;
+    FT_Error lastErr   = 0;
+    int      w         = MeasureLineWidth(face, line, loadFails, lastErr);
     FT_Done_Face(face);
     return w;
 }
@@ -754,6 +803,15 @@ void WPTextRenderer::TEST_resetMissingGlyphLogCounter() {
 
 int WPTextRenderer::TEST_getMissingGlyphLogCount() {
     return s_missingGlyphLogFired.load(std::memory_order_relaxed);
+}
+
+void WPTextRenderer::TEST_resetLoadGlyphFailLogCounter() {
+    s_loadGlyphFailLogTick.store(0, std::memory_order_relaxed);
+    s_loadGlyphFailLogFired.store(0, std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getLoadGlyphFailLogCount() {
+    return s_loadGlyphFailLogFired.load(std::memory_order_relaxed);
 }
 
 } // namespace wallpaper

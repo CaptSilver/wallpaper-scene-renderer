@@ -113,6 +113,8 @@ public:
     static int  TEST_getFallbackProbeCount();
     static void TEST_resetMissingGlyphLogCounter();
     static int  TEST_getMissingGlyphLogCount();
+    static void TEST_resetLoadGlyphFailLogCounter();
+    static int  TEST_getLoadGlyphFailLogCount();
 };
 
 } // namespace wallpaper
