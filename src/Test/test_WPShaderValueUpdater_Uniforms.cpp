@@ -842,3 +842,194 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::init_audio_flag") {
         CHECK_FALSE(updater.hasAudioConsumer());
     }
 }
+
+// =============================================================================
+//   Per-texture-slot has_resolution / has_mipmap flag population
+//   — pins the parallel-index contract between info.texs[i] and the
+//   WE_GLTEX_RESOLUTION_NAMES[i] / WE_GLTEX_MIPMAPINFO_NAMES[i] arrays.
+//   Flags are not directly observable through the writer; they gate
+//   the per-frame uniform upload in UpdateUniforms.  Each case wires up a
+//   real SceneRenderTarget at the slot under test and asserts on the
+//   downstream upload — drive InitUniforms with a name allow-list, then
+//   confirm the writer dispatched (or skipped) the corresponding uniform.
+// =============================================================================
+TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
+    TEST_CASE("slot 0: g_Texture0Resolution present -> has_resolution[0] true") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        SceneRenderTarget rt;
+        rt.width        = 640;
+        rt.height       = 480;
+        rt.mipmap_level = 1;
+        scene.renderTargets["_rt_default"] = rt;
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        WPShaderValueData data;
+        data.renderTargets.emplace_back(0u, std::string("_rt_default"));
+        updater.SetNodeData(f.node.get(), data);
+
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        // has_resolution[0] true => Apply emits g_Texture0Resolution upload.
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[0]) != nullptr);
+    }
+
+    TEST_CASE("slot 0: g_Texture0Resolution absent -> flag false, no upload") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        SceneRenderTarget rt;
+        rt.width        = 640;
+        rt.height       = 480;
+        rt.mipmap_level = 1;
+        scene.renderTargets["_rt_default"] = rt;
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        WPShaderValueData data;
+        data.renderTargets.emplace_back(0u, std::string("_rt_default"));
+        updater.SetNodeData(f.node.get(), data);
+
+        // existsOp returns false for everything -> has_resolution[0] stays false.
+        updater.InitUniforms(f.node.get(), makeExistsOp({}));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[0]) == nullptr);
+    }
+
+    TEST_CASE("slot 5: g_Texture5MipMapInfo present -> has_mipmap[5] true") {
+        // Mid-array slot — proves the loop reaches non-zero indices,
+        // not just slot 0.  A rewrite that walks only the first element
+        // would skip this dispatch.
+        Scene scene;
+        installActiveCamera(scene);
+
+        SceneRenderTarget rt;
+        rt.width        = 1024;
+        rt.height       = 512;
+        rt.mipmap_level = 4;
+        scene.renderTargets["_rt_default"] = rt;
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        WPShaderValueData data;
+        data.renderTargets.emplace_back(5u, std::string("_rt_default"));
+        updater.SetNodeData(f.node.get(), data);
+
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ WE_GLTEX_MIPMAPINFO_NAMES[5] }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        CHECK(cap.find(WE_GLTEX_MIPMAPINFO_NAMES[5]) != nullptr);
+    }
+
+    TEST_CASE("multiple slots in one InitUniforms call -- parallel-index contract") {
+        // Names for slots 0, 3, 7.  Every flagged slot must drive its
+        // corresponding upload; un-flagged slots must not.  Regression
+        // target: a swapped-index rewrite would attach Resolution to
+        // MipMapInfo flags and vice versa.
+        Scene scene;
+        installActiveCamera(scene);
+
+        SceneRenderTarget rt;
+        rt.width        = 256;
+        rt.height       = 256;
+        rt.mipmap_level = 2;
+        scene.renderTargets["_rt_default"] = rt;
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        WPShaderValueData data;
+        data.renderTargets.emplace_back(0u, std::string("_rt_default"));
+        data.renderTargets.emplace_back(3u, std::string("_rt_default"));
+        data.renderTargets.emplace_back(7u, std::string("_rt_default"));
+        updater.SetNodeData(f.node.get(), data);
+
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0],
+                                            WE_GLTEX_MIPMAPINFO_NAMES[3],
+                                            WE_GLTEX_RESOLUTION_NAMES[7],
+                                            WE_GLTEX_MIPMAPINFO_NAMES[7] }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[0]) != nullptr);
+        CHECK(cap.find(WE_GLTEX_MIPMAPINFO_NAMES[3]) != nullptr);
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[7]) != nullptr);
+        CHECK(cap.find(WE_GLTEX_MIPMAPINFO_NAMES[7]) != nullptr);
+        // Cross-slot negatives -- flags off -> no upload.  A swapped-index
+        // bug would surface here.
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[3]) == nullptr);
+        CHECK(cap.find(WE_GLTEX_MIPMAPINFO_NAMES[0]) == nullptr);
+    }
+
+    TEST_CASE("all 12 slots flagged -- loop reaches every index, no off-by-one") {
+        // Drives the full info.texs.size() iteration count.  A rewrite
+        // that uses `<` vs `<=` (or `info.texs.size()-1`) trips here on
+        // either slot 0 or slot 11.
+        Scene scene;
+        installActiveCamera(scene);
+
+        SceneRenderTarget rt;
+        rt.width        = 128;
+        rt.height       = 128;
+        rt.mipmap_level = 1;
+        scene.renderTargets["_rt_default"] = rt;
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        WPShaderValueData data;
+        std::vector<std::string_view> allNames;
+        for (usize i = 0; i < 12; ++i) {
+            data.renderTargets.emplace_back(i, std::string("_rt_default"));
+            allNames.push_back(WE_GLTEX_RESOLUTION_NAMES[i]);
+        }
+        updater.SetNodeData(f.node.get(), data);
+
+        std::unordered_set<std::string> nameSet;
+        for (auto n : allNames) nameSet.emplace(n);
+        ExistsUniformOp exists = [set = std::move(nameSet)](std::string_view n) {
+            return set.find(std::string(n)) != set.end();
+        };
+        updater.InitUniforms(f.node.get(), exists);
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        // First slot reachable, last slot reachable -- if either is null,
+        // the loop didn't span the full range.
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[0]) != nullptr);
+        CHECK(cap.find(WE_GLTEX_RESOLUTION_NAMES[11]) != nullptr);
+    }
+}

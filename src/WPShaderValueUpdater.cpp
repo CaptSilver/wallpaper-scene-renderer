@@ -17,7 +17,6 @@
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
-#include <numeric>
 #include <set>
 
 using namespace wallpaper;
@@ -129,11 +128,10 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
         LOG_INFO("Audio spectrum uniforms detected for node %d", pNode->ID());
     }
 
-    std::accumulate(begin(info.texs), end(info.texs), 0, [&existsOp](uint index, auto& value) {
-        value.has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[index]);
-        value.has_mipmap     = existsOp(WE_GLTEX_MIPMAPINFO_NAMES[index]);
-        return index + 1;
-    });
+    for (size_t i = 0; i < info.texs.size(); ++i) {
+        info.texs[i].has_resolution = existsOp(WE_GLTEX_RESOLUTION_NAMES[i]);
+        info.texs[i].has_mipmap     = existsOp(WE_GLTEX_MIPMAPINFO_NAMES[i]);
+    }
 
     // Pre-resolve render-target names to their (width, height, mipmap_level)
     // tuple once, here, instead of every frame inside UpdateUniforms.  The
