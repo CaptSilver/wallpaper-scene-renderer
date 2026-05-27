@@ -1346,3 +1346,185 @@ TEST_SUITE("ParticleSubSystem Emitt dead-instance skip") {
     }
 
 } // ParticleSubSystem Emitt dead-instance skip
+
+// ===========================================================================
+// ParticleSystem global emit budget — kMaxParticlesPerFrame caps aggregate
+// spawning across all subsystems per ParticleSystem::Emitt() call.  Subsystems
+// past the budget skip their spawn phase but still tick update/operators/trail
+// so existing particles age out normally; a one-shot LOG_INFO records the
+// offender, re-armed on ParticleSystem destroy/recreate (scene reload).
+// ===========================================================================
+
+namespace
+{
+
+// Saturating emitter — every tick, push particles until maxcount is reached.
+// Exposes the spawn-cap as the only ceiling on live particle count, so the
+// budget gate can be observed directly in the post-tick particle total.
+static ParticleEmittOp saturatingEmitter() {
+    return [](std::vector<Particle>& ps, std::vector<ParticleInitOp>&,
+              uint32_t maxcount, double /*dt*/) {
+        while (ps.size() < maxcount) {
+            Particle p;
+            p.lifetime = 100.0f; // long-lived so they stick around within the tick
+            ps.push_back(p);
+        }
+    };
+}
+
+} // namespace
+
+TEST_SUITE("ParticleSystem global emit budget") {
+    TEST_CASE("budget exhaustion gates further spawning within one tick") {
+        ParticleFixture fx;
+        constexpr uint32_t per_sub = 20'000;
+        // Build enough subsystems that N * per_sub overshoots the budget by
+        // at least 2x — leaves headroom to detect a working gate.
+        constexpr int n_subs = (int)(2 * kMaxParticlesPerFrame / per_sub) + 1;
+        for (int i = 0; i < n_subs; ++i) {
+            auto sub = fx.makeSub(per_sub, 1.0, 1, 1.0,
+                                  ParticleSubSystem::SpawnType::STATIC);
+            sub->AddEmitter(saturatingEmitter());
+            fx.psys->subsystems.emplace_back(std::move(sub));
+        }
+        fx.scene.frameTime    = 0.016;
+        fx.scene.elapsingTime = 0.0;
+
+        fx.psys->Emitt();
+
+        // Tally live particles across every subsystem's auto-created instance.
+        // STATIC type auto-creates one instance per sub on first Emitt, so each
+        // emitter target is that instance's ParticlesVec.
+        size_t total = 0;
+        for (auto& sub : fx.psys->subsystems) {
+            for (auto& inst : sub->Instances()) {
+                if (inst) total += inst->Particles().size();
+            }
+        }
+        // Hard upper bound: budget + one full subsystem of overshoot, since
+        // the check fires AFTER each sub's emit, not mid-emit.  Without the
+        // gate, total = n_subs * per_sub = ~420k; with the gate, total <=
+        // 200k + 20k = 220k.
+        CHECK(total <= kMaxParticlesPerFrame + per_sub);
+        // And it must have actually saturated some subs (not zero).
+        CHECK(total >= kMaxParticlesPerFrame);
+        // The latch flag should be set, exactly once.
+        CHECK(fx.psys->GlobalEmitWarned());
+    }
+
+    TEST_CASE("warning fires exactly once per ParticleSystem lifetime") {
+        ParticleFixture fx;
+        constexpr uint32_t per_sub = 20'000;
+        constexpr int n_subs = (int)(2 * kMaxParticlesPerFrame / per_sub) + 1;
+        for (int i = 0; i < n_subs; ++i) {
+            auto sub = fx.makeSub(per_sub, 1.0, 1, 1.0,
+                                  ParticleSubSystem::SpawnType::STATIC);
+            sub->AddEmitter(saturatingEmitter());
+            fx.psys->subsystems.emplace_back(std::move(sub));
+        }
+        fx.scene.frameTime    = 0.016;
+        fx.scene.elapsingTime = 0.0;
+
+        // Two ticks in a row — second tick must NOT clear the sticky latch.
+        // (We're testing the latch is sticky: compare_exchange_strong succeeds
+        //  exactly once on the false->true edge.  A subsequent tick re-tests
+        //  the over-budget condition but the CAS no-ops.)
+        fx.psys->Emitt();
+        CHECK(fx.psys->GlobalEmitWarned());
+        fx.psys->Emitt();
+        CHECK(fx.psys->GlobalEmitWarned()); // sticky after the first edge
+    }
+
+    TEST_CASE("fresh ParticleSystem starts unwarned (lifetime-bound re-arm)") {
+        Scene scene;
+        // Two distinct ParticleSystems — the warning latch lives per-object,
+        // so a fresh one (mirroring scene reload destroying + recreating)
+        // begins unwarned regardless of any prior process state.
+        auto ps1 = std::make_unique<ParticleSystem>(scene);
+        auto ps2 = std::make_unique<ParticleSystem>(scene);
+        CHECK_FALSE(ps1->GlobalEmitWarned());
+        CHECK_FALSE(ps2->GlobalEmitWarned());
+    }
+
+    TEST_CASE("update phase still runs for budget-skipped subsystems") {
+        ParticleFixture fx;
+        // sub_first exhausts the budget on its own — needs maxcount large
+        // enough that one saturating emit fills past the cap.  Use maxcount =
+        // kMaxParticlesPerFrame (per-sub limit at parse time is 20000 in
+        // production, but this is a pure-C++ test with no parser involved, so
+        // we can construct any maxcount).
+        auto sub_first = fx.makeSub(kMaxParticlesPerFrame + 1000, 1.0, 1, 1.0,
+                                    ParticleSubSystem::SpawnType::STATIC);
+        sub_first->AddEmitter(saturatingEmitter());
+        fx.psys->subsystems.emplace_back(std::move(sub_first));
+
+        // sub_second is the victim — its emit will be skipped, but its update
+        // phase (operator dispatch) must still run.  Counter operator records
+        // every call so we can prove the skip preserves the update path.
+        auto sub_second = fx.makeSub(100, 1.0, 1, 1.0,
+                                     ParticleSubSystem::SpawnType::STATIC);
+        int  op_call_count = 0;
+        sub_second->AddOperator([&op_call_count](const ParticleInfo&) {
+            op_call_count++;
+        });
+        auto* sub_second_raw = sub_second.get();
+        fx.psys->subsystems.emplace_back(std::move(sub_second));
+
+        fx.scene.frameTime    = 0.016;
+        fx.scene.elapsingTime = 0.0;
+
+        // Tick once to auto-create both STATIC instances; sub_first exhausts
+        // budget, sub_second's emit is skipped — but the operator dispatch
+        // happens AFTER the gated spawn block, so it must still fire.
+        fx.psys->Emitt();
+        REQUIRE(sub_second_raw->Instances().size() == 1);
+        auto& inst = sub_second_raw->Instances().front();
+        REQUIRE(inst);
+        // Tick 1's operator ran once on the empty instance (alive auto-create).
+        CHECK(op_call_count == 1);
+        // sub_second's particle vector is empty — the spawn block was skipped.
+        CHECK(inst->ParticlesVec().empty());
+
+        // Pre-populate sub_second with one particle to prove the per-particle
+        // ChangeLifetime + operator pass continues to age them out.
+        Particle p;
+        p.lifetime      = 10.0f;
+        p.init.lifetime = 10.0f;
+        inst->ParticlesVec().push_back(p);
+
+        // Second tick — sub_first re-exhausts, sub_second's emit stays gated,
+        // operator must still tick (op_call_count goes 1 -> 2).
+        fx.scene.elapsingTime = 0.5;
+        fx.psys->Emitt();
+        CHECK(op_call_count == 2);
+        // ChangeLifetime decrements by particleTime (clamped frameTime * rate)
+        // and our counter operator does NOT touch lifetime, so the particle
+        // should be at 10.0 - 0.016 = 9.984 after tick 2.
+        CHECK(inst->ParticlesVec().front().lifetime ==
+              doctest::Approx(10.0f - 0.016f));
+        // Still no new spawns into sub_second's vector beyond our pre-pop.
+        CHECK(inst->ParticlesVec().size() == 1);
+    }
+
+    TEST_CASE("per-subsystem maxcount cap holds even at saturating dynamic rate") {
+        // Paranoia check on the spec's open-question note: a hostile script
+        // writing m_dynamic_rate_multiplier = 1e6 still hits the per-instance
+        // `if (maxcount == particles.size()) break` in the emitter, so the
+        // per-subsystem cap is the backstop the global cap relies on.
+        ParticleFixture fx;
+        auto sub = fx.makeSub(20'000, 1.0, 1, 1.0,
+                              ParticleSubSystem::SpawnType::STATIC);
+        sub->AddEmitter(saturatingEmitter());
+        sub->SetDynamicRateMultiplier(1e6);
+        fx.psys->subsystems.emplace_back(std::move(sub));
+        fx.scene.frameTime    = 0.032;
+        fx.scene.elapsingTime = 0.0;
+        fx.psys->Emitt();
+        auto& inst = fx.psys->subsystems.front()->Instances().front();
+        REQUIRE(inst);
+        CHECK(inst->Particles().size() == 20'000);
+        // Single sub well under cap — no warning expected.
+        CHECK_FALSE(fx.psys->GlobalEmitWarned());
+    }
+
+} // ParticleSystem global emit budget

@@ -228,7 +228,10 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
     return nullptr;
 }
 
-void ParticleSubSystem::Emitt() {
+void ParticleSubSystem::Emitt()          { EmittImpl(false); }
+void ParticleSubSystem::EmittSkipSpawn() { EmittImpl(true);  }
+
+void ParticleSubSystem::EmittImpl(bool skip_spawn) {
     if (m_sys.scene.elapsingTime < (double)m_starttime) return;
 
     // Cap per-frame particle time to avoid burst emission when the frame is
@@ -371,7 +374,7 @@ void ParticleSubSystem::Emitt() {
         // WEKDE_DEBUG_PARTICLE first-emit log to peek at init values.
         const usize pre_emit_count = inst->ParticlesVec().size();
 
-        if (! inst->IsDeath()) {
+        if (! inst->IsDeath() && ! skip_spawn) {
             // Plumb the currently-spawning instance through a thread-local cell so
             // initializers (notably `inheritinitialvaluefromevent`) can resolve the
             // parent-event particle without a signature change on ParticleInitOp.
@@ -633,10 +636,28 @@ void ParticleSubSystem::Emitt() {
         }
     }
 
+    // Children inherit the parent's skip state — a budget-exhausted parent's
+    // children must not continue spawning unbounded.
     for (auto& child : m_children) {
-        child->Emitt();
+        if (skip_spawn) child->EmittSkipSpawn();
+        else            child->Emitt();
     }
 }
+
+namespace
+{
+// Sum live particles across every instance of a subsystem.  Cheap walk —
+// m_instances is bounded by m_maxcount_instance (see QueryNewInstance);
+// Particles().size() is O(1).  Used by ParticleSystem::Emitt below to
+// snapshot pre/post counts and detect spawn delta per subsystem.
+size_t particleCountOf(const ParticleSubSystem& sub) {
+    size_t n = 0;
+    for (const auto& inst : sub.Instances()) {
+        if (inst) n += inst->Particles().size();
+    }
+    return n;
+}
+} // namespace
 
 void ParticleSystem::Emitt() {
     static int s_ps_log = 0;
@@ -650,14 +671,52 @@ void ParticleSystem::Emitt() {
     // Reset() cycle; we push the node id here on the edge, gated on
     // WasBurstDoneAcked so we never re-push for a sustained-true level.
     m_burst_done_this_tick.clear();
-    for (auto& el : subsystems) {
-        el->Emitt();
+
+    // Global aggregate emit budget.  Track running total of newly-spawned
+    // particles across already-ticked subsystems; once we cross the cap,
+    // remaining subsystems iterate via EmittSkipSpawn so their update /
+    // operators / trail / burst-done all run (existing particles age out
+    // normally) but no new spawning happens this tick.  Skip order is the
+    // iteration order — subsystems declared later vanish first when the
+    // budget binds.
+    size_t total_spawned = 0;
+    bool   over_budget   = false;
+    for (size_t i = 0; i < subsystems.size(); ++i) {
+        auto& el = subsystems[i];
+        if (! el) continue;
+
+        if (over_budget) {
+            el->EmittSkipSpawn();
+        } else {
+            // Snapshot pre/post live particle counts to measure this sub's
+            // spawn delta.  Delta is clamped at zero so operator-driven
+            // deaths in the same tick don't credit against the budget.
+            const size_t pre = particleCountOf(*el);
+            el->Emitt();
+            const size_t post  = particleCountOf(*el);
+            const size_t delta = post > pre ? post - pre : 0;
+            total_spawned += delta;
+            if (total_spawned >= kMaxParticlesPerFrame) {
+                over_budget = true;
+                bool expected = false;
+                if (m_global_emit_warned.compare_exchange_strong(expected, true)) {
+                    LOG_INFO("particle global emit budget exhausted "
+                             "(total=%zu cap=%u after %zu of %zu subs); "
+                             "remaining subs skip spawn this tick",
+                             total_spawned,
+                             kMaxParticlesPerFrame,
+                             i + 1,
+                             subsystems.size());
+                }
+            }
+        }
+
         // Edge-trigger detection AFTER the sub's Emitt has had a chance to
         // flip its m_burst_done.  Only pool-particle subs (NodeId() >= 0)
         // ever appear on the consumer's drain list — non-pool subs leave
         // NodeId at -1 and skip the collector entry.  Ack the sub so
         // subsequent ticks treat the level as "already published".
-        if (el && el->IsBurstDone() && ! el->WasBurstDoneAcked() && el->NodeId() >= 0) {
+        if (el->IsBurstDone() && ! el->WasBurstDoneAcked() && el->NodeId() >= 0) {
             m_burst_done_this_tick.push_back(el->NodeId());
             el->AckBurstDone();
         }

@@ -12,6 +12,18 @@
 namespace wallpaper
 {
 
+// Hard ceiling on the aggregate particles spawned across all subsystems per
+// ParticleSystem::Emitt call.  Once tripped, subsequent subsystems in the
+// iteration skip their spawn phase (update + operators + trail + burst-done
+// all still run, so existing particles age out normally).  Per-subsystem cap
+// is min(maxcount, 20000) at parse time (WPSceneParser); a real scene with
+// 1-30 subsystems at 200-5000 maxcount runs at ~5-30k aggregate per frame.
+// 200k is ~6x the worst real case and 10x the per-sub cap (saturates ~10
+// simultaneously bursting subsystems), well above any legitimate workshop
+// content while blocking the adversarial 500-subsystem case (10M particles /
+// frame -> GPU wedge).
+inline constexpr uint32_t kMaxParticlesPerFrame = 200'000;
+
 enum class ParticleAnimationMode
 {
     SEQUENCE,
@@ -84,6 +96,15 @@ public:
     ~ParticleSubSystem();
 
     void Emitt();
+
+    // Runs the same per-tick body as Emitt but skips the per-instance
+    // emitter spawn block.  Update / operators / trail / burst-done all
+    // still run, so existing particles age out normally and downstream
+    // bookkeeping (CP resolve, dead-instance skip, burst-done edge) stays
+    // in sync.  Used by ParticleSystem::Emitt's global cap path when the
+    // aggregate kMaxParticlesPerFrame ceiling has already been exhausted
+    // by earlier subsystems in this tick.
+    void EmittSkipSpawn();
 
     // Clears all particle instances and trail histories so the next Emitt()
     // treats the subsystem as freshly created — instantaneous emitters fire
@@ -216,6 +237,15 @@ public:
     SpawnType Type() const;
     u32       MaxInstanceCount() const;
 
+    // Read-only view of the live instance pool.  Used by ParticleSystem::Emitt
+    // to snapshot pre/post particle counts for the global emission budget,
+    // and by unit tests to inspect spawn results without touching internals.
+    // Pointer stability matters here — EVENT_FOLLOW children's bounded_data
+    // points into this vector, so callers must not reallocate via mutation.
+    std::span<const std::unique_ptr<ParticleInstance>> Instances() const {
+        return m_instances;
+    }
+
     void SetSpriteTrail(u32 trail_capacity, float trail_length = 0.0f);
 
     // Debug label (particle preset basename, e.g. "thunderbolt_glow") plumbed from the
@@ -236,6 +266,11 @@ public:
     }
 
 private:
+    // Shared body for Emitt() and EmittSkipSpawn().  `skip_spawn` gates the
+    // per-instance emitter spawn block; everything else (CP resolve, update,
+    // operators, trails, burst-done) runs identically.
+    void EmittImpl(bool skip_spawn);
+
     ParticleSystem&            m_sys;
     std::shared_ptr<SceneMesh> m_mesh;
     //	std::vector<std::unique_ptr<ParticleEmitter>> m_emiters;
@@ -351,6 +386,14 @@ public:
         return m_burst_done_this_tick;
     }
 
+    // Test-only observer of the one-shot global emit warning latch.  Set true
+    // the first time ParticleSystem::Emitt detects aggregate spawning crossing
+    // kMaxParticlesPerFrame; remains sticky for the lifetime of this object so
+    // the LOG_INFO fires exactly once (scene reload re-arms by destroying +
+    // recreating the ParticleSystem).  Atomic so the test harness reading
+    // from the doctest thread doesn't race with the render thread's write.
+    bool GlobalEmitWarned() const { return m_global_emit_warned.load(); }
+
     Scene& scene;
 
     std::vector<std::unique_ptr<ParticleSubSystem>> subsystems;
@@ -358,5 +401,11 @@ public:
 
 private:
     std::vector<int32_t> m_burst_done_this_tick;
+
+    // Sticky once-per-lifetime latch for the global emission budget warning.
+    // Atomic guards against concurrent test reader; on x86 the load/store are
+    // essentially free, and on ARM the small fence cost is negligible vs the
+    // work done per tick.
+    std::atomic<bool> m_global_emit_warned { false };
 };
 } // namespace wallpaper
