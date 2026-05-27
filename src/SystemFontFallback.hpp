@@ -28,4 +28,11 @@ std::string ResolveSystemFontFallback(const std::string& we_name);
 // outside the WE VFS.  Returns empty on failure.
 std::string ReadSystemFile(const std::string& path);
 
+// Resolve a CJK Han fallback font (Noto Sans CJK by default).  Returns the
+// first existing path from a curated candidate list spanning Fedora/Bazzite,
+// Debian/Ubuntu, Arch, and openSUSE.  Empty string when no CJK font is
+// installed.  Caller decides what to do on empty (typically fall back to
+// the primary face's .notdef glyph plus a rate-limited LOG_INFO).
+std::string ResolveCJKHanFallback();
+
 } // namespace wallpaper

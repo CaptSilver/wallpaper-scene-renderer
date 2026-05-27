@@ -1,4 +1,5 @@
 #include "WPTextRenderer.hpp"
+#include "SystemFontFallback.hpp"
 #include "Utils/Logging.h"
 
 #include <ft2build.h>
@@ -124,6 +125,117 @@ void purgeFaceCacheLocked() {
     s_faceLru.clear();
     s_faceIdx.clear();
 }
+
+// -------- kerning + missing-glyph + CJK fallback --------
+//
+// Closes two FreeType-direct gaps:
+//   (a) FT_HAS_KERNING / FT_Get_Kerning were never invoked.  Pairs like AV,
+//       To, Te, Wa rendered unkerned even on fonts that ship a `kern` table.
+//   (b) FT_Load_Char silently loaded .notdef on a missing codepoint; mixed-
+//       script text (CJK in a Latin font) rendered as silent boxes with no
+//       log line for the user to investigate.  Switch to explicit
+//       FT_Get_Char_Index → kerning delta → FT_Load_Glyph; count missing
+//       glyphs and rate-limit a LOG_INFO.  When WEKDE_TEXT_CJK_FALLBACK=1,
+//       load a Noto Sans CJK fallback face (held under s_ftLibMutex like the
+//       primary cache) and render the Han glyph through it instead of
+//       emitting .notdef.
+//
+// Out of scope (deferred subitem): HarfBuzz-driven combining marks, RTL,
+// color emoji, complex-script shaping, GPOS kerning beyond the legacy
+// `kern` table.
+
+// Counts FT_Get_Kerning attempts process-wide.  Test-only observable.
+std::atomic<int> s_kerningProbeCount { 0 };
+// Counts CJK fallback consults (i.e. how many times the missing-glyph branch
+// invoked acquireFallbackFaceLocked) process-wide.  Test-only observable.
+std::atomic<int> s_fallbackProbeCount { 0 };
+// Rate-limit state for the per-call missing-glyph LOG_INFO.  Ticks on every
+// call that has any missing glyph; fires LOG_INFO once per 32 ticks.
+std::atomic<int> s_missingGlyphLogTick { 0 };
+std::atomic<int> s_missingGlyphLogFired { 0 };
+
+// Query the legacy `kern` table for the (prevIdx, idx) pair.  Returns the
+// horizontal kerning in pixels (already grid-fitted by FT_KERNING_DEFAULT
+// and the >>6 6.6-fixed-point shift).  Caller MUST gate on hasKerning ==
+// FT_HAS_KERNING(face) and on both indices being nonzero — calling
+// FT_Get_Kerning with idx==0 (missing glyph) is undefined per FT docs.
+//
+// Counted on every invocation regardless of return value so the test
+// instrumentation can prove the kerning probe is reached.  GPOS-table
+// kerning is HarfBuzz scope (most fonts shipping `kern` duplicate the
+// data in GPOS; the legacy table covers ~90% of Latin typographic pairs).
+int getKerningDelta(FT_Face face, FT_UInt prevIdx, FT_UInt idx, bool hasKerning) {
+    if (! hasKerning || prevIdx == 0 || idx == 0) return 0;
+    s_kerningProbeCount.fetch_add(1, std::memory_order_relaxed);
+    FT_Vector kern;
+    if (FT_Get_Kerning(face, prevIdx, idx, FT_KERNING_DEFAULT, &kern) != 0) return 0;
+    return static_cast<int>(kern.x >> 6);
+}
+
+// Han-script codepoint test for the Tier-2 CJK fallback.  Covers CJK
+// Unified Ideographs (U+4E00..U+9FFF), the CJK Symbols & Punctuation block
+// (U+3000..U+303F, used in Chinese/Japanese punctuation), Hiragana
+// (U+3040..U+309F), Katakana (U+30A0..U+30FF), Hangul Syllables
+// (U+AC00..U+D7AF), CJK Compatibility Ideographs (U+F900..U+FAFF), and the
+// supplementary Han plane (U+20000..U+2FFFF).  Narrow enough to skip
+// Cyrillic, Arabic, Devanagari (which would need their own fallback fonts).
+bool isHanCodepoint(uint32_t cp) {
+    return (cp >= 0x3000u && cp <= 0x9FFFu) || (cp >= 0xAC00u && cp <= 0xD7AFu) ||
+           (cp >= 0xF900u && cp <= 0xFAFFu) || (cp >= 0x20000u && cp <= 0x2FFFFu);
+}
+
+// Lazily-loaded CJK Han fallback face.  One static face per process; lives
+// behind s_ftLibMutex.  The cache holds an owned copy of the font bytes
+// (FT_New_Memory_Face does NOT copy).  Cleared by Shutdown.
+//
+// Distinct lifetime from the primary face cache — the candidate font is
+// resolved from the system, not from the caller's tl.fontData, so the
+// "key" is just "the one CJK font we picked".  No need to plumb through
+// the LRU.
+std::string s_fallbackFontBytes;
+FT_Face     s_fallbackFace { nullptr };
+FT_UInt     s_fallbackPixelSize { 0 };
+
+// MUST be called under s_ftLibMutex.  Loads the fallback face on first
+// call (returns nullptr if no CJK font is installed) and sets pixel size.
+FT_Face acquireFallbackFaceLocked(FT_UInt pixelSize) {
+    s_fallbackProbeCount.fetch_add(1, std::memory_order_relaxed);
+    if (! s_fallbackFace) {
+        std::string path = ResolveCJKHanFallback();
+        if (path.empty()) return nullptr;
+        s_fallbackFontBytes = ReadSystemFile(path);
+        if (s_fallbackFontBytes.empty()) return nullptr;
+        FT_Error err =
+            FT_New_Memory_Face(s_ftLib,
+                               reinterpret_cast<const FT_Byte*>(s_fallbackFontBytes.data()),
+                               static_cast<FT_Long>(s_fallbackFontBytes.size()),
+                               0,
+                               &s_fallbackFace);
+        if (err || ! s_fallbackFace) {
+            s_fallbackFace = nullptr;
+            s_fallbackFontBytes.clear();
+            return nullptr;
+        }
+        LOG_INFO("WPTextRenderer: loaded CJK Han fallback face from %s", path.c_str());
+    }
+    if (s_fallbackPixelSize != pixelSize) {
+        FT_Set_Pixel_Sizes(s_fallbackFace, 0, pixelSize);
+        s_fallbackPixelSize = pixelSize;
+    }
+    return s_fallbackFace;
+}
+
+// MUST be called under s_ftLibMutex.  Frees the fallback face BEFORE
+// FT_Done_FreeType so the FT_Face does not dangle on the freed library.
+void purgeFallbackFaceLocked() {
+    if (s_fallbackFace) {
+        FT_Done_Face(s_fallbackFace);
+        s_fallbackFace = nullptr;
+    }
+    s_fallbackFontBytes.clear();
+    s_fallbackPixelSize = 0;
+}
+
 } // namespace
 
 void WPTextRenderer::Init() {
@@ -141,6 +253,7 @@ void WPTextRenderer::Shutdown() {
     // Purge cached faces BEFORE freeing the library; cached FT_Face
     // objects internally reference s_ftLib and would dangle otherwise.
     purgeFaceCacheLocked();
+    purgeFallbackFaceLocked();
     if (s_ftLib) {
         FT_Done_FreeType(s_ftLib);
         s_ftLib = nullptr;
@@ -195,8 +308,38 @@ static int EffectiveAdvance(FT_GlyphSlot g) {
     return std::max(adv, visualEnd);
 }
 
-// Measure the pixel width of a single line
+// Measure the pixel width of a single line — kerned variant.  Must match
+// the raster loop's pen advance byte-for-byte (same FT_Get_Char_Index →
+// kerning delta → FT_Load_Glyph sequence) or right/center alignment drifts
+// by the cumulative kerning.
 static int MeasureLineWidth(FT_Face face, const std::string& line) {
+    const bool  hasKerning = FT_HAS_KERNING(face);
+    int         pen_x      = 0;
+    FT_UInt     prevIdx    = 0;
+    const char* p          = line.data();
+    const char* end        = p + line.size();
+    while (p < end) {
+        uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
+        if (cp == 0) break;
+        FT_UInt idx = FT_Get_Char_Index(face, cp);
+        // idx == 0 → .notdef.  For measurement we still advance by the
+        // .notdef glyph's metrics — the raster loop also rasterizes it,
+        // and the two paths must agree on the width.
+        pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
+        if (FT_Load_Glyph(face, idx, FT_LOAD_DEFAULT) != 0) {
+            prevIdx = idx;
+            continue;
+        }
+        pen_x += EffectiveAdvance(face->glyph);
+        prevIdx = idx;
+    }
+    return pen_x;
+}
+
+// Unkerned MeasureLineWidth — test-only baseline for TEST_measureLineWidthNoKerning.
+// Mirrors the pre-Q4 measure loop verbatim.  Do NOT delete: the kerned-vs-unkerned
+// comparison test relies on this.
+static int MeasureLineWidthUnkerned(FT_Face face, const std::string& line) {
     int         pen_x = 0;
     const char* p     = line.data();
     const char* end   = p + line.size();
@@ -323,6 +466,18 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         startY = padding + (usableH - totalH) / 2 + ascender;
     }
 
+    // Kerning is queried once per call (cheap — single FT_HAS_KERNING flag
+    // bit).  Both MeasureLineWidth and the raster loop honour the same
+    // hasKerning verdict so alignment stays in sync.
+    const bool hasKerning            = FT_HAS_KERNING(face);
+    int        missingGlyphsThisCall = 0;
+    // Re-read the env var on every call rather than caching in a static —
+    // the test suite toggles WEKDE_TEXT_CJK_FALLBACK between cases, so a
+    // process-lifetime cache would lock in the first value seen.  The
+    // getenv cost (~30ns) is dwarfed by the per-call FT raster work.
+    const char* cjkEnv        = std::getenv("WEKDE_TEXT_CJK_FALLBACK");
+    const bool  cjkFallbackOn = (cjkEnv && cjkEnv[0] == '1');
+
     for (usize li = 0; li < lines.size(); ++li) {
         const auto& line = lines[li];
         if (line.empty()) continue;
@@ -341,15 +496,54 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
 
         i32 baselineY = startY + static_cast<i32>(li) * lineH;
         i32 pen_x     = startX;
+        // Track previous glyph index for FT_Get_Kerning.  Reset per line —
+        // kerning across a newline is not a thing.
+        FT_UInt prevIdx = 0;
 
         const char* p   = line.data();
         const char* end = p + line.size();
         while (p < end) {
             uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
             if (cp == 0) break;
-            if (FT_Load_Char(face, cp, FT_LOAD_RENDER) != 0) continue;
+            // Explicit glyph-index lookup.  FT_Load_Char would silently
+            // substitute .notdef on miss; FT_Get_Char_Index returns 0 so
+            // we can count the miss and (optionally) route to the
+            // fallback face.
+            FT_UInt idx       = FT_Get_Char_Index(face, cp);
+            FT_Face faceToUse = face;
+            if (idx == 0) {
+                ++missingGlyphsThisCall;
+                // Tier-2 CJK fallback — opt-in via WEKDE_TEXT_CJK_FALLBACK=1.
+                // Only attempted for codepoints in the Han block (CJK
+                // Unified Ideographs + Hangul + Kana + CJK punctuation) so
+                // Cyrillic / Arabic / Devanagari still fall through to
+                // .notdef + log.
+                if (cjkFallbackOn && isHanCodepoint(cp)) {
+                    FT_Face fb = acquireFallbackFaceLocked(static_cast<FT_UInt>(pixelSize));
+                    if (fb) {
+                        FT_UInt fbIdx = FT_Get_Char_Index(fb, cp);
+                        if (fbIdx != 0) {
+                            faceToUse = fb;
+                            idx       = fbIdx;
+                            // missingGlyphsThisCall stays incremented so
+                            // the LOG_INFO still surfaces the font/script
+                            // mismatch — the fallback is a render-quality
+                            // band-aid, not a "this font covered it" win.
+                        }
+                    }
+                }
+            }
+            // Kerning is queried against the primary face (the only one
+            // with a known kern table).  When idx is a fallback-face glyph
+            // the call returns 0 — FT_Get_Kerning won't find the pair —
+            // and pen_x is unaffected.  Cross-face kerning is HarfBuzz scope.
+            pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
+            if (FT_Load_Glyph(faceToUse, idx, FT_LOAD_RENDER) != 0) {
+                prevIdx = idx;
+                continue;
+            }
 
-            FT_GlyphSlot g  = face->glyph;
+            FT_GlyphSlot g  = faceToUse->glyph;
             i32          bx = pen_x + g->bitmap_left;
             i32          by = baselineY - g->bitmap_top;
 
@@ -362,17 +556,32 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                     uint8_t alpha = g->bitmap.buffer[row * g->bitmap.pitch + col];
                     if (alpha == 0) continue;
 
-                    usize idx = (static_cast<usize>(py) * static_cast<usize>(width) +
-                                 static_cast<usize>(px)) *
-                                4;
+                    usize bidx = (static_cast<usize>(py) * static_cast<usize>(width) +
+                                  static_cast<usize>(px)) *
+                                 4;
                     // White text, alpha = glyph coverage (max blend for overlapping glyphs)
-                    buf[idx + 0] = 255;
-                    buf[idx + 1] = 255;
-                    buf[idx + 2] = 255;
-                    buf[idx + 3] = std::max(buf[idx + 3], alpha);
+                    buf[bidx + 0] = 255;
+                    buf[bidx + 1] = 255;
+                    buf[bidx + 2] = 255;
+                    buf[bidx + 3] = std::max(buf[bidx + 3], alpha);
                 }
             }
             pen_x += EffectiveAdvance(g);
+            prevIdx = idx;
+        }
+    }
+
+    // Rate-limited missing-glyph log.  ~once per 32 calls that hit any
+    // missing glyph.  Acceptable journal density for a clock wallpaper
+    // that ticks through missing CJK glyphs at 1Hz (~one line every 32s).
+    if (missingGlyphsThisCall > 0) {
+        int n = s_missingGlyphLogTick.fetch_add(1, std::memory_order_relaxed);
+        if ((n & 31) == 0) {
+            s_missingGlyphLogFired.fetch_add(1, std::memory_order_relaxed);
+            LOG_INFO("WPTextRenderer: %d codepoint(s) missing in font (.notdef glyph "
+                     "emitted) in text \"%.32s\" — font may not cover the script",
+                     missingGlyphsThisCall,
+                     text.c_str());
         }
     }
 
@@ -437,10 +646,10 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             // RGBA → RGB with alpha as visible white-on-black
             std::vector<uint8_t> rgb(static_cast<usize>(width) * static_cast<usize>(height) * 3);
             for (usize i = 0; i < static_cast<usize>(width) * static_cast<usize>(height); ++i) {
-                uint8_t a    = buf[i * 4 + 3];
-                rgb[i * 3]   = a;
-                rgb[i*3 + 1] = a;
-                rgb[i*3 + 2] = a;
+                uint8_t a      = buf[i * 4 + 3];
+                rgb[i * 3]     = a;
+                rgb[i * 3 + 1] = a;
+                rgb[i * 3 + 2] = a;
             }
             std::fwrite(rgb.data(), 1, rgb.size(), fp);
             std::fclose(fp);
@@ -448,6 +657,101 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     }
 
     return img_ptr;
+}
+
+// -------- test-only accessors --------
+//
+// All four "measure" / "host kerning" probes build a one-shot FT_Face via
+// FT_New_Memory_Face → FT_Done_Face rather than going through Q2's LRU.
+// Going through the LRU would inflate cache-size in the FT_Face cache test
+// suite; the one-shot face cost is acceptable for a test path that runs
+// O(10) times per binary.
+
+int WPTextRenderer::TEST_measureLineWidthWithKerning(const std::string& fontData, float pointsize,
+                                                     const std::string& line) {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    if (! s_ftLib) {
+        FT_Error err = FT_Init_FreeType(&s_ftLib);
+        if (err) return -1;
+    }
+    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * kRasterDpiScale + 0.5f);
+    if (pixelSize < 4) pixelSize = 4;
+    FT_Face  face = nullptr;
+    FT_Error err  = FT_New_Memory_Face(s_ftLib,
+                                      reinterpret_cast<const FT_Byte*>(fontData.data()),
+                                      static_cast<FT_Long>(fontData.size()),
+                                      0,
+                                      &face);
+    if (err || ! face) return -1;
+    FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
+    int w = MeasureLineWidth(face, line);
+    FT_Done_Face(face);
+    return w;
+}
+
+int WPTextRenderer::TEST_measureLineWidthNoKerning(const std::string& fontData, float pointsize,
+                                                   const std::string& line) {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    if (! s_ftLib) {
+        FT_Error err = FT_Init_FreeType(&s_ftLib);
+        if (err) return -1;
+    }
+    i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * kRasterDpiScale + 0.5f);
+    if (pixelSize < 4) pixelSize = 4;
+    FT_Face  face = nullptr;
+    FT_Error err  = FT_New_Memory_Face(s_ftLib,
+                                      reinterpret_cast<const FT_Byte*>(fontData.data()),
+                                      static_cast<FT_Long>(fontData.size()),
+                                      0,
+                                      &face);
+    if (err || ! face) return -1;
+    FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
+    int w = MeasureLineWidthUnkerned(face, line);
+    FT_Done_Face(face);
+    return w;
+}
+
+void WPTextRenderer::TEST_resetKerningProbeCounter() {
+    s_kerningProbeCount.store(0, std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getKerningProbeCount() {
+    return s_kerningProbeCount.load(std::memory_order_relaxed);
+}
+
+bool WPTextRenderer::TEST_hostFontHasKerning(const std::string& fontData) {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    if (! s_ftLib) {
+        FT_Error err = FT_Init_FreeType(&s_ftLib);
+        if (err) return false;
+    }
+    FT_Face  face = nullptr;
+    FT_Error err  = FT_New_Memory_Face(s_ftLib,
+                                      reinterpret_cast<const FT_Byte*>(fontData.data()),
+                                      static_cast<FT_Long>(fontData.size()),
+                                      0,
+                                      &face);
+    if (err || ! face) return false;
+    bool hk = FT_HAS_KERNING(face);
+    FT_Done_Face(face);
+    return hk;
+}
+
+void WPTextRenderer::TEST_resetFallbackProbeCounter() {
+    s_fallbackProbeCount.store(0, std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getFallbackProbeCount() {
+    return s_fallbackProbeCount.load(std::memory_order_relaxed);
+}
+
+void WPTextRenderer::TEST_resetMissingGlyphLogCounter() {
+    s_missingGlyphLogTick.store(0, std::memory_order_relaxed);
+    s_missingGlyphLogFired.store(0, std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getMissingGlyphLogCount() {
+    return s_missingGlyphLogFired.load(std::memory_order_relaxed);
 }
 
 } // namespace wallpaper

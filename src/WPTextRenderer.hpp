@@ -92,6 +92,27 @@ public:
     static std::size_t  TEST_getFaceCacheSize();
     static unsigned int TEST_getLastPixelSize(const void* fontDataPtr);
     static std::size_t  TEST_getFaceCacheCapacity();
+
+    // Test-only accessors for kerning + fallback diagnostics.
+    //   TEST_measureLineWidthWithKerning / NoKerning rebuild a throwaway
+    //   FT_Face per call (not via the LRU cache) so they do not pollute
+    //   cache-size assertions in the FT_Face cache suite.
+    //   TEST_reset/getKerningProbeCounter — counts FT_Get_Kerning attempts.
+    //   TEST_hostFontHasKerning — wraps FT_HAS_KERNING on the passed font.
+    //   TEST_reset/getFallbackProbeCounter — counts CJK fallback consults.
+    //   TEST_reset/getMissingGlyphLogCount — counts rate-limited LOG_INFO
+    //   firings for missing glyphs in this process.
+    static int  TEST_measureLineWidthWithKerning(const std::string& fontData, float pointsize,
+                                                 const std::string& line);
+    static int  TEST_measureLineWidthNoKerning(const std::string& fontData, float pointsize,
+                                               const std::string& line);
+    static void TEST_resetKerningProbeCounter();
+    static int  TEST_getKerningProbeCount();
+    static bool TEST_hostFontHasKerning(const std::string& fontData);
+    static void TEST_resetFallbackProbeCounter();
+    static int  TEST_getFallbackProbeCount();
+    static void TEST_resetMissingGlyphLogCounter();
+    static int  TEST_getMissingGlyphLogCount();
 };
 
 } // namespace wallpaper

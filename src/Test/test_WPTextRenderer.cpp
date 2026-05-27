@@ -472,3 +472,151 @@ TEST_SUITE("WPTextRenderer FT_Face cache") {
         WPTextRenderer::Shutdown();
     }
 }
+
+// ---------- kerning + fallback face ----------
+//
+// Closes two FreeType-direct call-site bugs in RenderText / MeasureLineWidth:
+// (a) FT_HAS_KERNING / FT_Get_Kerning were never invoked, so pairs like AV,
+//     To, Te, Wa rendered unkerned even on fonts shipping a `kern` table.
+// (b) FT_Load_Char silently loaded the .notdef glyph on a missing codepoint;
+//     a CJK string in a Latin-only font rendered as silent boxes with no log.
+//     RenderText now counts missing glyphs via FT_Get_Char_Index, emits a
+//     rate-limited LOG_INFO per scene, and optionally loads a Noto Sans CJK
+//     fallback face for codepoints in the Han block when WEKDE_TEXT_CJK_FALLBACK=1.
+
+#include <cstdlib> // setenv / unsetenv
+
+TEST_SUITE("WPTextRenderer kerning + fallback") {
+    static std::string loadHostFont() {
+        const std::string path = wallpaper::ResolveSystemFontFallback("systemfont_sans");
+        if (path.empty()) return {};
+        return wallpaper::ReadSystemFile(path);
+    }
+
+    TEST_CASE("FT_Get_Kerning is invoked between consecutive glyphs on a kerned font") {
+        // (a) Direct instrumentation: count the number of FT_Get_Kerning
+        // attempts during a rasterization of a string with multiple pairs.
+        // The counter is a test-only accessor exposed by WPTextRenderer.
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::TEST_resetKerningProbeCounter();
+        // Kerning is only attempted when FT_HAS_KERNING(face) returns true;
+        // record the host's verdict so the assertion can decline gracefully
+        // on fonts without a legacy `kern` table.
+        auto img =
+            WPTextRenderer::RenderText(fontData, 24.f, "AVAVAV", 256, 64, "left", "top", 0);
+        REQUIRE(img != nullptr);
+        const int attempts = WPTextRenderer::TEST_getKerningProbeCount();
+        if (! WPTextRenderer::TEST_hostFontHasKerning(fontData)) {
+            MESSAGE("Host's Liberation Sans lacks a legacy `kern` table; kerning "
+                    "queries skipped per FreeType semantics (GPOS is HarfBuzz scope).");
+            CHECK(attempts == 0);
+        } else {
+            // 6 glyphs in "AVAVAV" → 5 consecutive pairs that should be
+            // probed.  MeasureLineWidth also probes the same 5 pairs, so
+            // the count is 10.  Defend with a loose lower bound: probe
+            // count must be >= 5 (the raster pass alone produces this).
+            CHECK(attempts >= 5);
+        }
+    }
+
+    TEST_CASE("primary face missing glyph: fallback consulted under WEKDE_TEXT_CJK_FALLBACK=1") {
+        // (b) When WEKDE_TEXT_CJK_FALLBACK=1 and FT_Get_Char_Index on the
+        // primary face returns 0, RenderText loads the Noto Sans CJK
+        // fallback face (held under s_ftLibMutex, cached via Q2's LRU)
+        // and uses its glyph instead of .notdef.
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("Noto Sans CJK absent on host; skipping fallback test");
+            return;
+        }
+        ::setenv("WEKDE_TEXT_CJK_FALLBACK", "1", 1);
+        WPTextRenderer::TEST_resetFallbackProbeCounter();
+        auto img = WPTextRenderer::RenderText(fontData, 24.f, "\xE4\xB8\xAD", 64, 64, "center",
+                                              "center", 0);
+        const int consulted = WPTextRenderer::TEST_getFallbackProbeCount();
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        REQUIRE(img != nullptr);
+        // The fallback path must have been consulted at least once for the
+        // single Han codepoint U+4E2D.
+        CHECK(consulted >= 1);
+        // The fallback Han glyph rasterizes through the primary face's
+        // ascender/descender baseline.  Sum total alpha across the canvas —
+        // a .notdef box has sparse alpha; the actual 中 from Noto is dense.
+        // Threshold conservatively (well above any plausible .notdef-only
+        // hollow rectangle).
+        const uint8_t* data       = img->slots[0].mipmaps[0].data.get();
+        int            totalAlpha = 0;
+        for (int i = 0; i < 64 * 64; ++i) totalAlpha += data[i * 4 + 3];
+        CHECK(totalAlpha > 5000);
+    }
+
+    TEST_CASE("primary face missing glyph: env unset → replacement glyph + LOG_INFO once") {
+        // When the env var is OFF (default), RenderText must:
+        //   (1) NOT consult the fallback face at all;
+        //   (2) still rasterize the .notdef glyph (replacement);
+        //   (3) emit LOG_INFO at least once across multiple consecutive
+        //       missing-glyph calls (rate-limited to ~once per 32).
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::TEST_resetFallbackProbeCounter();
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        std::string cjk = "\xE4\xB8\xAD"; // U+4E2D '中'
+        for (int i = 0; i < 100; ++i) {
+            (void)WPTextRenderer::RenderText(fontData, 16.f, cjk, 32, 32, "center", "center", 0);
+        }
+        // (1) Fallback must NOT be touched when the env var is unset, even
+        // if Noto CJK happens to be installed on the host.
+        CHECK(WPTextRenderer::TEST_getFallbackProbeCount() == 0);
+        // (3) LOG_INFO fires at least once across the 100 calls.
+        const int logged = WPTextRenderer::TEST_getMissingGlyphLogCount();
+        CHECK(logged >= 1);
+        CHECK(logged <= 6);
+    }
+
+    TEST_CASE("all-Latin font + Latin string: no fallback-face load") {
+        // (c) Gate check: when no codepoint in the string is missing from
+        // the primary face, the fallback resolver must not be touched —
+        // not even when the env var is set.  Defends against an over-eager
+        // implementation that loads Noto CJK on every RenderText call.
+        ::setenv("WEKDE_TEXT_CJK_FALLBACK", "1", 1);
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::TEST_resetFallbackProbeCounter();
+        auto img =
+            WPTextRenderer::RenderText(fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        REQUIRE(img != nullptr);
+        // No missing glyph in the primary → no fallback probe.
+        CHECK(WPTextRenderer::TEST_getFallbackProbeCount() == 0);
+    }
+
+    TEST_CASE("kerned line width <= unkerned line width") {
+        // Sanity for the measure loop: applying kerning never makes the
+        // line wider.  Pre-Q4 there was no kerned measure at all; with
+        // Q4 the kerned measure must match what the raster loop produces
+        // (or right alignment drifts).
+        auto fontData = loadHostFont();
+        if (fontData.empty()) return;
+        const int kerned = WPTextRenderer::TEST_measureLineWidthWithKerning(fontData, 48.f, "AV");
+        const int unkern = WPTextRenderer::TEST_measureLineWidthNoKerning(fontData, 48.f, "AV");
+        REQUIRE(kerned > 0);
+        REQUIRE(unkern > 0);
+        CHECK(kerned <= unkern);
+    }
+}

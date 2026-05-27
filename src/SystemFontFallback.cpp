@@ -140,4 +140,34 @@ std::string ReadSystemFile(const std::string& path) {
     return out;
 }
 
+std::string ResolveCJKHanFallback() {
+    // Curated candidate list — first existing wins.  Covers:
+    //   Fedora / RHEL / Bazzite — google-noto-sans-cjk-fonts
+    //   Debian / Ubuntu         — fonts-noto-cjk
+    //   Arch                    — noto-fonts-cjk
+    //   openSUSE                — noto-sans-cjk-fonts
+    //   Generic /usr/share/fonts/noto layouts as a last resort.
+    // Noto Sans CJK is the canonical pan-CJK choice because it ships as a
+    // single OTC covering Hans/Hant/Hangul/Kana in one face.  Source Han Sans
+    // and Sarasa Gothic are alternative families; if a host has only those
+    // installed the fallback returns empty and the renderer emits .notdef.
+    static const char* kCandidates[] = {
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/TTF/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto/NotoSansCJK-Regular.ttc",
+        // Last-resort: any Noto Sans CJK weight at the canonical Fedora path.
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Medium.ttc",
+    };
+    for (const char* path : kCandidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(path, ec) && !ec) {
+            return path;
+        }
+    }
+    return {};
+}
+
 } // namespace wallpaper
