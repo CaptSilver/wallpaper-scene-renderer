@@ -135,10 +135,11 @@ void purgeFaceCacheLocked() {
 //       script text (CJK in a Latin font) rendered as silent boxes with no
 //       log line for the user to investigate.  Switch to explicit
 //       FT_Get_Char_Index → kerning delta → FT_Load_Glyph; count missing
-//       glyphs and rate-limit a LOG_INFO.  When WEKDE_TEXT_CJK_FALLBACK=1,
-//       load a Noto Sans CJK fallback face (held under s_ftLibMutex like the
-//       primary cache) and render the Han glyph through it instead of
-//       emitting .notdef.
+//       glyphs and rate-limit a LOG_INFO.  By default, load a Noto Sans CJK
+//       fallback face (held under s_ftLibMutex like the primary cache) and
+//       render the Han glyph through it instead of emitting .notdef;
+//       WEKDE_TEXT_CJK_FALLBACK=0 disables (opt-out preserved for the
+//       .notdef-rendering testing case).
 //
 // Out of scope (deferred subitem): HarfBuzz-driven combining marks, RTL,
 // color emoji, complex-script shaping, GPOS kerning beyond the legacy
@@ -475,8 +476,9 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // the test suite toggles WEKDE_TEXT_CJK_FALLBACK between cases, so a
     // process-lifetime cache would lock in the first value seen.  The
     // getenv cost (~30ns) is dwarfed by the per-call FT raster work.
+    // Semantics: default ON; WEKDE_TEXT_CJK_FALLBACK=0 disables (opt-out).
     const char* cjkEnv        = std::getenv("WEKDE_TEXT_CJK_FALLBACK");
-    const bool  cjkFallbackOn = (cjkEnv && cjkEnv[0] == '1');
+    const bool  cjkFallbackOn = ! (cjkEnv && cjkEnv[0] == '0');
 
     for (usize li = 0; li < lines.size(); ++li) {
         const auto& line = lines[li];
@@ -513,11 +515,11 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             FT_Face faceToUse = face;
             if (idx == 0) {
                 ++missingGlyphsThisCall;
-                // Tier-2 CJK fallback — opt-in via WEKDE_TEXT_CJK_FALLBACK=1.
-                // Only attempted for codepoints in the Han block (CJK
-                // Unified Ideographs + Hangul + Kana + CJK punctuation) so
-                // Cyrillic / Arabic / Devanagari still fall through to
-                // .notdef + log.
+                // Tier-2 CJK fallback — default ON, opt-OUT via
+                // WEKDE_TEXT_CJK_FALLBACK=0.  Only attempted for codepoints
+                // in the Han block (CJK Unified Ideographs + Hangul + Kana
+                // + CJK punctuation) so Cyrillic / Arabic / Devanagari
+                // still fall through to .notdef + log.
                 if (cjkFallbackOn && isHanCodepoint(cp)) {
                     FT_Face fb = acquireFallbackFaceLocked(static_cast<FT_UInt>(pixelSize));
                     if (fb) {
