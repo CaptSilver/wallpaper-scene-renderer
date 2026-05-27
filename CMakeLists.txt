@@ -27,6 +27,13 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekSanitize.cmake)
 # and wek_warn_opts for the wescene-renderer-qml bridge below.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekWarnings.cmake)
 
+# Release-time hardening plumbing (WEK_HARDEN + WEK_LTO + WEK_USE_LLD).  Same
+# canonical-file pattern as WekWarnings / WekSanitize above.  Provides
+# wek_harden_opts + wek_harden_link_opts for the wescene-renderer-qml bridge
+# below; the option declarations are visible to standalone-submodule
+# configures too.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekHardening.cmake)
+
 if(PROFILING)
     # Applied before add_subdirectory so every backend target compiles the
     # WEK_PROFILE_SCOPE macros to real timers instead of ((void)0).
@@ -126,7 +133,8 @@ if(BUILD_QML)
     # conservative wek_warn_opts (-Wall -Wextra, +/-Werror under WEK_WERROR).
     # Not the full -Wconversion family: the bridge marshals QJSEngine doubles
     # <-> C++ ints heavily and that would drown the actionable warnings.
-    target_compile_options(${PROJECT_NAME}-qml PRIVATE ${wek_warn_opts})
+    target_compile_options(${PROJECT_NAME}-qml PRIVATE ${wek_warn_opts} ${wek_harden_opts})
+    target_link_options(${PROJECT_NAME}-qml PRIVATE ${wek_harden_link_opts})
 
     set(CMAKE_AUTOMOC OFF)
     set(CMAKE_AUTORCC OFF) 
