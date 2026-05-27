@@ -4592,6 +4592,12 @@ void SceneObject::evaluatePropertyScripts() {
     // into a flat stride-4 array [idx, v1, v2, v3, ...].  Errors are pushed
     // to `_scriptErrors` (stride 4: idx, message, line, stack) and drained
     // below.  Kind for each idx is known from `m_propertyScriptStates[idx].kind`.
+    //
+    // The flat result is all-numeric and stride-4, so we marshal it via ONE
+    // `toVariant().toList()` boundary crossing and index the resulting
+    // QVariantList natively, instead of N `QJSValue::property(i).toNumber()`
+    // round-trips through the JS accessor.  Errors drain (mixed-type, rare,
+    // capped at 10 per id+kind) stays on the per-element path.
     if (m_runAllPropertyScriptsFn.isCallable()) {
         using Kind              = PropertyScriptState::Kind;
         bool     wasInterrupted = false;
@@ -4601,21 +4607,23 @@ void SceneObject::evaluatePropertyScripts() {
             },
             &wasInterrupted);
         tickInterrupted = tickInterrupted || wasInterrupted;
-        int total       = out.property("length").toInt();
+        // Single boundary crossing for the entire flat numeric array.
+        const QVariantList list  = out.toVariant().toList();
+        const int          total = (int)list.size();
         for (int i = 0; i < total; i += 4) {
-            int idx = out.property(i).toInt();
+            int idx = (int)list[i].toDouble();
             if (idx < 0 || idx >= (int)m_propertyScriptStates.size()) continue;
             auto& state = m_propertyScriptStates[idx];
             switch (state.kind) {
             case Kind::Visible: {
-                bool v               = out.property(i + 1).toInt() != 0;
+                bool v               = list[i + 1].toDouble() != 0.0;
                 state.currentVisible = v;
                 m_scene->updateNodeVisible(state.id, v);
                 if (s_scriptDiag) s_updatesVisible++;
                 break;
             }
             case Kind::Alpha: {
-                float v            = (float)out.property(i + 1).toNumber();
+                float v            = (float)list[i + 1].toDouble();
                 state.currentFloat = v;
                 m_scene->updateNodeAlpha(state.id, v);
                 if (s_scriptDiag) s_updatesAlpha++;
@@ -4625,16 +4633,16 @@ void SceneObject::evaluatePropertyScripts() {
                 // Same wire shape as Alpha (single float), routed to the
                 // particle subsystem's dynamic rate multiplier instead of
                 // the g_UserAlpha uniform.
-                float v            = (float)out.property(i + 1).toNumber();
+                float v            = (float)list[i + 1].toDouble();
                 state.currentFloat = v;
                 m_scene->updateParticleRate(state.id, v);
                 if (s_scriptDiag) s_updatesAlpha++;
                 break;
             }
             case Kind::Vec3: {
-                float x           = (float)out.property(i + 1).toNumber();
-                float y           = (float)out.property(i + 2).toNumber();
-                float z           = (float)out.property(i + 3).toNumber();
+                float x           = (float)list[i + 1].toDouble();
+                float y           = (float)list[i + 2].toDouble();
+                float z           = (float)list[i + 3].toDouble();
                 state.currentVec3 = { x, y, z };
                 m_scene->updateNodeTransform(state.id, state.property, x, y, z);
                 if (s_scriptDiag) s_updatesVec3++;

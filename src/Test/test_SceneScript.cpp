@@ -10321,3 +10321,179 @@ TEST_SUITE("ParticleSubByNodeId Lifetime") {
         CHECK(map.size() == 3);
     }
 } // TEST_SUITE ParticleSubByNodeId Lifetime
+
+// ------------------------------------------------------------------
+// SceneBackend dirty-layer readback bulk
+//
+// Pins the contract for the property-script `_runAllPropertyScripts`
+// result drain (SceneBackend.cpp ~4595): the all-numeric stride-4 flat
+// array is now marshalled via ONE `out.toVariant().toList()` boundary
+// crossing + native QVariantList indexing instead of N
+// `out.property(i).toNumber()` reads.
+//
+// These tests pin the EQUIVALENCE between the two paths so the prod
+// drain can swap from per-element to bulk while keeping byte-identical
+// dispatched values.
+// ------------------------------------------------------------------
+TEST_SUITE("SceneBackend dirty-layer readback bulk") {
+    TEST_CASE("toVariant().toList() yields the same doubles as per-element property reads") {
+        QJSEngine e;
+        // Stride-4 entries like _runAllPropertyScripts emits.  Slot 0 of
+        // each stride is an integer index (echoed from the JS-resolved
+        // state idx), slots 1..3 are floats / bool-as-int.  Mixed kinds:
+        //   stride 0: Visible idx=0, v=1, _, _
+        //   stride 1: Alpha   idx=1, v=0.5, _, _
+        //   stride 2: Vec3    idx=2, x=-1.25, y=2.5, z=3.75
+        //   stride 3: ParticleRate idx=3, v=4.5, _, _
+        e.evaluate("var out = [0, 1, 0, 0,"
+                   "          1, 0.5, 0, 0,"
+                   "          2, -1.25, 2.5, 3.75,"
+                   "          3, 4.5, 0, 0];");
+        QJSValue out = e.evaluate("out");
+        const int total = out.property("length").toInt();
+        REQUIRE(total == 16);
+
+        // Per-element reference path (the OLD drain pattern at SceneBackend.cpp:4604-4642).
+        std::vector<double> perElem;
+        perElem.reserve((size_t)total);
+        for (int i = 0; i < total; ++i) {
+            perElem.push_back(out.property(i).toNumber());
+        }
+
+        // Bulk path (the NEW drain).  ONE boundary crossing, then native
+        // QVariantList indexing.
+        const QVariantList list = out.toVariant().toList();
+        REQUIRE((int)list.size() == total);
+        std::vector<double> bulk;
+        bulk.reserve(list.size());
+        for (const QVariant& v : list) {
+            bulk.push_back(v.toDouble());
+        }
+
+        REQUIRE(bulk.size() == perElem.size());
+        for (size_t i = 0; i < bulk.size(); ++i) {
+            // Byte-identical doubles across both paths.  Direct == on
+            // double is intentional here — bulk marshal must NOT
+            // introduce any precision drift.
+            CHECK(bulk[i] == perElem[i]);
+        }
+
+        // Stride-4 decode parity — the (int) cast on slot 0 and the
+        // float reads on slots 1..3 must agree between paths.
+        CHECK((int)bulk[0] == (int)perElem[0]);
+        CHECK((int)bulk[4] == (int)perElem[4]);
+        CHECK((int)bulk[8] == (int)perElem[8]);
+        CHECK((int)bulk[12] == (int)perElem[12]);
+        CHECK(bulk[9] == perElem[9]);
+        CHECK(bulk[10] == perElem[10]);
+        CHECK(bulk[11] == perElem[11]);
+    }
+
+    TEST_CASE("Visible decode: toInt() != 0 vs toDouble() != 0.0 are equivalent for 0/1 ints") {
+        // The Visible-kind branch shifts from `out.property(i+1).toInt() != 0`
+        // to `list[i+1].toDouble() != 0.0`.  JS packs 0/1 (or boolean
+        // coerced) into the Visible slot; both predicates must agree.
+        QJSEngine e;
+        e.evaluate("var out = [0, 0, 0, 0,"   // visible = 0 -> false
+                   "          1, 1, 0, 0,"   // visible = 1 -> true
+                   "          2, true, 0, 0," // bool coerced
+                   "          3, false, 0, 0];");
+        QJSValue out = e.evaluate("out");
+        const int total = out.property("length").toInt();
+        REQUIRE(total == 16);
+
+        const QVariantList list = out.toVariant().toList();
+        REQUIRE((int)list.size() == total);
+
+        for (int base = 0; base < total; base += 4) {
+            const bool oldDecode = out.property(base + 1).toInt() != 0;
+            const bool newDecode = list[base + 1].toDouble() != 0.0;
+            CHECK(oldDecode == newDecode);
+        }
+    }
+
+    TEST_CASE("empty array: total == 0, list.size() == 0, loop body never executes") {
+        QJSEngine e;
+        e.evaluate("var out = [];");
+        QJSValue out = e.evaluate("out");
+        REQUIRE(out.property("length").toInt() == 0);
+
+        const QVariantList list = out.toVariant().toList();
+        CHECK(list.size() == 0);
+
+        int dispatched = 0;
+        for (int i = 0; i < (int)list.size(); i += 4) {
+            (void)i;
+            ++dispatched;
+        }
+        CHECK(dispatched == 0);
+    }
+
+    TEST_CASE("sparse indices preserve write order under bulk marshal (no implicit sort)") {
+        // The drain reads idx from slot 0 and dispatches in WRITE order.
+        // QVariantList must preserve insertion order — pin this against
+        // any future Qt change.
+        QJSEngine e;
+        e.evaluate("var out = [7, 7.5, 0, 0,"
+                   "          1, 1.5, 0, 0,"
+                   "          5, 5.5, 0, 0,"
+                   "          3, 3.5, 0, 0];");
+        QJSValue out = e.evaluate("out");
+        const QVariantList list = out.toVariant().toList();
+        REQUIRE((int)list.size() == 16);
+
+        // Idx slots (0, 4, 8, 12) — must come out in the order written.
+        CHECK((int)list[0].toDouble() == 7);
+        CHECK((int)list[4].toDouble() == 1);
+        CHECK((int)list[8].toDouble() == 5);
+        CHECK((int)list[12].toDouble() == 3);
+        // Value slots (1, 5, 9, 13) follow the same order.
+        CHECK(list[1].toDouble() == doctest::Approx(7.5));
+        CHECK(list[5].toDouble() == doctest::Approx(1.5));
+        CHECK(list[9].toDouble() == doctest::Approx(5.5));
+        CHECK(list[13].toDouble() == doctest::Approx(3.5));
+    }
+
+    TEST_CASE("single toVariant() call replaces N property() reads: instrumentation pin") {
+        // The structural pin: the bulk drain pattern does exactly one
+        // `out.toVariant()` and zero `out.property(i)` reads inside the
+        // dispatch loop.  We can't intercept QJSValue's per-element
+        // accessors directly, but we CAN verify the QVariantList has
+        // every stride slot pre-materialized so the loop body never
+        // needs to round-trip back through QJSValue.
+        QJSEngine e;
+        // 20 stride-4 entries = 80 slots = a realistic per-tick load.
+        QString gen =
+            "var out = [];"
+            "for (var i = 0; i < 20; ++i) {"
+            "    out.push(i, i * 0.5, i * 1.5, i * 2.5);"
+            "}"
+            "out";
+        QJSValue out = e.evaluate(gen);
+        REQUIRE(out.property("length").toInt() == 80);
+
+        // ONE boundary crossing.
+        const QVariantList list = out.toVariant().toList();
+
+        // Every slot was materialized in the single marshal step.
+        REQUIRE((int)list.size() == 80);
+        for (int i = 0; i < 80; ++i) {
+            const QVariant& v = list[(qsizetype)i];
+            CHECK(v.isValid());
+            CHECK(! v.isNull());
+        }
+
+        // Stride-4 sample: idx slot, plus three value slots, decoded
+        // with the same casts the drain does.
+        for (int base = 0; base < 80; base += 4) {
+            const int idx = (int)list[base].toDouble();
+            const float a = (float)list[base + 1].toDouble();
+            const float b = (float)list[base + 2].toDouble();
+            const float c = (float)list[base + 3].toDouble();
+            CHECK(idx == base / 4);
+            CHECK(a == doctest::Approx((float)(idx * 0.5)));
+            CHECK(b == doctest::Approx((float)(idx * 1.5)));
+            CHECK(c == doctest::Approx((float)(idx * 2.5)));
+        }
+    }
+} // TEST_SUITE SceneBackend dirty-layer readback bulk
