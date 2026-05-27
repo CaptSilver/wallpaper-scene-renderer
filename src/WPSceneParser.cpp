@@ -2868,6 +2868,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             // particles and get wrongly flagged as "done".
             if (wppartobj.name.rfind("__pool_", 0) == 0) {
                 context.scene->particleSubByNodeId[wppartobj.id] = particleSub.get();
+                // Mirror the map key onto the sub so the producer-pushed
+                // burst-done queue on ParticleSystem can publish the node
+                // id without needing a back-pointer to Scene.
+                particleSub->SetNodeId(wppartobj.id);
             }
             context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
         }
@@ -3144,6 +3148,10 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
         // Pool-only: see comment in the spawner-only branch above
         if (wppartobj.name.rfind("__pool_", 0) == 0) {
             context.scene->particleSubByNodeId[wppartobj.id] = particleSub.get();
+            // Mirror the map key onto the sub so the producer-pushed
+            // burst-done queue on ParticleSystem can publish the node id
+            // without needing a back-pointer to Scene.
+            particleSub->SetNodeId(wppartobj.id);
         }
         context.scene->paritileSys->subsystems.emplace_back(std::move(particleSub));
     }

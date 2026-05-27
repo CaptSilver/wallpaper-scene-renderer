@@ -32,6 +32,7 @@ add_executable(backend_scene_tests
     test_WPUserProperties.cpp
     test_ParticleModify.cpp
     test_ParticleSystem.cpp
+    test_ParticleSubSystem_BurstDoneQueue.cpp
     test_ParticleTrail.cpp
     test_SceneClockClamp.cpp
     test_AudioRateMultiplier.cpp

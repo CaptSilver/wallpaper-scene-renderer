@@ -771,25 +771,35 @@ private:
             // inside each sub-step so audio multiplier + emission rate stay in
             // lockstep with the per-step dt.
 
-            // Auto-hide pool particle nodes whose burst has played out.
-            // SceneScript pool-particle assets (e.g. dino_run's coinget)
-            // fire their instantaneous emitter on first tick after
-            // createLayer, particles live their lifetime, then die.  If the
-            // script doesn't promptly call destroyLayer, the node stays
-            // "visible" with zero active particles.  Hide it here so pool
-            // slots release automatically; JS destroyLayer then re-pushes
-            // the name to the pool for reuse.
-            for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
-                if (! sub || ! sub->IsBurstDone()) continue;
+            // Auto-hide pool particle nodes whose burst played out THIS
+            // tick.  Drain the per-tick burst-done queue produced by
+            // ParticleSystem::Emitt (edge-triggered on the false→true
+            // transition of each sub's m_burst_done).  Empty in the common
+            // case (continuous emitters like rain/snow/fire never
+            // burst-done) → zero map iteration.  Non-empty only when a
+            // pool-particle burst completed this tick (e.g. dino_run's
+            // coinget when the script doesn't promptly destroyLayer);
+            // auto-hide + ClearBurstDone (which also resets the ack so a
+            // future re-armed burst publishes again).
+            //
+            // Bit-exact equivalence with the old full walk: same
+            // SetVisible(false) call from the same caller, same
+            // ClearBurstDone, same timing (Emitt produces the queue, drain
+            // consumes within the same drawFrame).  Only the detection
+            // shape changes from poll to push.
+            const auto& burst_done_this_tick = scene->paritileSys->BurstDoneThisTick();
+            for (int32_t nodeId : burst_done_this_tick) {
+                auto subIt = scene->particleSubByNodeId.find(nodeId);
+                if (subIt == scene->particleSubByNodeId.end() || ! subIt->second) continue;
                 auto nit = scene->nodeById.find(nodeId);
                 if (nit == scene->nodeById.end() || ! nit->second) {
-                    sub->ClearBurstDone();
+                    subIt->second->ClearBurstDone();
                     continue;
                 }
                 if (nit->second->IsVisible()) {
                     nit->second->SetVisible(false);
                 }
-                sub->ClearBurstDone();
+                subIt->second->ClearBurstDone();
             }
 
             // Process pending text updates before drawing

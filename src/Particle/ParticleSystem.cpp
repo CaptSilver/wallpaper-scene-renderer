@@ -200,6 +200,9 @@ void ParticleSubSystem::Reset() {
     }
     m_time                  = 0.0;
     m_burst_done            = false;
+    // Re-arm the edge for a fresh burst — the next false→true transition
+    // of m_burst_done must publish a new id onto m_burst_done_this_tick.
+    m_burst_done_acked      = false;
     m_any_alive_since_reset = false;
     for (auto& child : m_children) {
         if (child) child->Reset();
@@ -642,8 +645,22 @@ void ParticleSystem::Emitt() {
                  subsystems.size(),
                  scene.elapsingTime);
     }
+    // Clear the per-tick burst-done collector before iterating subs.  Each
+    // sub's Emitt may flip its m_burst_done false→true exactly once per
+    // Reset() cycle; we push the node id here on the edge, gated on
+    // WasBurstDoneAcked so we never re-push for a sustained-true level.
+    m_burst_done_this_tick.clear();
     for (auto& el : subsystems) {
         el->Emitt();
+        // Edge-trigger detection AFTER the sub's Emitt has had a chance to
+        // flip its m_burst_done.  Only pool-particle subs (NodeId() >= 0)
+        // ever appear on the consumer's drain list — non-pool subs leave
+        // NodeId at -1 and skip the collector entry.  Ack the sub so
+        // subsequent ticks treat the level as "already published".
+        if (el && el->IsBurstDone() && ! el->WasBurstDoneAcked() && el->NodeId() >= 0) {
+            m_burst_done_this_tick.push_back(el->NodeId());
+            el->AckBurstDone();
+        }
     }
 }
 

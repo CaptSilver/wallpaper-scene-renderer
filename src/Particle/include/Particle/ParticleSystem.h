@@ -97,7 +97,51 @@ public:
     // so scripts that don't promptly call destroyLayer don't leave lingering
     // slots visible on screen.
     bool IsBurstDone() const { return m_burst_done; }
-    void ClearBurstDone() { m_burst_done = false; }
+    void ClearBurstDone() {
+        m_burst_done = false;
+        // Reset the per-cycle ack so a re-armed burst (the pool re-firing
+        // the same coin-pickup sparkle for a new pickup) produces a fresh
+        // edge-trigger notification.  Without this, only the first burst
+        // would be auto-hidden.
+        m_burst_done_acked = false;
+    }
+
+    // Edge-trigger ack for the producer-pushed burst-done queue: the
+    // false→true transition of m_burst_done must produce exactly one
+    // consumer notification per Reset() cycle.  ParticleSystem::Emitt
+    // walks subsystems, pushes the NodeId of any sub whose IsBurstDone()
+    // is true but WasBurstDoneAcked() is false, then calls AckBurstDone()
+    // so subsequent ticks treat the level as "already published".
+    // ClearBurstDone() (called by the consumer drain after auto-hide)
+    // resets both the level flag and the ack so a re-armed burst publishes
+    // on the next edge.
+    //
+    // Pattern parity: the sprite-snapshot gate is the sticky-flag
+    // producer-skip variant; this is the edge-trigger producer-pushed
+    // variant.  Both mirror the WorldCacheGate.h consumer-gate intent —
+    // avoid per-frame work when no consumer-side state change has
+    // occurred.
+    bool WasBurstDoneAcked() const { return m_burst_done_acked; }
+    void AckBurstDone() { m_burst_done_acked = true; }
+
+    // Test-only: directly latch m_burst_done = true without driving the
+    // full Emitt() any-alive-since-reset transition.  Unit tests for the
+    // edge-trigger semantics use this to exercise the producer collector
+    // in ParticleSystem::Emitt without spinning up a real emitter loop.
+    // Production code never calls this — m_burst_done is set inside
+    // ParticleSubSystem::Emitt when m_any_alive_since_reset becomes
+    // true-then-no-live.
+    void TEST_MarkBurstDone() { m_burst_done = true; }
+
+    // Node id assigned by the parser for pool-particle subsystems
+    // (`particleSubByNodeId[wppartobj.id] = sub.get()`).  Surfaced here so
+    // the producer's edge-trigger collector in ParticleSystem::Emitt can
+    // push the id onto m_burst_done_this_tick without needing a back-
+    // pointer to Scene::particleSubByNodeId.  Non-pool subsystems leave
+    // this at the default -1 and never participate in the burst-done
+    // queue (their node ids aren't registered in particleSubByNodeId).
+    int32_t NodeId() const { return m_node_id; }
+    void    SetNodeId(int32_t id) { m_node_id = id; }
 
     // Runtime multiplier applied on top of the static `m_rate` factor.
     // Scripted instanceoverride.rate (NieR:Automata audio-reactive emission)
@@ -225,7 +269,17 @@ private:
     // Emitt() when the subsystem has had at least one live particle since
     // the last Reset() but currently has none.
     bool m_burst_done { false };
+    // Edge-trigger ack: per-cycle one-shot consumed by ParticleSystem::Emitt
+    // to publish each burst-done false→true transition exactly once.  Reset
+    // by ClearBurstDone() (consumer side) and by Reset() (re-arming).
+    bool m_burst_done_acked { false };
     bool m_any_alive_since_reset { false };
+
+    // Owning node id for pool-particle subsystems (mirrored from the
+    // parser's particleSubByNodeId map key).  Default -1 means "no node"
+    // (non-pool subs, children).  Read by ParticleSystem::Emitt() when
+    // collecting burst-done ids onto m_burst_done_this_tick.
+    int32_t m_node_id { -1 };
 
     // Scripted rate override — see SetDynamicRateMultiplier.
     std::atomic<double> m_dynamic_rate_multiplier { 1.0 };
@@ -281,9 +335,28 @@ public:
     // is 0 (the overwhelming majority of wallpapers).
     void PreSimulate(double dt = 0.032);
 
+    // Per-tick burst-done collector: filled by Emitt() with the NodeId of
+    // each subsystem whose IsBurstDone() flipped false→true since the last
+    // ack.  Drained by the render-thread draw loop in SceneWallpaper.cpp
+    // (auto-hide the node + ClearBurstDone, which also resets the ack so a
+    // future re-armed burst publishes again).  Empty in the common case
+    // (continuous emitters like rain/snow/fire/ambient particle fields
+    // never burst-done), avoiding the per-frame O(N) walk of
+    // particleSubByNodeId.
+    //
+    // Producer (Emitt) and consumer (drain) run on the same render thread
+    // within the same drawFrame, so no synchronization is needed — a plain
+    // std::vector<int32_t> suffices.  Cleared at the top of each Emitt().
+    const std::vector<int32_t>& BurstDoneThisTick() const {
+        return m_burst_done_this_tick;
+    }
+
     Scene& scene;
 
     std::vector<std::unique_ptr<ParticleSubSystem>> subsystems;
     std::unique_ptr<IParticleRawGener>              gener;
+
+private:
+    std::vector<int32_t> m_burst_done_this_tick;
 };
 } // namespace wallpaper
