@@ -8,6 +8,7 @@
 // body and doesn't emit an unresolved external reference.  Otherwise the
 // plugin .so fails to dlopen with "undefined symbol: ...ToVkType...".
 #include "TexFormatVk.hpp"
+#include "SamplerDedupDetail.hpp"
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 #include "StagingReuse.hpp"
@@ -73,6 +74,20 @@ public:
     // RT (path D).  Process-lifetime handle owned by this TextureCache.
     VkSampler GetOrCreateDepthSampler();
 
+    // Hash-keyed VkSampler dedup.  TextureCache::CreateTex used to mint a
+    // fresh VkSampler per texture even when the sampler config matched one
+    // already in the cache; most scenes have ~5-15 unique configs across
+    // 50-200 textures.  Lookup by hashSamplerInfo(info); on miss, create the
+    // VkSampler and store it in the bucket.  Returns a raw, non-owning
+    // VkSampler — the vvk::Sampler is owned by m_sampler_cache and lives
+    // until Clear() (which is called on scene swap, AFTER the images that
+    // reference these samplers are torn down).
+    //
+    // Generalizes the existing single-slot GetOrCreateDepthSampler precedent
+    // on the same class.  Returns VK_NULL_HANDLE on CreateSampler failure
+    // (LOG_ERROR-logged).
+    VkSampler GetOrCreateSampler(const VkSamplerCreateInfo& info);
+
 private:
     std::optional<VmaImageParameters> CreateTex(TextureKey);
     void                              allocateCmd();
@@ -101,6 +116,12 @@ private:
     // Lazily-allocated depth sampler (NEAREST/CLAMP/no-compare).  See
     // GetOrCreateDepthSampler().
     vvk::Sampler m_depth_sampler;
+
+    // Hash-keyed VkSampler dedup cache (MEM5).  Bucket-vector layout —
+    // [hash -> vector<pair<info, vvk::Sampler>>] — disambiguates collisions
+    // via samplerInfoEqual on confirm.  Cleared LAST in Clear() (after the
+    // images that reference these samplers).  See GetOrCreateSampler().
+    SamplerBucketMap<vvk::Sampler> m_sampler_cache;
 };
 
 } // namespace vulkan

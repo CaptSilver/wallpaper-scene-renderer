@@ -183,11 +183,12 @@ std::optional<vvk::DeviceMemory> AllocateMemory(const vvk::Device& device, vvk::
 }
 
 std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, VkFormat format,
-                                               VkImageTiling       tiling,
-                                               VkSamplerCreateInfo sampler_info,
+                                               VkImageTiling tiling, VkSampler sampler,
                                                VkImageUsageFlags usage, const vvk::Device& device,
                                                const vvk::PhysicalDevice& gpu) {
+    // Sampler resolved by the caller via TextureCache::GetOrCreateSampler — see MEM5.
     ExImageParameters image;
+    image.sampler = sampler;
     do {
         VkExternalMemoryImageCreateInfo ex_info {
             .sType       = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
@@ -246,7 +247,7 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
             };
             VVK_CHECK_ACT(break, device.CreateImageView(createinfo, image.view));
         }
-        VVK_CHECK_ACT(break, device.CreateSampler(sampler_info, image.sampler));
+        // No CreateSampler here — see CreateImage above (MEM5 dedup).
         VVK_CHECK_ACT(break, image.mem.GetMemoryFdKHR(&image.fd));
 
         return image;
@@ -257,9 +258,13 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
 
 inline std::optional<VmaImageParameters>
 CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat format,
-            VkSamplerCreateInfo sampler_info, VkImageUsageFlags usage,
+            VkSampler sampler, VkImageUsageFlags usage,
             VmaMemoryUsage mem_usage = VMA_MEMORY_USAGE_GPU_ONLY) {
+    // Sampler is resolved by the caller (TextureCache::GetOrCreateSampler) so
+    // identical sampler configs share one underlying VkSampler; the image just
+    // holds the raw handle non-owning.
     VmaImageParameters image;
+    image.sampler = sampler;
     do {
         VkImageCreateInfo info {
             .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -326,7 +331,9 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
             VVK_CHECK_ACT(break,
                           device.handle().CreateImageView(createinfo, image.mip0_view));
         }
-        VVK_CHECK_ACT(break, device.handle().CreateSampler(sampler_info, image.sampler));
+        // No CreateSampler here — `sampler` was resolved by the caller via
+        // TextureCache::GetOrCreateSampler so identical configs reuse one
+        // underlying VkSampler (owned by m_sampler_cache).  See MEM5.
         return image;
     } while (false);
     /*
@@ -452,11 +459,12 @@ std::optional<ExImageParameters> TextureCache::CreateExTex(uint32_t width, uint3
         .unnormalizedCoordinates = false,
     };
 
-    auto opt = CreateExImage(width,
+    VkSampler shared_sampler = GetOrCreateSampler(sampler_info);
+    auto      opt            = CreateExImage(width,
                              height,
                              format,
                              tiling,
-                             sampler_info,
+                             shared_sampler,
                              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                              m_device.device(),
@@ -515,11 +523,12 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         VkFormat   format = ToVkType(image.header.format);
         VkExtent3D ext { (u32)image_slot.width, (u32)image_slot.height, 1 };
 
+        VkSampler shared_sampler = GetOrCreateSampler(sampler_info);
         if (auto opt = CreateImage(m_device,
                                    ext,
                                    (u32)mipmap_levels,
                                    format,
-                                   sampler_info,
+                                   shared_sampler,
                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
@@ -585,8 +594,9 @@ void TextureCache::allocateCmd() {
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
-        VkSamplerCreateInfo sam_info = GenSamplerInfo(tex_key, m_device.maxAnisotropy());
-        VkFormat            format   = ToVkType(tex_key.format);
+        VkSamplerCreateInfo sam_info       = GenSamplerInfo(tex_key, m_device.maxAnisotropy());
+        VkSampler           shared_sampler = GetOrCreateSampler(sam_info);
+        VkFormat            format         = ToVkType(tex_key.format);
         VkExtent3D          ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
 
         if (auto opt =
@@ -594,7 +604,7 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
                             ext,
                             tex_key.mipmap_level,
                             format,
-                            sam_info,
+                            shared_sampler,
                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
             opt.has_value()) {
@@ -623,6 +633,13 @@ void TextureCache::Clear() {
     m_reupload_staging.clear();
     m_query_texs.clear();
     m_query_map.clear();
+    // Clear the sampler cache LAST.  Samplers must be destroyed AFTER the
+    // images that reference them (or after vkDeviceWaitIdle); the m_tex_map
+    // clear above destroys the images synchronously, so this is the safe
+    // point to drop the dedup'd VkSampler handles.  If a future refactor
+    // reorders, --valid-layer flags "destroy in use" on the still-bound
+    // descriptors.
+    m_sampler_cache.clear();
 }
 
 std::optional<ImageParameters> TextureCache::Query(std::string_view key, TextureKey content_hash,
@@ -916,4 +933,24 @@ VkSampler TextureCache::GetOrCreateDepthSampler() {
         return VK_NULL_HANDLE;
     }
     return *m_depth_sampler;
+}
+
+VkSampler TextureCache::GetOrCreateSampler(const VkSamplerCreateInfo& info) {
+    // Bucket-vector lookup + samplerInfoEqual scan disambiguates collisions.
+    // findOrCreateSampler returns a reference to the bucket entry by value
+    // semantics (vvk::Sampler is move-only); we deref to a raw VkSampler.
+    bool create_failed = false;
+    auto creator       = [&](const VkSamplerCreateInfo& ci) -> vvk::Sampler {
+        vvk::Sampler s;
+        if (m_device.handle().CreateSampler(ci, s) != VK_SUCCESS) {
+            LOG_ERROR("CreateSampler failed in TextureCache::GetOrCreateSampler");
+            create_failed = true;
+        }
+        return s;
+    };
+    vvk::Sampler& entry = findOrCreateSampler(m_sampler_cache, info, creator);
+    if (create_failed && *entry == VK_NULL_HANDLE) {
+        return VK_NULL_HANDLE;
+    }
+    return *entry;
 }

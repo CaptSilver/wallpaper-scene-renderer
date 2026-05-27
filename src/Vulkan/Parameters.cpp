@@ -21,7 +21,9 @@ VmaImageParameters::VmaImageParameters(VmaImageParameters&& o) noexcept
     : handle(std::move(o.handle)),
       view(std::move(o.view)),
       mip0_view(std::move(o.mip0_view)),
-      sampler(std::move(o.sampler)),
+      // sampler is a non-owning raw VkSampler (owned by TextureCache's
+      // m_sampler_cache); plain value copy.
+      sampler(o.sampler),
       extent(o.extent),
       mipmap_level(o.mipmap_level),
       initial_layout_transitioned(o.initial_layout_transitioned) {}
@@ -29,7 +31,7 @@ VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexce
     handle                      = std::move(o.handle);
     view                        = std::move(o.view);
     mip0_view                   = std::move(o.mip0_view);
-    sampler                     = std::move(o.sampler);
+    sampler                     = o.sampler; // non-owning raw VkSampler
     extent                      = o.extent;
     mipmap_level                = o.mipmap_level;
     initial_layout_transitioned = o.initial_layout_transitioned;
@@ -43,7 +45,9 @@ ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
       mem_reqs(o.mem_reqs),
       handle(std::move(o.handle)),
       view(std::move(o.view)),
-      sampler(std::move(o.sampler)),
+      // sampler is a non-owning raw VkSampler (owned by TextureCache's
+      // m_sampler_cache); plain value copy.
+      sampler(o.sampler),
       extent(o.extent),
       mipmap_level(o.mipmap_level),
       fd(std::exchange(o.fd, 0)) {}
@@ -52,7 +56,7 @@ ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept 
     mem_reqs     = o.mem_reqs;
     handle       = std::move(o.handle);
     view         = std::move(o.view);
-    sampler      = std::move(o.sampler);
+    sampler      = o.sampler; // non-owning raw VkSampler
     extent       = o.extent;
     mipmap_level = o.mipmap_level;
     fd           = std::exchange(o.fd, 0);

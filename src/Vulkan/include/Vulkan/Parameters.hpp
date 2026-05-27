@@ -42,7 +42,11 @@ struct VmaImageParameters : NoCopy {
                                // Only populated when mipmap_level > 1; for single-mip
                                // images `view` already covers exactly mip 0 and the
                                // ImageParameters wrapper falls back to it.
-    vvk::Sampler   sampler;
+    // Non-owning raw VkSampler.  The owning vvk::Sampler lives in
+    // TextureCache::m_sampler_cache (dedup'd by VkSamplerCreateInfo hash) and
+    // is destroyed there in Clear() AFTER this image — which references the
+    // sampler via descriptor sets — has been destroyed.
+    VkSampler      sampler { VK_NULL_HANDLE };
     VkExtent3D     extent;
     uint           mipmap_level { 1 };
     // First-use barrier latch for the UNDEFINED -> initial-usage transition.
@@ -65,7 +69,9 @@ struct ExImageParameters : NoCopy {
 
     vvk::Image     handle;
     vvk::ImageView view;
-    vvk::Sampler   sampler;
+    // Non-owning raw VkSampler.  Same dedup'd lifetime as VmaImageParameters
+    // — TextureCache::m_sampler_cache owns the underlying vvk::Sampler.
+    VkSampler      sampler { VK_NULL_HANDLE };
     VkExtent3D     extent;
     uint           mipmap_level { 1 };
     int            fd { 0 };
@@ -92,14 +98,14 @@ struct ImageParameters {
         : handle(*o.handle),
           view(*o.view),
           mip0_view(o.mipmap_level > 1 ? *o.mip0_view : *o.view),
-          sampler(*o.sampler),
+          sampler(o.sampler),
           extent(o.extent),
           mipmap_level(o.mipmap_level) {}
     ImageParameters(const ExImageParameters& o) noexcept
         : handle(*o.handle),
           view(*o.view),
           mip0_view(*o.view),
-          sampler(*o.sampler),
+          sampler(o.sampler),
           extent(o.extent),
           mipmap_level(o.mipmap_level) {}
 };
