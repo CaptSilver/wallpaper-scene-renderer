@@ -1,5 +1,6 @@
 #include "Audio/AudioCapture.h"
 #include "Audio/AudioAnalyzer.h"
+#include "Audio/RebindRetry.hpp"
 #include "Utils/Logging.h"
 
 // miniaudio header-only (implementation already in miniaudio-wrapper.hpp)
@@ -308,8 +309,18 @@ struct AudioCapture::Impl {
             if (OpenMaDevice(newSink)) {
                 boundSink = newSink;
             } else {
-                LOG_INFO("AudioCapture: rebind to '%s' failed; capture is silent until next change",
-                         newSink.c_str());
+                // Initial open failed (sink unloaded mid-init, PA race, card
+                // vanished).  Try a short exponential backoff before giving
+                // up and waiting for the next PA event.  RetryOpenWithBackoff
+                // aborts early on shutdown or on a newer rebindPending so we
+                // don't block the worker indefinitely.
+                const bool recovered = RetryOpenWithBackoff(
+                    newSink, shutdown, rebindPending, rebindCV, rebindMutex,
+                    [this](const std::string& s) { return this->OpenMaDevice(s); });
+                if (recovered) boundSink = newSink;
+                // No `else` log here — RetryOpenWithBackoff already emits the
+                // terminal "rebind to '%s' failed after N retries" line on
+                // giveup.
             }
         }
     }
