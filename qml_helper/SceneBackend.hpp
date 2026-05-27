@@ -9,6 +9,7 @@
 #include <QtGui/QHoverEvent>
 #include <QtQml/QJSEngine>
 #include <QtQml/QJSValue>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -684,6 +685,18 @@ private:
     bool        m_lsScreenDirty { false };
     bool        m_lsLoaded { false };
     QTimer*     m_lsFlushTimer { nullptr };
+    // Cached serialized-byte count per scope, invalidated on every mutation
+    // (insert/remove/clear) and recomputed lazily on the next lsSet.  Cheaper
+    // than serializing on every set — write rate is ~30 Hz worst case, scope
+    // walks are O(N keys) which dominates for large scopes.  See
+    // LocalStorageQuota.hpp for the cap math; the cache lives on SceneObject
+    // (one per scope) so the helper stays free-standing + unit-testable.
+    mutable std::optional<qsizetype> m_lsGlobalBytes;
+    mutable std::optional<qsizetype> m_lsScreenBytes;
+    // One-shot quota-warning latch — matches the RL-PARTICLE1 pattern.
+    // Cleared by cleanupTextScripts on every scene swap so a reloaded
+    // wallpaper re-arms the LOG_INFO line.
+    bool        m_lsQuotaWarned { false };
     void        ensureLocalStorageLoaded();
     void        scheduleLocalStorageFlush();
     void        flushLocalStorage();

@@ -12,6 +12,7 @@
 #include "JsStringEscape.hpp"
 #include "JsSyntaxNormalize.hpp"
 #include "JsWatchdog.h"
+#include "LocalStorageQuota.hpp"
 #include "ScriptDiagState.h"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
@@ -10497,3 +10498,133 @@ TEST_SUITE("SceneBackend dirty-layer readback bulk") {
         }
     }
 } // TEST_SUITE SceneBackend dirty-layer readback bulk
+
+// ------------------------------------------------------------------
+// LocalStorageQuota — browser-parity per-value + per-scope caps for the
+// SceneScript localStorage bridge.  Helper-level coverage: the production
+// wiring (SceneObject::lsSet -> throwError) cannot link in scenescript_tests
+// because SceneBackend.cpp pulls Vulkan, so the cap math + cache-invalidation
+// contract is pinned here, and end-to-end coverage relies on sceneviewer-script
+// runs over the localStorage-using wallpaper corpus.
+// ------------------------------------------------------------------
+TEST_SUITE("LocalStorageQuota") {
+    using wek::qml_helper::kMaxLsPreloadBytes;
+    using wek::qml_helper::kMaxLsScopeBytes;
+    using wek::qml_helper::kMaxLsValueBytes;
+    using wek::qml_helper::LocalStorageQuota;
+    using wek::qml_helper::SerializedSize;
+    using R = LocalStorageQuota::Result;
+
+    TEST_CASE("Check accepts a single small value into an empty scope") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        const auto r = q.Check(scope, QStringLiteral("k"), QJsonValue(QStringLiteral("small")));
+        CHECK(r == R::Ok);
+    }
+
+    TEST_CASE("Check rejects a single oversize value with ValueTooLarge") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        QString           big((int)kMaxLsValueBytes + 1, QChar('x'));
+        const auto        r = q.Check(scope, QStringLiteral("k"), QJsonValue(big));
+        CHECK(r == R::ValueTooLarge);
+    }
+
+    TEST_CASE("Check rejects when the aggregate would overflow the per-scope cap") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        // Pre-populate scope with 10 keys at ~1 MiB each (just under per-value
+        // cap).  Insertion goes via direct scope.insert + Invalidate (the
+        // helper doesn't mutate the scope itself).  10 entries at ~1 MiB
+        // serializes to ~10 MiB by itself, so any further insert crosses.
+        for (int i = 0; i < 10; ++i) {
+            QString val((int)kMaxLsValueBytes - 64, QChar('y'));
+            scope.insert(QStringLiteral("k%1").arg(i), val);
+        }
+        q.Invalidate();
+        // Adding an 11th ~1 MiB key would cross the 10 MiB cap.
+        QString    big((int)kMaxLsValueBytes - 64, QChar('z'));
+        const auto r = q.Check(scope, QStringLiteral("k10"), QJsonValue(big));
+        CHECK(r == R::ScopeWouldOverflow);
+    }
+
+    TEST_CASE("rejected write leaves QJsonObject unchanged (no partial state)") {
+        QJsonObject scope;
+        scope.insert(QStringLiteral("good_key"), QJsonValue(QStringLiteral("baseline_value")));
+        LocalStorageQuota q;
+        q.Invalidate();
+        QString    big((int)kMaxLsValueBytes + 1, QChar('z'));
+        const auto r = q.Check(scope, QStringLiteral("bad_key"), QJsonValue(big));
+        REQUIRE(r == R::ValueTooLarge);
+        // Helper does NOT mutate scope; caller would have respected the reject.
+        CHECK(scope.size() == 1);
+        CHECK(scope.value(QStringLiteral("good_key")).toString() ==
+              QStringLiteral("baseline_value"));
+        CHECK_FALSE(scope.contains(QStringLiteral("bad_key")));
+    }
+
+    TEST_CASE("Invalidate + scope.remove (lsRemove path) frees space for next Check") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        for (int i = 0; i < 10; ++i) {
+            QString val((int)kMaxLsValueBytes - 64, QChar('a'));
+            scope.insert(QStringLiteral("k%1").arg(i), val);
+        }
+        q.Invalidate();
+        QString big((int)kMaxLsValueBytes - 64, QChar('b'));
+        REQUIRE(q.Check(scope, QStringLiteral("k10"), QJsonValue(big)) == R::ScopeWouldOverflow);
+        // Free a slot (mirrors lsRemove).
+        scope.remove(QStringLiteral("k0"));
+        q.Invalidate();
+        // Same big value now fits.
+        CHECK(q.Check(scope, QStringLiteral("k10"), QJsonValue(big)) == R::Ok);
+    }
+
+    TEST_CASE("scope = {} (lsClear path) unblocks all subsequent writes") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        for (int i = 0; i < 10; ++i) {
+            QString val((int)kMaxLsValueBytes - 64, QChar('a'));
+            scope.insert(QStringLiteral("k%1").arg(i), val);
+        }
+        q.Invalidate();
+        QString    half((int)kMaxLsValueBytes / 2, QChar('b'));
+        const auto rejected = q.Check(scope, QStringLiteral("k10"), QJsonValue(half));
+        REQUIRE(rejected == R::ScopeWouldOverflow);
+        // lsClear-equivalent: wipe scope + invalidate the cache.
+        scope = {};
+        q.Invalidate();
+        CHECK(q.Check(scope, QStringLiteral("k10"), QJsonValue(half)) == R::Ok);
+    }
+
+    TEST_CASE("kMaxLsPreloadBytes is exactly 2x kMaxLsScopeBytes") {
+        CHECK(kMaxLsPreloadBytes == 2 * kMaxLsScopeBytes);
+    }
+
+    TEST_CASE("CachedBytes returns 2 for an empty scope ('{}')") {
+        // Empty QJsonObject serializes to "{}" (2 bytes); this is the
+        // baseline lsClear sets the cache to without forcing a serialize.
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        CHECK(q.CachedBytes(scope) == 2);
+    }
+
+    TEST_CASE("CachedBytes grows monotonically after Invalidate + insert") {
+        LocalStorageQuota q;
+        QJsonObject       scope;
+        const qsizetype   empty_bytes = q.CachedBytes(scope);
+        scope.insert(QStringLiteral("hello"), QJsonValue(QStringLiteral("world")));
+        q.Invalidate();
+        const qsizetype after = q.CachedBytes(scope);
+        CHECK(after > empty_bytes);
+    }
+
+    TEST_CASE("SerializedSize matches direct QJsonDocument(array).toJson size") {
+        // Pin the SerializedSize contract: same units as the aggregate
+        // serializer used for CachedBytes.  A tiny string -> a few bytes
+        // for the array framing + the string itself.
+        const QJsonValue v(QStringLiteral("xy"));
+        const auto expected = QJsonDocument(QJsonArray { v }).toJson(QJsonDocument::Compact).size();
+        CHECK(SerializedSize(v) == expected);
+    }
+} // TEST_SUITE LocalStorageQuota

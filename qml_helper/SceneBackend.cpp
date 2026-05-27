@@ -6,6 +6,7 @@
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
 #include "JsSyntaxNormalize.hpp"
+#include "LocalStorageQuota.hpp"
 #include "PropertyScriptDispatchJs.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
@@ -1117,23 +1118,59 @@ void SceneObject::ensureLocalStorageLoaded() {
         }
     }
 
-    auto loadFile = [](const QString& path) -> QJsonObject {
+    auto loadFile = [this](const QString& path, bool global) -> QJsonObject {
         if (path.isEmpty()) return {};
         QFile f(path);
         if (! f.open(QIODevice::ReadOnly)) return {};
+        // Pre-load cap: refuse to readAll() on a file larger than 2x the
+        // per-scope cap.  Tolerates pre-existing slightly-oversized files
+        // from older pre-cap versions of this codebase; an empty load +
+        // flush-on-first-write will atomically overwrite the bloated file
+        // without manual rm (respects the user's ~/.cache no-delete rule
+        // per feedback_no_delete_outside).  Without this, a 100 GB hostile
+        // blob written by an old runaway script would OOM plasmashell on
+        // scene load via f.readAll().
+        const auto file_size = f.size();
+        if (file_size > wek::qml_helper::kMaxLsPreloadBytes) {
+            LOG_ERROR(
+                "localStorage file '%s' size %lld exceeds pre-load cap %lld; treating scope as "
+                "empty",
+                qPrintable(path),
+                (long long)file_size,
+                (long long)wek::qml_helper::kMaxLsPreloadBytes);
+            // Arm flush-on-first-write so a subsequent lsSet rewrites the
+            // file at normal size, recovering without manual cleanup.
+            if (global) {
+                m_lsGlobalDirty = true;
+            } else {
+                m_lsScreenDirty = true;
+            }
+            return {};
+        }
         QJsonParseError err {};
         QJsonDocument   doc = QJsonDocument::fromJson(f.readAll(), &err);
         if (err.error != QJsonParseError::NoError || ! doc.isObject()) return {};
         return doc.object();
     };
-    m_lsGlobal = loadFile(localStoragePath(true));
-    m_lsScreen = loadFile(localStoragePath(false));
+    m_lsGlobal = loadFile(localStoragePath(true), true);
+    m_lsScreen = loadFile(localStoragePath(false), false);
+    // Reset cached serialized-byte counts; first lsSet recomputes lazily.
+    m_lsGlobalBytes.reset();
+    m_lsScreenBytes.reset();
 
     if (! m_lsFlushTimer) {
         m_lsFlushTimer = new QTimer(this);
         m_lsFlushTimer->setSingleShot(true);
         m_lsFlushTimer->setInterval(500);
         connect(m_lsFlushTimer, &QTimer::timeout, this, &SceneObject::flushLocalStorage);
+    }
+    // If loadFile rejected a pre-load-oversized file it set the dirty flag
+    // so the empty in-memory state gets atomically written back to disk on
+    // the next debounce tick, recovering without manual rm.  Kick the
+    // timer here -- without it, no further lsSet means no flush, and the
+    // bloated cache file lingers until the next write event.
+    if (m_lsGlobalDirty || m_lsScreenDirty) {
+        scheduleLocalStorageFlush();
     }
 }
 
@@ -1178,13 +1215,70 @@ QJSValue SceneObject::lsGet(int loc, const QString& key) {
 void SceneObject::lsSet(int loc, const QString& key, const QJSValue& value) {
     ensureLocalStorageLoaded();
     QJsonValue jv = QJsonValue::fromVariant(value.toVariant());
-    if (loc == 0) {
-        m_lsGlobal.insert(key, jv);
-        m_lsGlobalDirty = true;
-    } else {
-        m_lsScreen.insert(key, jv);
-        m_lsScreenDirty = true;
+
+    QJsonObject&              scope  = (loc == 0) ? m_lsGlobal : m_lsScreen;
+    bool&                     dirty  = (loc == 0) ? m_lsGlobalDirty : m_lsScreenDirty;
+    std::optional<qsizetype>& cached = (loc == 0) ? m_lsGlobalBytes : m_lsScreenBytes;
+
+    // Per-value cap.  Reject oversize values before touching scope so the
+    // QJsonObject stays consistent (no partial state) and the on-disk file
+    // (only written when dirty) stays at the last committed size.
+    const qsizetype value_size = wek::qml_helper::SerializedSize(jv);
+    if (value_size > wek::qml_helper::kMaxLsValueBytes) {
+        if (m_jsEngine) {
+            m_jsEngine->throwError(
+                QJSValue::RangeError,
+                QStringLiteral(
+                    "QuotaExceededError: value of %1 bytes exceeds per-value localStorage cap of "
+                    "%2 bytes")
+                    .arg(value_size)
+                    .arg((qsizetype)wek::qml_helper::kMaxLsValueBytes));
+        }
+        if (! m_lsQuotaWarned) {
+            m_lsQuotaWarned = true;
+            LOG_INFO("localStorage quota exceeded (per-value): key='%s' size=%lld cap=%lld",
+                     qPrintable(key),
+                     (long long)value_size,
+                     (long long)wek::qml_helper::kMaxLsValueBytes);
+        }
+        return;
     }
+
+    // Per-scope cap.  Recompute the cache on miss (lazy); the projection
+    // is current + new_value + key_overhead (over-approximates by a few
+    // bytes for JSON framing -- fine, the cap is generous).
+    if (! cached.has_value()) {
+        cached = QJsonDocument(scope).toJson(QJsonDocument::Compact).size();
+    }
+    const qsizetype key_overhead = key.size() + 8;
+    const qsizetype projected    = *cached + value_size + key_overhead;
+    if (projected > wek::qml_helper::kMaxLsScopeBytes) {
+        if (m_jsEngine) {
+            m_jsEngine->throwError(
+                QJSValue::RangeError,
+                QStringLiteral(
+                    "QuotaExceededError: aggregate %1 bytes would exceed per-scope localStorage "
+                    "cap of %2 bytes")
+                    .arg(projected)
+                    .arg((qsizetype)wek::qml_helper::kMaxLsScopeBytes));
+        }
+        if (! m_lsQuotaWarned) {
+            m_lsQuotaWarned = true;
+            LOG_INFO("localStorage quota exceeded (per-scope %s): projected=%lld cap=%lld key='%s'",
+                     (loc == 0) ? "GLOBAL" : "SCREEN",
+                     (long long)projected,
+                     (long long)wek::qml_helper::kMaxLsScopeBytes,
+                     qPrintable(key));
+        }
+        return;
+    }
+
+    scope.insert(key, jv);
+    dirty = true;
+    // Invalidate -- a replace of an existing key with a different-sized
+    // value would make any delta-update wrong; lazy recompute on the next
+    // lsSet is cheap enough at observed write rates.
+    cached.reset();
     scheduleLocalStorageFlush();
 }
 
@@ -1194,12 +1288,16 @@ void SceneObject::lsRemove(int loc, const QString& key) {
         if (m_lsGlobal.contains(key)) {
             m_lsGlobal.remove(key);
             m_lsGlobalDirty = true;
+            // Invalidate cached byte count -- a future lsSet must re-
+            // serialize to see the freed space.
+            m_lsGlobalBytes.reset();
             scheduleLocalStorageFlush();
         }
     } else {
         if (m_lsScreen.contains(key)) {
             m_lsScreen.remove(key);
             m_lsScreenDirty = true;
+            m_lsScreenBytes.reset();
             scheduleLocalStorageFlush();
         }
     }
@@ -1211,12 +1309,16 @@ void SceneObject::lsClear(int loc) {
         if (! m_lsGlobal.isEmpty()) {
             m_lsGlobal      = {};
             m_lsGlobalDirty = true;
+            // Empty object serializes to "{}" -- 2 bytes.  Setting the
+            // cache directly avoids the next lsSet re-serializing on miss.
+            m_lsGlobalBytes = 2;
             scheduleLocalStorageFlush();
         }
     } else {
         if (! m_lsScreen.isEmpty()) {
             m_lsScreen      = {};
             m_lsScreenDirty = true;
+            m_lsScreenBytes = 2;
             scheduleLocalStorageFlush();
         }
     }
@@ -5287,6 +5389,11 @@ void SceneObject::cleanupTextScripts() {
     m_lsGlobal = {};
     m_lsScreen = {};
     m_lsSceneId.clear();
+    // Reset quota-warning latch + byte-count cache so a reloaded wallpaper
+    // re-arms the one-shot LOG_INFO and recomputes lazily on first lsSet.
+    m_lsQuotaWarned = false;
+    m_lsGlobalBytes.reset();
+    m_lsScreenBytes.reset();
     // Stop + delete the localStorage debounce timer AFTER the flush above, or a
     // single-shot still pending from scheduleLocalStorageFlush() could fire
     // flushLocalStorage() against the half-torn-down state (m_jsEngine is
