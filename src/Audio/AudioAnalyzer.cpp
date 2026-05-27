@@ -194,6 +194,13 @@ void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
         magL[k] = std::sqrt(reL * reL + imL * imL) * norm;
         magR[k] = std::sqrt(reR * reR + imR * imR) * norm;
     }
+    // DC (k=0) and Nyquist (k=NUM_BINS-1 == FFT_SIZE/2) are self-conjugate
+    // in a real-input FFT — they have no negative-frequency mirror to fold
+    // back, so the *2 in `norm` over-counts them.  Halve to correct.
+    magL[0] *= 0.5f;
+    magR[0] *= 0.5f;
+    magL[NUM_BINS - 1] *= 0.5f;
+    magR[NUM_BINS - 1] *= 0.5f;
 
     // Map bins to 64 log-spaced bands
     for (uint32_t b = 0; b < NUM_BANDS_64; b++) {

@@ -162,6 +162,94 @@ TEST_SUITE("AudioAnalyzer.Spectrum") {
 
 } // Spectrum
 
+// Single-sided FFT requires `2/N` magnitude scaling for interior bins
+// (fold negative-frequency mirror) but `1/N` for DC and Nyquist (no
+// mirror — self-conjugate in a real-input FFT).  Pre-fix, all bins use
+// `2/N` → DC and Nyquist double-counted.  Band 0 of the 64-band log-
+// spaced map includes bin 0 (DC); band 64 stops at bin ~213 so Nyquist
+// (bin 256) does NOT reach any band — the Nyquist halving is correct
+// in principle but not directly inspectable through the public band API.
+TEST_SUITE("AudioAnalyzer.Normalization") {
+
+    // Pure DC input (constant 1.0 on both channels): after Hanning + FFT
+    // the bin-0 magnitude carries the entire DC component (plus leakage
+    // to nearby bins).  Empirically, the soft-saturator output for band 0
+    // sits at ~1.50 pre-fix (2× inflated DC) and ~1.30 post-fix (DC bin
+    // halved to the correct 1/N normalization).  Bracket the post-fix
+    // value: any future regression that re-inflates DC will push band 0
+    // back above ~1.4.
+    TEST_CASE("DC bin: pure DC input halves band-0 magnitude (post fix)") {
+        AudioAnalyzer      a;
+        std::vector<float> pcm(MIN_FRAMES_TO_FFT * 2 * 2, 1.0f); // DC = constant 1.0
+        a.FeedPcm(pcm.data(), MIN_FRAMES_TO_FFT * 2, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+        auto raw64L = a.GetRawSpectrum(64, 0);
+        auto raw64R = a.GetRawSpectrum(64, 1);
+        REQUIRE(raw64L.size() == 64);
+        REQUIRE(raw64R.size() == 64);
+
+        // Post-fix upper bound: ~1.40 (pre-fix sits at ~1.50; the
+        // soft-saturator x/(1+0.4x) compresses the halving into a ~14%
+        // delta on the saturated output).  Lower bound: stays well
+        // above noise — DC is the dominant spectral component.
+        CHECK(raw64L[0] < 1.40f);
+        CHECK(raw64R[0] < 1.40f);
+        CHECK(raw64L[0] > 1.10f);
+        CHECK(raw64R[0] > 1.10f);
+        // L and R should be identical (same constant input).
+        CHECK(raw64L[0] == doctest::Approx(raw64R[0]).epsilon(0.001));
+    }
+
+    // Interior bin invariance: 1kHz sine lands in a band well above
+    // band 0.  Pre-fix and post-fix should produce the SAME band
+    // magnitude — neither DC nor Nyquist are touched at 1kHz.
+    // Regression guard: if a future edit accidentally also halves
+    // interior bins, this test fires.
+    TEST_CASE("Interior bin (1kHz sine) is unchanged by DC/Nyquist halving") {
+        AudioAnalyzer a;
+        auto          pcm = makeSineStereo(1000.f, MIN_FRAMES_TO_FFT * 2);
+        a.FeedPcm(pcm.data(), MIN_FRAMES_TO_FFT * 2, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+        auto raw64L = a.GetRawSpectrum(64, 0);
+
+        // Find peak band.  1kHz sits at bin ~11 of the 257 FFT bins
+        // (freqPerBin ≈ 93.75 Hz; 1000/93.75 ≈ 10.7).  Band 0 covers
+        // bin 0 only; band 1+ covers bin 1+.  1kHz peaks well above
+        // band 0 — let the test pick the actual peak band rather than
+        // hardcode.
+        size_t peakBand = 0;
+        float  peakVal  = 0.0f;
+        for (size_t b = 0; b < raw64L.size(); ++b)
+            if (raw64L[b] > peakVal) {
+                peakVal  = raw64L[b];
+                peakBand = b;
+            }
+        // Peak should NOT be band 0 (DC).  1kHz is well above bin 0.
+        CHECK(peakBand > 0);
+        CHECK(peakBand < 32);          // peaks in the lower-mid range
+        CHECK(peakVal > 0.05f);        // bigger than the noise floor
+    }
+
+    // Silent input (all zero PCM) — band 0 should be very near zero.
+    // Pre-fix: still near zero (no DC bias in zero input).  Post-fix:
+    // unchanged (halving zero is still zero).  Regression guard: if
+    // a future edit introduces a spurious DC offset (e.g., wrong norm
+    // constant), band 0 spikes.
+    TEST_CASE("Silent input: band-0 stays near zero (no DC artifact)") {
+        AudioAnalyzer      a;
+        std::vector<float> silence(MIN_FRAMES_TO_FFT * 2 * 2, 0.0f);
+        a.FeedPcm(silence.data(), MIN_FRAMES_TO_FFT * 2, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+        auto raw64L = a.GetRawSpectrum(64, 0);
+        CHECK(raw64L[0] < 0.05f);
+        CHECK(raw64L[0] >= 0.0f);
+    }
+
+} // Normalization
+
 TEST_SUITE("AudioAnalyzer.Channels") {
     TEST_CASE("mono input (1 channel) duplicates to both L and R") {
         AudioAnalyzer a;
