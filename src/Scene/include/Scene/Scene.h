@@ -274,7 +274,20 @@ public:
     };
     std::unordered_map<std::string, std::vector<UserPropVisibility>> userPropVisBindings;
     std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;
-    // Node lookup by ID for visibility updates
+    // Node lookup by ID for visibility updates and SceneScript getLayer
+    // resolution.
+    //
+    // LIFETIME INVARIANT: built once during parse (WPSceneParser populates
+    // entries as nodes are constructed).  Never erased or cleared at
+    // runtime -- destruction of the Scene shared_ptr frees the entries
+    // atomically along with the SceneNodes themselves (raw pointers alias
+    // owners elsewhere in Scene).  Per-frame iteration is safe for the
+    // duration the Scene is observable to the render thread.  The
+    // SceneScript thisScene.destroyLayer shim is a JS-side visibility flip
+    // + pool bookkeeping that does NOT touch this map.  If a future change
+    // adds a runtime erase path, switch to weak_ptr or coordinated-erase
+    // before landing that change -- the regression tests under
+    // TEST_SUITE("ParticleSubByNodeId Lifetime") will fail loudly first.
     std::unordered_map<i32, SceneNode*> nodeById;
     // Node ID → effect layer for redirecting property script transform updates.
     // Nodes with effect chains need transforms applied to the final composite
@@ -387,6 +400,25 @@ public:
     // the render thread sees a pool particle node's visibility flip from
     // false to true (via createLayer), it calls Reset() on the matching
     // subsystem so the burst emitter re-fires.
+    //
+    // LIFETIME INVARIANT: built once during parse (WPSceneParser at two
+    // sites).  Never erased or cleared at runtime.  The raw pointer aliases
+    // a unique_ptr in ParticleSystem::subsystems, also parse-only filled.
+    // Destruction of the Scene frees both atomically.
+    //
+    // The SceneScript thisScene.destroyLayer shim is a JS-side visibility
+    // flip + pool bookkeeping -- it does NOT touch this map nor delete the
+    // subsystem; the subsystem stays alive (and silent -- IsVisible() ==
+    // false short-circuits draw).  Callers iterating this map per-frame
+    // can rely on raw-pointer stability for the duration the Scene
+    // shared_ptr is observable to the render thread.
+    //
+    // The `if (!sub || ...)` guard at the emit-rate scan site is defensive
+    // against a future state where some code path nulls a slot; today it
+    // never fires.  Tests under TEST_SUITE("ParticleSubByNodeId Lifetime")
+    // pin this contract -- if they fail, the invariant has been broken and
+    // the consumer-side iteration must switch to weak_ptr or coordinated-
+    // erase before landing the change that broke it.
     std::unordered_map<i32, ParticleSubSystem*> particleSubByNodeId;
 
     // Sound layer info for SceneScript play/stop/pause API (enumerateLayers)

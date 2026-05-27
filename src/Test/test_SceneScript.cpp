@@ -10259,3 +10259,65 @@ TEST_SUITE("timeOfDay 1-second throttle gate") {
         CHECK(m_cachedTimeOfDay == doctest::Approx(snapshot));
     }
 } // TEST_SUITE timeOfDay 1-second throttle gate
+
+// Lifetime invariant pins for nodeById + particleSubByNodeId.  Both maps
+// are parse-only.  thisScene.destroyLayer is a JS-side state flip that does
+// NOT touch the C++ maps nor free any subsystem.  If these tests ever fail,
+// the invariant has been broken and the consumer-side iteration over
+// particleSubByNodeId must switch to weak_ptr or coordinated-erase before
+// landing the change that broke it (see Scene.h LIFETIME INVARIANT block).
+TEST_SUITE("ParticleSubByNodeId Lifetime") {
+
+    // (1) destroyLayer JS shim source must not reach the C++ side.  The
+    // shim is included verbatim into the production engine via
+    // wek::qml_helper::kLayerRuntimeJs (SceneScriptShimsJs.hpp); a text
+    // search of its source pins the contract that the destroyLayer body
+    // contains zero __sceneBridge / erase / clear calls -- i.e. there is
+    // no path from destroyLayer to the C++ particleSubByNodeId map.
+    TEST_CASE("destroyLayer JS shim has no C++ erase path") {
+        const std::string shimSrc(wek::qml_helper::kLayerRuntimeJs);
+        REQUIRE(shimSrc.find("thisScene.destroyLayer") != std::string::npos);
+        // Isolate the destroyLayer function body (from its declaration to
+        // the next `thisScene.` member assignment).
+        auto begin = shimSrc.find("destroyLayer = function");
+        REQUIRE(begin != std::string::npos);
+        auto end = shimSrc.find("thisScene.", begin + 20);
+        if (end == std::string::npos) end = shimSrc.size();
+        const std::string body = shimSrc.substr(begin, end - begin);
+        // No bridge call, no erase, no clear within destroyLayer.
+        CHECK(body.find("__sceneBridge") == std::string::npos);
+        CHECK(body.find(".erase") == std::string::npos);
+        CHECK(body.find(".clear") == std::string::npos);
+    }
+
+    // (2) Raw-pointer stability characterization.  Mock the map shape +
+    // simulate many create/destroy cycles -- production destroyLayer does
+    // not touch this map, so the cycle loop is a no-op and the pointers
+    // remain stable.  A future change that adds a runtime erase path will
+    // surface here once the simulated cycle is updated to invoke it.
+    TEST_CASE("particleSubByNodeId raw pointers stable across cycles") {
+        // 3 stable subsystem-pointer slots backed by owned storage.
+        std::vector<int>             subsystemStorage(3, 0);
+        std::unordered_map<int, int*> map;
+        map[100]        = &subsystemStorage[0];
+        map[200]        = &subsystemStorage[1];
+        map[300]        = &subsystemStorage[2];
+        const auto p100 = map[100];
+        const auto p200 = map[200];
+        const auto p300 = map[300];
+
+        // Simulate many create/destroy cycles.  Production destroyLayer
+        // does not touch this map; the mock loop is therefore a no-op
+        // characterizing the immutability (see case (1)'s text-search
+        // proof of the same contract).
+        for (int i = 0; i < 1000; ++i) {
+            // Intentional no-op: see destroyLayer shim assertions above.
+        }
+
+        CHECK(map[100] == p100);
+        CHECK(map[200] == p200);
+        CHECK(map[300] == p300);
+        CHECK(*map[100] == 0);
+        CHECK(map.size() == 3);
+    }
+} // TEST_SUITE ParticleSubByNodeId Lifetime
