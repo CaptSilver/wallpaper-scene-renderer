@@ -216,8 +216,15 @@ private:
     bool              m_hasReactiveParticles { false };
     std::atomic<bool> m_hasScriptAudio { false };
 
-    Map<void*, WPShaderValueData> m_nodeDataMap;
-    Map<void*, WPUniformInfo>     m_nodeUniformInfoMap;
+    // Per-node lookups are point queries (find/at/exists), never ordered
+    // iteration — std::hash<void*> is typically a no-op cast so unordered_map
+    // gives O(1) average lookup with zero extra cost vs the RB-tree probe
+    // std::map issued for every uniform write per pass per frame.  Forward
+    // hook: per-light state for a future lights/ambient split can live in a
+    // sibling unordered_map keyed by SceneLight* without restructuring the
+    // container contract.
+    std::unordered_map<void*, WPShaderValueData> m_nodeDataMap;
+    std::unordered_map<void*, WPUniformInfo>     m_nodeUniformInfoMap;
     // Keyed on (node ptr, cam_name): the SAME node renders under the global
     // camera (empty name), the "effect" camera, and "reflected_perspective"
     // in different passes within one frame, each producing a different

@@ -29,6 +29,12 @@ inline bool exists(const std::set<Key, std::less<>, Allocator>& m, const KeyLike
 // std::unordered_map overload — Scene::cameras / renderTargets are
 // unordered_map, which the std::map overload above does not match.  Lets the
 // camera-lookup guards read identically to the existing exists() call sites.
+//
+// The heterogeneous overload (KeyLike != Key) uses find(KeyLike) which
+// requires Hash::is_transparent + KeyEqual::is_transparent on the container.
+// For ShaderReflected::Block::member_map we provide both via
+// TransparentStringHash + std::equal_to<>; the homogeneous (KeyLike == Key)
+// overload falls back to the default find path automatically.
 template<class Key, class Value, class Hash, class Eq, class Allocator, class KeyLike>
 inline bool exists(const std::unordered_map<Key, Value, Hash, Eq, Allocator>& m,
                    const KeyLike&                                             key) noexcept {

@@ -129,6 +129,7 @@ add_executable(backend_scene_tests
     test_WPLightKindParse.cpp
     test_WPShaderValueUpdater_Volumetric.cpp
     test_WPShaderValueUpdater_Uniforms.cpp
+    test_UniformLookupHash.cpp
     test_DependencyGraph.cpp
     test_RenderGraph.cpp
     test_WorldCacheGate.cpp
