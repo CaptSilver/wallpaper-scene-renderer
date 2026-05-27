@@ -25,10 +25,13 @@
 // a `Scene` without compiling any SPIR-V and without a Vulkan device.
 
 #include "WPSceneParser.hpp"
+#include "WPShaderParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneCamera.h"
+#include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneLight.hpp"
 #include "Scene/SceneNode.h"
+#include "SpecTexs.hpp"
 #include "WPUserProperties.hpp"
 
 #include "Audio/SoundManager.h"
@@ -38,7 +41,9 @@
 
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -81,6 +86,101 @@ std::unique_ptr<fs::VFS> makeEmptyAssetsVfs() {
     auto memfs   = std::make_unique<MemFs>();
     bool mounted = vfs->Mount("/assets", std::move(memfs));
     REQUIRE(mounted);
+    return vfs;
+}
+
+// Process-wide glslang init.  CompileToSpv -> CompileShaderUnits needs the
+// glslang globals.  Mirrors the std::call_once pattern in
+// test_WarmCacheTexSlots.cpp + test_thread_repro.cpp; never paired with a
+// FinalGlslang() — process exit handles teardown.
+void ensureGlslangInit() {
+    static std::once_flag once;
+    std::call_once(once, [] { WPShaderParser::InitGlslang(); });
+}
+
+// Trivial GLSL pair shared by every E2E image/effect fixture below.  The WE
+// preamble (WPShaderPreamble.hpp) injects `#define attribute in` for vertex
+// and remaps `gl_FragColor` to an `out vec4` for fragment, so a "classic"
+// `attribute vec3 a_Position` declaration + `gl_FragColor = vec4(1)` write
+// compiles cleanly through PreShaderSrc + PreShaderHeader -> glslang.  We
+// don't reference g_ModelViewProjectionMatrix here because the fixture's
+// material has no textures and the renderer only needs valid SPV for
+// LoadMaterial to succeed; the test never runs a Vulkan draw.  The vert
+// must still write gl_Position so glslang doesn't reject it; we use a
+// pass-through.
+constexpr const char* kTrivialVert = R"GLSL(
+attribute vec3 a_Position;
+void main() {
+    gl_Position = vec4(a_Position, 1.0);
+}
+)GLSL";
+
+constexpr const char* kTrivialFrag = R"GLSL(
+void main() {
+    gl_FragColor = vec4(1.0);
+}
+)GLSL";
+
+// Minimal `passes`-wrapped material JSON pointing at the trivial shader.
+// WPMaterial::FromJson requires the outer `{ "passes": [ { "shader": "..."
+// } ] }` shape (see wpscene/WPMaterial.cpp:84-93).
+constexpr const char* kPlainMaterialJson = R"({
+    "passes": [{
+        "shader": "_t",
+        "blending": "translucent",
+        "textures": []
+    }]
+})";
+
+// Plain image descriptor: 256x256 quad, references _plain material above.
+// WPImageObject::FromJson reads `material` (mandatory), `width`/`height`
+// (optional but used here to skip the autosize path) — see
+// wpscene/WPImageObject.cpp:513-525.
+constexpr const char* kPlainImageJson = R"({
+    "material": "materials/_plain.json",
+    "width": 256,
+    "height": 256
+})";
+
+// Effect file referenced by the headline (a-2) case.  WPImageEffect::
+// FromFileJson requires `name` + `passes` with each pass containing a
+// `material` path (wpscene/WPImageObject.cpp:267-323).  The lone pass
+// points at the same trivial-shader material so the effect's glslang
+// compile succeeds.
+constexpr const char* kEffectFileJson = R"({
+    "name": "tint",
+    "passes": [{
+        "material": "materials/_plain.json"
+    }]
+})";
+
+// Build a /assets-mounted MemFs preloaded with the trivial shader pair, the
+// shared plain image/material JSONs, and any extra (path, content) pairs
+// each test wants to layer in.  VFS::GetPathInMount strips the "/assets"
+// prefix at lookup time (see Fs/VFS.h:33-36), so MemFs keys are POST-
+// strip — "/shaders/_t.vert" rather than "/assets/shaders/_t.vert".
+//
+// Confirmed by test_VFS.cpp ("Contains matches only paths under a mount
+// point"): a MemFs that adds "/hello.txt" answers a vfs.Open("/assets/
+// hello.txt").  Same key convention applies here.
+std::unique_ptr<fs::VFS>
+makeAssetsVfsWith(std::initializer_list<std::pair<std::string, std::string>> extras) {
+    auto vfs   = std::make_unique<fs::VFS>();
+    auto memfs = std::make_unique<MemFs>();
+
+    // Trivial shader pair — every fixture below uses shader "_t".
+    memfs->add("/shaders/_t.vert", kTrivialVert);
+    memfs->add("/shaders/_t.frag", kTrivialFrag);
+
+    // Shared plain image descriptor + material.
+    memfs->add("/models/_plain.json", kPlainImageJson);
+    memfs->add("/materials/_plain.json", kPlainMaterialJson);
+
+    for (const auto& [path, content] : extras) {
+        memfs->add(path, content);
+    }
+
+    REQUIRE(vfs->Mount("/assets", std::move(memfs)));
     return vfs;
 }
 
@@ -709,6 +809,292 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         auto                scene = parser.Parse("scene_disabled", kJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
         CHECK(scene->volumetricsConfig.enabled == false);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Partials: image+effect-chain and compose-dependency end-to-end
+    //
+    // Every prior case in this suite stops at the group/light/script
+    // boundary — none reaches ParseImageObj.  These four close the two
+    // gaps the umbrella spec deferred:
+    //
+    //  - (a-1) image layer with NO effects — base ParseImageObj path,
+    //          JSON transform propagates, no synthesised effect child.
+    //  - (a-2) image layer with a real effect chain — image worldNode
+    //          collapses to IDENTITY for the effect base-pass capture,
+    //          the effect-layer FinalNode preserves the JSON transform
+    //          (regression net: a script-driven `origin` must redirect
+    //          to ResolvedLastOutput, not the worldNode).
+    //  - (b-1) compose layer with `dependencies: [N]` — image N must be
+    //          forced offscreen so the compose blend samples an isolated
+    //          sprite RT (3498984739 gray-quad regression).
+    //  - (b-2) non-compose image with `dependencies: [self, self]` —
+    //          dropped by CollectComposeDependencyIds' two filters,
+    //          dependent NOT offscreen (1210462523 Eclipse black-screen
+    //          regression).
+    //
+    // The fixture VFS chain is exactly what runtime sees:
+    //   scene.json -> image descriptor -> material -> shader pair.
+    // All four cases share the makeAssetsVfsWith(...) scaffolding plus
+    // the trivial GLSL pair (which glslang-compiles in <20ms after the
+    // call_once init).
+    // ────────────────────────────────────────────────────────────────────
+
+    TEST_CASE("E2E: image layer with empty effects array (a-1)") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({});
+
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 300, "name": "the_image_name",
+      "image": "models/_plain.json",
+      "origin": "10 20 0",
+      "scale":  "2.0 2.0 1.0",
+      "angles": "0 0 0.7853981",
+      "visible": true,
+      "effects": [] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_image_no_effect", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        // Walk the graph to find id=300 — same recursive findById pattern
+        // used by the earlier group-parent case.
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* node = findById(scene->sceneGraph.get(), 300);
+        REQUIRE(node != nullptr);
+        CHECK(scene->nodeNameToId.count("the_image_name") == 1);
+
+        // JSON transform propagated onto the worldNode (no effects = no
+        // identity collapse).  Pin the three components separately so a
+        // future regression names the broken axis.
+        CHECK(node->Translate().x() == doctest::Approx(10.0f));
+        CHECK(node->Translate().y() == doctest::Approx(20.0f));
+        CHECK(node->Scale().x() == doctest::Approx(2.0f));
+        CHECK(node->Scale().y() == doctest::Approx(2.0f));
+        CHECK(node->Rotation().z() == doctest::Approx(0.7853981f).epsilon(1e-4));
+
+        // No effects -> no nodeEffectLayerMap entry, no offscreen routing.
+        CHECK(scene->nodeEffectLayerMap.count(300) == 0);
+        CHECK(node->IsOffscreen() == false);
+    }
+
+    TEST_CASE("E2E: image layer with real effect chain — worldNode collapses to IDENTITY (a-2)") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 301, "name": "img_with_effect",
+      "image": "models/_plain.json",
+      "origin": "10 20 0",
+      "scale":  "2.0 2.0 1.0",
+      "angles": "0 0 0.7853981",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "tint", "visible": true,
+          "file": "effects/tint.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_image_effect_chain", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* node = findById(scene->sceneGraph.get(), 301);
+        REQUIRE(node != nullptr);
+
+        // The image is registered by name; the effect is addressable via the
+        // layerEffectNames map instead, NOT as its own scene-graph node.
+        CHECK(scene->nodeNameToId.count("img_with_effect") == 1);
+        CHECK(scene->nodeNameToId.count("tint") == 0);
+
+        // assembleEffectChain installs a SceneImageEffectLayer entry against
+        // the image id (WPSceneParser.cpp:2327).  It owns the FinalNode that
+        // carries the JSON transform; the worldNode itself is reset to
+        // IDENTITY at WPSceneParser.cpp:2323 so the base capture pass draws
+        // into the pingpong RT at origin.  This is the pin for the
+        // property-anim-effect-layer-redirect regression: a vec3 origin
+        // script on the image must update ResolvedLastOutput, NOT the
+        // worldNode (which would put the geometry off-screen).
+        REQUIRE(scene->nodeEffectLayerMap.count(301) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(301);
+        REQUIRE(effLayer != nullptr);
+
+        // worldNode collapsed to identity — confirms the CopyTrans(SceneNode())
+        // reset fired on the non-compose, hasEffect path.
+        CHECK(node->Translate().x() == doctest::Approx(0.0f));
+        CHECK(node->Translate().y() == doctest::Approx(0.0f));
+        CHECK(node->Scale().x() == doctest::Approx(1.0f));
+        CHECK(node->Scale().y() == doctest::Approx(1.0f));
+        CHECK(node->Rotation().z() == doctest::Approx(0.0f));
+
+        // FinalNode carries the JSON transform (CopyTrans(*spImgNode) at
+        // WPSceneParser.cpp:2290).  This is the corner the script redirect
+        // must target.
+        const SceneNode& finalNode = effLayer->FinalNode();
+        CHECK(finalNode.Translate().x() == doctest::Approx(10.0f));
+        CHECK(finalNode.Translate().y() == doctest::Approx(20.0f));
+        CHECK(finalNode.Scale().x() == doctest::Approx(2.0f));
+        CHECK(finalNode.Rotation().z() == doctest::Approx(0.7853981f).epsilon(1e-4));
+
+        // Effect ordering / count: the visible effect produced one entry in
+        // the layer's effect vector.  No effect was named "tint" in
+        // nodeNameToId (confirmed above) — naming flows through
+        // layerEffectNames instead.
+        CHECK(effLayer->EffectCount() == 1);
+
+        // The image is not offscreen (visible=true, not a compose dep).
+        CHECK(node->IsOffscreen() == false);
+        CHECK(effLayer->IsOffscreen() == false);
+    }
+
+    TEST_CASE("E2E: compose-dependency forces dependent image offscreen (b-1)") {
+        ensureGlslangInit();
+        // Build a compose-layer image descriptor in the VFS:
+        // /assets/models/util/composelayer.json — the marker the parser
+        // looks for in CollectComposeDependencyIds (WPImageObject.h:145).
+        //
+        // A no-effect compose layer also makes the parser synthesise a
+        // passthrough effect from /assets/materials/util/effectpassthrough.json
+        // (WPSceneParser.cpp:1567) — without it synthesizePassthroughForCompose
+        // returns nullopt and the compose layer is dropped before reaching the
+        // scene graph.  Use the same minimal trivial-shader material content
+        // so the synthesised effect glslang-compiles cleanly.
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/composelayer.json", kPlainImageJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
+        });
+
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 401, "name": "dep_image",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true },
+    { "id": 402, "name": "compose_layer",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "dependencies": [401] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_compose_dep", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* dep     = findById(scene->sceneGraph.get(), 401);
+        SceneNode* compose = findById(scene->sceneGraph.get(), 402);
+        REQUIRE(dep != nullptr);
+        REQUIRE(compose != nullptr);
+
+        // The observable effect of CollectComposeDependencyIds picking up
+        // 401: applyImagePreRoutingDefaults/computeOffscreenRouting at
+        // WPSceneParser.cpp:1428 force the dependent image offscreen so the
+        // compose blend samples an isolated sprite RT.  Without this, 401
+        // renders to _rt_default and the compose layer paints solid quads
+        // sampled from full-FB UVs (Clair Obscur Expedition 33 3498984739
+        // gray-quads-over-characters regression).
+        CHECK(dep->IsOffscreen() == true);
+
+        // Sibling effect of the offscreen routing: ensureBareDependencyOffscreenRT
+        // registers a /_rt_offscreen_<id>/ render target so the compose
+        // blend's link-tex resolves to a real RT (WPSceneParser.cpp:2583).
+        CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+    }
+
+    TEST_CASE("E2E: self-referential dependency dropped, dependent NOT offscreen (b-2)") {
+        ensureGlslangInit();
+        // No compose-layer marker in the VFS — the image at id 64 is a
+        // plain (non-compose) image; CollectComposeDependencyIds' first
+        // filter rejects it.  The fixture mirrors Eclipse 1210462523's
+        // `dependencies:[64,64,64]` self-reference shape exactly.
+        auto vfs = makeAssetsVfsWith({});
+
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 64, "name": "self_ref",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "dependencies": [64, 64, 64] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_self_ref", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* node = findById(scene->sceneGraph.get(), 64);
+        REQUIRE(node != nullptr);
+
+        // The non-compose filter (WPImageObject.h:166-177) drops every
+        // dependency from a non-compose image, and the self-reference
+        // filter drops `dep_id == img->id` even if the image is a compose
+        // layer.  Either way, 64 must NOT end up routed offscreen — the
+        // Eclipse 1210462523 regression was exactly the inverse: 64 was
+        // forced offscreen, nothing read the offscreen RT, and the screen
+        // stayed at clearColor.
+        CHECK(node->IsOffscreen() == false);
+        // No offscreen RT registered for the self-ref id.
+        CHECK(scene->renderTargets.count(GenOffscreenRT(64)) == 0);
     }
 
 } // TEST_SUITE
