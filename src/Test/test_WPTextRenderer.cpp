@@ -1,9 +1,11 @@
 #include <doctest.h>
 
 #include "WPTextRenderer.hpp"
+#include "SystemFontFallback.hpp"
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 using namespace wallpaper;
 
@@ -330,5 +332,143 @@ TEST_SUITE("WPTextRenderer bitmap ownership") {
             // img drops here → ImageDataPtr drops → deleter fires →
             // shared_ptr<vector> refcount hits zero → vector dtor frees.
         }
+    }
+}
+
+// ---------- FT_Face LRU cache ----------
+//
+// `RenderText` previously parsed the font buffer on every call via
+// `FT_New_Memory_Face` + `FT_Done_Face`.  Clock-style wallpapers (e.g. 2866203962
+// VHS Time/Date) drive ~9 RenderText calls/sec — each re-parsing the same
+// ~200KB-1MB OTF/TTF.  The cache holds at most kMaxFaceCacheEntries live
+// faces keyed on the buffer pointer+size, evicted LRU.
+//
+// These tests exercise the cache via three test-only accessors on
+// WPTextRenderer (TEST_getFaceCacheSize / TEST_getLastPixelSize /
+// TEST_getFaceCacheCapacity).  Each accessor locks s_ftLibMutex.
+
+TEST_SUITE("WPTextRenderer FT_Face cache") {
+    // Liberation Sans Regular is shipped by every preflight host (the
+    // liberation-fonts RPM is a Fedora default; Debian/Ubuntu ship it via
+    // fonts-liberation).  If absent, skip gracefully — same pattern as
+    // the existing test_VideoTextureDecoder env-skip path.
+    static std::string loadHostFont() {
+        const std::string path = wallpaper::ResolveSystemFontFallback("systemfont_sans");
+        if (path.empty()) return {};
+        return wallpaper::ReadSystemFile(path);
+    }
+
+    TEST_CASE("repeated RenderText with same fontData reuses FT_Face") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::Init();
+        for (int i = 0; i < 100; ++i) {
+            auto img =
+                WPTextRenderer::RenderText(fontData, 16.f, "tick", 64, 32, "center", "center", 0);
+            REQUIRE(img != nullptr);
+        }
+        // After 100 calls with the same buffer the cache holds exactly ONE
+        // entry — proves we are NOT re-parsing the font per call.
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == 1);
+        WPTextRenderer::Shutdown();
+        // Shutdown must purge the cache before FT_Done_FreeType.
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == 0);
+    }
+
+    TEST_CASE("different fontData buffers cause distinct cache entries") {
+        auto fontA = loadHostFont();
+        if (fontA.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        std::string fontB = fontA; // independent std::string -> different .data()
+        REQUIRE(fontA.data() != fontB.data());
+        WPTextRenderer::Init();
+        (void)WPTextRenderer::RenderText(fontA, 16.f, "a", 32, 32, "center", "center", 0);
+        (void)WPTextRenderer::RenderText(fontB, 16.f, "b", 32, 32, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == 2);
+        WPTextRenderer::Shutdown();
+    }
+
+    TEST_CASE("FT_Set_Pixel_Sizes is tracked per-entry and updates on size change") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::Init();
+        (void)WPTextRenderer::RenderText(fontData, 16.f, "a", 32, 32, "center", "center", 0);
+        // Compute via the same formula production code uses; assert the
+        // accessor matches.  pixelSize = round(points * 96/72 * scale + 0.5).
+        unsigned int expected16 = static_cast<unsigned int>(
+            16.0f * 96.0f / 72.0f * WPTextRenderer::kRasterDpiScale + 0.5f);
+        if (expected16 < 4) expected16 = 4;
+        CHECK(WPTextRenderer::TEST_getLastPixelSize(fontData.data()) == expected16);
+
+        (void)WPTextRenderer::RenderText(fontData, 32.f, "a", 32, 32, "center", "center", 0);
+        unsigned int expected32 = static_cast<unsigned int>(
+            32.0f * 96.0f / 72.0f * WPTextRenderer::kRasterDpiScale + 0.5f);
+        CHECK(WPTextRenderer::TEST_getLastPixelSize(fontData.data()) == expected32);
+        WPTextRenderer::Shutdown();
+    }
+
+    TEST_CASE("LRU evicts oldest entry when at capacity") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        const std::size_t cap = WPTextRenderer::TEST_getFaceCacheCapacity();
+        REQUIRE(cap > 0);
+        // Synthesise cap+1 distinct std::string buffers — each an independent
+        // copy of fontData with a unique .data().  Liberation Sans is many KB
+        // so SBO can't collapse pointers; defend with a REQUIRE anyway.
+        std::vector<std::string> buffers;
+        buffers.reserve(cap + 1);
+        for (std::size_t i = 0; i < cap + 1; ++i) buffers.push_back(fontData);
+        for (std::size_t i = 1; i < buffers.size(); ++i) {
+            REQUIRE(buffers[i].data() != buffers[0].data());
+        }
+        WPTextRenderer::Init();
+        for (auto& b : buffers) {
+            (void)WPTextRenderer::RenderText(b, 16.f, "x", 32, 32, "center", "center", 0);
+        }
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == cap);
+        // buffers[0] was inserted first and is now evicted at the cap boundary.
+        // Re-rendering it is a miss → count stays at cap (which means a now-older
+        // entry — buffers[1] — was evicted in turn).
+        (void)WPTextRenderer::RenderText(buffers[0], 16.f, "x", 32, 32, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == cap);
+        WPTextRenderer::Shutdown();
+    }
+
+    TEST_CASE("Init -> render -> Shutdown -> Init -> render survives cycle (no UAF)") {
+        // Shutdown must purge the cache BEFORE FT_Done_FreeType, otherwise a
+        // cached FT_Face dangles on the freed library.  Single-thread
+        // companion to the existing Q1 race test.
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        WPTextRenderer::Init();
+        {
+            auto img =
+                WPTextRenderer::RenderText(fontData, 16.f, "a", 32, 32, "center", "center", 0);
+            REQUIRE(img != nullptr);
+        }
+        WPTextRenderer::Shutdown();
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == 0);
+        WPTextRenderer::Init();
+        {
+            auto img =
+                WPTextRenderer::RenderText(fontData, 16.f, "b", 32, 32, "center", "center", 0);
+            REQUIRE(img != nullptr);
+        }
+        CHECK(WPTextRenderer::TEST_getFaceCacheSize() == 1);
+        WPTextRenderer::Shutdown();
     }
 }

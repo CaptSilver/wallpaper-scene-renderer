@@ -81,6 +81,17 @@ public:
                                              const std::string& text, i32 width, i32 height,
                                              const std::string& halign, const std::string& valign,
                                              i32 padding);
+
+    // Test-only accessors for the FT_Face LRU cache.  Always available
+    // (no #ifdef gate) — cheap and the test target already pokes internals.
+    // The first two lock s_ftLibMutex internally; safe to call from any thread.
+    // TEST_getLastPixelSize takes the font data pointer used as the cache key;
+    // returns 0 if no entry is found.  The signature uses `unsigned int` so
+    // the header does not need to drag in <ft2build.h> (FT_UInt is a typedef
+    // of unsigned int in every FreeType release we support).
+    static std::size_t  TEST_getFaceCacheSize();
+    static unsigned int TEST_getLastPixelSize(const void* fontDataPtr);
+    static std::size_t  TEST_getFaceCacheCapacity();
 };
 
 } // namespace wallpaper

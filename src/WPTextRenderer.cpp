@@ -9,7 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace wallpaper
@@ -24,6 +26,106 @@ namespace wallpaper
 static std::mutex s_ftLibMutex;
 static FT_Library s_ftLib = nullptr;
 
+// -------- FT_Face LRU cache --------
+//
+// Pre-cache, every RenderText call ran FT_New_Memory_Face +
+// FT_Set_Pixel_Sizes + FT_Done_Face — re-parsing the entire font file
+// on each call.  Clock-style wallpapers (e.g. 2866203962 VHS Time/Date)
+// drive ~9 RenderText/sec, each re-parsing the same ~200KB-1MB OTF/TTF.
+//
+// The cache holds at most kMaxFaceCacheEntries live faces keyed on the
+// font-buffer (data ptr + size) — caller pointers are stable for the
+// lifetime of TextLayer::fontData (any setTextStyle that rebuilds the
+// buffer yields a different .data() pointer and correctly misses).
+//
+// All cache operations happen under s_ftLibMutex — no separate lock,
+// no nested-lock risk.  Each entry owns a std::string COPY of the font
+// payload because FT_New_Memory_Face does NOT copy the bytes — it
+// expects the caller to keep the buffer alive for the face's lifetime.
+// Owning a copy decouples the cache from the scene's tl.fontData
+// (which may be freed by setTextStyle while the old face still sits
+// in the LRU awaiting eviction).
+//
+// Shutdown MUST purge cached faces BEFORE FT_Done_FreeType — cached
+// FT_Face objects internally reference s_ftLib and would dangle on
+// the freed library otherwise.
+namespace
+{
+struct FaceCacheKey {
+    const void* dataPtr;
+    std::size_t dataSize;
+    bool        operator==(const FaceCacheKey& o) const noexcept {
+        return dataPtr == o.dataPtr && dataSize == o.dataSize;
+    }
+};
+struct FaceCacheKeyHash {
+    std::size_t operator()(const FaceCacheKey& k) const noexcept {
+        return std::hash<const void*> {}(k.dataPtr) ^ (std::hash<std::size_t> {}(k.dataSize) << 1);
+    }
+};
+struct FaceCacheEntry {
+    FaceCacheKey key;
+    std::string  bytes; // owns the font payload (FT does NOT copy)
+    FT_Face      face { nullptr };
+    FT_UInt      lastPixelSize { 0 };
+};
+constexpr std::size_t     kMaxFaceCacheEntries = 8;
+std::list<FaceCacheEntry> s_faceLru;
+std::unordered_map<FaceCacheKey, std::list<FaceCacheEntry>::iterator, FaceCacheKeyHash> s_faceIdx;
+
+// Acquire (or create) an FT_Face for `fontData` and set its pixel size.
+// MUST be called under s_ftLibMutex.  Returns nullptr on FT failure.
+// The returned face is owned by the cache — caller must NOT FT_Done_Face it.
+FT_Face acquireFaceLocked(const std::string& fontData, FT_UInt pixelSize) {
+    FaceCacheKey key { fontData.data(), fontData.size() };
+    if (auto it = s_faceIdx.find(key); it != s_faceIdx.end()) {
+        // Hit — promote to MRU and only re-set pixel size on change.
+        s_faceLru.splice(s_faceLru.begin(), s_faceLru, it->second);
+        FaceCacheEntry& e = s_faceLru.front();
+        if (e.lastPixelSize != pixelSize) {
+            FT_Set_Pixel_Sizes(e.face, 0, pixelSize);
+            e.lastPixelSize = pixelSize;
+        }
+        return e.face;
+    }
+    // Miss — evict at capacity, then create.
+    while (s_faceLru.size() >= kMaxFaceCacheEntries) {
+        auto& victim = s_faceLru.back();
+        if (victim.face) FT_Done_Face(victim.face);
+        s_faceIdx.erase(victim.key);
+        s_faceLru.pop_back();
+    }
+    FaceCacheEntry entry;
+    entry.key    = key;
+    entry.bytes  = fontData; // owned copy — FT_New_Memory_Face does NOT copy
+    FT_Error err = FT_New_Memory_Face(s_ftLib,
+                                      reinterpret_cast<const FT_Byte*>(entry.bytes.data()),
+                                      static_cast<FT_Long>(entry.bytes.size()),
+                                      0,
+                                      &entry.face);
+    if (err || ! entry.face) {
+        LOG_ERROR("acquireFaceLocked: FT_New_Memory_Face failed: %d", err);
+        return nullptr;
+    }
+    FT_Set_Pixel_Sizes(entry.face, 0, pixelSize);
+    entry.lastPixelSize = pixelSize;
+    s_faceLru.push_front(std::move(entry));
+    s_faceIdx[key] = s_faceLru.begin();
+    return s_faceLru.front().face;
+}
+
+// Free all cached FT_Face objects.  MUST be called under s_ftLibMutex.
+// Called by Shutdown BEFORE FT_Done_FreeType (cached faces internally
+// reference s_ftLib; freeing the library invalidates them).
+void purgeFaceCacheLocked() {
+    for (auto& e : s_faceLru) {
+        if (e.face) FT_Done_Face(e.face);
+    }
+    s_faceLru.clear();
+    s_faceIdx.clear();
+}
+} // namespace
+
 void WPTextRenderer::Init() {
     std::lock_guard<std::mutex> lock(s_ftLibMutex);
     if (s_ftLib != nullptr) return;
@@ -36,10 +138,32 @@ void WPTextRenderer::Init() {
 
 void WPTextRenderer::Shutdown() {
     std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    // Purge cached faces BEFORE freeing the library; cached FT_Face
+    // objects internally reference s_ftLib and would dangle otherwise.
+    purgeFaceCacheLocked();
     if (s_ftLib) {
         FT_Done_FreeType(s_ftLib);
         s_ftLib = nullptr;
     }
+}
+
+std::size_t WPTextRenderer::TEST_getFaceCacheSize() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    return s_faceLru.size();
+}
+
+unsigned int WPTextRenderer::TEST_getLastPixelSize(const void* fontDataPtr) {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    for (const auto& e : s_faceLru) {
+        if (e.key.dataPtr == fontDataPtr) {
+            return static_cast<unsigned int>(e.lastPixelSize);
+        }
+    }
+    return 0;
+}
+
+std::size_t WPTextRenderer::TEST_getFaceCacheCapacity() {
+    return kMaxFaceCacheEntries; // compile-time constant; no lock needed
 }
 
 // DecodeUtf8 now lives header-inline at WPTextRenderer::DecodeUtf8 so the
@@ -148,17 +272,6 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         return img_ptr;
     }
 
-    FT_Face  face = nullptr;
-    FT_Error err  = FT_New_Memory_Face(s_ftLib,
-                                      reinterpret_cast<const FT_Byte*>(fontData.data()),
-                                      static_cast<FT_Long>(fontData.size()),
-                                      0,
-                                      &face);
-    if (err || ! face) {
-        LOG_ERROR("FT_New_Memory_Face failed: %d", err);
-        return nullptr;
-    }
-
     // Convert pointsize from typographic points to pixels.
     // WE authors a scene against a 3840x2160 virtual ortho — pointsize is
     // intended to render at the native full-resolution scale, not at 96 DPI
@@ -170,7 +283,13 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // so glyphs don't clip at the edges of an authored 1× size.
     i32 pixelSize = static_cast<i32>(pointsize * 96.0f / 72.0f * kRasterDpiScale + 0.5f);
     if (pixelSize < 4) pixelSize = 4;
-    FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
+
+    // Cached FT_Face acquisition.  Replaces per-call
+    // FT_New_Memory_Face + FT_Set_Pixel_Sizes + FT_Done_Face with an LRU
+    // lookup under s_ftLibMutex (already held).  The cache owns the face;
+    // we do NOT FT_Done_Face it here.
+    FT_Face face = acquireFaceLocked(fontData, static_cast<FT_UInt>(pixelSize));
+    if (! face) return nullptr;
 
     i32 usableW = width - padding * 2;
     i32 usableH = height - padding * 2;
@@ -257,7 +376,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         }
     }
 
-    FT_Done_Face(face);
+    // NB: no FT_Done_Face — face is owned by the LRU cache; Shutdown purges.
 
     // Build Image
     auto  img_ptr        = std::make_shared<Image>();
