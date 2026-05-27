@@ -648,8 +648,16 @@ private:
     bool  m_sceneOrthoLoaded { false };
     float m_cursorSceneX { 0.0f }; // scene-space cursor X, updated on hover/drag
     float m_cursorSceneY { 0.0f }; // scene-space cursor Y, updated on hover/drag
-    float m_mouseNx { 0.5f };      // widget-normalized cursor X (0..1)
-    float m_mouseNy { 0.5f };      // widget-normalized cursor Y (0..1, top-down)
+    // Widget-pixel cursor pair (top-down) — shares units with
+    // engine.screenResolution (which fireResizeScreen sets to widget pixels at
+    // every resize).  Read by input.cursorScreenPosition + event.screenPosition
+    // so scripts doing (csp.x - screenResolution.x/2)/scale produce a correct
+    // normalised offset on any resolution.  cursorWorldPosition stays in
+    // scene-ortho units — "world" and "screen" are separate WE-Windows surfaces.
+    float m_cursorScreenX { 0.0f };
+    float m_cursorScreenY { 0.0f };
+    float m_mouseNx { 0.5f }; // widget-normalized cursor X (0..1)
+    float m_mouseNy { 0.5f }; // widget-normalized cursor Y (0..1, top-down)
 
     // Camera-parallax config, cached from SceneWallpaper::getParallaxInfo()
     // at load time + refreshed with live mouse coords on every hit-test

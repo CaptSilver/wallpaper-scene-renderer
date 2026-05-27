@@ -4,6 +4,7 @@
 #include <QJSEngine>
 #include <QJSValue>
 #include "SceneTimerBridge.h"
+#include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
 #include "SceneScriptShimsJs.hpp"
 
@@ -669,6 +670,133 @@ TEST_SUITE("SceneScript Cursor Position") {
     }
 
 } // TEST_SUITE SceneScript Cursor Position
+
+// ------------------------------------------------------------------
+// input.cursorScreenPosition / event.screenPosition unit contract
+// ------------------------------------------------------------------
+// input.cursorScreenPosition is meant to share units with
+// engine.screenResolution (widget pixels, top-down — fireResizeScreen sets it
+// to widget pixels on every resize).  The previous per-tick write put
+// scene-ortho units into csp, so the common WE-Windows idiom
+// `(csp.x - screenResolution.x/2) / scale` returned a non-zero offset at the
+// widget centre on any resolution != 1920x1080 (where ortho and widget
+// happen to coincide).  cursorWorldPosition stays scene-ortho (Y-up) — "world"
+// and "screen" are independent WE-Windows surfaces.
+TEST_SUITE("SceneBackend cursorScreenPosition units") {
+    // Fixture mirroring the JS shape the real SceneObject sets up.  Both
+    // input.cursorWorldPosition and input.cursorScreenPosition exist as
+    // separate {x,y} sub-objects; engine.screenResolution carries widget
+    // pixels (the value fireResizeScreen writes after every resize).
+    struct UnitsEnv {
+        QJSEngine engine;
+        UnitsEnv() {
+            engine.evaluate(wek::qml_helper::kVecClassesJs);
+            engine.evaluate("var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
+                            "  cursorScreenPosition: { x: 0, y: 0 } };\n"
+                            "var engine = { screenResolution: { x: 0, y: 0 } };\n");
+        }
+        // Mirror the per-tick C++ writer (refreshEngineTickGlobals) at a
+        // non-coincident widget/ortho resolution.  Scene-ortho 1920x1080
+        // with widget 2560x1440 is the spec's witness case.
+        void writeCursor(double sceneX, double sceneY, double screenX, double screenY) {
+            QJSValue inputObj = engine.globalObject().property("input");
+            QJSValue cwp      = inputObj.property("cursorWorldPosition");
+            QJSValue csp      = inputObj.property("cursorScreenPosition");
+            scenebackend::writeCursorTickGlobals(
+                cwp, csp, (float)sceneX, (float)sceneY, (float)screenX, (float)screenY);
+        }
+        void setScreenResolution(double w, double h) {
+            QJSValue engineObj = engine.globalObject().property("engine");
+            QJSValue sr        = engineObj.property("screenResolution");
+            sr.setProperty("x", w);
+            sr.setProperty("y", h);
+        }
+    };
+
+    TEST_CASE("cursorScreenPosition is widget pixels even when scene-ortho differs") {
+        // Spec witness: scene-ortho 1920x1080, widget 2560x1440.  At the
+        // widget centre (1280, 720) the scene-ortho mapping is (960, 540).
+        // Pre-fix the per-tick writer wrote 960/540 into both cwp and csp,
+        // so csp didn't share units with screenResolution.  Post-fix csp is
+        // 1280/720 (widget pixels, top-down) while cwp stays 960/540
+        // (scene-ortho, Y-up convention).
+        UnitsEnv env;
+        env.writeCursor(/*sceneX*/ 960.0,
+                        /*sceneY*/ 540.0,
+                        /*screenX*/ 1280.0,
+                        /*screenY*/ 720.0);
+        CHECK(env.engine.evaluate("input.cursorScreenPosition.x").toNumber() ==
+              doctest::Approx(1280.0));
+        CHECK(env.engine.evaluate("input.cursorScreenPosition.y").toNumber() ==
+              doctest::Approx(720.0));
+        CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() ==
+              doctest::Approx(960.0));
+        CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() ==
+              doctest::Approx(540.0));
+    }
+
+    TEST_CASE("(csp.x - screenResolution.x/2)/scale returns 0 at widget centre") {
+        // Real-Time Earth (3557068717) idiom.  csp and screenResolution must
+        // share units — both widget pixels — for the normalised offset to be
+        // 0 at the centre regardless of resolution.  Pre-fix, csp was
+        // scene-ortho while screenResolution was widget pixels, so the
+        // delta was (960 - 1280) = -320 at 2560x1440 against a 1920x1080-
+        // ortho scene.  Post-fix the delta is 0.
+        UnitsEnv env;
+        env.writeCursor(/*sceneX*/ 960.0,
+                        /*sceneY*/ 540.0,
+                        /*screenX*/ 1280.0,
+                        /*screenY*/ 720.0);
+        env.setScreenResolution(2560.0, 1440.0);
+        env.engine.evaluate(
+            "var scale = 1.0;\n"
+            "var dx = (input.cursorScreenPosition.x - engine.screenResolution.x/2) / scale;\n"
+            "var dy = (input.cursorScreenPosition.y - engine.screenResolution.y/2) / scale;\n");
+        CHECK(env.engine.evaluate("dx").toNumber() == doctest::Approx(0.0));
+        CHECK(env.engine.evaluate("dy").toNumber() == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("event.screenPosition carries widget pixels (separate from worldPosition)") {
+        // Mirrors the makeCursorEvent contract: every cursor event carries a
+        // Vec3 worldPosition in scene-ortho and a Vec2 screenPosition in
+        // widget pixels, so cursorDown(event) handlers reading
+        // event.screenPosition.{x,y} (the Real-Time Earth lastMouseX/Y
+        // pattern) get widget pixels — the same units as
+        // engine.screenResolution.
+        UnitsEnv env;
+        QJSValue ev = scenebackend::makeCursorEvent(&env.engine,
+                                                    /*sceneX*/ 960.0f,
+                                                    /*sceneY*/ 540.0f,
+                                                    /*screenX*/ 1280.0f,
+                                                    /*screenY*/ 720.0f);
+        env.engine.globalObject().setProperty("ev", ev);
+        CHECK(env.engine.evaluate("ev.worldPosition.x").toNumber() == doctest::Approx(960.0));
+        CHECK(env.engine.evaluate("ev.worldPosition.y").toNumber() == doctest::Approx(540.0));
+        CHECK(env.engine.evaluate("ev.screenPosition.x").toNumber() == doctest::Approx(1280.0));
+        CHECK(env.engine.evaluate("ev.screenPosition.y").toNumber() == doctest::Approx(720.0));
+        // The two surfaces differ when widget != ortho — that is the point.
+        CHECK(env.engine.evaluate("ev.worldPosition.x !== ev.screenPosition.x").toBool());
+    }
+
+    TEST_CASE("widget-pixel writes survive a second tick at a new cursor position") {
+        // Per-tick writer is called on every text/colour/property script
+        // tick; a fresh cursor move replaces the prior value cleanly with
+        // no scene-ortho residue (no half-fix where csp got partially
+        // overwritten).
+        UnitsEnv env;
+        env.writeCursor(960.0, 540.0, 1280.0, 720.0);
+        env.writeCursor(480.0, 270.0, 640.0, 360.0);
+        CHECK(env.engine.evaluate("input.cursorScreenPosition.x").toNumber() ==
+              doctest::Approx(640.0));
+        CHECK(env.engine.evaluate("input.cursorScreenPosition.y").toNumber() ==
+              doctest::Approx(360.0));
+        CHECK(env.engine.evaluate("input.cursorWorldPosition.x").toNumber() ==
+              doctest::Approx(480.0));
+        CHECK(env.engine.evaluate("input.cursorWorldPosition.y").toNumber() ==
+              doctest::Approx(270.0));
+    }
+
+} // TEST_SUITE SceneBackend cursorScreenPosition units
 
 // ------------------------------------------------------------------
 // getVideoTexture() proxy (JS side)

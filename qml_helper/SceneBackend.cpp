@@ -1,6 +1,7 @@
 #include "SceneBackend.hpp"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
+#include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
@@ -1260,25 +1261,9 @@ static void stripESModuleSyntax(QString& src) {
 
 // hitTestLayerProxy lives in SceneCursorHitTest.h so scenescript_tests can
 // exercise the same geometry without pulling in Qt Quick.
-
-// Helper: build cursor event argument with worldPosition as Vec3
-static QJSValue makeCursorEvent(QJSEngine* engine, float sceneX, float sceneY) {
-    QJSValue ev = engine->newObject();
-    ev.setProperty("x", (double)sceneX);
-    ev.setProperty("y", (double)sceneY);
-    // worldPosition as Vec3 (for drag scripts that use .add()/.subtract())
-    QJSValue wp =
-        engine->evaluate(QString("new Vec3(%1,%2,0)").arg((double)sceneX).arg((double)sceneY));
-    ev.setProperty("worldPosition", wp);
-    // screenPosition as Vec2 — Real-Time Earth (3557068717) `视角控制`
-    // script's cursorDown(event) reads `event.screenPosition.x/.y` to seed
-    // lastMouseX/Y for drag-delta math; without this property the handler
-    // throws "cannot read property 'x' of undefined" and drag never starts.
-    QJSValue sp =
-        engine->evaluate(QString("new Vec2(%1,%2)").arg((double)sceneX).arg((double)sceneY));
-    ev.setProperty("screenPosition", sp);
-    return ev;
-}
+// makeCursorEvent lives in SceneCursorEvent.h for the same reason — and so
+// the worldPosition/screenPosition unit contract is testable in isolation.
+using scenebackend::makeCursorEvent;
 
 // Helper: flush JS console.log buffer
 static void flushJsConsole(QJSEngine* engine, const char* ctx) {
@@ -1307,6 +1292,13 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // scene.json grow upward from the bottom).  Flip so cursor tracking and
     // AABB hit-testing both match layer origin convention.
     float sceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
+    // Widget pixels (top-down) for event.screenPosition — same units as
+    // engine.screenResolution, so script idioms reading both off the event
+    // can normalise without a second source of truth.
+    m_cursorScreenX = (float)pos.x();
+    m_cursorScreenY = (float)pos.y();
+    float screenX   = m_cursorScreenX;
+    float screenY   = m_cursorScreenY;
 
     // Hit-test to pick the target layer.  All four press-time cursor events
     // (cursorDown, cursorClick, cursorMove on drag, cursorUp) go to this
@@ -1330,7 +1322,7 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
                                               m_parallaxCache.mouseInfluence,
                                               m_parallaxCache.camX,
                                               m_parallaxCache.camY);
-    QJSValue       ev       = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+    QJSValue       ev       = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
     int            clickIdx = -1, moveIdx = -1, downIdx = -1;
     double         clickArea = 0.0, moveArea = 0.0, downArea = 0.0;
     for (int i = 0; i < (int)m_cursorTargets.size(); i++) {
@@ -1456,6 +1448,12 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     // scene.json grow upward from the bottom).  Flip so cursor tracking and
     // AABB hit-testing both match layer origin convention.
     float sceneY = (float)(1.0 - pos.y() / height()) * m_sceneOrthoH;
+    // Widget-pixel screen coords for event.screenPosition (top-down, shares
+    // units with engine.screenResolution).
+    m_cursorScreenX = (float)pos.x();
+    m_cursorScreenY = (float)pos.y();
+    float screenX   = m_cursorScreenX;
+    float screenY   = m_cursorScreenY;
 
     // cursorUp dispatch priority:
     //   1. m_dragTarget (set at press from cursorDown/Move/Click handlers)
@@ -1468,9 +1466,9 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     //      winning shared.currentBrush.)
     //   3. Fan-out fallback for true "tap anywhere" patterns where no
     //      cursor target was hit (dino_run-style controls).
-    QJSValue ev      = makeCursorEvent(m_jsEngine, sceneX, sceneY);
-    int      upFired = 0;
-    CursorParallax para = buildCursorParallax(this,
+    QJSValue       ev      = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
+    int            upFired = 0;
+    CursorParallax para    = buildCursorParallax(this,
                                               m_mouseNx,
                                               m_mouseNy,
                                               m_sceneOrthoW,
@@ -1535,25 +1533,31 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
-    // Track cursor position for input.cursorWorldPosition in scripts.
-    // Qt Y is top-down; WE scene coords are Y-up — flip.
-    m_mouseNx      = (float)(pos.x() / width());
-    m_mouseNy      = (float)(pos.y() / height());
-    m_cursorSceneX = m_mouseNx * m_sceneOrthoW;
-    m_cursorSceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
+    // Track cursor position for input.cursorWorldPosition (scene-ortho, Y-up)
+    // and input.cursorScreenPosition (widget pixels, Y-down — shares units
+    // with engine.screenResolution).  Qt's pos is widget pixels top-down,
+    // so cwp flips Y while csp passes through.
+    m_mouseNx       = (float)(pos.x() / width());
+    m_mouseNy       = (float)(pos.y() / height());
+    m_cursorSceneX  = m_mouseNx * m_sceneOrthoW;
+    m_cursorSceneY  = (1.0f - m_mouseNy) * m_sceneOrthoH;
+    m_cursorScreenX = (float)pos.x();
+    m_cursorScreenY = (float)pos.y();
 
     // cursorMove on drag target.  The target is selected once on press via
     // hit-test; subsequent moves only reach that layer's moveFn (WE semantics
     // — the rest of the scene shouldn't see drag motions).
     if (! m_dragTarget.empty() && m_jsEngine) {
-        float sceneX = m_cursorSceneX;
-        float sceneY = m_cursorSceneY;
+        float sceneX  = m_cursorSceneX;
+        float sceneY  = m_cursorSceneY;
+        float screenX = m_cursorScreenX;
+        float screenY = m_cursorScreenY;
         for (auto& target : m_cursorTargets) {
             if (target.layerName != m_dragTarget || ! target.moveFn.isCallable()) continue;
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
                 return target.moveFn.call({ ev });
             });
@@ -1582,12 +1586,16 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 #endif
     m_scene->mouseInput(pos.x() / width(), pos.y() / height());
 
-    // Track cursor position for input.cursorWorldPosition in scripts.
-    // Qt Y is top-down; WE scene coords are Y-up — flip.
-    m_mouseNx      = (float)(pos.x() / width());
-    m_mouseNy      = (float)(pos.y() / height());
-    m_cursorSceneX = m_mouseNx * m_sceneOrthoW;
-    m_cursorSceneY = (1.0f - m_mouseNy) * m_sceneOrthoH;
+    // Track cursor position for input.cursorWorldPosition (scene-ortho, Y-up)
+    // and input.cursorScreenPosition (widget pixels, Y-down — shares units
+    // with engine.screenResolution).  Qt's pos is widget pixels top-down,
+    // so cwp flips Y while csp passes through.
+    m_mouseNx       = (float)(pos.x() / width());
+    m_mouseNy       = (float)(pos.y() / height());
+    m_cursorSceneX  = m_mouseNx * m_sceneOrthoW;
+    m_cursorSceneY  = (1.0f - m_mouseNy) * m_sceneOrthoH;
+    m_cursorScreenX = (float)pos.x();
+    m_cursorScreenY = (float)pos.y();
 
     // Sample log — once per ~4s — to confirm hover events reach the scene.
     // If this line is missing entirely from journals, the MouseGrabber isn't
@@ -1607,9 +1615,11 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
 
     // cursorEnter / cursorLeave hit-testing
     if (m_cursorTargets.empty() || ! m_jsEngine) return;
-    float          sceneX = m_cursorSceneX;
-    float          sceneY = m_cursorSceneY;
-    CursorParallax para   = buildCursorParallax(this,
+    float          sceneX  = m_cursorSceneX;
+    float          sceneY  = m_cursorSceneY;
+    float          screenX = m_cursorScreenX;
+    float          screenY = m_cursorScreenY;
+    CursorParallax para    = buildCursorParallax(this,
                                               m_mouseNx,
                                               m_mouseNy,
                                               m_sceneOrthoW,
@@ -1648,7 +1658,7 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
             m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY);
+            QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
                 return target.enterFn.call({ ev });
             });
@@ -1691,7 +1701,8 @@ void SceneObject::flushPendingLeaves() {
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
                 m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-                QJSValue ev = makeCursorEvent(m_jsEngine, m_cursorSceneX, m_cursorSceneY);
+                QJSValue ev = makeCursorEvent(
+                    m_jsEngine, m_cursorSceneX, m_cursorSceneY, m_cursorScreenX, m_cursorScreenY);
                 callJsGuarded([&] {
                     return target.leaveFn.call({ ev });
                 });
@@ -3942,14 +3953,14 @@ void SceneObject::refreshEngineTickGlobals(qint64& lastTickMs, double frametimeF
     engineObj.setProperty("timeOfDay", m_cachedTimeOfDay);
 
     // Refresh cursor world/screen positions for scripts reading
-    // input.cursorWorldPosition / input.cursorScreenPosition.  Both surfaces
-    // share the same {x,y} so wallpapers that mix them (Real-Time Earth's
-    // `视角控制` reads screen for normalized-mouse drag; Game of Life reads
-    // world for tooltip math) see a consistent live cursor each tick.
-    m_cwpObj.setProperty("x", (double)m_cursorSceneX);
-    m_cwpObj.setProperty("y", (double)m_cursorSceneY);
-    m_cspObj.setProperty("x", (double)m_cursorSceneX);
-    m_cspObj.setProperty("y", (double)m_cursorSceneY);
+    // input.cursorWorldPosition / input.cursorScreenPosition.  cwp is
+    // scene-ortho (Y-up, "world"), csp is widget pixels (Y-down, "screen",
+    // units of engine.screenResolution which fireResizeScreen sets at every
+    // resize).  Real-Time Earth's `视角控制` reads csp for normalised drag
+    // math against screenResolution; Game of Life reads cwp for scene-ortho
+    // tooltip placement — the two surfaces are independent on purpose.
+    scenebackend::writeCursorTickGlobals(
+        m_cwpObj, m_cspObj, m_cursorSceneX, m_cursorSceneY, m_cursorScreenX, m_cursorScreenY);
 }
 
 void SceneObject::refreshAudioBuffers() {
