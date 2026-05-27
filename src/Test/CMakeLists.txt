@@ -528,9 +528,22 @@ if(BUILD_FUZZERS)
     target_compile_options(fuzz_WPSoundParser PRIVATE ${_fuzz_san_opts})
     target_link_options(fuzz_WPSoundParser PRIVATE ${_fuzz_san_opts})
 
+    # Drives the SAX-driven ParseJson gate (depth / element / byte caps +
+    # lenient cleanup pipeline).  Small TU set: only WPJson.cpp itself.
+    add_executable(fuzz_WPJsonParse EXCLUDE_FROM_ALL
+        fuzz/fuzz_WPJsonParse.cpp
+        ${SRC_DIR}/WPJson.cpp
+    )
+    target_include_directories(fuzz_WPJsonParse PRIVATE ${SRC_DIR})
+    target_link_libraries(fuzz_WPJsonParse PRIVATE
+        wpUtils wpFs nlohmann_json
+    )
+    target_compile_options(fuzz_WPJsonParse PRIVATE ${_fuzz_san_opts})
+    target_link_options(fuzz_WPJsonParse PRIVATE ${_fuzz_san_opts})
+
     # Convenience: build all fuzz harnesses with one target.
     add_custom_target(fuzzers DEPENDS
         fuzz_WPMdlParser fuzz_WPTexImageParser fuzz_WPPkgFs
         fuzz_WPShaderParser fuzz_WPShaderCompile fuzz_WPSceneParser
-        fuzz_WPParticleParser fuzz_WPSoundParser)
+        fuzz_WPParticleParser fuzz_WPSoundParser fuzz_WPJsonParse)
 endif()

@@ -1,6 +1,11 @@
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
+#include <cstddef>
+#include <cstdlib>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "Utils/Identity.hpp"
 #include "Utils/String.h"
@@ -8,6 +13,162 @@
 
 namespace wallpaper
 {
+
+namespace
+{
+
+// True when WEKDE_DEBUG_JSON_LIMITS env var is set to a non-empty, non-"0"
+// value at first call.  Per project preference, the diagnostic stays in the
+// shippable build so future-wallpaper investigation can re-enable observation
+// without a rebuild.
+bool JsonLimitDebugEnabled() {
+    static const bool s_enabled = [] {
+        const char* v = std::getenv("WEKDE_DEBUG_JSON_LIMITS");
+        return v != nullptr && v[0] != '\0' && v[0] != '0';
+    }();
+    return s_enabled;
+}
+
+// SAX consumer that builds the nlohmann::json DOM while enforcing the depth
+// and element-count caps from WPJson.hpp.  Returning false from any callback
+// aborts the parse; the caller maps the abort to a LOG_ERROR + early return.
+//
+// We subclass the public json_sax<json> base (rather than the private
+// detail::json_sax_dom_parser) so a future nlohmann version cannot silently
+// move the DOM builder under our feet — the public SAX contract is stable.
+struct LimitedSaxBuilder : nlohmann::json_sax<nlohmann::json> {
+    using json = nlohmann::json;
+
+    explicit LimitedSaxBuilder(json& r) : root(r) {}
+
+    bool null() override                                     { return handle_value(nullptr); }
+    bool boolean(bool v) override                            { return handle_value(v); }
+    bool number_integer(number_integer_t v) override         { return handle_value(v); }
+    bool number_unsigned(number_unsigned_t v) override       { return handle_value(v); }
+    bool number_float(number_float_t v, const string_t&) override { return handle_value(v); }
+    bool string(string_t& v) override                        { return handle_value(v); }
+    bool binary(binary_t& v) override                        { return handle_value(std::move(v)); }
+
+    bool start_object(std::size_t /*len*/) override {
+        ++depth;
+        if (depth > max_depth_seen) max_depth_seen = depth;
+        if (depth > kMaxJsonDepth) return false;
+        if (! bump_elements()) return false;
+        json* slot = handle_value_slot(json::value_t::object);
+        if (slot == nullptr) return false;
+        ref_stack.push_back(slot);
+        return true;
+    }
+
+    bool key(string_t& v) override {
+        if (! bump_elements()) return false;
+        if (ref_stack.empty() || ! ref_stack.back()->is_object()) return false;
+        object_element = &((*ref_stack.back())[v]);
+        return true;
+    }
+
+    bool end_object() override {
+        if (ref_stack.empty()) return false;
+        ref_stack.pop_back();
+        --depth;
+        return true;
+    }
+
+    bool start_array(std::size_t /*len*/) override {
+        ++depth;
+        if (depth > max_depth_seen) max_depth_seen = depth;
+        if (depth > kMaxJsonDepth) return false;
+        if (! bump_elements()) return false;
+        json* slot = handle_value_slot(json::value_t::array);
+        if (slot == nullptr) return false;
+        ref_stack.push_back(slot);
+        return true;
+    }
+
+    bool end_array() override {
+        if (ref_stack.empty()) return false;
+        ref_stack.pop_back();
+        --depth;
+        return true;
+    }
+
+    bool parse_error(std::size_t, const std::string&,
+                     const nlohmann::detail::exception& ex) override {
+        // Capture the underlying lexer/parser message so ParseJson can log
+        // exactly what nlohmann's recursive-descent path would have logged
+        // pre-cap.  We don't re-throw here (the virtual override receives
+        // the polymorphic base reference, which would slice on re-throw);
+        // returning false aborts sax_parse cleanly.
+        had_parse_error = true;
+        parse_error_msg = ex.what();
+        return false;
+    }
+
+    bool depth_exceeded() const { return max_depth_seen > kMaxJsonDepth; }
+    bool elements_exceeded() const { return elements > kMaxJsonElements; }
+    bool had_syntax_error() const { return had_parse_error; }
+    const std::string& syntax_error_message() const { return parse_error_msg; }
+    std::size_t observed_depth() const { return max_depth_seen; }
+    std::size_t observed_elements() const { return elements; }
+
+private:
+    template<typename Value>
+    bool handle_value(Value&& v) {
+        if (! bump_elements()) return false;
+        if (ref_stack.empty()) {
+            root = json(std::forward<Value>(v));
+            return true;
+        }
+        if (ref_stack.back()->is_array()) {
+            ref_stack.back()->emplace_back(std::forward<Value>(v));
+            return true;
+        }
+        if (object_element != nullptr) {
+            *object_element = json(std::forward<Value>(v));
+            object_element  = nullptr;
+            return true;
+        }
+        return false;
+    }
+
+    // For containers: the slot has to be carved out before the elements
+    // start flowing so nested handle_value calls can push into the right
+    // container.  Returns a pointer to the newly-installed container, or
+    // nullptr on a structural error.
+    json* handle_value_slot(json::value_t kind) {
+        if (ref_stack.empty()) {
+            root = json(kind);
+            return &root;
+        }
+        if (ref_stack.back()->is_array()) {
+            ref_stack.back()->emplace_back(kind);
+            return &ref_stack.back()->back();
+        }
+        if (object_element != nullptr) {
+            *object_element = json(kind);
+            json* slot      = object_element;
+            object_element  = nullptr;
+            return slot;
+        }
+        return nullptr;
+    }
+
+    bool bump_elements() {
+        ++elements;
+        return elements <= kMaxJsonElements;
+    }
+
+    json&              root;
+    std::vector<json*> ref_stack {};
+    json*              object_element { nullptr };
+    std::size_t        depth { 0 };
+    std::size_t        max_depth_seen { 0 };
+    std::size_t        elements { 0 };
+    bool               had_parse_error { false };
+    std::string        parse_error_msg;
+};
+
+} // namespace
 
 // Resolve user property reference if present.  Returns a reference into `json`
 // for the pass-through cases (the common path — zero copy); for the genuine
@@ -194,13 +355,86 @@ std::string StripLeadingZeros(std::string_view source) {
 
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result) {
+    if (JsonLimitDebugEnabled()) {
+        WallpaperLog(LOGLEVEL_INFO,
+                     file,
+                     line,
+                     "ParseJson enter size=%zu func=%s",
+                     source.size(),
+                     func);
+    }
+
+    // Cheap byte gate before any cleanup allocation — a 2GB hostile source
+    // is rejected without ever materialising a cleaned copy.
+    if (source.size() > kMaxJsonBytes) {
+        WallpaperLog(LOGLEVEL_ERROR,
+                     file,
+                     line,
+                     "parse json(%s) rejected: %zu bytes > %zu cap",
+                     func,
+                     source.size(),
+                     kMaxJsonBytes);
+        return false;
+    }
+
     try {
         // Pre-strip trailing commas; quote any first-key-missing-opening-quote
         // members ({Foo":0 → {"Foo":0); strip illegal leading zeros from
         // numeric literals ([0,01] → [0,1]); then let nlohmann handle comments.
         const std::string cleaned =
             StripLeadingZeros(QuoteFirstKey(StripTrailingCommas(source)));
-        result                    = nlohmann::json::parse(cleaned, nullptr, true, true);
+        result = nlohmann::json {};
+        LimitedSaxBuilder sax(result);
+        const bool        ok = nlohmann::json::sax_parse(cleaned,
+                                                  &sax,
+                                                  nlohmann::json::input_format_t::json,
+                                                  /*strict=*/true,
+                                                  /*ignore_comments=*/true);
+        if (! ok) {
+            // sax_parse returns false either when a SAX callback returned
+            // false (our cap rejection) or when the lexer/parser hit a
+            // syntax error (we captured the message via parse_error()).
+            if (sax.depth_exceeded() || sax.elements_exceeded()) {
+                WallpaperLog(LOGLEVEL_ERROR,
+                             file,
+                             line,
+                             "parse json(%s) rejected: depth or element cap exceeded "
+                             "(kMaxJsonDepth=%zu kMaxJsonElements=%zu observed depth=%zu "
+                             "elements=%zu)",
+                             func,
+                             kMaxJsonDepth,
+                             kMaxJsonElements,
+                             sax.observed_depth(),
+                             sax.observed_elements());
+            } else if (sax.had_syntax_error()) {
+                WallpaperLog(LOGLEVEL_ERROR,
+                             file,
+                             line,
+                             "parse json(%s), %s",
+                             func,
+                             sax.syntax_error_message().c_str());
+            } else {
+                // Defensive: SAX aborted without flagging either case (e.g.
+                // a structural inconsistency caught by handle_value_slot).
+                WallpaperLog(LOGLEVEL_ERROR,
+                             file,
+                             line,
+                             "parse json(%s) failed: sax abort without diagnosis",
+                             func);
+            }
+            result = nlohmann::json {};
+            return false;
+        }
+        if (JsonLimitDebugEnabled()) {
+            WallpaperLog(LOGLEVEL_INFO,
+                         file,
+                         line,
+                         "ParseJson ok size=%zu depth=%zu elements=%zu func=%s",
+                         source.size(),
+                         sax.observed_depth(),
+                         sax.observed_elements(),
+                         func);
+        }
     } catch (nlohmann::json::parse_error& e) {
         WallpaperLog(LOGLEVEL_ERROR, file, line, "parse json(%s), %s", func, e.what());
         return false;

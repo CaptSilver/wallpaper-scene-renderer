@@ -15,7 +15,8 @@ bool ParticleChild::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
 
     nlohmann::json jParticle;
-    if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + name), jParticle)) return false;
+    if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + name, kMaxJsonBytes), jParticle))
+        return false;
 
     if (! obj.FromJson(jParticle, vfs)) return false;
 
@@ -216,7 +217,9 @@ bool Particle::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         std::string matPath;
         GET_JSON_NAME_VALUE(json, "material", matPath);
         nlohmann::json jMat;
-        if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + matPath), jMat)) return false;
+        if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + matPath, kMaxJsonBytes),
+                         jMat))
+            return false;
         material.FromJson(jMat);
     } else {
         LOG_ERROR("particle object no material");
@@ -253,7 +256,9 @@ bool WPParticleObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
 
     nlohmann::json jParticle;
-    if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + particle), jParticle)) return false;
+    if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + particle, kMaxJsonBytes),
+                     jParticle))
+        return false;
     if (! particleObj.FromJson(jParticle, vfs)) return false;
     return true;
 }

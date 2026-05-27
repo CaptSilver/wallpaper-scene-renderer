@@ -1055,7 +1055,8 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         auto&                   vfs = *context.vfs;
         std::vector<CameraPath> camPaths;
         for (auto& pathFile : sc.camera.paths) {
-            std::string content = fs::GetFileContent(vfs, "/assets/" + pathFile);
+            std::string content =
+                fs::GetFileContentBounded(vfs, "/assets/" + pathFile, kMaxJsonBytes);
             if (content.empty()) {
                 LOG_ERROR("failed to load camera path file: %s", pathFile.c_str());
                 continue;
@@ -1455,8 +1456,9 @@ std::optional<BlendMode> applyColorBlendOverride(ParseContext&            contex
             wpscene::WPImageEffect colorEffect;
             wpscene::WPMaterial    colorMat;
             nlohmann::json         json;
-            if (! PARSE_JSON(
-                    fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"), json))
+            if (! PARSE_JSON(fs::GetFileContentBounded(
+                                 vfs, "/assets/materials/util/effectpassthrough.json", kMaxJsonBytes),
+                             json))
                 return std::nullopt;
             colorMat.FromJson(json);
             colorMat.combos["BONECOUNT"] = 1;
@@ -1564,7 +1566,8 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
         wpscene::WPImageEffect passEffect;
         wpscene::WPMaterial    passMat;
         nlohmann::json         json;
-        if (PARSE_JSON(fs::GetFileContent(vfs, "/assets/materials/util/effectpassthrough.json"),
+        if (PARSE_JSON(fs::GetFileContentBounded(
+                           vfs, "/assets/materials/util/effectpassthrough.json", kMaxJsonBytes),
                        json)) {
             passMat.FromJson(json);
             passMat.combos["BONECOUNT"] = 1;
@@ -3252,7 +3255,9 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
 
         // Load material JSON from the submesh's referenced material file
         nlohmann::json jMat;
-        if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + sub.mat_json_file), jMat)) {
+        if (! PARSE_JSON(
+                fs::GetFileContentBounded(vfs, "/assets/" + sub.mat_json_file, kMaxJsonBytes),
+                jMat)) {
             LOG_ERROR("Can't load model material json: %s", sub.mat_json_file.c_str());
             continue;
         }

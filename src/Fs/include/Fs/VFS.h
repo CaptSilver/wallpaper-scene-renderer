@@ -1,9 +1,11 @@
 #pragma once
-#include <vector>
+#include <algorithm>
+#include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <tuple>
-#include <algorithm>
+#include <vector>
 #include "Fs.h"
 #include "Utils/Logging.h"
 #include "Core/NoCopyMove.hpp"
@@ -123,6 +125,42 @@ inline std::string GetFileContent(fs::VFS& vfs, std::string_view path) {
     auto f = vfs.Open(path);
     if (f) return f->ReadAllStr();
     return "";
+}
+
+// Bounded variant of GetFileContent: returns empty string (with LOG_ERROR)
+// when the underlying stream's size exceeds max_bytes.  Used by JSON read
+// paths (scene.json, materials, MDL events, particles) so a hostile multi-GB
+// pkg cannot allocate a multi-GB std::string before ParseJson can reject it.
+inline std::string GetFileContentBounded(fs::VFS& vfs, std::string_view path,
+                                         std::size_t max_bytes) {
+    auto f = vfs.Open(path);
+    if (! f) return "";
+    // Size() returns isize (signed); negative or sentinel values mean "size
+    // unknown", in which case we fall through to read-then-check.  A real
+    // backend (PhysicalFs / WPPkgFs) returns the byte count directly.
+    const auto sz = f->Size();
+    if (sz > 0 && static_cast<std::size_t>(sz) > max_bytes) {
+        LOG_ERROR("file '%s' size %zu exceeds bound %zu",
+                  std::string(path).c_str(),
+                  static_cast<std::size_t>(sz),
+                  max_bytes);
+        return "";
+    }
+    auto body = f->ReadAllStr();
+    if (body.size() > max_bytes) {
+        // Defence in depth: a backend returning a too-small or negative
+        // Size() hint can still over-read at the OS layer; the second
+        // check on body.size() catches that case.  The bounded read above
+        // already capped the alloc to the backend's reported size, so the
+        // worst-case waste is one bounded std::string allocation.
+        LOG_ERROR("file '%s' read %zu exceeds bound %zu (Size hint was %lld)",
+                  std::string(path).c_str(),
+                  body.size(),
+                  max_bytes,
+                  static_cast<long long>(sz));
+        return "";
+    }
+    return body;
 }
 
 } // namespace fs

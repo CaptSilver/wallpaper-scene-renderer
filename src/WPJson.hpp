@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
@@ -27,6 +28,15 @@
 namespace wallpaper
 {
 
+// Resource caps applied inside ParseJson — see WPJson.cpp for the SAX gate.
+// Cap rationale (2026-05-15 560-scene audit): largest observed scene.json was
+// ~1.4MB / ~12-deep / ~200k elements.  64MB / 64 / 5M leaves 25-50x headroom
+// over the worst real wallpaper, well clear of false positives but tight
+// enough to keep a hostile file from wedging plasmashell.
+inline constexpr std::size_t kMaxJsonBytes    = 64 * 1024 * 1024;
+inline constexpr std::size_t kMaxJsonDepth    = 64;
+inline constexpr std::size_t kMaxJsonElements = 5'000'000;
+
 template<typename T>
 struct JsonTemplateTypeCheck {
     using type = bool;
@@ -38,6 +48,17 @@ typename wallpaper::JsonTemplateTypeCheck<T>::type
 GetJsonValue(const char* file, const char* func, int line, const nlohmann::json& json, T& value,
              bool has_name, std::string_view name, bool warn);
 
+// Parses `source` as lenient JSON (comments + trailing commas + first-key
+// quote recovery + leading-zero strip), with hard caps applied before and
+// during parse:
+//   - source.size() must be < kMaxJsonBytes
+//   - nesting depth must not exceed kMaxJsonDepth
+//   - total element + key count must not exceed kMaxJsonElements
+// Returns false (with LOG_ERROR) on any cap hit, parse error, or
+// validation failure; result is left in the default-constructed state.
+// Caps apply to every PARSE_JSON call site uniformly — there is no per-
+// caller override.  Set WEKDE_DEBUG_JSON_LIMITS=1 to emit a LOG_INFO with
+// observed size/depth/element counts on every parse for cap tuning.
 bool ParseJson(const char* file, const char* func, int line, const std::string& source,
                nlohmann::json& result);
 

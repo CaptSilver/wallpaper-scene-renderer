@@ -123,6 +123,48 @@ TEST_SUITE("VFS") {
         CHECK(GetFileContent(v, "/assets/missing.txt").empty());
     }
 
+    TEST_CASE("GetFileContentBounded returns full body when size is at the bound") {
+        VFS  v;
+        auto fs = std::make_unique<MemFs>();
+        fs->add("/asset.json", std::vector<uint8_t>(1024, 'a'));
+        REQUIRE(v.Mount("/test", std::move(fs)));
+        const auto out = GetFileContentBounded(v, "/test/asset.json", 1024);
+        CHECK(out.size() == 1024);
+    }
+
+    TEST_CASE("GetFileContentBounded returns full body when size is under the bound") {
+        VFS  v;
+        auto fs = std::make_unique<MemFs>();
+        fs->add("/asset.json", std::vector<uint8_t>(512, 'a'));
+        REQUIRE(v.Mount("/test", std::move(fs)));
+        const auto out = GetFileContentBounded(v, "/test/asset.json", 1024);
+        CHECK(out.size() == 512);
+    }
+
+    TEST_CASE("GetFileContentBounded returns empty when size exceeds the bound") {
+        VFS  v;
+        auto fs = std::make_unique<MemFs>();
+        fs->add("/asset.json", std::vector<uint8_t>(2048, 'b'));
+        REQUIRE(v.Mount("/test", std::move(fs)));
+        const auto out = GetFileContentBounded(v, "/test/asset.json", 1024);
+        CHECK(out.empty());
+    }
+
+    TEST_CASE("GetFileContentBounded returns empty for a missing path") {
+        VFS        v;
+        const auto out = GetFileContentBounded(v, "/missing", 1024);
+        CHECK(out.empty());
+    }
+
+    TEST_CASE("GetFileContentBounded returns empty body for an empty file") {
+        VFS  v;
+        auto fs = std::make_unique<MemFs>();
+        fs->add("/empty.json", {});
+        REQUIRE(v.Mount("/test", std::move(fs)));
+        const auto out = GetFileContentBounded(v, "/test/empty.json", 1024);
+        CHECK(out.empty());
+    }
+
     TEST_CASE("MountedFs path helpers") {
         CHECK(VFS::MountedFs::CheckMountPoint("/a"));
         CHECK_FALSE(VFS::MountedFs::CheckMountPoint("/a/"));

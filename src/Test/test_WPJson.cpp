@@ -98,6 +98,81 @@ TEST_SUITE("WPJson.ParseJson") {
         CHECK(out["b"]["c"].get<int>() == 3);
     }
 
+    // ---- Resource caps ---------------------------------------------------
+    // Hard caps on input bytes, nesting depth, and total element count
+    // protect plasmashell from a hostile scene.json wedging the parser
+    // recursion stack or amplifying memory via deeply-nested / huge inputs.
+
+    TEST_CASE("rejects JSON deeper than the depth cap without recursion blowup") {
+        // Synthesize kMaxJsonDepth+1 nested arrays.  Pre-cap behaviour was a
+        // recursive-descent parse that could SIGSEGV on the C stack at this
+        // shape; post-cap, ParseJson returns false cleanly without recursion.
+        constexpr std::size_t kOverDepth = wallpaper::kMaxJsonDepth + 1;
+        std::string           deep(kOverDepth, '[');
+        deep.append(kOverDepth, ']');
+        njson out;
+        CHECK_FALSE(PARSE_JSON(deep, out));
+    }
+
+    TEST_CASE("accepts JSON exactly at the depth cap") {
+        constexpr std::size_t kAtDepth = wallpaper::kMaxJsonDepth;
+        std::string           deep(kAtDepth, '[');
+        deep.append(kAtDepth, ']');
+        njson out;
+        REQUIRE(PARSE_JSON(deep, out));
+        CHECK(out.is_array());
+    }
+
+    TEST_CASE("rejects JSON with more elements than the element cap") {
+        // Build a top-level array of kMaxJsonElements + 1 zeros.  Each digit
+        // counts as one element under the SAX callback; the array itself
+        // counts too, so the cap bites partway through.
+        std::string s = "[0";
+        s.reserve(wallpaper::kMaxJsonElements * 3);
+        for (std::size_t i = 1; i < wallpaper::kMaxJsonElements + 1; ++i) s += ",0";
+        s += ']';
+        njson out;
+        CHECK_FALSE(PARSE_JSON(s, out));
+    }
+
+    TEST_CASE("accepts JSON near the element cap") {
+        // Build a top-level array of (kMaxJsonElements - 1) zeros — together
+        // with the wrapping array itself, the total element count equals
+        // kMaxJsonElements (the cap is inclusive: <= passes).
+        std::string s = "[0";
+        s.reserve(wallpaper::kMaxJsonElements * 3);
+        for (std::size_t i = 2; i < wallpaper::kMaxJsonElements; ++i) s += ",0";
+        s += ']';
+        njson out;
+        REQUIRE(PARSE_JSON(s, out));
+        REQUIRE(out.is_array());
+        CHECK(out.size() == wallpaper::kMaxJsonElements - 1);
+    }
+
+    TEST_CASE("rejects JSON larger than the byte cap before parse starts") {
+        // Construct a string > kMaxJsonBytes that would otherwise parse fine.
+        // Reserve before building so the test doesn't OOM on the resize.
+        std::string oversize;
+        oversize.reserve(wallpaper::kMaxJsonBytes + 16);
+        oversize = R"({"k":")";
+        oversize.append(wallpaper::kMaxJsonBytes + 1 - oversize.size() - 2, 'x');
+        oversize.append(R"("})");
+        njson out;
+        CHECK_FALSE(PARSE_JSON(oversize, out));
+    }
+
+    TEST_CASE("accepts JSON just under the byte cap") {
+        // Benign string at kMaxJsonBytes-1024 so we don't tank doctest mem.
+        std::string near = R"({"k":")";
+        near.reserve(wallpaper::kMaxJsonBytes);
+        near.append(wallpaper::kMaxJsonBytes - 1024 - near.size() - 2, 'x');
+        near.append(R"("})");
+        REQUIRE(near.size() < wallpaper::kMaxJsonBytes);
+        njson out;
+        REQUIRE(PARSE_JSON(near, out));
+        CHECK(out.contains("k"));
+    }
+
 } // ParseJson
 
 TEST_SUITE("WPJson.StripTrailingCommas") {

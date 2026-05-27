@@ -245,7 +245,9 @@ bool WPImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
     GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
     nlohmann::json jEffect;
-    if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + filePath), jEffect)) return false;
+    if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + filePath, kMaxJsonBytes),
+                     jEffect))
+        return false;
     if (! FromFileJson(jEffect, vfs)) return false;
 
     if (json.contains("passes")) {
@@ -292,7 +294,9 @@ bool WPImageEffect::FromFileJson(const nlohmann::json& json, fs::VFS& vfs) {
             std::string matPath;
             GET_JSON_NAME_VALUE(jP, "material", matPath);
             nlohmann::json jMat;
-            if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + matPath), jMat)) return false;
+            if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + matPath, kMaxJsonBytes),
+                             jMat))
+                return false;
             WPMaterial material;
             material.FromJson(jMat);
             materials.push_back(std::move(material));
@@ -448,7 +452,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         }
     }
     nlohmann::json jImage;
-    if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + image), jImage)) {
+    if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + image, kMaxJsonBytes), jImage)) {
         LOG_ERROR("Can't load image json: %s", image.c_str());
         return false;
     }
@@ -514,7 +518,8 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         std::string matPath;
         GET_JSON_NAME_VALUE(jImage, "material", matPath);
         nlohmann::json jMat;
-        if (! PARSE_JSON(fs::GetFileContent(vfs, "/assets/" + matPath), jMat)) {
+        if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + matPath, kMaxJsonBytes),
+                         jMat)) {
             LOG_ERROR("Can't load material json: %s", matPath.c_str());
             return false;
         }

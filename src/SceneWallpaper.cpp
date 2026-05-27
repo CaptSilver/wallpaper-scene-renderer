@@ -7,6 +7,7 @@
 
 #include "Timer/FrameTimer.hpp"
 #include "Utils/FpsCounter.h"
+#include "WPJson.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
@@ -2903,9 +2904,11 @@ void MainHandler::loadScene() {
         for (const auto& cand : candidates) {
             std::string scenePath = base + cand;
             if (! vfs.Contains(scenePath)) continue;
-            auto f = vfs.Open(scenePath);
-            if (! f) continue;
-            std::string body = f->ReadAllStr();
+            // Bounded read: a hostile pkg with a multi-GB scene.json would
+            // otherwise allocate the full string here, before ParseJson
+            // (with its byte cap) gets a chance to reject it.  Same kMaxJsonBytes
+            // ceiling as the helper call sites under wpscene/.
+            std::string body = fs::GetFileContentBounded(vfs, scenePath, kMaxJsonBytes);
             if (body.empty()) continue;
             scene_src       = std::move(body);
             scene_src_entry = cand;
