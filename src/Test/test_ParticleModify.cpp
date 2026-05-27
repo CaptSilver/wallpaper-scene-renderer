@@ -1008,3 +1008,121 @@ TEST_SUITE("ParticleModify_3DoubleOverloads") {
         CHECK(p.position.norm() == doctest::Approx(1.0f).epsilon(0.01));
     }
 }
+
+// ===========================================================================
+// Vector3f-native overloads — skip the Vec3f -> Vec3d -> Vec3f round-trip
+// when the caller already holds a Vec3f.  Bit-identical to the Vec3d form
+// for inputs that round-trip cleanly through float (|x| < 2^23); ULP-bounded
+// for any input that already lives at float precision.
+// ===========================================================================
+
+TEST_SUITE("ParticleModify Vector3f overloads") {
+    TEST_CASE("Move(Vector3f) bit-identical to Move(Vector3d) at float-input scale") {
+        Particle pf = makeParticle();
+        Particle pd = makeParticle();
+        REQUIRE(pf.position == pd.position);
+
+        Eigen::Vector3f acc_f(0.5f, -0.25f, 0.125f); // round-trip-clean
+        Eigen::Vector3d acc_d = acc_f.cast<double>();
+
+        ParticleModify::Move(pf, acc_f);
+        ParticleModify::Move(pd, acc_d);
+
+        CHECK(pf.position.x() == pd.position.x());
+        CHECK(pf.position.y() == pd.position.y());
+        CHECK(pf.position.z() == pd.position.z());
+        // ...and the expected resultant state, not just "the two agree":
+        CHECK(pf.position.x() == 1.5f);
+        CHECK(pf.position.y() == 1.75f);
+        CHECK(pf.position.z() == 3.125f);
+    }
+
+    TEST_CASE("ChangeColor(Vector3f) bit-identical to ChangeColor(Vector3d)") {
+        Particle pf = makeParticle();
+        Particle pd = makeParticle();
+        pf.color = pd.color = Eigen::Vector3f(0.5f, 0.5f, 0.5f);
+
+        Eigen::Vector3f c_f(0.125f, 0.25f, 0.0625f);
+        Eigen::Vector3d c_d = c_f.cast<double>();
+        ParticleModify::ChangeColor(pf, c_f);
+        ParticleModify::ChangeColor(pd, c_d);
+
+        CHECK(pf.color.x() == pd.color.x());
+        CHECK(pf.color.y() == pd.color.y());
+        CHECK(pf.color.z() == pd.color.z());
+    }
+
+    TEST_CASE("ChangeRotation(Vector3f) bit-identical to ChangeRotation(Vector3d)") {
+        Particle pf = makeParticle();
+        Particle pd = makeParticle();
+        pf.rotation = pd.rotation = Eigen::Vector3f(0.25f, 0.5f, 0.75f);
+
+        Eigen::Vector3f r_f(0.125f, -0.25f, 0.0625f);
+        Eigen::Vector3d r_d = r_f.cast<double>();
+        ParticleModify::ChangeRotation(pf, r_f);
+        ParticleModify::ChangeRotation(pd, r_d);
+
+        CHECK(pf.rotation.x() == pd.rotation.x());
+        CHECK(pf.rotation.y() == pd.rotation.y());
+        CHECK(pf.rotation.z() == pd.rotation.z());
+    }
+
+    TEST_CASE("ChangeVelocity(Vector3f) bit-identical to ChangeVelocity(Vector3d)") {
+        Particle pf = makeParticle();
+        Particle pd = makeParticle();
+        pf.velocity = pd.velocity = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        Eigen::Vector3f v_f(0.0f, 1.0f, 0.0f);
+        Eigen::Vector3d v_d = v_f.cast<double>();
+        ParticleModify::ChangeVelocity(pf, v_f);
+        ParticleModify::ChangeVelocity(pd, v_d);
+
+        CHECK(pf.velocity.x() == pd.velocity.x());
+        CHECK(pf.velocity.y() == pd.velocity.y());
+        CHECK(pf.velocity.z() == pd.velocity.z());
+    }
+
+    TEST_CASE("ChangeAngularVelocity(Vector3f) bit-identical to ChangeAngularVelocity(Vector3d)") {
+        Particle pf        = makeParticle();
+        Particle pd        = makeParticle();
+        pf.angularVelocity = pd.angularVelocity = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
+
+        Eigen::Vector3f v_f(0.0625f, 0.125f, 0.25f);
+        Eigen::Vector3d v_d = v_f.cast<double>();
+        ParticleModify::ChangeAngularVelocity(pf, v_f);
+        ParticleModify::ChangeAngularVelocity(pd, v_d);
+
+        CHECK(pf.angularVelocity.x() == pd.angularVelocity.x());
+        CHECK(pf.angularVelocity.y() == pd.angularVelocity.y());
+        CHECK(pf.angularVelocity.z() == pd.angularVelocity.z());
+    }
+
+    TEST_CASE("Rotate(Vector3f) bit-identical to Rotate(Vector3d)") {
+        Particle pf = makeParticle();
+        Particle pd = makeParticle();
+        pf.rotation = pd.rotation = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+
+        Eigen::Vector3f r_f(0.0f, 1.0f, 0.0f);
+        Eigen::Vector3d r_d = r_f.cast<double>();
+        ParticleModify::Rotate(pf, r_f);
+        ParticleModify::Rotate(pd, r_d);
+
+        CHECK(pf.rotation.x() == pd.rotation.x());
+        CHECK(pf.rotation.y() == pd.rotation.y());
+        CHECK(pf.rotation.z() == pd.rotation.z());
+    }
+
+    TEST_CASE("Vector3f overload dispatches without intermediate Vec3d") {
+        // The new overload picks up a Vec3f directly — no explicit cast.  If
+        // the overload were absent this would fail to compile (no implicit
+        // Vec3f -> Vec3d in Eigen) or hit the (x,y,z) overload via
+        // implicit-conversion paths that don't exist for Vec3f.
+        Particle p = makeParticle();
+        p.position = Eigen::Vector3f(0.0f, 0.0f, 0.0f);
+        Eigen::Vector3f acc(1.0f, 2.0f, 3.0f);
+        ParticleModify::Move(p, acc); // no .cast<double>() needed
+        CHECK(p.position.x() == 1.0f);
+        CHECK(p.position.y() == 2.0f);
+        CHECK(p.position.z() == 3.0f);
+    }
+} // TEST_SUITE

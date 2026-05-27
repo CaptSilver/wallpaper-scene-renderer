@@ -116,8 +116,8 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
             auto p = Particle();
             pos    = pos.cwiseProduct(Eigen::Vector3f { a.directions.data() }.cast<double>());
             ParticleModify::MoveTo(p, pos);
-            ParticleModify::ChangeVelocity(p,
-                                           Random::get(a.minSpeed, a.maxSpeed) * pos.normalized());
+            ParticleModify::ChangeVelocity(
+                p, Eigen::Vector3d { Random::get(a.minSpeed, a.maxSpeed) * pos.normalized() });
 
             ParticleModify::Move(p, a.orgin[0], a.orgin[1], a.orgin[2]);
             return p;
@@ -181,10 +181,11 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
             ApplySign(sp, a.sign[0], a.sign[1], a.sign[2]);
 
             ParticleModify::MoveTo(p, sp);
-            ParticleModify::ChangeVelocity(p,
-                                           Random::get(a.minSpeed, a.maxSpeed) * sp.normalized());
+            ParticleModify::ChangeVelocity(
+                p, Eigen::Vector3d { Random::get(a.minSpeed, a.maxSpeed) * sp.normalized() });
 
-            ParticleModify::Move(p, Eigen::Vector3f { a.orgin.data() }.cast<double>());
+            ParticleModify::Move(
+                p, Eigen::Vector3d { Eigen::Vector3f { a.orgin.data() }.cast<double>() });
             return p;
         };
 

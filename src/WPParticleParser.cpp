@@ -452,7 +452,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                               std::sin(t * 11.3f * (float)M_PI + phase2) * 0.15f;
                 pathpos += noise_perp * noise * amplitude * taper;
 
-                PM::Move(p, pathpos.cast<double>());
+                PM::Move(p, pathpos); // Vector3f-native: skips Vec3d round-trip
                 // Explicitly zero velocity — particles are placed, not moving
                 PM::InitVelocity(p, 0.0, 0.0, 0.0);
                 seq++;
@@ -555,7 +555,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 if ((usize)controlpoint >= cp_size) return;
                 Vector3d v = cp_data[controlpoint].velocity;
                 float    s = Random::get(scale_min, scale_max);
-                PM::ChangeVelocity(p, v * s);
+                PM::ChangeVelocity(p, Vector3d { v * s });
             };
         } else if (name == "inheritinitialvaluefromevent") {
             // Initializer fired on EVENT_FOLLOW / EVENT_SPAWN / EVENT_DEATH children.
@@ -622,7 +622,7 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
                 Vector3f pos = cp_offset +
                                Vector3f(axis[0] * std::cos(angle), axis[1] * std::sin(angle), 0.0f);
 
-                PM::Move(p, pos.cast<double>());
+                PM::Move(p, pos); // Vector3f-native: skips Vec3d round-trip
                 // Explicitly zero velocity — particles are placed, not moving
                 PM::InitVelocity(p, 0.0, 0.0, 0.0);
                 seq++;
@@ -1049,7 +1049,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         for (usize i = 0; i < 3; i++) {
                             if (tur.mask[i] == 0) result[i] = 0;
                         }
-                        PM::Move(p, result * factor * info.time_pass * 0.3);
+                        PM::Move(p, Vector3d { result * factor * info.time_pass * 0.3 });
                     } else {
                         pos.x() += phase + tur.timescale * info.time;
                         Vector3d result =
@@ -1179,7 +1179,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         double   clampedT = std::clamp(projT, 0.0, 1.0);
                         Vector3d projPt   = cp0 + projT * line;
                         Vector3d clampPt  = cp0 + clampedT * line;
-                        PM::Move(p, clampPt - projPt);
+                        PM::Move(p, Vector3d { clampPt - projPt });
                     }
                 }
             };
@@ -1691,7 +1691,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                     if (variablestrength <= 0.0f) {
                         Vector3d target = cp + (d / dist) * distance;
                         Vector3d delta  = target - ppos;
-                        PM::Move(p, delta * blend);
+                        PM::Move(p, Vector3d { delta * blend });
                     } else {
                         double pull = (distance - dist) * variablestrength * blend;
                         PM::Accelerate(p, (d / dist) * pull, info.time_pass);
