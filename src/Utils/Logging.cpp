@@ -8,6 +8,12 @@
 constexpr const char* level_names[] = { "INFO", "ERROR" };
 constexpr const char* level_fmt[]   = { "%-5s", "%-5s %s:%d " };
 
+namespace wallpaper_log_test {
+static Sink g_sink = nullptr;
+void        setSink(Sink s) { g_sink = s; }
+Sink        getSink() { return g_sink; }
+} // namespace wallpaper_log_test
+
 void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
     std::va_list args;
     std::fprintf(stderr, level_fmt[level], level_names[level], file, line);
@@ -18,6 +24,14 @@ void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
     }
     std::fprintf(stderr, "\n");
     std::fflush(stderr);
+    if (auto sink = wallpaper_log_test::getSink()) {
+        std::va_list args2;
+        va_start(args2, fmt);
+        char buf[1024];
+        std::vsnprintf(buf, sizeof(buf), fmt, args2);
+        va_end(args2);
+        sink(level, buf);
+    }
 }
 
 std::string logToTmpfileWithSha1(std::span<const char> in, const char* fmt, ...) {

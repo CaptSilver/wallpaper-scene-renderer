@@ -115,8 +115,10 @@ struct AudioCapture::Impl {
         ma_device_info* pCaptureInfos = nullptr;
         ma_uint32       captureCount  = 0;
         if (ma_context_get_devices(&maContext, nullptr, nullptr, &pCaptureInfos, &captureCount) !=
-            MA_SUCCESS)
+            MA_SUCCESS) {
+            LOG_INFO("AudioCapture: ma_context_get_devices failed in legacy path");
             return false;
+        }
 
         int monitorIdx = -1;
         for (ma_uint32 i = 0; i < captureCount; i++) {
@@ -128,7 +130,12 @@ struct AudioCapture::Impl {
                 monitorIdx = (int)i;
             }
         }
-        if (monitorIdx < 0) return false;
+        if (monitorIdx < 0) {
+            LOG_INFO("AudioCapture: no monitor source found in %u capture devices "
+                     "(legacy enumeration)",
+                     (unsigned)captureCount);
+            return false;
+        }
 
         ma_device_config cfg  = ma_device_config_init(ma_device_type_capture);
         cfg.capture.pDeviceID = &pCaptureInfos[monitorIdx].id;
@@ -137,9 +144,19 @@ struct AudioCapture::Impl {
         cfg.sampleRate        = 48000;
         cfg.dataCallback      = captureCallback;
         cfg.pUserData         = this;
-        if (ma_device_init(&maContext, &cfg, &maDevice) != MA_SUCCESS) return false;
+        ma_result r           = ma_device_init(&maContext, &cfg, &maDevice);
+        if (r != MA_SUCCESS) {
+            LOG_INFO("AudioCapture: legacy ma_device_init failed (r=%d, device='%s')",
+                     (int)r,
+                     pCaptureInfos[monitorIdx].name);
+            return false;
+        }
         maDeviceInited = true;
-        if (ma_device_start(&maDevice) != MA_SUCCESS) {
+        r              = ma_device_start(&maDevice);
+        if (r != MA_SUCCESS) {
+            LOG_INFO("AudioCapture: legacy ma_device_start failed (r=%d, device='%s')",
+                     (int)r,
+                     pCaptureInfos[monitorIdx].name);
             ma_device_uninit(&maDevice);
             maDeviceInited = false;
             return false;
