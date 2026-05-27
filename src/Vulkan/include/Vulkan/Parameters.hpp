@@ -45,6 +45,13 @@ struct VmaImageParameters : NoCopy {
     vvk::Sampler   sampler;
     VkExtent3D     extent;
     uint           mipmap_level { 1 };
+    // First-use barrier latch for the UNDEFINED -> initial-usage transition.
+    // Owned here (not a global VkImage-keyed set) so the bool dies with the
+    // VkImage handle — Vulkan is free to recycle handles after a free, and a
+    // stale global tracker would skip the barrier for the recycled image
+    // (validation: "Image must be in COLOR_ATTACHMENT_OPTIMAL but is in
+    // UNDEFINED"; black tile / undefined contents on real GPUs).
+    bool initial_layout_transitioned { false };
 
     VmaImageParameters();
     ~VmaImageParameters();

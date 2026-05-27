@@ -1579,11 +1579,9 @@ void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
     m_passes.clear();
     m_device->tex_cache().Clear();
 
-    // Clear MSAA image init tracking (images are being destroyed)
-    {
-        extern std::unordered_set<VkImage> g_msaa_color_inited;
-        g_msaa_color_inited.clear();
-    }
+    // (Removed: g_msaa_color_inited.clear() — the MSAA first-use latch now
+    // lives on VmaImageParameters as initial_layout_transitioned and dies
+    // with the VkImage handle.  See barrier-emit site in CustomShaderPass.cpp.)
 
     // Release GPU images stored in Scene before VMA allocator is destroyed.
     // These are shared_ptr<VmaImageParameters> erased to shared_ptr<void>.

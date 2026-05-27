@@ -35,9 +35,11 @@ bool g_refl_depth_transitioned = false; // DEPRECATED: see g_depth_inited_frame
 // "expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL, current UNDEFINED".  Track
 // per-image; cleared each frame in VulkanRender.cpp.
 std::unordered_set<VkImage> g_depth_inited_frame;
-// MSAA color images that have been transitioned from UNDEFINED to COLOR_ATTACHMENT_OPTIMAL
-// (only needs to happen once per image lifetime, not per frame)
-std::unordered_set<VkImage> g_msaa_color_inited;
+// NOTE: the global MSAA-init tracker (g_msaa_color_inited) used to live here.
+// The latch now lives on the owning VmaImageParameters as
+// initial_layout_transitioned, so it dies with the VkImage handle and a
+// driver-recycled handle for a fresh image starts un-transitioned.  See the
+// barrier-emit site below.
 // Cacheable-pass skip counters (reset each frame).  g_cache_hits counts
 // passes whose execute() returned early because the RT was already up to
 // date; g_cache_misses counts everything else.  Reported in the periodic
@@ -1184,9 +1186,13 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     auto& cmd    = rr.command;
     auto& outext = m_desc.vk_output.extent;
 
-    // Transition MSAA color image from UNDEFINED → COLOR_ATTACHMENT_OPTIMAL on first use
-    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT &&
-        g_msaa_color_inited.find(m_desc.msaaColorImage) == g_msaa_color_inited.end()) {
+    // Transition MSAA color image from UNDEFINED → COLOR_ATTACHMENT_OPTIMAL on
+    // first use.  The latch lives on the owning VmaImageParameters so it dies
+    // with the VkImage handle — a driver-recycled handle for a fresh image
+    // starts un-transitioned and re-emits the barrier (the old global
+    // VkImage-keyed tracker would have incorrectly skipped it).
+    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_desc.msaaColorOwner &&
+        ! m_desc.msaaColorOwner->initial_layout_transitioned) {
         VkImageMemoryBarrier barrier {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
             .pNext               = nullptr,
@@ -1203,7 +1209,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                             0,
                             barrier);
-        g_msaa_color_inited.insert(m_desc.msaaColorImage);
+        m_desc.msaaColorOwner->initial_layout_transitioned = true;
     }
 
     // Explicitly clear depth buffer to 1.0 on first use each frame.

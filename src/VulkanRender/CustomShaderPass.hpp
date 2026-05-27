@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Vulkan/Device.hpp"
+#include "Vulkan/Parameters.hpp"
 #include "Scene/Scene.h"
 #include "Vulkan/StagingBuffer.hpp"
 #include "Vulkan/GraphicsPipeline.hpp"
@@ -83,7 +84,12 @@ public:
         VkImageView           depthView { VK_NULL_HANDLE };
         VkImage               depthImage { VK_NULL_HANDLE };
         std::shared_ptr<void> depthOwner;     // prevent shared depth image from being freed
-        std::shared_ptr<void> msaaColorOwner; // prevent shared MSAA image from being freed
+        // Typed (not shared_ptr<void>) so the barrier-emit site can read the
+        // first-use latch (VmaImageParameters::initial_layout_transitioned)
+        // without a static_cast.  The latch lives with the owning resource
+        // so it dies when the VkImage dies — recycled handles can't fool a
+        // stale tracker.  See barrier-emit site in CustomShaderPass.cpp.
+        std::shared_ptr<VmaImageParameters> msaaColorOwner;
         vvk::Framebuffer      fb;
         PipelineParameters    pipeline;
         u32                   draw_count { 0 };
