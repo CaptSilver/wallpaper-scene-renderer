@@ -12,6 +12,12 @@ set(SPIRV_REFLECT_STATIC_LIB ON)
 set(SPIRV_REFLECT_EXECUTABLE OFF)
 set(SPIRV_REFLECT_BUILD_TESTS OFF)
 set(SPIRV_REFLECT_EXAMPLES OFF)
+# Block upstream's install(TARGETS spirv-reflect-static ...) rule. Today the
+# directory-level EXCLUDE_FROM_ALL on the add_subdirectory below also blocks it,
+# but pinning OFF gives defense-in-depth: if anyone ever drops the
+# EXCLUDE_FROM_ALL (e.g., to expose spirv-reflect-static for a unit test target),
+# the static lib + header still won't deposit under the install prefix.
+set(SPIRV_REFLECT_INSTALL OFF)
 add_subdirectory(SPIRV-Reflect EXCLUDE_FROM_ALL)
 
 set(SKIP_GLSLANG_INSTALL ON)
