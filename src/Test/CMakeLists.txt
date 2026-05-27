@@ -13,6 +13,14 @@ find_package(Freetype REQUIRED)
 # the offline cases never touch libmpv at runtime (constructor + destructor +
 # triple-buffer indices), they just need the headers/symbols at link time.
 pkg_check_modules(MPV REQUIRED mpv)
+# EGL + GBM for the HWVideoTextureDecoder test.  These are SIBLINGS of src/
+# (which detects them in src/CMakeLists.txt) — that scope isn't visible here,
+# so re-probe.  When absent we skip the HW test sources; the SW test still
+# builds (it's the bulk of test_VideoTextureDecoder.cpp coverage).  Mirrors
+# the gate in src/CMakeLists.txt:91.
+pkg_check_modules(EGL egl)
+pkg_check_modules(GBM gbm)
+pkg_check_modules(GL gl)
 
 set(DOCTEST_INCLUDE_DIR
     "${CMAKE_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
@@ -67,6 +75,7 @@ add_executable(backend_scene_tests
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
     test_AudioCapture.cpp
+    test_AudioCapture_Rebind.cpp
     test_BinaryStream.cpp
     test_VFS.cpp
     test_WPPkgFs.cpp
@@ -147,6 +156,12 @@ add_executable(backend_scene_tests
     # the entire Vulkan device chain. The TU's only non-stdlib dep is libmpv,
     # added via MPV_LIBRARIES below.
     ${SRC_DIR}/VideoTextureDecoder.cpp
+    # HWVideoTextureDecoder: only included when EGL+GBM+GL are available
+    # (same gate as src/CMakeLists.txt for the production lib).  Otherwise
+    # we skip the cpp + test_HWVideoTextureDecoder.cpp entirely on systems
+    # without EGL/GBM/GL dev libs.
+    $<$<AND:$<BOOL:${EGL_FOUND}>,$<BOOL:${GBM_FOUND}>,$<BOOL:${GL_FOUND}>>:test_HWVideoTextureDecoder.cpp>
+    $<$<AND:$<BOOL:${EGL_FOUND}>,$<BOOL:${GBM_FOUND}>,$<BOOL:${GL_FOUND}>>:${SRC_DIR}/HWVideoTextureDecoder.cpp>
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
@@ -225,7 +240,23 @@ target_link_libraries(backend_scene_tests PRIVATE
     nlohmann_json
     # libmpv — VideoTextureDecoder.cpp (test_VideoTextureDecoder.cpp).
     ${MPV_LIBRARIES}
+    # EGL + GBM + GL — HWVideoTextureDecoder.cpp (test_HWVideoTextureDecoder.cpp).
+    # The test only exercises initEGL (return-false path under WEK_HW_DECODE_DRI_PATH),
+    # but HWVideoTextureDecoder.cpp references glGenTextures/glReadPixels/etc
+    # so the linker needs the GL lib at link time even if those code paths
+    # never execute.
+    $<$<BOOL:${EGL_FOUND}>:${EGL_LIBRARIES}>
+    $<$<BOOL:${GBM_FOUND}>:${GBM_LIBRARIES}>
+    $<$<BOOL:${GL_FOUND}>:${GL_LIBRARIES}>
 )
+
+# HAVE_EGL_HWDEC matches the production gate (src/CMakeLists.txt:92); without
+# it the HWVideoTextureDecoder.hpp/.cpp pieces are referenced but no callers
+# in tests depend on the symbol — this define is informational here, but kept
+# parallel with production so a future test-side HW path activation is one-step.
+if(EGL_FOUND AND GBM_FOUND AND GL_FOUND)
+    target_compile_definitions(backend_scene_tests PRIVATE HAVE_EGL_HWDEC=1)
+endif()
 
 target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
 

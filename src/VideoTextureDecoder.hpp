@@ -20,7 +20,10 @@ public:
     virtual ~VideoTextureDecoder();
 
     /// Load video file and start decoding. Returns false on failure.
-    virtual bool open(const std::string& path);
+    /// `outError`, when non-null, is populated with a short English diagnostic
+    /// on failure (empty on success).  Default-arg keeps legacy bool-only
+    /// callers source-compatible.
+    virtual bool open(const std::string& path, std::string* outError = nullptr);
 
     /// Playback control
     virtual void play();
@@ -79,8 +82,9 @@ protected:
     void fillAlpha(uint8_t* buf);
 
     /// Initialize mpv handle with common options. Subclasses call this then
-    /// create their own render context.
-    bool initMpv();
+    /// create their own render context.  `outError`, when non-null, is
+    /// populated on failure (same contract as `open`).
+    bool initMpv(std::string* outError = nullptr);
     /// Load video file into an already-initialized mpv instance.
     bool loadFile(const std::string& path);
 };

@@ -92,6 +92,7 @@ public:
         CMD_SET_PROPERTY,
         CMD_STOP,
         CMD_FIRST_FRAME,
+        CMD_VIDEO_DECODE_FAILED,
         CMD_NO
     };
 
@@ -115,6 +116,7 @@ public:
                 CASE_CMD(LOAD_SCENE);
                 CASE_CMD(STOP);
                 CASE_CMD(FIRST_FRAME);
+                CASE_CMD(VIDEO_DECODE_FAILED);
             default: break;
             }
         }
@@ -122,6 +124,7 @@ public:
 
     void sendCmdLoadScene();
     void sendFirstFrameOk();
+    void sendVideoDecodeFailed(const std::string& summary);
     bool isGenGraphviz() const { return m_gen_graphviz; }
 
     std::vector<TextScriptInfo> getTextScripts() const {
@@ -274,6 +277,7 @@ private:
     MHANDLER_CMD(SET_PROPERTY);
     MHANDLER_CMD(STOP);
     MHANDLER_CMD(FIRST_FRAME);
+    MHANDLER_CMD(VIDEO_DECODE_FAILED);
 
 private:
     bool m_inited { false };
@@ -291,6 +295,7 @@ private:
     std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
     std::unique_ptr<audio::AudioCapture>  m_audio_capture;
     FirstFrameCallback                    m_first_frame_callback;
+    VideoDecodeFailedCallback             m_video_decode_failed_callback;
     std::string                           m_user_props_json;
     // Atomic: written on the main looper thread (loadScene) and read on the
     // QML thread (getOrthoSize / getParallaxInfo / drainAnimationEvents).  Every
@@ -1662,23 +1667,45 @@ private:
                 std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
                 m_video_decoders.clear();
             }
+            // Collect per-texture failure messages so the user gets a single
+            // bundled diagnostic instead of N overlapping overlays.
+            std::vector<std::string> decode_failures;
             for (auto& vt : scene->videoTextures) {
                 std::shared_ptr<VideoTextureDecoder> decoder;
+                std::string                          hwErr, swErr;
 #ifdef HAVE_EGL_HWDEC
                 {
                     auto hw = std::make_shared<HWVideoTextureDecoder>(vt.width, vt.height);
-                    if (hw->open(vt.videoFilePath)) decoder = hw;
+                    if (hw->open(vt.videoFilePath, &hwErr)) decoder = hw;
                 }
 #endif
                 if (! decoder) {
                     auto sw = std::make_shared<VideoTextureDecoder>(vt.width, vt.height);
-                    if (sw->open(vt.videoFilePath)) decoder = sw;
+                    if (sw->open(vt.videoFilePath, &swErr)) decoder = sw;
                 }
                 if (decoder) {
                     std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
                     m_video_decoders.push_back(
                         { vt.textureKey, decoder, vt.ownerNode, vt.ownerNodes });
+                } else {
+                    // Both HW+SW failed; capture the basename + both error strings.
+                    std::filesystem::path p(vt.videoFilePath);
+                    std::string           line = "Video texture " + p.filename().string() + ": ";
+                    if (! hwErr.empty()) line += "HW=" + hwErr;
+                    if (! hwErr.empty() && ! swErr.empty()) line += "; ";
+                    if (! swErr.empty()) line += "SW=" + swErr;
+                    decode_failures.push_back(std::move(line));
                 }
+            }
+            if (! decode_failures.empty()) {
+                std::string summary;
+                for (size_t i = 0; i < decode_failures.size(); ++i) {
+                    if (i) summary += '\n';
+                    summary += decode_failures[i];
+                }
+                // Marshal back to MainHandler so the callback runs there with
+                // the rest of the QML-bridge state (mirrors FIRST_FRAME).
+                main_handler.sendVideoDecodeFailed(summary);
             }
         }
     }
@@ -2561,6 +2588,10 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             std::shared_ptr<FirstFrameCallback> cb;
             msg->findObject("value", &cb);
             m_first_frame_callback = *cb;
+        } else if (property == PROPERTY_VIDEO_DECODE_FAILED_CALLBACK) {
+            std::shared_ptr<VideoDecodeFailedCallback> cb;
+            msg->findObject("value", &cb);
+            m_video_decode_failed_callback = *cb;
         } else if (property == PROPERTY_SPEED) {
             float speed { 1.0f };
             if (msg->findFloat("value", &speed)) {
@@ -2633,6 +2664,12 @@ MHANDLER_CMD_IMPL(MainHandler, STOP) {
 
 MHANDLER_CMD_IMPL(MainHandler, FIRST_FRAME) {
     if (m_first_frame_callback) m_first_frame_callback();
+}
+
+MHANDLER_CMD_IMPL(MainHandler, VIDEO_DECODE_FAILED) {
+    std::string summary;
+    msg->findString("summary", &summary);
+    if (m_video_decode_failed_callback) m_video_decode_failed_callback(summary);
 }
 
 bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
@@ -3205,6 +3242,13 @@ void MainHandler::sendCmdLoadScene() {
     auto msg = CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_LOAD_SCENE);
     msg->post();
 }
+void MainHandler::sendVideoDecodeFailed(const std::string& summary) {
+    auto msg =
+        CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_VIDEO_DECODE_FAILED);
+    msg->setString("summary", summary);
+    msg->post();
+}
+
 void MainHandler::sendFirstFrameOk() {
     auto msg = CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_FIRST_FRAME);
     msg->post();

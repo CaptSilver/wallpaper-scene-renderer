@@ -10,6 +10,8 @@
 #include <GL/gl.h>
 #include <gbm.h>
 
+#include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -21,6 +23,30 @@ namespace wallpaper
 
 static void* eglGetProcAddressWrapper(void*, const char* name) {
     return (void*)eglGetProcAddress(name);
+}
+
+// Translate an EGL error code into a short English token.  The numeric codes
+// are stable across the spec; returns "EGL_UNKNOWN" for anything outside the
+// set so the log site never loses context entirely.
+static const char* eglErrorString(EGLint err) {
+    switch (err) {
+        case EGL_SUCCESS:                return "EGL_SUCCESS";
+        case EGL_NOT_INITIALIZED:        return "EGL_NOT_INITIALIZED";
+        case EGL_BAD_ACCESS:             return "EGL_BAD_ACCESS";
+        case EGL_BAD_ALLOC:              return "EGL_BAD_ALLOC";
+        case EGL_BAD_ATTRIBUTE:          return "EGL_BAD_ATTRIBUTE";
+        case EGL_BAD_CONTEXT:            return "EGL_BAD_CONTEXT";
+        case EGL_BAD_CONFIG:             return "EGL_BAD_CONFIG";
+        case EGL_BAD_CURRENT_SURFACE:    return "EGL_BAD_CURRENT_SURFACE";
+        case EGL_BAD_DISPLAY:            return "EGL_BAD_DISPLAY";
+        case EGL_BAD_SURFACE:            return "EGL_BAD_SURFACE";
+        case EGL_BAD_MATCH:              return "EGL_BAD_MATCH";
+        case EGL_BAD_PARAMETER:          return "EGL_BAD_PARAMETER";
+        case EGL_BAD_NATIVE_PIXMAP:      return "EGL_BAD_NATIVE_PIXMAP";
+        case EGL_BAD_NATIVE_WINDOW:      return "EGL_BAD_NATIVE_WINDOW";
+        case EGL_CONTEXT_LOST:           return "EGL_CONTEXT_LOST";
+        default:                         return "EGL_UNKNOWN";
+    }
 }
 
 HWVideoTextureDecoder::HWVideoTextureDecoder(int width, int height)
@@ -40,23 +66,49 @@ HWVideoTextureDecoder::~HWVideoTextureDecoder() {
     cleanupEGL();
 }
 
-bool HWVideoTextureDecoder::initEGL() {
-    // Find a working GPU render node via GBM
-    for (const auto& entry : std::filesystem::directory_iterator("/dev/dri")) {
+bool HWVideoTextureDecoder::initEGL(std::string* outError) {
+    // WEK_HW_DECODE_DRI_PATH lets tests redirect the /dev/dri probe at a
+    // tempdir with fake renderD* files (regular files, not devices) so the
+    // per-node failure paths are exercisable without a real GPU.  Behaves
+    // identically to /dev/dri when unset.
+    const char*                 driEnv = std::getenv("WEK_HW_DECODE_DRI_PATH");
+    const std::filesystem::path driRoot { driEnv && driEnv[0] ? driEnv : "/dev/dri" };
+
+    std::error_code ec;
+    if (! std::filesystem::is_directory(driRoot, ec)) {
+        static const char* MSG =
+            "HWVideoTextureDecoder: no working GPU render node found (DRI path missing)";
+        LOG_ERROR("%s: %s", MSG, driRoot.c_str());
+        if (outError) *outError = "HWVideoTextureDecoder: no working GPU render node found";
+        return false;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(driRoot)) {
         std::string name = entry.path().filename().string();
         if (name.find("renderD") != 0) continue;
 
         int fd = ::open(entry.path().c_str(), O_RDWR | O_CLOEXEC);
-        if (fd < 0) continue;
+        if (fd < 0) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: open() failed (%s)",
+                     entry.path().c_str(),
+                     std::strerror(errno));
+            continue;
+        }
 
         struct gbm_device* gbm = gbm_create_device(fd);
         if (! gbm) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: gbm_create_device returned null",
+                     entry.path().c_str());
             ::close(fd);
             continue;
         }
 
         EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, gbm, nullptr);
         if (display == EGL_NO_DISPLAY) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: eglGetPlatformDisplay returned "
+                     "NO_DISPLAY (%s)",
+                     entry.path().c_str(),
+                     eglErrorString(eglGetError()));
             gbm_device_destroy(gbm);
             ::close(fd);
             continue;
@@ -64,6 +116,9 @@ bool HWVideoTextureDecoder::initEGL() {
 
         EGLint major, minor;
         if (! eglInitialize(display, &major, &minor)) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: eglInitialize failed (%s)",
+                     entry.path().c_str(),
+                     eglErrorString(eglGetError()));
             gbm_device_destroy(gbm);
             ::close(fd);
             continue;
@@ -77,6 +132,9 @@ bool HWVideoTextureDecoder::initEGL() {
         eglChooseConfig(display, configAttribs, &config, 1, &numConfigs);
 
         if (numConfigs == 0) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: eglChooseConfig returned 0 configs (%s)",
+                     entry.path().c_str(),
+                     eglErrorString(eglGetError()));
             eglTerminate(display);
             gbm_device_destroy(gbm);
             ::close(fd);
@@ -88,6 +146,9 @@ bool HWVideoTextureDecoder::initEGL() {
         };
         EGLContext ctx = eglCreateContext(display, config, EGL_NO_CONTEXT, ctxAttribs);
         if (ctx == EGL_NO_CONTEXT) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: eglCreateContext failed (%s)",
+                     entry.path().c_str(),
+                     eglErrorString(eglGetError()));
             eglTerminate(display);
             gbm_device_destroy(gbm);
             ::close(fd);
@@ -95,6 +156,9 @@ bool HWVideoTextureDecoder::initEGL() {
         }
 
         if (! eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) {
+            LOG_INFO("HWVideoTextureDecoder: skipped %s: eglMakeCurrent failed (%s)",
+                     entry.path().c_str(),
+                     eglErrorString(eglGetError()));
             eglDestroyContext(display, ctx);
             eglTerminate(display);
             gbm_device_destroy(gbm);
@@ -113,6 +177,7 @@ bool HWVideoTextureDecoder::initEGL() {
     }
 
     LOG_ERROR("HWVideoTextureDecoder: no working GPU render node found");
+    if (outError) *outError = "HWVideoTextureDecoder: no working GPU render node found";
     return false;
 }
 
@@ -152,8 +217,8 @@ void HWVideoTextureDecoder::cleanupEGL() {
     }
 }
 
-bool HWVideoTextureDecoder::open(const std::string& path) {
-    if (! initEGL()) return false;
+bool HWVideoTextureDecoder::open(const std::string& path, std::string* outError) {
+    if (! initEGL(outError)) return false;
 
     // Create GL FBO for mpv to render into
     auto glGenFramebuffers = (void (*)(GLsizei, GLuint*))eglGetProcAddress("glGenFramebuffers");
@@ -162,8 +227,10 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
         GLenum, GLenum, GLenum, GLuint, GLint))eglGetProcAddress("glFramebufferTexture2D");
 
     if (! glGenFramebuffers || ! glBindFramebuffer || ! glFramebufferTexture2D) {
-        LOG_ERROR("HWVideoTextureDecoder: GL framebuffer entry points unavailable "
-                  "(eglGetProcAddress returned null) — cannot create render FBO");
+        static const char* MSG = "HWVideoTextureDecoder: GL framebuffer entry points unavailable "
+                                 "(eglGetProcAddress returned null) — cannot create render FBO";
+        LOG_ERROR("%s", MSG);
+        if (outError) *outError = MSG;
         cleanupEGL();
         return false;
     }
@@ -179,7 +246,7 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
     glFramebufferTexture2D(0x8D40, 0x8CE0 /*GL_COLOR_ATTACHMENT0*/, GL_TEXTURE_2D, m_fboTex, 0);
 
     // Initialize mpv
-    if (! initMpv()) {
+    if (! initMpv(outError)) {
         cleanupGL();
         cleanupEGL();
         return false;
@@ -203,7 +270,9 @@ bool HWVideoTextureDecoder::open(const std::string& path) {
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
-        LOG_ERROR("HWVideoTextureDecoder: mpv_render_context_create (GL) failed");
+        static const char* MSG = "HWVideoTextureDecoder: mpv_render_context_create (GL) failed";
+        LOG_ERROR("%s", MSG);
+        if (outError) *outError = MSG;
         mpv_terminate_destroy(m_mpv);
         m_mpv = nullptr;
         cleanupGL();

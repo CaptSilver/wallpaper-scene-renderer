@@ -168,6 +168,23 @@ public:
             Q_EMIT this->redraw();
         });
         m_scene->setPropertyObject(wallpaper::PROPERTY_FIRST_FRAME_CALLBACK, cb);
+
+        // Video-decode failure bridge: marshal the bundled summary onto the
+        // GUI thread before emit (the callback fires on the render thread).
+        // TextureNode forwards to SceneObject via the sceneVideoDecodeFailed
+        // → videoDecodeFailed connection wired up in SceneObject::updatePaintNode.
+        auto videoFailCb = std::make_shared<wallpaper::VideoDecodeFailedCallback>(
+            [this](const std::string& summary) {
+                QString qs = QString::fromStdString(summary);
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, qs]() {
+                        Q_EMIT this->sceneVideoDecodeFailed(qs);
+                    },
+                    Qt::QueuedConnection);
+            });
+        m_scene->setPropertyObject(wallpaper::PROPERTY_VIDEO_DECODE_FAILED_CALLBACK, videoFailCb);
+
         // this send to looper, not in this thread
         m_scene->initVulkan(info);
     }
@@ -178,6 +195,11 @@ signals:
     void nodeDestroyed();
     void redraw();
     void sceneFirstFrame();
+    // Forwarded from the render-thread VideoDecodeFailedCallback (see
+    // initVulkan).  Wired in SceneObject::updatePaintNode to the
+    // SceneObject::videoDecodeFailed Q_EMIT so the QML side receives it
+    // on the GUI thread.
+    void sceneVideoDecodeFailed(const QString& summary);
 
 public slots:
     void newTexture() {
@@ -290,6 +312,10 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     &TextureNode::newTexture,
                     Qt::DirectConnection);
             connect(node, &TextureNode::sceneFirstFrame, this, &SceneObject::firstFrame);
+            connect(node,
+                    &TextureNode::sceneVideoDecodeFailed,
+                    this,
+                    &SceneObject::videoDecodeFailed);
         }
     }
 

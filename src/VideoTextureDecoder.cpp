@@ -9,6 +9,16 @@
 namespace wallpaper
 {
 
+namespace
+{
+// Sets `*outError` to `msg` when non-null AND emits the existing LOG_ERROR so
+// journalctl output stays unchanged.  Keeps the failure message in one place.
+void setError(std::string* outError, const char* msg) {
+    LOG_ERROR("%s", msg);
+    if (outError) *outError = msg;
+}
+} // namespace
+
 VideoTextureDecoder::VideoTextureDecoder(int width, int height)
     : m_width(width), m_height(height), m_stride(width * 4) {
     for (int i = 0; i < NUM_BUFFERS; i++) {
@@ -28,7 +38,7 @@ VideoTextureDecoder::~VideoTextureDecoder() {
     }
 }
 
-bool VideoTextureDecoder::initMpv() {
+bool VideoTextureDecoder::initMpv(std::string* outError) {
     // mpv refuses to initialize when LC_NUMERIC is non-C (prints "Non-C locale
     // detected" and returns NULL from mpv_create).  Qt sets the process locale
     // from the environment during QCoreApplication init, so we force LC_NUMERIC
@@ -37,7 +47,7 @@ bool VideoTextureDecoder::initMpv() {
     std::setlocale(LC_NUMERIC, "C");
     m_mpv = mpv_create();
     if (! m_mpv) {
-        LOG_ERROR("VideoTextureDecoder: mpv_create failed");
+        setError(outError, "VideoTextureDecoder: mpv_create failed");
         return false;
     }
     mpv_set_option_string(m_mpv, "vo", "libmpv");
@@ -48,7 +58,7 @@ bool VideoTextureDecoder::initMpv() {
     mpv_set_option_string(m_mpv, "hwdec", "vaapi");
 
     if (mpv_initialize(m_mpv) < 0) {
-        LOG_ERROR("VideoTextureDecoder: mpv_initialize failed");
+        setError(outError, "VideoTextureDecoder: mpv_initialize failed");
         mpv_terminate_destroy(m_mpv);
         m_mpv = nullptr;
         return false;
@@ -64,8 +74,8 @@ bool VideoTextureDecoder::loadFile(const std::string& path) {
     return true;
 }
 
-bool VideoTextureDecoder::open(const std::string& path) {
-    if (! initMpv()) return false;
+bool VideoTextureDecoder::open(const std::string& path, std::string* outError) {
+    if (! initMpv(outError)) return false;
 
     // Create SW render context
     mpv_render_param params[] = {
@@ -73,7 +83,7 @@ bool VideoTextureDecoder::open(const std::string& path) {
         { MPV_RENDER_PARAM_INVALID, nullptr },
     };
     if (mpv_render_context_create(&m_renderCtx, m_mpv, params) < 0) {
-        LOG_ERROR("VideoTextureDecoder: mpv_render_context_create (SW) failed");
+        setError(outError, "VideoTextureDecoder: mpv_render_context_create (SW) failed");
         mpv_terminate_destroy(m_mpv);
         m_mpv = nullptr;
         return false;

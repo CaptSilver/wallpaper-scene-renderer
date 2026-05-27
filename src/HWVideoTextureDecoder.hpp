@@ -18,13 +18,13 @@ public:
     HWVideoTextureDecoder(int width, int height);
     ~HWVideoTextureDecoder() override;
 
-    bool open(const std::string& path) override;
+    bool open(const std::string& path, std::string* outError = nullptr) override;
 
 protected:
     void renderFrame() override;
 
 private:
-    bool initEGL();
+    bool initEGL(std::string* outError = nullptr);
     bool exportDmaBuf();
     void cleanupEGL();
     void cleanupGL();

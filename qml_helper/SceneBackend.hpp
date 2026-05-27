@@ -277,6 +277,13 @@ signals:
     // standalone sceneviewer has no listener, so the action surfaces only
     // through LOG_INFO and the in-scene `userShortcut` event bus.
     void userShortcutRequested(const QString& name);
+    // Bundled per-load summary of video-texture decoder failures.  Emitted
+    // once per scene load when at least one videoTexture's open() failed for
+    // both HW and SW backends.  The summary is newline-joined "Video texture
+    // <name>: HW=<err>; SW=<err>" lines suitable for a transient overlay
+    // (Scene.qml).  Deliberately bundled (not per-texture) to avoid stacked
+    // overlays on scenes with multiple failed textures.
+    void videoDecodeFailed(const QString& summary);
 
 private:
     QUrl m_source;

@@ -19,6 +19,11 @@ namespace wallpaper
 {
 
 using FirstFrameCallback = std::function<void()>;
+// Bundled per-load summary of video-texture decoder failures.  Fires once per
+// SET_SCENE when at least one videoTexture's open() returned false for BOTH
+// HW and SW decoders.  The string is a multi-line human-readable summary
+// suitable for QML display.
+using VideoDecodeFailedCallback = std::function<void(const std::string& summary)>;
 
 struct TextScriptInfo {
     int32_t     id;
@@ -101,22 +106,23 @@ struct AnimationEventInfo {
     std::string name;
 };
 
-constexpr std::string_view PROPERTY_SOURCE               = "source";
-constexpr std::string_view PROPERTY_ASSETS               = "assets";
-constexpr std::string_view PROPERTY_FPS                  = "fps";
-constexpr std::string_view PROPERTY_FILLMODE             = "fillmode";
-constexpr std::string_view PROPERTY_SPEED                = "speed";
-constexpr std::string_view PROPERTY_GRAPHIVZ             = "graphivz";
-constexpr std::string_view PROPERTY_VOLUME               = "volume";
-constexpr std::string_view PROPERTY_MUTED                = "muted";
-constexpr std::string_view PROPERTY_CACHE_PATH           = "cache_path";
-constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK = "first_frame_callback";
-constexpr std::string_view PROPERTY_USER_PROPS           = "user_props";
-constexpr std::string_view PROPERTY_HDR_OUTPUT           = "hdr_output";
-constexpr std::string_view PROPERTY_HDR_CONTENT          = "hdr_content";
-constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE = "system_audio_capture";
-constexpr std::string_view PROPERTY_SCREENSHOT_PATH      = "screenshot_path";
-constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE = "postprocessing_override";
+constexpr std::string_view PROPERTY_SOURCE                       = "source";
+constexpr std::string_view PROPERTY_ASSETS                       = "assets";
+constexpr std::string_view PROPERTY_FPS                          = "fps";
+constexpr std::string_view PROPERTY_FILLMODE                     = "fillmode";
+constexpr std::string_view PROPERTY_SPEED                        = "speed";
+constexpr std::string_view PROPERTY_GRAPHIVZ                     = "graphivz";
+constexpr std::string_view PROPERTY_VOLUME                       = "volume";
+constexpr std::string_view PROPERTY_MUTED                        = "muted";
+constexpr std::string_view PROPERTY_CACHE_PATH                   = "cache_path";
+constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK         = "first_frame_callback";
+constexpr std::string_view PROPERTY_VIDEO_DECODE_FAILED_CALLBACK = "video_decode_failed_callback";
+constexpr std::string_view PROPERTY_USER_PROPS                   = "user_props";
+constexpr std::string_view PROPERTY_HDR_OUTPUT                   = "hdr_output";
+constexpr std::string_view PROPERTY_HDR_CONTENT                  = "hdr_content";
+constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE         = "system_audio_capture";
+constexpr std::string_view PROPERTY_SCREENSHOT_PATH              = "screenshot_path";
+constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE      = "postprocessing_override";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;
