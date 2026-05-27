@@ -3,6 +3,7 @@
 #include "Eigen/src/Geometry/Transform.h"
 #include "Scene/Scene.h"
 #include "Scene/SceneCamera.h"
+#include "Scene/SpriteSnapshotGate.h"
 #include "SpriteAnimation.hpp"
 #include "SpecTexs.hpp"
 #include "Audio/AudioAnalyzer.h"
@@ -537,7 +538,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     // isPlaying()).  Uses the first sprite as the representative — multiple
     // sprites on the same layer share authored frametimes and advance in
     // lock-step within a tick, so the first is faithful for read-back.
-    if (pNode && !sprites.empty()) {
+    // Consumer-gate: skip the publication (mutex + map probe + 4 writes) when
+    // no SceneScript has called thisLayer.getTextureAnimation() yet.  Sticky-on
+    // once a consumer appears; first-frame stale-zero on the consumer side is
+    // harmless (default-constructed NodeSpriteSnapshot matches the pre-existing
+    // cache-miss return path).
+    if (pNode && ! sprites.empty() && spriteSnapshotShouldPublish(m_scene->needsSpriteSnapshot)) {
         const auto&                   first_sp = sprites.begin()->second;
         std::lock_guard<std::mutex>   lock(m_scene->nodeSpriteSnapshotMutex);
         auto&                         snap     = m_scene->nodeSpriteSnapshot[pNode->ID()];

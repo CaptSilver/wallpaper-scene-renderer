@@ -13,6 +13,7 @@
 #include "Core/NoCopyMove.hpp"
 
 #include <mutex>
+#include <atomic>
 
 namespace wallpaper
 {
@@ -338,6 +339,13 @@ public:
     };
     std::unordered_map<i32, NodeSpriteSnapshot> nodeSpriteSnapshot;
     mutable std::mutex                          nodeSpriteSnapshotMutex;
+    // Consumer-gate flag.  Latched true by the first call to
+    // getLayerSpriteSnapshot (thisLayer.getTextureAnimation() bridge).
+    // The per-frame producer in WPShaderValueUpdater skips publication
+    // when this is false.  Sticky-on within a scene; resets implicitly
+    // on scene swap (a new Scene is constructed).  Mirrors the
+    // WorldCacheGate pattern.
+    mutable std::atomic<bool>                   needsSpriteSnapshot { false };
 
     // Layer name → initial transform state for JS proxy initialization
     struct LayerInitialState {

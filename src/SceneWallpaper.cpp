@@ -12,6 +12,7 @@
 #include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SubTickPlan.hpp"
 #include "Scene/WorldCacheGate.h"
+#include "Scene/SpriteSnapshotGate.h"
 #include "Scene/TextStyleMerge.hpp"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
@@ -448,6 +449,12 @@ public:
     Scene::NodeSpriteSnapshot getLayerSpriteSnapshot(i32 nodeId) const {
         auto scene = m_scene.load();
         if (! scene) return {};
+        // A reader has appeared: enable the per-frame publish from now on.
+        // Idempotent; relaxed.  The very first read (before the producer
+        // observes the flag) returns the default-constructed snapshot, which
+        // is the documented not-yet-published behavior (matches the
+        // cache-miss return path below).
+        markSpriteSnapshotNeeded(scene->needsSpriteSnapshot);
         std::lock_guard<std::mutex> lk(scene->nodeSpriteSnapshotMutex);
         auto                        it = scene->nodeSpriteSnapshot.find(nodeId);
         if (it == scene->nodeSpriteSnapshot.end()) return {};
