@@ -344,6 +344,18 @@ void ParticleSubSystem::Emitt() {
             inst->ParticlesVec().clear();
         }
 
+        // Dead-and-empty fast path: the per-frame CP resolver, the empty-vector
+        // particle walk, and the operator dispatch all produce no observable
+        // output when the instance has died AND no live particles remain.  The
+        // bounded-parent death-propagation block above must still run (it just
+        // did) so the slot becomes available to QueryNewInstance next frame and
+        // EVENT_FOLLOW children see their parent's death flag.  m_time advances
+        // outside this per-instance loop so the subsystem clock keeps ticking
+        // regardless.  m_instances is NOT compacted here — pointer stability
+        // matters for EVENT_FOLLOW children whose bounded_data.parent points
+        // into this vector.
+        if (inst->IsDeath() && inst->IsNoLiveParticle()) continue;
+
         // Resolve CP offsets now — bounded_data.pos is fresh for this instance, and the
         // resolver needs to run BEFORE emitters (which execute initializers like
         // mapsequencebetweencontrolpoints that read CPs) AND before operators (line

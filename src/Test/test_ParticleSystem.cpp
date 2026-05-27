@@ -1153,3 +1153,196 @@ TEST_SUITE("ParticleSystem.StartTime") {
     }
 }
 
+// ===========================================================================
+// Emitt: per-instance dead+empty skip.  Burst-FX subsystems and dynamic-asset
+// pool slots accumulate maxcount_instance entries that are dead with zero
+// live particles.  Each such instance still ran ResolveControlpointsForInstance
+// (8 CPs × parent-chain pointer chasing + per-frame Vector3d velocity write)
+// and dispatched the operator chain over a 0-particle vector — wasted work.
+// The skip preserves bounded-parent death propagation (still runs above), and
+// is a no-op on live instances (operator dispatch + CP resolve unchanged).
+// ===========================================================================
+TEST_SUITE("ParticleSubSystem Emitt dead-instance skip") {
+    // (1) CP resolver is skipped.  Pre-resolve once with offset A; mark dead+empty;
+    // change offset to B; call Emitt; cp.resolved must remain A (resolver did not run).
+    // Revive (SetDeath(false), SetNoLiveParticle(false)); next Emitt picks up B.
+    TEST_CASE("Emitt does not call ResolveControlpointsForInstance on dead+empty instances") {
+        ParticleFixture fx;
+        // EVENT_FOLLOW so STATIC auto-create at lines 266-273 does NOT fire.
+        // Pool of 1; one instance via QueryNewInstance.
+        auto  sub  = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto* inst = sub->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+
+        // Seed CP[0] with offset A, then prime prev_resolved by calling the
+        // resolver directly (mirrors steady-state where one alive frame ran).
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(11, 22, 33);
+        sub->ResolveControlpointsForInstance(inst);
+        REQUIRE(sub->Controlpoints()[0].resolved.x() == doctest::Approx(11.0));
+
+        // Mark dead+empty.
+        inst->SetDeath(true);
+        inst->SetNoLiveParticle(true);
+
+        // Mutate offset to B and run Emitt — the skip means cp.resolved stays at A.
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(99, 88, 77);
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(11.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(22.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(33.0));
+
+        // Revive; resolver runs on the next Emitt and picks up B.
+        inst->SetDeath(false);
+        inst->SetNoLiveParticle(false);
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(99.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(88.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(77.0));
+    }
+
+    // (2) Operator dispatch is skipped.  Counter operator records invocations;
+    // dead+empty across many Emitt calls → counter stays at 0.  Revive → fires.
+    TEST_CASE("Emitt does not dispatch operators on dead+empty instances") {
+        ParticleFixture fx;
+        auto  sub  = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto* inst = sub->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+
+        int call_count = 0;
+        sub->AddOperator([&call_count](const ParticleInfo&) {
+            call_count++;
+        });
+
+        // Mark dead+empty.
+        inst->SetDeath(true);
+        inst->SetNoLiveParticle(true);
+
+        for (int n = 0; n < 10; n++) {
+            fx.scene.PassFrameTime(0.016);
+            sub->Emitt();
+        }
+        CHECK(call_count == 0);
+
+        // Revive — operator fires.  EVENT_FOLLOW has no auto-create path; the
+        // single instance is alive with 0 particles, the iteration loop is empty,
+        // but the operator dispatch still happens.
+        inst->SetDeath(false);
+        inst->SetNoLiveParticle(false);
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        CHECK(call_count == 1);
+    }
+
+    // (3) Live instances keep working: when there ARE live particles on a dead
+    // instance, or when alive with empty vector, operator dispatch must continue.
+    // This pins "skip applies ONLY to dead AND no-live-particle" — neither alone
+    // triggers the skip.
+    TEST_CASE("Emitt still dispatches operators on alive-but-empty instances") {
+        ParticleFixture fx;
+        auto  sub  = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto* inst = sub->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+
+        int call_count = 0;
+        sub->AddOperator([&call_count](const ParticleInfo&) {
+            call_count++;
+        });
+
+        // Alive with empty particle vector — NoLiveParticle is the per-frame
+        // output, but death is false → not the skip case.
+        inst->SetDeath(false);
+        inst->SetNoLiveParticle(true);
+
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        CHECK(call_count == 1);
+    }
+
+    TEST_CASE("Emitt still dispatches operators on dead-but-has-particles instances") {
+        ParticleFixture fx;
+        auto  sub  = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto* inst = sub->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+
+        int call_count = 0;
+        sub->AddOperator([&call_count](const ParticleInfo&) {
+            call_count++;
+        });
+
+        // Dead but particle vector non-empty (and at least one alive) — the
+        // operator pass still needs to run so the existing particles age out.
+        Particle p;
+        p.lifetime = 5.0f;
+        inst->ParticlesVec().push_back(p);
+        inst->SetDeath(true);
+        inst->SetNoLiveParticle(false); // has live particles
+
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        // EVENT_FOLLOW's "clear-on-death" block (lines 343-345) wipes the vector
+        // when dead; afterwards the instance has empty particles but is NOT
+        // NoLiveParticle this frame (state from the previous frame).  The
+        // operator pass runs once on the now-empty vector.  Next frame it will
+        // be NoLiveParticle (no particles to mark live) and the skip kicks in.
+        CHECK(call_count == 1);
+    }
+
+    // (4) Bounded-parent death propagation runs BEFORE the skip, so a child
+    // instance whose parent died still has its death flag set by the propagation
+    // block at lines 318-329 — even though the remainder of the per-instance
+    // work (CP resolve, operators) is skipped.
+    TEST_CASE("Bounded-parent death still propagates through skipped instances") {
+        ParticleFixture fx;
+        // Child: EVENT_FOLLOW so type_has_death is true (death-propagation path
+        // fires).  Pool of 1, manually bound to a synthesised parent instance
+        // carrying a dead particle.
+        auto  child      = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::EVENT_FOLLOW);
+        auto* child_inst = child->QueryNewInstance();
+        REQUIRE(child_inst != nullptr);
+
+        ParticleInstance parent_inst_synth;
+        Particle         pp;
+        pp.lifetime = 0.0f; // already dead
+        parent_inst_synth.ParticlesVec().push_back(pp);
+        // Child's bounded particle points at the now-dead parent particle.
+        // pre_lifetime_ok=true so the propagation block (LifetimeOk false AND
+        // pre_lifetime_ok true) declares the child dead this frame.
+        child_inst->GetBoundedData().parent          = &parent_inst_synth;
+        child_inst->GetBoundedData().particle_idx    = 0;
+        child_inst->GetBoundedData().pre_lifetime_ok = true;
+
+        // Before child->Emitt: child is alive.
+        REQUIRE_FALSE(child_inst->IsDeath());
+
+        // Mark the child no-live-particle so the post-propagation skip would
+        // engage IF death also fires.  The skip MUST NOT block the propagation
+        // block above it.
+        child_inst->SetNoLiveParticle(true);
+
+        fx.scene.PassFrameTime(0.016);
+        child->Emitt();
+
+        // Propagation set death from "particle was alive last frame, dead now".
+        CHECK(child_inst->IsDeath());
+    }
+
+    // (5) STATIC auto-create stays intact: the skip applies only AFTER the
+    // EVENT_FOLLOW clear block, AFTER bounded-death propagation, but before CP
+    // resolve.  A STATIC alive subsystem with auto-created instance must run
+    // normally.
+    TEST_CASE("STATIC alive subsystem with auto-created instance runs CP resolve normally") {
+        ParticleFixture fx;
+        auto            sub = fx.makeSub(10, 1.0, 1, 1.0, ParticleSubSystem::SpawnType::STATIC);
+        sub->Controlpoints()[0].offset = Eigen::Vector3d(7, 8, 9);
+
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+        // The auto-created instance is alive; CP resolver ran with offset (7,8,9).
+        CHECK(sub->Controlpoints()[0].resolved.x() == doctest::Approx(7.0));
+        CHECK(sub->Controlpoints()[0].resolved.y() == doctest::Approx(8.0));
+        CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(9.0));
+    }
+
+} // ParticleSubSystem Emitt dead-instance skip
