@@ -134,6 +134,64 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
         value.has_mipmap     = existsOp(WE_GLTEX_MIPMAPINFO_NAMES[index]);
         return index + 1;
     });
+
+    // Pre-resolve render-target names to their (width, height, mipmap_level)
+    // tuple once, here, instead of every frame inside UpdateUniforms.  The
+    // tuple is parse-time-immutable post-WPSceneParser (the lone post-parse
+    // mutation — CopyPass::prepare flipping allowReuse — never touches
+    // dimensions or mip-level), and InitUniforms runs once per pass at
+    // CustomShaderPass::prepare AFTER WPSceneParser has called SetNodeData,
+    // so nodeData.renderTargets is already populated when we get here.
+    //
+    // If SetNodeData hasn't run for this node yet (legitimate for a node
+    // with no RT-name uniforms), find() returns end() and Apply has nothing
+    // to upload — same behaviour as the original block's `exists()` gate.
+    auto nodeDataIt = m_nodeDataMap.find(pNode);
+    if (nodeDataIt != m_nodeDataMap.end()) {
+        const auto& nodeData = nodeDataIt->second;
+        for (const auto& el : nodeData.renderTargets) {
+            if (el.first >= info.texs.size()) continue;
+            // Link textures ("_rt_link_N") aren't in renderTargets directly;
+            // resolve to the corresponding "_rt_offscreen_N" so the slot's
+            // dimensions come from the real RT.
+            std::string_view rtName = el.second;
+            std::string      resolved;
+            if (IsSpecLinkTex(rtName)) {
+                resolved = GenOffscreenRT(ParseLinkTex(rtName));
+                rtName   = resolved;
+            }
+            auto rtIt = m_scene->renderTargets.find(std::string(rtName));
+            if (rtIt == m_scene->renderTargets.end()) {
+                // Diagnostic log: moved from per-frame to per-prepare so it
+                // fires once at scene build instead of once per frame.
+                // Still one-shot per (key, process) via the static set, so
+                // log volume is unchanged or strictly reduced.
+                static std::set<std::string> _rt_miss_logged;
+                if (_rt_miss_logged.insert(el.second).second) {
+                    LOG_INFO("RT miss: tex[%zu]='%s' resolved='%s' NOT in renderTargets",
+                             el.first,
+                             el.second.c_str(),
+                             std::string(rtName).c_str());
+                }
+                continue;
+            }
+            const auto& rt                      = rtIt->second;
+            info.texs[el.first].rt_valid        = true;
+            info.texs[el.first].rt_width        = rt.width;
+            info.texs[el.first].rt_height       = rt.height;
+            info.texs[el.first].rt_mipmap_level = rt.mipmap_level;
+
+            static std::set<std::string> _rt_res_logged;
+            if (IsSpecLinkTex(el.second) && _rt_res_logged.insert(el.second).second) {
+                LOG_INFO("RT resolution upload: tex[%zu]='%s' → '%s' (%dx%d)",
+                         el.first,
+                         el.second.c_str(),
+                         std::string(rtName).c_str(),
+                         rt.width,
+                         rt.height);
+            }
+        }
+    }
 }
 
 void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprites,
@@ -180,51 +238,29 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     }
     const auto& info = m_nodeUniformInfoMap.at(pNode);
 
+    // RT name resolution + dimension / mipmap lookup happened at
+    // InitUniforms.  Upload the cached tuple — no string alloc, no
+    // unordered_map probe per frame.  Iterates the fixed-size info.texs
+    // directly; rt_valid filters out slots whose RT wasn't found at prepare
+    // (matches the old `continue` branch).
+    for (usize i = 0; i < info.texs.size(); i++) {
+        const auto& unifrom_tex = info.texs[i];
+        if (! unifrom_tex.rt_valid) continue;
+        if (unifrom_tex.has_resolution) {
+            std::array<i32, 4> resolution_uint({ unifrom_tex.rt_width,
+                                                 unifrom_tex.rt_height,
+                                                 unifrom_tex.rt_width,
+                                                 unifrom_tex.rt_height });
+            updateOp(WE_GLTEX_RESOLUTION_NAMES[i], ShaderValue(array_cast<float>(resolution_uint)));
+        }
+        if (unifrom_tex.has_mipmap) {
+            updateOp(WE_GLTEX_MIPMAPINFO_NAMES[i], (float)unifrom_tex.rt_mipmap_level);
+        }
+    }
+
     bool hasNodeData = exists(m_nodeDataMap, pNode);
     if (hasNodeData) {
         auto& nodeData = m_nodeDataMap.at(pNode);
-        for (const auto& el : nodeData.renderTargets) {
-            // Link textures (_rt_link_N) aren't directly in renderTargets;
-            // resolve to the corresponding offscreen RT so we can look up
-            // the correct dimensions for g_TextureNResolution.
-            std::string rtName = el.second;
-            if (IsSpecLinkTex(rtName)) {
-                rtName = GenOffscreenRT(ParseLinkTex(rtName));
-            }
-            if (m_scene->renderTargets.count(rtName) == 0) {
-                static std::set<std::string> _rt_miss_logged;
-                if (_rt_miss_logged.insert(el.second).second) {
-                    LOG_INFO("RT miss: tex[%zu]='%s' resolved='%s' NOT in renderTargets",
-                             el.first,
-                             el.second.c_str(),
-                             rtName.c_str());
-                }
-                continue;
-            }
-            const auto& rt = m_scene->renderTargets[rtName];
-            {
-                static std::set<std::string> _rt_res_logged;
-                if (IsSpecLinkTex(el.second) && _rt_res_logged.insert(el.second).second) {
-                    LOG_INFO("RT resolution upload: tex[%zu]='%s' → '%s' (%dx%d)",
-                             el.first,
-                             el.second.c_str(),
-                             rtName.c_str(),
-                             rt.width,
-                             rt.height);
-                }
-            }
-
-            const auto& unifrom_tex = info.texs[el.first];
-
-            if (unifrom_tex.has_resolution) {
-                std::array<i32, 4> resolution_uint({ rt.width, rt.height, rt.width, rt.height });
-                updateOp(WE_GLTEX_RESOLUTION_NAMES[el.first],
-                         ShaderValue(array_cast<float>(resolution_uint)));
-            }
-            if (unifrom_tex.has_mipmap) {
-                updateOp(WE_GLTEX_MIPMAPINFO_NAMES[el.first], (float)rt.mipmap_level);
-            }
-        }
         if (nodeData.puppet_layer.hasPuppet() && info.has_BONES) {
             auto        data          = nodeData.puppet_layer.genFrame(m_scene->frameTime);
             static bool _bones_logged = false;

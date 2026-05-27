@@ -586,13 +586,17 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[2],
-                                            WE_GLTEX_MIPMAPINFO_NAMES[2] }));
 
+        // Production ordering: SetNodeData (parse time) precedes
+        // InitUniforms (prepare time) so the prepare-time RT-name
+        // resolution sees the populated nodeData.
         WPShaderValueData data;
         data.renderTargets.emplace_back(2u, std::string("custom_rt"));
         updater.SetNodeData(f.node.get(), data);
+
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[2],
+                                            WE_GLTEX_MIPMAPINFO_NAMES[2] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -630,12 +634,13 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
 
         WPShaderValueData data;
         data.renderTargets.emplace_back(0u, GenLinkTex(42));
         updater.SetNodeData(f.node.get(), data);
+
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;

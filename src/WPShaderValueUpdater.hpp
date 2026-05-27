@@ -61,6 +61,31 @@ struct WPUniformInfo {
     struct Tex {
         bool has_resolution { false };
         bool has_mipmap { false };
+
+        // RT name resolution is hoisted from the per-frame UpdateUniforms
+        // hot path to InitUniforms.  rt_valid carries "we found this slot's
+        // RT in Scene::renderTargets at prepare time"; the width / height /
+        // mipmap_level are the resolved tuple uploaded by Apply.
+        //
+        // Population:
+        //   - link-tex names ("_rt_link_N") are pre-resolved to their
+        //     "_rt_offscreen_N" target's dimensions so Apply has nothing to
+        //     compute.
+        //   - on an RT miss (name absent from Scene::renderTargets at
+        //     prepare), rt_valid stays false and Apply skips the slot —
+        //     same behaviour as the original `continue` branch.
+        //
+        // Invariant: Scene::renderTargets is parse-time-immutable
+        // post-WPSceneParser.  The single legal post-parse write is
+        // CopyPass::prepare inserting a copy of an existing RT and toggling
+        // its allowReuse flag — width / height / mipmap_level are never
+        // mutated.  Each WPShaderValueUpdater is constructed fresh per
+        // scene (WPSceneParser), so the cache resets implicitly on scene
+        // swap; no cross-scene staleness.
+        bool rt_valid { false };
+        i32  rt_width { 0 };
+        i32  rt_height { 0 };
+        uint rt_mipmap_level { 1 };
     };
     std::array<Tex, 12> texs;
 };
