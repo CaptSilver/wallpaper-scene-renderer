@@ -5,6 +5,7 @@ STATIC
 CopyPass.cpp
 CustomShaderPass.cpp
 DepthToColorResolvePass.cpp
+FenceWaitRetry.cpp
 FinPass.cpp
 PrePass.cpp
 SceneToRenderGraph.cpp

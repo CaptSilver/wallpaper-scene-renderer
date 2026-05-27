@@ -31,6 +31,7 @@
 #include "CopyPass.hpp"
 #include "Resource.hpp"
 #include "VulkanRender/PassCacheAlias.hpp"
+#include "VulkanRender/FenceWaitRetry.hpp"
 
 #include "Core/ArrayHelper.hpp"
 #include "Core/MapSet.hpp"
@@ -1177,8 +1178,15 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     // Wait for the slot's previous in-flight submission (two frames ago)
     // to complete.  This is the new "GPU done" barrier — moved from end
     // of the previous frame so frame N+1's CPU record can overlap with
-    // frame N's GPU execution.
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    // frame N's GPU execution.  waitFenceWithRetry rides VK_TIMEOUT as
+    // operational (3 × 10 s grace) before promoting to DEVICE_LOST so
+    // sustained GPU starvation (gaming + video encoding + wallpaper) no
+    // longer wedges the renderer with an unsignalled fence.
+    VVK_CHECK_DEVICE_LOST(waitFenceWithRetry(
+        [&rr](uint64_t wait_ns) {
+            return rr.fence_frame.Wait(wait_ns);
+        },
+        vk_wait_time));
     VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
 
     // If the previous frame's Acquire/Present saw OUT_OF_DATE (Wayland
@@ -1323,7 +1331,11 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         need_readback |= ! m_pending_pass_dump_dir.empty();
     }
     if (need_readback) {
-        VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+        VVK_CHECK_DEVICE_LOST(waitFenceWithRetry(
+            [&rr](uint64_t wait_ns) {
+                return rr.fence_frame.Wait(wait_ns);
+            },
+            vk_wait_time));
         takeScreenshotIfRequested(image.handle,
                                   m_device->swapchain().format(),
                                   m_device->swapchain().extent().width,
@@ -1342,8 +1354,14 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     // Wait on THIS slot's previous submission (two frames back) — lets
     // frame N+1 record while frame N's GPU work runs.  At steady state
     // with GPU-fast scenes the wait is ~0; with GPU-slow scenes it's the
-    // GPU/CPU time delta, still less than the full GPU time.
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+    // GPU/CPU time delta, still less than the full GPU time.  Same
+    // bounded retry path as drawFrameSwapchain (3 × 10 s grace on
+    // VK_TIMEOUT before DEVICE_LOST promotion).
+    VVK_CHECK_DEVICE_LOST(waitFenceWithRetry(
+        [&rr](uint64_t wait_ns) {
+            return rr.fence_frame.Wait(wait_ns);
+        },
+        vk_wait_time));
     VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
 
     m_dyn_buf->setCurrentSlot(slot);
@@ -1411,7 +1429,11 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         need_readback |= ! m_pending_pass_dump_dir.empty();
     }
     if (need_readback) {
-        VVK_CHECK_DEVICE_LOST(rr.fence_frame.Wait(vk_wait_time));
+        VVK_CHECK_DEVICE_LOST(waitFenceWithRetry(
+            [&rr](uint64_t wait_ns) {
+                return rr.fence_frame.Wait(wait_ns);
+            },
+            vk_wait_time));
         takeScreenshotIfRequested(
             image.handle, m_ex_swapchain->format(), image.extent.width, image.extent.height);
         dumpPassesIfRequested();
