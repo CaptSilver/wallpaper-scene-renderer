@@ -392,3 +392,37 @@ TEST_SUITE("WPPkgFs - fuzz regressions") {
         // won the map insert.
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPPkgFs/*.bin and feeds each file
+// through the same entry point fuzz_WPPkgFs drives (CreateFromStream via
+// the local parse() helper). A re-regression surfaces as a CHECK_NOTHROW
+// failure with the filename in doctest's message.
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPPkgFs";
+        if (! fs2::exists(dir)) return;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+                MemBinaryStream stream(std::move(buf));
+                CHECK_NOTHROW(
+                    (void)WPPkgFs::CreateFromStream(stream, "fuzz.pkg"));
+            }
+        }
+    }
+}

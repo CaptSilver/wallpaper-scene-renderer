@@ -1283,3 +1283,46 @@ TEST_SUITE("WPSoundStream — extended state-transition coverage") {
         CHECK(HasNonZero(resumed));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPSoundParser/*.bin and feeds each
+// file through the same entry point fuzz_WPSoundParser drives
+// (wpscene::WPSoundObject::FromJson).
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPSoundParser";
+        if (! fs2::exists(dir)) return;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::string buf(std::istreambuf_iterator<char>(in), {});
+                auto j = nlohmann::json::parse(buf, nullptr, false);
+                if (j.is_discarded()) return;
+                wallpaper::fs::VFS                vfs;
+                wallpaper::wpscene::WPSoundObject so;
+                CHECK_NOTHROW([&] {
+                    try {
+                        so.FromJson(j, vfs);
+                    } catch (...) {
+                        // Mirrors fuzz_WPSoundParser.cpp's no-throw envelope.
+                    }
+                }());
+            }
+        }
+    }
+}

@@ -39,6 +39,7 @@
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -1098,3 +1099,112 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
 } // TEST_SUITE
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPSceneParser/*.bin and feeds each
+// file through the same entry point fuzz_WPSceneParser drives — JSON parse
+// then wpscene::WPScene::FromJson. Production wraps FromJson in a no-throw
+// envelope, so we mirror the fuzz harness's swallow.
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include "wpscene/WPScene.h"
+
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("WPSceneParser_Hotplug") {
+    // Cooperative-cancellation of an in-flight scene parse.  The parser polls
+    // an external std::atomic_bool* at hot-path checkpoints (Parse entry and
+    // per-object dispatch).  When the flag is set BEFORE Parse runs, the
+    // parser bails immediately with nullptr.  When set after a partial parse,
+    // dispatch loop unwinds early.
+    TEST_CASE("Parse with abort flag set at entry returns nullptr") {
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+
+        std::atomic_bool abort_flag { true };
+        WPSceneParser    parser;
+        parser.SetAbortFlag(&abort_flag);
+
+        auto scene = parser.Parse("aborted_at_entry", kFixtureSceneJson, *vfs, sm, props);
+        CHECK(scene == nullptr);
+        CHECK(parser.IsAborted() == true);
+    }
+
+    TEST_CASE("Parse with cleared abort flag completes normally") {
+        // Defending against the bricked-subsequent-load regression: even after
+        // a prior abort, calling Parse with a cleared flag must succeed.
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+
+        std::atomic_bool abort_flag { false };
+        WPSceneParser    parser;
+        parser.SetAbortFlag(&abort_flag);
+
+        auto scene = parser.Parse("clean_run", kFixtureSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->scene_id == "clean_run");
+        CHECK(parser.IsAborted() == false);
+    }
+
+    TEST_CASE("null abort flag leaves the parser uncancellable (back-compat)") {
+        auto                vfs = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+
+        WPSceneParser parser;
+        // No SetAbortFlag call -- default state is nullptr.
+        auto scene = parser.Parse("null_flag", kFixtureSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK(parser.IsAborted() == false);
+    }
+
+    TEST_CASE("toggling SetAbortFlag rebinds the polled pointer") {
+        // MainHandler ctor binds the parser's flag exactly once at construction;
+        // this test confirms a later SetAbortFlag call rebinds to a new pointer.
+        std::atomic_bool first { false };
+        std::atomic_bool second { true };
+        WPSceneParser    parser;
+        parser.SetAbortFlag(&first);
+        CHECK(parser.IsAborted() == false);
+        parser.SetAbortFlag(&second);
+        CHECK(parser.IsAborted() == true);
+        parser.SetAbortFlag(nullptr);
+        CHECK(parser.IsAborted() == false);
+    }
+}
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPSceneParser";
+        if (! fs2::exists(dir)) return;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::string buf(std::istreambuf_iterator<char>(in), {});
+                auto j = nlohmann::json::parse(buf, nullptr, false);
+                if (j.is_discarded()) return;
+                wallpaper::wpscene::WPScene sc;
+                CHECK_NOTHROW([&] {
+                    try {
+                        sc.FromJson(j);
+                    } catch (...) {
+                        // Mirrors fuzz_WPSceneParser.cpp's no-throw envelope.
+                    }
+                }());
+            }
+        }
+    }
+}

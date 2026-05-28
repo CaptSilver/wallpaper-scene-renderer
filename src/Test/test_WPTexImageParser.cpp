@@ -1629,3 +1629,38 @@ TEST_SUITE("WPTexImageParser.ParseHeaderCache") {
     }
 
 } // WPTexImageParser.ParseHeaderCache
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPTexImageParser/*.bin and feeds
+// each file through the same entry point fuzz_WPTexImageParser drives.
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPTexImageParser";
+        if (! fs2::exists(dir)) return;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+                VFS  vfs;
+                auto mockFs = std::make_unique<MockFs>();
+                mockFs->AddFile("/materials/fuzz.tex", std::move(buf));
+                vfs.Mount("/assets", std::move(mockFs));
+                WPTexImageParser parser(&vfs);
+                CHECK_NOTHROW((void)parser.Parse("fuzz"));
+            }
+        }
+    }
+}

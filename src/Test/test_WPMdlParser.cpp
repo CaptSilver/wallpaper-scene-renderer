@@ -411,3 +411,38 @@ TEST_SUITE("WPCommon_CountFitsStream") {
         CHECK(! CountFitsStream(f, 61));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPMdlParser/*.bin and feeds each
+// file through the same entry point fuzz_WPMdlParser drives. The harness
+// catches re-regressions: a fixed crash that creeps back in surfaces as a
+// CHECK_NOTHROW failure with the filename in doctest's message.
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPMdlParser";
+        if (! fs2::exists(dir)) return; // no fixtures yet — pass
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
+                fs::MemBinaryStream f(std::move(buf));
+                WPMdl mdl;
+                CHECK_NOTHROW(
+                    (void)WPMdlParser::ParseStream(f, "fuzz.mdl", mdl));
+            }
+        }
+    }
+}

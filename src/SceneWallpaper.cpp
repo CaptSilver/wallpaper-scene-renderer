@@ -28,7 +28,7 @@
 #include "WPSoundParser.hpp"
 #include "Audio/SoundManager.h"
 #include "Audio/AudioAnalyzer.h"
-#include "Audio/AudioCapture.h"
+#include "Audio/AudioBus.h"
 #include "VideoTextureDecoder.hpp"
 #ifdef HAVE_EGL_HWDEC
 #    include "HWVideoTextureDecoder.hpp"
@@ -101,6 +101,15 @@ public:
     virtual ~MainHandler() {};
 
     void setHidePattern(const std::string& pat) { m_scene_parser.SetHidePattern(pat); }
+
+    // Cooperative cancellation of an in-flight CMD_LOAD_SCENE.  Sets the
+    // atomic flag the parse thread polls at checkpoints (WPSceneParser hot
+    // loops); the parser bails out at the next poll.  Safe to call when no
+    // load is in flight -- the flag is reset at the top of each new
+    // CMD_LOAD_SCENE so subsequent loads aren't bricked by a stale abort.
+    // Atomic-only; no mutex.
+    void abortForSurface() { m_aborted.store(true, std::memory_order_release); }
+    bool isAborted() const { return m_aborted.load(std::memory_order_relaxed); }
 
     bool init();
     auto renderHandler() const { return m_render_handler; }
@@ -290,10 +299,17 @@ private:
     bool        m_system_audio_capture { false };
     std::string m_postprocessing_override;
 
+    // Cooperative abort flag for an in-flight CMD_LOAD_SCENE.  Written by
+    // SceneWallpaper::abortLoad() (called when QGuiApplication::screenRemoved
+    // fires on this backend's screen, after a debounce); polled by the parser
+    // at hot-path checkpoints (see WPSceneParser::SetAbortFlag).  Reset at the
+    // top of each new CMD_LOAD_SCENE so abortLoad doesn't permanently brick
+    // subsequent loads.
+    std::atomic_bool m_aborted { false };
+
     WPSceneParser                         m_scene_parser;
     std::unique_ptr<audio::SoundManager>  m_sound_manager;
     std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
-    std::unique_ptr<audio::AudioCapture>  m_audio_capture;
     FirstFrameCallback                    m_first_frame_callback;
     VideoDecodeFailedCallback             m_video_decode_failed_callback;
     std::string                           m_user_props_json;
@@ -2229,6 +2245,15 @@ void SceneWallpaper::play() {
     msg->setBool("value", false);
     msg->post();
 }
+void SceneWallpaper::abortLoad() {
+    if (! m_main_handler) return;
+    m_main_handler->abortForSurface();
+}
+
+bool SceneWallpaper::isAborted() const {
+    return m_main_handler && m_main_handler->isAborted();
+}
+
 void SceneWallpaper::pause() {
     auto msg = CreateMsgWithCmd(m_main_handler, MainHandler::CMD::CMD_STOP);
     msg->setBool("value", true);
@@ -2597,23 +2622,20 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             msg->findBool("value", &enabled);
             if (enabled != m_system_audio_capture) {
                 m_system_audio_capture = enabled;
-                if (enabled && m_audio_analyzer) {
-                    if (! m_audio_capture) {
-                        m_audio_capture = std::make_unique<audio::AudioCapture>();
-                    }
-                    if (m_audio_capture->Init(m_audio_analyzer)) {
-                        m_sound_manager->SetAudioAnalyzer(nullptr);
-                        LOG_INFO("Audio spectrum: switched to system audio capture");
-                    } else {
-                        m_audio_capture.reset();
-                        m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
-                        LOG_INFO("Audio spectrum: system capture failed, keeping playback tap");
-                    }
+                // Re-Acquire from the bus with the new wantSystemCapture
+                // intent.  The bus's singleton analyzer pointer doesn't
+                // change across the re-Acquire (other subscribers keep
+                // it alive), so we don't have to republish to the scene
+                // or shader updater — they still hold valid handles.
+                m_audio_analyzer = audio::AudioBus::Acquire(enabled);
+                if (enabled && audio::AudioBus::HasSystemCapture()) {
+                    m_sound_manager->SetAudioAnalyzer(nullptr);
+                    LOG_INFO("Audio spectrum: switched to shared system audio capture");
+                } else if (enabled) {
+                    m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
+                    LOG_INFO("Audio spectrum: system capture failed, keeping playback tap");
                 } else {
-                    m_audio_capture.reset();
-                    if (m_audio_analyzer) {
-                        m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
-                    }
+                    m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
                     LOG_INFO("Audio spectrum: switched to playback tap (wallpaper BGM)");
                 }
             }
@@ -2841,6 +2863,12 @@ void MainHandler::loadScene() {
     WEK_PROFILE_SCOPE("MainHandler::loadScene");
     if (m_source.empty() || m_assets.empty()) return;
 
+    // Reset the cooperative-abort flag at the top of every new load so a stale
+    // abort (e.g. from a previous screen-removal that fired before this load
+    // was scheduled) doesn't permanently brick the parse pipeline.  release
+    // pairs with the parser's relaxed loads at checkpoints.
+    m_aborted.store(false, std::memory_order_release);
+
     LOG_INFO("loading scene: %s", m_source.c_str());
 
     if (! m_sound_manager->IsInited()) {
@@ -2850,20 +2878,22 @@ void MainHandler::loadScene() {
         m_sound_manager->UnMountAll();
     }
 
-    // Create audio analyzer — use system capture only if enabled, otherwise playback tap
-    m_audio_analyzer = std::make_shared<audio::AudioAnalyzer>();
+    // Acquire shared analyzer + capture from the process-singleton AudioBus.
+    // Both this SceneWallpaper and any active WebAudioBridge tap the same
+    // capture stream, so we only pay for one PulseAudio monitor + one
+    // miniaudio thread + one FFT pipeline across the whole process.
+    m_audio_analyzer = audio::AudioBus::Acquire(m_system_audio_capture);
     if (m_system_audio_capture) {
-        m_audio_capture = std::make_unique<audio::AudioCapture>();
-        if (m_audio_capture->Init(m_audio_analyzer)) {
-            LOG_INFO("Audio spectrum: using system audio capture (PipeWire/PulseAudio monitor)");
+        if (audio::AudioBus::HasSystemCapture()) {
+            LOG_INFO("Audio spectrum: shared system audio capture via AudioBus");
         } else {
-            m_audio_capture.reset();
             m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
-            LOG_INFO("Audio spectrum: system capture failed, falling back to playback tap");
+            LOG_INFO(
+                "Audio spectrum: AudioBus system capture failed, falling back to playback tap");
         }
     } else {
         m_sound_manager->SetAudioAnalyzer(m_audio_analyzer);
-        LOG_INFO("Audio spectrum: using playback tap (wallpaper BGM only)");
+        LOG_INFO("Audio spectrum: shared AudioBus (playback tap)");
     }
 
     std::shared_ptr<Scene> scene { nullptr };
@@ -3324,4 +3354,9 @@ MainHandler::MainHandler()
       m_audio_analyzer(std::make_shared<audio::AudioAnalyzer>()),
       m_main_loop(std::make_shared<looper::Looper>()),
       m_render_loop(std::make_shared<looper::Looper>()),
-      m_render_handler(std::make_shared<RenderHandler>(*this)) {}
+      m_render_handler(std::make_shared<RenderHandler>(*this)) {
+    // Plumb the cooperative-cancellation atomic into the parser so it can
+    // poll at per-object checkpoints.  Address is stable for MainHandler's
+    // lifetime; the parser does NOT take ownership.
+    m_scene_parser.SetAbortFlag(&m_aborted);
+}

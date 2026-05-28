@@ -3772,3 +3772,49 @@ TEST_SUITE("VolumetricEndToEndPreprocess") {
         CHECK(src.find("texSample2DBackBuffer") != std::string::npos);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPShaderCompile/*.bin and feeds
+// each file through the same entry point fuzz_WPShaderCompile drives
+// (CompileToSpv with no cache dir → synchronous compile branch).
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPShaderCompile";
+        if (! fs2::exists(dir)) return;
+        // One-time glslang init (matches fuzz_WPShaderCompile.cpp's static init).
+        static const bool init = [] {
+            wallpaper::WPShaderParser::InitGlslang();
+            return true;
+        }();
+        (void)init;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::string src(std::istreambuf_iterator<char>(in), {});
+                wallpaper::fs::VFS                   vfs;
+                wallpaper::WPShaderInfo              info;
+                std::vector<wallpaper::WPShaderUnit> units;
+                units.push_back(
+                    wallpaper::WPShaderUnit { wallpaper::ShaderType::FRAGMENT,
+                                              src, {} });
+                std::vector<wallpaper::ShaderCode>      codes;
+                std::vector<wallpaper::WPShaderTexInfo> texs;
+                CHECK_NOTHROW((void)wallpaper::WPShaderParser::CompileToSpv(
+                    "fuzz", units, codes, vfs, &info, texs));
+            }
+        }
+    }
+}

@@ -503,3 +503,63 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
         }
     }
 }
+
+TEST_SUITE("WPImageObject parsing - skybox tag") {
+    // 360° / skybox detection: a layer is marked is_skybox in the model JSON
+    // (the typical case) or as a scene-level override on the image object.
+    // Both flow into WPImageObject::is_skybox; the scene-level override wins
+    // so authors can opt in without re-publishing the model.
+    TEST_CASE("model JSON is_skybox true populates WPImageObject.is_skybox") {
+        auto vfs       = makeAssetsVfs({
+            { "models/util/skybox.json",
+                    R"({ "material": "materials/util/skybox.json", "is_skybox": true })" },
+            { "materials/util/skybox.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 7, "name": "skybox", "image": "models/util/skybox.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "1024 512"
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.is_skybox == true);
+    }
+
+    TEST_CASE("scene.json is_skybox override wins when model leaves flag false") {
+        auto vfs       = makeAssetsVfs({
+            { "models/regular.json",
+                    R"({ "material": "materials/util/skybox.json" })" },
+            { "materials/util/skybox.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 8, "name": "panorama", "image": "models/regular.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100",
+            "is_skybox": true
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.is_skybox == true);
+    }
+
+    TEST_CASE("absent flag leaves WPImageObject.is_skybox at default false") {
+        auto vfs       = makeAssetsVfs({
+            { "models/regular.json",
+                    R"({ "material": "materials/util/skybox.json" })" },
+            { "materials/util/skybox.json", kFlatMaterial },
+        });
+        auto sceneJson = nlohmann::json::parse(R"({
+            "id": 9, "name": "flat", "image": "models/regular.json",
+            "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "size": "100 100"
+        })");
+
+        wpscene::WPImageObject obj;
+        REQUIRE(obj.FromJson(sceneJson, *vfs));
+        CHECK(obj.is_skybox == false);
+    }
+
+    TEST_CASE("default-constructed WPImageObject has is_skybox false") {
+        wpscene::WPImageObject obj;
+        CHECK(obj.is_skybox == false);
+    }
+}

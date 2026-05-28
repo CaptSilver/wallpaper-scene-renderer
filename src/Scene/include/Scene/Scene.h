@@ -178,6 +178,24 @@ public:
     // HDR content pipeline: when true, render targets use RGBA16F and FinPass tonemaps
     bool hdrContent { false };
 
+    // 360° / skybox cubemap path: set true by WPSceneParser when at least one
+    // image layer is flagged `is_skybox: true` in the scene JSON.  Currently a
+    // detection-only stub — full rendering (cubemap upload + SkyboxPass with
+    // worldDir sampling) is intentionally deferred until the rendergraph
+    // infrastructure for cubemap views + a depth-disabled fullscreen pass is in
+    // place.  Today, flagged scenes log a warning at scene-build and render via
+    // the regular image-object path (single stretched face), which is no worse
+    // than the pre-detection behaviour for ~0.1% of the workshop catalogue.
+    // Non-skybox scenes are byte-identical because every consumer guards on
+    // this flag.
+    bool has_skybox { false };
+
+    // Ids of image layers tagged `is_skybox: true`.  Empty when has_skybox is
+    // false.  Surface kept narrow so downstream code can iterate authoritative
+    // skybox layers without re-walking nodes.  Populated alongside has_skybox
+    // in WPSceneParser::ParseImageObj.
+    std::vector<i32> skyboxLayerIds;
+
     // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/
     // "low"/""), after the plugin-level override is applied on top of
     // scene.general.orthogonalprojection.postprocessing.  Stored on Scene so

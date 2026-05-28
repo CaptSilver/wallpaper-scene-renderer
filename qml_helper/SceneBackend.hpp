@@ -2,11 +2,13 @@
 
 #include <QtQuick/QQuickFramebufferObject>
 #include <QtCore/QLoggingCategory>
+#include <QtCore/QPointer>
 #include <QtCore/QTimer>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonObject>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QHoverEvent>
+#include <QtGui/QScreen>
 #include <QtQml/QJSEngine>
 #include <QtQml/QJSValue>
 #include <optional>
@@ -263,6 +265,15 @@ public slots:
     void play();
     void pause();
 
+private slots:
+    // QGuiApplication::screenRemoved hook.  When the wallpaper's screen is
+    // unplugged (or KVM-switched off), starts a 500 ms debounce timer; if
+    // QGuiApplication::screenAdded fires within that window (KVM switch /
+    // brief monitor sleep), the timer is cancelled.  Otherwise the timer
+    // calls SceneWallpaper::abortLoad to stop the parse thread mid-load.
+    // Removals on other screens are ignored.
+    void onScreenRemoved(QScreen* removed);
+
 signals:
     void sourceChanged();
     void fpsChanged();
@@ -364,6 +375,12 @@ private:
     bool m_paused { false };
 
     std::shared_ptr<wallpaper::SceneWallpaper> m_scene { nullptr };
+
+    // 500 ms debounce timer for QGuiApplication::screenRemoved.  Lazy-created
+    // the first time a screen is removed on this backend's window; cancelled
+    // by screenAdded.  QPointer guards against late-destruction races when
+    // the QQuickItem parent is torn down before the timer fires.
+    QPointer<QTimer> m_screenRemoveTimer;
 
     // Text script evaluation
     struct TextScriptState {

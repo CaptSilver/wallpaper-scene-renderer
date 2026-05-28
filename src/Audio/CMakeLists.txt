@@ -5,6 +5,7 @@ add_library(${LIB_NAME}
     SoundManager.cpp
     AudioAnalyzer.cpp
     AudioCapture.cpp
+    AudioBus.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/kissfft/kiss_fft.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/kissfft/kiss_fftr.c
 )

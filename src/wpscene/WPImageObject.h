@@ -102,6 +102,13 @@ public:
     // handle, so nothing to propagate.
     bool        disablepropagation { false };
     bool        perspective { false }; // Use perspective camera (default: flat/ortho)
+    // 360° skybox flag from the image's model JSON or scene-level override.
+    // When true, Scene::has_skybox is set in ParseImageObj and the layer id is
+    // appended to Scene::skyboxLayerIds.  Detection-only today; full cubemap
+    // render path (depth-disabled fullscreen pass sampling by
+    // inverse(viewProj)*clipPos worldDir) is deferred — see Scene::has_skybox
+    // documentation.
+    bool        is_skybox { false };
     std::string image;
     std::string alignment { "center" };
     WPMaterial  material;

@@ -1,4 +1,5 @@
 #include "WPSceneParser.hpp"
+#include <atomic>
 #include "WPJson.hpp"
 #include "WPCommon.hpp"
 #include "WPPropertyScriptExtract.hpp"
@@ -170,6 +171,13 @@ struct ParseContext {
     // value in that script (e.g. 3body's `trailLength: {..., max: 400}` × N
     // bodies) so LRU-recycle doesn't have to visibly cycle live trails.
     std::unordered_map<std::string, size_t> asset_pool_size_hints;
+
+    // Cooperative cancellation flag.  When non-null and set, the per-object
+    // dispatch loop bails out early so we don't burn CPU/GPU on a parse whose
+    // surface has gone away (KDE Plasma containment destruction races with
+    // screen-removal).  Pointer is owned by MainHandler; address is stable
+    // for the duration of any Parse() call.
+    std::atomic_bool* abort_flag { nullptr };
 };
 
 using WPObjectVar =
@@ -2635,9 +2643,30 @@ void attachNodeToScene(ParseContext& context,
     context.node_map[wpimgobj.id] = spImgNode;
 }
 
+// Tags a single image layer's skybox state on the in-progress Scene.  Stays a
+// free helper rather than a method so the detection logic is exercised
+// directly from tests without standing up the full ParseImageObj pipeline.
+// Currently a pure flag-propagator: full cubemap rendering is deferred until
+// the Vulkan infrastructure for cubemap views + a depth-disabled fullscreen
+// pass lands.  One LOG_INFO so multi-monitor diagnostics don't have to guess
+// whether the scene was classified as 360°.
+static void recordSkyboxLayerIfTagged(ParseContext&                 context,
+                                      const wpscene::WPImageObject& wpimgobj) {
+    if (! wpimgobj.is_skybox) return;
+    if (! context.scene) return;
+    context.scene->has_skybox = true;
+    context.scene->skyboxLayerIds.push_back(wpimgobj.id);
+    LOG_INFO("[WEK] skybox layer detected id=%d name='%s'; renders as flat layer "
+             "until cubemap pass lands",
+             wpimgobj.id,
+             wpimgobj.name.c_str());
+}
+
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto& wpimgobj = img_obj;
     auto& vfs      = *context.vfs;
+
+    recordSkyboxLayerIfTagged(context, wpimgobj);
 
     resolveImageAutosize(context, wpimgobj);
 
@@ -4409,6 +4438,17 @@ dispatchObjects(ParseContext& context, std::vector<WPObjectVar>& wp_objs,
                 audio::SoundManager& sm) {
     std::unordered_map<std::string, ObjInitState> nameToObjState;
     for (WPObjectVar& obj : wp_objs) {
+        // Cooperative-cancellation checkpoint -- screen-removal mid-load fires
+        // SceneWallpaper::abortLoad which sets the parser's abort flag.  Polled
+        // once per object; one atomic load per object is negligible vs. the
+        // shader-compile / texture-decompress work each object triggers.  Bail
+        // out by returning what we have so far; the caller (Parse) checks the
+        // flag again post-dispatch and discards the scene if needed.
+        if (context.abort_flag &&
+            context.abort_flag->load(std::memory_order_relaxed)) {
+            LOG_INFO("[WEK] dispatchObjects aborted on screen removal");
+            return nameToObjState;
+        }
         std::visit(
             visitor::overload {
                 [&context, &nameToObjState](wpscene::WPImageObject& obj) {
@@ -5490,6 +5530,17 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     ParseContext context;
     context.hide_pattern            = m_hide_pattern;
     context.postprocessing_override = m_postprocessing_override;
+    // Plumb the host's cooperative-cancellation flag (set by
+    // SceneWallpaper::abortLoad when the wallpaper's screen goes away
+    // mid-load) into the parse context so per-object hot loops can poll it.
+    context.abort_flag = m_abort_flag;
+
+    // Early-bail checkpoint: a screen-removal that fired before Parse() got
+    // scheduled would otherwise burn the entire JSON / pre-scan budget.
+    if (m_abort_flag && m_abort_flag->load(std::memory_order_relaxed)) {
+        LOG_INFO("[WEK] WPSceneParser::Parse aborted at entry");
+        return nullptr;
+    }
 
     std::vector<WPObjectVar> wp_objs;
     std::vector<GroupInfo>   group_infos;

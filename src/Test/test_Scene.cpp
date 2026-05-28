@@ -538,3 +538,29 @@ TEST_SUITE("Scene.PendingChildSorts") {
     }
 
 } // Scene.PendingChildSorts
+
+TEST_SUITE("Scene_Skybox") {
+    // 360° / skybox cubemap detection-only stub.  Defaults stay off so the
+    // non-skybox path remains byte-identical; consumers downstream of the
+    // parser key off has_skybox and the skyboxLayerIds list.
+    TEST_CASE("default-constructed Scene has has_skybox false and empty layer list") {
+        Scene s;
+        CHECK(s.has_skybox == false);
+        CHECK(s.skyboxLayerIds.empty());
+    }
+
+    TEST_CASE("populating skyboxLayerIds + flag is independent of other Scene state") {
+        Scene s;
+        s.has_skybox = true;
+        s.skyboxLayerIds.push_back(7);
+        s.skyboxLayerIds.push_back(42);
+
+        // Other defaults remain untouched — toggling the skybox state must not
+        // shift fields a regression oracle compares against.
+        CHECK(s.hdrContent == false);
+        CHECK(s.has_skybox == true);
+        REQUIRE(s.skyboxLayerIds.size() == 2);
+        CHECK(s.skyboxLayerIds[0] == 7);
+        CHECK(s.skyboxLayerIds[1] == 42);
+    }
+}

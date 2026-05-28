@@ -2,6 +2,8 @@
 
 #include "Device.hpp"
 
+#include <algorithm>
+
 using namespace wallpaper::vulkan;
 
 struct SwapChainSupportDetails {
@@ -12,6 +14,63 @@ struct SwapChainSupportDetails {
 
 namespace
 {
+
+// Human-readable name for a VkPresentModeKHR — used in the create-time
+// LOG_INFO so a user bug report indicates which mode was actually picked.
+const char* present_mode_name(VkPresentModeKHR m) {
+    switch (m) {
+        case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "IMMEDIATE";
+        case VK_PRESENT_MODE_MAILBOX_KHR:      return "MAILBOX";
+        case VK_PRESENT_MODE_FIFO_KHR:         return "FIFO";
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "FIFO_RELAXED";
+        default:                                return "UNKNOWN";
+    }
+}
+
+// Pick the best available present mode given the user's policy and the
+// output's refresh rate (Hz).  Falls back to FIFO if no preferred mode is
+// supported — FIFO is guaranteed by the Vulkan spec on every conformant
+// implementation.
+//
+// Auto policy thresholds (10% slack avoids flapping when Fps≈refresh):
+//   target_fps > output_refresh * 1.1 → MAILBOX (low-latency, drop frames)
+//   target_fps < output_refresh * 0.9 → FIFO_RELAXED (sub-refresh smoothing)
+//   otherwise                          → FIFO (matched, no tearing)
+//
+// Explicit non-Auto policies (Fifo / FifoRelaxed / Mailbox / Immediate)
+// pin the requested mode, falling back to FIFO when the surface does
+// not advertise it (e.g. MAILBOX on some Wayland surfaces, IMMEDIATE on
+// frame-pacing-strict drivers).
+VkPresentModeKHR pickPresentMode(const std::vector<VkPresentModeKHR>& supported,
+                                  PresentModePolicy policy,
+                                  int               target_fps,
+                                  int               output_refresh_hz) {
+    auto has = [&](VkPresentModeKHR m) {
+        return std::find(supported.begin(), supported.end(), m) != supported.end();
+    };
+
+    switch (policy) {
+    case PresentModePolicy::Auto: {
+        if (target_fps > output_refresh_hz * 11 / 10 && has(VK_PRESENT_MODE_MAILBOX_KHR))
+            return VK_PRESENT_MODE_MAILBOX_KHR;
+        if (target_fps < output_refresh_hz * 9 / 10 && has(VK_PRESENT_MODE_FIFO_RELAXED_KHR))
+            return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+    case PresentModePolicy::Mailbox:
+        return has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR
+                                                : VK_PRESENT_MODE_FIFO_KHR;
+    case PresentModePolicy::FifoRelaxed:
+        return has(VK_PRESENT_MODE_FIFO_RELAXED_KHR) ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
+                                                     : VK_PRESENT_MODE_FIFO_KHR;
+    case PresentModePolicy::Immediate:
+        return has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR
+                                                  : VK_PRESENT_MODE_FIFO_KHR;
+    case PresentModePolicy::Fifo:
+    default:
+        return VK_PRESENT_MODE_FIFO_KHR;
+    }
+}
 
 bool querySwapChainSupport(const vvk::PhysicalDevice& gpu, VkSurfaceKHR surface,
                            SwapChainSupportDetails& details) {
@@ -111,7 +170,18 @@ bool Swapchain::Create(Device& device, VkSurfaceKHR surface, VkExtent2D extent, 
 
     swap.m_extent = GetSwapChainExtent(surfaceCapabilities, extent);
 
-    swap.m_present_mode                          = VK_PRESENT_MODE_FIFO_KHR;
+    swap.m_present_mode = pickPresentMode(swap_details.presentModes,
+                                          swap.m_present_policy,
+                                          swap.m_target_fps,
+                                          swap.m_output_refresh_hz);
+    // Diagnostic: log the picked mode so a user bug report indicates which
+    // mode the surface ended up on (the Auto policy fall-backs are not
+    // observable in the QML config, only here).
+    LOG_INFO("swapchain present mode = %s on %dHz output for fps %d (policy=%d)",
+             present_mode_name(swap.m_present_mode),
+             swap.m_output_refresh_hz,
+             swap.m_target_fps,
+             static_cast<int>(swap.m_present_policy));
     VkSurfaceTransformFlagBitsKHR preTransform   = surfaceCapabilities.currentTransform;
     VkCompositeAlphaFlagBitsKHR   compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
@@ -165,7 +235,12 @@ bool Swapchain::Recreate(Device& device, VkSurfaceKHR surface, VkExtent2D extent
     if (surfaceCapabilities.maxImageCount > 0 && image_count > surfaceCapabilities.maxImageCount)
         image_count = surfaceCapabilities.maxImageCount;
     m_extent       = GetSwapChainExtent(surfaceCapabilities, extent);
-    m_present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    m_present_mode = pickPresentMode(swap_details.presentModes,
+                                      m_present_policy,
+                                      m_target_fps,
+                                      m_output_refresh_hz);
+    // No LOG_INFO at the Recreate site — would spam on Wayland resize.
+    // The Create-site log suffices for first-frame diagnostics.
 
     // Hand the driver the old swapchain so it can recycle pool memory.
     // The image views referencing the old swapchain's images must be

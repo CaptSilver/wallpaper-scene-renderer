@@ -268,6 +268,45 @@ SceneObject::SceneObject(QQuickItem* parent)
     m_scene->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, GetDefaultCachePath());
 
     connect(this, &SceneObject::firstFrame, this, &SceneObject::setupTextScripts);
+
+    // Screen-removal cooperative-abort plumbing.  When the wallpaper's screen
+    // is unplugged (monitor, USB-C dock, KVM switch), Plasma destroys the
+    // containment shortly after; if a scene was mid-parse the parse thread
+    // would otherwise burn through the rest of its CPU/GPU budget against a
+    // surface that's gone.  Debounced 500 ms so KVM-switch / brief monitor-
+    // sleep cycles (remove + add within the debounce) don't trigger a wasteful
+    // abort+restart.
+    if (auto* app = qApp) {
+        connect(app, &QGuiApplication::screenRemoved, this, &SceneObject::onScreenRemoved);
+        connect(app, &QGuiApplication::screenAdded, this, [this](QScreen*) {
+            // Any new screen cancels a pending abort (KVM-switch / brief
+            // monitor-sleep defense).  Per spec L7-8: the simplest "any add
+            // cancels any pending remove" is sufficient because monitors
+            // typically reappear on the same logical port within ms.
+            if (m_screenRemoveTimer) m_screenRemoveTimer->stop();
+        });
+    }
+}
+
+void SceneObject::onScreenRemoved(QScreen* removed) {
+    QQuickWindow* win = window();
+    if (win && win->screen() != removed) {
+        // Not our screen; the other containment handles its own removal.
+        return;
+    }
+    if (! m_screenRemoveTimer) {
+        m_screenRemoveTimer = new QTimer(this);
+        m_screenRemoveTimer->setSingleShot(true);
+        connect(m_screenRemoveTimer, &QTimer::timeout, this, [this] {
+            if (! m_scene) return;
+            _Q_INFO("aborted load on screen removal");
+            m_scene->abortLoad();
+        });
+    }
+    // Conservative fallback: if no window is bound yet (mid-construct race),
+    // we already short-circuit on win->screen mismatch above; otherwise hit
+    // the 500ms debounce.
+    m_screenRemoveTimer->start(500);
 }
 
 SceneObject::~SceneObject() {

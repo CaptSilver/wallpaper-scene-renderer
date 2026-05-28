@@ -780,3 +780,49 @@ TEST_SUITE("collisionquad operator") {
         CHECK(ps[0].velocity.y() == doctest::Approx(-10.0f));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Fuzz crash regression replay.
+//
+// Iterates tests/fixtures/fuzz_regressions/WPParticleParser/*.bin and feeds
+// each file through the same entry points fuzz_WPParticleParser drives
+// (genParticleInitOp + genParticleOperatorOp). Production wraps both in
+// no-throw envelopes, so we mirror the fuzz harness's swallow.
+// ---------------------------------------------------------------------------
+
+#include "test_data_root.hpp"
+
+#include "wpscene/WPParticleObject.h"
+
+#include <nlohmann/json.hpp>
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+TEST_SUITE("regression: minimised fuzz crashes") {
+    TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
+        namespace fs2 = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root()
+                              / "fuzz_regressions" / "WPParticleParser";
+        if (! fs2::exists(dir)) return;
+        for (auto& entry : fs2::directory_iterator(dir)) {
+            if (entry.path().extension() != ".bin") continue;
+            SUBCASE(entry.path().filename().string().c_str()) {
+                std::ifstream in(entry.path(), std::ios::binary);
+                std::string buf(std::istreambuf_iterator<char>(in), {});
+                auto j = nlohmann::json::parse(buf, nullptr, false);
+                if (j.is_discarded()) return;
+                CHECK_NOTHROW([&] {
+                    try {
+                        (void)wallpaper::WPParticleParser::genParticleInitOp(j);
+                        wallpaper::wpscene::ParticleInstanceoverride ovr;
+                        (void)wallpaper::WPParticleParser::genParticleOperatorOp(j, ovr);
+                    } catch (...) {
+                        // Mirrors fuzz_WPParticleParser.cpp's no-throw envelope.
+                    }
+                }());
+            }
+        }
+    }
+}

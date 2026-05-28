@@ -78,6 +78,7 @@ add_executable(backend_scene_tests
     test_SoundManager.cpp
     test_AudioCapture.cpp
     test_AudioCapture_Rebind.cpp
+    test_AudioBus.cpp
     test_BinaryStream.cpp
     test_VFS.cpp
     test_WPPkgFs.cpp
@@ -105,6 +106,7 @@ add_executable(backend_scene_tests
     test_TextureCacheQueryLRU.cpp
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
+    test_present_mode.cpp
     test_PipelineCacheIO.cpp
     test_Shader.cpp
     test_FenceWaitRetry.cpp

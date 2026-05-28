@@ -139,6 +139,17 @@ public:
 
     void play();
     void pause();
+
+    // Cooperative-cancellation of an in-flight parse / load.  Sets an atomic
+    // flag the parse thread checks at hot-path checkpoints (texture decompress,
+    // shader compile, per-layer iteration) so a screen-removal mid-load doesn't
+    // burn CPU/GPU finishing a parse whose surface is gone.  Idempotent and
+    // safe to call when no load is in flight; the flag is reset at the top of
+    // every new CMD_LOAD_SCENE handler so subsequent loads aren't bricked.
+    void abortLoad();
+    // For tests only: observe the current abort flag.
+    bool isAborted() const;
+
     void mouseInput(double x, double y);
     void updateText(int32_t id, const std::string& text);
     // Dynamic pointsize override: scripts call `thisLayer.pointsize = 20`
