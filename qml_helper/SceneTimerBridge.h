@@ -180,7 +180,12 @@ private:
         // interval can't pin the CPU forever (A3-T2 per-timer back-off).
         int consecutiveInterrupts { 0 };
     };
-    QJSEngine*                          m_engine;
+    // Stored for symmetry with the public ctor signature; each TimerEntry's
+    // QJSValue callback already retains the engine internally, so the member
+    // itself is currently unused beyond ownership bookkeeping.  Kept rather
+    // than dropped because callers (SceneBackend + tests) pass the engine
+    // explicitly and may need it during future watchdog plumbing.
+    [[maybe_unused]] QJSEngine*         m_engine;
     std::unordered_map<int, TimerEntry> m_timers;
     int                                 m_nextId { 1 };
     PostFireFn                          m_postFire;
