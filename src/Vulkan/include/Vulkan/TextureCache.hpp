@@ -109,9 +109,26 @@ private:
         TexHash            content_hash;
         VmaImageParameters image;
         Set<std::string>   query_keys;
+        // Bumped on Query hit AND at insert time.  Drives the non-persist
+        // LRU eviction sort when m_query_texs grows past m_query_soft_cap.
+        uint64_t lru_tick { 0 };
     };
     std::vector<std::unique_ptr<QueryTex>> m_query_texs;
     Map<std::string, QueryTex*>            m_query_map;
+
+    // Monotonic per-Query-call counter; assigned to QueryTex::lru_tick on hit
+    // or insert.  Wraparound is theoretical — even at one Query() per
+    // microsecond, uint64_t lasts ~580k years.
+    uint64_t m_lru_clock { 0 };
+
+    // Soft cap on m_query_texs growth.  Env-overridable via
+    // WEK_TEXCACHE_QUERY_CAP (in [8, 4096]); default 64 covers measured
+    // peak (~30-40) on Totoro/Blur/Nightingale with headroom.  Eviction
+    // walks non-persist entries by ascending lru_tick — persist=true
+    // entries are never evicted.  See evictColdQueryTexs().
+    uint32_t m_query_soft_cap { 64 };
+
+    void evictColdQueryTexs();
 
     // Lazily-allocated depth sampler (NEAREST/CLAMP/no-compare).  See
     // GetOrCreateDepthSampler().

@@ -740,7 +740,66 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     return std::nullopt;
 }
 
-TextureCache::TextureCache(const Device& device): m_device(device) {}
+void TextureCache::evictColdQueryTexs() {
+    // Build parallel lru_tick + persist views over m_query_texs so the
+    // selection helper stays pure (testable without a live VkDevice).
+    std::vector<uint64_t> ticks;
+    std::vector<uint8_t>  persists;
+    ticks.reserve(m_query_texs.size());
+    persists.reserve(m_query_texs.size());
+    for (const auto& q : m_query_texs) {
+        ticks.push_back(q->lru_tick);
+        persists.push_back(q->persist ? 1u : 0u);
+    }
+    const std::vector<std::size_t> victims =
+        detail::selectEvictionVictims(ticks, persists, m_query_soft_cap);
+    if (victims.empty()) return;
+    // Defensive: drain in-flight frames so no submitted command buffer is
+    // still referencing the evicted images.  Mirrors the WaitIdle invariant
+    // around Clear() (which destroys the entire pool).  Called once per
+    // eviction batch — eviction is rare (only above cap), so the cost
+    // amortises.
+    m_device.handle().WaitIdle();
+    // Victims are sorted descending — erasing in this order keeps remaining
+    // indices stable.
+    for (std::size_t v : victims) {
+        // Prune m_query_map of any keys that still point at the evicted
+        // entry BEFORE the unique_ptr is destroyed (the map stores raw
+        // QueryTex*, which would dangle).
+        for (const auto& mapped_key : m_query_texs[v]->query_keys) {
+            m_query_map.erase(mapped_key);
+        }
+        m_query_texs.erase(m_query_texs.begin() + v);
+    }
+    LOG_INFO("TextureCache: evicted %zu cold query-tex entries (cap=%u, size=%zu)",
+             victims.size(),
+             m_query_soft_cap,
+             m_query_texs.size());
+}
+
+TextureCache::TextureCache(const Device& device): m_device(device) {
+    const char* env = std::getenv("WEK_TEXCACHE_QUERY_CAP");
+    if (env != nullptr && env[0] != '\0') {
+        // Sentinel-based accept/reject probe: pass two distinct defaults and
+        // check whether the parser kept either of them.  If both return the
+        // same value, the env was accepted (and that value is the parse
+        // result); otherwise the parser bailed to its default arg.  Avoids a
+        // false "rejected" log when the user explicitly passes the current
+        // default (e.g. WEK_TEXCACHE_QUERY_CAP=64).
+        const uint32_t p1 = detail::parseQueryCapEnv(env, /*default=*/0, /*min=*/8, /*max=*/4096);
+        const uint32_t p2 = detail::parseQueryCapEnv(env, /*default=*/1, /*min=*/8, /*max=*/4096);
+        if (p1 == p2) {
+            m_query_soft_cap = p1;
+            LOG_INFO("TextureCache: query-tex soft cap = %u (WEK_TEXCACHE_QUERY_CAP override)",
+                     m_query_soft_cap);
+        } else {
+            LOG_INFO("TextureCache: WEK_TEXCACHE_QUERY_CAP='%s' rejected "
+                     "(outside [8, 4096] or malformed); using default cap = %u",
+                     env,
+                     m_query_soft_cap);
+        }
+    }
+}
 
 TextureCache::~TextureCache() {};
 
@@ -765,6 +824,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
 
         query.share_ready = false;
         query.persist     = persist;
+        query.lru_tick    = ++m_lru_clock;
 
         return query.image;
     };
@@ -777,6 +837,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
         query->share_ready = false;
         query->persist     = persist;
         query->query_keys.insert(std::string(key));
+        query->lru_tick = ++m_lru_clock;
 
         m_query_map[std::string(key)] = &(*query);
 
@@ -790,9 +851,13 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
     query.index        = (idx)m_query_texs.size() - 1;
     query.content_hash = tex_hash;
     query.query_keys.insert(std::string(key));
-    query.persist = persist;
+    query.persist  = persist;
+    query.lru_tick = ++m_lru_clock;
     if (auto opt = CreateTex(content_hash); opt.has_value()) {
         query.image = std::move(opt.value());
+        if (m_query_texs.size() > m_query_soft_cap) {
+            evictColdQueryTexs();
+        }
         return query.image;
     }
     return std::nullopt;

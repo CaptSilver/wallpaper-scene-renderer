@@ -1,7 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -94,6 +98,70 @@ inline void packMipsIntoBuffer(std::span<const std::pair<const std::uint8_t*, st
     for (std::size_t j = 0; j < mips.size(); ++j) {
         std::memcpy(dst + offsets[j], mips[j].first, mips[j].second);
     }
+}
+
+// Parse WEK_TEXCACHE_QUERY_CAP-style env override into a uint32_t soft cap.
+// Returns the default when env is null, empty, malformed, or out of the
+// accepted [min_cap, max_cap] band.  Out-of-band values must fall back to
+// the default — a cap too small thrashes the pool (eviction every frame),
+// a cap too large defeats the purpose entirely.  Bounds + default are
+// caller-supplied so the helper stays testable in isolation.
+//
+// `env` mirrors std::getenv()'s return shape (NUL-terminated cstr or
+// nullptr); pass a closure in tests, std::getenv in production.
+inline std::uint32_t parseQueryCapEnv(const char* env, std::uint32_t default_cap,
+                                      std::uint32_t min_cap = 8,
+                                      std::uint32_t max_cap = 4096) {
+    if (env == nullptr || env[0] == '\0') return default_cap;
+    char*               endp = nullptr;
+    const unsigned long val  = std::strtoul(env, &endp, 10);
+    if (endp == nullptr || *endp != '\0') return default_cap;
+    if (val < min_cap || val > max_cap) return default_cap;
+    return static_cast<std::uint32_t>(val);
+}
+
+// Choose which non-persist query-tex entries to evict so the pool shrinks
+// back to <= soft_cap.  Pure function — operates on a parallel ticks/persist
+// view of the cache so it can be unit-tested without a live VkDevice or VMA
+// allocator.
+//
+// `lru_ticks[i]` is QueryTex[i].lru_tick; `persist[i]` is QueryTex[i].persist.
+// Returns the indices of victims, sorted DESCENDING by index — callers walk
+// the result in order and erase by index without needing to renumber.
+//
+// Eviction policy: oldest-non-persist-first.  Persist=true entries are never
+// touched; if every entry is persist=true, the result is empty and the pool
+// stays above the cap (intentional — the cap is soft).
+inline std::vector<std::size_t> selectEvictionVictims(std::span<const std::uint64_t> lru_ticks,
+                                                     std::span<const std::uint8_t>  persist,
+                                                     std::size_t soft_cap) {
+    if (lru_ticks.size() <= soft_cap) return {};
+    if (lru_ticks.size() != persist.size()) return {};
+
+    // Collect indices of non-persist entries, paired with their lru_tick so
+    // we can sort by recency without sorting the original pool in-place.
+    std::vector<std::pair<std::uint64_t, std::size_t>> cold;
+    cold.reserve(lru_ticks.size());
+    for (std::size_t i = 0; i < lru_ticks.size(); ++i) {
+        if (! persist[i]) cold.emplace_back(lru_ticks[i], i);
+    }
+    if (cold.empty()) return {};
+
+    // Sort ascending by lru_tick — oldest first.
+    std::sort(cold.begin(), cold.end(), [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    });
+
+    const std::size_t       overflow = lru_ticks.size() - soft_cap;
+    const std::size_t       take     = std::min(overflow, cold.size());
+    std::vector<std::size_t> victims;
+    victims.reserve(take);
+    for (std::size_t i = 0; i < take; ++i) victims.push_back(cold[i].second);
+
+    // Erase-by-index callers want descending order so earlier erases don't
+    // invalidate later indices.
+    std::sort(victims.begin(), victims.end(), std::greater<std::size_t>());
+    return victims;
 }
 
 } // namespace detail
