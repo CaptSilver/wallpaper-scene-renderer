@@ -147,6 +147,20 @@ struct AudioAnalyzer::Impl {
     // FFT_SIZE-stereo-frame overlap stride).  Read by WindowsProcessedForTest().
     uint64_t windowsProcessed { 0 };
 
+    // One-shot diagnostic breadcrumbs.  The overlap rewrite shifted Process()
+    // from a single FFT-per-call to a while-loop that runs N FFTs in one
+    // invocation (50% overlap stride); the bass-band integrator inside
+    // DoOneFFTWindow gains energy as bass-frequency content lands in the
+    // first few log-spaced bands.  Each breadcrumb is fired ONCE per analyzer
+    // instance so the journal proves the new path is engaged at runtime
+    // without flooding (Process runs at 60Hz; per-frame LOG_INFO would
+    // wallpaper the log).  Both flags survive across analyzer lifetime per
+    // [[feedback_keep_debug_logging]] — future investigations of audio
+    // wallpapers benefit from a single "saw N FFTs this call" / "bass band
+    // active" line in the journal at scene start.
+    bool loggedOverlapMultiWindow { false };
+    bool loggedBassBandActive { false };
+
     Impl() {
         fftCfg = kiss_fftr_alloc((int)FFT_SIZE, 0, nullptr, nullptr);
         bandMap.Compute(sampleRate);
@@ -241,6 +255,28 @@ void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
         rawR64[b] = smoothR64[b];
     }
 
+    // One-shot bass-band breadcrumb: bands 0..3 of the 64-band log-spaced
+    // map cover ~20-100Hz (kick, sub-bass, low bass).  Under the 50%-overlap
+    // path each FFT integrates phase-coherently into smoothL64, so
+    // bass-frequency content lands here cleanly rather than as the
+    // noisy single-window snapshot that the legacy code produced.  Log
+    // ONCE when any low band first crosses an audible threshold — useful
+    // when investigating why a future audio-reactive wallpaper does not
+    // pulse on bass.
+    if (! loggedBassBandActive) {
+        float lowBandMax = 0.0f;
+        for (uint32_t b = 0; b < 4; b++) {
+            lowBandMax = std::max(lowBandMax, smoothL64[b]);
+            lowBandMax = std::max(lowBandMax, smoothR64[b]);
+        }
+        if (lowBandMax > 0.1f) {
+            loggedBassBandActive = true;
+            LOG_INFO("AudioAnalyzer: bass band (20-100Hz, smoothL/R64[0..3]) "
+                     "first active (peak=%.3f)",
+                     (double)lowBandMax);
+        }
+    }
+
     // 32 bands = pairwise average of 64
     for (uint32_t b = 0; b < NUM_BANDS_32; b++) {
         rawL32[b] = (rawL64[b * 2] + rawL64[b * 2 + 1]) * 0.5f;
@@ -317,12 +353,26 @@ void AudioAnalyzer::Process() {
         return;
     }
 
+    uint32_t windowsThisCall = 0;
     while (wp - rp >= FFT_SIZE * 2) {
         d.DoOneFFTWindow(rp);
         rp += FFT_SIZE; // 50% overlap stride (half a window)
+        windowsThisCall++;
     }
     d.readPos = rp; // next-start, NOT wp — leaves residual (< FFT_SIZE*2 floats)
                     // for the next call to combine with new samples
+
+    // One-shot breadcrumb: confirm the 50%-overlap branch ran more than the
+    // legacy single-window count (pre-rewrite Process always executed
+    // exactly one FFT per call).  Fires the first time we observe a
+    // multi-window tick so the journal records "overlap engaged" without
+    // looping at 60Hz.
+    if (windowsThisCall >= 2 && ! d.loggedOverlapMultiWindow) {
+        d.loggedOverlapMultiWindow = true;
+        LOG_INFO("AudioAnalyzer::Process: 50%% overlap engaged "
+                 "(%u FFT windows in one call; legacy path was 1)",
+                 windowsThisCall);
+    }
 }
 
 std::span<const float> AudioAnalyzer::GetSpectrum16Left() const { return m_impl->padL16; }
