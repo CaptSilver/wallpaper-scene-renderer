@@ -49,6 +49,7 @@ add_executable(backend_scene_tests
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
+    test_WPTextRendererGlyphCache.cpp
     test_SceneCamera.cpp
     test_SceneNode.cpp
     test_UniformDirtyGate.cpp
@@ -96,10 +97,12 @@ add_executable(backend_scene_tests
     test_DepthToColorResolvePass.cpp
     test_SceneDepthFallbackGate.cpp
     test_DeviceCaps.cpp
+    test_DeviceMemoryBudget.cpp
     test_DepthSamplerConfig.cpp
     test_DepthUsageFlags.cpp
     test_TextureCache_SamplerDedup.cpp
     test_TextureCache_LoadStaging.cpp
+    test_TextureCacheQueryLRU.cpp
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
     test_PipelineCacheIO.cpp

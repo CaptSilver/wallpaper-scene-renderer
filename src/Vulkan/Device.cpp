@@ -233,6 +233,13 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
         allocatorInfo.physicalDevice         = *device.m_gpu;
         allocatorInfo.device                 = *device.m_device;
         allocatorInfo.instance               = *inst.inst();
+        if (device.supportExt(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+            allocatorInfo.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+            LOG_INFO("VMA: VK_EXT_memory_budget enabled (driver-reported VRAM pressure)");
+        } else {
+            LOG_INFO("VMA: VK_EXT_memory_budget not supported "
+                     "(allocator-internal bookkeeping only)");
+        }
         VVK_CHECK_BOOL_RE(vvk::CreateVmaAllocator(allocatorInfo, device.m_allocator));
     }
     {
@@ -278,6 +285,19 @@ VkDeviceSize Device::GetUsage() const {
     VkDeviceSize total = 0;
     for (auto& b : budgets) total += b.usage;
     return total;
+}
+
+std::array<Device::HeapBudget, VK_MAX_MEMORY_HEAPS> Device::GetHeapBudgets() const {
+    std::array<HeapBudget, VK_MAX_MEMORY_HEAPS> out {};
+    VmaBudget                                   budgets[VK_MAX_MEMORY_HEAPS] {};
+    vmaGetHeapBudgets(*m_allocator, budgets);
+    const VkPhysicalDeviceMemoryProperties props = m_gpu.GetMemoryProperties().memoryProperties;
+    for (uint32_t i = 0; i < VK_MAX_MEMORY_HEAPS && i < props.memoryHeapCount; ++i) {
+        out[i].usage  = budgets[i].usage;
+        out[i].budget = budgets[i].budget;
+        out[i].flags  = props.memoryHeaps[i].flags;
+    }
+    return out;
 }
 
 void Device::Destroy() {

@@ -5,6 +5,7 @@
 #include "Parameters.hpp"
 #include "TextureCache.hpp"
 
+#include <array>
 #include <vector>
 
 namespace wallpaper
@@ -73,6 +74,18 @@ public:
     bool supportExt(std::string_view) const;
 
     TextureCache& tex_cache() const { return *m_tex_cache; }
+
+    // Per-heap usage/budget snapshot reported by VMA.  When VK_EXT_memory_budget
+    // is enabled (driver advertises it AND the VMA flag is set in Device::Create),
+    // these numbers come from the driver and include all VRAM consumers
+    // process-wide; otherwise they fall back to allocator-internal bookkeeping
+    // which only counts bytes this allocator itself has minted.
+    struct HeapBudget {
+        VkDeviceSize      usage { 0 };
+        VkDeviceSize      budget { 0 };
+        VkMemoryHeapFlags flags { 0 };
+    };
+    std::array<HeapBudget, VK_MAX_MEMORY_HEAPS> GetHeapBudgets() const;
 
     VkDeviceSize GetUsage() const;
 
