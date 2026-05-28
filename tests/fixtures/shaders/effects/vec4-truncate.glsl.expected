@@ -1,0 +1,6 @@
+// Minimal repro of FixImplicitConversions (vec3 = vec4 truncation).  HLSL
+// implicitly drops the .w component when assigning vec4 to a vec3; GLSL
+// requires an explicit .xyz swizzle.
+vec3 a;
+vec4 b;
+a = b.xyz;

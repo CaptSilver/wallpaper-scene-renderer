@@ -27,3 +27,14 @@ set(ENABLE_GLSLANG_JS OFF)
 set(ENABLE_HLSL OFF)
 set(ENABLE_OPT OFF)
 add_subdirectory(glslang EXCLUDE_FROM_ALL)
+
+if(BUILD_TESTS)
+    # RapidCheck — property-based testing companion to doctest. Header-heavy
+    # template library; only built when BUILD_TESTS is ON. EXCLUDE_FROM_ALL
+    # means only the test binary pulls it in transitively. The extras/doctest
+    # INTERFACE target (gated by RC_ENABLE_DOCTEST) is left OFF: its header
+    # depends on doctest internals that postdate the vendored snapshot under
+    # third_party/nlohmann/tests/thirdparty/doctest/.  rc::check + a doctest
+    # CHECK wrapper covers the same use case without the header drift.
+    add_subdirectory(rapidcheck EXCLUDE_FROM_ALL)
+endif()

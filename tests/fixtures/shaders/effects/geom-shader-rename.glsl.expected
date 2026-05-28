@@ -1,0 +1,11 @@
+#define WE_GS_MAX_VERTICES (1)
+// Minimal repro of TranslateGeometryShader.  Exercises three rewrites in
+// one fixture: maxvertexcount removal plus the WE_GS_MAX_VERTICES #define,
+// the producer-side input rename, and the per-varying gs_in_ array prefix.
+
+in vec2 gs_in_v_TexCoord[];
+void emit() {
+    gl_Position = gl_in[0].gl_Position;
+    v_TexCoord = gs_in_v_TexCoord[0];
+    EmitVertex();
+}

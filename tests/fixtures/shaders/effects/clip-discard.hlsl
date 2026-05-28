@@ -1,0 +1,8 @@
+// Minimal repro of TranslateHlslClip.  Authors reach for the HLSL discard
+// primitive when they need to drop a fragment based on a sampled value; the
+// GLSL equivalent is a guarded discard statement.
+void main() {
+    float v = g_Texture0.Sample(g_Sampler, uv).a - 0.5;
+    clip(v);
+    glOutColor = vec4(1, 0, 0, 1);
+}

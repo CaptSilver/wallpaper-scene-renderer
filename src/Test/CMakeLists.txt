@@ -212,6 +212,10 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/wpscene/WPLightObject.cpp
     ${SRC_DIR}/wpscene/WPModelObject.cpp
     ${SRC_DIR}/wpscene/WPTextObject.cpp
+    # Property-based invariants over WPSceneParser (RapidCheck + doctest).
+    test_WPSceneParse_Properties.cpp
+    # Golden-snapshot diff tests for WPShaderTransforms.h string rewrites.
+    test_WPShaderTransforms_Golden.cpp
 )
 
 target_include_directories(backend_scene_tests PRIVATE
@@ -255,6 +259,19 @@ target_link_libraries(backend_scene_tests PRIVATE
     $<$<BOOL:${EGL_FOUND}>:${EGL_LIBRARIES}>
     $<$<BOOL:${GBM_FOUND}>:${GBM_LIBRARIES}>
     $<$<BOOL:${GL_FOUND}>:${GL_LIBRARIES}>
+    # RapidCheck (vendored under third_party/rapidcheck/) -- consumed by
+    # test_WPSceneParse_Properties.cpp.  Wrapping rc::check inside a doctest
+    # CHECK gives us the SUBCASE-equivalent reporting without needing the
+    # rapidcheck/doctest.h extras header (which assumes a newer doctest than
+    # the one vendored under third_party/nlohmann/tests/thirdparty/doctest).
+    rapidcheck
+)
+
+# Pin the fixtures dir for the golden-snapshot harness so the test binary can
+# locate tests/fixtures/shaders/ regardless of cwd (preflight + ctest run
+# from different working directories).
+target_compile_definitions(backend_scene_tests PRIVATE
+    WEK_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../../tests/fixtures"
 )
 
 # HAVE_EGL_HWDEC matches the production gate (src/CMakeLists.txt:92); without
@@ -349,6 +366,58 @@ endif()
 wek_apply_sanitizers(backend_scene_thread_tests)
 add_test(NAME backend_scene_thread_tests COMMAND backend_scene_thread_tests)
 set_tests_properties(backend_scene_thread_tests PROPERTIES TIMEOUT 300)
+
+# ── Microbenchmarks (nanobench) ──────────────────────────────────────────────
+# Separate executable from backend_scene_tests so nanobench's iteration loop
+# stays clear of doctest's case dispatcher.  Vendored single-header lives at
+# third_party/nanobench.h (MIT).  Not run by ctest -- invoked on demand by
+# scripts/preflight.sh --bench (or directly by a developer).  Output:
+# human-readable to stdout; CSV append to ${BENCH_HISTORY:-unset}.
+add_executable(backend_scene_benches
+    bench/bench_main.cpp
+    bench/bench_UniformLookupHash.cpp
+    bench/bench_RenderGraphTopo.cpp
+    bench/bench_WPShaderValueUpdater.cpp
+    # WPShaderValueUpdater.cpp pulls only stdlib + Eigen + Logging on the
+    # SetNodeData path; safe to compile in directly.  WPPuppet.cpp provides
+    # the ctor/dtor for WPPuppetLayer (embedded in WPShaderValueData).
+    ${SRC_DIR}/WPShaderValueUpdater.cpp
+    ${SRC_DIR}/WPPuppet.cpp
+    ${SRC_DIR}/Type.cpp
+)
+target_include_directories(backend_scene_benches PRIVATE
+    ${SRC_DIR}
+    ${SRC_DIR}/Scene/include
+    ${SRC_DIR}/Scene/include/Scene
+    ${SRC_DIR}/Particle/include
+)
+target_include_directories(backend_scene_benches SYSTEM PRIVATE
+    "${CMAKE_SOURCE_DIR}/third_party")
+target_link_libraries(backend_scene_benches PRIVATE
+    wpRGraph
+    wpUtils
+    wpFs
+    wpAudio
+    wpParticle
+    Eigen3::Eigen
+    nlohmann_json
+)
+# nanobench's BENCHMARK_DONT_OPTIMIZE_AWAY uses asm volatile; warn_opts +
+# -Wpedantic doesn't object but skip -Werror on the bench TU because the
+# header drags in a couple of conversion warnings on signed-vs-unsigned.
+wek_apply_sanitizers(backend_scene_benches)
+
+# Convenience target: regenerate golden GLSL fixtures.  Use after an
+# intentional change to WPShaderTransforms.h string rewrites.
+add_custom_target(shader-golden-regen
+    COMMAND ${CMAKE_COMMAND} -E env WEK_GOLDEN_REGEN=1
+            $<TARGET_FILE:backend_scene_tests>
+            --test-suite=WPShaderTransforms.golden
+    DEPENDS backend_scene_tests
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Regenerating GLSL goldens (WEK_GOLDEN_REGEN=1)"
+    VERBATIM
+)
 
 # ── Coverage report target ────────────────────────────────────────────────────
 if(COVERAGE)

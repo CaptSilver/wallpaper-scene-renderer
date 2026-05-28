@@ -1,0 +1,4 @@
+// Minimal repro of FixImplicitConversions (uint modulo path).  The author
+// reads a uint into a + literal mod expression; HLSL allows this, GLSL needs
+// the modulo computed in signed arithmetic to avoid wraparound.
+uint b = uint((int(a) + 1) % 32);

@@ -21,3 +21,7 @@
 [submodule "third_party/kissfft"]
 	path = third_party/kissfft
 	url = https://github.com/mborgerding/kissfft.git
+[submodule "third_party/rapidcheck"]
+	path = third_party/rapidcheck
+	url = https://github.com/emil-e/rapidcheck.git
+	shallow = true
