@@ -10025,6 +10025,175 @@ TEST_SUITE("Cached engine/input global handle aliasing") {
 } // TEST_SUITE Cached engine/input global handle aliasing
 
 // ------------------------------------------------------------------
+// Cached globalObject() handle (m_globalObj).
+// SceneBackend used to invoke `m_jsEngine->globalObject().setProperty(...)`
+// at every cursor / lifecycle / animation-event / sound-volume dispatch
+// site (~50 callers).  Each call went through a virtual lookup on
+// QJSEngine, returned a fresh QJSValue wrapper around the same JS global,
+// and then forwarded setProperty into it.  Caching the QJSValue once at
+// setupEngineGlobals entry collapses every later setProperty to a
+// direct JSValue write.
+//
+// The seam is the same QJSValue-aliasing contract validated by the
+// engine/input cache suite above: a QJSValue grabbed from
+// engine.globalObject() aliases the same JS object as a fresh
+// engine.globalObject() call on the same engine instance, so mutations
+// through the cached handle remain visible across the full lifetime of
+// the engine (and a teardown reassigns the cache to a default QJSValue,
+// matching the m_engineObj invariant).
+TEST_SUITE("Cached globalObject() handle aliasing") {
+    TEST_CASE("cached global handle aliases live globalObject() across mutations") {
+        QJSEngine engine;
+        // Simulate SceneBackend::setupEngineGlobals's first cache assignment.
+        QJSValue m_globalObj = engine.globalObject();
+        REQUIRE(m_globalObj.isObject());
+
+        // Writes via the cached handle (covers every setProperty path in
+        // SceneBackend that mass-substituted m_jsEngine->globalObject() ->
+        // m_globalObj).
+        m_globalObj.setProperty("__perf9_probe", 42);
+        m_globalObj.setProperty("__perf9_layer", engine.newObject());
+
+        // Visible via a fresh globalObject() lookup — proves the cache is
+        // an alias for the same JS object, not a shallow copy.
+        QJSValue live = engine.globalObject();
+        CHECK(live.property("__perf9_probe").toInt() == 42);
+        CHECK(live.property("__perf9_layer").isObject());
+
+        // Visible to JS evaluation — full round-trip a SceneScript would
+        // observe when it reads `thisLayer` after a C++-side setProperty.
+        CHECK(engine.evaluate("__perf9_probe").toInt() == 42);
+        CHECK(engine.evaluate("typeof __perf9_layer").toString() == "object");
+    }
+
+    TEST_CASE("repeated setProperty on the cached handle stays coherent") {
+        // The cursor / animation-event / sound-volume paths all do
+        // setProperty("thisLayer", proxyA) + setProperty("thisObject", proxyB)
+        // in sequence.  Prove repeated mass mutation through the cached
+        // handle is visible without shadowing.
+        QJSEngine engine;
+        QJSValue  m_globalObj = engine.globalObject();
+
+        QJSValue layerA = engine.newObject();
+        layerA.setProperty("id", 1);
+        QJSValue layerB = engine.newObject();
+        layerB.setProperty("id", 2);
+
+        m_globalObj.setProperty("thisLayer", layerA);
+        m_globalObj.setProperty("thisObject", layerA);
+        CHECK(engine.evaluate("thisLayer.id").toInt() == 1);
+        CHECK(engine.evaluate("thisObject.id").toInt() == 1);
+
+        m_globalObj.setProperty("thisLayer", layerB);
+        m_globalObj.setProperty("thisObject", layerB);
+        CHECK(engine.evaluate("thisLayer.id").toInt() == 2);
+        CHECK(engine.evaluate("thisObject.id").toInt() == 2);
+    }
+
+    TEST_CASE("cleared cached global handle does not crash on setProperty") {
+        // SceneBackend::cleanupTextScripts clears m_globalObj to QJSValue()
+        // alongside m_engineObj.  Qt documents setProperty on a default-
+        // constructed QJSValue as a documented no-op (the value is not
+        // an object — the call returns without effect).  Prove the
+        // teardown path is not a crash class.
+        QJSValue stale; // default-constructed; mirrors post-cleanup state
+        REQUIRE(! stale.isObject());
+
+        QJSEngine engine;
+        QJSValue  proxy = engine.newObject();
+        proxy.setProperty("alpha", 0.5);
+
+        // Must not crash, must not silently graft properties onto a
+        // live engine — purely a no-op against the default value.
+        stale.setProperty("thisLayer", proxy);
+        CHECK(stale.property("thisLayer").isUndefined());
+    }
+} // TEST_SUITE Cached globalObject() handle aliasing
+
+// ------------------------------------------------------------------
+// callWithInstance binds `this` for SceneScript dispatch sites.
+// SceneBackend used to invoke cursor/animation/sound-volume callbacks via
+// `fn.call({args})`, which leaves `this === undefined` inside the script.
+// Workshop scripts authored as `function downFn() { this.alpha = ... }`
+// silently no-oped (writes went into a fresh undefined object that nobody
+// observed).  Switching to `fn.callWithInstance(thisLayerProxy, {args})`
+// keeps the global setProperty in place (so free-var `thisLayer` from
+// nested helper scopes still resolves) while additionally binding
+// `this === thisLayerProxy`, so the script can mutate its own layer via
+// `this.alpha` without an explicit `thisLayer` qualifier.
+TEST_SUITE("callWithInstance binds `this` to the proxy") {
+    TEST_CASE("callable invoked via callWithInstance sees `this === proxy`") {
+        QJSEngine engine;
+        engine.evaluate(R"(
+            var __cwiCaptured = null;
+            function update(arg) { __cwiCaptured = this; return arg; }
+        )");
+
+        // Simulate a SceneBackend cursor dispatch.
+        QJSValue layerProxy = engine.newObject();
+        layerProxy.setProperty("alpha", 0.5);
+        layerProxy.setProperty("name", "layer-a");
+
+        QJSValue fn = engine.globalObject().property("update");
+        REQUIRE(fn.isCallable());
+
+        QJSValue r = fn.callWithInstance(layerProxy, { QJSValue("hello") });
+        CHECK(r.toString() == "hello");
+
+        // `this` inside the function aliases layerProxy — JS-side mutation
+        // is visible through the cached C++ proxy handle.
+        QJSValue captured = engine.globalObject().property("__cwiCaptured");
+        CHECK(captured.property("name").toString() == "layer-a");
+        CHECK(captured.property("alpha").toNumber() == doctest::Approx(0.5));
+
+        // Mutation via `this.x = ...` lands on the same JS object the
+        // C++ side holds in layerProxy — proves the binding is by-reference
+        // (the workshop convention SceneBackend now supports).
+        engine.evaluate("update.call(__cwiCaptured); __cwiCaptured.alpha = 0.9;");
+        CHECK(layerProxy.property("alpha").toNumber() == doctest::Approx(0.9));
+    }
+
+    TEST_CASE("callWithInstance preserves free-var `thisLayer` resolution") {
+        // The plan retains the preceding setProperty("thisLayer", proxy)
+        // call before each callWithInstance.  Prove a script that uses
+        // `thisLayer` as a free variable (the dominant workshop idiom)
+        // still resolves it against the global, even when `this` is
+        // simultaneously bound to the proxy.
+        QJSEngine engine;
+        engine.evaluate(R"(
+            var __cwiThisName = null;
+            var __cwiLayerName = null;
+            function handler(ev) {
+                __cwiThisName  = this.name;
+                __cwiLayerName = thisLayer.name;
+                return ev;
+            }
+        )");
+
+        QJSValue proxy = engine.newObject();
+        proxy.setProperty("name", "proxy-bound-this");
+
+        // SceneBackend keeps the setProperty so free-var resolution works
+        // for scripts that reference `thisLayer` via the global JS scope
+        // chain (nested-helper authors).
+        QJSValue layerForFreeVar = engine.newObject();
+        layerForFreeVar.setProperty("name", "globally-installed");
+        engine.globalObject().setProperty("thisLayer", layerForFreeVar);
+
+        QJSValue fn = engine.globalObject().property("handler");
+        REQUIRE(fn.isCallable());
+        fn.callWithInstance(proxy, { QJSValue(7) });
+
+        // Both bindings survive: this === proxy (callWithInstance contract)
+        // AND thisLayer === free-var lookup (global setProperty contract).
+        CHECK(engine.globalObject().property("__cwiThisName").toString()
+              == "proxy-bound-this");
+        CHECK(engine.globalObject().property("__cwiLayerName").toString()
+              == "globally-installed");
+    }
+} // TEST_SUITE callWithInstance binds `this` to the proxy
+
+// ------------------------------------------------------------------
 // Audio buffer handle aliasing (refreshAudioBuffers lazy-populate).
 // m_audioBufferRegs was declared but never populated; its leftArray/
 // rightArray/averageArray fields should be grabbed once on the first

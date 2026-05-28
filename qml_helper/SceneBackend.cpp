@@ -492,8 +492,8 @@ void SceneObject::fireApplyUserProperties() {
         if (! state.applyUserPropertiesFn.isCallable()) continue;
 
         if (! state.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", state.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = callJsGuarded([&] {
@@ -512,8 +512,8 @@ void SceneObject::fireApplyUserProperties() {
         if (! svState.applyUserPropertiesFn.isCallable()) continue;
 
         if (! svState.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", svState.thisLayerProxy);
+            m_globalObj.setProperty("thisLayer", svState.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", svState.thisLayerProxy);
         }
 
         QJSValue result = callJsGuarded([&] {
@@ -569,15 +569,19 @@ void SceneObject::fireDestroyEvent() {
     // error).  Re-newQObject(this) yields a fresh wrapper that still resolves
     // against the live `this` pointer, so destroy handlers' lsSet calls
     // (Game of Life 3453251764 brush persistence is the canonical driver)
-    // reach the C++ side and save state to disk.
+    // reach the C++ side and save state to disk.  Routed through the live
+    // globalObject() call (not the cached m_globalObj) per the same defensive
+    // pattern as setupEngineGlobals — keeps the __sceneBridge re-registration
+    // path on the same code path it has had since the GoL brush-persistence
+    // fix landed.
     m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
 
     for (auto& state : m_propertyScriptStates) {
         if (! state.destroyFn.isCallable()) continue;
 
         if (! state.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", state.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = callJsGuarded([&] {
@@ -609,8 +613,8 @@ void SceneObject::fireResizeScreen(int width, int height) {
         if (! state.resizeScreenFn.isCallable()) continue;
 
         if (! state.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", state.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", state.thisObjectProxy);
         }
 
         QJSValue result = callJsGuarded([&] {
@@ -635,8 +639,8 @@ void SceneObject::mediaPlaybackChanged(int state) {
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaPlaybackChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
-            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
         callJsGuarded([&] {
             return s.mediaPlaybackChangedFn.call({ event });
         });
@@ -662,8 +666,8 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaPropertiesChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
-            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
         callJsGuarded([&] {
             return s.mediaPropertiesChangedFn.call({ event });
         });
@@ -691,8 +695,8 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaThumbnailChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
-            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
         callJsGuarded([&] {
             return s.mediaThumbnailChangedFn.call({ event });
         });
@@ -712,8 +716,8 @@ void SceneObject::mediaTimelineChanged(double position, double duration, int sta
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaTimelineChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
-            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
         callJsGuarded([&] {
             return s.mediaTimelineChangedFn.call({ event });
         });
@@ -728,8 +732,8 @@ void SceneObject::mediaStatusChanged(bool enabled) {
     for (auto& s : m_propertyScriptStates) {
         if (! s.mediaStatusChangedFn.isCallable()) continue;
         if (! s.layerName.empty())
-            m_jsEngine->globalObject().setProperty("thisLayer", s.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", s.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
         callJsGuarded([&] {
             return s.mediaStatusChangedFn.call({ event });
         });
@@ -1498,10 +1502,16 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             auto& target = m_cursorTargets[i];
             if (! target.downFn.isCallable()) continue;
             if (! hitTestLayerProxy(target.thisLayerProxy, sceneX, sceneY, para)) continue;
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            // Keep the global setProperty so scripts that read `thisLayer` as
+            // a free variable from nested helper scopes still resolve;
+            // callWithInstance additionally binds `this === thisLayerProxy`
+            // so scripts written as `function downFn() { this.alpha = ... }`
+            // work natively.  Same pattern at every cursor / animation /
+            // sound-volume dispatch below.
+            m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = callJsGuarded([&] {
-                return target.downFn.call({ ev });
+                return target.downFn.callWithInstance(target.thisLayerProxy, { ev });
             });
             downFired++;
             if (r.isError())
@@ -1517,11 +1527,11 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
         // affected.
         for (auto& target : m_cursorTargets) {
             if (! target.downFn.isCallable()) continue;
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = callJsGuarded([&] {
-                return target.downFn.call({ ev });
+                return target.downFn.callWithInstance(target.thisLayerProxy, { ev });
             });
             downFired++;
             if (r.isError())
@@ -1533,10 +1543,10 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // Fire cursorClick on the smallest-hit layer with clickFn.
     if (clickIdx >= 0) {
         auto& target = m_cursorTargets[clickIdx];
-        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", target.thisObjectProxy);
         QJSValue r = callJsGuarded([&] {
-            return target.clickFn.call({ ev });
+            return target.clickFn.callWithInstance(target.thisLayerProxy, { ev });
         });
         LOG_INFO(
             "cursorClick fired on '%s'%s", target.layerName.c_str(), r.isError() ? " ERROR" : "");
@@ -1608,10 +1618,10 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
                                               m_parallaxCache.camY);
     auto fire = [&](CursorTarget& target) {
         if (! target.upFn.isCallable()) return;
-        m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-        m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+        m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+        m_globalObj.setProperty("thisObject", target.thisObjectProxy);
         QJSValue r = callJsGuarded([&] {
-            return target.upFn.call({ ev });
+            return target.upFn.callWithInstance(target.thisLayerProxy, { ev });
         });
         upFired++;
         if (r.isError())
@@ -1682,12 +1692,12 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
         float screenY = m_cursorScreenY;
         for (auto& target : m_cursorTargets) {
             if (target.layerName != m_dragTarget || ! target.moveFn.isCallable()) continue;
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
-                return target.moveFn.call({ ev });
+                return target.moveFn.callWithInstance(target.thisLayerProxy, { ev });
             });
             // Throttle per-frame to avoid flooding when a real user drags.
             // Sample once every ~30 dispatches so drag tests still surface
@@ -1783,12 +1793,12 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
         for (auto& target : m_cursorTargets) {
             if (target.layerName != name || ! target.enterFn.isCallable()) continue;
             LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)", name.c_str(), sceneX, sceneY);
-            m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
+            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
-                return target.enterFn.call({ ev });
+                return target.enterFn.callWithInstance(target.thisLayerProxy, { ev });
             });
             if (r.isError()) LOG_INFO("cursorEnter ERROR: %s", r.toString().toStdString().c_str());
             break;
@@ -1825,14 +1835,14 @@ void SceneObject::flushPendingLeaves() {
             if (target.layerName != name) continue;
             if (target.leaveFn.isCallable()) {
                 LOG_INFO("cursorLeave: layer '%s' (after grace)", target.layerName.c_str());
-                m_jsEngine->globalObject().setProperty("thisLayer", target.thisLayerProxy);
-                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
-                m_jsEngine->globalObject().setProperty("thisObject", target.thisObjectProxy);
+                m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
+                m_globalObj.setProperty("thisObject", target.thisObjectProxy);
+                m_globalObj.setProperty("thisObject", target.thisObjectProxy);
+                m_globalObj.setProperty("thisObject", target.thisObjectProxy);
                 QJSValue ev = makeCursorEvent(
                     m_jsEngine, m_cursorSceneX, m_cursorSceneY, m_cursorScreenX, m_cursorScreenY);
                 callJsGuarded([&] {
-                    return target.leaveFn.call({ ev });
+                    return target.leaveFn.callWithInstance(target.thisLayerProxy, { ev });
                 });
             }
             m_hoveredLayers.erase(name);
@@ -1998,7 +2008,7 @@ void SceneObject::setupTextScripts() {
         // / thisLayer.getEffect() in init.  Without this `thisLayer` stayed
         // pinned to whichever layer the prior property-script loop landed
         // on, and init threw on the first method lookup.
-        m_jsEngine->globalObject().setProperty(
+        m_globalObj.setProperty(
             "thisLayer",
             m_jsEngine->evaluate(
                 QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(csi.id)));
@@ -2136,7 +2146,7 @@ void SceneObject::setupTextScripts() {
                 break;
             }
         }
-        m_jsEngine->globalObject().setProperty(
+        m_globalObj.setProperty(
             "thisLayer",
             m_jsEngine->evaluate(
                 QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(svi.id)));
@@ -2248,7 +2258,7 @@ void SceneObject::setupTextScripts() {
         // Set thisLayer before compilation so closures can capture it
         if (! psi.layerName.empty()) {
             // Escaped layer-name lookup (was unescaped pre-F18; see JsStringEscape.hpp).
-            m_jsEngine->globalObject().setProperty(
+            m_globalObj.setProperty(
                 "thisLayer",
                 m_jsEngine->evaluate(
                     wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName))));
@@ -2517,8 +2527,8 @@ void SceneObject::setupTextScripts() {
         if (initFn.isCallable()) {
             // Set thisLayer + thisObject for init call
             if (! psi.layerName.empty()) {
-                m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-                m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
+                m_globalObj.setProperty("thisLayer", state.thisLayerProxy);
+                m_globalObj.setProperty("thisObject", state.thisObjectProxy);
             }
             QJSValue initVal;
             if (psi.property == "visible") {
@@ -2620,8 +2630,8 @@ void SceneObject::setupTextScripts() {
                 vec3End++;
             }
         }
-        m_jsEngine->globalObject().setProperty("_scriptPartVisEnd", QJSValue(visEnd));
-        m_jsEngine->globalObject().setProperty("_scriptPartVec3End", QJSValue(vec3End));
+        m_globalObj.setProperty("_scriptPartVisEnd", QJSValue(visEnd));
+        m_globalObj.setProperty("_scriptPartVec3End", QJSValue(vec3End));
     }
     m_runAllPropertyScriptsFn = m_jsEngine->globalObject().property("_runAllPropertyScripts");
 
@@ -2786,7 +2796,7 @@ void SceneObject::setupTextScripts() {
         // Set thisLayer to the sound layer proxy for this script's own layer.
         // Shared escaped lookup (was a bespoke '-only escape pre-F18; see JsStringEscape.hpp).
         if (! svsi.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty(
+            m_globalObj.setProperty(
                 "thisLayer",
                 m_jsEngine->evaluate(
                     wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(svsi.layerName))));
@@ -3081,6 +3091,11 @@ void SceneObject::setupTextScripts() {
 
 void SceneObject::setupEngineGlobals() {
     m_jsEngine = new QJSEngine(this);
+    // Cache the globalObject() handle once for the lifetime of m_jsEngine.
+    // Every subsequent globalObject().setProperty(...) site in this file
+    // routes through m_globalObj instead — see the field comment in
+    // SceneBackend.hpp.  Cleared in cleanupTextScripts alongside m_engineObj.
+    m_globalObj = m_jsEngine->globalObject();
 
     // Start the runaway-script watchdog now that the engine exists.  It stays
     // disarmed until a JS dispatch site arms it; the monitor thread is joined in
@@ -3100,6 +3115,10 @@ void SceneObject::setupEngineGlobals() {
     // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
     // to the QJSEngine which we own; newQObject wraps without taking ownership
     // (QJSEngine::ObjectOwnership::CppOwnership by default for child QObjects).
+    // Routed through the live globalObject() call (not the cached m_globalObj)
+    // to keep the __sceneBridge install path on the same code path as the
+    // re-registration in fireDestroyEvent — both are load-bearing for the GoL
+    // 3453251764 brush-persistence case that motivated the original workaround.
     m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
 
     // Provide a minimal 'engine' global with runtime and timeOfDay
@@ -3130,12 +3149,12 @@ void SceneObject::setupEngineGlobals() {
         engineObj.setProperty("timeZoneName", id);
     }
     engineObj.setProperty("userProperties", m_jsEngine->newObject());
-    m_jsEngine->globalObject().setProperty("engine", engineObj);
+    m_globalObj.setProperty("engine", engineObj);
     m_engineObj = m_jsEngine->globalObject().property("engine"); // cache the stored handle
 
     // Provide the 'shared' global for inter-script data sharing.
     // All scripts in the scene can read/write to this object.
-    m_jsEngine->globalObject().setProperty("shared", m_jsEngine->newObject());
+    m_globalObj.setProperty("shared", m_jsEngine->newObject());
     // Default shared values for common script patterns
     m_jsEngine->evaluate("shared.volume = 1.0;\n");
 
@@ -3488,7 +3507,7 @@ void SceneObject::installTimerBridge() {
             // fires (SceneTimerBridge's per-timer back-off). Surfaced via postFire.
             return callJsGuarded(call, outInterrupted);
         });
-    m_jsEngine->globalObject().setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
+    m_globalObj.setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
     m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
                          "delay || 0, false); }\n"
                          "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
@@ -4668,8 +4687,8 @@ void SceneObject::evaluatePropertyScripts() {
                     if (! state.animationEventFn.isCallable()) continue;
 
                     if (! state.layerName.empty()) {
-                        m_jsEngine->globalObject().setProperty("thisLayer", state.thisLayerProxy);
-                        m_jsEngine->globalObject().setProperty("thisObject", state.thisObjectProxy);
+                        m_globalObj.setProperty("thisLayer", state.thisLayerProxy);
+                        m_globalObj.setProperty("thisObject", state.thisObjectProxy);
                     }
                     QJSValue eventObj = m_jsEngine->newObject();
                     eventObj.setProperty("name", QString::fromStdString(evt.name));
@@ -4678,7 +4697,8 @@ void SceneObject::evaluatePropertyScripts() {
                     bool     wasInterrupted = false;
                     QJSValue result         = callJsGuarded(
                         [&] {
-                            return state.animationEventFn.call({ eventObj, buildValue(state) });
+                            return state.animationEventFn.callWithInstance(
+                                state.thisLayerProxy, { eventObj, buildValue(state) });
                         },
                         &wasInterrupted);
                     tickInterrupted = tickInterrupted || wasInterrupted;
@@ -5168,8 +5188,8 @@ void SceneObject::evaluatePropertyScripts() {
 
         // Set thisLayer for this volume script (same as property scripts)
         if (! svState.layerName.empty()) {
-            m_jsEngine->globalObject().setProperty("thisLayer", svState.thisLayerProxy);
-            m_jsEngine->globalObject().setProperty("thisObject", svState.thisLayerProxy);
+            m_globalObj.setProperty("thisLayer", svState.thisLayerProxy);
+            m_globalObj.setProperty("thisObject", svState.thisLayerProxy);
         }
 
         // Advance volume animation and use animated value as base.
@@ -5208,7 +5228,8 @@ void SceneObject::evaluatePropertyScripts() {
         bool     svInterrupted = false;
         QJSValue result        = callJsGuarded(
             [&] {
-                return svState.updateFn.call({ QJSValue((double)baseVolume) });
+                return svState.updateFn.callWithInstance(
+                    svState.thisLayerProxy, { QJSValue((double)baseVolume) });
             },
             &svInterrupted);
         tickInterrupted = tickInterrupted || svInterrupted;
@@ -5456,6 +5477,7 @@ void SceneObject::cleanupTextScripts() {
     m_vec3Fn                  = QJSValue();
     m_vec4Fn                  = QJSValue();
     m_engineObj               = QJSValue();
+    m_globalObj               = QJSValue();
     m_inputObj                = QJSValue();
     m_cwpObj                  = QJSValue();
     m_cspObj                  = QJSValue();

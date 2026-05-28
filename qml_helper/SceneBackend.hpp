@@ -595,6 +595,17 @@ private:
     // property, text, and color loops.  Mirrors the m_vec2Fn/m_vec3Fn/m_vec4Fn
     // pattern.  Cleared in cleanupTextScripts.
     QJSValue m_engineObj;   // globalObject().property("engine")
+    // Cached globalObject() handle.  Every globalObject().setProperty(...) call
+    // path went `m_jsEngine->globalObject().setProperty(...)` — that is a virtual
+    // call on QJSEngine plus a QJSValue ctor wrapping the returned handle for
+    // each setProperty.  Caching the handle once at setupEngineGlobals() entry
+    // (right after the engine itself is constructed) and clearing it in
+    // cleanupTextScripts collapses the per-call overhead to a direct
+    // QJSValue::setProperty.  Same lifetime invariant as m_engineObj: invalid
+    // before setupEngineGlobals and after cleanupTextScripts; setProperty on a
+    // default-constructed QJSValue is a documented no-op so out-of-window touches
+    // are not a crash class.
+    QJSValue m_globalObj;
     QJSValue m_inputObj;    // globalObject().property("input")
     QJSValue m_cwpObj;      // m_inputObj.property("cursorWorldPosition")
     // input.cursorScreenPosition Vec2 — refreshed per-tick alongside m_cwpObj.
