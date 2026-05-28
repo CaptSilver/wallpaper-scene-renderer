@@ -885,6 +885,41 @@ bool VulkanRender::passDumpDone() const {
     return pImpl->m_pass_dump_done.load(std::memory_order_acquire);
 }
 
+void VulkanRender::setSwapchainPresentPolicy(int policy) {
+    if (! pImpl->m_device) return;
+    auto p = static_cast<PresentModePolicy>(policy);
+    auto& swap = pImpl->m_device->mut_swapchain();
+    if (swap.presentPolicy() == p) return;
+    swap.setPresentPolicy(p);
+    // Force the next acquire to rebuild the swapchain so the new mode applies
+    // without waiting for an OUT_OF_DATE from the surface.  The Swapchain
+    // re-runs pickPresentMode() inside Recreate() against the cached fields.
+    pImpl->m_swapchain_needs_recreate = true;
+    LOG_INFO("swapchain present policy queued: %d (will recreate)", policy);
+}
+
+void VulkanRender::setSwapchainOutputRefreshHz(int hz) {
+    if (! pImpl->m_device) return;
+    auto& swap = pImpl->m_device->mut_swapchain();
+    if (swap.outputRefreshHz() == hz) return;
+    swap.setOutputRefreshHz(hz);
+    // Auto policy depends on this in pickPresentMode's threshold math.
+    // Recreate to re-evaluate; non-Auto policies are unaffected and recreating
+    // is still cheap (single VkSwapchainCreateInfoKHR call with oldSwapchain).
+    pImpl->m_swapchain_needs_recreate = true;
+    LOG_INFO("swapchain output refresh hz queued: %d (will recreate)", hz);
+}
+
+void VulkanRender::setSwapchainTargetFps(int fps) {
+    if (! pImpl->m_device) return;
+    auto& swap = pImpl->m_device->mut_swapchain();
+    if (swap.targetFps() == fps) return;
+    swap.setTargetFps(fps);
+    // Same rationale as setSwapchainOutputRefreshHz — Auto policy reads this
+    // at Create()/Recreate() time, so recreate to pick the right mode.
+    pImpl->m_swapchain_needs_recreate = true;
+}
+
 bool VulkanRender::Impl::init(RenderInitInfo info) {
     if (m_inited) return true;
 

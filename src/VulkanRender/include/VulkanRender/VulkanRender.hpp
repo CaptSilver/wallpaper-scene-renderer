@@ -58,6 +58,19 @@ public:
     void setPassDumpDir(const std::string& dir);
     bool passDumpDone() const;
 
+    // Push the present-mode policy, output-refresh-hz and target-fps into the
+    // live Swapchain so the next acquire/present picks the matching mode.
+    // policy is the PresentModePolicy enum encoded as int (0=Auto / 1=Fifo /
+    // 2=FifoRelaxed / 3=Mailbox / 4=Immediate).  Forces a swapchain recreate so
+    // the new mode takes effect without waiting for the next OUT_OF_DATE.
+    // No-op when the renderer isn't initialised yet (the values stick on the
+    // Swapchain's pre-Create defaults, picked up at Create() time).  Safe to
+    // call before init(); the Swapchain owns the fields and reads them at
+    // every Create()/Recreate().
+    void setSwapchainPresentPolicy(int policy);
+    void setSwapchainOutputRefreshHz(int hz);
+    void setSwapchainTargetFps(int fps);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> pImpl;

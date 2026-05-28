@@ -123,6 +123,14 @@ constexpr std::string_view PROPERTY_HDR_CONTENT                  = "hdr_content"
 constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE         = "system_audio_capture";
 constexpr std::string_view PROPERTY_SCREENSHOT_PATH              = "screenshot_path";
 constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE      = "postprocessing_override";
+// Swapchain present-mode policy (Auto / Fifo / FifoRelaxed / Mailbox / Immediate).
+// Encoded as int matching the PresentModePolicy enum in Vulkan/Swapchain.hpp.
+// Default 0 = Auto, preserving today's FIFO behaviour for matched Fps/refresh.
+constexpr std::string_view PROPERTY_PRESENT_MODE                 = "present_mode";
+// Output refresh rate in Hz, sourced from Window.screen.refreshRate.  Feeds the
+// Auto policy's threshold math (target_fps vs refresh) for picking MAILBOX /
+// FIFO_RELAXED / FIFO.  Safe to default to 60 pre-monitor-query.
+constexpr std::string_view PROPERTY_OUTPUT_REFRESH_HZ            = "output_refresh_hz";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;

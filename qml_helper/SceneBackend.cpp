@@ -374,6 +374,8 @@ QUrl SceneObject::source() const { return m_source; }
 QUrl SceneObject::assets() const { return m_assets; }
 
 int   SceneObject::fps() const { return m_fps; }
+int   SceneObject::presentMode() const { return m_presentMode; }
+int   SceneObject::outputRefreshHz() const { return m_outputRefreshHz; }
 int   SceneObject::fillMode() const { return m_fillMode; }
 float SceneObject::speed() const { return m_speed; }
 float SceneObject::volume() const { return m_volume; }
@@ -404,6 +406,18 @@ void SceneObject::setFps(int value) {
     m_fps = value;
     SET_PROPERTY(Int32, wallpaper::PROPERTY_FPS, value);
     Q_EMIT fpsChanged();
+}
+void SceneObject::setPresentMode(int value) {
+    if (m_presentMode == value) return;
+    m_presentMode = value;
+    SET_PROPERTY(Int32, wallpaper::PROPERTY_PRESENT_MODE, value);
+    Q_EMIT presentModeChanged();
+}
+void SceneObject::setOutputRefreshHz(int value) {
+    if (m_outputRefreshHz == value) return;
+    m_outputRefreshHz = value;
+    SET_PROPERTY(Int32, wallpaper::PROPERTY_OUTPUT_REFRESH_HZ, value);
+    Q_EMIT outputRefreshHzChanged();
 }
 void SceneObject::setFillMode(int value) {
     if (m_fillMode == value) return;

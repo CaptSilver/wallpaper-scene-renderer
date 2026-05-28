@@ -298,6 +298,12 @@ private:
     bool        m_hdr_output { false };
     bool        m_system_audio_capture { false };
     std::string m_postprocessing_override;
+    // Last present-mode policy + refresh-hz seen from QML.  Cached so the
+    // PROPERTY_FPS path (which mirrors fps into the swapchain) can re-issue
+    // the same policy without expecting QML to repost it.  Defaults match the
+    // Swapchain's pre-Create defaults: Auto (0) + 60Hz.
+    int32_t     m_present_mode_policy { 0 };
+    int32_t     m_output_refresh_hz { 60 };
 
     // Cooperative abort flag for an in-flight CMD_LOAD_SCENE.  Written by
     // SceneWallpaper::abortLoad() (called when QGuiApplication::screenRemoved
@@ -359,6 +365,8 @@ public:
         CMD_SET_FILLMODE,
         CMD_SET_SPEED,
         CMD_SET_HDR,
+        CMD_SET_PRESENT_MODE,
+        CMD_SET_OUTPUT_REFRESH_HZ,
         CMD_STOP,
         CMD_DRAW,
         CMD_NO
@@ -388,6 +396,8 @@ public:
                 CASE_CMD(SET_SCENE);
                 CASE_CMD(SET_SPEED);
                 CASE_CMD(SET_HDR);
+                CASE_CMD(SET_PRESENT_MODE);
+                CASE_CMD(SET_OUTPUT_REFRESH_HZ);
                 CASE_CMD(INIT_VULKAN);
             default: break;
             }
@@ -1767,6 +1777,23 @@ private:
         }
     }
     MHANDLER_CMD(SET_SPEED) { msg->findFloat("value", &m_speed); }
+    MHANDLER_CMD(SET_PRESENT_MODE) {
+        int32_t policy { 0 };
+        if (msg->findInt32("value", &policy)) {
+            m_render->setSwapchainPresentPolicy(policy);
+            // Also push the matching target_fps so Auto picks correctly the
+            // first time after the user changes Fps + PresentMode together.
+            // SET_PROPERTY orders PRESENT_MODE after FPS so frame_timer's fps
+            // has already been clamped; mirror it into the Swapchain.
+            m_render->setSwapchainTargetFps((int)frame_timer.RequiredFps());
+        }
+    }
+    MHANDLER_CMD(SET_OUTPUT_REFRESH_HZ) {
+        int32_t hz { 60 };
+        if (msg->findInt32("value", &hz) && hz > 0) {
+            m_render->setSwapchainOutputRefreshHz(hz);
+        }
+    }
     MHANDLER_CMD(SET_HDR) {
         bool value { false };
         if (msg->findBool("value", &value)) {
@@ -2602,6 +2629,44 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             msg->findInt32("value", &fps);
             if (fps >= 5) {
                 m_render_handler->frame_timer.SetRequiredFps((uint8_t)fps);
+                // Mirror into the swapchain so Auto present-mode picks the
+                // right mode on the next acquire/Recreate.  Routed through
+                // the render thread to avoid touching Device from the main
+                // looper (Swapchain owns the field; render thread reads it
+                // at every Create()/Recreate()).
+                if (m_render_handler->renderInited()) {
+                    auto nmsg = CreateMsgWithCmd(
+                        m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+                    nmsg->setInt32("value", static_cast<int32_t>(m_present_mode_policy));
+                    nmsg->post();
+                }
+            }
+        } else if (property == PROPERTY_PRESENT_MODE) {
+            int32_t policy { 0 };
+            if (msg->findInt32("value", &policy)) {
+                if (policy != m_present_mode_policy) {
+                    m_present_mode_policy = policy;
+                    LOG_INFO("present-mode policy requested: %d", policy);
+                    if (m_render_handler->renderInited()) {
+                        auto nmsg = CreateMsgWithCmd(
+                            m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+                        nmsg->setInt32("value", policy);
+                        nmsg->post();
+                    }
+                }
+            }
+        } else if (property == PROPERTY_OUTPUT_REFRESH_HZ) {
+            int32_t hz { 60 };
+            if (msg->findInt32("value", &hz) && hz > 0) {
+                if (hz != m_output_refresh_hz) {
+                    m_output_refresh_hz = hz;
+                    if (m_render_handler->renderInited()) {
+                        auto nmsg = CreateMsgWithCmd(
+                            m_render_handler, RenderHandler::CMD::CMD_SET_OUTPUT_REFRESH_HZ);
+                        nmsg->setInt32("value", hz);
+                        nmsg->post();
+                    }
+                }
             }
         } else if (property == PROPERTY_FILLMODE) {
             int32_t value;

@@ -33,6 +33,15 @@ class SceneObject : public QQuickItem {
     Q_PROPERTY(QUrl source READ source WRITE setSource NOTIFY sourceChanged)
     Q_PROPERTY(QUrl assets READ assets WRITE setAssets)
     Q_PROPERTY(int fps READ fps WRITE setFps NOTIFY fpsChanged)
+    // Swapchain present-mode policy (0=Auto / 1=Fifo / 2=FifoRelaxed / 3=Mailbox / 4=Immediate).
+    // Matches PresentModePolicy in src/backend_scene/src/Vulkan/include/Vulkan/Swapchain.hpp.
+    // Default 0 (Auto) preserves today's FIFO behaviour for matched Fps/refresh.
+    Q_PROPERTY(int presentMode READ presentMode WRITE setPresentMode NOTIFY presentModeChanged)
+    // Output refresh rate in Hz, plumbed from Window.screen.refreshRate.  Feeds
+    // the Auto policy's threshold math.  Default 60 covers the most common
+    // display until the QML side reads the real value.
+    Q_PROPERTY(int outputRefreshHz READ outputRefreshHz WRITE setOutputRefreshHz
+                   NOTIFY outputRefreshHzChanged)
     Q_PROPERTY(int fillMode READ fillMode WRITE setFillMode NOTIFY fillModeChanged)
     Q_PROPERTY(float speed READ speed WRITE setSpeed NOTIFY speedChanged)
     Q_PROPERTY(float volume READ volume WRITE setVolume NOTIFY volumeChanged)
@@ -80,6 +89,8 @@ public:
     void setAssets(const QUrl& assets);
 
     int     fps() const;
+    int     presentMode() const;
+    int     outputRefreshHz() const;
     int     fillMode() const;
     float   speed() const;
     float   volume() const;
@@ -91,6 +102,8 @@ public:
     qreal   nativeAspectRatio() const;
 
     void setFps(int);
+    void setPresentMode(int);
+    void setOutputRefreshHz(int);
     void setFillMode(int);
     void setSpeed(float);
     void setVolume(float);
@@ -277,6 +290,8 @@ private slots:
 signals:
     void sourceChanged();
     void fpsChanged();
+    void presentModeChanged();
+    void outputRefreshHzChanged();
     void fillModeChanged();
     void speedChanged();
     void volumeChanged();
@@ -301,6 +316,11 @@ private:
     QUrl m_assets;
 
     int     m_fps { 15 };
+    // Default to Auto policy + 60Hz so an unset QML (e.g. headless / standalone
+    // viewer) lands the same FIFO behaviour the plugin had before this surface
+    // existed.
+    int     m_presentMode { 0 };
+    int     m_outputRefreshHz { 60 };
     int     m_fillMode { FillMode::ASPECTCROP };
     float   m_speed { 1.0f };
     float   m_volume { 1.0f };
