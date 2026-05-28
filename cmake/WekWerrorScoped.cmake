@@ -32,7 +32,14 @@ if(NOT WEK_WERROR
         -Werror
         -Wno-error=conversion
         -Wno-error=sign-conversion
-        -Wno-error=sign-compare)
+        -Wno-error=sign-compare
+        # rpmbuild injects gcc-flavour `-specs=...` hardening + annobin flags
+        # the host toolchain pipeline doesn't recognise.  Under clang those
+        # silently warn as -Wunused-command-line-argument; -Werror would then
+        # promote that to a fatal during `rpmbuild`.  Keep the diagnostic
+        # warning-only so the RPM build still proceeds while a -Wall regression
+        # in our own code remains gating.
+        -Wno-error=unused-command-line-argument)
     foreach(_t IN LISTS _wek_werror_scoped_targets)
         if(TARGET ${_t})
             target_compile_options(${_t} PRIVATE ${_wek_werror_scoped_flags})
