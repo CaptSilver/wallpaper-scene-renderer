@@ -63,6 +63,16 @@ void processLoop() {
 // Tears down the entire bus.  Must be called with g_mutex unlocked
 // (signals + joins the Process thread, which itself needs the mutex
 // for its wait_for predicate check).
+//
+// Production safety: g_capture->Stop() below relies on AudioCapture's
+// rebind-thread join completing promptly.  That join is racy if the
+// shutdown flag is stored outside the rebind-mutex (see
+// AudioCapture::Stop, where we now take the rebind-mutex before
+// `shutdown = true; notify_all` to keep the predicate store/check pair
+// serialised).  Without that property, the bus dtor could wedge the
+// scene unload path indefinitely under suite-ordering / desktop-tear-
+// down pressure — the same lost-wakeup window that failed under the
+// `after Init failure, no orphan worker thread blocks Stop()` test.
 void teardownAll() {
     std::thread joiner;
     {

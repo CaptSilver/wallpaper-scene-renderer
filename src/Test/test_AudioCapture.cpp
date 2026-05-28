@@ -91,34 +91,27 @@ TEST_SUITE("AudioCapture") {
         // freeing paLoop, leaving cleanup to Stop()/dtor much later. Fix
         // cleans up in-place; destruction should be fast even when Init
         // failed half-way.
-        if (wekde_audio_device_optin()) {
-            MESSAGE("WEKDE_HAS_AUDIO_DEVICE=1 — Init is expected to succeed, skipping");
-            return;
-        }
-        // SKIP BY DEFAULT: a regression surfaces under the full-suite
-        // ordering — the AudioBus singleton state from earlier test cases
-        // interacts with the direct-path AudioCapture dtor and Stop() blocks
-        // for many minutes instead of the budgeted 500 ms.  In-isolation
-        // runs of this test still complete under 100 ms, so the contract is
-        // preserved for any caller that does not transit AudioBus first.
-        // Set WEKDE_RUN_AUDIOCAPTURE_ORPHAN_TEST=1 when investigating the
-        // ordering issue; preflight skips by default to keep wall time
-        // bounded.
-        const char* run_env = std::getenv("WEKDE_RUN_AUDIOCAPTURE_ORPHAN_TEST");
-        if (! (run_env && run_env[0] == '1')) {
-            MESSAGE("WEKDE_RUN_AUDIOCAPTURE_ORPHAN_TEST not set — skipping "
-                    "(suite-ordering regression with AudioBus, see comment)");
-            return;
-        }
-        auto cap      = std::make_unique<AudioCapture>();
-        auto analyzer = std::make_shared<AudioAnalyzer>();
-        (void)cap->Init(analyzer); // expected to fail in distrobox
-        const auto t0 = std::chrono::steady_clock::now();
+        // The previous suite-ordering hang here was a lost-wakeup race in
+        // AudioCapture::Stop(): the rebind worker thread's std::condition
+        // _variable wait observed `shutdown == false` and parked on the
+        // futex while Stop() was setting `shutdown = true` (atomic) +
+        // calling notify_all OUTSIDE of rebindMutex.  The notify could
+        // race with the futex park and be lost, leaving the rebind thread
+        // wedged for the rest of the process lifetime.  Stop() now takes
+        // rebindMutex before storing shutdown + notifying, which serialises
+        // the store against the waiter's pred re-check under the lock.
+        auto       cap      = std::make_unique<AudioCapture>();
+        auto       analyzer = std::make_shared<AudioAnalyzer>();
+        const bool inited   = cap->Init(analyzer);
+        const auto t0       = std::chrono::steady_clock::now();
         cap.reset();
         const auto elapsed_ms =
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - t0)
                 .count();
+        LOG_INFO("orphan-test: Init() returned %d, cap.reset() took %lld ms",
+                 (int)inited,
+                 (long long)elapsed_ms);
         CHECK(elapsed_ms < 500);
     }
 }

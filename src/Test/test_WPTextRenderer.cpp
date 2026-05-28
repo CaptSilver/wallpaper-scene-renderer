@@ -266,12 +266,19 @@ inline std::atomic<int>& counter() {
 }
 } // namespace wek_q5_alloc_canary
 
+// TSan's runtime defines its own `operator new[]/delete[]` to interpose every
+// allocation, which collides with our canary overrides at link time.  Skip
+// the canary in TSan builds; the underlying invariant (no `new T[]` in
+// RenderText) is purely an allocation-pattern check that TSan does not
+// stress, and a TSan-clean run remains observable via other tests.
+#if ! defined(__has_feature) || ! __has_feature(thread_sanitizer)
 void* operator new[](std::size_t n) {
     wek_q5_alloc_canary::counter().fetch_add(1, std::memory_order_relaxed);
     return ::operator new(n);
 }
 void operator delete[](void* p) noexcept { ::operator delete(p); }
 void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
+#endif
 
 TEST_SUITE("WPTextRenderer bitmap ownership") {
     TEST_CASE("RenderText does not allocate a redundant uint8_t[] buffer") {

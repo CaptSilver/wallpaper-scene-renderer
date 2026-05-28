@@ -293,20 +293,26 @@ struct AudioCapture::Impl {
 
     void DisconnectPulse() {
         if (paLoop && paContext) {
+            LOG_INFO("AudioCapture::DisconnectPulse: locking + disconnecting context...");
             PALock lk(paLoop);
             pa_context_disconnect(paContext);
             pa_context_unref(paContext);
             paContext = nullptr;
             paReady   = false;
+            LOG_INFO("AudioCapture::DisconnectPulse: context torn down");
         }
         if (paLoop) {
+            LOG_INFO("AudioCapture::DisconnectPulse: pa_threaded_mainloop_stop...");
             pa_threaded_mainloop_stop(paLoop);
+            LOG_INFO("AudioCapture::DisconnectPulse: pa_threaded_mainloop_free...");
             pa_threaded_mainloop_free(paLoop);
             paLoop = nullptr;
+            LOG_INFO("AudioCapture::DisconnectPulse: paLoop freed");
         }
     }
 
     void RebindLoop() {
+        LOG_INFO("AudioCapture::RebindLoop: started (impl=%p)", (void*)this);
         while (! shutdown) {
             std::string newSink;
             {
@@ -314,6 +320,8 @@ struct AudioCapture::Impl {
                 rebindCV.wait(lk, [this] {
                     return shutdown.load() || rebindPending.load();
                 });
+                LOG_INFO("AudioCapture::RebindLoop: woke (shutdown=%d, rebindPending=%d)",
+                         (int)shutdown.load(), (int)rebindPending.load());
                 if (shutdown) return;
                 rebindPending = false;
                 if (targetSink == boundSink) continue;
@@ -409,19 +417,39 @@ bool AudioCapture::Init(std::shared_ptr<AudioAnalyzer> analyzer) {
 bool AudioCapture::IsActive() const { return m_impl->active; }
 
 void AudioCapture::Stop() {
+    LOG_INFO("AudioCapture::Stop: enter (this=%p)", (void*)this);
     m_impl->active = false;
 #ifdef WEK_HAVE_LIBPULSE
-    m_impl->shutdown = true;
-    m_impl->rebindCV.notify_all();
+    {
+        // Acquire rebindMutex before signaling shutdown so the rebind
+        // thread's predicate check observes the store; without this
+        // ordering, a notify that races the wait() lock-release window
+        // can be lost (the futex registration races the predicate flag
+        // store on weak hardware).  Holding the lock during notify_all
+        // is safe — wait() releases lk before parking, so the notifier
+        // never serializes with a parked waiter.
+        std::lock_guard<std::mutex> lk(m_impl->rebindMutex);
+        m_impl->shutdown = true;
+        m_impl->rebindCV.notify_all();
+    }
+    LOG_INFO("AudioCapture::Stop: joining rebind thread (joinable=%d)",
+             (int)m_impl->rebindThread.joinable());
     if (m_impl->rebindThread.joinable()) m_impl->rebindThread.join();
+    LOG_INFO("AudioCapture::Stop: rebind joined; DisconnectPulse...");
     m_impl->DisconnectPulse();
+    LOG_INFO("AudioCapture::Stop: DisconnectPulse done");
 #endif
     if (m_impl->maDeviceInited) {
+        LOG_INFO("AudioCapture::Stop: ma_device_uninit...");
         ma_device_uninit(&m_impl->maDevice);
         m_impl->maDeviceInited = false;
+        LOG_INFO("AudioCapture::Stop: ma_device_uninit done");
     }
     if (m_impl->maContextInited) {
+        LOG_INFO("AudioCapture::Stop: ma_context_uninit...");
         ma_context_uninit(&m_impl->maContext);
         m_impl->maContextInited = false;
+        LOG_INFO("AudioCapture::Stop: ma_context_uninit done");
     }
+    LOG_INFO("AudioCapture::Stop: exit (this=%p)", (void*)this);
 }
