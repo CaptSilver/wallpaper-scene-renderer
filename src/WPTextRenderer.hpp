@@ -115,6 +115,17 @@ public:
     static int  TEST_getMissingGlyphLogCount();
     static void TEST_resetLoadGlyphFailLogCounter();
     static int  TEST_getLoadGlyphFailLogCount();
+
+    // Test-only accessors for the per-(face, pixelSize, glyphIdx) glyph
+    // bitmap LRU layered on top of the FT_Face cache.  Both lock
+    // s_ftLibMutex internally; safe to call from any thread.
+    //   TEST_getGlyphCacheSize — live entry count (0 <= size <= 256).
+    //   TEST_getGlyphCacheHits — running hit counter (incremented inside
+    //     the cache's hit branch).  Reset by TEST_clearGlyphCache.
+    //   TEST_clearGlyphCache — drop all entries + reset the hit counter.
+    static std::size_t TEST_getGlyphCacheSize();
+    static std::size_t TEST_getGlyphCacheHits();
+    static void        TEST_clearGlyphCache();
 };
 
 } // namespace wallpaper

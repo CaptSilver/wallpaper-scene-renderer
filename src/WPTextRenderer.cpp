@@ -74,6 +74,12 @@ constexpr std::size_t     kMaxFaceCacheEntries = 8;
 std::list<FaceCacheEntry> s_faceLru;
 std::unordered_map<FaceCacheKey, std::list<FaceCacheEntry>::iterator, FaceCacheKeyHash> s_faceIdx;
 
+// Forward-decl: glyph-cache purge needed by acquireFaceLocked's eviction
+// branch + purgeFaceCacheLocked.  Defined further down the TU after the
+// CachedGlyph / s_glyphLru declarations land.
+void purgeGlyphsForFaceLocked(FT_Face face);
+void purgeGlyphCacheLocked();
+
 // Acquire (or create) an FT_Face for `fontData` and set its pixel size.
 // MUST be called under s_ftLibMutex.  Returns nullptr on FT failure.
 // The returned face is owned by the cache — caller must NOT FT_Done_Face it.
@@ -92,7 +98,13 @@ FT_Face acquireFaceLocked(const std::string& fontData, FT_UInt pixelSize) {
     // Miss — evict at capacity, then create.
     while (s_faceLru.size() >= kMaxFaceCacheEntries) {
         auto& victim = s_faceLru.back();
-        if (victim.face) FT_Done_Face(victim.face);
+        // Invariant: drop any glyph cache entries keyed on the victim
+        // face BEFORE freeing the face.  See the glyph-cache header
+        // comment near purgeFaceCacheLocked for the full rationale.
+        if (victim.face) {
+            purgeGlyphsForFaceLocked(victim.face);
+            FT_Done_Face(victim.face);
+        }
         s_faceIdx.erase(victim.key);
         s_faceLru.pop_back();
     }
@@ -118,7 +130,93 @@ FT_Face acquireFaceLocked(const std::string& fontData, FT_UInt pixelSize) {
 // Free all cached FT_Face objects.  MUST be called under s_ftLibMutex.
 // Called by Shutdown BEFORE FT_Done_FreeType (cached faces internally
 // reference s_ftLib; freeing the library invalidates them).
+//
+// Glyph cache invariant: every CachedGlyph holds a raw FT_Face pointer keyed
+// to a face that lives in s_faceLru.  Purging ALL faces means EVERY glyph
+// key would dangle, so the glyph cache is cleared first (cheaper than
+// per-face purge here — the loop body knows we are tearing down everything).
+void purgeFaceCacheLocked();
+
+// -------- per-glyph bitmap LRU --------
+//
+// Layered on top of the FT_Face cache: keyed on (face, pixelSize, glyphIdx),
+// stores an owned copy of the FT_LOAD_RENDER 8-bit gray bitmap plus the
+// pixel metrics (bitmap_left/top) and the EffectiveAdvance integer.  The
+// FT slot's `g->bitmap.buffer` is per-call reusable storage owned by FT —
+// we copy out so a later cache hit does not have to re-load + re-render.
+//
+// Hit path: O(1) hash lookup + LRU splice + return pointer to entry.
+// Miss path: one FT_Load_Glyph(FT_LOAD_RENDER) + per-row memcpy of the
+// 8-bit gray rows into a contiguous std::vector<uint8_t>.  Both
+// MeasureLineWidth and the RenderText raster loop go through
+// acquireGlyphLocked — measure thus also benefits the raster pass (cache
+// is warm by the time the line is being drawn).
+//
+// CRITICAL INVARIANT: CachedGlyph.face is a raw FT_Face pointer that
+// stays valid only while the face lives in s_faceLru / s_fallbackFace.
+// Every face-tear-down site (acquireFaceLocked eviction branch,
+// purgeFallbackFaceLocked, and purgeFaceCacheLocked) MUST call
+// purgeGlyphsForFaceLocked(face) BEFORE FT_Done_Face(face).  Otherwise the
+// next acquireGlyphLocked sees a stale-pointer hit on the freed FT_Face.
+struct GlyphCacheKey {
+    FT_Face face;
+    FT_UInt pixelSize;
+    FT_UInt glyphIdx;
+    bool    operator==(const GlyphCacheKey& o) const noexcept {
+        return face == o.face && pixelSize == o.pixelSize && glyphIdx == o.glyphIdx;
+    }
+};
+struct GlyphCacheKeyHash {
+    std::size_t operator()(const GlyphCacheKey& k) const noexcept {
+        std::size_t h = reinterpret_cast<std::uintptr_t>(k.face);
+        h = h * 1099511628211ull ^ static_cast<std::size_t>(k.pixelSize);
+        h = h * 1099511628211ull ^ static_cast<std::size_t>(k.glyphIdx);
+        return h;
+    }
+};
+struct CachedGlyph {
+    std::vector<uint8_t> pixels; // 8-bit gray, row-major, size = width * rows
+    u32                  width { 0 };
+    u32                  rows { 0 };
+    i32                  bitmap_left { 0 };
+    i32                  bitmap_top { 0 };
+    i32                  advance_x_pixels { 0 };
+};
+
+constexpr std::size_t kMaxGlyphCacheEntries = 256;
+std::list<std::pair<GlyphCacheKey, CachedGlyph>> s_glyphLru;
+std::unordered_map<GlyphCacheKey, std::list<std::pair<GlyphCacheKey, CachedGlyph>>::iterator,
+                   GlyphCacheKeyHash>            s_glyphIdx;
+std::size_t                                      s_glyphCacheHits { 0 };
+
+// Forward-decl for the helper used by both face-eviction sites; defined
+// after EffectiveAdvance below (the function it calls).
+const CachedGlyph* acquireGlyphLocked(FT_Face face, FT_UInt pixelSize, FT_UInt glyphIdx);
+
+void purgeGlyphCacheLocked() {
+    s_glyphLru.clear();
+    s_glyphIdx.clear();
+    s_glyphCacheHits = 0;
+}
+
+void purgeGlyphsForFaceLocked(FT_Face face) {
+    for (auto it = s_glyphLru.begin(); it != s_glyphLru.end();) {
+        if (it->first.face == face) {
+            s_glyphIdx.erase(it->first);
+            it = s_glyphLru.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Free all cached FT_Face objects.  MUST be called under s_ftLibMutex.
 void purgeFaceCacheLocked() {
+    // Invariant: cached glyph keys point into s_faceLru entries.  We are
+    // about to FT_Done_Face every one of them, so EVERY glyph key would
+    // dangle — bulk-purge the glyph cache first.  Cheaper than per-face
+    // purgeGlyphsForFaceLocked in a loop.
+    purgeGlyphCacheLocked();
     for (auto& e : s_faceLru) {
         if (e.face) FT_Done_Face(e.face);
     }
@@ -237,8 +335,10 @@ FT_Face acquireFallbackFaceLocked(FT_UInt pixelSize) {
 
 // MUST be called under s_ftLibMutex.  Frees the fallback face BEFORE
 // FT_Done_FreeType so the FT_Face does not dangle on the freed library.
+// Glyph-cache invariant: purge fallback-face glyphs BEFORE FT_Done_Face.
 void purgeFallbackFaceLocked() {
     if (s_fallbackFace) {
+        purgeGlyphsForFaceLocked(s_fallbackFace);
         FT_Done_Face(s_fallbackFace);
         s_fallbackFace = nullptr;
     }
@@ -289,6 +389,21 @@ std::size_t WPTextRenderer::TEST_getFaceCacheCapacity() {
     return kMaxFaceCacheEntries; // compile-time constant; no lock needed
 }
 
+std::size_t WPTextRenderer::TEST_getGlyphCacheSize() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    return s_glyphLru.size();
+}
+
+std::size_t WPTextRenderer::TEST_getGlyphCacheHits() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    return s_glyphCacheHits;
+}
+
+void WPTextRenderer::TEST_clearGlyphCache() {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    purgeGlyphCacheLocked();
+}
+
 // DecodeUtf8 now lives header-inline at WPTextRenderer::DecodeUtf8 so the
 // validation can be tested directly without linking the full wpScene library.
 
@@ -318,6 +433,64 @@ static int EffectiveAdvance(FT_GlyphSlot g) {
     return std::max(adv, visualEnd);
 }
 
+// Glyph cache — MUST be called under s_ftLibMutex.  Returns a pointer
+// into the LRU's storage; the pointer is INVALIDATED by the next
+// cache-modifying call (eviction or insertion), so callers must consume
+// the entry before issuing another acquireGlyphLocked.
+//
+// Hit: O(1) hash lookup, MRU-promote, return.
+// Miss: FT_Load_Glyph(FT_LOAD_RENDER) on the supplied face, copy out the
+// 8-bit gray bitmap rows into an owned std::vector, store pixel metrics
+// + EffectiveAdvance, evict LRU back-entry at capacity.
+//
+// Returns nullptr on FT_Load_Glyph failure (the existing pathological
+// path).  Negative pitch is rejected with LOG_INFO and nullptr — every
+// FT_LOAD_RENDER 8-bit gray bitmap we have ever seen has positive pitch
+// (top-down row order), so a negative value is "unexpected font" not
+// "common path"; the existing FT_Load_Glyph-fail counter would log it
+// as a pathological miss anyway.
+namespace
+{
+const CachedGlyph* acquireGlyphLocked(FT_Face face, FT_UInt pixelSize, FT_UInt glyphIdx) {
+    GlyphCacheKey key { face, pixelSize, glyphIdx };
+    if (auto it = s_glyphIdx.find(key); it != s_glyphIdx.end()) {
+        s_glyphLru.splice(s_glyphLru.begin(), s_glyphLru, it->second);
+        ++s_glyphCacheHits;
+        return &s_glyphLru.front().second;
+    }
+    FT_Error err = FT_Load_Glyph(face, glyphIdx, FT_LOAD_RENDER);
+    if (err != 0) return nullptr;
+    FT_GlyphSlot g = face->glyph;
+    if (g->bitmap.pitch < 0) {
+        LOG_INFO("WPTextRenderer: unexpected negative pitch glyph idx=%u (skipped)",
+                 (unsigned)glyphIdx);
+        return nullptr;
+    }
+    while (s_glyphLru.size() >= kMaxGlyphCacheEntries) {
+        s_glyphIdx.erase(s_glyphLru.back().first);
+        s_glyphLru.pop_back();
+    }
+    CachedGlyph entry;
+    entry.width            = g->bitmap.width;
+    entry.rows             = g->bitmap.rows;
+    entry.bitmap_left      = g->bitmap_left;
+    entry.bitmap_top       = g->bitmap_top;
+    entry.advance_x_pixels = EffectiveAdvance(g);
+    entry.pixels.resize(static_cast<std::size_t>(entry.width) * entry.rows);
+    const std::size_t pitch =
+        static_cast<std::size_t>(g->bitmap.pitch); // sign-checked positive above
+    for (u32 row = 0; row < entry.rows; ++row) {
+        const uint8_t* src = g->bitmap.buffer + static_cast<std::size_t>(row) * pitch;
+        std::memcpy(entry.pixels.data() + static_cast<std::size_t>(row) * entry.width,
+                    src,
+                    entry.width);
+    }
+    s_glyphLru.push_front({ key, std::move(entry) });
+    s_glyphIdx[key] = s_glyphLru.begin();
+    return &s_glyphLru.front().second;
+}
+} // namespace
+
 // Measure the pixel width of a single line — kerned variant.  Must match
 // the raster loop's pen advance byte-for-byte (same FT_Get_Char_Index →
 // kerning delta → FT_Load_Glyph sequence) or right/center alignment drifts
@@ -327,8 +500,19 @@ static int EffectiveAdvance(FT_GlyphSlot g) {
 // both paths.  The `loadGlyphFails` out-param accumulates into the raster-loop
 // counter that drives the LOG_ERROR rate-limit; we do not double-log
 // measurement-time failures.
-static int MeasureLineWidth(FT_Face face, const std::string& line, int& loadGlyphFails,
-                            FT_Error& lastLoadGlyphErr) {
+//
+// Both the measure and the raster pass go through acquireGlyphLocked, so
+// the second-glyph-rendered-this-call hits the cache without re-issuing
+// FT_Load_Glyph.  On a miss we use FT_LOAD_RENDER (one full raster +
+// memcpy) instead of FT_LOAD_DEFAULT — slightly heavier per cold miss but
+// it amortises the raster cost onto the next acquire (the very next call
+// in the raster loop), eliminating the previous "measure with
+// FT_LOAD_DEFAULT, raster with FT_LOAD_RENDER" double work.
+//
+// The cache stores EffectiveAdvance in the entry, so the pen advance is
+// the cached integer instead of a fresh g->advance.x>>6 read.
+static int MeasureLineWidth(FT_Face face, FT_UInt pixelSize, const std::string& line,
+                            int& loadGlyphFails, FT_Error& lastLoadGlyphErr) {
     const bool  hasKerning = FT_HAS_KERNING(face);
     int         pen_x      = 0;
     FT_UInt     prevIdx    = 0;
@@ -342,14 +526,14 @@ static int MeasureLineWidth(FT_Face face, const std::string& line, int& loadGlyp
         // .notdef glyph's metrics — the raster loop also rasterizes it,
         // and the two paths must agree on the width.
         pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-        FT_Error glyphErr = FT_Load_Glyph(face, idx, FT_LOAD_DEFAULT);
-        if (glyphErr != 0) {
+        const CachedGlyph* cg = acquireGlyphLocked(face, pixelSize, idx);
+        if (! cg) {
             ++loadGlyphFails;
-            lastLoadGlyphErr = glyphErr;
+            lastLoadGlyphErr = -1; // synthetic; underlying FT error LOG_INFO'd at miss time
             prevIdx          = idx;
             continue;
         }
-        pen_x += EffectiveAdvance(face->glyph);
+        pen_x += cg->advance_x_pixels;
         prevIdx = idx;
     }
     return pen_x;
@@ -504,7 +688,11 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         const auto& line = lines[li];
         if (line.empty()) continue;
 
-        i32 lineWidth = MeasureLineWidth(face, line, loadGlyphFailsThisCall, lastLoadGlyphErr);
+        i32 lineWidth = MeasureLineWidth(face,
+                                         static_cast<FT_UInt>(pixelSize),
+                                         line,
+                                         loadGlyphFailsThisCall,
+                                         lastLoadGlyphErr);
 
         // Horizontal offset
         i32 startX;
@@ -560,30 +748,34 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             // the call returns 0 — FT_Get_Kerning won't find the pair —
             // and pen_x is unaffected.  Cross-face kerning is HarfBuzz scope.
             pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-            // FT_Load_Glyph failure — pathological (not idx==0 which is benign
-            // and routes to the LOG_INFO path below).  MeasureLineWidth on the
-            // same face + same idx will skip the same glyph, so alignment stays
-            // consistent.  Counter is read after the line-loop and rate-limited
-            // to ~1 LOG_ERROR per 32 calls.
-            FT_Error glyphErr = FT_Load_Glyph(faceToUse, idx, FT_LOAD_RENDER);
-            if (glyphErr != 0) {
+            // Glyph-cache lookup.  On a miss the cache calls
+            // FT_Load_Glyph(FT_LOAD_RENDER) on faceToUse and stores an owned
+            // copy of the 8-bit gray bitmap + metrics + EffectiveAdvance.
+            // On a hit (second tick of a clock wallpaper, repeated digit in
+            // a line, second-half of a measure+raster pair) we get the
+            // cached pixels at memcpy speed.  nullptr means a pathological
+            // FT_Load_Glyph failure (corrupt glyf, OOM); the existing
+            // rate-limited LOG_ERROR fires after the line loop.
+            const CachedGlyph* cg =
+                acquireGlyphLocked(faceToUse, static_cast<FT_UInt>(pixelSize), idx);
+            if (! cg) {
                 ++loadGlyphFailsThisCall;
-                lastLoadGlyphErr = glyphErr;
+                lastLoadGlyphErr = -1;
                 prevIdx          = idx;
                 continue;
             }
 
-            FT_GlyphSlot g  = faceToUse->glyph;
-            i32          bx = pen_x + g->bitmap_left;
-            i32          by = baselineY - g->bitmap_top;
+            i32 bx = pen_x + cg->bitmap_left;
+            i32 by = baselineY - cg->bitmap_top;
 
-            for (u32 row = 0; row < g->bitmap.rows; ++row) {
-                for (u32 col = 0; col < g->bitmap.width; ++col) {
+            for (u32 row = 0; row < cg->rows; ++row) {
+                for (u32 col = 0; col < cg->width; ++col) {
                     i32 px = bx + static_cast<i32>(col);
                     i32 py = by + static_cast<i32>(row);
                     if (px < 0 || px >= width || py < 0 || py >= height) continue;
 
-                    uint8_t alpha = g->bitmap.buffer[row * g->bitmap.pitch + col];
+                    uint8_t alpha =
+                        cg->pixels[static_cast<std::size_t>(row) * cg->width + col];
                     if (alpha == 0) continue;
 
                     usize bidx = (static_cast<usize>(py) * static_cast<usize>(width) +
@@ -596,7 +788,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                     buf[bidx + 3] = std::max(buf[bidx + 3], alpha);
                 }
             }
-            pen_x += EffectiveAdvance(g);
+            pen_x += cg->advance_x_pixels;
             prevIdx = idx;
         }
     }
@@ -735,7 +927,12 @@ int WPTextRenderer::TEST_measureLineWidthWithKerning(const std::string& fontData
     FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
     int      loadFails = 0;
     FT_Error lastErr   = 0;
-    int      w         = MeasureLineWidth(face, line, loadFails, lastErr);
+    int      w =
+        MeasureLineWidth(face, static_cast<FT_UInt>(pixelSize), line, loadFails, lastErr);
+    // Glyph cache invariant: purge entries keyed on this throwaway face
+    // before we free it, otherwise the next acquireGlyphLocked hits a
+    // dangling pointer.  Same guard as the LRU face-eviction branch.
+    purgeGlyphsForFaceLocked(face);
     FT_Done_Face(face);
     return w;
 }
