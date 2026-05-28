@@ -137,6 +137,13 @@ if(BUILD_QML)
     target_link_options(${PROJECT_NAME}-qml PRIVATE ${wek_harden_link_opts})
 
     set(CMAKE_AUTOMOC OFF)
-    set(CMAKE_AUTORCC OFF) 
-    set(CMAKE_AUTOUIC OFF) 
+    set(CMAKE_AUTORCC OFF)
+    set(CMAKE_AUTOUIC OFF)
 endif()
+
+# Scoped -Werror gate for the audited-clean shippable targets.  Same canonical
+# file the parent includes.  Standalone-submodule configures only have two of
+# the four targets (wescene-renderer-qml, wpParticle); the per-target if(TARGET)
+# guard inside the helper makes that safe.  No-op when -DWEK_WERROR=ON (full
+# audit covers these targets already).
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekWerrorScoped.cmake)

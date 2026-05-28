@@ -1090,10 +1090,22 @@ TEST_SUITE("FixImplicitConversions") {
                 << (micros / iterations) << " us avg)");
 
         // Sanity floor only — guards against a future regression that turns
-        // this back into per-name NFA rebuild.  Generous bound (10 s) to
-        // absorb debug-build + libstdc++ ECMAScript NFA-build cost variability
-        // across distrobox / lavapipe / native runs.
+        // this back into per-name NFA rebuild.  Generous bound to absorb
+        // debug-build + libstdc++ ECMAScript NFA-build cost variability
+        // across distrobox / lavapipe / native runs.  Under address/undefined
+        // sanitizers the std::regex engine is ~3x slower, so bump the bound
+        // proportionally when instrumented so the default-gate ASAN run does
+        // not flake on the floor.
+#if defined(__has_feature)
+#    if __has_feature(address_sanitizer) || __has_feature(undefined_behavior_sanitizer) \
+        || __has_feature(memory_sanitizer)
+        CHECK(micros < 30'000'000);
+#    else
         CHECK(micros < 10'000'000);
+#    endif
+#else
+        CHECK(micros < 10'000'000);
+#endif
     }
 
     // --- Pattern 16: const TYPE = texture() → remove const ---

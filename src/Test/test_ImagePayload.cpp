@@ -90,9 +90,15 @@ TEST_SUITE("Image decoded-payload release") {
 
     TEST_CASE("policy-gated combo leaves a video placeholder intact") {
         // Mirrors the production call: `if (mayRelease) release(...)`.
+        //
+        // `freed` must outlive `videoImg`: the slot's mip deleter captures
+        // `&freed` and runs from `Image::~Image()` when this scope unwinds.
+        // Stack destruction is LIFO, so `freed` is declared FIRST to ensure
+        // it is still live when the deleter fires.  Reversing the order
+        // produces a stack-use-after-scope (caught by ASAN).
+        int   freed = 0;
         Image videoImg;
         videoImg.header.isVideoTexture = true;
-        int  freed = 0;
         addSlot(videoImg, /*mips*/ 1, /*bytes*/ 64, &freed);
 
         if (mayReleaseDecodedPayload(videoImg)) releaseDecodedPayload(videoImg);
