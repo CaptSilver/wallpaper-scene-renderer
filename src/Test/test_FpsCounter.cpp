@@ -1,6 +1,7 @@
 #include <doctest.h>
 #include <thread>
 #include <chrono>
+#include <cstdlib>
 
 #include "Utils/FpsCounter.h"
 
@@ -8,6 +9,59 @@ using wallpaper::FpsCounter;
 using namespace std::chrono_literals;
 
 TEST_SUITE("FpsCounter") {
+    TEST_CASE("histogram disabled without env returns empty snapshot") {
+        // histogramEnabled() reads the env per call, so unsetenv suffices —
+        // no need to worry about test ordering or a cached first observation.
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+        FpsCounter c;
+        for (int i = 0; i < 100; ++i) {
+            c.RegisterFrame();
+            std::this_thread::sleep_for(1ms);
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 0u);
+    }
+
+    TEST_CASE("histogram bins frame intervals into 2ms-wide buckets") {
+        ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
+        FpsCounter c;
+        // Drive 50 RegisterFrame() calls with ~1ms spacing.  Most intervals
+        // should land in bucket 0 (0-2 ms); some scheduler jitter pushes a
+        // few into bucket 1, which is fine — the assertion allows that.
+        for (int i = 0; i < 50; ++i) {
+            std::this_thread::sleep_for(1ms);
+            c.RegisterFrame();
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 50u);
+        CHECK(snap.buckets[0] >= 35u);
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+    }
+
+    TEST_CASE("histogram computes p95/p99/max from bucket walk") {
+        ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
+        FpsCounter c;
+        // 90 fast frames (~1 ms) + 10 hitch frames (~20 ms).  A 10% hitch
+        // rate puts both the 95th and 99th percentile inside the 20 ms
+        // bucket: the running accumulator over ascending buckets only
+        // crosses 95 once the hitches start landing.  Allows scheduler
+        // jitter slack on the lower-bound assertion.
+        for (int i = 0; i < 90; ++i) {
+            std::this_thread::sleep_for(1ms);
+            c.RegisterFrame();
+        }
+        for (int i = 0; i < 10; ++i) {
+            std::this_thread::sleep_for(20ms);
+            c.RegisterFrame();
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 100u);
+        CHECK(snap.p95_ms >= 18u);
+        CHECK(snap.p99_ms >= 18u);
+        CHECK(snap.max_ms >= 18u);
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+    }
+
     TEST_CASE("starts at 0 fps before any frame registered") {
         FpsCounter c;
         CHECK(c.Fps() == 0u);

@@ -1533,6 +1533,47 @@ private:
             scene->shaderValueUpdater->FrameEnd();
             fps_counter.RegisterFrame();
 
+            // Frame-time histogram log cadence: once per 30 s, drain the
+            // FpsCounter bucket counters and emit a single LOG_INFO with
+            // the bucket vector + p95/p99/max.  Gating happens internally
+            // (CollectHistogram returns sampleCount=0 when WEKDE_DEBUG_FRAMETIME
+            // is unset), so the disabled path is just a handful of atomic
+            // exchanges on zero values — negligible.  Single-thread-safe via
+            // the static-local (RegisterFrame is render-thread-only here).
+            {
+                using namespace std::chrono;
+                static auto sLastHistLog = steady_clock::now();
+                auto        nowHist      = steady_clock::now();
+                if (nowHist - sLastHistLog > seconds(30)) {
+                    sLastHistLog = nowHist;
+                    auto snap    = fps_counter.CollectHistogram();
+                    if (snap.sampleCount > 0) {
+                        LOG_INFO("[FRAMETIME] samples=%u p95=%ums p99=%ums max=%ums "
+                                 "buckets=[%u %u %u %u %u %u %u %u %u %u %u %u %u %u %u %u]",
+                                 snap.sampleCount,
+                                 snap.p95_ms,
+                                 snap.p99_ms,
+                                 snap.max_ms,
+                                 snap.buckets[0],
+                                 snap.buckets[1],
+                                 snap.buckets[2],
+                                 snap.buckets[3],
+                                 snap.buckets[4],
+                                 snap.buckets[5],
+                                 snap.buckets[6],
+                                 snap.buckets[7],
+                                 snap.buckets[8],
+                                 snap.buckets[9],
+                                 snap.buckets[10],
+                                 snap.buckets[11],
+                                 snap.buckets[12],
+                                 snap.buckets[13],
+                                 snap.buckets[14],
+                                 snap.buckets[15]);
+                    }
+                }
+            }
+
             if (! scene->first_frame_ok) {
                 scene->first_frame_ok = true;
                 main_handler.sendFirstFrameOk();
