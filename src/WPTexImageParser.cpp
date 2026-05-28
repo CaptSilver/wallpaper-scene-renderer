@@ -44,6 +44,26 @@ namespace
 
 using namespace wallpaper::teximage_helpers;
 
+// Hostile-input bounds for Parse().  Wallpaper Engine ships textures up to 4K
+// per side with ≤13 mips and ≤6 slots (cube faces) in practice; these caps sit
+// well above any real .tex while keeping fuzz inputs from declaring 80GB
+// image_count, INT32_MAX dimensions, or thousands of mip levels.
+//
+// Surfaced by fuzz_WPTexImageParser pathologies — a 105-byte hostile .tex
+// embedding a TGA with declared dims 10000×10000 routes through
+// stbi_load_from_memory and allocates ~716MB before failing on truncated input;
+// a many-mip header with each mip declaring decompressed_size near the 256MB
+// per-allocation cap accumulates total RSS across slot.mipmaps[].data without
+// bound.
+//
+// Each LOG_INFO names the field and the rejected value so journal forensics on
+// a refused texture localises the bad header field.
+constexpr usize kMaxImageCount   = 16;
+constexpr usize kMaxMipmapCount  = 24;
+constexpr i32   kMaxMipmapDim    = 16384;
+constexpr i64   kMaxTotalBytes   = 1024ll * 1024 * 1024;
+constexpr i32   kMaxEmbeddedDim  = 16384;
+
 std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size) {
     std::vector<char> dst((usize)decompressed_size);
     int               load_size = LZ4_decompress_safe(src, dst.data(), size, decompressed_size);
@@ -173,16 +193,31 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     if (_image_count < 0) return nullptr;
     usize image_count = (usize)_image_count;
 
+    if (image_count > kMaxImageCount) {
+        LOG_INFO("tex '%s': image_count %zu exceeds plausibility cap %zu",
+                 name.c_str(), image_count, kMaxImageCount);
+        return nullptr;
+    }
     if (! CountFitsStream(file, image_count)) {
         LOG_ERROR("tex '%s': image_count %zu exceeds stream", name.c_str(), image_count);
         return nullptr;
     }
     img.slots.resize(image_count);
+
+    // Cumulative byte budget across every mip in every slot.  Caps the total
+    // RSS a single Parse() can request — a per-allocation cap alone leaves the
+    // door open to N slots × M mips × cap accumulating without bound.
+    i64 total_bytes = 0;
     for (usize i_image = 0; i_image < image_count; i_image++) {
         auto& img_slot = img.slots[i_image];
         auto& mipmaps  = img_slot.mipmaps;
 
         usize mipmap_count = (usize)std::max<i32>(file.ReadInt32(), 0);
+        if (mipmap_count > kMaxMipmapCount) {
+            LOG_INFO("tex '%s' slot[%zu]: mipmap_count %zu exceeds plausibility cap %zu",
+                     name.c_str(), i_image, mipmap_count, kMaxMipmapCount);
+            return nullptr;
+        }
         if (! CountFitsStream(file, mipmap_count)) {
             LOG_ERROR("tex '%s': mipmap_count %zu exceeds stream", name.c_str(), mipmap_count);
             return nullptr;
@@ -211,6 +246,16 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             if (src_size <= 0 || mipmap.width <= 0 || mipmap.height <= 0 || decompressed_size < 0)
                 return nullptr;
 
+            // Per-axis plausibility cap.  Real WP textures top out at 4K per
+            // side; 16K leaves room for future engine bumps while rejecting
+            // the INT32_MAX class of fuzz inputs.
+            if (mipmap.width > kMaxMipmapDim || mipmap.height > kMaxMipmapDim) {
+                LOG_INFO("tex '%s' mip[%zu]: dimensions %dx%d exceed plausibility cap %d",
+                         name.c_str(), i_mipmap,
+                         mipmap.width, mipmap.height, kMaxMipmapDim);
+                return nullptr;
+            }
+
             // Cap any single-allocation byte count parsed from the .tex
             // header — both decompressed_size below (Lz4Decompress) and
             // raw_size in the MP4-placeholder path further down call
@@ -229,6 +274,21 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                           (long long)kMaxTexAllocBytes);
                 return nullptr;
             }
+
+            // Cumulative-budget gate before the std::vector<char> for src_size
+            // and the Lz4Decompress allocation.  src_size is bounded by
+            // CountFitsStream, decompressed_size by the per-allocation cap
+            // above; this check stops the parser running through many mips and
+            // accumulating slot.mipmaps[].data without bound.
+            i64 mip_budget = (i64)src_size + (i64)decompressed_size;
+            if (total_bytes + mip_budget > kMaxTotalBytes) {
+                LOG_INFO("tex '%s' mip[%zu]: cumulative allocation %lld + %lld exceeds %lld-byte cap",
+                         name.c_str(), i_mipmap,
+                         (long long)total_bytes, (long long)mip_budget,
+                         (long long)kMaxTotalBytes);
+                return nullptr;
+            }
+            total_bytes += mip_budget;
 
             if (! CountFitsStream(file, (usize)src_size)) {
                 LOG_ERROR("tex '%s': src_size %d exceeds stream", name.c_str(), src_size);
@@ -305,6 +365,46 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             }
             // is image container
             if (img.header.extraHeader["texb"].val >= 3 && img.header.type != ImageType::UNKNOWN) {
+                // Pre-validate the embedded image's declared dimensions before
+                // calling stbi_load_from_memory.  stbi allocates its output
+                // buffer up front from the decoded image header (TGA/PNG/JPEG);
+                // a hostile 10K×10K TGA inside an otherwise-empty .tex causes
+                // ~716MB RSS + 7s of CPU before stbi errors on truncated
+                // pixels.  Reject at the parser boundary instead.
+                //
+                // Well-formed WP textures store the embedded image at the same
+                // dimensions as the mip container declared (mipmap.width/height)
+                // — the parser later overwrites mipmap.size with w*h*4 from
+                // stbi's output.  Reject if the embedded dims exceed the mip
+                // container's, since that's the upper bound the parser would
+                // honour anyway, or if either side exceeds the plausibility cap.
+                int32_t info_w = 0, info_h = 0, info_n = 0;
+                if (! stbi_info_from_memory((const unsigned char*)result.data(),
+                                            src_size, &info_w, &info_h, &info_n) ||
+                    info_w <= 0 || info_h <= 0 ||
+                    info_w > kMaxEmbeddedDim || info_h > kMaxEmbeddedDim ||
+                    info_w > mipmap.width || info_h > mipmap.height) {
+                    LOG_INFO("tex '%s' mip[%zu]: embedded image dims %dx%d "
+                             "outside mip container %dx%d / plausibility cap %d",
+                             name.c_str(), i_mipmap,
+                             info_w, info_h,
+                             mipmap.width, mipmap.height,
+                             kMaxEmbeddedDim);
+                    return nullptr;
+                }
+                // Fold the about-to-be-allocated stbi output into the
+                // cumulative budget.
+                i64 stbi_out = (i64)info_w * info_h * 4;
+                if (total_bytes + stbi_out > kMaxTotalBytes) {
+                    LOG_INFO("tex '%s' mip[%zu]: stbi output %lld for %dx%d "
+                             "exceeds cumulative cap %lld",
+                             name.c_str(), i_mipmap,
+                             (long long)stbi_out, info_w, info_h,
+                             (long long)kMaxTotalBytes);
+                    return nullptr;
+                }
+                total_bytes += stbi_out;
+
                 int32_t w, h, n;
                 auto*   data = stbi_load_from_memory(
                     (const unsigned char*)result.data(), src_size, &w, &h, &n, 4);

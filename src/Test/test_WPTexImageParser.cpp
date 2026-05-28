@@ -919,8 +919,11 @@ TEST_SUITE("WPTexImageParser") {
         // texb==3 must read the imageType field; if ge_to_gt mutant fires
         // (>= 3 becomes > 3), the imageType int won't be consumed and
         // the stream will be misaligned, causing a parse failure.
+        // Use imageType=UNKNOWN(-1) so the parser takes the raw-copy branch
+        // instead of stbi_load — the raw RGBA payload here is not a valid
+        // image container, and the stbi pre-validation guard would reject it.
         auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
-        appendInt32(buf, 0); // imageType = UNKNOWN (texb >= 3)
+        appendInt32(buf, -1); // imageType = UNKNOWN (texb >= 3)
         appendInt32(buf, 1); // mipmap count
         std::vector<uint8_t> pixels(4 * 4 * 4, 0xCC);
         appendMipmapV2(buf, 4, 4, pixels);
@@ -935,8 +938,11 @@ TEST_SUITE("WPTexImageParser") {
     }
 
     TEST_CASE("TEXB v4 header reads imageType and isVideoMp4") {
+        // imageType=UNKNOWN(-1) routes through the raw-copy branch (the raw
+        // RGBA payload here is not a valid image container, so the stbi
+        // pre-validation guard would otherwise reject it).
         auto buf = makeTexHeader(1, 1, 4, 0, 0, 4, 4, 4, 4, 1);
-        appendInt32(buf, 0); // imageType = UNKNOWN (texb >= 3)
+        appendInt32(buf, -1); // imageType = UNKNOWN (texb >= 3)
         appendInt32(buf, 0); // isVideoMp4 flag    (texb >= 4)
         appendInt32(buf, 1); // mipmap count
         appendInt32(buf, 4); // w
@@ -1492,6 +1498,149 @@ TEST_SUITE("WPTexImageParser") {
         WPTexImageParser parser(&vfs);
         auto             img = parser.Parse("hostile_count");
         CHECK(img == nullptr);
+    }
+
+    // -----------------------------------------------------------------------
+    // Fuzz-hardening bounds: image_count, mipmap_count, mip dims, cumulative
+    // byte budget, and stbi pre-validation.  Each test pins one rejection
+    // branch in Parse().  Real WP textures sit well under all caps (≤6 slots,
+    // ≤13 mips, ≤4K per side); hostile inputs trip the cap and return nullptr
+    // without ever allocating the budget they declared.
+    // -----------------------------------------------------------------------
+
+    TEST_CASE("Plausibility cap on image_count rejects large stream-fitting values") {
+        // 32 slots × 1 byte/slot = 32 bytes — fits the stream, so the
+        // pre-existing CountFitsStream check accepts it.  The new plausibility
+        // cap (16 slots) is what rejects this — WP ships at most 6 (cube map).
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, /*count=*/32);
+        // Pad with bytes so CountFitsStream(file, 32) succeeds.
+        for (int i = 0; i < 256; i++) buf.push_back(0);
+        VFS vfs;
+        mountTex(vfs, "many_slots", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("many_slots") == nullptr);
+    }
+
+    TEST_CASE("Plausibility cap on mipmap_count rejects large stream-fitting values") {
+        // 64 mips × 1 byte = 64 bytes — fits stream.  Plausibility cap (24)
+        // rejects — WP ships at most 13 mips (log2(8K)).
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*mipmap_count=*/64);
+        for (int i = 0; i < 512; i++) buf.push_back(0);
+        VFS vfs;
+        mountTex(vfs, "many_mips", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("many_mips") == nullptr);
+    }
+
+    TEST_CASE("Mip dimension cap rejects oversized width/height") {
+        // mipmap.width = 32768 exceeds the 16384 plausibility cap.
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);                                    // mipmap_count
+        appendInt32(buf, /*mip width=*/32768);
+        appendInt32(buf, /*mip height=*/4);
+        appendInt32(buf, /*src_size=*/16);
+        for (int i = 0; i < 16; i++) buf.push_back(0);
+        VFS vfs;
+        mountTex(vfs, "huge_w", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("huge_w") == nullptr);
+    }
+
+    TEST_CASE("Mip dimension cap accepts 16384 (boundary)") {
+        // 16384 × 1 is right at the cap and must NOT be rejected by the
+        // dimension guard — the cap is `>`, not `>=`.  Parse succeeds via the
+        // raw-copy path; the only assertion is no-crash + no-OOM (proved by
+        // reaching here).
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 16384, 1, 16384, 1, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 16384);
+        appendInt32(buf, 1);
+        appendInt32(buf, 4);
+        for (int i = 0; i < 4; i++) buf.push_back(0);
+        VFS vfs;
+        mountTex(vfs, "edge_dim", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("edge_dim");
+        REQUIRE(img != nullptr);
+        CHECK(img->slots[0].width == 16384);
+        CHECK(img->slots[0].height == 1);
+    }
+
+    TEST_CASE("Cumulative-byte cap rejects N mips × per-mip cap") {
+        // 8 mips × 200 MB lz4 decompressed_size each = 1.6 GB cumulative — the
+        // per-allocation cap (256 MB) lets each mip past on its own, but the
+        // total exceeds the 1 GiB cumulative cap.  Verifies the cumulative
+        // budget gate.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*mipmap_count=*/8);
+        for (int i = 0; i < 8; i++) {
+            appendInt32(buf, 4);                              // mip width
+            appendInt32(buf, 4);                              // mip height
+            appendInt32(buf, 1);                              // LZ4 compressed
+            appendInt32(buf, 200 * 1024 * 1024);              // decompressed_size = 200MB
+            appendInt32(buf, 16);                             // src_size
+            for (int j = 0; j < 16; j++) buf.push_back(0);
+        }
+        VFS vfs;
+        mountTex(vfs, "cumulative", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("cumulative") == nullptr);
+    }
+
+    TEST_CASE("stbi pre-validation rejects embedded TGA with huge declared dims") {
+        // 10000×10000 TGA inside an otherwise-empty .tex: stbi would allocate
+        // ~400MB output before failing on truncated input.  The pre-validation
+        // guard rejects up front by reading stbi_info_from_memory.
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*imageType=*/17);  // TARGA
+        appendInt32(buf, /*mipmap_count=*/1);
+        // TGA header: 18 bytes, declares 10000x10000, 24bpp uncompressed.
+        std::vector<uint8_t> tga(18, 0);
+        tga[2]  = 2;  // image type: uncompressed true-color
+        tga[12] = 0x10; tga[13] = 0x27;  // width = 10000 (little-endian)
+        tga[14] = 0x10; tga[15] = 0x27;  // height = 10000
+        tga[16] = 24;  // bpp
+        appendMipmapV2(buf, /*mip_w=*/4, /*mip_h=*/4, tga);
+        VFS vfs;
+        mountTex(vfs, "stbi_huge_dim", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("stbi_huge_dim") == nullptr);
+    }
+
+    TEST_CASE("stbi pre-validation rejects embedded TGA exceeding mip container dims") {
+        // 100×100 TGA in a 4×4 mip container — the parser overwrites
+        // mipmap.size with stbi's w*h*4, so silently accepting the larger
+        // embedded image would propagate a mismatched-dim mip downstream.
+        // Reject at the parser instead.
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*imageType=*/17);  // TARGA
+        appendInt32(buf, /*mipmap_count=*/1);
+        std::vector<uint8_t> tga(18, 0);
+        tga[2]  = 2;
+        tga[12] = 100; tga[13] = 0;
+        tga[14] = 100; tga[15] = 0;
+        tga[16] = 24;
+        appendMipmapV2(buf, /*mip_w=*/4, /*mip_h=*/4, tga);
+        VFS vfs;
+        mountTex(vfs, "stbi_mip_mismatch", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("stbi_mip_mismatch") == nullptr);
+    }
+
+    TEST_CASE("stbi pre-validation rejects malformed embedded image (info-fails)") {
+        // Bytes that don't decode as any image format stbi understands: the
+        // pre-validation gate rejects rather than letting stbi do partial
+        // allocation work before failing.
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*imageType=*/17);  // TARGA
+        appendInt32(buf, /*mipmap_count=*/1);
+        std::vector<uint8_t> garbage(64, 0xAB);  // not a valid image header
+        appendMipmapV2(buf, /*mip_w=*/4, /*mip_h=*/4, garbage);
+        VFS vfs;
+        mountTex(vfs, "stbi_garbage", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("stbi_garbage") == nullptr);
     }
 
 } // TEST_SUITE

@@ -44,8 +44,18 @@ TEST_SUITE("WPTextRenderer GlyphCache") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
+        // Start from a clean global state.  Prior tests leave FT_Face
+        // entries in the LRU keyed on raw pointers into their fontData
+        // buffers — buffers that go out of scope when the prior test
+        // returns.  When a fresh loadHostFont() call reuses one of those
+        // freed slabs at the same address and size (malloc free-list
+        // coincidence), acquireFaceLocked would hit a STALE face built
+        // from the prior caller's (possibly corrupt) bytes, every glyph
+        // load would fail, and the cache size + hits would stay at zero.
+        // Shutdown drops every cached face, so the new fontData definitely
+        // misses and gets a freshly created FT_Face.
+        WPTextRenderer::Shutdown();
         WPTextRenderer::Init();
-        WPTextRenderer::TEST_clearGlyphCache();
         // First RenderText — all glyphs cold miss.
         (void)WPTextRenderer::RenderText(
             fontData, 16.f, "AB", 64, 32, "center", "center", 0);
@@ -73,8 +83,12 @@ TEST_SUITE("WPTextRenderer GlyphCache") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
+        // Shutdown drops every FT_Face left over from prior tests so the
+        // face cache cannot return a stale entry whose pointer-keyed
+        // bytes were freed (see the long comment in the "re-rendering"
+        // case for the malloc-address-reuse mechanic).
+        WPTextRenderer::Shutdown();
         WPTextRenderer::Init();
-        WPTextRenderer::TEST_clearGlyphCache();
         (void)WPTextRenderer::RenderText(
             fontData, 16.f, "AAAAA", 64, 32, "center", "center", 0);
         CHECK(WPTextRenderer::TEST_getGlyphCacheHits() >= 4);
@@ -92,8 +106,11 @@ TEST_SUITE("WPTextRenderer GlyphCache") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
+        // Shutdown drops every FT_Face left over from prior tests so the
+        // face cache cannot return a stale entry (see the long comment
+        // in the "re-rendering" case).
+        WPTextRenderer::Shutdown();
         WPTextRenderer::Init();
-        WPTextRenderer::TEST_clearGlyphCache();
         // Build a UTF-8 string of ~300 distinct codepoints starting at 'A'.
         // U+0041..U+0170 (Latin-A + Latin Ext-A) — many of which are in a
         // typical font.  Some may collapse to a single FT glyph index in
@@ -143,8 +160,11 @@ TEST_SUITE("WPTextRenderer GlyphCache") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
+        // Shutdown drops every FT_Face left over from prior tests so the
+        // face cache cannot return a stale entry (see the long comment
+        // in the "re-rendering" case).
+        WPTextRenderer::Shutdown();
         WPTextRenderer::Init();
-        WPTextRenderer::TEST_clearGlyphCache();
         // Each std::string copy has a unique .data() pointer — that's
         // the face-cache key.  The test renders 'X' with each distinct
         // buffer, then re-renders with the FIRST buffer.
@@ -197,8 +217,11 @@ TEST_SUITE("WPTextRenderer GlyphCache") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
+        // Shutdown drops every FT_Face left over from prior tests so the
+        // face cache cannot return a stale entry (see the long comment
+        // in the "re-rendering" case).
+        WPTextRenderer::Shutdown();
         WPTextRenderer::Init();
-        WPTextRenderer::TEST_clearGlyphCache();
         (void)WPTextRenderer::RenderText(
             fontData, 16.f, "AB", 64, 32, "center", "center", 0);
         CHECK(WPTextRenderer::TEST_getGlyphCacheSize() >= 1);
