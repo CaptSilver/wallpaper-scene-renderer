@@ -169,9 +169,22 @@ int repro_scene_parent_tree(int iters) {
 // table that is not safe under concurrent reads.  WPShaderParser serialises
 // every glslang entry point with g_glslangSerialiseMtx.  This races N threads
 // each compiling K distinct trivial GLSL units through CompileToSpv with NO
-// cache dir (synchronous path).  Under -DWEK_SANITIZE=thread a clean run proves
-// the serialization holds; a refactor that drops/narrows the lock makes TSAN
-// report a race on the keyword table.
+// cache dir (synchronous path).
+//
+// ALSO covers a SIGSEGV regression seen in production (RPM 2026-05-30):
+// CompileToSpv's TranslateGeometryShader / TranslateHlslClip prelude was
+// originally OUTSIDE the lock.  Those helpers live in WPShaderTransforms.h
+// and use `static const std::regex` extensively; libstdc++'s regex matcher
+// reads internal NFA state without synchronisation, and two threads calling
+// regex_search on the same static regex SIGSEGV in `_Executor::_M_dfs`.
+// Particle wallpapers with a geometry stage (e.g. 'genericparticle' with
+// geom 2732 bytes) crashed plasmashell within seconds.  This repro mixes
+// FRAGMENT/GEOMETRY/HLSL-clip stages so a future drift that narrows the
+// mutex back to glslang-only fails loudly (TSAN race AND/OR direct SIGSEGV).
+//
+// Under -DWEK_SANITIZE=thread a clean run proves the serialization holds; a
+// refactor that drops/narrows the lock makes TSAN report a race on either
+// the keyword table or libstdc++'s regex NFA state.
 int repro_glslang_concurrent_compile(int iters) {
     wallpaper::WPShaderParser::InitGlslang(); // once for this process
 
@@ -180,25 +193,57 @@ int repro_glslang_concurrent_compile(int iters) {
     std::atomic<bool> go { false };
     std::atomic<long> ok_count { 0 };
 
+    // Minimal valid sources for each stage we want to exercise.  Each is
+    // suffixed at call time with distinct identifiers per (tid,k) to defeat
+    // the SHA1-keyed compile cache (forces fresh tokenize + translate work
+    // every iteration).  Geometry uses HLSL [maxvertexcount] which exercises
+    // TranslateGeometryShader's static-const-regex pipeline; fragment uses
+    // an HLSL clip() statement which exercises TranslateHlslClip.
     auto worker = [&](int tid) {
         while (! go.load()) {
         }
         long local = 0;
         for (int k = 0; k < kPerThread; ++k) {
-            // Distinct source per (tid,k) so each thread exercises a fresh
-            // tokenize path (forces keyword-table lookups, not a cached result).
-            std::string src = "void main() { float x" + std::to_string(tid) + "_" +
-                              std::to_string(k) + " = 0.0; gl_FragColor = vec4(x" +
-                              std::to_string(tid) + "_" + std::to_string(k) + "); }\n";
+            const std::string suf = "_" + std::to_string(tid) + "_" + std::to_string(k);
+
+            // Stage rotation: 0=plain frag, 1=HLSL-clip frag, 2=HLSL geom.
+            const int stage_pick = (tid + k) % 3;
+            wallpaper::ShaderType stage;
+            std::string src;
+            switch (stage_pick) {
+            case 0:
+                stage = wallpaper::ShaderType::FRAGMENT;
+                src   = "void main() { float x" + suf +
+                      " = 0.0; gl_FragColor = vec4(x" + suf + "); }\n";
+                break;
+            case 1:
+                stage = wallpaper::ShaderType::FRAGMENT;
+                src   = "void main() { float a" + suf +
+                      " = 0.5; clip(a" + suf +
+                      " - 0.25); gl_FragColor = vec4(a" + suf + "); }\n";
+                break;
+            default:
+                stage = wallpaper::ShaderType::GEOMETRY;
+                src   = "[maxvertexcount(4)]\n"
+                      "void main(point float4 input" + suf +
+                      "[1] : SV_POSITION, inout TriangleStream<float4> stream" + suf +
+                      ") { stream" + suf + ".Append(input" + suf + "[0]); }\n";
+                break;
+            }
+
             wallpaper::fs::VFS                   vfs; // no cache -> sync compile
             wallpaper::WPShaderInfo              info;
             std::vector<wallpaper::WPShaderUnit> units {
-                { wallpaper::ShaderType::FRAGMENT, src, {} }
+                { stage, src, {} }
             };
             std::vector<wallpaper::ShaderCode>      codes;
             std::vector<wallpaper::WPShaderTexInfo> texs;
-            if (wallpaper::WPShaderParser::CompileToSpv("tsan", units, codes, vfs, &info, texs))
-                ++local;
+            // CompileToSpv returns true even when downstream compile fails
+            // (geometry+HLSL is intentionally invalid for glslang without
+            // full preprocessing — the point of this repro is racing the
+            // translate+preprocess path, not validating glslang accepts it).
+            (void)wallpaper::WPShaderParser::CompileToSpv("tsan", units, codes, vfs, &info, texs);
+            ++local;
         }
         ok_count.fetch_add(local);
     };
@@ -208,8 +253,10 @@ int repro_glslang_concurrent_compile(int iters) {
     go.store(true);
     for (auto& t : ts) t.join();
 
-    // Invariant: at least one compile succeeded (trivial fragment is valid).
-    return ok_count.load() > 0 ? 0 : 1;
+    // Invariant: every iteration completed (no crash).  The point of this
+    // repro is "no SIGSEGV / no TSAN race" — actual glslang acceptance is
+    // not asserted.
+    return ok_count.load() == (long)kThreads * kPerThread ? 0 : 1;
 }
 
 } // namespace

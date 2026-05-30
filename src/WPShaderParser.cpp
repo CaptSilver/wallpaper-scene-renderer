@@ -921,23 +921,39 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     WEK_PROFILE_SCOPE("WPShaderParser::CompileToSpv");
     (void)texs;
 
-    // Translate WE geometry shader syntax to GLSL before preprocessing.
-    // Fragment units also pick up the HLSL clip()-statement rewrite so the
-    // volumetric-fog shader family (and any other material that ships HLSL
-    // clip()) translates cleanly.
-    for (auto& unit : units) {
-        if (unit.stage == ShaderType::GEOMETRY) {
-            unit.src = TranslateGeometryShader(unit.src);
-        } else if (unit.stage == ShaderType::FRAGMENT) {
-            unit.src = TranslateHlslClip(unit.src);
-        }
-    }
-
     {
-        // Preprocessor() ultimately invokes glslang::TShader::preprocess, which
-        // holds non-thread-safe static keyword tables.  See g_glslangSerialiseMtx
-        // declaration above.
+        // Single lock around BOTH the HLSL→GLSL translator passes AND the
+        // Preprocessor — both share the same root concurrency hazard:
+        //  - TranslateGeometryShader / TranslateHlslClip are in WPShaderTransforms.h
+        //    and use `static const std::regex` extensively. libstdc++'s regex
+        //    matcher reads internal NFA state without synchronisation; two
+        //    threads calling regex_search on the same static regex can read
+        //    freed `_NFA_base::_M_sub_count` and SIGSEGV in `_Executor::_M_dfs`.
+        //    Reproduces on particle wallpapers with geometry shaders
+        //    (e.g. 'genericparticle' with geom stage 2732 bytes) under
+        //    concurrent CompileToSpv calls from multiple ParseParticleObj
+        //    invocations.
+        //  - Preprocessor() invokes glslang::TShader::preprocess, which holds
+        //    non-thread-safe static keyword tables.
+        // See the g_glslangSerialiseMtx declaration block above for the full
+        // race rationale.  The translator + preprocessor block was scoped to
+        // the lock together because both surfaces share the same compilation
+        // critical section; splitting them lets CompileToSpv from parallel
+        // ParseParticleObj calls race in TranslateGeometryShader.
         std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+
+        // Translate WE geometry shader syntax to GLSL before preprocessing.
+        // Fragment units also pick up the HLSL clip()-statement rewrite so the
+        // volumetric-fog shader family (and any other material that ships HLSL
+        // clip()) translates cleanly.
+        for (auto& unit : units) {
+            if (unit.stage == ShaderType::GEOMETRY) {
+                unit.src = TranslateGeometryShader(unit.src);
+            } else if (unit.stage == ShaderType::FRAGMENT) {
+                unit.src = TranslateHlslClip(unit.src);
+            }
+        }
+
         std::for_each(units.begin(), units.end(), [shader_info](auto& unit) {
             unit.src =
                 Preprocessor(unit.src, unit.stage, shader_info->combos, unit.preprocess_info);
