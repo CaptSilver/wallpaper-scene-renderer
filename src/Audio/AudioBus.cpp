@@ -175,6 +175,27 @@ bool openCaptureLocked() {
     return true;
 }
 
+// ── Process-exit teardown guard ──────────────────────────────────────────────
+// Without this, a process that exits without explicitly dropping every
+// subscriber (sceneviewer cut short by --screenshot exit; plasmashell
+// killed mid-load; any unit test that leaks an AudioBus handle) hits
+// std::thread::~thread on the still-joinable g_process_thread inside
+// __run_exit_handlers, which calls std::terminate() and aborts the
+// process.  Reproducer (the original symptom):
+//     terminate called without an active exception
+//     #7 std::thread::~thread (this=g_process_thread) at std_thread.h:184
+//     #8 __run_exit_handlers
+//
+// The guard's destructor runs in reverse declaration order, so since it
+// is declared AFTER g_process_thread in this TU it runs FIRST at exit —
+// teardownAll() joins the thread cleanly before g_process_thread's own
+// destructor fires.  Same-TU static destruction order is well-defined by
+// the standard, so this is reliable.
+struct AudioBusShutdownGuard {
+    ~AudioBusShutdownGuard() { teardownAll(); }
+};
+static AudioBusShutdownGuard g_shutdown_guard;
+
 } // namespace
 
 std::shared_ptr<AudioAnalyzer> AudioBus::Acquire(bool wantSystemCapture) {
