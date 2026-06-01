@@ -371,7 +371,7 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
             "    return light;\n"
             "}\n";
 
-        static const std::regex re_require(R"((^|\r?\n)#require (.+)(\r?\n))");
+        thread_local const std::regex re_require(R"((^|\r?\n)#require (.+)(\r?\n))");
         std::smatch             m;
         std::string             tmp = src;
         std::string             result;
@@ -416,7 +416,7 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
     // (?:^|\s) lets us match "out vec2 foo;" at column 0 (no qualifier) as well as
     // "smooth out vec4 foo;" where the qualifier precedes the keyword.
     // The optional (\[\])? handles geometry shader array inputs (e.g., "in vec4 v_Color[];").
-    static const std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
+    thread_local const std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
                                   std::regex::ECMAScript | std::regex::multiline);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
          it != std::sregex_iterator();
@@ -429,7 +429,7 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
         }
     }
 
-    static const std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))",
+    thread_local const std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))",
                                    std::regex::ECMAScript);
     for (auto it = std::sregex_iterator(res.begin(), res.end(), re_tex);
          it != std::sregex_iterator();
@@ -454,12 +454,12 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
 
     // Constant-pattern varying-swap regexes hoisted to compile once, not per
     // varying inside the loops below (cold-load / wallpaper-switch path).
-    static const std::regex re_out_to_in(R"(\s*out\s)");
-    static const std::regex re_in_to_out(R"(\s*in\s)");
-    static const std::regex re_gs_in_decl(R"(\bin\s+([\w]+)\s+(v_\w+))");
-    static const std::regex re_gs_unsized(R"((\w)\s*;)");
-    static const std::regex re_strip_gs_prefix(R"(\bgs_in_(v_\w+))");
-    static const std::regex re_strip_array(R"(\[\]\s*;)");
+    thread_local const std::regex re_out_to_in(R"(\s*out\s)");
+    thread_local const std::regex re_in_to_out(R"(\s*in\s)");
+    thread_local const std::regex re_gs_in_decl(R"(\bin\s+([\w]+)\s+(v_\w+))");
+    thread_local const std::regex re_gs_unsized(R"((\w)\s*;)");
+    thread_local const std::regex re_strip_gs_prefix(R"(\bgs_in_(v_\w+))");
+    thread_local const std::regex re_strip_array(R"(\[\]\s*;)");
 
     if (pre != nullptr) {
         for (auto& [k, v] : pre->output) {
@@ -497,7 +497,7 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
             }
         }
     }
-    static const std::regex re_hold(SHADER_PLACEHOLD.data());
+    thread_local const std::regex re_hold(SHADER_PLACEHOLD.data());
 
     // LOG_INFO("insert: %s", insert_str.c_str());
     // return std::regex_replace(
@@ -561,7 +561,7 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
 // the parser entry points).  Two third-party / standard-library races would
 // otherwise fire under parallel async compilation:
 //
-//   1. libstdc++ std::regex_search with a `static const std::regex` shared between
+//   1. libstdc++ std::regex_search with a `thread_local const std::regex` shared between
 //      threads can read freed NFA state in `_NFA_base::_M_sub_count`.  This is
 //      observable in WPShaderTransforms.h's FixImplicitConversions.
 //   2. glslang's keyword scanner uses an internal `unordered_set<const char*>` that
@@ -925,7 +925,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         // Single lock around BOTH the HLSL→GLSL translator passes AND the
         // Preprocessor — both share the same root concurrency hazard:
         //  - TranslateGeometryShader / TranslateHlslClip are in WPShaderTransforms.h
-        //    and use `static const std::regex` extensively. libstdc++'s regex
+        //    and use `thread_local const std::regex` extensively. libstdc++'s regex
         //    matcher reads internal NFA state without synchronisation; two
         //    threads calling regex_search on the same static regex can read
         //    freed `_NFA_base::_M_sub_count` and SIGSEGV in `_Executor::_M_dfs`.

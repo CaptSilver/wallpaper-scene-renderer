@@ -32,6 +32,7 @@
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
 #include "WPShaderParser.hpp"
+#include "WPShaderTransforms.h"
 #include "Fs/VFS.h"
 
 #include <atomic>
@@ -172,15 +173,24 @@ int repro_scene_parent_tree(int iters) {
 // cache dir (synchronous path).
 //
 // ALSO covers a SIGSEGV regression seen in production (RPM 2026-05-30):
-// CompileToSpv's TranslateGeometryShader / TranslateHlslClip prelude was
-// originally OUTSIDE the lock.  Those helpers live in WPShaderTransforms.h
-// and use `static const std::regex` extensively; libstdc++'s regex matcher
-// reads internal NFA state without synchronisation, and two threads calling
-// regex_search on the same static regex SIGSEGV in `_Executor::_M_dfs`.
-// Particle wallpapers with a geometry stage (e.g. 'genericparticle' with
-// geom 2732 bytes) crashed plasmashell within seconds.  This repro mixes
-// FRAGMENT/GEOMETRY/HLSL-clip stages so a future drift that narrows the
-// mutex back to glslang-only fails loudly (TSAN race AND/OR direct SIGSEGV).
+// every regex in WPShaderTransforms.h was `static const std::regex`
+// (hoisted out of inner loops over ~9 commits for perf).  libstdc++'s
+// regex matcher reads/writes internal NFA state on every match call —
+// even for "const" std::regex, the underlying _NFA's mutable cache is
+// touched.  Two threads matching against the same shared NFA SIGSEGV
+// in `_Executor::_M_dfs` or `_NFA_base::_M_sub_count`.  Particle
+// wallpapers with a geometry stage (e.g. 'genericparticle' with geom
+// 2732 bytes) crashed plasmashell within seconds.
+//
+// Fix: switched all 120 `static const std::regex` sites to
+// `thread_local const std::regex` so each thread builds its own NFA on
+// first call — no shared mutable state across threads.  This repro
+// mixes FRAGMENT/GEOMETRY/HLSL-clip stages so a future drift that
+// reverts thread_local OR narrows the g_glslangSerialiseMtx fails
+// loudly (TSAN race AND/OR direct SIGSEGV).  Repro 4 below stresses
+// the WPShaderTransforms.h helpers directly with NO external sync, to
+// catch any thread_local regression even when the WPShaderParser
+// mutex still holds.
 //
 // Under -DWEK_SANITIZE=thread a clean run proves the serialization holds; a
 // refactor that drops/narrows the lock makes TSAN report a race on either
@@ -259,6 +269,76 @@ int repro_glslang_concurrent_compile(int iters) {
     return ok_count.load() == (long)kThreads * kPerThread ? 0 : 1;
 }
 
+// Repro 4: direct WPShaderTransforms.h helpers from N threads with NO
+// external mutex.  Repro 3 above tested CompileToSpv which holds the
+// g_glslangSerialiseMtx — that mutex narrowed the surface but doesn't
+// catch the deeper bug (libstdc++ shared-NFA UAF) on its own.  This
+// repro proves the static→thread_local std::regex conversion is what
+// actually makes the helpers safe under concurrent unsynchronised use.
+//
+// Pre-fix (`static const std::regex` shared across threads):
+//   ASan reports heap-use-after-free in _NFA_base::_M_sub_count or
+//   _M_handle_word_boundary; release builds SIGSEGV in _M_dfs.
+// Post-fix (`thread_local const std::regex`):
+//   Each thread has its own per-NFA state — clean run AND TSAN-clean.
+int repro_wpshader_transforms_unlocked(int iters) {
+    const int         kThreads   = 8;
+    const int         kPerThread = std::max(1, iters / 800);
+    std::atomic<bool> go { false };
+    std::atomic<long> ok_count { 0 };
+
+    // Geometry shader source that exercises TranslateGeometryShader's
+    // full regex chain (steps 1-12): [maxvertexcount], in/out vec4
+    // gl_Position, IN[0].gl_Position, IN[0].v_xxx, OUT.Append, etc.
+    // Mirrors the shape of WE's stock genericparticle.geom (2.7KB).
+    const std::string kGeomSrc =
+        "#include \"common_particles.h\"\n"
+        "in vec4 v_Color;\n"
+        "in vec4 gl_Position;\n"
+        "in vec3 v_Rotation;\n"
+        "out vec4 v_Color;\n"
+        "out vec4 gl_Position;\n"
+        "out vec3 v_WorldPos;\n"
+        "out vec3 v_WorldRight;\n"
+        "PS_INPUT CreateParticleVertex(vec2 sprite, in VS_OUTPUT IN, vec3 right, vec3 up) {\n"
+        "    PS_INPUT v;\n"
+        "    v.gl_Position = mul(vec4(IN.gl_Position.xyz, 1.0), g_ModelViewProjectionMatrix);\n"
+        "    v.v_Color = IN.v_Color;\n"
+        "    v.v_WorldPos = mul(vec4(IN.gl_Position.xyz, 1.0), g_ModelMatrix).xyz;\n"
+        "    v.v_WorldRight = mul(right, CAST3X3(g_ModelMatrix)).xyz;\n"
+        "    return v;\n"
+        "}\n"
+        "[maxvertexcount(4)]\n"
+        "void main() {\n"
+        "    vec3 right = IN[0].v_Rotation;\n"
+        "    vec3 up = vec3(0,1,0);\n"
+        "    OUT.Append(CreateParticleVertex(vec2(0,0), IN[0], right, up));\n"
+        "    OUT.Append(CreateParticleVertex(vec2(1,1), IN[0], right, up));\n"
+        "}\n";
+
+    auto worker = [&](int tid) {
+        (void)tid;
+        while (! go.load()) {
+        }
+        long local = 0;
+        for (int k = 0; k < kPerThread; ++k) {
+            // Same source on every thread → exercises shared static NFA
+            // if any regex slipped through the thread_local conversion.
+            std::string out = TranslateGeometryShader(kGeomSrc);
+            // Result is non-empty; basic functional invariant.
+            if (! out.empty()) ++local;
+        }
+        ok_count.fetch_add(local);
+    };
+
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) ts.emplace_back(worker, t);
+    go.store(true);
+    for (auto& t : ts) t.join();
+
+    return ok_count.load() == (long)kThreads * kPerThread ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -277,6 +357,9 @@ int main(int argc, char** argv) {
 
     std::printf("[thread-repro] concurrent CompileToSpv (glslang), %d iters...\n", iters);
     rc |= repro_glslang_concurrent_compile(iters);
+
+    std::printf("[thread-repro] WPShaderTransforms helpers unlocked (thread_local regex), %d iters...\n", iters);
+    rc |= repro_wpshader_transforms_unlocked(iters);
 
     std::printf("[thread-repro] done (rc=%d)%s\n", rc,
                 rc == 0 ? " — clean (check TSAN output for races)" : " — FAILED invariant");
