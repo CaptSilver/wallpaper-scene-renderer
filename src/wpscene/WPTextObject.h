@@ -24,6 +24,13 @@ public:
     int32_t              parent_id { -1 };
     std::string          name;
     std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
+    // True when `origin` is a property script (e.g. 3363252053's clock layers
+    // compute absolute scene coords as `scriptProperties.x * canvasSize.x`).
+    // Such layers must NOT inherit their parent's transform on the effect
+    // composite — the script already produces world-space coords, so re-applying
+    // the parent chain double-shifts them.  Static-origin text-effect layers
+    // (e.g. 3122339805's world clock) DO need the parent transform restored.
+    bool                 originIsScripted { false };
     std::array<float, 3> scale { 1.0f, 1.0f, 1.0f };
     std::array<float, 3> angles { 0.0f, 0.0f, 0.0f };
     std::array<float, 2> size { 2.0f, 2.0f };

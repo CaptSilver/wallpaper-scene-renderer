@@ -765,7 +765,7 @@ function _makeLayerProxy(name) {
     _woBaked: init.wo ? Vec3(init.wo[0], init.wo[1], init.wo[2]) : null,
     _wsBaked: init.ws ? Vec3(init.ws[0], init.ws[1], init.ws[2]) : null,
     visible: init.v, alpha: 1.0,
-    text: '', pointsize: init.ps || 0,
+    text: (init.text !== undefined ? init.text : ''), pointsize: init.ps || 0,
     name: name, _dirty: {}, _cmds: []
   } : { origin: Vec3(0,0,0), scale: Vec3(1,1,1),
         angles: Vec3(0,0,0), size: {x:0, y:0},

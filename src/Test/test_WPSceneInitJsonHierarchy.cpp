@@ -88,6 +88,50 @@ TEST_SUITE("WPSceneInitJson.Hierarchy") {
         CHECK(j["b"]["id"].get<int>() == 2);
     }
 
+    // A text layer's static text must travel into the init state so a script
+    // can read ANOTHER layer's text (thisScene.getLayer(name).text) before
+    // that layer ever runs a script.  Wallpaper 3122339805's world clock
+    // reads a "Time Difference" layer's "+1"; without the seed it read "" and
+    // the clock computed NaN -> "aN:aN:aN".
+    TEST_CASE("text layer emits its static text in the init state") {
+        Scene s;
+        auto  n = std::make_shared<SceneNode>();
+        n->ID() = 42;
+        s.nodeNameToId["Time Difference 1"] = 42;
+        s.nodeById[42]                      = n.get();
+        s.layerInitialStates["Time Difference 1"] = Scene::LayerInitialState {};
+        s.sceneGraph->AppendChild(n);
+        TextLayerInfo tl;
+        tl.id          = 42;
+        tl.currentText = "+1";
+        s.textLayers.push_back(tl);
+
+        auto j = json::parse(s.SerializeLayerInitialStates());
+        REQUIRE(j.contains("Time Difference 1"));
+        REQUIRE(j["Time Difference 1"].contains("text"));
+        CHECK(j["Time Difference 1"]["text"].get<std::string>() == "+1");
+    }
+
+    TEST_CASE("text layer with empty text omits the text field") {
+        // An empty seed is identical to the proxy's '' default, so don't bloat
+        // the JSON with it (matches the halign/valign/font non-empty gating).
+        Scene s;
+        auto  n = std::make_shared<SceneNode>();
+        n->ID() = 43;
+        s.nodeNameToId["Blank"] = 43;
+        s.nodeById[43]          = n.get();
+        s.layerInitialStates["Blank"] = Scene::LayerInitialState {};
+        s.sceneGraph->AppendChild(n);
+        TextLayerInfo tl;
+        tl.id          = 43;
+        tl.currentText = "";
+        s.textLayers.push_back(tl);
+
+        auto j = json::parse(s.SerializeLayerInitialStates());
+        REQUIRE(j.contains("Blank"));
+        CHECK_FALSE(j["Blank"].contains("text"));
+    }
+
     TEST_CASE("jsonParentId resolves pn when runtime SceneNode hierarchy is rewired") {
         // Regression for Floating Cat (3367988661): `Background` and
         // `Settings Container` declared `parent: 169` (Text Container) in

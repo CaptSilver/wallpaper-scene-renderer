@@ -94,9 +94,15 @@ std::string Scene::SerializeLayerInitialStates() const {
             // info entry.
             for (const auto& tl : textLayers) {
                 if (tl.id != idit->second) continue;
-                if (! tl.halign.empty())   entry["halign"] = tl.halign;
-                if (! tl.valign.empty())   entry["valign"] = tl.valign;
-                if (! tl.fontName.empty()) entry["font"]   = tl.fontName;
+                if (! tl.halign.empty())      entry["halign"] = tl.halign;
+                if (! tl.valign.empty())      entry["valign"] = tl.valign;
+                if (! tl.fontName.empty())    entry["font"]   = tl.fontName;
+                // Static text seed so a script that reads ANOTHER layer's text
+                // before that layer ever runs a script (e.g. a world clock
+                // reading a "Time Difference" layer's "+1") sees the real value
+                // instead of "".  Script-owned layers overwrite their own proxy
+                // text the first time they assign thisLayer.text.
+                if (! tl.currentText.empty()) entry["text"]   = tl.currentText;
                 break;
             }
         }

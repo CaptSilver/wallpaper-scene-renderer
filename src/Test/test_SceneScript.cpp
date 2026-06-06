@@ -16,6 +16,7 @@
 #include "ScriptDiagState.h"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
+#include "TextScriptResult.hpp"
 
 using scenebackend::CursorParallax;
 using scenebackend::drainExpiredLeaves;
@@ -671,6 +672,81 @@ TEST_SUITE("SceneScript Cursor Position") {
     }
 
 } // TEST_SUITE SceneScript Cursor Position
+
+// ------------------------------------------------------------------
+// Text update() return semantics: undefined / null means "keep current
+// text", NOT "set the layer to the literal word 'undefined'".  This mirrors
+// evaluateTextScripts() in SceneBackend.cpp, which feeds the script's return
+// value through wek::qml_helper::textUpdateResult().  Wallpapers rely on it:
+// a log window that appends once a second returns undefined on the in-between
+// ticks; a world-clock "month" layer returns months[getMonth()] which is
+// undefined the instant the index goes out of range.
+// ------------------------------------------------------------------
+TEST_SUITE("SceneScript text update result") {
+    using wek::qml_helper::textUpdateResult;
+
+    // Run a one-liner `update` body and hand its return value to the same guard
+    // production uses.
+    static std::optional<QString> evalUpdate(QJSEngine& engine, const char* body) {
+        QJSValue fn = engine.evaluate(QString("(function update(value) { %1 })").arg(body));
+        REQUIRE(fn.isCallable());
+        QJSValue result = fn.call({ QJSValue(QStringLiteral("CURRENT")) });
+        REQUIRE_FALSE(result.isError());
+        return textUpdateResult(result);
+    }
+
+    TEST_CASE("a real string return is applied") {
+        QJSEngine engine;
+        auto      out = evalUpdate(engine, "return '13:37:00';");
+        REQUIRE(out.has_value());
+        CHECK(*out == QStringLiteral("13:37:00"));
+    }
+
+    TEST_CASE("an explicit undefined return keeps the current text") {
+        QJSEngine engine;
+        CHECK_FALSE(evalUpdate(engine, "return undefined;").has_value());
+    }
+
+    TEST_CASE("falling off the end (no return) keeps the current text") {
+        // The Log-window pattern: only returns once the 1s timer elapses,
+        // otherwise the function ends with no return -> undefined.
+        QJSEngine engine;
+        CHECK_FALSE(evalUpdate(engine, "if (false) { return 'x'; }").has_value());
+    }
+
+    TEST_CASE("a null return keeps the current text") {
+        QJSEngine engine;
+        CHECK_FALSE(evalUpdate(engine, "return null;").has_value());
+    }
+
+    TEST_CASE("an out-of-range array index (months[NaN]) keeps the current text") {
+        // The World-Time "month" pattern: months[getMonth()] resolves to
+        // undefined whenever the index isn't 0..11, and that must not stamp
+        // "undefined" over the layer's existing month text.
+        QJSEngine engine;
+        CHECK_FALSE(evalUpdate(engine, "var m = ['Jan','Feb']; return m[NaN];").has_value());
+    }
+
+    TEST_CASE("an empty string return is applied (clears the layer)") {
+        // "" is a real value, distinct from undefined: a script that wants to
+        // blank the text must still be able to.
+        QJSEngine engine;
+        auto      out = evalUpdate(engine, "return '';");
+        REQUIRE(out.has_value());
+        CHECK(out->isEmpty());
+    }
+
+    TEST_CASE("numeric and boolean returns stringify (WE coerces to text)") {
+        QJSEngine engine;
+        auto      num = evalUpdate(engine, "return 42;");
+        REQUIRE(num.has_value());
+        CHECK(*num == QStringLiteral("42"));
+        auto bln = evalUpdate(engine, "return true;");
+        REQUIRE(bln.has_value());
+        CHECK(*bln == QStringLiteral("true"));
+    }
+
+} // TEST_SUITE SceneScript text update result
 
 // ------------------------------------------------------------------
 // input.cursorScreenPosition / event.screenPosition unit contract

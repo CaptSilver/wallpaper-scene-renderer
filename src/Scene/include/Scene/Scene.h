@@ -274,6 +274,12 @@ public:
     bool hasAudioReactiveParticles { false };
 
     std::vector<TextLayerInfo>         textLayers;
+    // Transform-only helper nodes (no mesh, never traversed) that carry a
+    // baked world transform so a non-effect child can recover its parent's
+    // position after that parent's live node was reset to identity for its own
+    // effect base pass.  Owned here for scene lifetime; children hold a raw
+    // m_parent pointer into them (see WPSceneParser attachTextNodeToScene).
+    std::vector<std::shared_ptr<SceneNode>> ownedProxyNodes;
     std::vector<SceneColorScript>      colorScripts;
     std::vector<ScenePropertyScript>   propertyScripts;
     std::vector<SceneShaderValueScript> shaderValueScripts;

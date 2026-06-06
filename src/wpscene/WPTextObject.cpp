@@ -10,6 +10,13 @@ bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
+    // A scripted origin ({script, scriptproperties, value}) drives the node's
+    // position at runtime — usually with absolute scene coords — so the effect
+    // composite must not also apply the parent transform.  See the field doc.
+    if (json.contains("origin") && json.at("origin").is_object() &&
+        json.at("origin").contains("script")) {
+        originIsScripted = true;
+    }
     GET_JSON_NAME_VALUE_NOWARN(json, "scale", scale);
     GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
     GET_JSON_NAME_VALUE_NOWARN(json, "size", size);

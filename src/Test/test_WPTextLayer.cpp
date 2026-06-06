@@ -3,6 +3,9 @@
 #include <string>
 #include <regex>
 
+#include "Fs/VFS.h"
+#include "wpscene/WPTextObject.h"
+
 // ===========================================================================
 // NBSP normalization — mirrors stripESModuleSyntax's first step
 // ===========================================================================
@@ -276,3 +279,54 @@ TEST_SUITE("Text scriptProperties extraction") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// originIsScripted — drives whether a text-effect layer inherits its parent's
+// transform.  A static origin (a plain "x y z" string / array) is authored
+// relative to the parent, so the effect composite must re-apply the parent
+// chain (3122339805's world clock).  A scripted origin already yields absolute
+// scene coords, so it must NOT (3363252053's clock layers).
+// ===========================================================================
+TEST_SUITE("WPTextObject.originIsScripted") {
+    using namespace wallpaper;
+
+    TEST_CASE("static string origin is not flagged as scripted") {
+        wpscene::WPTextObject obj;
+        fs::VFS               vfs;
+        nlohmann::json        j = { { "id", 1 }, { "origin", "-160 12 0" } };
+        REQUIRE(obj.FromJson(j, vfs));
+        CHECK_FALSE(obj.originIsScripted);
+    }
+
+    TEST_CASE("scripted origin object is flagged as scripted") {
+        wpscene::WPTextObject obj;
+        fs::VFS               vfs;
+        nlohmann::json        j = {
+            { "id", 2 },
+            { "origin",
+              { { "script", "export function update(v){ v.x = 0.5 * engine.canvasSize.x; return v; }" },
+                { "value", "-488 108 0" } } }
+        };
+        REQUIRE(obj.FromJson(j, vfs));
+        CHECK(obj.originIsScripted);
+    }
+
+    TEST_CASE("origin object WITHOUT a script is not flagged") {
+        // An origin object that only carries an animation/value (no script)
+        // still positions relative to the parent, so it must not be treated
+        // as absolute.
+        wpscene::WPTextObject obj;
+        fs::VFS               vfs;
+        nlohmann::json        j = { { "id", 3 }, { "origin", { { "value", "0 0 0" } } } };
+        REQUIRE(obj.FromJson(j, vfs));
+        CHECK_FALSE(obj.originIsScripted);
+    }
+
+    TEST_CASE("missing origin field is not flagged") {
+        wpscene::WPTextObject obj;
+        fs::VFS               vfs;
+        nlohmann::json        j = { { "id", 4 } };
+        REQUIRE(obj.FromJson(j, vfs));
+        CHECK_FALSE(obj.originIsScripted);
+    }
+}

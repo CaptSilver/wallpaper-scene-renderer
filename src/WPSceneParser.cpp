@@ -3673,19 +3673,43 @@ void assembleTextEffectChain(ParseContext&                           context,
         imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effctFinalMesh);
         imgEffectLayer->FinalNode().CopyTrans(*spNode);
         imgEffectLayer->FinalNode().SetVisibilityOwner(spNode.get());
+        // Restore the parent-group transform on the final composite, the same
+        // way image-effect layers do (SetInheritParent + a SetParentProxy
+        // carrying the parent's baked world transform — the live parent node
+        // may itself have been reset to identity for its own effect chain).
+        // Without this a text-effect layer authored RELATIVE to a parent
+        // container composites at its bare local origin near the scene corner
+        // (3122339805's world clock Time/Date landed bottom-left, off-screen).
+        //
+        // EXCEPTION: a script-driven origin already yields absolute scene
+        // coords (3363252053's clock layers do `scriptProperties.x *
+        // canvasSize.x`), so re-applying the parent chain would double-shift
+        // them — those stay disconnected.  Either way the base-pass mesh is
+        // reset to identity below so it fills the pingpong at the origin.
+        if (! textObj.originIsScripted && textObj.parent_id >= 0 &&
+            context.node_map.count(textObj.parent_id) > 0) {
+            imgEffectLayer->SetInheritParent(true);
+            if (context.original_world_transforms.count(textObj.parent_id)) {
+                auto proxy = std::make_shared<SceneNode>();
+                proxy->SetWorldTransform(context.original_world_transforms.at(textObj.parent_id));
+                imgEffectLayer->SetParentProxy(std::move(proxy));
+            }
+        }
+        // Bake THIS layer's authored world transform so non-effect text
+        // children (e.g. a clock's MINUTES/SECONDS nested under HOURS) can
+        // recover it — their live parent (this node) is reset to identity just
+        // below for the base pass, which would otherwise drag them to the
+        // scene origin.  Composed as parent_world * local, matching UpdateTrans.
+        if (textObj.parent_id >= 0 && context.original_world_transforms.count(textObj.parent_id)) {
+            context.original_world_transforms[textObj.id] =
+                context.original_world_transforms.at(textObj.parent_id) * spNode->GetLocalTrans();
+        } else {
+            context.original_world_transforms[textObj.id] = spNode->GetLocalTrans();
+        }
         spNode->CopyTrans(SceneNode());
         scene.cameras.at(nodeAddr)->AttatchImgEffect(imgEffectLayer);
         // Register for property script transform redirection.
         scene.nodeEffectLayerMap[spNode->ID()] = imgEffectLayer.get();
-        // NOTE: text-effect layers do NOT use SetInheritParent /
-        // SetParentProxy like image-effect layers do.  The text origin
-        // script (driver: 3363252053 Date layer) computes ABSOLUTE
-        // scene-ortho coordinates (e.g. `value.x = scriptProperties.x *
-        // engine.canvasSize.x`), so the final composite's authored local
-        // is already in world space.  Re-applying parent_chain would
-        // double-shift the composite into the wrong position.  Only the
-        // base-pass mesh (below) needs parent-chain disconnected so it
-        // fills the pingpong at identity.
     }
     scene.renderTargets[effect_ppong_a] = {
         .width      = static_cast<uint16_t>(w),
@@ -3836,6 +3860,19 @@ void attachTextNodeToScene(ParseContext& context, const wpscene::WPTextObject& t
         // (`disconnect_parent = isOffscreen || (hasEffect && !isCompose)`).
         if (hasEffect) {
             spNode->InheritParent(SceneNode());
+        } else if (context.scene->nodeEffectLayerMap.count(textObj.parent_id) &&
+                   context.original_world_transforms.count(textObj.parent_id)) {
+            // This (non-effect) child's parent IS an effect layer whose live
+            // node was reset to identity for its own base pass — so chaining
+            // through it lands the child at the scene origin (3122339805's
+            // world-clock MINUTES/SECONDS and month abbreviations).  Keep the
+            // AppendChild above for visibility inheritance (m_visibility_parent),
+            // but redirect the TRANSFORM parent to a proxy carrying the parent's
+            // baked authored world transform.
+            auto proxy = std::make_shared<SceneNode>();
+            proxy->SetWorldTransform(context.original_world_transforms.at(textObj.parent_id));
+            spNode->SetParent(proxy.get());
+            context.scene->ownedProxyNodes.push_back(std::move(proxy));
         }
     } else {
         context.scene->sceneGraph->AppendChild(spNode);

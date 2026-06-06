@@ -11,6 +11,7 @@
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneTimerBridge.h"
+#include "TextScriptResult.hpp"
 
 #include <QJSValueIterator>
 #include <QtGlobal>
@@ -4283,12 +4284,17 @@ void SceneObject::evaluateTextScripts() {
             }
             continue;
         }
-        QString newText = result.toString();
+        // WE text semantics: update() returning undefined/null means "keep the
+        // current text" — e.g. a log that only appends once a second returns
+        // nothing on the in-between ticks.  Stringifying that would stamp the
+        // literal word "undefined" onto the layer (the property paths above
+        // already guard the same way).
+        std::optional<QString> maybeText = wek::qml_helper::textUpdateResult(result);
         // Always log first 5 evals so we can tell from plasma's journal whether
         // the text script is firing at all, and whether it produces the same
         // string each call (showing as "no update" with no re-raster).
         if (s_textDebugCount <= 5) {
-            QString a = newText;
+            QString a = maybeText ? *maybeText : QStringLiteral("<no-change>");
             a.replace('\n', '\\');
             QString b = state.currentText;
             b.replace('\n', '\\');
@@ -4297,8 +4303,10 @@ void SceneObject::evaluateTextScripts() {
                      state.id,
                      qPrintable(a.left(80)),
                      qPrintable(b.left(80)),
-                     (int)(newText != state.currentText));
+                     (int)(maybeText && *maybeText != state.currentText));
         }
+        if (! maybeText) continue;
+        QString newText = *maybeText;
         if (newText != state.currentText) {
             if (s_textDiag) {
                 // Log the new value (truncated) — essential for blank-HUD
