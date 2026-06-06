@@ -5,6 +5,7 @@
 
 #include "Vulkan/TextureCacheDetail.hpp"
 
+using wallpaper::vulkan::detail::effectiveEvictionPersist;
 using wallpaper::vulkan::detail::parseQueryCapEnv;
 using wallpaper::vulkan::detail::selectEvictionVictims;
 
@@ -78,6 +79,65 @@ TEST_SUITE("TextureCache query-tex LRU policy") {
         const std::vector<uint64_t> ticks    = { 100, 200, 300, 400 };
         const std::vector<uint8_t>  persists = { 0, 0 };
         CHECK(selectEvictionVictims(ticks, persists, /*cap=*/1).empty());
+    }
+}
+
+// Generation protection: a query-tex requested during the current
+// render-graph compile is a LIVE render target (its image backs a framebuffer
+// bound by CustomShaderPass), so it must never be LRU-evicted regardless of
+// the soft cap — evicting one mid-scene destroyed an image still referenced by
+// CustomShaderPass::execute -> CmdBeginRenderPass (a use-after-free that
+// crashed plasmashell on wallpapers with more effect RTs than the cap).  Only
+// prior-generation (previous-scene) entries stay reclaimable.
+TEST_SUITE("TextureCache query-tex generation protection") {
+
+    TEST_CASE("current-generation entries are all protected") {
+        // Four non-persist entries, all requested in the current generation (7)
+        // → all live, so the effective persist mask protects every one.
+        const std::vector<uint8_t>  persist  = { 0, 0, 0, 0 };
+        const std::vector<uint64_t> last_gen = { 7, 7, 7, 7 };
+        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 7);
+        REQUIRE(mask.size() == 4);
+        for (auto m : mask) CHECK(m == 1u);
+    }
+
+    TEST_CASE("prior-generation entries stay reclaimable; live ones do not") {
+        // Current gen = 7.  Entries 0 and 2 are leftovers from scene gen 6
+        // (reclaimable); 1 and 3 are live this scene (protected).
+        const std::vector<uint8_t>  persist  = { 0, 0, 0, 0 };
+        const std::vector<uint64_t> last_gen = { 6, 7, 6, 7 };
+        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 7);
+        CHECK(mask[0] == 0u);
+        CHECK(mask[1] == 1u);
+        CHECK(mask[2] == 0u);
+        CHECK(mask[3] == 1u);
+    }
+
+    TEST_CASE("explicit persist wins regardless of generation") {
+        const std::vector<uint8_t>  persist  = { 1, 0 };
+        const std::vector<uint64_t> last_gen = { 3, 3 }; // both old (current=9)
+        const auto                  mask = effectiveEvictionPersist(persist, last_gen, 9);
+        CHECK(mask[0] == 1u); // explicit persist
+        CHECK(mask[1] == 0u); // old gen, not persist
+    }
+
+    TEST_CASE("a live scene larger than the cap evicts nothing (the crash fix)") {
+        // Five live effect RTs, soft cap 3.  Before the fix the LRU evicted the
+        // two coldest — both still bound to live pass framebuffers.  Now every
+        // entry is current-generation, the persist mask protects them all, and
+        // selectEvictionVictims returns no victims despite size > cap.
+        const std::vector<uint64_t> ticks    = { 1, 2, 3, 4, 5 };
+        const std::vector<uint8_t>  persist  = { 0, 0, 0, 0, 0 };
+        const std::vector<uint64_t> last_gen = { 2, 2, 2, 2, 2 };
+        const auto                  mask    = effectiveEvictionPersist(persist, last_gen, 2);
+        const auto                  victims = selectEvictionVictims(ticks, mask, /*cap=*/3);
+        CHECK(victims.empty());
+    }
+
+    TEST_CASE("mismatched view sizes return empty (defensive)") {
+        const std::vector<uint8_t>  persist  = { 0, 0, 0 };
+        const std::vector<uint64_t> last_gen = { 1, 1 };
+        CHECK(effectiveEvictionPersist(persist, last_gen, 1).empty());
     }
 }
 

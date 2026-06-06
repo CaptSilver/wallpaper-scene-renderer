@@ -1639,6 +1639,13 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     if (! m_inited) return;
     m_pass_loaded = false;
 
+    // Open a new query-tex generation before (re)building the passes.  Render
+    // targets queried by this compile are stamped live and protected from LRU
+    // eviction (they back the framebuffers built in CustomShaderPass::prepare,
+    // and evicting one mid-scene is a use-after-free); RTs left over from a
+    // previous scene fall to a prior generation and become reclaimable.
+    m_device->tex_cache().beginQueryGeneration();
+
     auto nodes             = rg.topologicalOrder();
     auto node_release_texs = rg.getLastReadTexs(nodes);
 

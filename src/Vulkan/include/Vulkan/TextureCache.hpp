@@ -65,6 +65,15 @@ public:
     std::optional<ImageParameters> Query(std::string_view key, TextureKey content_hash,
                                          bool persist = false);
 
+    // Open a new render-graph generation.  Query-texs requested after this
+    // call are stamped with the new generation; eviction never reclaims a
+    // current-generation entry, because those are live render targets still
+    // bound to this scene's pass framebuffers (evicting one is a
+    // use-after-free).  Call once per compileRenderGraph so prior-scene RTs
+    // become reclaimable while the live scene's RTs stay protected regardless
+    // of the soft cap.
+    void beginQueryGeneration() { ++m_query_generation; }
+
     void MarkShareReady(std::string_view key);
 
     void RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const;
@@ -112,6 +121,11 @@ private:
         // Bumped on Query hit AND at insert time.  Drives the non-persist
         // LRU eviction sort when m_query_texs grows past m_query_soft_cap.
         uint64_t lru_tick { 0 };
+        // Render-graph generation this entry was last requested in.  Eviction
+        // skips current-generation entries because they are live render
+        // targets bound to the active scene's pass framebuffers.  See
+        // beginQueryGeneration().
+        uint64_t last_gen { 0 };
     };
     std::vector<std::unique_ptr<QueryTex>> m_query_texs;
     Map<std::string, QueryTex*>            m_query_map;
@@ -120,6 +134,12 @@ private:
     // or insert.  Wraparound is theoretical — even at one Query() per
     // microsecond, uint64_t lasts ~580k years.
     uint64_t m_lru_clock { 0 };
+
+    // Bumped once per render-graph compile via beginQueryGeneration().  A
+    // query-tex whose last_gen equals this is live in the current scene and is
+    // never evicted, even above the soft cap; only prior-generation entries
+    // (left over from a previous scene) are reclaimable.
+    uint64_t m_query_generation { 0 };
 
     // Soft cap on m_query_texs growth.  Env-overridable via
     // WEK_TEXCACHE_QUERY_CAP (in [8, 4096]); default 64 covers measured

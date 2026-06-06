@@ -164,6 +164,26 @@ inline std::vector<std::size_t> selectEvictionVictims(std::span<const std::uint6
     return victims;
 }
 
+// Combine each query-tex's explicit persist flag with current-generation
+// liveness into the effective persist mask fed to selectEvictionVictims.  A
+// query-tex requested during the current render-graph generation is a LIVE
+// render target — its image backs a framebuffer bound by CustomShaderPass, so
+// evicting it is a use-after-free however cold its lru_tick looks.  Entry i is
+// protected iff it is already persist OR its last_gen == current_gen; only
+// prior-generation (previous-scene) entries stay eligible for reclaim.  Pure
+// so it is unit-testable without a live VkDevice.  Size mismatch → empty
+// (defensive; selectEvictionVictims then also returns empty).
+inline std::vector<std::uint8_t> effectiveEvictionPersist(std::span<const std::uint8_t>  persist,
+                                                          std::span<const std::uint64_t> last_gen,
+                                                          std::uint64_t current_gen) {
+    if (persist.size() != last_gen.size()) return {};
+    std::vector<std::uint8_t> out(persist.size());
+    for (std::size_t i = 0; i < persist.size(); ++i) {
+        out[i] = (persist[i] || last_gen[i] == current_gen) ? std::uint8_t { 1 } : std::uint8_t { 0 };
+    }
+    return out;
+}
+
 } // namespace detail
 } // namespace vulkan
 } // namespace wallpaper

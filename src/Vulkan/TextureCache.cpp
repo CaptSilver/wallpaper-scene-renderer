@@ -744,13 +744,22 @@ void TextureCache::evictColdQueryTexs() {
     // Build parallel lru_tick + persist views over m_query_texs so the
     // selection helper stays pure (testable without a live VkDevice).
     std::vector<uint64_t> ticks;
-    std::vector<uint8_t>  persists;
+    std::vector<uint8_t>  persist_flags;
+    std::vector<uint64_t> last_gens;
     ticks.reserve(m_query_texs.size());
-    persists.reserve(m_query_texs.size());
+    persist_flags.reserve(m_query_texs.size());
+    last_gens.reserve(m_query_texs.size());
     for (const auto& q : m_query_texs) {
         ticks.push_back(q->lru_tick);
-        persists.push_back(q->persist ? 1u : 0u);
+        persist_flags.push_back(q->persist ? 1u : 0u);
+        last_gens.push_back(q->last_gen);
     }
+    // Current-generation entries are live render targets in this scene (still
+    // bound to a pass framebuffer); evicting one destroys an image still
+    // referenced by CustomShaderPass::execute -> use-after-free.  Protect them
+    // regardless of the soft cap; only prior-scene entries are reclaimable.
+    const std::vector<std::uint8_t> persists =
+        detail::effectiveEvictionPersist(persist_flags, last_gens, m_query_generation);
     const std::vector<std::size_t> victims =
         detail::selectEvictionVictims(ticks, persists, m_query_soft_cap);
     if (victims.empty()) return;
@@ -825,6 +834,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
         query.share_ready = false;
         query.persist     = persist;
         query.lru_tick    = ++m_lru_clock;
+        query.last_gen    = m_query_generation;
 
         return query.image;
     };
@@ -838,6 +848,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
         query->persist     = persist;
         query->query_keys.insert(std::string(key));
         query->lru_tick = ++m_lru_clock;
+        query->last_gen = m_query_generation;
 
         m_query_map[std::string(key)] = &(*query);
 
@@ -853,6 +864,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
     query.query_keys.insert(std::string(key));
     query.persist  = persist;
     query.lru_tick = ++m_lru_clock;
+    query.last_gen = m_query_generation;
     if (auto opt = CreateTex(content_hash); opt.has_value()) {
         query.image = std::move(opt.value());
         if (m_query_texs.size() > m_query_soft_cap) {
