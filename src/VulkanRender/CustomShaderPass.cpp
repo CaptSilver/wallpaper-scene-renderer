@@ -346,7 +346,7 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::prepare");
     {
-        static std::unordered_set<const void*> _csp_logged;
+        thread_local std::unordered_set<const void*> _csp_logged;
         if (_csp_logged.insert(this).second) {
             SceneMesh*  pm = m_desc.node ? m_desc.node->Mesh() : nullptr;
             std::string sn =
@@ -910,7 +910,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // a single pipeline.  Gate on WEKDE_PIPELINE_DIAG=1 to avoid spam
         // on scenes with hundreds of effect passes.
         {
-            static std::set<std::string> _pipe_logged;
+            thread_local std::set<std::string> _pipe_logged;
             auto key   = mesh.Material()->customShader.shader->name + "_" + m_desc.output;
             bool first = _pipe_logged.insert(key).second;
             static const bool s_pipeDiag = []() {

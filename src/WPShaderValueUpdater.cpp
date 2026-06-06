@@ -164,7 +164,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
                 // fires once at scene build instead of once per frame.
                 // Still one-shot per (key, process) via the static set, so
                 // log volume is unchanged or strictly reduced.
-                static std::set<std::string> _rt_miss_logged;
+                thread_local std::set<std::string> _rt_miss_logged;
                 if (_rt_miss_logged.insert(el.second).second) {
                     LOG_INFO("RT miss: tex[%zu]='%s' resolved='%s' NOT in renderTargets",
                              el.first,
@@ -179,7 +179,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
             info.texs[el.first].rt_height       = rt.height;
             info.texs[el.first].rt_mipmap_level = rt.mipmap_level;
 
-            static std::set<std::string> _rt_res_logged;
+            thread_local std::set<std::string> _rt_res_logged;
             if (IsSpecLinkTex(el.second) && _rt_res_logged.insert(el.second).second) {
                 LOG_INFO("RT resolution upload: tex[%zu]='%s' → '%s' (%dx%d)",
                          el.first,
@@ -424,7 +424,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
             // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
             if (reqM && info.has_VP && ! reqMVP && cam_name.empty()) {
-                static std::set<SceneNode*> _mvp_sep_logged;
+                thread_local std::set<SceneNode*> _mvp_sep_logged;
                 if (_mvp_sep_logged.insert(pNode).second) {
                     Vector4d center = viewProTrans * modelTrans * Vector4d(0, 0, 0, 1);
                     auto     t      = pNode->Translate();
@@ -461,7 +461,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                     updateOp(G_MVPI, mc.mvpi);
                 }
                 // One-time diagnostic: log MVP info for nodes with empty camera (final composites)
-                static std::set<SceneNode*> _mvp_logged;
+                thread_local std::set<SceneNode*> _mvp_logged;
                 if (cam_name.empty() && _mvp_logged.insert(pNode).second) {
                     Vector4d center = mvpTrans * Vector4d(0, 0, 0, 1);
                     auto     t      = pNode->Translate();

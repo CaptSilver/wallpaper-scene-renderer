@@ -536,7 +536,7 @@ public:
         // Keep a long-lived "last logged" map so [jump] reflects real deltas;
         // the pending map clears every frame, which would otherwise mark
         // every first-of-frame write as a jump.
-        static std::map<std::pair<i32, std::string>, std::array<float, 3>> s_last_logged_transform;
+        thread_local std::map<std::pair<i32, std::string>, std::array<float, 3>> s_last_logged_transform;
         auto prev   = s_last_logged_transform.find(key);
         bool jumped = (prev == s_last_logged_transform.end()) ||
                       (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
@@ -558,7 +558,7 @@ public:
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_visible_updates[id]                      = visible;
         static int                           s_visible_log = 0;
-        static std::unordered_map<i32, bool> s_last_logged_visible;
+        thread_local std::unordered_map<i32, bool> s_last_logged_visible;
         auto                                 prev = s_last_logged_visible.find(id);
         bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
         if (++s_visible_log <= 5 || jumped) {
@@ -613,7 +613,7 @@ public:
         // Track the last *logged* value separately from the pending map
         // (which gets cleared each render frame) so [jump] detects real
         // deltas instead of firing on every first-of-frame write.
-        static std::unordered_map<i32, float> s_last_logged_alpha;
+        thread_local std::unordered_map<i32, float> s_last_logged_alpha;
         auto                                  prev = s_last_logged_alpha.find(id);
         bool jumped = prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
         if (++s_alpha_log <= 5 || jumped) {
@@ -630,7 +630,7 @@ public:
         std::lock_guard<std::mutex> lock(m_property_update_mutex);
         m_pending_particle_rate[id]                      = rate;
         static int                            s_rate_log = 0;
-        static std::unordered_map<i32, float> s_last_logged_rate;
+        thread_local std::unordered_map<i32, float> s_last_logged_rate;
         auto                                  prev = s_last_logged_rate.find(id);
         // Log the first few writes + any subsequent >30% swing so NieR 2B's
         // bass-driven 0.1..1.0 oscillation is visible without flooding the
