@@ -148,6 +148,13 @@ TEST_SUITE("WPTextRenderer Init/Shutdown race") {
                 render_count.fetch_add(1, std::memory_order_relaxed);
             }
         });
+        // Wait until the render thread is actually looping before cycling
+        // Init/Shutdown, so the cycles genuinely overlap RenderText AND the
+        // render_count assertion can't flake to 0 when thread startup is
+        // delayed under a loaded machine (e.g. the full preflight build running
+        // this concurrently with other compiles).
+        while (render_count.load(std::memory_order_relaxed) == 0)
+            std::this_thread::yield();
         for (int i = 0; i < 64; ++i) {
             WPTextRenderer::Init();
             WPTextRenderer::Shutdown();
