@@ -137,6 +137,9 @@ public:
         double blend { 1.0f };
         bool   visible { true };
         double cur_time { 0.0f };
+        // Additive layers add their frame-relative delta on top of the running
+        // pose; non-additive layers blend over it (WE's `additive` flag).
+        bool additive { false };
     };
 
     // Emitted when playback crosses an event keyframe during updateInterpolation.
@@ -161,7 +164,6 @@ public:
 private:
     struct Layer {
         AnimationLayer                         anim_layer;
-        double                                 blend;
         const WPPuppet::Animation*             anim { nullptr };
         WPPuppet::Animation::InterpolationInfo interp_info {};
 
@@ -177,7 +179,6 @@ private:
         operator bool() const noexcept { return anim != nullptr; };
     };
 
-    double m_global_blend { 1.0 };
     double m_total_blend { 0.0 };
 
     std::vector<Layer>        m_layers;

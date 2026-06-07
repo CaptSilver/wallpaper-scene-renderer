@@ -3,6 +3,7 @@
 #include "WPPuppet.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
 #include <string>
@@ -366,7 +367,7 @@ TEST_SUITE("WPPuppetLayer_Prepared") {
         CHECK(frames.size() == 1);
     }
 
-    TEST_CASE("total_blend > 1.0 normalizes blends") {
+    TEST_CASE("two visible layers both matched produce a frame") {
         auto puppet = makePuppet(1, 100, 10.0, 2);
         auto anim2  = puppet->anims[0];
         anim2.id    = 200;
@@ -381,35 +382,12 @@ TEST_SUITE("WPPuppetLayer_Prepared") {
         CHECK(frames.size() == 1);
     }
 
-    TEST_CASE("total_blend <= 1.0 multiplicative path") {
+    TEST_CASE("single partial-weight layer produces a frame") {
         auto puppet = makePuppet(1, 100, 10.0, 2);
         puppet->prepared();
         WPPuppetLayer                              layer(puppet);
         std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
         alayers[0] = { 100, 1.0, 0.5, true, 0.0 };
-        layer.prepared(alayers);
-        auto frames = layer.genFrame(0.0);
-        CHECK(frames.size() == 1);
-    }
-
-    // Kills the cxx_gt_to_ge mutation on `total_blend > 1.0` (line 241):
-    // at exactly total_blend == 1.0, original takes the else (multiplicative)
-    // branch — cur_blend = blend * layer.blend = 1.0 * 1.0 = 1.0.
-    // Mutated `>=` takes the if branch — cur_blend = layer.blend / total_blend
-    // = 1.0 / 1.0 = 1.0.  Same numerically, but the side effect on `blend`
-    // differs: original drops blend to 0 only if total_blend > 1.0, mutated
-    // also at == 1.0.  Subsequent layer's cur_blend would differ.
-    TEST_CASE("total_blend == 1.0 takes multiplicative path (boundary kill)") {
-        // Two layers each blend=0.5 → total_blend=1.0.
-        auto puppet = makePuppet(1, 100, 10.0, 2);
-        auto anim2  = puppet->anims[0];
-        anim2.id    = 200;
-        puppet->anims.push_back(anim2);
-        puppet->prepared();
-        WPPuppetLayer                              layer(puppet);
-        std::vector<WPPuppetLayer::AnimationLayer> alayers(2);
-        alayers[0] = { 100, 1.0, 0.5, true, 0.0 };
-        alayers[1] = { 200, 1.0, 0.5, true, 0.0 };
         layer.prepared(alayers);
         auto frames = layer.genFrame(0.0);
         CHECK(frames.size() == 1);
@@ -542,12 +520,9 @@ TEST_SUITE("WPPuppet_GenFrame") {
     }
 
     TEST_CASE("genFrame at frame 1-2 transition verifies one_t calculation") {
-        // At frame 1→2 interpolation, both delta_a and delta_b are non-zero.
-        // frame_base = frame[0] = (0,0,0)
-        // delta_a = frame[1] - frame[0] = (10,0,0), delta_b = frame[2] - frame[0] = (20,0,0)
-        // At info.t=0.5: trans = base(0) + blend*(delta_a * one_t + delta_b * t)
-        //   = 0 + 1.0*(10*0.5 + 20*0.5) = 5 + 10 = 15
-        // If one_t mutated to 1.0+t=1.5: 1.0*(10*1.5 + 20*0.5) = 15+10 = 25 (WRONG)
+        // At the frame 1→2 midpoint the interpolated absolute position is
+        //   frame[1]*one_t + frame[2]*t = 10*0.5 + 20*0.5 = 15.
+        // A one_t = (1 - t) → (1 + t) mutant would give 10*1.5 + 20*0.5 = 25.
         auto                                       puppet = makeSimplePuppet3Frame();
         WPPuppetLayer                              layer(puppet);
         std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
@@ -557,7 +532,6 @@ TEST_SUITE("WPPuppet_GenFrame") {
         layer.genFrame(0.0);
         layer.genFrame(0.1);                // now at t=0.1 → frame 1
         auto frames = layer.genFrame(0.05); // now at t=0.15 → midpoint of frame 1→2
-        // Kills sub_to_add on line 89
         CHECK(frames[0].translation().x() == doctest::Approx(15.0f));
     }
 
@@ -573,31 +547,31 @@ TEST_SUITE("WPPuppet_GenFrame") {
         CHECK(frames[0].translation().x() == doctest::Approx(2.5f));
     }
 
-    TEST_CASE("genFrame two layers with total_blend > 1.0") {
+    TEST_CASE("two full-weight non-additive layers: top layer wins") {
         auto           puppet = std::make_shared<WPPuppet>();
         WPPuppet::Bone bone;
         bone.transform = Eigen::Affine3f::Identity();
         bone.parent    = 0xFFFFFFFFu;
         puppet->bones.push_back(bone);
 
-        // Anim 1: frames at x=0, 10, 20
+        // Anim 1 (bottom): static at the bind pose.
         WPPuppet::Animation anim1;
         anim1.id     = 1;
         anim1.fps    = 10.0;
-        anim1.length = 3;
+        anim1.length = 2;
         anim1.mode   = WPPuppet::PlayMode::Loop;
         anim1.name   = "a1";
         WPPuppet::Animation::BoneFrames bf1;
-        for (int f = 0; f < 3; f++) {
+        for (int f = 0; f < 2; f++) {
             WPPuppet::BoneFrame frame;
-            frame.position = Eigen::Vector3f(f * 10.0f, 0, 0);
+            frame.position = Eigen::Vector3f::Zero();
             frame.angle    = Eigen::Vector3f::Zero();
             frame.scale    = Eigen::Vector3f::Ones();
             bf1.frames.push_back(frame);
         }
         anim1.bframes_array.push_back(bf1);
 
-        // Anim 2: same but with y=5
+        // Anim 2 (top): static but displaced to y=5 (a "swung out" pose).
         auto anim2 = anim1;
         anim2.id   = 2;
         anim2.name = "a2";
@@ -608,19 +582,22 @@ TEST_SUITE("WPPuppet_GenFrame") {
 
         WPPuppetLayer                              layer(puppet);
         std::vector<WPPuppetLayer::AnimationLayer> alayers(2);
-        alayers[0] = { 1, 1.0, 0.8, true, 0.0 };
-        alayers[1] = { 2, 1.0, 0.8, true, 0.0 };
+        alayers[0] = { 1, 1.0, 1.0, true, 0.0 }; // bottom, non-additive
+        alayers[1] = { 2, 1.0, 1.0, true, 0.0 }; // top, non-additive
         layer.prepared(alayers);
 
-        // total_blend=1.6 > 1.0 → normalized: each gets 0.8/1.6 = 0.5
-        // Kills div_to_mul on line 213 and gt_to_ge/gt_to_le on line 211
-        auto frames = layer.genFrame(0.0);
-        // y should be 2.5 (half of 5.0 from anim2's y offset)
-        CHECK(frames[0].translation().y() == doctest::Approx(2.5f));
+        // Two non-additive layers at weight 1.0: the top layer (anim2) blends
+        // fully over the bottom, so the bone takes anim2's pose (y=5).  It does
+        // NOT average to 2.5 (the old normalization, which detached the hair on
+        // Weathering With You) nor stay at the bind/bottom pose (y=0).
+        auto rest = layer.genFrame(0.0);
+        CHECK(rest[0].translation().y() == doctest::Approx(5.0f));
     }
 
     TEST_CASE("genFrame with rotation verifies quaternion slerp blend") {
-        // Kills sub_to_add on lines 96-97: slerp(1.0 - blend, ident)
+        // A single non-additive layer at weight 1.0 takes the animation's
+        // interpolated rotation directly (blend-over from the identity bind
+        // rotation).
         auto           puppet = std::make_shared<WPPuppet>();
         WPPuppet::Bone bone;
         bone.transform = Eigen::Affine3f::Identity();
@@ -708,7 +685,8 @@ TEST_SUITE("WPPuppet_GenFrame") {
     }
 
     TEST_CASE("genFrame with zero blend produces minimal change") {
-        // blend=0 should leave bone near identity (only global_blend * base transform)
+        // A weight-0 layer contributes nothing, so the bone stays at the bind
+        // pose regardless of how far the animation has advanced.
         auto                                       puppet = makeSimplePuppet3Frame();
         WPPuppetLayer                              layer(puppet);
         std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
@@ -737,10 +715,9 @@ TEST_SUITE("WPPuppet_GenFrame") {
     }
 
     TEST_CASE("genFrame rotation with non-identity base quaternion and partial blend") {
-        // Kills slerp(1.0-blend, ident) → slerp(1.0+blend, ident) mutant (lines 98-99)
-        // Base frame has 30° Z rotation (non-identity quaternion).
-        // With anim_layer.blend=0.5: slerp(0.5, ident) attenuates the base rotation.
-        // With mutant (1.0+0.5=1.5): slerp(1.5, ident) extrapolates in reverse — different result.
+        // A partial-weight non-additive layer blends the bone's rotation only
+        // part-way from bind toward the animation pose, so a half-weight layer
+        // produces a smaller rotation than a full-weight one.
         auto puppet = makeRotatedPuppet();
 
         // Full blend (1.0): advance to midpoint between frame 0 (30°) and frame 1 (90°)
@@ -786,21 +763,95 @@ TEST_SUITE("WPPuppet_GenFrame") {
         CHECK(x0 != doctest::Approx(x1).epsilon(0.001f));
     }
 
-    TEST_CASE("genFrame with total_blend exactly 1.0 uses multiplicative path") {
-        // Kills total_blend > 1.0 → total_blend >= 1.0 mutant (line 217)
-        // With total_blend==1.0, should use multiplicative path (not normalization)
+    TEST_CASE("genFrame single full-weight layer interpolates position") {
+        // A single non-additive layer at weight 1.0 takes the animation's
+        // interpolated absolute position; at the half-frame it is midway
+        // between frame 0 (x=0) and frame 1 (x=10), i.e. x=5.
         auto                                       puppet = makeSimplePuppet3Frame();
         WPPuppetLayer                              layer(puppet);
         std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
         alayers[0] = { 1, 1.0, 1.0, true, 0.0 }; // total_blend = 1.0 exactly
         layer.prepared(alayers);
 
-        // Should work without crashing (normalization would divide by 1.0 anyway)
         auto frames = layer.genFrame(0.0);
         layer.genFrame(0.05);
         auto  frames2 = layer.genFrame(0.0);
         float x       = frames2[0].translation().x();
         CHECK(x == doctest::Approx(5.0f)); // halfway between 0 and 10
+    }
+
+    namespace
+    {
+    // Two-animation puppet (bind = identity, single bone) where each animation
+    // is static at its own frame-0 position so the base/delta split is easy to
+    // reason about.  anim `id` holds the bone at (baseX,0,0) on frame 0 and
+    // (tipX,0,0) on frame 1.
+    std::shared_ptr<WPPuppet> makeTwoAnimPuppet(int idA, float baseAX, float tipAX, int idB,
+                                                float baseBX, float tipBX) {
+        auto           puppet = std::make_shared<WPPuppet>();
+        WPPuppet::Bone bone;
+        bone.transform = Eigen::Affine3f::Identity();
+        bone.parent    = 0xFFFFFFFFu;
+        puppet->bones.push_back(bone);
+
+        const std::array<std::array<float, 3>, 2> defs { { { (float)idA, baseAX, tipAX },
+                                                           { (float)idB, baseBX, tipBX } } };
+        for (const auto& d : defs) {
+            WPPuppet::Animation anim;
+            anim.id     = (int)d[0];
+            anim.fps    = 10.0;
+            anim.length = 2;
+            anim.mode   = WPPuppet::PlayMode::Loop;
+            anim.name   = "test";
+            WPPuppet::Animation::BoneFrames bf;
+            for (int f = 0; f < 2; f++) {
+                WPPuppet::BoneFrame fr;
+                fr.position = Eigen::Vector3f(f == 0 ? d[1] : d[2], 0, 0);
+                fr.angle    = Eigen::Vector3f::Zero();
+                fr.scale    = Eigen::Vector3f::Ones();
+                bf.frames.push_back(fr);
+            }
+            anim.bframes_array.push_back(bf);
+            puppet->anims.push_back(anim);
+        }
+        puppet->prepared();
+        return puppet;
+    }
+    } // namespace
+
+    // Regression for the Weathering With You (2558523891) detached-hair bug.
+    // Two non-additive layers at weight 1.0: anim 100 sits at bind, anim 200's
+    // frame-0 is displaced +100 in X (its "swung-out hair" base).  As the top
+    // layer it wins, so the bone takes x≈100 — NOT the 50 average that stranded
+    // the hair half-way off the head, and NOT the bind/bottom pose (x≈0).
+    TEST_CASE("displaced-base top non-additive layer wins (hair fix)") {
+        auto          puppet = makeTwoAnimPuppet(100, 0, 0, 200, 100, 100);
+        WPPuppetLayer layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(2);
+        alayers[0] = { 100, 1.0, 1.0, true, 0.0 }; // bottom
+        alayers[1] = { 200, 1.0, 1.0, true, 0.0 }; // top, displaced base
+        layer.prepared(alayers);
+        auto frames = layer.genFrame(0.0);
+        CHECK(frames[0].translation().x() == doctest::Approx(100.0f));
+    }
+
+    // An additive layer adds its frame-relative delta on top of the running
+    // (non-additive) pose, instead of blending over it.  Bottom non-additive
+    // layer holds the bone at x=50; the additive top layer animates 0→30, so
+    // at frame 0 the bone is at the base (50) and at frame 1 it is base+delta
+    // (50+30=80).  This is the #412 "all layers play" case done correctly.
+    TEST_CASE("additive layer adds its delta onto the non-additive base") {
+        auto          puppet = makeTwoAnimPuppet(100, 50, 50, 200, 0, 30);
+        WPPuppetLayer layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(2);
+        alayers[0]          = { 100, 1.0, 1.0, true, 0.0 }; // bottom, non-additive base
+        alayers[1]          = { 200, 1.0, 1.0, true, 0.0 }; // top, additive
+        alayers[1].additive = true;
+        layer.prepared(alayers);
+        auto rest = layer.genFrame(0.0);
+        CHECK(rest[0].translation().x() == doctest::Approx(50.0f));
+        auto frames = layer.genFrame(0.1); // advance to frame 1 (cur_time=0.1)
+        CHECK(frames[0].translation().x() == doctest::Approx(80.0f));
     }
 
 } // TEST_SUITE("WPPuppet_GenFrame")

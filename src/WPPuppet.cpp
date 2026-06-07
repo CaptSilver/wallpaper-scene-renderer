@@ -1,4 +1,5 @@
 #include "WPPuppet.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -45,10 +46,11 @@ void WPPuppet::prepared() {
 
 std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
                                                     double         time) noexcept {
-    double global_blend = puppet_layer.m_global_blend;
-    double total_blend  = puppet_layer.m_total_blend;
+    double total_blend = puppet_layer.m_total_blend;
 
     puppet_layer.updateInterpolation(time);
+
+    const Quaterniond ident { Quaterniond::Identity() };
 
     for (uint i = 0; i < m_final_affines.size(); i++) {
         const auto& bone   = bones[i];
@@ -59,12 +61,24 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         const Affine3f parent =
             bone.noParent() ? Affine3f::Identity() : m_final_affines[bone.parent];
 
-        Vector3f    trans { bone.transform.translation() * global_blend };
-        Vector3f    scale { Vector3f::Ones() * global_blend };
-        Quaterniond quat { Quaterniond::Identity() };
-        Quaterniond ident { Quaterniond::Identity() };
-
-        // double cur_blend { 0.0f };
+        // Wallpaper Engine stacks animation layers bottom-to-top onto the bind
+        // (rest) pose, honouring each layer's `additive` flag:
+        //   - non-additive: blend OVER the running pose toward the layer's
+        //     absolute pose by the layer weight, so a full-weight layer fully
+        //     replaces what is below it (the topmost full-weight layer wins).
+        //   - additive: add the layer's frame-relative delta, scaled by weight,
+        //     on top of the running pose.
+        // The previous code ignored `additive` and, for total weight > 1,
+        // *averaged* the layers' frame-0 poses.  That detached the hair on
+        // Weathering With You (2558523891) — two full-weight non-additive
+        // layers whose second layer starts with the hair swung out should let
+        // that layer win, not blend halfway into it.  Starting from the bind
+        // pose and blending over / adding per the flag matches WE.
+        Matrix3f bindR, bindS;
+        bone.transform.computeRotationScaling(&bindR, &bindS);
+        Vector3f    trans { bone.transform.translation() };
+        Vector3f    scale { bindS.diagonal() };
+        Quaterniond quat { Quaterniond(bindR.cast<double>()) };
 
         for (auto& layer : puppet_layer.m_layers) {
             auto& alayer = layer.anim_layer;
@@ -77,37 +91,28 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
             auto& frame_a    = layer.anim->bframes_array[i].frames[(usize)info.frame_a];
             auto& frame_b    = layer.anim->bframes_array[i].frames[(usize)info.frame_b];
 
-            double t     = info.t;
-            double one_t = 1.0f - info.t;
+            float  t     = (float)info.t;
+            float  one_t = 1.0f - t;
+            double w     = std::clamp(alayer.blend, 0.0, 1.0);
 
-            // break up the delta quaternions from the animation start quaternion
-            // blend the starting quaternion using the reduced blending factor
-            // blend the delta using the full blending factor
-            auto frame_a_quat_delta = frame_a.quaternion * frame_base.quaternion.conjugate();
-            auto frame_b_quat_delta = frame_b.quaternion * frame_base.quaternion.conjugate();
-            quat *= frame_a_quat_delta.slerp(info.t, frame_b_quat_delta)
-                        .slerp(1.0 - layer.anim_layer.blend, ident) *
-                    frame_base.quaternion.slerp(1.0 - (layer.blend), ident);
+            // This layer's interpolated absolute pose for bone i.
+            Vector3f    pos_i = frame_a.position * one_t + frame_b.position * t;
+            Vector3f    scale_i { frame_a.scale * one_t + frame_b.scale * t };
+            Quaterniond quat_i = frame_a.quaternion.slerp(info.t, frame_b.quaternion);
 
-            // break up the delta positions from the animation start position
-            // blend the starting position using the reduced blending factor
-            // blend the delta using the full blending factor
-            auto frame_a_pos_delta = frame_a.position - frame_base.position;
-            auto frame_b_pos_delta = frame_b.position - frame_base.position;
-            trans += (layer.blend * frame_base.position) +
-                     (layer.anim_layer.blend * (frame_a_pos_delta * one_t + frame_b_pos_delta * t));
-
-            // break up the delta scales from the animation start scale
-            // blend the starting scale using the reduced blending factor
-            // blend the delta using the full blending factor
-            auto& frame_a_scale_delta = frame_a.scale - frame_base.scale;
-            auto& frame_b_scale_delta = frame_b.scale - frame_base.scale;
-            scale += (layer.blend * frame_base.scale) +
-                     (layer.anim_layer.blend *
-                      (frame_a_scale_delta * one_t + frame_b_scale_delta * info.t));
+            if (alayer.additive) {
+                trans += (float)w * (pos_i - frame_base.position);
+                scale += (float)w * (scale_i - frame_base.scale);
+                Quaterniond dq = quat_i * frame_base.quaternion.conjugate();
+                quat           = quat * ident.slerp(w, dq);
+            } else {
+                trans = trans * (1.0f - (float)w) + pos_i * (float)w;
+                scale = scale * (1.0f - (float)w) + scale_i * (float)w;
+                quat  = quat.slerp(w, quat_i);
+            }
         }
         affine.pretranslate(trans);
-        affine.rotate(quat.slerp(global_blend, ident).cast<float>());
+        affine.rotate(quat.cast<float>());
         affine.scale(scale);
         affine = parent * affine;
     }
@@ -116,28 +121,38 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
     if (! m_logged_bones_frame0 && ! m_final_affines.empty()) {
         // One-shot per-puppet frame-0 diagnostic.  Reports bone count,
         // blend state, matched animations, and whether the animated bone
-        // world (m_final_affines[i], pre-offset_trans) diverges from
-        // bind pose bones[i].world_transform.  For static puppets these
-        // agree (max_dY ≈ 0); a non-zero max_dY suggests an animation is
-        // shifting bones at frame 0 and that shift may need to propagate
-        // to attachment composition for accurate child placement.
-        double max_dY = 0.0;
+        // world (m_final_affines[i], pre-offset_trans) diverges from the
+        // bind pose bones[i].world_transform.  At frame 0 a correctly
+        // anchored puppet sits at bind pose, so both max_dX and max_dY are
+        // ≈ 0; a large divergence means an active animation's frame-0 differs
+        // from bind and is pulling bones off the rest pose.  Measure BOTH
+        // axes — a hair-sway animation displaces bones horizontally, which a
+        // Y-only check silently misses.
+        double max_dY = 0.0, max_dX = 0.0;
+        int    max_dX_bone = -1;
         for (uint i = 0; i < bones.size(); i++) {
-            double dY = m_final_affines[i].translation().y() -
-                        bones[i].world_transform.translation().y();
+            double dY =
+                m_final_affines[i].translation().y() - bones[i].world_transform.translation().y();
+            double dX =
+                m_final_affines[i].translation().x() - bones[i].world_transform.translation().x();
             if (std::abs(dY) > std::abs(max_dY)) max_dY = dY;
+            if (std::abs(dX) > std::abs(max_dX)) {
+                max_dX      = dX;
+                max_dX_bone = (int)i;
+            }
         }
         int matched = 0;
         for (auto& l : puppet_layer.m_layers)
             if (l.anim != nullptr) matched++;
-        LOG_INFO("genFrame frame0: bones=%zu global_blend=%.2f total_blend=%.2f "
-                 "matched_anims=%d/%zu max_dY=%.2f",
+        LOG_INFO("genFrame frame0: bones=%zu total_blend=%.2f "
+                 "matched_anims=%d/%zu max_dY=%.2f max_dX=%.2f@bone%d",
                  bones.size(),
-                 global_blend,
                  total_blend,
                  matched,
                  puppet_layer.m_layers.size(),
-                 max_dY);
+                 max_dY,
+                 max_dX,
+                 max_dX_bone);
         m_logged_bones_frame0 = true;
     }
 #endif
@@ -190,66 +205,42 @@ WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
 
 void WPPuppetLayer::prepared(std::span<AnimationLayer> alayers) {
     m_layers.resize(alayers.size());
-    double& blend       = m_global_blend;
-    double& total_blend = m_total_blend;
 
-    total_blend = 0.0;
-    for (int i = 0; i < alayers.size(); i++) {
-        if (alayers[i].visible) {
-            total_blend += alayers[i].blend;
-        }
-    }
+    // Sum of visible layer weights — informational only (the per-layer
+    // blend-over in genFrame needs no global normalization).
+    m_total_blend = 0.0;
+    for (const auto& l : alayers)
+        if (l.visible) m_total_blend += l.blend;
 
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
     LOG_INFO("puppet layer prepared: %zu scene layers, %zu mdl anims, total_blend=%.2f",
              alayers.size(),
              m_puppet->anims.size(),
-             total_blend);
+             m_total_blend);
     for (usize i = 0; i < alayers.size(); i++) {
-        LOG_INFO("  scene layer[%zu]: id=%d blend=%.2f rate=%.2f visible=%d",
+        LOG_INFO("  scene layer[%zu]: id=%d blend=%.2f rate=%.2f visible=%d additive=%d",
                  i,
                  alayers[i].id,
                  alayers[i].blend,
                  alayers[i].rate,
-                 (int)alayers[i].visible);
+                 (int)alayers[i].visible,
+                 (int)alayers[i].additive);
     }
 #endif
 
-    std::transform(
-        alayers.rbegin(), alayers.rend(), m_layers.rbegin(), [&blend, this](const auto& layer) {
-            double      cur_blend { 0.0f };
-            const auto& anims = m_puppet->anims;
-
-            auto it = std::find_if(anims.begin(), anims.end(), [&layer](auto& a) {
-                return layer.id == a.id;
-            });
-            bool ok = it != anims.end() && layer.visible;
-#ifndef WP_SUPPRESS_DEBUG_LOGGING
-            LOG_INFO("  match layer id=%d: %s (cur_blend will be %.4f)",
-                     layer.id,
-                     ok ? "MATCHED" : "NOT FOUND",
-                     ok ? layer.blend / m_total_blend : 0.0);
-#endif
-
-            double& total_blend = m_total_blend;
-
-            if (ok) {
-                if (total_blend > 1.0) {
-                    cur_blend = layer.blend / total_blend;
-                    blend     = 0.0;
-                } else {
-                    cur_blend = blend * layer.blend;
-                    blend *= 1.0f - layer.blend;
-                    blend = blend < 0.0f ? 0.0f : blend;
-                }
-            }
-
-            return Layer {
-                .anim_layer = layer,
-                .blend      = cur_blend,
-                .anim       = ok ? std::addressof(*it) : nullptr,
-            };
+    // Match each scene layer to its mdl animation by id, preserving scene order
+    // (bottom-to-top) so genFrame stacks them correctly.
+    const auto& anims = m_puppet->anims;
+    std::transform(alayers.begin(), alayers.end(), m_layers.begin(), [&anims](const auto& layer) {
+        auto it = std::find_if(anims.begin(), anims.end(), [&layer](auto& a) {
+            return layer.id == a.id;
         });
+        bool ok = it != anims.end() && layer.visible;
+        return Layer {
+            .anim_layer = layer,
+            .anim       = ok ? std::addressof(*it) : nullptr,
+        };
+    });
 }
 
 std::span<const Eigen::Affine3f> WPPuppetLayer::genFrame(double time) noexcept {
