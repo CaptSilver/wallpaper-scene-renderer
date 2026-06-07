@@ -2331,6 +2331,16 @@ void SceneObject::setupTextScripts() {
                 "thisLayer",
                 m_jsEngine->evaluate(
                     wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName))));
+        } else {
+            // Unnamed scripted object: our layer proxies are name-keyed, so there
+            // is nothing to bind here.  But the IIFE below captures whatever
+            // `thisLayer` currently holds, and a previously-compiled script left
+            // its own layer there — letting this script capture and mutate an
+            // unrelated layer.  Hoshi-Tele (3042492564) obj 962 (an unnamed media
+            // anchor) thereby ran `componentLayers.add([thisLayer, ...])` on 幽's
+            // leg, scaling the whole character by 1/g_zoom.  Hand it a fresh
+            // isolated object so its closures can't reach across to another layer.
+            m_globalObj.setProperty("thisLayer", m_jsEngine->newObject());
         }
 
         // Wrap in IIFE returning {update, init}
