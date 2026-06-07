@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <future>
 #include <thread>
 #include <vector>
@@ -50,6 +51,12 @@ std::vector<uint8_t> mdlvHeader(int version) {
 
 void appendInt32(std::vector<uint8_t>& v, int32_t x) {
     for (int i = 0; i < 4; i++) v.push_back(static_cast<uint8_t>((x >> (i * 8)) & 0xff));
+}
+
+void appendFloat(std::vector<uint8_t>& v, float x) {
+    uint32_t bits;
+    std::memcpy(&bits, &x, sizeof(bits));
+    appendInt32(v, static_cast<int32_t>(bits));
 }
 
 } // namespace
@@ -291,6 +298,89 @@ TEST_SUITE("WPMdlParser_EOF_safety") {
         REQUIRE(mdl.puppet->attachments.size() == 1);
         CHECK(mdl.puppet->attachments[0].name == "head");
         CHECK(mdl.puppet->attachments[0].bone_index == 0);
+    }
+
+    // Regression from Totoro 2891663007's body puppet (_0001_Totoro_puppet.mdl,
+    // MDLV0019).  Its MDLA section is misaligned for this format variant, so the
+    // second animation reads a garbage `b_num` that exceeds the stream.  The
+    // parser correctly bails the animation track — but the old code did so with
+    // an early `return true` BEFORE WPPuppet::prepared().  prepared() is the only
+    // place that sizes m_final_affines and computes the bind-pose bone
+    // transforms, so skipping it left genFrame() returning an empty span,
+    // g_Bones never uploaded, and the skinned mesh collapsed to the origin — the
+    // whole Totoro body rendered invisible.  The fix keeps the cleanly-parsed
+    // animations, finalizes the puppet, and renders the static bind pose.
+    TEST_CASE("Animation b_num overrun still finalizes the bind pose") {
+        std::vector<uint8_t> data = mdlvHeader(19);
+        appendInt32(data, 0); // mdl_flag = 0 → puppet path
+        appendInt32(data, 1); // unk
+        appendInt32(data, 1); // unk
+        data.push_back(0);    // empty mat_json_file
+        appendInt32(data, 0); // zero after mat
+        for (int i = 0; i < 24; i++) data.push_back(0); // v17+ bbox padding
+        appendInt32(data, 0x01800009);                  // std-format vertex herald
+        appendInt32(data, 0);                           // vertex_size = 0
+        appendInt32(data, 0);                           // indices_size = 0
+
+        const char mdls_tag[9] = "MDLS0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdls_tag[i]));
+        appendInt32(data, 0); // bones_file_end
+        data.push_back(1);
+        data.push_back(0); // bones_num = 1 (u16)
+        data.push_back(0);
+        data.push_back(0); // unk
+
+        // One root bone with a non-identity bind transform (translate 10,20,0)
+        // so we can confirm prepared() computed its world_transform.
+        data.push_back(0);             // empty bone name
+        appendInt32(data, 1);          // unk
+        appendInt32(data, (int32_t)0xFFFFFFFF); // parent = root
+        appendInt32(data, 64);         // matrix size
+        // 4x4 column-major: identity rotation + translation in the last column.
+        appendFloat(data, 1); appendFloat(data, 0); appendFloat(data, 0); appendFloat(data, 0);
+        appendFloat(data, 0); appendFloat(data, 1); appendFloat(data, 0); appendFloat(data, 0);
+        appendFloat(data, 0); appendFloat(data, 0); appendFloat(data, 1); appendFloat(data, 0);
+        appendFloat(data, 10); appendFloat(data, 20); appendFloat(data, 0); appendFloat(data, 1);
+        data.push_back(0);             // empty bone_simulation_json
+        // mdls == 1 → no extras block.
+
+        // MDLA0001 section with one animation whose b_num overruns the stream.
+        const char mdla_tag[9] = "MDLA0001";
+        for (int i = 0; i < 9; i++) data.push_back(static_cast<uint8_t>(mdla_tag[i]));
+        appendInt32(data, 0); // end_size
+        appendInt32(data, 1); // anim_num = 1
+        appendInt32(data, 287); // anim.id (>0, first byte non-zero ends the pad scan)
+        appendInt32(data, 0);   // unk
+        data.push_back('A'); data.push_back(0);                          // anim.name = "A"
+        for (char c : std::string("loop")) data.push_back((uint8_t)c);   // play mode
+        data.push_back(0);
+        appendFloat(data, 30.0f); // fps
+        appendInt32(data, 60);    // length
+        appendInt32(data, 0);     // unk
+        appendInt32(data, 0x7FFFFFFF); // b_num — far exceeds remaining bytes → bail
+        // EOF immediately after: nothing left for CountFitsStream(b_num).
+
+        fs::MemBinaryStream f(std::move(data));
+        WPMdl               mdl;
+        auto                r = parseWithWatchdog(f, "totoro_body.mdl", mdl);
+        REQUIRE(r.completed);
+        CHECK(r.ok); // keep the puppet (static mesh + bones still valid)
+        REQUIRE(mdl.puppet != nullptr);
+        REQUIRE(mdl.puppet->bones.size() == 1u);
+
+        // prepared() must have run: bind-pose world transform computed.
+        CHECK(mdl.puppet->bones[0].world_transform.translation().x() == doctest::Approx(10.0f));
+        CHECK(mdl.puppet->bones[0].world_transform.translation().y() == doctest::Approx(20.0f));
+
+        // genFrame() must return a non-empty bind-pose span (size == bone count)
+        // so g_Bones is uploaded; an empty span is exactly the invisible-body bug.
+        WPPuppetLayer                              layer(mdl.puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> none;
+        layer.prepared(none);
+        auto span = layer.genFrame(0.0);
+        REQUIRE(span.size() == mdl.puppet->bones.size());
+        // Bind pose → identity skinning matrix.
+        CHECK(span[0].matrix().isApprox(Eigen::Matrix4f::Identity(), 1e-3f));
     }
 
     // Anim-padding scan EOF test — line 500 `Tell() >= Size()` mutates to `>`.

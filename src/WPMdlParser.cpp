@@ -565,10 +565,8 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                 return false;
             }
             anims.resize(anim_num);
-#ifndef WP_SUPPRESS_DEBUG_LOGGING
-            int anim_idx = 0; // only read by LOG_INFO below
-#endif
-            for (auto& anim : anims) {
+            for (size_t ai = 0; ai < anims.size(); ai++) {
+                auto& anim = anims[ai];
                 // Skip zero padding bytes between animations.  Older formats
                 // used 4-byte-aligned padding, but newer MDLA versions (v6+)
                 // can have an odd number of padding bytes.  Scan byte-by-byte
@@ -601,13 +599,10 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                 anim.length = f.ReadInt32();
 #ifndef WP_SUPPRESS_DEBUG_LOGGING
                 LOG_INFO("  anim[%d]: id=%d name='%s' length=%d",
-                         anim_idx,
+                         (int)ai,
                          anim.id,
                          anim.name.c_str(),
                          anim.length);
-#endif
-#ifndef WP_SUPPRESS_DEBUG_LOGGING
-                anim_idx++;
 #endif
                 f.ReadInt32();
 
@@ -620,9 +615,20 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     // mesh + bones still loaded successfully; we just lose
                     // the animation track.  Drivers: Totoro (2891663007),
                     // Chill Time (2925278995), Persona 5 (2955378002).
-                    LOG_INFO("mdl: b_num %u exceeds stream (skipping animations)",
-                             b_num);
-                    return true;
+                    //
+                    // Drop this unparsable animation (and any trailing ones we
+                    // never reached), then break so control falls through to
+                    // mdl.puppet->prepared() below.  Returning here instead
+                    // would skip prepared(), leaving m_final_affines empty so
+                    // genFrame() returns an empty span, g_Bones is never
+                    // uploaded, and the skinned mesh collapses to the origin —
+                    // which rendered the entire Totoro body invisible.
+                    LOG_INFO("mdl: b_num %u exceeds stream — keeping %zu parsed "
+                             "animation(s), finalizing bind pose",
+                             b_num,
+                             ai);
+                    anims.resize(ai);
+                    break;
                 }
                 anim.bframes_array.resize(b_num);
                 for (auto& bframes : anim.bframes_array) {
