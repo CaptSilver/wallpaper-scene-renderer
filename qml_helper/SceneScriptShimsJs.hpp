@@ -249,6 +249,12 @@ function Vec3(x, y, z) {
     this.z = parseFloat(p[2])||0;
   } else if (x && typeof x === 'object') {
     this.x = x.x||0; this.y = x.y||0; this.z = x.z||0;
+  } else if (y === undefined && z === undefined) {
+    // A single scalar broadcasts to all components — WE / GLSL vec3(s)
+    // semantics, and what Vec2 already does.  `new Vec3(1/g_zoom)` is meant as
+    // a uniform scale; without the broadcast it became (s,0,0), squashing any
+    // script-scaled layer (e.g. clock text) to zero height and hiding it.
+    this.x = x||0; this.y = x||0; this.z = x||0;
   } else {
     this.x = x||0; this.y = y||0; this.z = z||0;
   }

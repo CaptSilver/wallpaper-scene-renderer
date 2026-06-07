@@ -406,6 +406,7 @@ private:
     struct TextScriptState {
         int32_t  id;
         QJSValue updateFn;
+        QJSValue applyUserPropertiesFn;
         QString  currentText;
     };
     // Color script evaluation

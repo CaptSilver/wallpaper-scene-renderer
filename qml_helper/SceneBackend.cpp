@@ -581,6 +581,22 @@ void SceneObject::fireApplyUserProperties() {
         }
     }
 
+    // Text scripts (thisLayer is closure-bound in the wrapper, so no global
+    // rebind needed here).  Seeded once inline in setupTextScripts; this keeps
+    // them in sync with runtime user-property changes (e.g. clock language /
+    // format edited in settings).
+    for (auto& tState : m_textScriptStates) {
+        if (! tState.applyUserPropertiesFn.isCallable()) continue;
+        QJSValue result = callJsGuarded([&] {
+            return tState.applyUserPropertiesFn.call({ propsArg });
+        });
+        if (result.isError()) {
+            LOG_INFO("applyUserProperties error text id=%d: %s",
+                     tState.id,
+                     qPrintable(result.toString()));
+        }
+    }
+
     fireSceneEventListeners("applyUserProperties", { propsArg });
 }
 
@@ -2997,8 +3013,12 @@ void SceneObject::setupTextScripts() {
                     "             (typeof update === 'function' ? update : null);\n"
                     "  var _init = typeof exports.init === 'function' ? exports.init :\n"
                     "              (typeof init === 'function' ? init : null);\n"
+                    "  var _aup  = typeof exports.applyUserProperties === 'function' ? "
+                    "exports.applyUserProperties :\n"
+                    "              (typeof applyUserProperties === 'function' ? applyUserProperties "
+                    ": null);\n"
                     "  if (!_upd) return null;\n"
-                    "  return { update: _upd, init: _init };\n"
+                    "  return { update: _upd, init: _init, applyUserProperties: _aup };\n"
                     "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
@@ -3025,9 +3045,10 @@ void SceneObject::setupTextScripts() {
         }
 
         TextScriptState state;
-        state.id          = tsi.id;
-        state.updateFn    = updateFn;
-        state.currentText = QString::fromStdString(tsi.initialValue);
+        state.id                    = tsi.id;
+        state.updateFn              = updateFn;
+        state.applyUserPropertiesFn = result.property("applyUserProperties");
+        state.currentText           = QString::fromStdString(tsi.initialValue);
 
         // Call init(value) if available
         if (initFn.isCallable()) {
@@ -3041,6 +3062,26 @@ void SceneObject::setupTextScripts() {
                           qPrintable(initResult.toString()));
             } else if (initResult.isString()) {
                 state.currentText = initResult.toString();
+            }
+        }
+
+        // Seed applyUserProperties now with the full user-property set.  The
+        // load-time fireApplyUserProperties() already ran (before firstFrame,
+        // when no text scripts existed yet), so without this a text script that
+        // initialises state in applyUserProperties never gets it — e.g. the
+        // Hoshi-Tele clock builds shared.customLang there, and a missing one
+        // makes its time-format throw every tick and the clock freezes.
+        if (state.applyUserPropertiesFn.isCallable()) {
+            QJSValue props =
+                m_jsEngine->globalObject().property("engine").property("userProperties");
+            QJSValue r = callJsGuarded([&] {
+                return state.applyUserPropertiesFn.call({ props });
+            });
+            if (r.isError()) {
+                qCWarning(wekdeScene,
+                          "Text script applyUserProperties error id=%d: %s",
+                          tsi.id,
+                          qPrintable(r.toString()));
             }
         }
 
@@ -3234,16 +3275,15 @@ void SceneObject::setupEngineGlobals() {
                          "engine.isScreensaver = function() { return false; };\n"
                          "engine.isRunningInEditor = function() { return false; };\n");
 
-    // Screen/canvas resolution, orientation, and input stubs for property scripts
+    // Orientation stubs (no Vec dependency).  canvasSize / screenResolution are
+    // assigned below, after Vec2 exists — WE returns them as Vec2 (scripts call
+    // e.g. `engine.canvasSize.divide(2)`), so plain {x,y} literals break any
+    // wallpaper that does vector arithmetic on them.
     {
         auto orthoSize = m_scene->getOrthoSize();
         bool portrait  = orthoSize[1] > orthoSize[0];
-        m_jsEngine->evaluate(QString("engine.screenResolution = { x: %1, y: %2 };\n"
-                                     "engine.canvasSize = { x: %1, y: %2 };\n"
-                                     "engine.isPortrait = function() { return %3; };\n"
-                                     "engine.isLandscape = function() { return %4; };\n")
-                                 .arg(orthoSize[0])
-                                 .arg(orthoSize[1])
+        m_jsEngine->evaluate(QString("engine.isPortrait = function() { return %1; };\n"
+                                     "engine.isLandscape = function() { return %2; };\n")
                                  .arg(portrait ? "true" : "false")
                                  .arg(portrait ? "false" : "true"));
     }
@@ -3260,6 +3300,17 @@ void SceneObject::setupEngineGlobals() {
     m_vec2Fn = m_jsEngine->globalObject().property("Vec2");
     m_vec3Fn = m_jsEngine->globalObject().property("Vec3");
     m_vec4Fn = m_jsEngine->globalObject().property("Vec4");
+
+    // canvasSize (design canvas, constant) and screenResolution (widget size,
+    // resized in place by applyScreenResize) as Vec2 — see EngineResolution.hpp.
+    // Must follow kVecClassesJs so Vec2 is defined.
+    {
+        auto orthoSize = m_scene->getOrthoSize();
+        m_jsEngine->evaluate(QString("engine.screenResolution = Vec2(%1, %2);\n"
+                                     "engine.canvasSize = Vec2(%1, %2);\n")
+                                 .arg(orthoSize[0])
+                                 .arg(orthoSize[1]));
+    }
 
     m_jsEngine->evaluate(
         // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain

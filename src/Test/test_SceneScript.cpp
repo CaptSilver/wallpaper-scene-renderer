@@ -2837,6 +2837,18 @@ TEST_SUITE("Vec3") {
         checkVec3(v, 1, 2, 3);
     }
 
+    TEST_CASE("single arg broadcasts to all components") {
+        // WE / GLSL vec3(s) semantics — `new Vec3(1/g_zoom)` is a uniform
+        // scale.  Regressed clock text to scale (s,0,0) → zero height → hidden.
+        MathEnv  env;
+        checkVec3(env.engine.evaluate("Vec3(5)"), 5, 5, 5);
+    }
+
+    TEST_CASE("two args leave z at zero") {
+        MathEnv  env;
+        checkVec3(env.engine.evaluate("Vec3(3, 4)"), 3, 4, 0);
+    }
+
     TEST_CASE("multiply scales all components") {
         MathEnv  env;
         QJSValue v = env.engine.evaluate("Vec3(1,2,3).multiply(2)");
@@ -5907,8 +5919,11 @@ TEST_SUITE("Script Compilation") {
         "             (typeof update === 'function' ? update : null);\n"
         "  var _init = typeof exports.init === 'function' ? exports.init :\n"
         "              (typeof init === 'function' ? init : null);\n"
+        "  var _aup = typeof exports.applyUserProperties === 'function' ? "
+        "exports.applyUserProperties :\n"
+        "             (typeof applyUserProperties === 'function' ? applyUserProperties : null);\n"
         "  if (!_upd) return null;\n"
-        "  return { update: _upd, init: _init };\n"
+        "  return { update: _upd, init: _init, applyUserProperties: _aup };\n"
         "})()";
 
     // Property IIFE pattern: extracts all handlers with try-catch wrapping
@@ -6001,6 +6016,31 @@ TEST_SUITE("Script Compilation") {
         QJSValue r = env.engine.evaluate(script);
         CHECK(r.property("init").isCallable());
         CHECK(r.property("update").isCallable());
+    }
+
+    TEST_CASE("exports.applyUserProperties extracted from text IIFE") {
+        // Text scripts that initialise state in applyUserProperties (e.g. the
+        // Hoshi-Tele clock building shared.customLang) need the handler exposed
+        // so setupTextScripts can fire it — without it the clock format throws
+        // every tick and the time freezes.
+        ScriptEnv env;
+        QString   script = QString("%1  exports.update = function(v){ return v; };\n"
+                                   "  exports.applyUserProperties = function(p){};\n%2")
+                             .arg(TEXT_IIFE_PRE)
+                             .arg(TEXT_IIFE_POST);
+        QJSValue r = env.engine.evaluate(script);
+        CHECK(r.property("update").isCallable());
+        CHECK(r.property("applyUserProperties").isCallable());
+    }
+
+    TEST_CASE("bare function applyUserProperties extracted from text IIFE") {
+        ScriptEnv env;
+        QString   script = QString("%1  function update(v){ return v; }\n"
+                                   "  function applyUserProperties(p){}\n%2")
+                             .arg(TEXT_IIFE_PRE)
+                             .arg(TEXT_IIFE_POST);
+        QJSValue r = env.engine.evaluate(script);
+        CHECK(r.property("applyUserProperties").isCallable());
     }
 
     TEST_CASE("property IIFE extracts all 16 handlers") {
