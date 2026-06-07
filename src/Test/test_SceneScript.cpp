@@ -12,6 +12,7 @@
 #include "JsStringEscape.hpp"
 #include "JsSyntaxNormalize.hpp"
 #include "JsWatchdog.h"
+#include "EngineResolution.hpp"
 #include "LocalStorageQuota.hpp"
 #include "ScriptDiagState.h"
 #include "SceneAspect.h"
@@ -874,6 +875,63 @@ TEST_SUITE("SceneBackend cursorScreenPosition units") {
     }
 
 } // TEST_SUITE SceneBackend cursorScreenPosition units
+
+// ------------------------------------------------------------------
+// engine.canvasSize vs engine.screenResolution on resize
+// ------------------------------------------------------------------
+// A screen resize updates engine.screenResolution (widget pixels) but must
+// leave engine.canvasSize pinned to the scene's ortho design canvas.  Scripts
+// position layers as `scriptProperties.x * engine.canvasSize.x`, so a clobbered
+// canvasSize drags every script-positioned layer (puppet head/eyes, clock text)
+// off the static layers on any screen != the design canvas.  Witness:
+// 3448290956 (夜莺Night), design canvas 3840x2160 — at 2560x1440 the head
+// origin 0.5*canvasSize.x went 1920 -> 1280 and the eyes/nose left the face.
+TEST_SUITE("SceneBackend resize canvasSize invariant") {
+    struct ResizeEnv {
+        QJSEngine engine;
+        ResizeEnv() {
+            // Mirror the JS shape SceneObject seeds at load: both globals start
+            // at the ortho design canvas.
+            engine.evaluate("var engine = { canvasSize: { x: 3840, y: 2160 },\n"
+                            "  screenResolution: { x: 3840, y: 2160 } };\n");
+        }
+        void resize(int w, int h) {
+            QJSValue engineObj = engine.globalObject().property("engine");
+            wek::qml_helper::applyScreenResize(engineObj, w, h);
+        }
+        double eval(const char* js) { return engine.evaluate(js).toNumber(); }
+    };
+
+    TEST_CASE("resize updates screenResolution but leaves canvasSize at design canvas") {
+        ResizeEnv env;
+        env.resize(2560, 1440);
+        CHECK(env.eval("engine.screenResolution.x") == doctest::Approx(2560.0));
+        CHECK(env.eval("engine.screenResolution.y") == doctest::Approx(1440.0));
+        // The invariant that broke 夜莺Night: canvasSize must NOT track the screen.
+        CHECK(env.eval("engine.canvasSize.x") == doctest::Approx(3840.0));
+        CHECK(env.eval("engine.canvasSize.y") == doctest::Approx(2160.0));
+    }
+
+    TEST_CASE("script positioning off canvasSize stays scene-centred after resize") {
+        // The exact head-origin idiom from 头位置 (id=179): 0.5 * canvasSize
+        // must land at the design-canvas centre (1920,1080) on any screen.
+        ResizeEnv env;
+        env.resize(2560, 1440);
+        CHECK(env.eval("0.5 * engine.canvasSize.x") == doctest::Approx(1920.0));
+        CHECK(env.eval("0.5 * engine.canvasSize.y") == doctest::Approx(1080.0));
+    }
+
+    TEST_CASE("repeated resizes never leak the widget size into canvasSize") {
+        ResizeEnv env;
+        env.resize(2560, 1440);
+        env.resize(1280, 720);
+        env.resize(3440, 1440);
+        CHECK(env.eval("engine.canvasSize.x") == doctest::Approx(3840.0));
+        CHECK(env.eval("engine.canvasSize.y") == doctest::Approx(2160.0));
+        CHECK(env.eval("engine.screenResolution.x") == doctest::Approx(3440.0));
+        CHECK(env.eval("engine.screenResolution.y") == doctest::Approx(1440.0));
+    }
+} // TEST_SUITE SceneBackend resize canvasSize invariant
 
 // ------------------------------------------------------------------
 // getVideoTexture() proxy (JS side)

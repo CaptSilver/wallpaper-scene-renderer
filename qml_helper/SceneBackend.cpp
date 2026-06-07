@@ -8,6 +8,7 @@
 #include "JsSyntaxNormalize.hpp"
 #include "LocalStorageQuota.hpp"
 #include "PropertyScriptDispatchJs.hpp"
+#include "EngineResolution.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneTimerBridge.h"
@@ -654,14 +655,12 @@ void SceneObject::fireDestroyEvent() {
 void SceneObject::fireResizeScreen(int width, int height) {
     if (! m_jsEngine || m_propertyScriptStates.empty()) return;
 
-    // Update engine.screenResolution and engine.canvasSize
+    // Update engine.screenResolution only.  engine.canvasSize stays pinned to
+    // the scene's design canvas (set once from getOrthoSize()) — clobbering it
+    // with the widget size shifts every script-positioned layer off the static
+    // layers on any screen != the design canvas.  See EngineResolution.hpp.
     QJSValue engineObj = m_jsEngine->globalObject().property("engine");
-    QJSValue sr        = engineObj.property("screenResolution");
-    sr.setProperty("x", width);
-    sr.setProperty("y", height);
-    QJSValue cs = engineObj.property("canvasSize");
-    cs.setProperty("x", width);
-    cs.setProperty("y", height);
+    wek::qml_helper::applyScreenResize(engineObj, width, height);
 
     for (auto& state : m_propertyScriptStates) {
         if (! state.resizeScreenFn.isCallable()) continue;
