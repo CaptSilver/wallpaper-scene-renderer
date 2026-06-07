@@ -2229,6 +2229,13 @@ void SceneObject::setupTextScripts() {
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
+        // WE seeds init(value) with the constant's initial value shaped to its
+        // component count (scalar number or VecN), matching the per-frame
+        // update(value) arg.  Passing undefined here threw on scripts that
+        // inspect the value's shape (value.hasOwnProperty('x')), so their init
+        // never ran — the media-info fade/scale on Totoro (2891663007) broke.
+        QString initArg = wek::qml_helper::shaderValueInitExpr(svi.initialValue, svi.argShape);
+
         QString wrapped =
             QString("(function(_tlo) {\n"
                     "  'use strict';\n"
@@ -2241,7 +2248,7 @@ void SceneObject::setupTextScripts() {
                     "  var _init = typeof exports.init === 'function' ? exports.init :\n"
                     "              (typeof init === 'function' ? init : null);\n"
                     "  if (_init) {\n"
-                    "    try { _init(undefined); }\n"
+                    "    try { _init(%3); }\n"
                     "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : e)); }\n"
                     "  }\n"
                     "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
@@ -2263,7 +2270,7 @@ void SceneObject::setupTextScripts() {
                     "           cursorUp: _up, cursorDown: _dn,\n"
                     "           cursorClick: _clk, cursorMove: _mv };\n"
                     "})(thisLayer)\n")
-                .arg(propsInit, scriptSrc);
+                .arg(propsInit, scriptSrc, initArg);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError() || result.isNull() || result.isUndefined()) {
@@ -3622,20 +3629,7 @@ void SceneObject::installTimerBridge() {
             return callJsGuarded(call, outInterrupted);
         });
     m_globalObj.setProperty("_timerBridge", m_jsEngine->newQObject(m_timerBridge));
-    m_jsEngine->evaluate("function setTimeout(fn, delay)  { return _timerBridge.createTimer(fn, "
-                         "delay || 0, false); }\n"
-                         "function setInterval(fn, delay) { return _timerBridge.createTimer(fn, "
-                         "delay || 0, true); }\n"
-                         "function clearTimeout(id)  { _timerBridge.clearTimer(id); }\n"
-                         "function clearInterval(id) { _timerBridge.clearTimer(id); }\n"
-                         // WE scripts call these as engine-namespaced too — most commonly
-                         // `engine.setTimeout(...)` for delayed-reveal animations (Summer
-                         // Vibes 3293999899 fires this 29 times).  Alias to the same
-                         // _timerBridge so cancellation IDs interoperate across spellings.
-                         "engine.setTimeout    = setTimeout;\n"
-                         "engine.setInterval   = setInterval;\n"
-                         "engine.clearTimeout  = clearTimeout;\n"
-                         "engine.clearInterval = clearInterval;\n");
+    m_jsEngine->evaluate(wek::qml_helper::kTimerShimJs);
 }
 
 void SceneObject::buildLayerProxyStates() {

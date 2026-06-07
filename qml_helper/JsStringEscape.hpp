@@ -27,6 +27,9 @@
 #include <QtCore/QChar>
 #include <QtCore/QString>
 
+#include <cstdint>
+#include <vector>
+
 namespace wek::qml_helper
 {
 
@@ -83,6 +86,28 @@ inline QString escapeForJsSingleQuoted(const QString& in) {
 // Returns e.g. `thisScene.getLayer('My\'Layer')`.
 inline QString jsLayerLookupExpr(const QString& layerName) {
     return QStringLiteral("thisScene.getLayer('%1')").arg(escapeForJsSingleQuoted(layerName));
+}
+
+// Build the JS expression for the initial value handed to a shader-value
+// script's `init(value)`.  Wallpaper Engine seeds init with the material
+// constant's declared value, shaped to its component count: a plain number for
+// a scalar (alpha), or a VecN for a vector (scale / colour).  Scripts branch on
+// the shape — e.g. `value.hasOwnProperty('x')` to tell vector from scalar — so
+// passing `undefined` (the old behaviour) threw "Cannot call method
+// 'hasOwnProperty' of undefined" and the script's init never ran, breaking the
+// media-info fade/scale on Totoro (2891663007).  This mirrors the per-frame
+// update arg shaping (the m_vecNFn calls) so init and update see the same type.
+// VecN here resolves to the engine's global Vec2/Vec3/Vec4 ctors (kVecClassesJs),
+// which are new-safe when called without `new`.
+inline QString shaderValueInitExpr(const std::vector<float>& initialValue, int argShape) {
+    auto num = [&](std::size_t i) -> QString {
+        double v = i < initialValue.size() ? (double)initialValue[i] : 0.0;
+        return QString::number(v, 'g', 9);
+    };
+    if (argShape <= 1) return num(0);
+    if (argShape == 2) return QStringLiteral("Vec2(%1,%2)").arg(num(0), num(1));
+    if (argShape == 3) return QStringLiteral("Vec3(%1,%2,%3)").arg(num(0), num(1), num(2));
+    return QStringLiteral("Vec4(%1,%2,%3,%4)").arg(num(0), num(1), num(2), num(3));
 }
 
 } // namespace wek::qml_helper

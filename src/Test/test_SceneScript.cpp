@@ -40,6 +40,84 @@ static void processEventsFor(int ms) {
 }
 
 // ------------------------------------------------------------------
+// Timer JS shim contract (kTimerShimJs)
+//
+// Wallpaper Engine's setTimeout/setInterval return a CANCEL FUNCTION — many
+// scripts cancel by calling the return value (the media-info template workshop
+// 3219510589 used by Totoro 2891663007 does `stop = engine.setTimeout(...);
+// if (stop) stop();`).  The old shim returned the bare numeric id, so `stop()`
+// no-op'd and fade timers stacked.  These cases pin the WE-faithful contract on
+// the exact JS production wires in, with a pure-JS mock _timerBridge.
+// ------------------------------------------------------------------
+TEST_SUITE("timer JS shim contract") {
+    // Build an engine with a mock _timerBridge that records create/clear calls,
+    // an `engine` object for the aliases, then the production timer shim.
+    static void setupTimerShim(QJSEngine& e) {
+        e.evaluate(
+            "var _created = [];\n"
+            "var _cleared = [];\n"
+            "var _nextId = 1;\n"
+            "var _timerBridge = {\n"
+            "  createTimer: function(fn, delay, repeat) {\n"
+            "    _created.push({ delay: delay, repeat: repeat }); return _nextId++; },\n"
+            "  clearTimer: function(id) { _cleared.push(id); }\n"
+            "};\n"
+            "var engine = {};\n");
+        e.evaluate(wek::qml_helper::kTimerShimJs);
+    }
+
+    TEST_CASE("setTimeout returns a callable cancel function, not a bare id") {
+        QJSEngine e;
+        setupTimerShim(e);
+        QJSValue h = e.evaluate("setTimeout(function(){}, 100)");
+        REQUIRE_FALSE(h.isError());
+        CHECK(h.isCallable()); // the WE contract: cancel by calling the return
+        // createTimer was invoked once, single-shot.
+        CHECK(e.evaluate("_created.length").toInt() == 1);
+        CHECK(e.evaluate("_created[0].repeat").toBool() == false);
+    }
+
+    TEST_CASE("calling the returned function cancels that timer's id") {
+        QJSEngine e;
+        setupTimerShim(e);
+        // First timer gets id 1; calling the cancel fn must clear id 1.
+        e.evaluate("var stop = setTimeout(function(){}, 100); stop();");
+        CHECK(e.evaluate("_cleared.length").toInt() == 1);
+        CHECK(e.evaluate("_cleared[0]").toInt() == 1);
+    }
+
+    TEST_CASE("setInterval returns a repeat cancel function") {
+        QJSEngine e;
+        setupTimerShim(e);
+        QJSValue h = e.evaluate("setInterval(function(){}, 50)");
+        CHECK(h.isCallable());
+        CHECK(e.evaluate("_created[0].repeat").toBool() == true);
+    }
+
+    TEST_CASE("clearTimeout accepts the returned cancel function (dual-mode)") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("clearTimeout(setTimeout(function(){}, 10));");
+        CHECK(e.evaluate("_cleared.length").toInt() == 1);
+        CHECK(e.evaluate("_cleared[0]").toInt() == 1);
+    }
+
+    TEST_CASE("clearTimeout still accepts a raw numeric id (back-compat)") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("clearTimeout(42);");
+        CHECK(e.evaluate("_cleared[0]").toInt() == 42);
+    }
+
+    TEST_CASE("engine.setTimeout aliases the same shim") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("var s = engine.setTimeout(function(){}, 5); s();");
+        CHECK(e.evaluate("_created.length").toInt() == 1);
+        CHECK(e.evaluate("_cleared[0]").toInt() == 1);
+    }
+}
+
 // SceneTimerBridge  (C++ level)
 // ------------------------------------------------------------------
 TEST_SUITE("SceneTimerBridge") {
@@ -9712,6 +9790,62 @@ TEST_SUITE("JS string escaping (F18)") {
         CHECK_FALSE(newResult.isError());
     }
 } // TEST_SUITE JS string escaping (F18)
+
+// ------------------------------------------------------------------
+// shaderValueInitExpr (JsStringEscape.hpp) — the JS expression for the value
+// passed to a shader-value script's init(value).  WE seeds init with the
+// material constant's initial value, shaped to its component count.  The old
+// wrapper passed `undefined`, so scripts that branch on the value's shape
+// (e.g. `value.hasOwnProperty('x')` to tell Vec from scalar) threw on init and
+// never ran — the media-info fade/scale on Totoro (2891663007) silently broke.
+// ------------------------------------------------------------------
+TEST_SUITE("shader-value script init seed") {
+    using wek::qml_helper::shaderValueInitExpr;
+
+    TEST_CASE("scalar argShape emits a plain number literal") {
+        CHECK(shaderValueInitExpr({ 0.5f }, 1) == QStringLiteral("0.5"));
+        CHECK(shaderValueInitExpr({ 0.5f }, 0) == QStringLiteral("0.5"));
+    }
+    TEST_CASE("empty initial value defaults each component to 0") {
+        CHECK(shaderValueInitExpr({}, 1) == QStringLiteral("0"));
+        CHECK(shaderValueInitExpr({}, 3) == QStringLiteral("Vec3(0,0,0)"));
+    }
+    TEST_CASE("vector argShapes emit the matching VecN ctor") {
+        // Exactly-representable floats so the string compare is imprecision-free.
+        CHECK(shaderValueInitExpr({ 1.0f, 0.0f }, 2) == QStringLiteral("Vec2(1,0)"));
+        CHECK(shaderValueInitExpr({ 0.5f, 0.25f, 0.125f }, 3) ==
+              QStringLiteral("Vec3(0.5,0.25,0.125)"));
+        CHECK(shaderValueInitExpr({ 1.0f, 2.0f, 3.0f, 4.0f }, 4) ==
+              QStringLiteral("Vec4(1,2,3,4)"));
+    }
+    TEST_CASE("a short value vector zero-fills the missing components") {
+        CHECK(shaderValueInitExpr({ 0.5f }, 3) == QStringLiteral("Vec3(0.5,0,0)"));
+    }
+
+    // The behaviour that actually mattered: evaluated against the engine's Vec
+    // classes, the seed must be the shape the script tests for.  A Vec3 seed has
+    // an own `x` property (hasOwnProperty true); a scalar seed does not — and
+    // neither throws, unlike the old `undefined`.
+    TEST_CASE("seed evaluates to the shape scripts branch on") {
+        QJSEngine engine;
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
+
+        QJSValue vec = engine.evaluate(shaderValueInitExpr({ 0.35f, 0.35f, 0.35f }, 3));
+        REQUIRE_FALSE(vec.isError());
+        CHECK(vec.property("x").toNumber() == doctest::Approx(0.35));
+        CHECK(engine.evaluate(
+                       QStringLiteral("(%1).hasOwnProperty('x')")
+                           .arg(shaderValueInitExpr({ 0.35f, 0.35f, 0.35f }, 3)))
+                  .toBool() == true);
+
+        QJSValue scalar = engine.evaluate(shaderValueInitExpr({ 0.5f }, 1));
+        REQUIRE_FALSE(scalar.isError());
+        CHECK(scalar.toNumber() == doctest::Approx(0.5));
+        CHECK(engine.evaluate(QStringLiteral("(%1).hasOwnProperty('x')")
+                                  .arg(shaderValueInitExpr({ 0.5f }, 1)))
+                  .toBool() == false);
+    }
+} // TEST_SUITE shader-value script init seed
 
 // ------------------------------------------------------------------
 // JsSyntaxNormalize — ES2019 optional catch binding (`catch {`)

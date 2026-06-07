@@ -1377,4 +1377,36 @@ function _collectDirtyLayers() {
   return out;
 }
 )JS";
+
+// Timer shim — setTimeout / setInterval / clearTimeout / clearInterval, plus the
+// `engine.`-namespaced aliases (WE scripts use both spellings; Summer Vibes
+// 3293999899 fires engine.setTimeout 29 times).  Requires the `_timerBridge`
+// QObject and an `engine` object already on the global.
+//
+// Wallpaper Engine's setTimeout/setInterval return a CANCEL FUNCTION — calling
+// it clears the timer, e.g. the widely-reused media-info template (workshop
+// 3219510589) does `stop = engine.setTimeout(...); ... if (stop) stop();`.
+// Returning a bare numeric id made `stop()` throw/no-op so fade timers stacked.
+// We return a cancel function that also carries its numeric id, and accept
+// either spelling in clear*, so both `stop()` and `clearTimeout(stop)` /
+// `clearTimeout(id)` keep working.
+inline constexpr const char* kTimerShimJs = R"JS(
+function _wekMakeTimer(fn, delay, repeat) {
+  var id = _timerBridge.createTimer(fn, delay || 0, repeat);
+  var cancel = function() { _timerBridge.clearTimer(id); };
+  cancel.__timerId = id;
+  return cancel;
+}
+function setTimeout(fn, delay)  { return _wekMakeTimer(fn, delay, false); }
+function setInterval(fn, delay) { return _wekMakeTimer(fn, delay, true); }
+function _wekClearTimer(h) {
+  _timerBridge.clearTimer((h != null && h.__timerId !== undefined) ? h.__timerId : h);
+}
+function clearTimeout(h)  { _wekClearTimer(h); }
+function clearInterval(h) { _wekClearTimer(h); }
+engine.setTimeout    = setTimeout;
+engine.setInterval   = setInterval;
+engine.clearTimeout  = clearTimeout;
+engine.clearInterval = clearInterval;
+)JS";
 } // namespace wek::qml_helper
