@@ -71,6 +71,32 @@ TEST_SUITE("WPPuppet_Loop") {
         CHECK(info.t == doctest::Approx(0.5));
     }
 
+    TEST_CASE("Loop mode negative time (reverse playback) wraps into range") {
+        // An animation layer with a negative rate drives cur_time below zero.
+        // C++ fmod keeps the dividend's sign, so without wrapping it back into
+        // [0, max_time) the `(uint)_rate` cast is undefined behaviour and the
+        // animation samples garbage frames — extrapolating bone pose AND scale
+        // past the keyframes (a puppet leg contorting / mis-scaling).  -0.05
+        // must behave like 0.95 (frame 9, midway), and cur_time must be
+        // rewritten into range.
+        auto   anim = makeAnimation(WPPuppet::PlayMode::Loop, 10, 10.0);
+        double t    = -0.05;
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 9);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.5));
+        CHECK(t == doctest::Approx(0.95));
+    }
+
+    TEST_CASE("Loop mode large negative time wraps through multiple periods") {
+        auto   anim = makeAnimation(WPPuppet::PlayMode::Loop, 10, 10.0);
+        double t    = -1.05; // more than one period below zero
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 9);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.5));
+    }
+
 } // TEST_SUITE
 
 // ===========================================================================

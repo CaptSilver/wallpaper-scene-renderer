@@ -166,7 +166,13 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
 static constexpr void genInterpolationInfo(WPPuppet::Animation::InterpolationInfo& info,
                                            double& cur, u32 length, double frame_time,
                                            double max_time) {
-    cur          = std::fmod(cur, max_time);
+    cur = std::fmod(cur, max_time);
+    // Reverse playback (negative animation-layer rate, e.g. Hoshi-Tele 幽's
+    // leg "swing" driven at a negative rate): C++ fmod keeps the dividend's
+    // sign, so cur goes negative and `(uint)_rate` below is undefined behaviour
+    // — it samples garbage frames, contorting the limb and scaling it wrong.
+    // Wrap back into [0, max_time) so reverse animations sample real frames.
+    if (cur < 0.0) cur += max_time;
     double _rate = cur / frame_time;
 
     info.frame_a = ((uint)_rate) % length;
