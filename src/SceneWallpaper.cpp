@@ -8,6 +8,7 @@
 #include "Timer/FrameTimer.hpp"
 #include "Utils/FpsCounter.h"
 #include "WPJson.hpp"
+#include "AttachmentLinkOrder.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
@@ -1123,6 +1124,70 @@ private:
                         }
                         if (! resolvedOutput || composeWorldTracks) {
                             node->SetRotation(rv);
+                        }
+                    }
+                }
+                // Recompose attachment proxies from each parent's CURRENT world
+                // so a script-rotated parent (a puppet head tracking the cursor)
+                // carries its bone-attached / effect-chain children along,
+                // instead of leaving them frozen at the parse-time bind pose
+                // (eyes/brows detaching off a tilting head — workshop 3448290956).
+                // Wallpaper Engine recomposes the attachment every frame; we
+                // mirror that here.  Only runs when a transform actually changed,
+                // and processes parents before children (ascending chain depth).
+                if (transformHit > 0 && ! scene->attachmentProxyLinks.empty()) {
+                    auto&            links = scene->attachmentProxyLinks;
+                    std::vector<int> childIds, parentIds;
+                    childIds.reserve(links.size());
+                    parentIds.reserve(links.size());
+                    for (auto& l : links) {
+                        childIds.push_back(l.child_id);
+                        parentIds.push_back(l.parent_id);
+                    }
+                    auto depths = attachmentLinkDepths(childIds, parentIds);
+                    for (std::size_t i = 0; i < links.size(); ++i) links[i].depth = depths[i];
+                    std::stable_sort(links.begin(),
+                                     links.end(),
+                                     [](const Scene::AttachmentProxyLink& a,
+                                        const Scene::AttachmentProxyLink& b) {
+                                         return a.depth < b.depth;
+                                     });
+                    auto liveWorld = [&](i32 id) -> Eigen::Matrix4d {
+                        auto eit = scene->nodeEffectLayerMap.find(id);
+                        if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
+                            if (auto* r = eit->second->ResolvedLastOutput()) {
+                                r->UpdateTrans();
+                                return r->ModelTrans();
+                            }
+                        }
+                        auto nit = scene->nodeById.find(id);
+                        if (nit != scene->nodeById.end() && nit->second) {
+                            nit->second->UpdateTrans();
+                            return nit->second->ModelTrans();
+                        }
+                        return Eigen::Matrix4d::Identity();
+                    };
+                    // Only recompose a child whose parent actually moved this
+                    // frame (transitively): a layer attached to a static parent
+                    // (e.g. the clock text on the alarm-clock group) must stay
+                    // exactly where it was baked at parse time, untouched.  Seed
+                    // the moved set with the ids that received a transform update,
+                    // then propagate down the chain as each link refreshes.
+                    std::unordered_set<i32> moved;
+                    for (auto& [key, vec] : m_pending_transform_updates) moved.insert(key.first);
+                    for (auto& l : links) {
+                        if (! l.proxy) continue;
+                        if (! moved.count(l.parent_id)) continue;
+                        l.proxy->SetWorldTransform(liveWorld(l.parent_id) * l.offset);
+                        moved.insert(l.child_id); // this child moved → its children follow
+                        // Force the child's render node (and its subtree) dirty so
+                        // the draw-time UpdateTrans recomputes it from the fresh
+                        // proxy.  Re-setting the same translate is the existing
+                        // mark-dirty idiom (MarkTransDirty is private).
+                        auto cit = scene->nodeEffectLayerMap.find(l.child_id);
+                        if (cit != scene->nodeEffectLayerMap.end() && cit->second) {
+                            if (auto* r = cit->second->ResolvedLastOutput())
+                                r->SetTranslate(r->Translate());
                         }
                     }
                 }

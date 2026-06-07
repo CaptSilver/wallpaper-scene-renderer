@@ -2275,11 +2275,11 @@ void assembleEffectChain(ParseContext&                     context,
             context.original_world_transforms.count(wpimgobj.parent_id)) {
             auto proxy = std::make_shared<SceneNode>();
             // Resolve the attachment anchor the same way original_world_
-            // transforms does above: start from the parent's mesh center,
-            // then apply the named MDAT attachment from the parent's
-            // puppet if one is present.
-            Eigen::Matrix4d parent_chain =
-                context.original_world_transforms[wpimgobj.parent_id];
+            // transforms does above: the constant `offset` is the parent's
+            // bone-attachment factor (bone bind-pose world * attachment
+            // transform), identity when the child has no bone attachment.
+            // The proxy world is `parentWorld * offset`.
+            Eigen::Matrix4d offset = Eigen::Matrix4d::Identity();
             if (! wpimgobj.attachment.empty()) {
                 auto pit = context.node_puppet.find(wpimgobj.parent_id);
                 if (pit != context.node_puppet.end() && pit->second) {
@@ -2288,14 +2288,21 @@ void assembleEffectChain(ParseContext&                     context,
                             Eigen::Matrix4d bone_world = pit->second->bones[att->bone_index]
                                                              .world_transform.matrix()
                                                              .cast<double>();
-                            parent_chain = parent_chain * bone_world *
-                                           att->transform.matrix().cast<double>();
+                            offset = bone_world * att->transform.matrix().cast<double>();
                         }
                     }
                 }
             }
+            Eigen::Matrix4d parent_chain =
+                context.original_world_transforms[wpimgobj.parent_id] * offset;
             proxy->SetWorldTransform(parent_chain);
+            SceneNode* proxy_raw = proxy.get();
             imgEffectLayer->SetParentProxy(std::move(proxy));
+            // Record a live link so the draw loop can recompose the proxy from
+            // the parent's current (script-rotated) world each frame, instead
+            // of leaving it frozen at the parse-time bind pose.
+            context.scene->attachmentProxyLinks.push_back(
+                { proxy_raw, wpimgobj.parent_id, wpimgobj.id, offset, 0 });
         }
         imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
         imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
@@ -3692,7 +3699,19 @@ void assembleTextEffectChain(ParseContext&                           context,
             if (context.original_world_transforms.count(textObj.parent_id)) {
                 auto proxy = std::make_shared<SceneNode>();
                 proxy->SetWorldTransform(context.original_world_transforms.at(textObj.parent_id));
+                SceneNode* proxy_raw = proxy.get();
                 imgEffectLayer->SetParentProxy(std::move(proxy));
+                // Refresh the proxy from the parent's CURRENT world each frame.
+                // Parents with a script-driven origin (e.g. the alarm-clock group
+                // 255 placing itself at `0.21*canvasSize`) move after parse, so a
+                // frozen proxy strands the Day/Date text where the clock used to
+                // be while the plain time layer tracks the live group — the
+                // day-of-week ends up ~90px off, overlapping the time (3448290956).
+                context.scene->attachmentProxyLinks.push_back({ proxy_raw,
+                                                                textObj.parent_id,
+                                                                textObj.id,
+                                                                Eigen::Matrix4d::Identity(),
+                                                                0 });
             }
         }
         // Bake THIS layer's authored world transform so non-effect text
@@ -4591,7 +4610,8 @@ dispatchObjects(ParseContext& context, std::vector<WPObjectVar>& wp_objs,
 // mark dirty so the next UpdateTrans propagates the full transform chain
 // to children (text/image nodes already attached to these groups).
 void fixupDeferredGroupLinks(ParseContext& context,
-                             const std::vector<GroupInfo>& deferred_group_links) {
+                             const std::vector<GroupInfo>& deferred_group_links,
+                             const std::map<i32, size_t>&  json_order) {
     for (auto& gi : deferred_group_links) {
         auto pit = context.node_map.find(gi.parent_id);
         if (pit == context.node_map.end()) continue;
@@ -4607,7 +4627,16 @@ void fixupDeferredGroupLinks(ParseContext& context,
         // into the re-linked group's own local — works for pure
         // scale+translate chains (solar info-panel case; no rotation).
         auto eit = context.scene->nodeEffectLayerMap.find(gi.parent_id);
-        if (eit != context.scene->nodeEffectLayerMap.end() && eit->second) {
+        // Compose layers (composelayer.json) keep their world node LIVE — its MVP
+        // tracks the current scripted origin/scale/angles and chains through the
+        // real parent, so a child re-linked under it inherits the full transform
+        // (including a runtime parent rotation) the normal way.  Flattening to
+        // translation+scale here would drop that rotation and detach the child
+        // (puppet eyes lifting off a tilting head — 3448290956).  Only the
+        // non-compose effect case needs the pre-compose, since there the world
+        // node is reset to identity for the base ping-pong pass.
+        if (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
+            ! eit->second->IsComposeLayer()) {
             auto&           finalNode = eit->second->FinalNode();
             Eigen::Vector3f parent_t  = finalNode.Translate();
             Eigen::Vector3f parent_s  = finalNode.Scale();
@@ -4616,14 +4645,14 @@ void fixupDeferredGroupLinks(ParseContext& context,
             Eigen::Vector3f group_s   = group_node->Scale();
             Eigen::Vector3f group_r   = group_node->Rotation();
             if (parent_r.squaredNorm() > 1e-6f || group_r.squaredNorm() > 1e-6f) {
-                // Rotation in the parent-or-group chain isn't currently
-                // baked into the composed local transform — the relink
-                // sets translation+scale only.  Logged at INFO since the
-                // composition still renders (with a slight misalignment
-                // proportional to the rotation angle); demoting from
-                // ERROR avoids tagging the wallpaper as a failure in the
-                // audit pipeline.  Driver: SUBARU 3448290956 (group_r.z
-                // ≈ 0.063 rad / 3.6°).
+                // Rotation in the parent-or-group chain isn't baked into the
+                // composed local transform for NON-compose effect parents — the
+                // relink sets translation+scale only, so a rotated chain renders
+                // with a slight misalignment proportional to the angle.  Compose
+                // parents take the live-world branch above (no flatten) and do
+                // carry rotation; this remaining gap only affects non-compose
+                // effect parents with a rotated re-linked group.  Logged at INFO
+                // (still renders) rather than ERROR to avoid audit false-positives.
                 LOG_INFO("relink inject: rotation in chain for id=%d unsupported, "
                          "parent_r=(%.3f,%.3f,%.3f) group_r=(%.3f,%.3f,%.3f)",
                          gi.id,
@@ -4657,11 +4686,27 @@ void fixupDeferredGroupLinks(ParseContext& context,
         // call marks self dirty — MarkTransDirty short-circuits if already
         // dirty, so order matters for descendants' cached world matrices.
         group_node->SetTranslate(group_node->Translate());
-        parent_node->AppendChild(group_node);
-        group_node->SetParent(parent_node.get());
-        LOG_INFO("relinked deferred group id=%d → parent %d (was orphaned at scene root)",
+        // Insert at the group's scene-json position among its new siblings
+        // rather than appending last.  restoreZOrder only sorts the top-level
+        // scene children, so a deferred group appended here would otherwise
+        // draw AFTER siblings authored later in scene.json — e.g. the eyeball
+        // layers (in the deferred Eyes group) drawing over the eyelids, so a
+        // blink never covers the iris (3448290956).  Land before the first
+        // existing child authored later than this group.
+        const auto orderIt  = json_order.find(gi.id);
+        const size_t myOrder = orderIt != json_order.end() ? orderIt->second
+                                                           : std::numeric_limits<size_t>::max();
+        int insertIdx = 0;
+        for (const auto& sib : parent_node->GetChildren()) {
+            auto sIt = json_order.find(sib->ID());
+            if (sIt != json_order.end() && sIt->second > myOrder) break;
+            ++insertIdx;
+        }
+        parent_node->InsertChildAt(group_node, insertIdx);
+        LOG_INFO("relinked deferred group id=%d → parent %d at idx %d (was orphaned at scene root)",
                  gi.id,
-                 gi.parent_id);
+                 gi.parent_id,
+                 insertIdx);
     }
 }
 
@@ -5620,7 +5665,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     auto nameToObjState = dispatchObjects(context, wp_objs, sm);
 
-    fixupDeferredGroupLinks(context, deferred_group_links);
+    fixupDeferredGroupLinks(context, deferred_group_links, json_order);
 
     // OWT for groups was computed before wp_objs parsing via the raw-JSON
     // walk above (context.id_authored_local) — it already includes

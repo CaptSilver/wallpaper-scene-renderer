@@ -280,6 +280,25 @@ public:
     // effect base pass.  Owned here for scene lifetime; children hold a raw
     // m_parent pointer into them (see WPSceneParser attachTextNodeToScene).
     std::vector<std::shared_ptr<SceneNode>> ownedProxyNodes;
+
+    // Live parent-tracking for attachment/effect-chain children.  An attached
+    // child's world is `parentWorld * boneAttOffset * childLocal`; we bake the
+    // parse-time value into a proxy node, but a parent whose transform is
+    // script-driven at runtime (e.g. a puppet head rotating toward the cursor)
+    // then leaves the baked proxy stale and the child detaches.  Each link lets
+    // the draw loop recompose the proxy every frame from the parent's *current*
+    // world (matching Wallpaper Engine, which never caches the attachment).
+    // `offset` is the constant `boneWorld * attachment` factor (identity when
+    // the child has no bone attachment).
+    struct AttachmentProxyLink {
+        SceneNode*      proxy { nullptr };  // proxy whose world is refreshed
+        i32             parent_id { -1 };   // live parent to read the world from
+        i32             child_id { -1 };    // child node (to re-dirty its subtree)
+        Eigen::Matrix4d offset { Eigen::Matrix4d::Identity() };
+        int             depth { 0 };        // parent-chain depth; refresh parents first
+    };
+    std::vector<AttachmentProxyLink> attachmentProxyLinks;
+
     std::vector<SceneColorScript>      colorScripts;
     std::vector<ScenePropertyScript>   propertyScripts;
     std::vector<SceneShaderValueScript> shaderValueScripts;

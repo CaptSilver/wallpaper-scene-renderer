@@ -11,6 +11,7 @@
 #include <doctest.h>
 
 #include "WPSceneAttachmentCompose.hpp"
+#include "AttachmentLinkOrder.hpp"
 #include "WPPuppet.hpp"
 
 #include <Eigen/Geometry>
@@ -272,5 +273,56 @@ TEST_SUITE("WPSceneAttachmentCompose") {
         CHECK(dt(3, 1) == doctest::Approx(m(3, 1)));
         CHECK(dt(3, 2) == doctest::Approx(m(3, 2)));
         CHECK(dt(3, 3) == doctest::Approx(m(3, 3)));
+    }
+}
+
+// The per-frame attachment-proxy refresh must process parents before children
+// so a child reads its parent's already-updated world this frame.  Depth = how
+// many ancestors (via parent id) are themselves tracked children.  Witness: the
+// 3448290956 face chain head(142, plain root from the link set's view) →
+// composite(137) → Eyes(157), where 137 tracks 142 and 157 tracks 137.
+TEST_SUITE("AttachmentLinkOrder depth") {
+    TEST_CASE("root link (parent not a tracked child) is depth 0") {
+        // 137 tracks 142, but 142 is not itself a tracked child → depth 0.
+        auto d = attachmentLinkDepths({ 137 }, { 142 });
+        REQUIRE(d.size() == 1);
+        CHECK(d[0] == 0);
+    }
+
+    TEST_CASE("nested chain increases depth parent-before-child") {
+        // 137←142 (depth 0); 157←137 (137 is tracked → depth 1);
+        // 999←157 (157 is tracked, itself depth 1 → depth 2).
+        auto d = attachmentLinkDepths({ 137, 157, 999 }, { 142, 137, 157 });
+        REQUIRE(d.size() == 3);
+        CHECK(d[0] == 0);
+        CHECK(d[1] == 1);
+        CHECK(d[2] == 2);
+    }
+
+    TEST_CASE("siblings sharing a tracked parent are both depth 1") {
+        // eyelids 149 and 243 both track composite 137 (depth 0) → both depth 1.
+        auto d = attachmentLinkDepths({ 137, 149, 243 }, { 142, 137, 137 });
+        REQUIRE(d.size() == 3);
+        CHECK(d[0] == 0);
+        CHECK(d[1] == 1);
+        CHECK(d[2] == 1);
+    }
+
+    TEST_CASE("input order independent — child listed before its parent") {
+        // Same chain as above but child rows precede the parent row; depths
+        // must still reflect the hierarchy, not list position.
+        auto d = attachmentLinkDepths({ 999, 157, 137 }, { 157, 137, 142 });
+        REQUIRE(d.size() == 3);
+        CHECK(d[0] == 2); // 999
+        CHECK(d[1] == 1); // 157
+        CHECK(d[2] == 0); // 137
+    }
+
+    TEST_CASE("cyclic parent chain terminates (no infinite loop)") {
+        // Malformed: 1←2 and 2←1.  The seen-guard stops counting on revisit.
+        auto d = attachmentLinkDepths({ 1, 2 }, { 2, 1 });
+        REQUIRE(d.size() == 2);
+        CHECK(d[0] <= 2);
+        CHECK(d[1] <= 2);
     }
 }
