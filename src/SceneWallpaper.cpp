@@ -1136,67 +1136,9 @@ private:
                 // mirror that here.  Only runs when a transform actually changed,
                 // and processes parents before children (ascending chain depth).
                 if (transformHit > 0 && ! scene->attachmentProxyLinks.empty()) {
-                    auto&            links = scene->attachmentProxyLinks;
-                    std::vector<int> childIds, parentIds;
-                    childIds.reserve(links.size());
-                    parentIds.reserve(links.size());
-                    for (auto& l : links) {
-                        childIds.push_back(l.child_id);
-                        parentIds.push_back(l.parent_id);
-                    }
-                    auto depths = attachmentLinkDepths(childIds, parentIds);
-                    for (std::size_t i = 0; i < links.size(); ++i) links[i].depth = depths[i];
-                    std::stable_sort(links.begin(),
-                                     links.end(),
-                                     [](const Scene::AttachmentProxyLink& a,
-                                        const Scene::AttachmentProxyLink& b) {
-                                         return a.depth < b.depth;
-                                     });
-                    auto liveWorld = [&](i32 id) -> Eigen::Matrix4d {
-                        auto eit = scene->nodeEffectLayerMap.find(id);
-                        if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
-                            if (auto* r = eit->second->ResolvedLastOutput()) {
-                                r->UpdateTrans();
-                                return r->ModelTrans();
-                            }
-                        }
-                        auto nit = scene->nodeById.find(id);
-                        if (nit != scene->nodeById.end() && nit->second) {
-                            nit->second->UpdateTrans();
-                            return nit->second->ModelTrans();
-                        }
-                        return Eigen::Matrix4d::Identity();
-                    };
-                    // Only recompose a child whose parent actually moved this
-                    // frame (transitively): a layer attached to a static parent
-                    // (e.g. the clock text on the alarm-clock group) must stay
-                    // exactly where it was baked at parse time, untouched.  Seed
-                    // the moved set with the ids that received a transform update,
-                    // then propagate down the chain as each link refreshes.
                     std::unordered_set<i32> moved;
                     for (auto& [key, vec] : m_pending_transform_updates) moved.insert(key.first);
-                    for (auto& l : links) {
-                        if (! l.proxy) continue;
-                        if (! moved.count(l.parent_id)) continue;
-                        l.proxy->SetWorldTransform(liveWorld(l.parent_id) * l.offset);
-                        moved.insert(l.child_id); // this child moved → its children follow
-                        // Force the child's render node (and its subtree) dirty so
-                        // the draw-time UpdateTrans recomputes it from the fresh
-                        // proxy.  Re-setting the same translate is the existing
-                        // mark-dirty idiom (MarkTransDirty is private).
-                        auto cit = scene->nodeEffectLayerMap.find(l.child_id);
-                        if (cit != scene->nodeEffectLayerMap.end() && cit->second) {
-                            if (auto* r = cit->second->ResolvedLastOutput())
-                                r->SetTranslate(r->Translate());
-                        } else {
-                            // Plain (effect-less) child: re-dirty its scene node
-                            // directly so draw-time UpdateTrans recomputes it
-                            // from the freshly-refreshed proxy parent.
-                            auto nit = scene->nodeById.find(l.child_id);
-                            if (nit != scene->nodeById.end() && nit->second)
-                                nit->second->SetTranslate(nit->second->Translate());
-                        }
-                    }
+                    recomposeAttachmentProxies(scene.get(), std::move(moved));
                 }
                 int visHit = 0, visMiss = 0;
                 for (auto& [id, visible] : m_pending_visible_updates) {
@@ -1917,11 +1859,69 @@ public:
     // composite.  Required because layers with effects bake alpha into
     // the effect chain's own material copies, so updating only the source
     // leaves the rendered output unchanged.  Runs on the render thread.
+    // Re-anchor attachment-proxy children to their parents' CURRENT world for
+    // the set of parent ids that moved this frame.  Shared by the two paths
+    // that move a parent: script-driven transform updates (CMD_DRAW) and
+    // keyframe property animations (tickPropertyAnimations).  `moved` is the
+    // seed set of parent ids; each refreshed child is appended so deeper chains
+    // follow.  Links are depth-sorted (parents before children) so a moved root
+    // propagates down in one pass.
+    void recomposeAttachmentProxies(Scene* scene, std::unordered_set<i32> moved) {
+        auto& links = scene->attachmentProxyLinks;
+        if (links.empty() || moved.empty()) return;
+        std::vector<int> childIds, parentIds;
+        childIds.reserve(links.size());
+        parentIds.reserve(links.size());
+        for (auto& l : links) {
+            childIds.push_back(l.child_id);
+            parentIds.push_back(l.parent_id);
+        }
+        auto depths = attachmentLinkDepths(childIds, parentIds);
+        for (std::size_t i = 0; i < links.size(); ++i) links[i].depth = depths[i];
+        std::stable_sort(links.begin(),
+                         links.end(),
+                         [](const Scene::AttachmentProxyLink& a,
+                            const Scene::AttachmentProxyLink& b) { return a.depth < b.depth; });
+        auto liveWorld = [&](i32 id) -> Eigen::Matrix4d {
+            auto eit = scene->nodeEffectLayerMap.find(id);
+            if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
+                if (auto* r = eit->second->ResolvedLastOutput()) {
+                    r->UpdateTrans();
+                    return r->ModelTrans();
+                }
+            }
+            auto nit = scene->nodeById.find(id);
+            if (nit != scene->nodeById.end() && nit->second) {
+                nit->second->UpdateTrans();
+                return nit->second->ModelTrans();
+            }
+            return Eigen::Matrix4d::Identity();
+        };
+        for (auto& l : links) {
+            if (! l.proxy) continue;
+            if (! moved.count(l.parent_id)) continue;
+            l.proxy->SetWorldTransform(liveWorld(l.parent_id) * l.offset);
+            moved.insert(l.child_id); // this child moved → its children follow
+            // Re-dirty the child's render node so draw-time UpdateTrans
+            // recomputes it from the fresh proxy (re-setting the same translate
+            // is the mark-dirty idiom; MarkTransDirty is private).
+            auto cit = scene->nodeEffectLayerMap.find(l.child_id);
+            if (cit != scene->nodeEffectLayerMap.end() && cit->second) {
+                if (auto* r = cit->second->ResolvedLastOutput()) r->SetTranslate(r->Translate());
+            } else {
+                auto nit = scene->nodeById.find(l.child_id);
+                if (nit != scene->nodeById.end() && nit->second)
+                    nit->second->SetTranslate(nit->second->Translate());
+            }
+        }
+    }
+
     void tickPropertyAnimations(double dt) {
         auto scene = m_scene.load();
         if (! scene) return;
         if (scene->nodePropertyAnimations.empty()) return;
         applyPendingPropertyAnimCommands();
+        std::unordered_set<i32> animMoved;
         for (auto& [nodeId, anims] : scene->nodePropertyAnimations) {
             auto       nit        = scene->nodeById.find(nodeId);
             SceneNode* sourceNode = (nit != scene->nodeById.end()) ? nit->second : nullptr;
@@ -1937,9 +1937,19 @@ public:
                     // delta added on top of the per-axis base in initialValue;
                     // in absolute mode it replaces the component outright.
                     applyVec3ComponentAnim(sourceNode, nodeId, anim, value);
+                    animMoved.insert(nodeId);
                 }
             }
         }
+        // Keyframe property animations move nodes directly (SetTranslate),
+        // bypassing the script-driven m_pending_transform_updates path that the
+        // CMD_DRAW recompose watches.  Re-anchor any attachment-proxy children
+        // of an animated parent here so effect-children track a float/dive
+        // animation instead of freezing at their last script-update pose
+        // (Hoshi-Tele 3042492564: 幽's body/head/clothes tore away from her
+        // animation-floated leg while the plain-child legs followed it).
+        if (! animMoved.empty() && ! scene->attachmentProxyLinks.empty())
+            recomposeAttachmentProxies(scene.get(), std::move(animMoved));
     }
 
     // Dispatch a single-axis property animation tick onto the corresponding
