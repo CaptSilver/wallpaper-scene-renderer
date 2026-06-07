@@ -980,6 +980,56 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(effLayer->IsOffscreen() == false);
     }
 
+    TEST_CASE("E2E: plain child of an effect parent inherits the parent world") {
+        // A parent image with its OWN non-compose effect has its worldNode
+        // reset to identity for the base capture pass (a-2 above).  A plain
+        // (effect-less) child must still land at parentWorld * childLocal — it
+        // gets a transform proxy carrying the parent's preserved world.  Before
+        // the fix it chained through the identity-reset parent and sat at its
+        // bare local offset (Hoshi-Tele 3042492564: the puppet's head + legs,
+        // the only effect-less parts, piled in the lower-left corner).
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 401, "name": "parent_fx", "image": "models/_plain.json",
+      "origin": "100 50 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] },
+    { "id": 402, "name": "plain_child", "parent": 401,
+      "image": "models/_plain.json",
+      "origin": "10 20 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_plain_child_fx_parent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        // Parent has a non-compose effect → its worldNode collapsed to identity.
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+
+        auto cit = scene->nodeById.find(402);
+        REQUIRE(cit != scene->nodeById.end());
+        SceneNode* child = cit->second;
+        REQUIRE(child != nullptr);
+        child->UpdateTrans();
+        const auto& m = child->ModelTrans();
+        // world = parentWorld(100,50) * childLocal(10,20) = (110,70).
+        // Stranded (pre-fix) it would read the bare local (10,20).
+        CHECK(m(0, 3) == doctest::Approx(110.0));
+        CHECK(m(1, 3) == doctest::Approx(70.0));
+    }
+
     TEST_CASE("E2E: compose-dependency forces dependent image offscreen (b-1)") {
         ensureGlslangInit();
         // Build a compose-layer image descriptor in the VFS:

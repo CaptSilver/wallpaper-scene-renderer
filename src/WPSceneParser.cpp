@@ -2202,6 +2202,27 @@ void computeWorldTransformAndAttachments(ParseContext&                 context,
     context.child_attachment_transforms[wpimgobj.id] = attach;
 }
 
+// Bone-attachment offset of a child against its parent's puppet: the constant
+// `boneWorld * attachment` factor, identity when the child names no attachment
+// or the parent has no puppet.  A child's parent-anchored world is
+// `parentWorld * offset * childLocal`.
+Eigen::Matrix4d resolveParentAttachOffset(const ParseContext& context, i32 parent_id,
+                                          const std::string& attachment) {
+    Eigen::Matrix4d offset = Eigen::Matrix4d::Identity();
+    if (attachment.empty()) return offset;
+    auto pit = context.node_puppet.find(parent_id);
+    if (pit != context.node_puppet.end() && pit->second) {
+        if (auto* att = pit->second->findAttachment(attachment)) {
+            if (att->bone_index < pit->second->bones.size()) {
+                Eigen::Matrix4d bone_world =
+                    pit->second->bones[att->bone_index].world_transform.matrix().cast<double>();
+                offset = bone_world * att->transform.matrix().cast<double>();
+            }
+        }
+    }
+    return offset;
+}
+
 void assembleEffectChain(ParseContext&                     context,
                          wpscene::WPImageObject&           wpimgobj,
                          const std::shared_ptr<SceneNode>& spImgNode,
@@ -2274,25 +2295,10 @@ void assembleEffectChain(ParseContext&                     context,
         if (! effectOffscreen && wpimgobj.parent_id >= 0 &&
             context.original_world_transforms.count(wpimgobj.parent_id)) {
             auto proxy = std::make_shared<SceneNode>();
-            // Resolve the attachment anchor the same way original_world_
-            // transforms does above: the constant `offset` is the parent's
-            // bone-attachment factor (bone bind-pose world * attachment
-            // transform), identity when the child has no bone attachment.
-            // The proxy world is `parentWorld * offset`.
-            Eigen::Matrix4d offset = Eigen::Matrix4d::Identity();
-            if (! wpimgobj.attachment.empty()) {
-                auto pit = context.node_puppet.find(wpimgobj.parent_id);
-                if (pit != context.node_puppet.end() && pit->second) {
-                    if (auto* att = pit->second->findAttachment(wpimgobj.attachment)) {
-                        if (att->bone_index < pit->second->bones.size()) {
-                            Eigen::Matrix4d bone_world = pit->second->bones[att->bone_index]
-                                                             .world_transform.matrix()
-                                                             .cast<double>();
-                            offset = bone_world * att->transform.matrix().cast<double>();
-                        }
-                    }
-                }
-            }
+            // The proxy world is `parentWorld * offset`, where offset is the
+            // parent's bone-attachment factor (identity without an attachment).
+            Eigen::Matrix4d offset =
+                resolveParentAttachOffset(context, wpimgobj.parent_id, wpimgobj.attachment);
             Eigen::Matrix4d parent_chain =
                 context.original_world_transforms[wpimgobj.parent_id] * offset;
             proxy->SetWorldTransform(parent_chain);
@@ -2637,6 +2643,32 @@ void attachNodeToScene(ParseContext& context,
         bool disconnect_parent = isOffscreen || (hasEffect && ! isCompose);
         if (disconnect_parent) {
             spImgNode->InheritParent(SceneNode());
+        } else {
+            // Plain (effect-less) child whose parent has its OWN non-compose
+            // effect: the parent's world node was reset to identity for the
+            // effect base pass, so chaining the child's transform through it
+            // strands the child at local coords (face + legs piled in the
+            // lower-left corner — workshop 3042492564).  Effect-children dodge
+            // this via a parent_proxy on their SceneImageEffectLayer; plain
+            // children have no such layer, so redirect ONLY their transform
+            // parent to a proxy carrying the parent's preserved world.  The
+            // child stays in the parent's render/visibility subtree (AppendChild
+            // above), and an AttachmentProxyLink refreshes the proxy each frame
+            // so it tracks a script-animated parent (148 here floats).
+            auto eit = context.scene->nodeEffectLayerMap.find(wpimgobj.parent_id);
+            if (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
+                ! eit->second->IsComposeLayer() &&
+                context.original_world_transforms.count(wpimgobj.parent_id)) {
+                Eigen::Matrix4d offset =
+                    resolveParentAttachOffset(context, wpimgobj.parent_id, wpimgobj.attachment);
+                auto proxy = std::make_shared<SceneNode>();
+                proxy->SetWorldTransform(
+                    context.original_world_transforms[wpimgobj.parent_id] * offset);
+                spImgNode->SetParent(proxy.get());
+                context.scene->attachmentProxyLinks.push_back(
+                    { proxy.get(), wpimgobj.parent_id, wpimgobj.id, offset, 0 });
+                context.scene->attachmentProxyKeepAlive.push_back(std::move(proxy));
+            }
         }
         LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
                  wpimgobj.id,

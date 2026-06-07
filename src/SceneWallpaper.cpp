@@ -1188,6 +1188,13 @@ private:
                         if (cit != scene->nodeEffectLayerMap.end() && cit->second) {
                             if (auto* r = cit->second->ResolvedLastOutput())
                                 r->SetTranslate(r->Translate());
+                        } else {
+                            // Plain (effect-less) child: re-dirty its scene node
+                            // directly so draw-time UpdateTrans recomputes it
+                            // from the freshly-refreshed proxy parent.
+                            auto nit = scene->nodeById.find(l.child_id);
+                            if (nit != scene->nodeById.end() && nit->second)
+                                nit->second->SetTranslate(nit->second->Translate());
                         }
                     }
                 }

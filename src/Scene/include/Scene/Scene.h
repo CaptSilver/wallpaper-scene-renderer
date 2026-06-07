@@ -299,6 +299,13 @@ public:
     };
     std::vector<AttachmentProxyLink> attachmentProxyLinks;
 
+    // Keep-alive owner for proxy nodes used as the TRANSFORM parent of plain
+    // (effect-less) children whose real parent node was reset to identity for
+    // its own effect chain.  Effect-children anchor their proxy on the
+    // SceneImageEffectLayer; plain children have no such owner, so the Scene
+    // holds them here (the AttachmentProxyLink above stores only a raw ptr).
+    std::vector<std::shared_ptr<SceneNode>> attachmentProxyKeepAlive;
+
     std::vector<SceneColorScript>      colorScripts;
     std::vector<ScenePropertyScript>   propertyScripts;
     std::vector<SceneShaderValueScript> shaderValueScripts;
