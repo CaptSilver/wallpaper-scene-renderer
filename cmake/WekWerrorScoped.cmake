@@ -12,6 +12,16 @@
 # leg (WekWarnings.cmake) and this helper applies -Werror to JUST the four
 # audited-clean targets as a default-gate fatal step.
 #
+# Clang only.  The audit behind these four targets was done under clang, and
+# GCC categorises several warnings differently — it has no
+# -Wunused-command-line-argument, and it reports double->float narrowing under
+# its own -Wfloat-conversion name without cascading the -Wno-error=conversion
+# group exempt to it.  Forcing this default-on -Werror onto GCC therefore turns
+# clean code fatal and breaks downstream packager builds (GCC is the system
+# compiler on Arch/Fedora).  GCC still compiles these targets with -Wall
+# -Wextra as warnings; the explicit -DWEK_WERROR=ON opt-in (WekWarnings.cmake)
+# is the path for a deliberate GCC -Werror audit.
+#
 # When -DWEK_WERROR=ON is set explicitly, this helper is a no-op so the audit
 # build does not double-apply -Werror; the audit's full-project -Werror already
 # covers every target.  The signed/unsigned diagnostic family stays warning-
@@ -21,8 +31,7 @@
 # WekSanitize files come from, AFTER add_subdirectory(src) so all four targets
 # already exist when the foreach() runs.
 
-if(NOT WEK_WERROR
-   AND (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+if(NOT WEK_WERROR AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(_wek_werror_scoped_targets
         WallpaperEngineKde
         mpvbackend
@@ -34,11 +43,9 @@ if(NOT WEK_WERROR
         -Wno-error=sign-conversion
         -Wno-error=sign-compare
         # rpmbuild injects gcc-flavour `-specs=...` hardening + annobin flags
-        # the host toolchain pipeline doesn't recognise.  Under clang those
-        # silently warn as -Wunused-command-line-argument; -Werror would then
-        # promote that to a fatal during `rpmbuild`.  Keep the diagnostic
-        # warning-only so the RPM build still proceeds while a -Wall regression
-        # in our own code remains gating.
+        # that clang doesn't recognise and silently warns as
+        # -Wunused-command-line-argument; without this exempt -Werror would
+        # promote that to fatal during `rpmbuild`'s %build stage.
         -Wno-error=unused-command-line-argument)
     foreach(_t IN LISTS _wek_werror_scoped_targets)
         if(TARGET ${_t})

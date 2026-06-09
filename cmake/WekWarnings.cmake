@@ -51,7 +51,12 @@ if(WEK_WERROR)
             -Werror
             -Wno-error=conversion
             -Wno-error=sign-conversion
-            -Wno-error=sign-compare)
+            -Wno-error=sign-compare
+            # GCC reports double->float narrowing under -Wfloat-conversion and
+            # does not cascade the -Wno-error=conversion group exempt to it the
+            # way clang does, so name it explicitly to keep the conversion
+            # family warning-only on both compilers.
+            -Wno-error=float-conversion)
         message(STATUS "WEK_WERROR: ON — first-party warnings are errors "
                        "(sign/conversion family stays warning-only)")
     endif()
