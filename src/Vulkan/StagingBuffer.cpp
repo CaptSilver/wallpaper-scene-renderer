@@ -261,32 +261,29 @@ VkResult StagingBuffer::mapStageBuf(size_t slot) {
     return m_stage_bufs[slot].handle.MapMemory(&m_stage_raws[slot]);
 }
 
-bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> data,
-                               size_t offset) {
-    CHECK_REF(ref, return false);
-
-    if (m_broadcast) {
-        return writeToBufAllSlots(ref, data, offset);
-    }
-    if (m_stage_raws[m_current_slot] == nullptr) {
-        mapStageBuf(m_current_slot);
-    }
+bool StagingBuffer::writeSlotRange(const StagingBufferRef& ref, std::span<uint8_t> data,
+                                   size_t offset, size_t first, size_t last) {
     VkDeviceSize size = std::min(ref.size - offset, data.size());
-    uint8_t*     raw  = (uint8_t*)m_stage_raws[m_current_slot];
-    std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
-    return true;
-}
-
-bool StagingBuffer::writeToBufAllSlots(const StagingBufferRef& ref, std::span<uint8_t> data,
-                                       size_t offset) {
-    CHECK_REF(ref, return false);
-    VkDeviceSize size = std::min(ref.size - offset, data.size());
-    for (size_t s = 0; s < m_slot_count; ++s) {
+    for (size_t s = first; s < last; ++s) {
         if (m_stage_raws[s] == nullptr) mapStageBuf(s);
         uint8_t* raw = (uint8_t*)m_stage_raws[s];
         std::copy(data.begin(), data.begin() + size, raw + ref.offset + offset);
     }
     return true;
+}
+
+bool StagingBuffer::writeToBuf(const StagingBufferRef& ref, std::span<uint8_t> data,
+                               size_t offset) {
+    CHECK_REF(ref, return false);
+    auto range = detail::stagingWriteSlotRange(m_slot_count, m_current_slot, m_broadcast);
+    return writeSlotRange(ref, data, offset, range.first, range.last);
+}
+
+bool StagingBuffer::writeToBufAllSlots(const StagingBufferRef& ref, std::span<uint8_t> data,
+                                       size_t offset) {
+    CHECK_REF(ref, return false);
+    auto range = detail::stagingWriteSlotRange(m_slot_count, m_current_slot, /*broadcast=*/true);
+    return writeSlotRange(ref, data, offset, range.first, range.last);
 }
 
 bool StagingBuffer::fillBuf(const StagingBufferRef& ref, size_t offset, size_t size, uint8_t c) {

@@ -1043,13 +1043,23 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                                                        const wallpaper::ShaderValue& value) {
                 UpdateUniform(buf, *bufref, block, name, value);
             };
-            // Re-upload constValues if they were modified at runtime (user property change)
+            // Re-upload constValues if they were modified at runtime (user
+            // property / SceneScript change, e.g. a day/night grade).  These
+            // writes must reach EVERY frame-in-flight staging slot: the UBO is
+            // N-buffered, so a value written to only the current slot leaves the
+            // other slot at its prepare-time default and the scene alternates
+            // between the two every frame (a per-FIF A/B flicker).  Broadcast
+            // mirrors the write to all slots, matching how prepare() seeds the
+            // defaults; the dirty flag is one-shot, so without this only the
+            // slot live on the dirty frame would ever see the new value.
             if (p_material->constValuesDirty) {
+                buf->setBroadcastMode(true);
                 for (auto& v : p_material->constValues) {
                     if (exists(block.member_map, v.first)) {
                         UpdateUniform(buf, *bufref, block, v.first, v.second);
                     }
                 }
+                buf->setBroadcastMode(false);
                 p_material->constValuesDirty = false;
             }
             shader_updater->UpdateUniforms(node, sprites, update_unf_op, cam_override);

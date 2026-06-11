@@ -193,3 +193,48 @@ TEST_SUITE("StagingBuffer increaseBuf peak alloc") {
     }
 
 } // TEST_SUITE
+
+using wallpaper::vulkan::detail::stagingWriteSlotRange;
+
+// The staging buffer is N-buffered for frames-in-flight.  A runtime uniform
+// re-upload (e.g. a SceneScript day/night grade flipping a material's const
+// `multiply`) must broadcast to EVERY slot; if it lands in only the current
+// slot, the other slot keeps the stale prepare-time value and the scene
+// alternates between the two every frame — the per-FIF A/B "lighting blink".
+// This pins the slot-targeting decision that bug came down to.
+TEST_SUITE("StagingBuffer per-FIF slot targeting") {
+    TEST_CASE("per-frame write targets only the current slot") {
+        auto r = stagingWriteSlotRange(/*slot_count*/ 2, /*current*/ 0, /*broadcast*/ false);
+        CHECK(r.first == 0);
+        CHECK(r.last == 1); // slot 1 is NOT touched -> would go stale for must-persist values
+        auto r1 = stagingWriteSlotRange(2, 1, false);
+        CHECK(r1.first == 1);
+        CHECK(r1.last == 2);
+    }
+
+    TEST_CASE("broadcast write reaches every slot regardless of current") {
+        for (size_t cur = 0; cur < 2; ++cur) {
+            auto r = stagingWriteSlotRange(/*slot_count*/ 2, cur, /*broadcast*/ true);
+            CHECK(r.first == 0);
+            CHECK(r.last == 2); // both FIF slots patched -> no stale slot, no flicker
+        }
+    }
+
+    TEST_CASE("single-buffered (slot_count=1): one slot either way, so no flicker possible") {
+        // kFramesInFlight=1 collapses the two slots into one, which is why
+        // forcing it stops the blink — there is no second slot to go stale.
+        CHECK(stagingWriteSlotRange(1, 0, false).first == 0);
+        CHECK(stagingWriteSlotRange(1, 0, false).last == 1);
+        CHECK(stagingWriteSlotRange(1, 0, true).first == 0);
+        CHECK(stagingWriteSlotRange(1, 0, true).last == 1);
+    }
+
+    TEST_CASE("higher frame-in-flight counts broadcast to all N slots") {
+        auto r = stagingWriteSlotRange(4, 2, true);
+        CHECK(r.first == 0);
+        CHECK(r.last == 4);
+        auto r1 = stagingWriteSlotRange(4, 2, false);
+        CHECK(r1.first == 2);
+        CHECK(r1.last == 3);
+    }
+}

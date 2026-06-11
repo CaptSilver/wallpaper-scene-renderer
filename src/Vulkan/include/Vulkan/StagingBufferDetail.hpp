@@ -21,6 +21,27 @@ inline void copyStagingPayload(const uint8_t* src, std::size_t src_size, uint8_t
     std::memcpy(dst, src, std::min(src_size, dst_size));
 }
 
+// Half-open staging-slot range [first, last) a write must land in.
+struct StagingSlotRange {
+    std::size_t first;
+    std::size_t last;
+};
+
+// Resolve which staging slots a write targets.  The staging buffer is
+// N-buffered for frames-in-flight (one slot per in-flight frame).  A value
+// that must persist across slot switches — prepare-time defaults and runtime
+// constValue re-uploads (e.g. a SceneScript day/night grade) — broadcasts to
+// EVERY slot; an ordinary per-frame write touches only the current slot.
+// Writing a must-persist value to a single slot leaves the other slot holding
+// the stale value, which the renderer then shows on alternate frames: a
+// per-frame-in-flight A/B flicker.  Pure so doctest can pin the decision
+// without a Vulkan device.
+inline StagingSlotRange stagingWriteSlotRange(std::size_t slot_count, std::size_t current_slot,
+                                              bool broadcast) {
+    if (broadcast) return { 0, slot_count };
+    return { current_slot, current_slot + 1 };
+}
+
 // MEM3 grow simulator.  Models the data-movement shape of
 // StagingBuffer::increaseBuf with a buffer-allocator callback so it can
 // be unit-tested under an allocation counter (no Vulkan device needed).

@@ -68,6 +68,11 @@ private:
         VkDeviceSize    size { 0 };
     };
 
+    // Copy `data` into every staging slot in [first, last), mapping lazily.
+    // Shared body of writeToBuf / writeToBufAllSlots; the slot range comes
+    // from detail::stagingWriteSlotRange.
+    bool writeSlotRange(const StagingBufferRef&, std::span<uint8_t>, size_t offset, size_t first,
+                        size_t last);
     VkResult      mapStageBuf(size_t slot);
     VirtualBlock* newVirtualBlock(VkDeviceSize);
     bool          increaseBuf(VkDeviceSize);
