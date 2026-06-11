@@ -23,6 +23,7 @@
 #include "WPSoundParser.hpp"
 #include "WPMdlParser.hpp"
 #include "WPSceneAttachmentCompose.hpp"
+#include "WPAttachmentProxyGate.hpp"
 #include "SystemFontFallback.hpp"
 
 #include "Particle/WPParticleRawGener.h"
@@ -2659,29 +2660,30 @@ void attachNodeToScene(ParseContext& context,
         if (disconnect_parent) {
             spImgNode->InheritParent(SceneNode());
         } else {
-            // Plain (effect-less) child whose parent has its OWN non-compose
-            // effect: the parent's world node was reset to identity for the
-            // effect base pass, so chaining the child's transform through it
-            // strands the child at local coords (face + legs piled in the
-            // lower-left corner — workshop 3042492564).  Effect-children dodge
-            // this via a parent_proxy on their SceneImageEffectLayer; plain
-            // children have no such layer, so redirect ONLY their transform
-            // parent to a proxy carrying the parent's preserved world.  The
-            // child stays in the parent's render/visibility subtree (AppendChild
-            // above), and an AttachmentProxyLink refreshes the proxy each frame
-            // so it tracks a script-animated parent (148 here floats).
-            auto eit = context.scene->nodeEffectLayerMap.find(wpimgobj.parent_id);
-            if (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
-                ! eit->second->IsComposeLayer() &&
-                context.original_world_transforms.count(wpimgobj.parent_id)) {
-                Eigen::Matrix4d offset =
-                    resolveParentAttachOffset(context, wpimgobj.parent_id, wpimgobj.attachment);
+            // Plain (effect-less) child.  It chains through its real parent
+            // node, which is correct unless the parent was identity-reset for
+            // its own effect (parentReset) OR the child rigs into a parent
+            // bone whose bind-pose offset must be applied (boneOffset).  The
+            // boneOffset arm matters when a user property disables the effects
+            // across a puppet chain: that used to strand bone-attached children
+            // at parentWorld*local, dropping the bone offset and floating the
+            // puppet off (SAO 3463520581 with "Animations" off — Asuna's face
+            // detached up-and-left).  Anchoring must not depend on effect
+            // visibility.
+            auto pw = attachmentProxyWorld(context, wpimgobj.parent_id, wpimgobj.attachment);
+            bool boneOffset = ! pw.offset.isApprox(Eigen::Matrix4d::Identity());
+            auto eit        = context.scene->nodeEffectLayerMap.find(wpimgobj.parent_id);
+            bool parentReset =
+                (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
+                 ! eit->second->IsComposeLayer());
+            bool parentWorldKnown =
+                context.original_world_transforms.count(wpimgobj.parent_id) > 0;
+            if (plainChildNeedsAnchorProxy(parentWorldKnown, parentReset, boneOffset)) {
                 auto proxy = std::make_shared<SceneNode>();
-                proxy->SetWorldTransform(
-                    context.original_world_transforms[wpimgobj.parent_id] * offset);
+                proxy->SetWorldTransform(pw.world);
                 spImgNode->SetParent(proxy.get());
                 context.scene->attachmentProxyLinks.push_back(
-                    { proxy.get(), wpimgobj.parent_id, wpimgobj.id, offset, 0 });
+                    { proxy.get(), wpimgobj.parent_id, wpimgobj.id, pw.offset, 0 });
                 context.scene->attachmentProxyKeepAlive.push_back(std::move(proxy));
             }
         }
