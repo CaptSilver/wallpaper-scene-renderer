@@ -12,6 +12,7 @@
 
 #include "WPSceneAttachmentCompose.hpp"
 #include "AttachmentLinkOrder.hpp"
+#include "WPAttachmentProxyGate.hpp"
 #include "WPPuppet.hpp"
 
 #include <Eigen/Geometry>
@@ -324,5 +325,30 @@ TEST_SUITE("AttachmentLinkOrder depth") {
         REQUIRE(d.size() == 2);
         CHECK(d[0] <= 2);
         CHECK(d[1] <= 2);
+    }
+}
+
+TEST_SUITE("WPAttachmentProxyGate") {
+    // A plain (effect-less) child is redirected to an anchor proxy only when
+    // its transform parent can't carry the correct world directly: either the
+    // parent was identity-reset for its own effect base pass (parentReset), or
+    // the child rigs into a parent bone whose bind-pose offset must be applied
+    // (boneOffset).  The boneOffset arm is what keeps a bone-attached child of
+    // an effect-less parent anchored (SAO 3463520581 with its effects off).
+    TEST_CASE("no parent world known → never redirect") {
+        CHECK_FALSE(plainChildNeedsAnchorProxy(false, false, false));
+        CHECK_FALSE(plainChildNeedsAnchorProxy(false, true, true));
+    }
+    TEST_CASE("parent identity-reset for its own effect → redirect") {
+        CHECK(plainChildNeedsAnchorProxy(true, true, false));
+    }
+    TEST_CASE("bone-attached child of an effect-less parent → redirect") {
+        CHECK(plainChildNeedsAnchorProxy(true, false, true));
+    }
+    TEST_CASE("plain non-attachment child of an effect-less parent → no redirect") {
+        CHECK_FALSE(plainChildNeedsAnchorProxy(true, false, false));
+    }
+    TEST_CASE("both reasons true → redirect") {
+        CHECK(plainChildNeedsAnchorProxy(true, true, true));
     }
 }
