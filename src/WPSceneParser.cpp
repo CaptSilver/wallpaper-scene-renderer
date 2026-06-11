@@ -2223,6 +2223,24 @@ Eigen::Matrix4d resolveParentAttachOffset(const ParseContext& context, i32 paren
     return offset;
 }
 
+// Anchored world an attachment proxy must carry for a child of `parent_id`:
+// the parent's composed world times the child's bone-attachment offset.  One
+// home for the rule both the effect and no-effect proxy sites apply.
+struct AttachmentProxyWorld {
+    Eigen::Matrix4d world;
+    Eigen::Matrix4d offset;
+};
+
+AttachmentProxyWorld attachmentProxyWorld(const ParseContext& context, i32 parent_id,
+                                          const std::string& attachment) {
+    Eigen::Matrix4d offset = resolveParentAttachOffset(context, parent_id, attachment);
+    auto            it     = context.original_world_transforms.find(parent_id);
+    Eigen::Matrix4d pworld = (it != context.original_world_transforms.end())
+                                 ? it->second
+                                 : Eigen::Matrix4d::Identity();
+    return { pworld * offset, offset };
+}
+
 void assembleEffectChain(ParseContext&                     context,
                          wpscene::WPImageObject&           wpimgobj,
                          const std::shared_ptr<SceneNode>& spImgNode,
@@ -2297,18 +2315,15 @@ void assembleEffectChain(ParseContext&                     context,
             auto proxy = std::make_shared<SceneNode>();
             // The proxy world is `parentWorld * offset`, where offset is the
             // parent's bone-attachment factor (identity without an attachment).
-            Eigen::Matrix4d offset =
-                resolveParentAttachOffset(context, wpimgobj.parent_id, wpimgobj.attachment);
-            Eigen::Matrix4d parent_chain =
-                context.original_world_transforms[wpimgobj.parent_id] * offset;
-            proxy->SetWorldTransform(parent_chain);
+            auto pw = attachmentProxyWorld(context, wpimgobj.parent_id, wpimgobj.attachment);
+            proxy->SetWorldTransform(pw.world);
             SceneNode* proxy_raw = proxy.get();
             imgEffectLayer->SetParentProxy(std::move(proxy));
             // Record a live link so the draw loop can recompose the proxy from
             // the parent's current (script-rotated) world each frame, instead
             // of leaving it frozen at the parse-time bind pose.
             context.scene->attachmentProxyLinks.push_back(
-                { proxy_raw, wpimgobj.parent_id, wpimgobj.id, offset, 0 });
+                { proxy_raw, wpimgobj.parent_id, wpimgobj.id, pw.offset, 0 });
         }
         imgEffectLayer->FinalMesh().ChangeMeshDataFrom(effct_final_mesh);
         imgEffectLayer->FinalNode().CopyTrans(*spImgNode);
