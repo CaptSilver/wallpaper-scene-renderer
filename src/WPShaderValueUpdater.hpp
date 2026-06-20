@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <cstdint>
 #include <chrono>
+#include <cmath>
 #include <string>
 #include <utility>
 
@@ -26,6 +27,21 @@ namespace wallpaper
 namespace audio { class AudioAnalyzer; }
 
 class Scene;
+
+// Wallpaper Engine's g_Time is a float32 "seconds since the wallpaper started".
+// The scene clock is an unbounded double; narrowing it straight to float32 means
+// the mantissa runs out after hours, so a 1/60s frame step stops being
+// representable and time-driven UV shaders (waterwaves, scroll) quantize into
+// visible blocks — the "pixelation after running a long time" symptom. Wrap the
+// clock to a bounded period before the cast so g_Time keeps sub-millisecond
+// resolution no matter how long it runs. The only cost is a one-frame phase seam
+// in periodic motion once per period, imperceptible for organic wind/flow; shader
+// authors who loop g_Time themselves conventionally do so near ~600s. A period
+// that is a multiple of 3600 keeps the seam aligned to a round hour.
+inline constexpr double kSceneTimeWrapPeriodSec = 3600.0;
+inline float            wrappedSceneTimeF(double elapsingTime) {
+    return static_cast<float>(std::fmod(elapsingTime, kSceneTimeWrapPeriodSec));
+}
 
 struct WPUniformInfo {
     bool has_MI { false };

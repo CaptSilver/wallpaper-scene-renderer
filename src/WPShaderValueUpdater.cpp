@@ -41,7 +41,11 @@ void WPShaderValueUpdater::FrameBegin() {
 
     // Compute camera shake offset (sum-of-sinusoids pseudo-noise)
     if (m_shake.enable) {
-        float t = (float)m_scene->elapsingTime * m_shake.speed;
+        // Wrap before the float32 narrowing for the same reason as g_Time; the
+        // shake speed multiplier would otherwise push it out of precision even
+        // sooner. Shake is pure sum-of-sinusoids, so a per-period phase seam is
+        // the only cost.
+        float t = wrappedSceneTimeF(m_scene->elapsingTime) * m_shake.speed;
         float r = m_shake.roughness;
         float sx =
             std::sin(t * 1.0f) + std::sin(t * 2.3f + 1.7f) * r + std::sin(t * 4.7f + 3.1f) * r * r;
@@ -500,7 +504,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     //	g_EffectTextureProjectionMatrix
     // shadervs.push_back({"g_EffectTextureProjectionMatrixInverse",
     // ShaderValue::ValueOf(Eigen::Matrix4f::Identity())});
-    if (info.has_TIME) updateOp(G_TIME, (float)m_scene->elapsingTime);
+    if (info.has_TIME) updateOp(G_TIME, wrappedSceneTimeF(m_scene->elapsingTime));
 
     if (info.has_DAYTIME) updateOp(G_DAYTIME, (float)m_dayTime);
 

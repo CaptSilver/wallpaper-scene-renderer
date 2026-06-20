@@ -3224,6 +3224,18 @@ void MainHandler::loadScene() {
 
     m_scene.store(scene); // keep reference for runtime user property updates
 
+    // Debug seed: advance the scene clock before the first frame so g_Time
+    // uploads reflect hours of runtime in one shot. Lets us reproduce the
+    // float32 g_Time precision loss (time-driven UV shaders band/shred after
+    // many hours) without actually waiting. No-op unless WEK_TIME_OFFSET is set.
+    if (const char* off = std::getenv("WEK_TIME_OFFSET"); off && off[0]) {
+        double secs = std::strtod(off, nullptr);
+        if (secs > 0.0) {
+            scene->elapsingTime += secs;
+            LOG_INFO("WEK_TIME_OFFSET: seeded scene clock to %.1f s", scene->elapsingTime);
+        }
+    }
+
     // Write active user property bindings to disk for the config UI.
     // Include ALL project.json properties — some are used only by property
     // scripts (e.g. via applyUserProperties / shared vars) and have no

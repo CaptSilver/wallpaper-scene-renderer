@@ -127,6 +127,52 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::time_and_screen") {
         CHECK(w->values[0] == doctest::Approx(7.5f));
     }
 
+    TEST_CASE("g_Time stays sub-frame precise and bounded after many hours of runtime") {
+        // The scene clock is an unbounded double; g_Time is its float32 narrowing.
+        // Left unwrapped, after hours the float32 ULP exceeds a 60fps frame, so two
+        // consecutive frames collapse to the same g_Time and time-driven UV shaders
+        // (waterwaves/scroll) quantize -> visible banding. The clock must be wrapped
+        // to a bounded period before the cast so g_Time resolution never degrades.
+        constexpr float kWrapPeriod = 3600.0f; // must match kSceneTimeWrapPeriodSec
+
+        Scene scene;
+        installActiveCamera(scene);
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_TIME }));
+
+        auto uploadGTime = [&](double elapsing) {
+            scene.elapsingTime = elapsing;
+            UniformCapture cap;
+            sprite_map_t   sprites;
+            updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+            const auto* w = cap.find(G_TIME);
+            REQUIRE(w != nullptr);
+            REQUIRE(w->values.size() == 1);
+            return w->values[0];
+        };
+
+        const double dt = 1.0 / 60.0;
+        // 1h, ~13.9h, ~25h, ~58h, ~1389h — far enough out that the raw float32
+        // cast loses sub-frame resolution.
+        for (double base : { 3661.0, 50000.0, 90061.0, 211111.0, 5.0e6 }) {
+            const float a = uploadGTime(base);
+            const float b = uploadGTime(base + dt);
+            // Consecutive 60fps frames remain distinguishable (raw cast fails here).
+            CHECK(a != b);
+            // Upload stays within the wrap period -> float32 ULP bounded forever.
+            CHECK(a >= 0.0f);
+            CHECK(a < kWrapPeriod);
+        }
+
+        // Periodicity: the shader sees the same phase one period later, so wrapping
+        // introduces no drift in what a time-driven shader observes.
+        CHECK(uploadGTime(kWrapPeriod + 1.25) == doctest::Approx(uploadGTime(1.25)));
+        CHECK(uploadGTime(2.0 * kWrapPeriod + 1.25) == doctest::Approx(uploadGTime(1.25)));
+    }
+
     TEST_CASE("g_DayTime defaults to 0 when no time-of-day source is set") {
         // WPShaderValueUpdater's m_dayTime defaults to 0 and is only ever
         // recomputed via a commented-out wall-clock block; in the shipped
