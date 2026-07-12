@@ -16,6 +16,7 @@
 #include "Scene/WorldCacheGate.h"
 #include "Scene/SpriteSnapshotGate.h"
 #include "Scene/TextStyleMerge.hpp"
+#include "Scene/PendingUpdateQueues.hpp"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
 #include "Core/Random.hpp"
@@ -434,15 +435,9 @@ public:
 
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
-    void setTextUpdate(i32 id, const std::string& text) {
-        std::lock_guard<std::mutex> lock(m_text_update_mutex);
-        m_pending_text_updates[id] = text;
-    }
+    void setTextUpdate(i32 id, const std::string& text) { m_queues.setTextUpdate(id, text); }
 
-    void setTextPointsize(i32 id, float pointsize) {
-        std::lock_guard<std::mutex> lock(m_text_update_mutex);
-        m_pending_pointsize_updates[id] = pointsize;
-    }
+    void setTextPointsize(i32 id, float pointsize) { m_queues.setTextPointsize(id, pointsize); }
 
     // Merge-style queue: subsequent calls for the same id within one tick
     // overwrite earlier values per-field (empty string = "leave unchanged").
@@ -451,8 +446,7 @@ public:
     // so each setter posts only the field it touches.
     void setTextStyle(i32 id, std::string halign, std::string valign,
                       std::string fontName) {
-        std::lock_guard<std::mutex> lock(m_text_update_mutex);
-        mergeTextStyle(m_pending_text_style_updates[id], halign, valign, fontName);
+        m_queues.setTextStyle(id, std::move(halign), std::move(valign), std::move(fontName));
     }
 
     // World-matrix cache populated at end of each drawFrame.  SceneScript
@@ -524,74 +518,76 @@ public:
     }
 
     void setColorUpdate(i32 id, float r, float g, float b) {
-        std::lock_guard<std::mutex> lock(m_color_update_mutex);
-        m_pending_color_updates[id] = { r, g, b };
+        m_queues.setColorUpdate(id, r, g, b);
         LOG_INFO("setColorUpdate enqueued id=%d rgb=(%.3f,%.3f,%.3f)", id, r, g, b);
     }
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        auto                        key  = std::make_pair(id, property);
-        m_pending_transform_updates[key] = { x, y, z };
-        static int s_transform_log       = 0;
-        // Keep a long-lived "last logged" map so [jump] reflects real deltas;
-        // the pending map clears every frame, which would otherwise mark
-        // every first-of-frame write as a jump.
-        thread_local std::map<std::pair<i32, std::string>, std::array<float, 3>> s_last_logged_transform;
-        auto prev   = s_last_logged_transform.find(key);
-        bool jumped = (prev == s_last_logged_transform.end()) ||
-                      (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
-                       std::abs(prev->second[2] - z)) > 50.0f;
-        if (++s_transform_log <= 5 || jumped) {
-            LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
-                     s_transform_log,
-                     id,
-                     property.c_str(),
-                     x,
-                     y,
-                     z,
-                     jumped ? " [jump]" : "");
-            s_last_logged_transform[key] = { x, y, z };
-        }
+        // Enqueue + jump-log stay under ONE property-mutex acquisition (as
+        // before).  The enqueue is delegated into the queue's map; the
+        // diagnostic static/thread_local state + LOG_INFO stay here in
+        // RenderHandler so the GPU-free queue keeps no renderer-log dependency
+        // and the log lines stay byte-identical.
+        m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
+            auto key                           = std::make_pair(id, property);
+            q.m_pending_transform_updates[key] = { x, y, z };
+            static int s_transform_log         = 0;
+            // Keep a long-lived "last logged" map so [jump] reflects real deltas;
+            // the pending map clears every frame, which would otherwise mark
+            // every first-of-frame write as a jump.
+            thread_local std::map<std::pair<i32, std::string>, std::array<float, 3>>
+                 s_last_logged_transform;
+            auto prev   = s_last_logged_transform.find(key);
+            bool jumped = (prev == s_last_logged_transform.end()) ||
+                          (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
+                           std::abs(prev->second[2] - z)) > 50.0f;
+            if (++s_transform_log <= 5 || jumped) {
+                LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
+                         s_transform_log,
+                         id,
+                         property.c_str(),
+                         x,
+                         y,
+                         z,
+                         jumped ? " [jump]" : "");
+                s_last_logged_transform[key] = { x, y, z };
+            }
+        });
     }
 
     void setNodeVisible(i32 id, bool visible) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_visible_updates[id]                      = visible;
-        static int                           s_visible_log = 0;
-        thread_local std::unordered_map<i32, bool> s_last_logged_visible;
-        auto                                 prev = s_last_logged_visible.find(id);
-        bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
-        if (++s_visible_log <= 5 || jumped) {
-            LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
-                     s_visible_log,
-                     id,
-                     (int)visible,
-                     jumped ? " [jump]" : "");
-            s_last_logged_visible[id] = visible;
-        }
+        m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
+            q.m_pending_visible_updates[id]                          = visible;
+            static int                                 s_visible_log = 0;
+            thread_local std::unordered_map<i32, bool> s_last_logged_visible;
+            auto                                       prev = s_last_logged_visible.find(id);
+            bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
+            if (++s_visible_log <= 5 || jumped) {
+                LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
+                         s_visible_log,
+                         id,
+                         (int)visible,
+                         jumped ? " [jump]" : "");
+                s_last_logged_visible[id] = visible;
+            }
+        });
     }
 
     void setEffectVisible(i32 nodeId, i32 effectIndex, bool visible) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_effect_visible.emplace_back(nodeId, effectIndex, visible);
+        m_queues.setEffectVisible(nodeId, effectIndex, visible);
     }
 
     void setMaterialValue(i32 nodeId, std::string name, std::vector<float> floats) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_material_values.emplace_back(nodeId, std::move(name), std::move(floats));
+        m_queues.setMaterialValue(nodeId, std::move(name), std::move(floats));
     }
 
     void setEffectMaterialValue(i32 nodeId, i32 effectIdx, std::string name,
                                 std::vector<float> floats) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_effect_material_values.emplace_back(
-            nodeId, effectIdx, std::move(name), std::move(floats));
+        m_queues.setEffectMaterialValue(nodeId, effectIdx, std::move(name), std::move(floats));
     }
 
     void setLayerSpriteFrame(i32 nodeId, bool wantsManual, i32 frameIdx) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_sprite_frame[nodeId] = { wantsManual, frameIdx };
+        m_queues.setLayerSpriteFrame(nodeId, wantsManual, frameIdx);
     }
 
     void queueParentChange(i32 childId, i32 parentId) {
@@ -608,92 +604,66 @@ public:
     }
 
     void setNodeAlpha(i32 id, float alpha) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_alpha_updates[id] = alpha;
-        static int s_alpha_log      = 0;
-        // Track the last *logged* value separately from the pending map
-        // (which gets cleared each render frame) so [jump] detects real
-        // deltas instead of firing on every first-of-frame write.
-        thread_local std::unordered_map<i32, float> s_last_logged_alpha;
-        auto                                  prev = s_last_logged_alpha.find(id);
-        bool jumped = prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
-        if (++s_alpha_log <= 5 || jumped) {
-            LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
-                     s_alpha_log,
-                     id,
-                     alpha,
-                     jumped ? " [jump]" : "");
-            s_last_logged_alpha[id] = alpha;
-        }
+        m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
+            q.m_pending_alpha_updates[id] = alpha;
+            static int s_alpha_log        = 0;
+            // Track the last *logged* value separately from the pending map
+            // (which gets cleared each render frame) so [jump] detects real
+            // deltas instead of firing on every first-of-frame write.
+            thread_local std::unordered_map<i32, float> s_last_logged_alpha;
+            auto                                        prev = s_last_logged_alpha.find(id);
+            bool                                        jumped =
+                prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
+            if (++s_alpha_log <= 5 || jumped) {
+                LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
+                         s_alpha_log,
+                         id,
+                         alpha,
+                         jumped ? " [jump]" : "");
+                s_last_logged_alpha[id] = alpha;
+            }
+        });
     }
 
     void setParticleRate(i32 id, float rate) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_particle_rate[id]                      = rate;
-        static int                            s_rate_log = 0;
-        thread_local std::unordered_map<i32, float> s_last_logged_rate;
-        auto                                  prev = s_last_logged_rate.find(id);
-        // Log the first few writes + any subsequent >30% swing so NieR 2B's
-        // bass-driven 0.1..1.0 oscillation is visible without flooding the
-        // journal at every tick.
-        bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
-        if (++s_rate_log <= 5 || jumped) {
-            LOG_INFO("setParticleRate[%d]: id=%d rate=%.4f%s",
-                     s_rate_log,
-                     id,
-                     rate,
-                     jumped ? " [jump]" : "");
-            s_last_logged_rate[id] = rate;
-        }
+        m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
+            q.m_pending_particle_rate[id]                          = rate;
+            static int                                  s_rate_log = 0;
+            thread_local std::unordered_map<i32, float> s_last_logged_rate;
+            auto                                        prev = s_last_logged_rate.find(id);
+            // Log the first few writes + any subsequent >30% swing so NieR 2B's
+            // bass-driven 0.1..1.0 oscillation is visible without flooding the
+            // journal at every tick.
+            bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
+            if (++s_rate_log <= 5 || jumped) {
+                LOG_INFO("setParticleRate[%d]: id=%d rate=%.4f%s",
+                         s_rate_log,
+                         id,
+                         rate,
+                         jumped ? " [jump]" : "");
+                s_last_logged_rate[id] = rate;
+            }
+        });
     }
 
     // Scene-level property setters
-    void setClearColor(float r, float g, float b) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_clear_color = std::array { r, g, b };
-    }
-    void setBloomStrength(float v) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_bloom_strength = v;
-    }
-    void setBloomThreshold(float v) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_bloom_threshold = v;
-    }
-    void setCameraFov(float v) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_camera_fov = v;
-    }
+    void setClearColor(float r, float g, float b) { m_queues.setClearColor(r, g, b); }
+    void setBloomStrength(float v) { m_queues.setBloomStrength(v); }
+    void setBloomThreshold(float v) { m_queues.setBloomThreshold(v); }
+    void setCameraFov(float v) { m_queues.setCameraFov(v); }
     void setCameraLookAt(float ex, float ey, float ez, float cx, float cy, float cz, float ux,
                          float uy, float uz) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_camera_lookat = CameraLookAtUpdate { { (double)ex, (double)ey, (double)ez },
-                                                       { (double)cx, (double)cy, (double)cz },
-                                                       { (double)ux, (double)uy, (double)uz } };
+        m_queues.setCameraLookAt(ex, ey, ez, cx, cy, cz, ux, uy, uz);
     }
-    void setAmbientColor(float r, float g, float b) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_ambient_color = std::array { r, g, b };
-    }
-    void setSkylightColor(float r, float g, float b) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_skylight_color = std::array { r, g, b };
-    }
+    void setAmbientColor(float r, float g, float b) { m_queues.setAmbientColor(r, g, b); }
+    void setSkylightColor(float r, float g, float b) { m_queues.setSkylightColor(r, g, b); }
     void setLightColor(i32 index, float r, float g, float b) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_light_colors.push_back({ index, { r, g, b } });
+        m_queues.setLightColor(index, r, g, b);
     }
-    void setLightRadius(i32 index, float v) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_light_radii.push_back({ index, v });
-    }
-    void setLightIntensity(i32 index, float v) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_light_intensities.push_back({ index, v });
-    }
+    void setLightRadius(i32 index, float v) { m_queues.setLightRadius(index, v); }
+    void setLightIntensity(i32 index, float v) { m_queues.setLightIntensity(index, v); }
     void setLightPosition(i32 index, float x, float y, float z) {
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
-        m_pending_light_positions.push_back({ index, { x, y, z } });
+        m_queues.setLightPosition(index, x, y, z);
     }
 
     // Batched layer-update apply: takes the property-update mutex once for
@@ -701,32 +671,23 @@ public:
     // (3509243656) with 1200 dirty pool layers per tick × ~3 properties, this
     // collapses ~3600 lock/unlock pairs into one.  Flags use the same
     // bitmask as the JS DIRTY_STRIDE layout (F_ORIGIN=1, F_SCALE=2, etc).
+    // Translates SceneWallpaper::LayerBatchUpdate -> the queue-local
+    // LayerBatchEntry (keeps the GPU-free queue off SceneWallpaper.hpp); the
+    // bitmask unfold + single-lock enqueue live in the queue.
     void applyLayerBatch(const std::vector<SceneWallpaper::LayerBatchUpdate>& batch) {
-        static constexpr u32 F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4, F_VISIBLE = 8, F_ALPHA = 16;
-        std::lock_guard<std::mutex> lock(m_property_update_mutex);
+        std::vector<PendingUpdateQueues::LayerBatchEntry> entries;
+        entries.reserve(batch.size());
         for (const auto& e : batch) {
-            if (e.flags & F_ORIGIN) {
-                m_pending_transform_updates[{ e.id, std::string("origin") }] = { e.origin[0],
-                                                                                 e.origin[1],
-                                                                                 e.origin[2] };
-            }
-            if (e.flags & F_SCALE) {
-                m_pending_transform_updates[{ e.id, std::string("scale") }] = { e.scale[0],
-                                                                                e.scale[1],
-                                                                                e.scale[2] };
-            }
-            if (e.flags & F_ANGLES) {
-                m_pending_transform_updates[{ e.id, std::string("angles") }] = { e.angles[0],
-                                                                                 e.angles[1],
-                                                                                 e.angles[2] };
-            }
-            if (e.flags & F_VISIBLE) {
-                m_pending_visible_updates[e.id] = e.visible != 0;
-            }
-            if (e.flags & F_ALPHA) {
-                m_pending_alpha_updates[e.id] = e.alpha;
-            }
+            entries.push_back(
+                PendingUpdateQueues::LayerBatchEntry { e.id,
+                                                       e.flags,
+                                                       { e.origin[0], e.origin[1], e.origin[2] },
+                                                       { e.scale[0], e.scale[1], e.scale[2] },
+                                                       { e.angles[0], e.angles[1], e.angles[2] },
+                                                       e.alpha,
+                                                       e.visible });
         }
+        m_queues.applyLayerBatch(entries);
     }
 
 private:
@@ -835,9 +796,13 @@ private:
                 subIt->second->ClearBurstDone();
             }
 
-            // Process pending text updates before drawing
-            {
-                std::lock_guard<std::mutex> lock(m_text_update_mutex);
+            // Process pending text updates before drawing.  The queue hands us
+            // mutable refs to the text-group maps under m_text_mutex; we iterate
+            // + apply (incl. reuploadTexture) + clear WHILE holding that lock,
+            // exactly as the inline drain did.
+            m_queues.withTextLocked([&](auto& m_pending_text_updates,
+                                        auto& m_pending_pointsize_updates,
+                                        auto& m_pending_text_style_updates) {
                 // Pointsize updates first — they influence every subsequent
                 // rasterization for the same layer in this frame.
                 for (auto& [id, newSize] : m_pending_pointsize_updates) {
@@ -936,7 +901,7 @@ private:
                 m_pending_text_updates.clear();
                 m_pending_pointsize_updates.clear();
                 m_pending_text_style_updates.clear();
-            }
+            });
 
             // Process video texture frame updates — only decode visible videos
             for (auto& vd : m_video_decoders) {
@@ -991,9 +956,9 @@ private:
                 vd.decoder->releaseFrame();
             }
 
-            // Process pending color updates before drawing
-            {
-                std::lock_guard<std::mutex> lock(m_color_update_mutex);
+            // Process pending color updates before drawing.  Held under
+            // m_color_mutex across the whole apply, as before.
+            m_queues.withColorLocked([&](auto& m_pending_color_updates) {
                 if (! m_pending_color_updates.empty()) {
                     LOG_INFO("DRAW: %zu pending color updates, %zu colorScripts",
                              m_pending_color_updates.size(),
@@ -1023,11 +988,31 @@ private:
                     }
                 }
                 m_pending_color_updates.clear();
-            }
+            });
 
-            // Process pending property script updates (transform, visibility, alpha)
-            {
-                std::lock_guard<std::mutex> lock(m_property_update_mutex);
+            // Process pending property script updates (transform, visibility, alpha).
+            // Held under m_property_mutex across the whole apply, as before.  The
+            // queue is passed by ref so the body references q.m_pending_* verbatim.
+            m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
+                auto& m_pending_transform_updates         = q.m_pending_transform_updates;
+                auto& m_pending_visible_updates           = q.m_pending_visible_updates;
+                auto& m_pending_alpha_updates             = q.m_pending_alpha_updates;
+                auto& m_pending_particle_rate             = q.m_pending_particle_rate;
+                auto& m_pending_effect_visible            = q.m_pending_effect_visible;
+                auto& m_pending_material_values           = q.m_pending_material_values;
+                auto& m_pending_effect_material_values    = q.m_pending_effect_material_values;
+                auto& m_pending_sprite_frame              = q.m_pending_sprite_frame;
+                auto& m_pending_clear_color               = q.m_pending_clear_color;
+                auto& m_pending_bloom_strength            = q.m_pending_bloom_strength;
+                auto& m_pending_bloom_threshold           = q.m_pending_bloom_threshold;
+                auto& m_pending_camera_fov                = q.m_pending_camera_fov;
+                auto& m_pending_camera_lookat             = q.m_pending_camera_lookat;
+                auto& m_pending_ambient_color             = q.m_pending_ambient_color;
+                auto& m_pending_skylight_color            = q.m_pending_skylight_color;
+                auto& m_pending_light_colors              = q.m_pending_light_colors;
+                auto& m_pending_light_radii               = q.m_pending_light_radii;
+                auto& m_pending_light_intensities         = q.m_pending_light_intensities;
+                auto& m_pending_light_positions           = q.m_pending_light_positions;
                 static int                  drawDiagCount = 0;
                 if (m_drawDiagReset) {
                     drawDiagCount   = 0;
@@ -1370,7 +1355,7 @@ private:
                     }
                 }
                 m_pending_light_positions.clear();
-            }
+            });
 
             // Advance scene clock and animation tracks by the true
             // wall-clock delta since the last DRAW, clamped to [0, 100 ms].
@@ -2186,13 +2171,13 @@ private:
     std::mutex           m_shot_at_mutex;
     std::string          m_shot_at_path;
 
-    std::mutex                           m_text_update_mutex;
-    std::unordered_map<i32, std::string> m_pending_text_updates;
-    std::unordered_map<i32, float>       m_pending_pointsize_updates;
-    // Per-id queue for thisLayer.horizontalalign/verticalalign/font/alignment.
-    // PendingTextStyleUpdate + the merge/apply helpers live in
-    // Scene/TextStyleMerge.hpp (wpScene, no Vulkan) so they are unit-testable.
-    std::unordered_map<i32, PendingTextStyleUpdate> m_pending_text_style_updates;
+    // The three per-tick pending-update mutex groups (text / color / property +
+    // scene-level).  State + setters + the withXLocked drains live in
+    // Scene/PendingUpdateQueues.hpp (wpScene, no Vulkan) so they are unit- and
+    // race-testable.  The setters here forward into m_queues; the drains wrap
+    // their existing body in m_queues.withXLocked([&](...){ ... }) so the render
+    // thread keeps holding the group mutex across the whole apply.
+    PendingUpdateQueues m_queues;
 
     // World-transform cache for SceneScript thisLayer.getTransformMatrix().
     // Populated at the end of every drawFrame; keyed by node id; column-major
@@ -2206,66 +2191,6 @@ private:
     // producer observes it is harmless (the reader returns identity for the
     // not-yet-cached id, which is the existing behavior).
     mutable std::atomic<bool> m_needs_world_cache { false };
-
-    std::mutex                                    m_color_update_mutex;
-    std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
-
-    std::mutex                                                  m_property_update_mutex;
-    std::map<std::pair<i32, std::string>, std::array<float, 3>> m_pending_transform_updates;
-    std::unordered_map<i32, bool>                               m_pending_visible_updates;
-    std::unordered_map<i32, float>                              m_pending_alpha_updates;
-    // Scripted particle instance-override rate (NieR:Automata starfields).
-    // Merged per-id so the latest value wins within a single tick — there is
-    // no reason to replay intermediate values the renderer never sampled.
-    std::unordered_map<i32, float> m_pending_particle_rate;
-    std::vector<std::tuple<i32, i32, bool>>
-        m_pending_effect_visible; // (nodeId, effectIdx, visible)
-    // (nodeId, uniformName, floats) — IMaterial.setValue from SceneScript.
-    // Drained alongside m_pending_effect_visible; applies to
-    // mesh.Material()->customShader.constValues and toggles
-    // constValuesDirty so CustomShaderPass re-uploads on the next frame.
-    std::vector<std::tuple<i32, std::string, std::vector<float>>>
-        m_pending_material_values;
-    // (nodeId, effectIdx, uniformName, floats) — IMaterial.setValue from
-    // SceneScript via thisLayer.getEffect(name).getMaterial().setValue(...).
-    // Drained alongside m_pending_material_values; targets the effect chain's
-    // m_effects[effectIdx]'s first node material instead of the main mesh.
-    std::vector<std::tuple<i32, i32, std::string, std::vector<float>>>
-        m_pending_effect_material_values;
-    // nodeId → (wantsManual, frameIdx) from
-    // thisLayer.getTextureAnimation().setFrame(N) SceneScript writes.
-    // Drained at the start of the render tick into Scene::nodeSpriteFrame;
-    // WPShaderValueUpdater consults the Scene-side map per pass since
-    // sprites_map copies are scattered across CustomShaderPass instances.
-    std::unordered_map<i32, std::pair<bool, i32>> m_pending_sprite_frame;
-
-    // Scene-level pending updates (under m_property_update_mutex)
-    std::optional<std::array<float, 3>> m_pending_clear_color;
-    std::optional<float>                m_pending_bloom_strength;
-    std::optional<float>                m_pending_bloom_threshold;
-    std::optional<float>                m_pending_camera_fov;
-    struct CameraLookAtUpdate {
-        std::array<double, 3> eye, center, up;
-    };
-    std::optional<CameraLookAtUpdate>   m_pending_camera_lookat;
-    std::optional<std::array<float, 3>> m_pending_ambient_color;
-    std::optional<std::array<float, 3>> m_pending_skylight_color;
-    struct LightColorUpdate {
-        i32                  index;
-        std::array<float, 3> color;
-    };
-    struct LightScalarUpdate {
-        i32   index;
-        float value;
-    };
-    struct LightPositionUpdate {
-        i32                  index;
-        std::array<float, 3> position;
-    };
-    std::vector<LightColorUpdate>    m_pending_light_colors;
-    std::vector<LightScalarUpdate>   m_pending_light_radii;
-    std::vector<LightScalarUpdate>   m_pending_light_intensities;
-    std::vector<LightPositionUpdate> m_pending_light_positions;
 
     bool m_drawDiagReset { false };
 

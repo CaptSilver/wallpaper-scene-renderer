@@ -31,15 +31,19 @@
 
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
+#include "Scene/PendingUpdateQueues.hpp"
 #include "WPShaderParser.hpp"
 #include "WPShaderTransforms.h"
 #include "Fs/VFS.h"
 
+#include <array>
 #include <atomic>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace wallpaper;
@@ -339,6 +343,141 @@ int repro_wpshader_transforms_unlocked(int iters) {
     return ok_count.load() == (long)kThreads * kPerThread ? 0 : 1;
 }
 
+// ── Repro 5: PendingUpdateQueues concurrent setters vs. withXLocked drains ────
+// The render-thread bridge's pending-update state (lifted out of RenderHandler)
+// owns three per-tick mutex groups.  The QML/script thread hammers the setters
+// (setNodeTransform/Visible/Alpha + setTextStyle + setColorUpdate + setClearColor
+// + setLightColor) across all three mutexes while the render-thread analogue
+// runs the withTextLocked/withColorLocked/withPropertyLocked drains swapping the
+// maps out in a tight loop.  A clean run under TSAN proves the three group
+// mutexes actually serialize writer vs. drain on their own maps; a drift that
+// drops a lock makes TSAN report a race on the touched container.
+//
+// Functional sanity (independent of TSAN): the writer only ever posts values
+// drawn from a known set, and the drain validates every drained struct is
+// internally consistent (a torn LightColorUpdate — index from one write, colour
+// from another — fails).  All light colours are posted as { index, {c,c,c} }
+// with c == index+1, so a non-torn struct always has all three components equal
+// to index+1.
+//
+// WEK_THREAD_REPRO_PROVE_RACE_QUEUE compiles a deliberately UNSYNCHRONISED
+// variant: both threads touch a shared map with NO mutex, which TSAN must flag
+// (proves this repro's access pattern actually bites).  Off by default.
+int repro_pending_update_queues(int iters) {
+    std::atomic<bool> go { false };
+    std::atomic<long> drained { 0 };
+    std::atomic<long> torn { 0 };
+
+#ifdef WEK_THREAD_REPRO_PROVE_RACE_QUEUE
+    // Deliberately racy: a bare map touched by both threads with no lock.  Mirrors
+    // the queue's transform map but WITHOUT the mutex -> TSAN must report a race.
+    std::map<std::pair<i32, std::string>, std::array<float, 3>> racy_transform;
+    std::thread                                                 writer([&] {
+        while (! go.load()) {
+        }
+        for (int i = 0; i < iters; ++i) {
+            int id                                        = 1 + (i % 8);
+            racy_transform[{ id, std::string("origin") }] = { (float)id, (float)id, (float)id };
+        }
+    });
+    std::thread                                                 reader([&] {
+        while (! go.load()) {
+        }
+        long local = 0;
+        for (int i = 0; i < iters; ++i) {
+            for (auto& [key, vec] : racy_transform) {
+                (void)key;
+                if (! (vec[0] == vec[1] && vec[1] == vec[2])) ++torn;
+                ++local;
+            }
+            racy_transform.clear();
+        }
+        drained.fetch_add(local);
+    });
+#else
+    PendingUpdateQueues q;
+
+    // Writer: post across all three mutex groups.  Every posted value is drawn
+    // from a small known set so the drain can validate it wasn't torn.
+    std::thread writer([&] {
+        while (! go.load()) {
+        }
+        for (int i = 0; i < iters; ++i) {
+            int id = 1 + (i % 8);
+            // property group
+            q.setNodeTransform(id, "origin", (float)id, (float)id, (float)id);
+            q.setNodeVisible(id, (i & 1) != 0);
+            q.setNodeAlpha(id, (float)id);
+            q.setClearColor((float)id, (float)id, (float)id);
+            q.setLightColor(id, (float)(id + 1), (float)(id + 1), (float)(id + 1));
+            // text group
+            q.setTextStyle(id, "right", "top", "F.otf");
+            // color group
+            q.setColorUpdate(id, (float)id, (float)id, (float)id);
+        }
+    });
+
+    // Reader (render-thread analogue): drain each group under its own lock,
+    // validate no torn struct, then swap the maps out (clear).
+    std::thread reader([&] {
+        while (! go.load()) {
+        }
+        long local = 0;
+        for (int i = 0; i < iters; ++i) {
+            q.withPropertyLocked([&](PendingUpdateQueues& p) {
+                for (auto& [key, vec] : p.m_pending_transform_updates) {
+                    (void)key;
+                    // origin was posted as {id,id,id} -> all three equal.
+                    if (! (vec[0] == vec[1] && vec[1] == vec[2])) ++torn;
+                    ++local;
+                }
+                for (auto& u : p.m_pending_light_colors) {
+                    // posted as { id, {id+1,id+1,id+1} }.
+                    float want = (float)(u.index + 1);
+                    if (! (u.color[0] == want && u.color[1] == want && u.color[2] == want)) ++torn;
+                }
+                if (p.m_pending_clear_color) {
+                    auto& c = *p.m_pending_clear_color;
+                    if (! (c[0] == c[1] && c[1] == c[2])) ++torn;
+                }
+                p.m_pending_transform_updates.clear();
+                p.m_pending_visible_updates.clear();
+                p.m_pending_alpha_updates.clear();
+                p.m_pending_light_colors.clear();
+                p.m_pending_clear_color.reset();
+            });
+            q.withTextLocked([&](auto& textUpdates, auto& pointsizeUpdates, auto& styleUpdates) {
+                (void)textUpdates;
+                (void)pointsizeUpdates;
+                for (auto& [id, s] : styleUpdates) {
+                    (void)id;
+                    // posted with all three fields non-empty -> a torn merge
+                    // would leave one field empty.
+                    if (s.halign.empty() || s.valign.empty() || s.fontName.empty()) ++torn;
+                }
+                styleUpdates.clear();
+            });
+            q.withColorLocked([&](auto& colorUpdates) {
+                for (auto& [id, rgb] : colorUpdates) {
+                    (void)id;
+                    if (! (rgb[0] == rgb[1] && rgb[1] == rgb[2])) ++torn;
+                }
+                colorUpdates.clear();
+            });
+        }
+        drained.fetch_add(local);
+    });
+#endif
+
+    go.store(true);
+    writer.join();
+    reader.join();
+
+    // Invariant: no torn struct ever observed (independent of TSAN).
+    (void)drained;
+    return torn.load() == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -360,6 +499,10 @@ int main(int argc, char** argv) {
 
     std::printf("[thread-repro] WPShaderTransforms helpers unlocked (thread_local regex), %d iters...\n", iters);
     rc |= repro_wpshader_transforms_unlocked(iters);
+
+    std::printf("[thread-repro] PendingUpdateQueues setters vs. withXLocked drains, %d iters...\n",
+                iters);
+    rc |= repro_pending_update_queues(iters);
 
     std::printf("[thread-repro] done (rc=%d)%s\n", rc,
                 rc == 0 ? " — clean (check TSAN output for races)" : " — FAILED invariant");

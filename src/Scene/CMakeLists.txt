@@ -11,6 +11,7 @@ SceneIndexArray.cpp
 SceneNode.cpp
 SceneVertexArray.cpp
 SceneShader.cpp
+PendingUpdateQueues.cpp
 )
 
 target_link_libraries(${LIB_NAME}

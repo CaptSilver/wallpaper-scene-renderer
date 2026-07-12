@@ -156,6 +156,11 @@ add_executable(backend_scene_tests
     test_ImagePayload.cpp
     test_AudioConsumerGate.cpp
     test_TextStyleMerge.cpp
+    test_PendingUpdateQueues.cpp
+    # Pending-update queue lifted out of RenderHandler.  backend_scene_tests
+    # compiles individual Scene .cpp files (it does not link the whole wpScene
+    # lib), so pull the queue's .cpp in directly for the unit test.
+    ${SRC_DIR}/Scene/PendingUpdateQueues.cpp
     test_WarmCacheTexSlots.cpp
     test_VideoTextureDecoder.cpp
     # VideoTextureDecoder.cpp: SW video texture decoder (libmpv triple-buffer).
@@ -362,6 +367,17 @@ option(WEK_THREAD_REPRO_PROVE_RACE
 if(WEK_THREAD_REPRO_PROVE_RACE)
     target_compile_definitions(backend_scene_thread_tests PRIVATE
         WEK_THREAD_REPRO_PROVE_RACE)
+endif()
+# Sibling prove-flag for the PendingUpdateQueues repro: swaps it to an
+# UNSYNCHRONISED map touched by both threads (no mutex) so TSAN must report a
+# race — proves that repro's access pattern actually bites.  Leave OFF for the
+# clean regression run.
+option(WEK_THREAD_REPRO_PROVE_RACE_QUEUE
+       "Compile the PendingUpdateQueues repro without its group mutexes \
+(demonstrates TSAN bites; leave OFF for the clean regression run)" OFF)
+if(WEK_THREAD_REPRO_PROVE_RACE_QUEUE)
+    target_compile_definitions(backend_scene_thread_tests PRIVATE
+        WEK_THREAD_REPRO_PROVE_RACE_QUEUE)
 endif()
 wek_apply_sanitizers(backend_scene_thread_tests)
 add_test(NAME backend_scene_thread_tests COMMAND backend_scene_thread_tests)
