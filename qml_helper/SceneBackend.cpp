@@ -263,11 +263,20 @@ private:
 
 } // namespace scenebackend
 
-SceneObject::SceneObject(QQuickItem* parent)
-    : QQuickItem(parent), m_scene(std::make_shared<wallpaper::SceneWallpaper>()) {
+SceneObject::SceneObject(QQuickItem* parent): QQuickItem(parent) {
     setFlag(ItemHasContents, true);
-    m_scene->init();
-    m_scene->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, GetDefaultCachePath());
+    // Env-gated headless path: with WEKDE_TEST_NO_SCENE set, skip building the
+    // SceneWallpaper entirely so scenescript_tests can drive the 30 Hz dispatch
+    // against an injected IPropertyDispatchSink with no Vulkan device.  Both
+    // m_scene and the default dispatch sink stay null; the test injects its own
+    // via setDispatchSinkForTesting.  Production (env unset) is unchanged: build
+    // the scene, init it, and wire the production sink to it.
+    if (! qEnvironmentVariableIsSet("WEKDE_TEST_NO_SCENE")) {
+        m_scene = std::make_shared<wallpaper::SceneWallpaper>();
+        m_scene->init();
+        m_scene->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, GetDefaultCachePath());
+        m_dispatch = std::make_unique<scenebackend::SceneWallpaperDispatchSink>(m_scene.get());
+    }
 
     connect(this, &SceneObject::firstFrame, this, &SceneObject::setupTextScripts);
 
@@ -1030,7 +1039,7 @@ void SceneObject::videoSetRate(const QString& layerName, double rate) {
 void SceneObject::materialSetValue(const QString&  layerName,
                                    const QString&  name,
                                    const QJSValue& value) {
-    if (! m_scene) return;
+    if (! m_dispatch) return;
     if (name.isEmpty()) return;
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
@@ -1046,7 +1055,7 @@ void SceneObject::materialSetValue(const QString&  layerName,
         if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
     }
     if (floats.empty()) return;
-    m_scene->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
+    m_dispatch->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
 }
 
 // Effect-material bridge — same shape as materialSetValue but carries an
@@ -1057,7 +1066,7 @@ void SceneObject::effectMaterialSetValue(const QString&  layerName,
                                          int             effectIdx,
                                          const QString&  name,
                                          const QJSValue& value) {
-    if (! m_scene) return;
+    if (! m_dispatch) return;
     if (name.isEmpty()) return;
     if (effectIdx < 0) return;
     auto it = m_nodeNameToId.find(layerName.toStdString());
@@ -1074,7 +1083,7 @@ void SceneObject::effectMaterialSetValue(const QString&  layerName,
         if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
     }
     if (floats.empty()) return;
-    m_scene->updateEffectMaterialValue(
+    m_dispatch->updateEffectMaterialValue(
         it->second, effectIdx, name.toStdString(), std::move(floats));
 }
 
@@ -1083,10 +1092,10 @@ void SceneObject::effectMaterialSetValue(const QString&  layerName,
 // pin is applied per-pass in WPShaderValueUpdater since each CustomShaderPass
 // holds its own sprites_map copy.
 void SceneObject::setLayerSpriteFrame(const QString& layerName, bool wantsManual, int frameIdx) {
-    if (! m_scene) return;
+    if (! m_dispatch) return;
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
-    m_scene->setLayerSpriteFrame(it->second, wantsManual, frameIdx);
+    m_dispatch->setLayerSpriteFrame(it->second, wantsManual, frameIdx);
 }
 
 // thisLayer.getTextureAnimation() read-back — returns frame count, current
@@ -1143,13 +1152,11 @@ void SceneObject::setTextStyle(const QString& layerName,
                                const QString& halign,
                                const QString& valign,
                                const QString& fontName) {
-    if (! m_scene) return;
+    if (! m_dispatch) return;
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
-    m_scene->updateTextStyle(it->second,
-                             halign.toStdString(),
-                             valign.toStdString(),
-                             fontName.toStdString());
+    m_dispatch->updateTextStyle(
+        it->second, halign.toStdString(), valign.toStdString(), fontName.toStdString());
 }
 
 // Layer-hierarchy bridge — enqueues (childId, parentId) for the render
@@ -2979,7 +2986,7 @@ void SceneObject::setupTextScripts() {
         // Otherwise the stream stays at the scene-JSON static volume and the
         // delta-threshold check in evaluatePropertyScripts() suppresses the
         // first update when script volume happens to equal the eval result.
-        m_scene->updateSoundVolume(svsi.index, state.currentVolume);
+        m_dispatch->updateSoundVolume(svsi.index, state.currentVolume);
 
         m_soundVolumeScriptStates.push_back(std::move(state));
         qCInfo(wekdeScene,
@@ -4196,7 +4203,8 @@ void SceneObject::refreshEngineTickGlobals(qint64& lastTickMs, double frametimeF
     QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
-    engineObj.setProperty("fps", m_scene->getFps());
+    // Headless test path (WEKDE_TEST_NO_SCENE) has no scene to read FPS from.
+    if (m_scene) engineObj.setProperty("fps", m_scene->getFps());
     // timeOfDay: 0.0 = midnight, 0.5 = noon, 1.0 = midnight.  Cached at 1Hz —
     // the value is seconds-resolution so a fresh QTime::currentTime() syscall per
     // tick repeats the same value for hundreds of consecutive ticks.
@@ -4220,6 +4228,8 @@ void SceneObject::refreshEngineTickGlobals(qint64& lastTickMs, double frametimeF
 
 void SceneObject::refreshAudioBuffers() {
     if (! m_jsEngine) return;
+    // Headless test path (WEKDE_TEST_NO_SCENE): no scene, no audio analyzer.
+    if (! m_scene) return;
 
     auto analyzer = m_scene->audioAnalyzer();
     if (! analyzer || ! analyzer->HasData()) return;
@@ -4288,9 +4298,13 @@ void SceneObject::evaluateTextScripts() {
     // calls equal real frametime.  Always allow the first eval (frame_idx
     // can be 0 if the render thread hasn't started yet, but the constructor
     // calls evaluateTextScripts() once to seed text content immediately).
-    uint64_t curFrameIdx = m_scene->getFrameIdx();
-    if (m_lastTextFrameIdx != 0 && curFrameIdx == m_lastTextFrameIdx) return;
-    m_lastTextFrameIdx = curFrameIdx;
+    // Headless test path (WEKDE_TEST_NO_SCENE) has no render thread / frame
+    // index to gate on, so it always evaluates.
+    if (m_scene) {
+        uint64_t curFrameIdx = m_scene->getFrameIdx();
+        if (m_lastTextFrameIdx != 0 && curFrameIdx == m_lastTextFrameIdx) return;
+        m_lastTextFrameIdx = curFrameIdx;
+    }
 
     // Refresh audio buffers before evaluating scripts
     refreshAudioBuffers();
@@ -4372,7 +4386,7 @@ void SceneObject::evaluateTextScripts() {
                 LOG_INFO("Text script id=%d update: \"%s\"", state.id, qPrintable(preview));
             }
             state.currentText = newText;
-            m_scene->updateText(state.id, newText.toStdString());
+            m_dispatch->updateText(state.id, newText.toStdString());
             updated++;
         }
     }
@@ -4465,7 +4479,7 @@ void SceneObject::evaluateColorScripts() {
             std::abs(g - state.currentColor[1]) > 0.001f ||
             std::abs(b - state.currentColor[2]) > 0.001f) {
             state.currentColor = { r, g, b };
-            m_scene->updateColor(state.id, r, g, b);
+            m_dispatch->updateColor(state.id, r, g, b);
         }
     }
 
@@ -4543,8 +4557,8 @@ void SceneObject::evaluateColorScripts() {
             if (std::abs(floats[i] - state.cachedValue[i]) > 0.0001f) changed = true;
         if (! changed) continue;
         state.cachedValue = floats;
-        m_scene->updateEffectMaterialValue(state.id, state.effectIdx, state.uniformName,
-                                           std::move(floats));
+        m_dispatch->updateEffectMaterialValue(
+            state.id, state.effectIdx, state.uniformName, std::move(floats));
     }
 
     // A3-T2 back-off: color + shader-value share one latch (same method/timer).
@@ -4626,7 +4640,9 @@ void SceneObject::evaluatePropertyScripts() {
     // ctor's seed eval ungated so shared.* is populated before text/color
     // scripts run.  Counters below feed the diag dump.
     static uint64_t s_propEvalCount = 0, s_propSkipCount = 0;
-    {
+    // Headless test path (WEKDE_TEST_NO_SCENE) has no render-frame index to gate
+    // on, so it always evaluates the tick.
+    if (m_scene) {
         uint64_t curFrameIdx = m_scene->getFrameIdx();
         if (! propertyTickShouldEval(m_propertyHighRate, curFrameIdx, m_lastPropertyFrameIdx)) {
             ++s_propSkipCount;
@@ -4745,7 +4761,9 @@ void SceneObject::evaluatePropertyScripts() {
     // actually matches (stream transitioning can take a frame or two —
     // meanwhile anyPlaying()-style polling would see stale "still playing"
     // and misbehave).  Clear the dirty flag once the two agree.
-    if (! m_soundLayerStates.empty()) {
+    // m_scene guard: soundLayerIsPlaying below reads the render side; the
+    // headless test path (WEKDE_TEST_NO_SCENE) has no sound layers anyway.
+    if (m_scene && ! m_soundLayerStates.empty()) {
         QJSValue playingStates = m_engineObj.property("_soundPlayingStates");
         if (playingStates.isUndefined()) {
             playingStates = m_jsEngine->newObject();
@@ -4881,14 +4899,14 @@ void SceneObject::evaluatePropertyScripts() {
             case Kind::Visible: {
                 bool v               = list[i + 1].toDouble() != 0.0;
                 state.currentVisible = v;
-                m_scene->updateNodeVisible(state.id, v);
+                m_dispatch->updateNodeVisible(state.id, v);
                 if (s_scriptDiag) s_updatesVisible++;
                 break;
             }
             case Kind::Alpha: {
                 float v            = (float)list[i + 1].toDouble();
                 state.currentFloat = v;
-                m_scene->updateNodeAlpha(state.id, v);
+                m_dispatch->updateNodeAlpha(state.id, v);
                 if (s_scriptDiag) s_updatesAlpha++;
                 break;
             }
@@ -4898,7 +4916,7 @@ void SceneObject::evaluatePropertyScripts() {
                 // the g_UserAlpha uniform.
                 float v            = (float)list[i + 1].toDouble();
                 state.currentFloat = v;
-                m_scene->updateParticleRate(state.id, v);
+                m_dispatch->updateParticleRate(state.id, v);
                 if (s_scriptDiag) s_updatesAlpha++;
                 break;
             }
@@ -4907,7 +4925,7 @@ void SceneObject::evaluatePropertyScripts() {
                 float y           = (float)list[i + 2].toDouble();
                 float z           = (float)list[i + 3].toDouble();
                 state.currentVec3 = { x, y, z };
-                m_scene->updateNodeTransform(state.id, state.property, x, y, z);
+                m_dispatch->updateNodeTransform(state.id, state.property, x, y, z);
                 if (s_scriptDiag) s_updatesVec3++;
                 break;
             }
@@ -5106,10 +5124,10 @@ void SceneObject::evaluatePropertyScripts() {
             // Low-frequency fields stay on the individual-setter path — these
             // don't fire every tick so a per-call lock is harmless.
             if (flags & F_PSIZE) {
-                m_scene->updateTextPointsize(id, (float)updates.property(base + 13).toNumber());
+                m_dispatch->updateTextPointsize(id, (float)updates.property(base + 13).toNumber());
             }
             if (flags & F_TEXT) {
-                m_scene->updateText(id, updates.property(base + 14).toString().toStdString());
+                m_dispatch->updateText(id, updates.property(base + 14).toString().toStdString());
             }
             if (flags & F_CMDS) {
                 QJSValue cmds     = updates.property(base + 15);
@@ -5121,6 +5139,9 @@ void SceneObject::evaluatePropertyScripts() {
                     if (sep < 0) continue;
                     std::string an     = cmd.mid(sep + 1).toStdString();
                     QString     action = cmd.mid(6, sep - 6);
+                    // Named property-animation control stays on m_scene (not a
+                    // sink method); guard for the headless test path.
+                    if (! m_scene) continue;
                     if (action == "play")
                         m_scene->propertyAnimPlay(id, an);
                     else if (action == "stop")
@@ -5135,17 +5156,19 @@ void SceneObject::evaluatePropertyScripts() {
                 for (int e = 0; e < efxLen; e += 2) {
                     int  effIdx = efxList.property(e).toInt();
                     bool effVis = efxList.property(e + 1).toInt() != 0;
-                    m_scene->updateEffectVisible(id, effIdx, effVis);
+                    m_dispatch->updateEffectVisible(id, effIdx, effVis);
                 }
             }
         }
-        if (! s_batch.empty()) m_scene->applyLayerBatch(s_batch);
+        if (! s_batch.empty()) m_dispatch->applyLayerBatch(s_batch);
     }
 
     probeMark(s_t_dirtyDispatch);
 
-    // Flush dirty sound layer proxies (play/stop/pause/volume commands)
-    if (m_collectDirtySoundLayersFn.isCallable()) {
+    // Flush dirty sound layer proxies (play/stop/pause/volume commands).
+    // soundLayer* dispatch stays on m_scene (not sink methods); guard the whole
+    // flush for the headless test path (WEKDE_TEST_NO_SCENE has no sound layers).
+    if (m_scene && m_collectDirtySoundLayersFn.isCallable()) {
         bool     wasInterrupted = false;
         QJSValue soundUpdates   = callJsGuarded(
             [this] {
@@ -5223,18 +5246,18 @@ void SceneObject::evaluatePropertyScripts() {
 
             if (dirty.property("clearColor").toBool()) {
                 QJSValue c = sceneUpdate.property("clearColor");
-                m_scene->updateClearColor((float)c.property("x").toNumber(),
-                                          (float)c.property("y").toNumber(),
-                                          (float)c.property("z").toNumber());
+                m_dispatch->updateClearColor((float)c.property("x").toNumber(),
+                                             (float)c.property("y").toNumber(),
+                                             (float)c.property("z").toNumber());
             }
             if (dirty.property("bloomStrength").toBool())
-                m_scene->updateBloomStrength(
+                m_dispatch->updateBloomStrength(
                     (float)sceneUpdate.property("bloomStrength").toNumber());
             if (dirty.property("bloomThreshold").toBool())
-                m_scene->updateBloomThreshold(
+                m_dispatch->updateBloomThreshold(
                     (float)sceneUpdate.property("bloomThreshold").toNumber());
             if (dirty.property("cameraFov").toBool())
-                m_scene->updateCameraFov((float)sceneUpdate.property("cameraFov").toNumber());
+                m_dispatch->updateCameraFov((float)sceneUpdate.property("cameraFov").toNumber());
             if (dirty.property("cameraEye").toBool() || dirty.property("cameraCenter").toBool() ||
                 dirty.property("cameraUp").toBool()) {
                 // Send full lookAt when any camera vector changes
@@ -5244,27 +5267,27 @@ void SceneObject::evaluatePropertyScripts() {
                     m_jsEngine->globalObject().property("_sceneState").property("cameraCenter");
                 QJSValue u =
                     m_jsEngine->globalObject().property("_sceneState").property("cameraUp");
-                m_scene->updateCameraLookAt((float)e.property("x").toNumber(),
-                                            (float)e.property("y").toNumber(),
-                                            (float)e.property("z").toNumber(),
-                                            (float)ct.property("x").toNumber(),
-                                            (float)ct.property("y").toNumber(),
-                                            (float)ct.property("z").toNumber(),
-                                            (float)u.property("x").toNumber(),
-                                            (float)u.property("y").toNumber(),
-                                            (float)u.property("z").toNumber());
+                m_dispatch->updateCameraLookAt((float)e.property("x").toNumber(),
+                                               (float)e.property("y").toNumber(),
+                                               (float)e.property("z").toNumber(),
+                                               (float)ct.property("x").toNumber(),
+                                               (float)ct.property("y").toNumber(),
+                                               (float)ct.property("z").toNumber(),
+                                               (float)u.property("x").toNumber(),
+                                               (float)u.property("y").toNumber(),
+                                               (float)u.property("z").toNumber());
             }
             if (dirty.property("ambientColor").toBool()) {
                 QJSValue c = sceneUpdate.property("ambientColor");
-                m_scene->updateAmbientColor((float)c.property("x").toNumber(),
-                                            (float)c.property("y").toNumber(),
-                                            (float)c.property("z").toNumber());
+                m_dispatch->updateAmbientColor((float)c.property("x").toNumber(),
+                                               (float)c.property("y").toNumber(),
+                                               (float)c.property("z").toNumber());
             }
             if (dirty.property("skylightColor").toBool()) {
                 QJSValue c = sceneUpdate.property("skylightColor");
-                m_scene->updateSkylightColor((float)c.property("x").toNumber(),
-                                             (float)c.property("y").toNumber(),
-                                             (float)c.property("z").toNumber());
+                m_dispatch->updateSkylightColor((float)c.property("x").toNumber(),
+                                                (float)c.property("y").toNumber(),
+                                                (float)c.property("z").toNumber());
             }
 
             // Light updates
@@ -5276,22 +5299,22 @@ void SceneObject::evaluatePropertyScripts() {
                 QJSValue ld    = entry.property("dirty");
                 if (ld.property("color").toBool()) {
                     QJSValue c = entry.property("color");
-                    m_scene->updateLightColor(idx,
-                                              (float)c.property("x").toNumber(),
-                                              (float)c.property("y").toNumber(),
-                                              (float)c.property("z").toNumber());
+                    m_dispatch->updateLightColor(idx,
+                                                 (float)c.property("x").toNumber(),
+                                                 (float)c.property("y").toNumber(),
+                                                 (float)c.property("z").toNumber());
                 }
                 if (ld.property("radius").toBool())
-                    m_scene->updateLightRadius(idx, (float)entry.property("radius").toNumber());
+                    m_dispatch->updateLightRadius(idx, (float)entry.property("radius").toNumber());
                 if (ld.property("intensity").toBool())
-                    m_scene->updateLightIntensity(idx,
-                                                  (float)entry.property("intensity").toNumber());
+                    m_dispatch->updateLightIntensity(idx,
+                                                     (float)entry.property("intensity").toNumber());
                 if (ld.property("position").toBool()) {
                     QJSValue p = entry.property("position");
-                    m_scene->updateLightPosition(idx,
-                                                 (float)p.property("x").toNumber(),
-                                                 (float)p.property("y").toNumber(),
-                                                 (float)p.property("z").toNumber());
+                    m_dispatch->updateLightPosition(idx,
+                                                    (float)p.property("x").toNumber(),
+                                                    (float)p.property("y").toNumber(),
+                                                    (float)p.property("z").toNumber());
                 }
             }
         }
@@ -5312,7 +5335,8 @@ void SceneObject::evaluatePropertyScripts() {
         // stays locked to visual animations even if the render loop throttles.
         float baseVolume = svState.currentVolume;
         if (svState.hasAnimation) {
-            double sceneTime = m_scene->getSceneTime();
+            // Headless test path (WEKDE_TEST_NO_SCENE): no render-thread clock.
+            double sceneTime = m_scene ? m_scene->getSceneTime() : 0.0;
             if (svState.anim.lastSceneTime < 0.0) {
                 svState.anim.lastSceneTime = sceneTime;
             }
@@ -5366,7 +5390,7 @@ void SceneObject::evaluatePropertyScripts() {
             if (newVol > 1.0f) newVol = 1.0f;
             if (std::abs(newVol - svState.currentVolume) > 0.001f) {
                 svState.currentVolume = newVol;
-                m_scene->updateSoundVolume(svState.index, newVol);
+                m_dispatch->updateSoundVolume(svState.index, newVol);
             }
         }
     }
@@ -5652,6 +5676,132 @@ void SceneObject::cleanupTextScripts() {
         m_jsEngine = nullptr;
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test-only hooks.  Let scenescript_tests drive the 30 Hz property/text/color
+// dispatch against a recording IPropertyDispatchSink with m_scene null (set
+// WEKDE_TEST_NO_SCENE before constructing).  These bypass setupTextScripts,
+// which reads m_scene for the parsed script list; instead they build the
+// minimal JS engine + `_runAllPropertyScripts` machinery and seed states
+// directly, so the exact same dispatch code path runs headless.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SceneObject::setDispatchSinkForTesting(
+    std::unique_ptr<scenebackend::IPropertyDispatchSink> sink) {
+    m_dispatch = std::move(sink);
+}
+
+void SceneObject::bootstrapScriptEngineForTesting() {
+    if (m_jsEngine) return;
+    m_jsEngine  = new QJSEngine(this);
+    m_globalObj = m_jsEngine->globalObject();
+    m_jsWatchdog.start();
+    m_runtimeTimer.start();
+
+    // A test SceneObject is a top-level QQuickItem (no QObject parent).
+    // fireDestroyEvent (run from cleanupTextScripts at teardown) re-wraps
+    // `this` via newQObject, which hands JavaScriptOwnership to parentless
+    // QObjects — the engine would then delete `this` during its own teardown,
+    // re-entering ~SceneObject.  In production `this` has a parent so Qt picks
+    // CppOwnership; pin that here so the test path matches.
+    QJSEngine::setObjectOwnership(this, QJSEngine::CppOwnership);
+
+    // Minimal 'engine' + 'console' globals (the eval loops touch engine.* per
+    // tick and console._buf on the property tick).
+    QJSValue engineObj = m_jsEngine->newObject();
+    engineObj.setProperty("frametime", 0.016);
+    engineObj.setProperty("runtime", 0.0);
+    engineObj.setProperty("timeOfDay", 0.0);
+    engineObj.setProperty("fps", 0.0);
+    engineObj.setProperty("frameCount", 0.0);
+    engineObj.setProperty("userProperties", m_jsEngine->newObject());
+    m_globalObj.setProperty("engine", engineObj);
+    m_engineObj = m_jsEngine->globalObject().property("engine");
+    m_jsEngine->evaluate("var console = { _buf: [], log: function(){}, warn: function(){}, "
+                         "error: function(){} };\n");
+    m_consoleObj = m_jsEngine->globalObject().property("console");
+
+    // Vec2/Vec3/Vec4 shims + the batched property-dispatch loop — the exact
+    // same source strings production evaluates (PropertyScriptDispatchJs.hpp).
+    m_jsEngine->evaluate(wek::qml_helper::kVecClassesJs);
+    m_vec2Fn = m_jsEngine->globalObject().property("Vec2");
+    m_vec3Fn = m_jsEngine->globalObject().property("Vec3");
+    m_vec4Fn = m_jsEngine->globalObject().property("Vec4");
+    m_jsEngine->evaluate(wek::qml_helper::kPropertyScriptDispatchJs);
+    m_runAllPropertyScriptsFn = m_jsEngine->globalObject().property("_runAllPropertyScripts");
+}
+
+void SceneObject::seedPropertyScriptForTesting(int32_t id, TestScriptKind kind,
+                                               const std::string& property,
+                                               const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+
+    PropertyScriptState state;
+    state.id       = id;
+    state.property = property;
+    state.kind     = static_cast<PropertyScriptState::Kind>(static_cast<uint8_t>(kind));
+    state.updateFn = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    // Seed current values so the first eval's delta compare fires on a change:
+    // visible starts true, alpha/particle-rate start 1.0, vec3 starts (0,0,0).
+    state.currentVisible = true;
+    state.currentFloat   = 1.0f;
+    state.currentVec3    = { 0, 0, 0 };
+    m_propertyScriptStates.push_back(std::move(state));
+
+    // Re-partition + rebuild the JS-side `_allPropertyScripts` array so
+    // _runAllPropertyScripts dispatches in (Visible, Vec3, Alpha) order — same
+    // shape production builds in setupTextScripts.
+    std::stable_sort(m_propertyScriptStates.begin(),
+                     m_propertyScriptStates.end(),
+                     [](const PropertyScriptState& a, const PropertyScriptState& b) {
+                         return static_cast<uint8_t>(a.kind) < static_cast<uint8_t>(b.kind);
+                     });
+    QJSValue scriptsArr = m_jsEngine->globalObject().property("_allPropertyScripts");
+    m_jsEngine->evaluate("_allPropertyScripts.length = 0;");
+    int visEnd  = 0;
+    int vec3End = 0;
+    for (auto& st : m_propertyScriptStates) {
+        QJSValue entry = m_jsEngine->newObject();
+        entry.setProperty("kind", QJSValue((int)st.kind));
+        entry.setProperty("fn", st.updateFn);
+        entry.setProperty("proxy", st.thisLayerProxy);
+        entry.setProperty("obj", st.thisObjectProxy);
+        entry.setProperty("hasLayer", QJSValue(! st.layerName.empty()));
+        entry.setProperty("valid", QJSValue(st.updateFn.isCallable()));
+        entry.setProperty("cb", QJSValue(st.currentVisible));
+        entry.setProperty("cf", QJSValue((double)st.currentFloat));
+        entry.setProperty("cx", QJSValue((double)st.currentVec3[0]));
+        entry.setProperty("cy", QJSValue((double)st.currentVec3[1]));
+        entry.setProperty("cz", QJSValue((double)st.currentVec3[2]));
+        scriptsArr.setProperty((quint32)scriptsArr.property("length").toUInt(), entry);
+        if (st.kind == PropertyScriptState::Kind::Visible) {
+            visEnd++;
+            vec3End++;
+        } else if (st.kind == PropertyScriptState::Kind::Vec3) {
+            vec3End++;
+        }
+    }
+    m_globalObj.setProperty("_scriptPartVisEnd", QJSValue(visEnd));
+    m_globalObj.setProperty("_scriptPartVec3End", QJSValue(vec3End));
+    m_runAllPropertyScriptsFn = m_jsEngine->globalObject().property("_runAllPropertyScripts");
+}
+
+void SceneObject::seedTextStyleScriptForTesting(int32_t id, const std::string& halign,
+                                                const std::string& valign,
+                                                const std::string& fontName) {
+    // updateTextStyle dispatches from the setTextStyle bridge (layerName → id →
+    // sink), not the eval loop.  Seed the id map and drive the real bridge.
+    const std::string layerName = "testlayer_" + std::to_string(id);
+    m_nodeNameToId[layerName]   = id;
+    setTextStyle(QString::fromStdString(layerName),
+                 QString::fromStdString(halign),
+                 QString::fromStdString(valign),
+                 QString::fromStdString(fontName));
+}
+
+void SceneObject::evaluatePropertyScriptsForTesting() { evaluatePropertyScripts(); }
+void SceneObject::evaluateTextScriptsForTesting() { evaluateTextScripts(); }
+void SceneObject::evaluateColorScriptsForTesting() { evaluateColorScripts(); }
 
 #include "SceneBackend.moc"
 #include "moc_SceneTimerBridge.cpp"

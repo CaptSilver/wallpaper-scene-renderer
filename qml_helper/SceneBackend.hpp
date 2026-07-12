@@ -20,6 +20,9 @@
 #include "JsWatchdog.h"
 #include "ScriptDiagState.h"
 #include "SceneWallpaper.hpp"
+#include "IPropertyDispatchSink.hpp"
+
+#include <memory>
 
 Q_DECLARE_LOGGING_CATEGORY(wekdeScene)
 
@@ -338,7 +341,41 @@ public:
     explicit SceneObject(QQuickItem* parent = nullptr);
     virtual ~SceneObject();
 
+    // ── Test-only hooks (do not call from production) ────────────────────────
+    // These let scenescript_tests drive the 30 Hz dispatch against a recording
+    // IPropertyDispatchSink with m_scene null (set WEKDE_TEST_NO_SCENE before
+    // constructing so the ctor leaves m_scene / the default sink null).
+
+    // Swap the dispatch sink (takes ownership).  Test injects a recording fake.
+    void setDispatchSinkForTesting(std::unique_ptr<scenebackend::IPropertyDispatchSink> sink);
+
+    // Mirror of PropertyScriptState::Kind for the test seed API — same
+    // underlying values so routing (Visible/Vec3/Alpha/ParticleRate) matches.
+    enum class TestScriptKind : uint8_t
+    {
+        Visible      = 0,
+        Vec3         = 1,
+        Alpha        = 2,
+        ParticleRate = 3
+    };
+    // Seed one property script (compiling `jsSource` to a function) into the
+    // dispatch state, building the minimal JS engine + `_runAllPropertyScripts`
+    // machinery on first call.  Bypasses setupTextScripts (which reads m_scene).
+    void seedPropertyScriptForTesting(int32_t id, TestScriptKind kind, const std::string& property,
+                                      const std::string& jsSource);
+    // Seed a text-style change so the next evaluateTextScripts tick dispatches
+    // updateTextStyle(id, halign, valign, fontName).
+    void seedTextStyleScriptForTesting(int32_t id, const std::string& halign,
+                                       const std::string& valign, const std::string& fontName);
+    // Public aliases for the private eval slots so a test can tick dispatch.
+    void evaluatePropertyScriptsForTesting();
+    void evaluateTextScriptsForTesting();
+    void evaluateColorScriptsForTesting();
+
 private:
+    // Build the minimal JS engine (Vec shims + property-dispatch loop) used by
+    // the test seed API when there is no scene to run setupTextScripts.
+    void bootstrapScriptEngineForTesting();
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
     void setupEngineGlobals();
@@ -395,6 +432,12 @@ private:
     bool m_paused { false };
 
     std::shared_ptr<wallpaper::SceneWallpaper> m_scene { nullptr };
+
+    // Seam for the 30 Hz script-driven mutation dispatch (update*/
+    // setLayerSpriteFrame/applyLayerBatch).  Points at a
+    // SceneWallpaperDispatchSink wrapping m_scene in production; a test can swap
+    // it for a recording fake via setDispatchSinkForTesting() with m_scene null.
+    std::unique_ptr<scenebackend::IPropertyDispatchSink> m_dispatch;
 
     // 500 ms debounce timer for QGuiApplication::screenRemoved.  Lazy-created
     // the first time a screen is removed on this backend's window; cancelled

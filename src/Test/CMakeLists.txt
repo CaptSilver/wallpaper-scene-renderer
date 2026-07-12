@@ -318,20 +318,32 @@ if(BUILD_TOOLS AND TARGET wp-pkg)
     add_dependencies(backend_scene_tests wp-pkg)
 endif()
 
-# Qt-dependent tests (SceneScript timers, device detection)
-find_package(Qt6 COMPONENTS Core Qml QUIET)
+# Qt-dependent tests (SceneScript timers, device detection).  Compiles the real
+# SceneBackend.cpp (the QML bridge) so test_SceneScriptDispatch can drive the
+# 30 Hz property/text/color dispatch against a recording IPropertyDispatchSink
+# with no SceneWallpaper / Vulkan device.  Needs Gui + Quick (SceneBackend uses
+# QQuickItem / QSGSimpleTextureNode) and glad (glExtra.cpp), plus the renderer
+# lib for the SceneWallpaper symbols — the ctor never opens Vulkan (deferred to
+# initVulkan), so the link set stays headless.
+find_package(Qt6 COMPONENTS Core Qml Gui Quick QUIET)
 if(Qt6_FOUND)
     add_executable(scenescript_tests
         test_main_qt.cpp
         test_SceneScript.cpp
+        test_SceneScriptDispatch.cpp
+        ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
+        ${CMAKE_SOURCE_DIR}/qml_helper/glExtra.cpp
     )
     set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
     target_include_directories(scenescript_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/qml_helper
+        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_SOURCE_DIR}/src/Audio/include
         ${DOCTEST_INCLUDE_DIR}
     )
-    target_link_libraries(scenescript_tests PRIVATE Qt6::Core Qt6::Qml)
+    target_link_libraries(scenescript_tests PRIVATE
+        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer)
     wek_apply_sanitizers(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
     set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)
