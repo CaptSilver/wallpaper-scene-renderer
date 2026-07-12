@@ -63,6 +63,7 @@ add_executable(backend_scene_tests
     test_Scene.cpp
     test_Scene_VolumetricsTick.cpp
     test_SceneToRenderGraph_Volumetrics.cpp
+    test_SkyboxRenderGraph.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp
@@ -200,6 +201,15 @@ add_executable(backend_scene_tests
     # pulled in (the fixture scene loads no materials/shaders).
     ${SRC_DIR}/WPSceneParser.cpp
     ${SRC_DIR}/VulkanRender/VolumetricChain.cpp
+    # Skybox background pass (Increment A) + its render-graph emission +
+    # integrated sceneToRenderGraph() for the topology tests.  Same headless
+    # contract as CustomShaderPass below: the Vulkan device-side prepare/execute
+    # is never called from tests (SkyboxPass::execute needs a real device), so
+    # only the compile-time header weight is pulled in — no GPU interaction.
+    # SceneToRenderGraph.cpp calls addPass<CopyPass>, so CopyPass.cpp comes too.
+    ${SRC_DIR}/VulkanRender/SkyboxPass.cpp
+    ${SRC_DIR}/VulkanRender/SceneToRenderGraph.cpp
+    ${SRC_DIR}/VulkanRender/CopyPass.cpp
     # CustomShaderPass: ctor/dtor + Desc copy live here; required so the test
     # target can instantiate CustomShaderPass through the RenderGraph::addPass
     # template (the volumetric chain emitters do).  The Vulkan device-side code
@@ -229,6 +239,11 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/Scene/include/Scene
     ${SRC_DIR}/Particle/include
     ${SRC_DIR}/VulkanRender/include
+    # SceneToRenderGraph.cpp / SkyboxPass.cpp include their headers unqualified
+    # (e.g. "SceneToRenderGraph.hpp"); production adds this dir PRIVATE on the
+    # wpVulkanRender target, so mirror it here for the pulled-in sources.
+    ${SRC_DIR}/VulkanRender/include/VulkanRender
+    ${SRC_DIR}/VulkanRender
     ${SRC_DIR}/Vulkan/include
     ${DOCTEST_INCLUDE_DIR}
     # libmpv headers (mpv/client.h, mpv/render.h) — VideoTextureDecoder.cpp.

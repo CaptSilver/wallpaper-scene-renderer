@@ -2712,10 +2712,17 @@ static void recordSkyboxLayerIfTagged(ParseContext&                 context,
     if (! context.scene) return;
     context.scene->has_skybox = true;
     context.scene->skyboxLayerIds.push_back(wpimgobj.id);
-    LOG_INFO("[WEK] skybox layer detected id=%d name='%s'; renders as flat layer "
-             "until cubemap pass lands",
+    // Stash the layer's base panorama so the skybox background pass can create
+    // its read TexNode without re-walking nodes.  First skybox layer wins; a
+    // second tagged layer keeps the first (a scene has one background).
+    if (context.scene->skyboxTexKey.empty()) {
+        context.scene->skyboxTexKey = wpscene::resolveSkyboxTexKey(wpimgobj);
+    }
+    LOG_INFO("[WEK] skybox layer detected id=%d name='%s' tex='%s'; renders as flat "
+             "layer until skybox pass lands",
              wpimgobj.id,
-             wpimgobj.name.c_str());
+             wpimgobj.name.c_str(),
+             context.scene->skyboxTexKey.c_str());
 }
 
 void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {

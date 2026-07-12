@@ -160,7 +160,11 @@ public:
 
     std::unique_ptr<ParticleSystem> paritileSys;
 
-    SceneCamera* activeCamera;
+    // Default null so a scene built without an active camera (e.g. the skybox
+    // topology tests, or a malformed scene) fails the `activeCamera != nullptr`
+    // guards in sceneToRenderGraph instead of dereferencing an uninitialized
+    // pointer.  Production sets this during parse.
+    SceneCamera* activeCamera { nullptr };
 
     i32                  ortho[2] { 1920, 1080 }; // w, h
     std::array<float, 3> clearColor { 1.0f, 1.0f, 1.0f };
@@ -195,6 +199,13 @@ public:
     // skybox layers without re-walking nodes.  Populated alongside has_skybox
     // in WPSceneParser::ParseImageObj.
     std::vector<i32> skyboxLayerIds;
+
+    // Resolved panorama texture key of the skybox layer — the first material
+    // texture of the tagged image object (imgIdToSourceTexture convention).
+    // The skybox background pass reads this as its equirect source.  Empty when
+    // has_skybox is false or the layer has no samplable base texture, in which
+    // case no skybox pass is emitted (the emit gate checks all three).
+    std::string skyboxTexKey;
 
     // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/
     // "low"/""), after the plugin-level override is applied on top of

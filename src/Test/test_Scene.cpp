@@ -563,4 +563,11 @@ TEST_SUITE("Scene_Skybox") {
         CHECK(s.skyboxLayerIds[0] == 7);
         CHECK(s.skyboxLayerIds[1] == 42);
     }
+
+    TEST_CASE("skyboxTexKey defaults empty and records the resolved panorama key") {
+        Scene s;
+        CHECK(s.skyboxTexKey.empty());
+        s.skyboxTexKey = "materials/pano.png";
+        CHECK(s.skyboxTexKey == "materials/pano.png");
+    }
 }

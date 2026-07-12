@@ -563,3 +563,31 @@ TEST_SUITE("WPImageObject parsing - skybox tag") {
         CHECK(obj.is_skybox == false);
     }
 }
+
+TEST_SUITE("WPImageObject - skybox panorama tex key") {
+    // The skybox pass samples the layer's base panorama.  resolveSkyboxTexKey
+    // mirrors the imgIdToSourceTexture convention (first material texture),
+    // with the same guards so a spec-RT / empty base never becomes a read key.
+    TEST_CASE("resolves the first material texture as the panorama key") {
+        wpscene::WPImageObject obj;
+        obj.material.textures = { "materials/pano.png", "materials/second.png" };
+        CHECK(wpscene::resolveSkyboxTexKey(obj) == "materials/pano.png");
+    }
+
+    TEST_CASE("empty material textures -> empty key") {
+        wpscene::WPImageObject obj;
+        CHECK(wpscene::resolveSkyboxTexKey(obj).empty());
+    }
+
+    TEST_CASE("empty first texture string -> empty key") {
+        wpscene::WPImageObject obj;
+        obj.material.textures = { "" };
+        CHECK(wpscene::resolveSkyboxTexKey(obj).empty());
+    }
+
+    TEST_CASE("spec render-target base (_rt_) is not a samplable panorama -> empty key") {
+        wpscene::WPImageObject obj;
+        obj.material.textures = { "_rt_default" };
+        CHECK(wpscene::resolveSkyboxTexKey(obj).empty());
+    }
+}

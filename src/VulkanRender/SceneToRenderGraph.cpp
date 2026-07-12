@@ -8,6 +8,7 @@
 
 #include "VulkanRender/AllPasses.hpp"
 #include "VulkanRender/VolumetricChain.hpp"
+#include "VulkanRender/SkyboxPass.hpp"
 
 using namespace wallpaper;
 namespace wallpaper::rg
@@ -361,6 +362,75 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
         });
 }
 
+namespace wallpaper::vulkan
+{
+
+namespace
+{
+// Count renderable nodes (mesh + material) in the scene graph.
+size_t countRenderableNodes(const Scene& scene) {
+    if (! scene.sceneGraph) return 0;
+    size_t renderable = 0;
+    TraverseNode(
+        [&renderable](SceneNode* node) {
+            if (node->HasMaterial()) renderable++;
+        },
+        const_cast<SceneNode*>(scene.sceneGraph.get()));
+    return renderable;
+}
+} // namespace
+
+bool skyboxHasForegroundNodes(const Scene& scene) {
+    if (! scene.has_skybox) return false;
+    // More renderable nodes than skybox layers → the extra ones are foreground
+    // content that renders flat in front of the panorama.
+    return countRenderableNodes(scene) > scene.skyboxLayerIds.size();
+}
+
+void emitSkyboxPass(rg::RenderGraph& rgraph, Scene& scene) {
+    // Three-part gate — any miss leaves the graph untouched so a non-skybox (or
+    // half-detected) scene emits nothing and the flat path stays byte-identical.
+    if (! scene.has_skybox) return;
+    if (scene.skyboxLayerIds.empty()) return;
+    if (scene.skyboxTexKey.empty()) return;
+
+    const std::string pano_key = scene.skyboxTexKey;
+
+    if (skyboxHasForegroundNodes(scene)) {
+        const size_t foreground = countRenderableNodes(scene) - scene.skyboxLayerIds.size();
+        LOG_INFO("scene has a skybox plus %zu foreground nodes; foreground renders flat "
+                 "(no perspective camera)",
+                 foreground);
+    }
+
+    rgraph.addPass<SkyboxPass>(
+        "skybox",
+        rg::PassNode::Type::CustomShader,
+        [&pano_key](rg::RenderGraphBuilder& builder, SkyboxPass::Desc& pdesc) {
+            pdesc.output       = std::string(SpecTex_Default);
+            pdesc.pano_tex_key = pano_key;
+
+            // Read the panorama texture node so the graph orders the upload
+            // before this pass, then write _rt_default as the base layer.
+            rg::TexNode::Desc in_desc {
+                .name = pano_key,
+                .key  = pano_key,
+                .type = rg::TexNode::TexType::Imported,
+            };
+            auto* in_node = builder.createTexNode(in_desc);
+            builder.read(in_node);
+
+            auto* out_node =
+                builder.createTexNode(rg::TexNode::Desc { .name = std::string(SpecTex_Default),
+                                                          .key  = std::string(SpecTex_Default),
+                                                          .type = rg::TexNode::TexType::Temp },
+                                      true);
+            builder.write(out_node);
+        });
+}
+
+} // namespace wallpaper::vulkan
+
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
@@ -397,6 +467,11 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
             }
         }
     }
+
+    // Equirect skybox background — writes _rt_default first so the scene's own
+    // layers composite on top.  No-op unless the scene is skybox-tagged with a
+    // resolved panorama (gate inside), so flat scenes stay byte-identical.
+    vulkan::emitSkyboxPass(*rgraph, scene);
 
     TraverseNode(
         [&extra](SceneNode* node) {

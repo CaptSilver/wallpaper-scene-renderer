@@ -9,6 +9,7 @@ FenceWaitRetry.cpp
 FinPass.cpp
 PrePass.cpp
 SceneToRenderGraph.cpp
+SkyboxPass.cpp
 VolumetricChain.cpp
 VulkanRender.cpp
 )

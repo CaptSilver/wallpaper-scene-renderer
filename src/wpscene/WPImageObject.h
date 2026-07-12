@@ -184,6 +184,22 @@ CollectComposeDependencyIds(const std::vector<const WPImageObject*>& image_objs)
     return out;
 }
 
+// Resolve the panorama texture key for a skybox-tagged image object: its first
+// material texture, matching the imgIdToSourceTexture convention.  Returns ""
+// when there is no base texture, the base is empty, or the base is a spec
+// render-target (`_rt_` prefix) — none of which is a samplable panorama.  The
+// skybox background pass reads this key; an empty return means no pass is
+// emitted.  Header-resident so the resolution can be pinned without standing up
+// the full WPSceneParser pipeline.
+inline std::string resolveSkyboxTexKey(const WPImageObject& obj) {
+    if (obj.material.textures.empty()) return {};
+    const std::string& base = obj.material.textures.front();
+    if (base.empty()) return {};
+    // Spec RTs start with "_rt_"; they are pipeline scratch, never a panorama.
+    if (base.rfind("_rt_", 0) == 0) return {};
+    return base;
+}
+
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageEffect, name, visible, passes, fbos, materials);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageObject, name, origin, angles, scale, size, visible,
