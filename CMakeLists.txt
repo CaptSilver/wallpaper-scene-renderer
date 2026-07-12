@@ -49,6 +49,13 @@ if(COVERAGE)
     # third_party gets filtered at report time via -ignore-filename-regex.
     add_compile_options(-fprofile-instr-generate -fcoverage-mapping -g -O0)
     add_link_options(-fprofile-instr-generate)
+    # Serialize instrumented links (the whole renderer maps into each -O0 -g
+    # link — the RSS spike that OOM'd 30 GB boxes).  A Ninja link pool caps
+    # concurrent links; compiles stay wide.  Ninja-only (the RAM-bounded -j in
+    # tools/scripts/preflight.sh is the Make backstop).
+    set(COVERAGE_LINK_JOBS 2 CACHE STRING "Max concurrent links in the COVERAGE build")
+    set_property(GLOBAL PROPERTY JOB_POOLS cov_link_pool=${COVERAGE_LINK_JOBS})
+    set(CMAKE_JOB_POOL_LINK cov_link_pool)
 endif()
 
 add_subdirectory(third_party)
