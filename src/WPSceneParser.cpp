@@ -2279,8 +2279,8 @@ void assembleEffectChain(ParseContext&                     context,
     effect_ppong_a = WE_EFFECT_PPONG_PREFIX_A.data() + nodeAddr;
     effect_ppong_b = WE_EFFECT_PPONG_PREFIX_B.data() + nodeAddr;
     // set image effect
-    auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(
-        spImgNode.get(), wpimgobj.size[0], wpimgobj.size[1], effect_ppong_a, effect_ppong_b);
+    auto imgEffectLayer =
+        std::make_shared<SceneImageEffectLayer>(spImgNode.get(), effect_ppong_a, effect_ppong_b);
     {
         imgEffectLayer->SetFinalBlend(imgBlendMode);
         imgEffectLayer->SetOffscreen(effectOffscreen);
@@ -3720,8 +3720,6 @@ void assembleTextEffectChain(ParseContext&                           context,
     GenCardMesh(effctFinalMesh, { static_cast<uint16_t>(w), static_cast<uint16_t>(h) });
 
     auto imgEffectLayer = std::make_shared<SceneImageEffectLayer>(spNode.get(),
-                                                                  static_cast<float>(w),
-                                                                  static_cast<float>(h),
                                                                   effect_ppong_a,
                                                                   effect_ppong_b);
     {

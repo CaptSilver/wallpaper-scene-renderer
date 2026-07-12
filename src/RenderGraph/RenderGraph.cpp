@@ -127,13 +127,12 @@ RenderGraph::getLastReadTexs(std::span<const NodeID> nodes) const {
     std::vector<std::vector<TexNode*>> res;
     std::vector<Set<NodeID>>           nodes_ids;
     // get in
-    std::transform(
-        nodes.begin(), nodes.end(), std::back_inserter(nodes_ids), [this, &nodes_ids](auto& n) {
-            Set<NodeID> sets;
-            const auto& ids = m_dg.GetNodeIn(n);
-            for (const auto& id : ids) sets.insert(id);
-            return sets;
-        });
+    std::transform(nodes.begin(), nodes.end(), std::back_inserter(nodes_ids), [this](auto& n) {
+        Set<NodeID> sets;
+        const auto& ids = m_dg.GetNodeIn(n);
+        for (const auto& id : ids) sets.insert(id);
+        return sets;
+    });
     // get last in
     {
         Set<NodeID> sets;

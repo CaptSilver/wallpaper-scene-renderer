@@ -18,10 +18,10 @@ constexpr std::array<InstanceLayer, 0> base_inst_layers {};
 namespace
 {
 
-VkBool32 DebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT      messageSeverity,
-                                     VkDebugUtilsMessageTypeFlagsEXT             messageType,
-                                     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                                     void*                                       pUserData) {
+VkBool32 DebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                     const VkDebugUtilsMessengerCallbackDataEXT*      pCallbackData,
+                                     [[maybe_unused]] void*                           pUserData) {
     // INFO+VERBOSE are not subscribed via messageSeverity (see
     // debugCallbackMessageSeverity() in DebugCallback.hpp), so this body
     // only ever sees WARN+ERROR.  Threshold check below is belt-and-braces

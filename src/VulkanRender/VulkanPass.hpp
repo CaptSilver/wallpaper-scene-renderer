@@ -15,7 +15,7 @@ namespace vulkan
 {
 
 class Device;
-class RenderingResources;
+struct RenderingResources;
 class Resource;
 
 class VulkanPass : public rg::Pass {

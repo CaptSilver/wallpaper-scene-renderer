@@ -34,7 +34,6 @@ public:
     }
 
 private:
-    miniaudio::DeviceDesc        m_desc;
     std::unique_ptr<SoundStream> m_ss;
 };
 

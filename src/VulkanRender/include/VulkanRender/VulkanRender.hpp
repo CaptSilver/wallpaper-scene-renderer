@@ -12,7 +12,7 @@
 namespace wallpaper
 {
 class Scene;
-class Image;
+struct Image;
 
 namespace vulkan
 {

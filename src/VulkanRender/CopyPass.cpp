@@ -11,7 +11,8 @@ CopyPass::CopyPass(const Desc& desc): m_desc(desc) {}
 
 CopyPass::~CopyPass() {};
 
-void CopyPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
+void CopyPass::prepare(Scene& scene, const Device& device,
+                       [[maybe_unused]] RenderingResources& rr) {
     if (scene.renderTargets.count(m_desc.src) == 0) {
         LOG_ERROR("%s not found", m_desc.src.c_str());
         return;

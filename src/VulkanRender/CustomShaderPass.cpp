@@ -22,6 +22,12 @@ using namespace wallpaper::vulkan;
 // Frame-level pass execution counters (reset in VulkanRender.cpp each frame)
 namespace wallpaper::vulkan
 {
+// Defined in VulkanRender.cpp; forward-declared in this namespace so the
+// per-pass RT dump extern below binds g_pass_dump_entries to
+// wallpaper::vulkan::PassDumpEntry.  A bare `struct PassDumpEntry` in the
+// file-scope method body resolves to a global-scope type instead, which
+// tripped -Wundefined-internal.
+struct PassDumpEntry;
 int  g_exec_pass_counter       = 0;
 int  g_exec_frame_counter      = 0;
 bool g_depth_transitioned      = false; // DEPRECATED: see g_depth_inited_frame
@@ -1100,11 +1106,11 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // affect downstream blend effects (blendAlpha *= blendColors.a).
         bool non_default_rt = (m_desc.output != SpecTex_Default);
         if (non_default_rt) {
-            m_desc.clear_value = VkClearValue { .color = { 0.0f, 0.0f, 0.0f, 0.0f } };
+            m_desc.clear_value = VkClearValue { .color = { { 0.0f, 0.0f, 0.0f, 0.0f } } };
         } else {
             auto& sc           = scene.clearColor;
             m_desc.clear_value = VkClearValue {
-                .color = { sc[0], sc[1], sc[2], 1.0f },
+                .color = { { sc[0], sc[1], sc[2], 1.0f } },
             };
         }
     }
@@ -1483,8 +1489,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // rewrites the same ping-pong slot.  VulkanRender maps the staging
     // buffers after the frame's submit+wait and writes PPMs.
     extern bool                               g_pass_dump_active;
-    extern std::vector<struct PassDumpEntry>* g_pass_dump_entries;
-    extern struct Device const*               g_pass_dump_device;
+    extern std::vector<PassDumpEntry>*        g_pass_dump_entries;
+    extern class Device const*                g_pass_dump_device;
     if (g_pass_dump_active && g_pass_dump_entries && g_pass_dump_device &&
         m_desc.vk_output.handle != VK_NULL_HANDLE) {
         // Forward-declare the structure for header-less access (defined in

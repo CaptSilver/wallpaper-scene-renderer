@@ -52,7 +52,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 {
     TEST_CASE("empty layer — nothing to remove") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         CHECK(layer.RemoveFailedEffects() == 0);
@@ -61,7 +61,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("all effects compiled — nothing removed") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         layer.AddEffect(makeEffectWithNode("pulse",
@@ -75,7 +75,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("last effect compile failed — drops just that one") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         layer.AddEffect(makeEffectWithNode("pulse",
@@ -96,7 +96,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("middle effect failed — chain stays linear, second pulse drops") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         layer.AddEffect(makeEffectWithNode("pulse",
@@ -113,7 +113,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("multi-node effect — kept if any node compiled") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         auto eff = std::make_shared<SceneImageEffect>();
@@ -127,7 +127,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("multi-node effect — all nodes failed → drops") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         auto eff = std::make_shared<SceneImageEffect>();
@@ -142,7 +142,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
     TEST_CASE("effect with no nodes — kept (defensive: empty list isn't a "
               "compile failure marker)") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         auto eff  = std::make_shared<SceneImageEffect>();
@@ -154,7 +154,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
 
     TEST_CASE("node without material — treated as not-compiled and drops") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         auto eff = std::make_shared<SceneImageEffect>();
@@ -193,7 +193,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("PPONG_A prefix on cmd.src is replaced with concrete pingpong_a") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA",
                                     "PPB");
         auto eff = makeEffectWithNode("e1",
@@ -215,7 +215,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("PPONG_A prefix on cmd.dst is replaced with concrete pingpong_a") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA-DST",
                                     "PPB");
         auto eff = makeEffectWithNode("e1",
@@ -235,7 +235,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("commands without PPONG_A prefix pass through unchanged") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "_rt_effect_pingpong_a_X",
                                     "_rt_effect_pingpong_b_X");
         auto eff = makeEffectWithNode("e1",
@@ -257,7 +257,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("node output starting with PPONG_B prefix → replaced with pingpong_b") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA",
                                     "PPB-RESOLVED");
         // Default makeEffectWithNode output is "_rt_effect_pingpong_b_"
@@ -275,7 +275,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("node output equal to SpecTex_Default → also picked as last_output") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         auto eff = makeEffectWithNode("e1",
                                       makeNodeWithCodes({ goodCode() }),
@@ -291,7 +291,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("node output not matching either → not picked as last_output, stays unchanged") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         // Output is unrelated to either prefix or default.
         auto eff = makeEffectWithNode("e1",
@@ -312,7 +312,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("textures with PPONG_A prefix get rewritten to ppong_a") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "RESOLVED-A",
                                     "RESOLVED-B");
         auto node = makeNodeWithCodes({ goodCode() });
@@ -340,7 +340,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("swap_pp alternates ppong_a/ppong_b between consecutive effects") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "ABCDEF",
                                     "FEDCBA");
 
@@ -369,7 +369,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("swap_pp with three effects: ABA pattern") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "AAA",
                                     "BBB");
         for (int i = 0; i < 3; i++) {
@@ -392,7 +392,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("each effect node gets blend=Normal and the supplied effect_cam") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         auto node = makeNodeWithCodes({ goodCode() });
         auto* mat = node->Mesh()->Material();
@@ -419,7 +419,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
     TEST_CASE("offscreen layer: last_output writes to per-node offscreen RT, blend=Normal") {
         auto worldNode = std::make_shared<SceneNode>();
         worldNode->ID() = 42;
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetOffscreen(true);
         layer.SetFinalBlend(BlendMode::Additive); // should be ignored when offscreen
@@ -443,7 +443,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
     TEST_CASE("offscreen layer: ID=0 still produces a valid offscreen RT name") {
         auto worldNode = std::make_shared<SceneNode>();
         worldNode->ID() = 0;
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetOffscreen(true);
         auto eff = makeEffectWithNode("e1",
@@ -460,7 +460,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("passthrough layer: last_output uses final_camera, final_blend, final_node trans") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetPassthrough(true);
         layer.SetFinalBlend(BlendMode::Translucent);
@@ -489,7 +489,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("normal layer: last_output gets _rt_default, final_blend, final_camera, final_trans") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetFinalBlend(BlendMode::Translucent_PA);
         layer.SetFinalCamera("orthoCam");
@@ -519,7 +519,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
         auto worldParent = std::make_shared<SceneNode>();
         worldParent->AppendChild(worldNode);
 
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetInheritParent(true);
 
@@ -540,7 +540,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
         auto proxyParent  = std::make_shared<SceneNode>();
         proxyParent->SetTranslate({ 50.f, 0.f, 0.f });
 
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetInheritParent(true);
         layer.SetParentProxy(proxyParent);
@@ -561,7 +561,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
         auto worldParent = std::make_shared<SceneNode>();
         worldParent->AppendChild(worldNode);
 
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         // Don't call SetInheritParent — stays false.
 
@@ -580,7 +580,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
         auto worldNode   = std::make_shared<SceneNode>();
         auto proxyParent = std::make_shared<SceneNode>();
 
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         layer.SetPassthrough(true);
         layer.SetInheritParent(true);
@@ -601,7 +601,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("ResolvedLastOutput points to the final node's SceneNode") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         auto innerNode = makeNodeWithCodes({ goodCode() });
         auto eff       = makeEffectWithNode("e1", innerNode);
@@ -615,7 +615,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("ResolvedLastOutput is the LAST eligible node when chain has multiple") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         auto first  = makeNodeWithCodes({ goodCode() });
         auto second = makeNodeWithCodes({ goodCode() });
@@ -638,7 +638,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("empty effect list → no work, ResolvedLastOutput stays nullptr") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         SceneMesh dm = makeDefaultMesh();
         layer.ResolveEffect(dm, "effCam");
@@ -649,7 +649,7 @@ TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 
     TEST_CASE("no node matches output substitution → final block is skipped entirely") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100,
+        SceneImageEffectLayer layer(worldNode.get(),
                                     "PPA", "PPB");
         // Outputs neither start with PPONG_B nor equal _rt_default.
         layer.AddEffect(makeEffectWithNode("e1",
@@ -686,13 +686,13 @@ TEST_SUITE("SceneImageEffectLayer::IsComposeLayer")
 {
     TEST_CASE("defaults to false") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
         CHECK(layer.IsComposeLayer() == false);
     }
 
     TEST_CASE("SetComposeLayer(true) → IsComposeLayer() == true") {
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
         layer.SetComposeLayer(true);
         CHECK(layer.IsComposeLayer() == true);
     }
@@ -701,7 +701,7 @@ TEST_SUITE("SceneImageEffectLayer::IsComposeLayer")
         // Verify the two flags don't alias.  Vanilla compose layers have
         // IsComposeLayer=true but IsPassthrough=false (the common case).
         auto worldNode = std::make_shared<SceneNode>();
-        SceneImageEffectLayer layer(worldNode.get(), 100, 100, "PPA", "PPB");
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
         layer.SetComposeLayer(true);
         CHECK(layer.IsComposeLayer() == true);
         CHECK(layer.IsPassthrough() == false);

@@ -25,7 +25,7 @@ uint32_t FindUnifiedFamily(const std::vector<uint32_t>& graphics,
                            const std::vector<uint32_t>& present);
 } // namespace queue_selection
 
-class PipelineParameters;
+struct PipelineParameters;
 
 class Device : NoCopy, NoMove {
 public:

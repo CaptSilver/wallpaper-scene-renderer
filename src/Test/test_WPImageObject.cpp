@@ -440,7 +440,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
 TEST_SUITE("SceneImageEffectLayer — gap fixes") {
     TEST_CASE("CopyBackground defaults to true and round-trips through setter") {
         SceneNode             placeholder;
-        SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
+        SceneImageEffectLayer layer(&placeholder, "ppA", "ppB");
         CHECK(layer.CopyBackground() == true); // default
         layer.SetCopyBackground(false);
         CHECK(layer.CopyBackground() == false);
@@ -450,7 +450,7 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
 
     TEST_CASE("CopyBackground is independent of Passthrough flag") {
         SceneNode             placeholder;
-        SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
+        SceneImageEffectLayer layer(&placeholder, "ppA", "ppB");
         layer.SetPassthrough(true);
         layer.SetCopyBackground(false);
         CHECK(layer.IsPassthrough() == true);
@@ -474,7 +474,7 @@ TEST_SUITE("SceneImageEffectLayer — gap fixes") {
     // non-passthrough compose path and WE's behavior).
     TEST_CASE("passthrough+copybackground flag combinations — base-pass emission contract") {
         SceneNode             placeholder;
-        SceneImageEffectLayer layer(&placeholder, 100.f, 100.f, "ppA", "ppB");
+        SceneImageEffectLayer layer(&placeholder, "ppA", "ppB");
 
         SUBCASE("non-passthrough: base pass runs (default)") {
             // SceneToRenderGraph: normal CustomShaderPass for node->material.

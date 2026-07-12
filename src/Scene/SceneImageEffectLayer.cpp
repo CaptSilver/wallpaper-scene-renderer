@@ -11,8 +11,7 @@
 
 using namespace wallpaper;
 
-SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, float w, float h,
-                                             std::string_view pingpong_a,
+SceneImageEffectLayer::SceneImageEffectLayer(SceneNode* node, std::string_view pingpong_a,
                                              std::string_view pingpong_b)
     : m_worldNode(node),
       m_pingpong_a(pingpong_a),

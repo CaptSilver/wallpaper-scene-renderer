@@ -11,7 +11,7 @@
 namespace wallpaper
 {
 class SceneNode;
-class SceneShader;
+struct SceneShader;
 class SceneLight;
 class ShaderValue;
 class SpriteAnimation;

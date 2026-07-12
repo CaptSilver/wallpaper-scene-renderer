@@ -320,8 +320,8 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, &scene, &extra](rg::RenderGraphBuilder&         builder,
-                                         vulkan::CustomShaderPass::Desc& pdesc) {
+        [material, node, &scene](rg::RenderGraphBuilder&         builder,
+                                 vulkan::CustomShaderPass::Desc& pdesc) {
             pdesc.node               = node;
             pdesc.output             = std::string(WE_REFLECTION);
             pdesc.camera_override    = "reflected_perspective";

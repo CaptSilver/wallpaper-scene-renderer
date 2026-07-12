@@ -158,7 +158,7 @@ inline void SetMessageOptions(const ShaderCompOpt& opt, EShMessages& emsg) {
         emsg = (EShMessages)(emsg | EShMsgVulkanRules);
 }
 
-inline i32 GetTypeNum(const glslang::TType* type) {
+[[maybe_unused]] inline i32 GetTypeNum(const glslang::TType* type) {
     i32 num { 1 };
     if (type->isArray()) num *= type->getCumulativeArraySize();
     if (type->isVector()) num *= type->getVectorSize();

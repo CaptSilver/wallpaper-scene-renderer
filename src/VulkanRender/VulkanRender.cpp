@@ -338,8 +338,9 @@ void VulkanRender::Impl::takeScreenshotIfRequested(VkImage swap_image, VkFormat 
 // uses them as shader inputs for downstream passes.  Returns true on success.
 // Format is inferred as RGBA8 UNORM for simplicity; HDR (RGBA16F) RTs produce
 // a garbled PPM but never crash.
-static bool writeImageToPPM(Device& device, VkImage image, VkImageLayout current_layout,
-                            uint32_t width, uint32_t height, const std::string& path) {
+[[maybe_unused]] static bool writeImageToPPM(Device& device, VkImage image,
+                                             VkImageLayout current_layout, uint32_t width,
+                                             uint32_t height, const std::string& path) {
     if (image == VK_NULL_HANDLE || width == 0 || height == 0) return false;
     const VkDeviceSize bufferSize = (VkDeviceSize)width * height * 4;
 
@@ -1118,11 +1119,11 @@ bool VulkanRender::Impl::CreateRenderingResource(RenderingResources& rr, vvk::Co
     return true;
 }
 
-void VulkanRender::Impl::DestroyRenderingResource(RenderingResources& rr) {}
+void VulkanRender::Impl::DestroyRenderingResource(RenderingResources&) {}
 
 // VulkanExSwapchain* VulkanRender::exSwapchain() const { return m_ex_swapchain.get(); }
 
-void VulkanRender::Impl::drawFrame(Scene& scene) {
+void VulkanRender::Impl::drawFrame([[maybe_unused]] Scene& scene) {
     WEK_PROFILE_SCOPE("VulkanRender::drawFrame");
     if (! (m_inited && m_pass_loaded)) return;
 
@@ -1478,7 +1479,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
     m_frame_index++;
 }
 
-void VulkanRender::Impl::setRenderTargetSize(Scene& scene, rg::RenderGraph& rg) {
+void VulkanRender::Impl::setRenderTargetSize(Scene& scene, [[maybe_unused]] rg::RenderGraph& rg) {
     auto& ext = m_device->out_extent();
     for (auto& item : scene.renderTargets) {
         auto& rt = item.second;

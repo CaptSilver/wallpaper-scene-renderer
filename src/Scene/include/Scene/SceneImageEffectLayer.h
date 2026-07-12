@@ -38,7 +38,7 @@ struct SceneImageEffect {
 
 class SceneImageEffectLayer {
 public:
-    SceneImageEffectLayer(SceneNode* node, float w, float h, std::string_view pingpong_a,
+    SceneImageEffectLayer(SceneNode* node, std::string_view pingpong_a,
                           std::string_view pingpong_b);
 
     void AddEffect(const std::shared_ptr<SceneImageEffect>& node) { m_effects.push_back(node); }
@@ -120,7 +120,6 @@ private:
     std::string m_pingpong_a;
     std::string m_pingpong_b;
 
-    bool                       fullscreen { false };
     bool                       m_is_offscreen { false };
     bool                       m_inherit_parent { false };
     bool                       m_passthrough { false };

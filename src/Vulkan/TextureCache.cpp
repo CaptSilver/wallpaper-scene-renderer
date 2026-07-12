@@ -435,9 +435,10 @@ inline VkResult CopyImageDataWithOffsets(const BufferParameters&        staging,
     return result;
 }
 
-inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
-                              std::span<const VkExtent3D> in_exts, const vvk::Queue& queue,
-                              vvk::CommandBuffer& cmd, const ImageParameters& image) {
+[[maybe_unused]] inline VkResult CopyImageData(std::span<const BufferParameters> in_bufs,
+                                               std::span<const VkExtent3D>       in_exts,
+                                               const vvk::Queue& queue, vvk::CommandBuffer& cmd,
+                                               const ImageParameters& image) {
     VkResult result;
     do {
         result = cmd.Begin(VkCommandBufferBeginInfo {
