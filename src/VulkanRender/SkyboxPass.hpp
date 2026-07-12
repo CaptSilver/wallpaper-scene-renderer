@@ -29,6 +29,38 @@ namespace vulkan
 // yet wired: invViewProj is identity, giving a static background.  A later
 // increment feeds the active camera's inverse view-projection so the sampled
 // direction tracks the scene camera.
+
+// The skybox fills its whole output every frame, so it is the RT's base write.
+// Register the output in Scene::clearedRTs before the flat layers prepare:
+// CustomShaderPass picks CLEAR for the first writer of an unregistered RT
+// (SelectOutputLoadOp), which would re-clear _rt_default to clearColor on top
+// of the panorama.  prepare() calls this once per graph compile (clearedRTs is
+// reset at the top of each compile); header-resident so the cross-pass
+// contract is pinned by the device-free tests.
+inline void MarkSkyboxOutputCleared(Scene& scene, const std::string& output) {
+    scene.clearedRTs.insert(output);
+}
+
+// UBO block for the skybox vertex shader — std140: mat4 (64B) + yawRad +
+// 3-float pad = 80B.  Lives in the frames-in-flight dyn_buf, whose whole
+// current staging slot is re-uploaded every frame, so this payload MUST be
+// rewritten in execute() each frame (a prepare()-only write survives on one
+// slot and reads back zeros on the others — zero matrix → NaN direction →
+// black background).  Increment B swaps the identity for the live camera's
+// inverse view-projection here.
+struct SkyboxUbo {
+    float invViewProj[16];
+    float yawRad;
+    float pad[3];
+};
+
+inline SkyboxUbo MakeSkyboxUbo(float yaw_rad) {
+    SkyboxUbo ubo {};
+    for (int i = 0; i < 16; i++) ubo.invViewProj[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    ubo.yawRad = yaw_rad;
+    return ubo;
+}
+
 class SkyboxPass : public VulkanPass {
 public:
     struct Desc {

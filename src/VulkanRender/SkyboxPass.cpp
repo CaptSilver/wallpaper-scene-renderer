@@ -67,14 +67,6 @@ void main()
 }
 )";
 
-// UBO layout — std140 mat4 (64B) + 4 floats (16B) = 80B.  yawRad is 0 for
-// Increment A; the pad rounds the block to a 16B boundary.
-struct SkyboxUbo {
-    float invViewProj[16];
-    float yawRad;
-    float pad[3];
-};
-
 struct VertexInput {
     std::array<float, 3> pos;
     std::array<float, 2> uv;
@@ -124,12 +116,30 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
         .colorAttachmentCount = 1,
         .pColorAttachments    = &attachment_ref,
     };
+    // Explicit ingoing dependency — the FinPass template omits one because the
+    // swapchain is semaphore-synchronized, but this pass LOADs an intermediate
+    // RT right after PrePass's transfer-clear and the previous frame's FinPass
+    // sampling.  Without it the implicit TOP_OF_PIPE dependency gives the
+    // begin-transition no ordering against those writes and RADV drops the
+    // pass's output (lavapipe's serial execution masks it).  Mirrors
+    // CustomShaderPass's dependency, widened with the TRANSFER source scope
+    // for the PrePass clear.
+    VkSubpassDependency dependency {
+        .srcSubpass    = VK_SUBPASS_EXTERNAL,
+        .dstSubpass    = 0,
+        .srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+    };
     VkRenderPassCreateInfo creatinfo {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
         .attachmentCount = 1,
         .pAttachments    = &attachment,
         .subpassCount    = 1,
         .pSubpasses      = &subpass,
+        .dependencyCount = 1,
+        .pDependencies   = &dependency,
     };
     vvk::RenderPass pass;
     if (auto res = device.CreateRenderPass(creatinfo, pass); res == VK_SUCCESS) {
@@ -260,17 +270,17 @@ void SkyboxPass::prepare(Scene& scene, const Device& device, RenderingResources&
         if (! pipeline.create(device, pass, m_desc.pipeline)) return;
     }
 
-    // Increment A: identity invViewProj (static background), yaw 0.  A later
-    // increment writes the live camera + pan here each frame.
-    {
-        SkyboxUbo ubo {};
-        for (int i = 0; i < 16; i++) ubo.invViewProj[i] = (i % 5 == 0) ? 1.0f : 0.0f;
-        ubo.yawRad = 0.0f;
-        if (! rr.dyn_buf->allocateSubRef(
-                sizeof(SkyboxUbo), m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment))
-            return;
-        rr.dyn_buf->writeToBuf(m_desc.ubo_buf, { (uint8_t*)&ubo, sizeof(SkyboxUbo) });
-    }
+    // Allocate the UBO's dyn_buf range only — the payload is written per frame
+    // in execute(): dyn_buf re-uploads its whole current staging slot every
+    // frame, so a one-shot write here reads back zeros on the frames whose
+    // slot never saw it (zero matrix → NaN direction → black background).
+    if (! rr.dyn_buf->allocateSubRef(
+            sizeof(SkyboxUbo), m_desc.ubo_buf, device.limits().minUniformBufferOffsetAlignment))
+        return;
+
+    // Only once fully prepared — a bailed-out skybox draws nothing, and the
+    // first flat layer must then keep its base CLEAR.
+    MarkSkyboxOutputCleared(scene, m_desc.output);
 
     setPrepared();
 }
@@ -279,6 +289,24 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("SkyboxPass::execute");
     auto& cmd    = rr.command;
     auto& outext = m_desc.vk_output.extent;
+
+    // First-execution breadcrumb, same shape as CustomShaderPass's EXEC line —
+    // pins which physical images the skybox drew from/to so a "pass ran but
+    // nothing visible" report can compare handles against the presented RT.
+    static bool s_logged_once = false; // render thread only
+    if (! s_logged_once) {
+        s_logged_once = true;
+        LOG_INFO("EXEC skybox pano_img=%p pano_view=%p out='%.*s' out_img=%p out_view=%p "
+                 "out_ext=%ux%u",
+                 (void*)m_desc.vk_pano.handle,
+                 (void*)m_desc.vk_pano.mip0_view,
+                 (int)m_desc.output.size(),
+                 m_desc.output.data(),
+                 (void*)m_desc.vk_output.handle,
+                 (void*)m_desc.vk_output.mip0_view,
+                 outext.width,
+                 outext.height);
+    }
 
     vvk::Framebuffer& framebuffer = m_fb_cache.getOrCreate(m_desc.vk_output.mip0_view, [&] {
         VkFramebufferCreateInfo info {
@@ -295,6 +323,15 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
         (void)device.handle().CreateFramebuffer(info, fb);
         return fb;
     });
+
+    // Rewrite the UBO every frame — dyn_buf's current staging slot is what the
+    // GPU sees this frame, and slots rotate with frames-in-flight.  Increment A
+    // is a constant payload (identity, yaw 0); Increment B feeds the live
+    // camera's inverse view-projection here.
+    {
+        SkyboxUbo ubo = MakeSkyboxUbo(0.0f);
+        rr.dyn_buf->writeToBuf(m_desc.ubo_buf, { (uint8_t*)&ubo, sizeof(SkyboxUbo) });
+    }
 
     // Push both descriptors in one call: panorama sampler (1) + UBO (0).
     {

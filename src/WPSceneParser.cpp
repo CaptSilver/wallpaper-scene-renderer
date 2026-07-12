@@ -2702,10 +2702,9 @@ void attachNodeToScene(ParseContext& context,
 // Tags a single image layer's skybox state on the in-progress Scene.  Stays a
 // free helper rather than a method so the detection logic is exercised
 // directly from tests without standing up the full ParseImageObj pipeline.
-// Currently a pure flag-propagator: full cubemap rendering is deferred until
-// the Vulkan infrastructure for cubemap views + a depth-disabled fullscreen
-// pass lands.  One LOG_INFO so multi-monitor diagnostics don't have to guess
-// whether the scene was classified as 360°.
+// The equirect background pass (SkyboxPass) consumes these fields; true
+// cubemap upload is still deferred.  One LOG_INFO so multi-monitor
+// diagnostics don't have to guess whether the scene was classified as 360°.
 static void recordSkyboxLayerIfTagged(ParseContext&                 context,
                                       const wpscene::WPImageObject& wpimgobj) {
     if (! wpimgobj.is_skybox) return;
@@ -2718,8 +2717,8 @@ static void recordSkyboxLayerIfTagged(ParseContext&                 context,
     if (context.scene->skyboxTexKey.empty()) {
         context.scene->skyboxTexKey = wpscene::resolveSkyboxTexKey(wpimgobj);
     }
-    LOG_INFO("[WEK] skybox layer detected id=%d name='%s' tex='%s'; renders as flat "
-             "layer until skybox pass lands",
+    LOG_INFO("[WEK] skybox layer detected id=%d name='%s' tex='%s'; equirect background "
+             "pass will render it",
              wpimgobj.id,
              wpimgobj.name.c_str(),
              context.scene->skyboxTexKey.c_str());
@@ -5718,6 +5717,16 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     allocateAssetPools(context, vfs, wp_objs, json_order, obj_idx, pool_id_to_name);
 
     auto nameToObjState = dispatchObjects(context, wp_objs, sm);
+
+    // has_skybox is final after object parsing; skybox scenes render
+    // single-sampled — the per-layer MSAA resolve would overwrite the
+    // background pass's output (see Scene::skyboxMsaaSamples).
+    if (const u32 msaa =
+            Scene::skyboxMsaaSamples(context.scene->has_skybox, context.scene->msaaSamples);
+        msaa != context.scene->msaaSamples) {
+        LOG_INFO("skybox scene: MSAA disabled (background pass writes the single-sampled RT)");
+        context.scene->msaaSamples = msaa;
+    }
 
     fixupDeferredGroupLinks(context, deferred_group_links, json_order);
 

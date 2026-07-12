@@ -3,6 +3,7 @@
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/SkyboxPass.hpp"
 #include "VulkanRender/SkyboxMath.hpp"
+#include "VulkanRender/CustomShaderPass.hpp" // SelectOutputLoadOp — the consumer of MarkSkyboxOutputCleared
 #include "RenderGraph/RenderGraph.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
@@ -241,5 +242,83 @@ TEST_SUITE("SkyboxRenderGraph_ForegroundPredicate") {
         }
         // 3 renderable nodes, 1 of which is the skybox → 2 foreground.
         CHECK(vulkan::skyboxHasForegroundNodes(s) == true);
+    }
+}
+
+// The skybox pass fills its whole output every frame, making it the RT's base
+// write.  CustomShaderPass picks CLEAR for the first writer of an RT that is
+// not in Scene::clearedRTs (SelectOutputLoadOp) — so if the skybox does not
+// register its output, the scene's first flat layer re-clears _rt_default to
+// clearColor ON TOP of the freshly drawn panorama and the background is lost.
+// Found on-GPU (RADV + lavapipe agreed): screen showed exactly clearColor.
+TEST_SUITE("SkyboxPass_ClearedRTs") {
+    TEST_CASE("skybox base write marks its RT cleared -> next writer LOADs") {
+        Scene s;
+        vulkan::MarkSkyboxOutputCleared(s, std::string(SpecTex_Default));
+        const bool already = s.clearedRTs.count(std::string(SpecTex_Default)) != 0;
+        CHECK(already);
+        CHECK(vulkan::SelectOutputLoadOp(false, already) == VK_ATTACHMENT_LOAD_OP_LOAD);
+    }
+
+    TEST_CASE("no skybox mark -> first writer still clears (flat-scene base path)") {
+        Scene      s;
+        const bool already = s.clearedRTs.count(std::string(SpecTex_Default)) != 0;
+        CHECK_FALSE(already);
+        CHECK(vulkan::SelectOutputLoadOp(false, already) == VK_ATTACHMENT_LOAD_OP_CLEAR);
+    }
+
+    TEST_CASE("a forced clear still wins over the skybox mark (compose base pass)") {
+        Scene s;
+        vulkan::MarkSkyboxOutputCleared(s, std::string(SpecTex_Default));
+        const bool already = s.clearedRTs.count(std::string(SpecTex_Default)) != 0;
+        CHECK(vulkan::SelectOutputLoadOp(true, already) == VK_ATTACHMENT_LOAD_OP_CLEAR);
+    }
+}
+
+// The skybox UBO lives in the frames-in-flight dyn_buf: recordUpload re-copies
+// the CURRENT slot's whole staging every frame, so a value written once at
+// prepare() only survives on frames whose slot saw the write — on the others
+// the shader reads zeros, farPoint*0 collapses to a NaN direction, and the
+// panorama samples black.  Found on-GPU (RADV + lavapipe both black).  The
+// contract is CustomShaderPass's: dynamic uniforms are rewritten every frame
+// during execute(); MakeSkyboxUbo is that per-frame payload.
+TEST_SUITE("SkyboxPass_Ubo") {
+    TEST_CASE("std140 block is 80 bytes: mat4 + yaw + 3-float pad") {
+        CHECK(sizeof(vulkan::SkyboxUbo) == 80);
+    }
+
+    TEST_CASE("Increment A payload is the identity matrix with zero yaw") {
+        const auto ubo = vulkan::MakeSkyboxUbo(0.0f);
+        for (int c = 0; c < 4; c++)
+            for (int r = 0; r < 4; r++) CHECK(ubo.invViewProj[c * 4 + r] == (c == r ? 1.0f : 0.0f));
+        CHECK(ubo.yawRad == 0.0f);
+        CHECK(ubo.pad[0] == 0.0f);
+        CHECK(ubo.pad[1] == 0.0f);
+        CHECK(ubo.pad[2] == 0.0f);
+    }
+
+    TEST_CASE("yaw passes through") {
+        const auto ubo = vulkan::MakeSkyboxUbo(1.5f);
+        CHECK(ubo.yawRad == 1.5f);
+    }
+}
+
+// MSAA scenes render layers into a 4x color buffer and RESOLVE it over
+// _rt_default at the end of every layer pass — a fullscreen overwrite that
+// erases the skybox background no matter what the skybox drew (and once the
+// first layer LOADs instead of clearing, the MSAA buffer starts as
+// uninitialized memory).  Until the skybox participates in the MSAA chain,
+// skybox scenes render single-sampled.  Found on-GPU: the "background" was
+// the panorama's staging bytes leaking through the uninitialized MSAA buffer.
+TEST_SUITE("Skybox_MsaaPolicy") {
+    TEST_CASE("skybox scene forces 1spp") {
+        CHECK(Scene::skyboxMsaaSamples(true, 4) == 1);
+        CHECK(Scene::skyboxMsaaSamples(true, 8) == 1);
+        CHECK(Scene::skyboxMsaaSamples(true, 1) == 1);
+    }
+
+    TEST_CASE("non-skybox scene keeps the requested sample count") {
+        CHECK(Scene::skyboxMsaaSamples(false, 4) == 4);
+        CHECK(Scene::skyboxMsaaSamples(false, 1) == 1);
     }
 }

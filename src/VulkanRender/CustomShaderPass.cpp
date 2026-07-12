@@ -788,6 +788,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             //      the sun.  See test_BlendModeFactors "Blend math".
             const bool rt_already_cleared = scene.clearedRTs.count(m_desc.output) != 0;
             loadOp = SelectOutputLoadOp(m_desc.force_clear_output, rt_already_cleared);
+            LOG_INFO("CSP_PREPARE loadOp for '%.*s': %s (force=%d already_cleared=%d)",
+                     (int)m_desc.output.size(),
+                     m_desc.output.data(),
+                     loadOp == VK_ATTACHMENT_LOAD_OP_LOAD ? "LOAD" : "CLEAR",
+                     (int)m_desc.force_clear_output,
+                     (int)rt_already_cleared);
             // Only the implicit "first-writer" path participates in the
             // one-shot tracking; force_clear is per-emission and must not
             // mutate clearedRTs (otherwise the next non-forced writer would
@@ -1176,7 +1182,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
             int  nodeId      = m_desc.node ? m_desc.node->ID() : -1;
             LOG_INFO("EXEC[%d] pass#%d id=%d shader='%s' out='%.*s' draw=%u visible=%d "
-                     "depth=%d blend=%d tex_count=%zu out_img=%p out_ext=%ux%u",
+                     "depth=%d blend=%d tex_count=%zu out_img=%p out_view=%p out_ext=%ux%u",
                      g_exec_frame_counter,
                      g_exec_pass_counter,
                      nodeId,
@@ -1189,6 +1195,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                      (int)m_desc.blending,
                      m_desc.vk_textures.size(),
                      (void*)m_desc.vk_output.handle,
+                     (void*)m_desc.vk_output.mip0_view,
                      m_desc.vk_output.extent.width,
                      m_desc.vk_output.extent.height);
             // Log bound textures

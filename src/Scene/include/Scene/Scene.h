@@ -207,6 +207,17 @@ public:
     // case no skybox pass is emitted (the emit gate checks all three).
     std::string skyboxTexKey;
 
+    // MSAA policy for skybox scenes: the layer passes resolve their 4x MSAA
+    // color buffer over _rt_default at the end of every pass — a fullscreen
+    // overwrite that erases whatever the single-sampled skybox background pass
+    // drew (and once the first layer LOADs instead of clearing, the MSAA
+    // buffer starts as uninitialized memory).  Until the skybox participates
+    // in the MSAA chain, skybox scenes render single-sampled.  The parser
+    // applies this after object parsing, once has_skybox is final.
+    static u32 skyboxMsaaSamples(bool has_skybox, u32 requested) {
+        return has_skybox ? 1u : requested;
+    }
+
     // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/
     // "low"/""), after the plugin-level override is applied on top of
     // scene.general.orthogonalprojection.postprocessing.  Stored on Scene so

@@ -35,6 +35,16 @@ void PrePass::prepare(Scene& scene, const Device& device, RenderingResources&) {
         auto& sc           = scene.clearColor;
         m_desc.clear_value = VkClearValue { .color = { { sc[0], sc[1], sc[2], 1.0f } } };
     }
+    // Breadcrumb parity with the EXEC pass lines: which image gets the base
+    // clear.  A duplicate _rt_default slot (this handle differing from the
+    // passes' out_img) means the clear lands on an image nobody presents.
+    LOG_INFO("PREPASS clear target '%.*s' img=%p clear=(%.2f,%.2f,%.2f)",
+             (int)m_desc.result.size(),
+             m_desc.result.data(),
+             (void*)m_desc.vk_result.handle,
+             m_desc.clear_value.color.float32[0],
+             m_desc.clear_value.color.float32[1],
+             m_desc.clear_value.color.float32[2]);
     setPrepared();
 }
 
