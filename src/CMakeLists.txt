@@ -65,7 +65,7 @@ add_library(
   WPMdlParser.cpp
   WPPuppet.cpp
   VideoTextureDecoder.cpp
-  $<$<BOOL:${EGL_FOUND}>:HWVideoTextureDecoder.cpp>
+  $<$<BOOL:${GBM_FOUND}>:HWVideoTextureDecoder.cpp>
   SceneWallpaper.cpp)
 
 set(InteralLib
