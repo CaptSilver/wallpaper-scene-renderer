@@ -102,6 +102,42 @@ TEST_SUITE("SystemFontFallback") {
         CHECK(IsMonoFamily(p));
     }
 
+    TEST_CASE("a resolved path actually exists on disk") {
+        // The old resolver returned a path only if one of its hardcoded
+        // candidates existed, so on a layout it did not know about it returned
+        // nothing at all.  Whatever comes back now must be a real file.
+        if (!HasAnyLinuxFont()) return;
+        for (const char* name : { "systemfont_arial", "systemfont_consolas",
+                                  "systemfont_timesnewroman" }) {
+            const auto p = ResolveSystemFontFallback(name);
+            if (p.empty()) continue;
+            CAPTURE(name);
+            CAPTURE(p);
+            CHECK(std::filesystem::exists(p));
+        }
+    }
+
+    TEST_CASE("resolution succeeds on any host that has fonts installed") {
+        // This is the openSUSE/Mageia regression: both ship fonts, neither uses
+        // a layout the curated list covered, so every candidate missed and text
+        // layers silently drew a placeholder.  Asking fontconfig removes the
+        // dependence on knowing the layout up front.
+        if (!HasAnyLinuxFont()) return;
+        if (std::filesystem::is_empty("/usr/share/fonts")) return;
+        const auto p = ResolveSystemFontFallback("systemfont_arial");
+        REQUIRE_MESSAGE(!p.empty(),
+                        "fonts are installed but nothing resolved");
+        CHECK(std::filesystem::exists(p));
+    }
+
+    TEST_CASE("CJK fallback never returns a path that does not exist") {
+        // Returning a Latin face for a CJK request would draw tofu, which is
+        // worse than reporting nothing, so an unmatched language must stay empty.
+        const auto p = wallpaper::ResolveCJKHanFallback();
+        if (p.empty()) return;
+        CHECK(std::filesystem::exists(p));
+    }
+
     TEST_CASE("ReadSystemFile returns empty for missing path") {
         const auto data = ReadSystemFile("/nonexistent/path/that/does/not/exist.ttf");
         CHECK(data.empty());

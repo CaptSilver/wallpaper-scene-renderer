@@ -86,7 +86,7 @@ target_link_libraries(
           $<$<BOOL:${EGL_FOUND}>:${EGL_LIBRARIES}>
           $<$<BOOL:${GL_FOUND}>:${GL_LIBRARIES}>
           $<$<BOOL:${GBM_FOUND}>:${GBM_LIBRARIES}>
-          Freetype::Freetype ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
+          Freetype::Freetype ${FONTCONFIG_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
 if(EGL_FOUND AND GL_FOUND AND GBM_FOUND)
     target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_EGL_HWDEC=1)
@@ -95,5 +95,5 @@ else()
     message(STATUS "HW video texture decoder: disabled (EGL/GL/GBM not found)")
 endif()
 
-target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain)
+target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)

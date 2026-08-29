@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include <fontconfig/fontconfig.h>
+
 namespace wallpaper {
 
 namespace {
@@ -92,6 +94,75 @@ const std::vector<const char*>& CandidatesFor(FontFamily f) {
     return kSans;
 }
 
+// Ask fontconfig where this host actually keeps its fonts.
+//
+// The curated path list below cannot keep up: openSUSE puts everything in a
+// flat truetype/, Mageia uses TTF/<vendor>/, and neither shape was in any list
+// we shipped -- so on those distros every candidate missed and text layers fell
+// back to a placeholder.  fontconfig knows the layout of whatever host it runs
+// on, and honours the user's own font configuration too.
+//
+// We query the *Microsoft* family names on purpose.  fontconfig ships metric
+// substitution rules (30-metric-aliases.conf) mapping Arial -> Liberation Sans,
+// Times New Roman -> Liberation Serif and Courier New -> Liberation Mono, so
+// asking for the name the wallpaper actually used yields a metric-compatible
+// face rather than the distro's default UI font.  Asking for generic
+// "sans-serif" would return Cantarell on Fedora and silently reflow the text.
+const char* FcFamilyFor(FontFamily f) {
+    switch (f) {
+    case FontFamily::Mono:  return "Courier New";
+    case FontFamily::Sans:  return "Arial";
+    case FontFamily::Serif: return "Times New Roman";
+    }
+    return "Arial";
+}
+
+// FcFontMatch always returns its best effort, even when that face covers none
+// of the requested language.  For CJK that would hand the renderer a Latin font
+// and draw tofu, which is worse than reporting nothing, so verify coverage.
+bool PatternCoversLang(FcPattern* pattern, const char* lang) {
+    FcLangSet* langset = nullptr;
+    if (FcPatternGetLangSet(pattern, FC_LANG, 0, &langset) != FcResultMatch
+        || langset == nullptr) {
+        return false;
+    }
+    return FcLangSetHasLang(langset, reinterpret_cast<const FcChar8*>(lang)) != FcLangDifferentLang;
+}
+
+std::string QueryFontconfig(const char* family, bool want_mono, const char* lang) {
+    FcPattern* pat = FcPatternCreate();
+    if (pat == nullptr) return {};
+
+    std::string out;
+    if (family != nullptr) {
+        FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>(family));
+    }
+    if (want_mono) {
+        FcPatternAddInteger(pat, FC_SPACING, FC_MONO);
+    }
+    if (lang != nullptr) {
+        FcPatternAddString(pat, FC_LANG, reinterpret_cast<const FcChar8*>(lang));
+    }
+
+    if (FcConfigSubstitute(nullptr, pat, FcMatchPattern) == FcTrue) {
+        FcDefaultSubstitute(pat);
+        FcResult   res   = FcResultNoMatch;
+        FcPattern* match = FcFontMatch(nullptr, pat, &res);
+        if (match != nullptr) {
+            FcChar8* file = nullptr;
+            const bool lang_ok = lang == nullptr || PatternCoversLang(match, lang);
+            if (res == FcResultMatch && lang_ok
+                && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch
+                && file != nullptr) {
+                out = reinterpret_cast<const char*>(file);
+            }
+            FcPatternDestroy(match);
+        }
+    }
+    FcPatternDestroy(pat);
+    return out;
+}
+
 std::string ToLower(const std::string& s) {
     std::string out;
     out.reserve(s.size());
@@ -114,6 +185,17 @@ FontFamily ClassifyName(const std::string& we_name) {
 
 std::string ResolveSystemFontFallback(const std::string& we_name) {
     const FontFamily family = ClassifyName(we_name);
+
+    const std::string via_fc =
+        QueryFontconfig(FcFamilyFor(family), family == FontFamily::Mono, nullptr);
+    if (!via_fc.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(via_fc, ec) && !ec) {
+            return via_fc;
+        }
+    }
+
+    // Fallback for hosts with no usable fontconfig configuration.
     for (const char* path : CandidatesFor(family)) {
         std::error_code ec;
         if (std::filesystem::exists(path, ec) && !ec) {
@@ -161,6 +243,20 @@ std::string ResolveCJKHanFallback() {
         // Last-resort: any Noto Sans CJK weight at the canonical Fedora path.
         "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Medium.ttc",
     };
+    // Ask by language coverage first.  openSUSE ships per-language variable
+    // OTFs (NotoSansCJKjp-VF.otf) rather than the pan-CJK .ttc these filenames
+    // assume, so the list below misses there even with a perfectly good CJK
+    // font installed.  Han is shared across these languages, so the first face
+    // covering any of them serves.
+    for (const char* lang : { "ja", "zh-cn", "zh-tw", "ko" }) {
+        const std::string via_fc = QueryFontconfig("sans-serif", false, lang);
+        if (via_fc.empty()) continue;
+        std::error_code ec;
+        if (std::filesystem::exists(via_fc, ec) && !ec) {
+            return via_fc;
+        }
+    }
+
     for (const char* path : kCandidates) {
         std::error_code ec;
         if (std::filesystem::exists(path, ec) && !ec) {

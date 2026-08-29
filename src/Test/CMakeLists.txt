@@ -266,6 +266,8 @@ target_link_libraries(backend_scene_tests PRIVATE
     wpVulkan
     # WPTextRenderer.cpp rasterizes via FreeType.
     Freetype::Freetype
+    # SystemFontFallback.cpp asks fontconfig for font paths.
+    ${FONTCONFIG_LIBRARIES}
     ${LZ4_LIBRARIES}
     Eigen3::Eigen
     nlohmann_json

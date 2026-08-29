@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
+# Declared here, not in src/, because src/Test is added from this file too:
+# sibling directory scopes do not share variables, and the test target
+# compiles SystemFontFallback.cpp directly so it needs its own link.
+pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
 
 
 option(BUILD_TESTS "Build backend_scene unit tests" OFF)
