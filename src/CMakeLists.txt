@@ -8,6 +8,20 @@ pkg_check_modules(GL gl)
 pkg_check_modules(GBM gbm)
 pkg_check_modules(LIBPULSE libpulse)
 
+# HWVideoTextureDecoder.cpp includes EGL/egl.h, GL/gl.h and gbm.h unconditionally,
+# so all three must be present or the translation unit will not compile.  Guarding
+# on any single one of them breaks the configurations missing the others: EGL alone
+# fails on a box with the proprietary NVIDIA stack and no mesa-libgbm-devel, GBM
+# alone fails wherever gbm.pc is installed without egl.pc.  They are independent
+# pkg-config probes, so one does not imply the others.  Decide once here and use
+# the result for both the source guard and the feature macro, so the two can never
+# disagree.
+if(EGL_FOUND AND GL_FOUND AND GBM_FOUND)
+    set(WEK_HAVE_EGL_HWDEC ON)
+else()
+    set(WEK_HAVE_EGL_HWDEC OFF)
+endif()
+
 option(ENABLE_RENDERDOC "Build with renderdoc api" OFF)
 
 if(ENABLE_RENDERDOC)
@@ -65,7 +79,7 @@ add_library(
   WPMdlParser.cpp
   WPPuppet.cpp
   VideoTextureDecoder.cpp
-  $<$<BOOL:${GBM_FOUND}>:HWVideoTextureDecoder.cpp>
+  $<$<BOOL:${WEK_HAVE_EGL_HWDEC}>:HWVideoTextureDecoder.cpp>
   SceneWallpaper.cpp)
 
 set(InteralLib
@@ -88,9 +102,9 @@ target_link_libraries(
           $<$<BOOL:${GBM_FOUND}>:${GBM_LIBRARIES}>
           Freetype::Freetype ${FONTCONFIG_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
 
-if(EGL_FOUND AND GL_FOUND AND GBM_FOUND)
+if(WEK_HAVE_EGL_HWDEC)
     target_compile_definitions(${PROJECT_NAME} PRIVATE HAVE_EGL_HWDEC=1)
-    message(STATUS "HW video texture decoder: enabled (EGL + GL)")
+    message(STATUS "HW video texture decoder: enabled (EGL + GL + GBM)")
 else()
     message(STATUS "HW video texture decoder: disabled (EGL/GL/GBM not found)")
 endif()
