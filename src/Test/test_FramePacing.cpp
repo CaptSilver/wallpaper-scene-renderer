@@ -99,4 +99,48 @@ TEST_SUITE("FramePacing") {
         CHECK(RebaseIndexLimit(1'000'000'000'000'000LL) >= 1u);
         CHECK(RebaseIndexLimit(kNsPerSec) > 4'000'000'000u);
     }
+
+    // =======================================================================
+    // PlanTick
+    // =======================================================================
+
+    TEST_CASE("wake before the deadline holds — spurious wakeups are harmless") {
+        TickGrid g = MakeGrid(1'000, 30, 0);
+        auto plan = PlanTick(g, 999, true);
+        CHECK_FALSE(plan.fire);
+        CHECK(plan.skipped == 0u);
+        CHECK(g.DeadlineNs() == 1'000);
+    }
+    TEST_CASE("wake at the deadline fires and schedules the next grid point") {
+        TickGrid g = MakeGrid(1'000, 30, 0);
+        auto plan = PlanTick(g, 1'000, true);
+        CHECK(plan.fire);
+        CHECK(plan.skipped == 0u);
+        CHECK(g.DeadlineNs() == 1'000 + 33'333'333);
+    }
+    TEST_CASE("saturated busy gate skips the fire but stays on the grid") {
+        TickGrid g = MakeGrid(1'000, 30, 0);
+        auto plan = PlanTick(g, 1'000, false);
+        CHECK_FALSE(plan.fire);
+        CHECK(plan.skipped == 1u);
+        CHECK(g.DeadlineNs() == 1'000 + 33'333'333);
+    }
+    TEST_CASE("late wake fires once, drops the missed deadlines, no burst") {
+        TickGrid g = MakeGrid(0, 30, 0);
+        // woke 3.5 periods late: fire one, deadlines 1..3 are gone
+        auto plan = PlanTick(g, 116'666'666, true);
+        CHECK(plan.fire);
+        CHECK(plan.skipped == 3u);
+        CHECK(g.DeadlineNs() == 133'333'333);
+    }
+    TEST_CASE("multi-hour stall (suspend) lands back on the grid") {
+        TickGrid g = MakeGrid(0, 60, 0);
+        const i64 eight_hours = 8LL * 3600 * kNsPerSec;
+        auto plan = PlanTick(g, eight_hours, true);
+        CHECK(plan.fire);
+        const i64 next = g.DeadlineNs();
+        CHECK(next > eight_hours);
+        CHECK(next - eight_hours <= 2 * g.ApproxPeriodNs());
+        CHECK(g.base_ns == 0); // still the original anchor — no rebase fired
+    }
 } // TEST_SUITE

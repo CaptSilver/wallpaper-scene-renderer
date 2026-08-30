@@ -98,4 +98,45 @@ constexpr void RebaseIfNeeded(TickGrid& g) noexcept {
     }
 }
 
+struct TickPlan {
+    bool fire;    // invoke the draw callback for this wake
+    u64  skipped; // grid deadlines dropped (missed while stalled or gated)
+};
+
+// Advance so DeadlineNs() > now_ns; returns deadlines dropped on the way.
+// The coarse jump keeps an 8-hour suspend from looping a million times.
+// Jumping against period+1 (a ceiling of the true rational period)
+// guarantees the jump undershoots for any stall length, so the loop always
+// finishes on the exact grid.
+constexpr u64 AdvancePastNow(TickGrid& g, i64 now_ns) noexcept {
+    u64 skipped = 0;
+    const i64 period = g.ApproxPeriodNs() + 1;
+    const i64 behind = now_ns - g.DeadlineNs();
+    if (behind > 4 * period) {
+        const u64 jump = static_cast<u64>(behind / period);
+        g.index += jump;
+        skipped += jump;
+    }
+    while (g.DeadlineNs() <= now_ns) {
+        g.index += 1;
+        skipped += 1;
+    }
+    return skipped;
+}
+
+// One decision per timer-thread wake.
+//   now <  deadline               -> hold (nudge/spurious wake)
+//   now >= deadline, slot free    -> fire, next deadline = first grid point > now
+//   now >= deadline, gate full    -> skip the fire, same advance — deadlines
+//                                    stay ON the grid so recovery never bursts
+constexpr TickPlan PlanTick(TickGrid& g, i64 now_ns, bool busy_slot_free) noexcept {
+    if (now_ns < g.DeadlineNs()) return { false, 0 };
+    const bool fire = busy_slot_free;
+    g.index += 1;
+    u64 skipped = AdvancePastNow(g, now_ns);
+    if (! fire) skipped += 1;
+    RebaseIfNeeded(g);
+    return { fire, skipped };
+}
+
 } // namespace wallpaper::pacing
