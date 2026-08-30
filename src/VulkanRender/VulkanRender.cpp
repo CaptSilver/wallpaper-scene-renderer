@@ -127,7 +127,9 @@ struct VulkanRender::Impl {
     std::array<vvk::CommandBuffer, kFramesInFlight> m_render_cmds;
 
     bool m_with_surface { false };
-    bool m_inited { false };
+    // Written on the render thread at init, read from the main looper via
+    // renderInited() (the post-init property replay does exactly that).
+    std::atomic<bool> m_inited { false };
     bool m_pass_loaded { false };
     bool m_device_lost { false };
     bool m_hdr_output { false };
