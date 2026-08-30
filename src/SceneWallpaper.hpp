@@ -127,10 +127,12 @@ constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE      = "postprocessi
 // Encoded as int matching the PresentModePolicy enum in Vulkan/Swapchain.hpp.
 // Default 0 = Auto, preserving today's FIFO behaviour for matched Fps/refresh.
 constexpr std::string_view PROPERTY_PRESENT_MODE                 = "present_mode";
-// Output refresh rate in Hz, sourced from Window.screen.refreshRate.  Feeds the
-// Auto policy's threshold math (target_fps vs refresh) for picking MAILBOX /
-// FIFO_RELAXED / FIFO.  Safe to default to 60 pre-monitor-query.
-constexpr std::string_view PROPERTY_OUTPUT_REFRESH_HZ            = "output_refresh_hz";
+// Display refresh rate in millihertz (59.94Hz -> 59940), sourced from
+// Window.screen.refreshRate.  Feeds the frame timer's snap-to-refresh grid
+// and, on surface builds (standalone viewer), the swapchain Auto policy.
+// 0 = unknown (plasmoid not mapped yet) — the timer falls back to the exact
+// fps period.
+constexpr std::string_view PROPERTY_OUTPUT_REFRESH_MHZ           = "output_refresh_mhz";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;

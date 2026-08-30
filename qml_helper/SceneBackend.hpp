@@ -40,11 +40,12 @@ class SceneObject : public QQuickItem {
     // Matches PresentModePolicy in src/backend_scene/src/Vulkan/include/Vulkan/Swapchain.hpp.
     // Default 0 (Auto) preserves today's FIFO behaviour for matched Fps/refresh.
     Q_PROPERTY(int presentMode READ presentMode WRITE setPresentMode NOTIFY presentModeChanged)
-    // Output refresh rate in Hz, plumbed from Window.screen.refreshRate.  Feeds
-    // the Auto policy's threshold math.  Default 60 covers the most common
-    // display until the QML side reads the real value.
-    Q_PROPERTY(int outputRefreshHz READ outputRefreshHz WRITE setOutputRefreshHz
-                   NOTIFY outputRefreshHzChanged)
+    // Display refresh in millihertz (59.94Hz -> 59940), plumbed from
+    // Window.screen.refreshRate.  Feeds the engine's snap-to-refresh frame
+    // pacing, and a rounded-Hz mirror feeds the surface-only Auto present
+    // policy.  0 = unknown until the window is mapped.
+    Q_PROPERTY(int outputRefreshMillihertz READ outputRefreshMillihertz WRITE setOutputRefreshMillihertz
+                   NOTIFY outputRefreshMillihertzChanged)
     Q_PROPERTY(int fillMode READ fillMode WRITE setFillMode NOTIFY fillModeChanged)
     Q_PROPERTY(float speed READ speed WRITE setSpeed NOTIFY speedChanged)
     Q_PROPERTY(float volume READ volume WRITE setVolume NOTIFY volumeChanged)
@@ -93,7 +94,7 @@ public:
 
     int     fps() const;
     int     presentMode() const;
-    int     outputRefreshHz() const;
+    int     outputRefreshMillihertz() const;
     int     fillMode() const;
     float   speed() const;
     float   volume() const;
@@ -106,7 +107,7 @@ public:
 
     void setFps(int);
     void setPresentMode(int);
-    void setOutputRefreshHz(int);
+    void setOutputRefreshMillihertz(int);
     void setFillMode(int);
     void setSpeed(float);
     void setVolume(float);
@@ -294,7 +295,7 @@ signals:
     void sourceChanged();
     void fpsChanged();
     void presentModeChanged();
-    void outputRefreshHzChanged();
+    void outputRefreshMillihertzChanged();
     void fillModeChanged();
     void speedChanged();
     void volumeChanged();
@@ -323,7 +324,7 @@ private:
     // viewer) lands the same FIFO behaviour the plugin had before this surface
     // existed.
     int     m_presentMode { 0 };
-    int     m_outputRefreshHz { 60 };
+    int     m_outputRefreshMillihertz { 0 }; // 0 = unknown until mapped
     int     m_fillMode { FillMode::ASPECTCROP };
     float   m_speed { 1.0f };
     float   m_volume { 1.0f };
