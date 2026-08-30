@@ -4,6 +4,7 @@ add_library(${LIB_NAME}
 STATIC
 ThreadTimer.cpp
 FrameTimer.cpp
+FramePacing.cpp
 )
 
 target_link_libraries(${LIB_NAME} PUBLIC wpUtils)

@@ -162,6 +162,10 @@ add_executable(backend_scene_tests
     # compiles individual Scene .cpp files (it does not link the whole wpScene
     # lib), so pull the queue's .cpp in directly for the unit test.
     ${SRC_DIR}/Scene/PendingUpdateQueues.cpp
+    test_FramePacing.cpp
+    # Pacing math lifted out of FrameTimer.  backend_scene_tests compiles the
+    # header's self-containment TU directly rather than linking all of wpTimer.
+    ${SRC_DIR}/Timer/FramePacing.cpp
     test_WarmCacheTexSlots.cpp
     test_VideoTextureDecoder.cpp
     # VideoTextureDecoder.cpp: SW video texture decoder (libmpv triple-buffer).
@@ -245,6 +249,9 @@ target_include_directories(backend_scene_tests PRIVATE
     ${SRC_DIR}/VulkanRender/include/VulkanRender
     ${SRC_DIR}/VulkanRender
     ${SRC_DIR}/Vulkan/include
+    # FramePacing.hpp is compiled as a direct TU (no wpTimer link needed for
+    # the pure-math suite), so expose its include dir here.
+    ${SRC_DIR}/Timer/include
     ${DOCTEST_INCLUDE_DIR}
     # libmpv headers (mpv/client.h, mpv/render.h) — VideoTextureDecoder.cpp.
     ${MPV_INCLUDE_DIRS}
