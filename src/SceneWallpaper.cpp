@@ -2616,6 +2616,21 @@ void SceneWallpaper::setHidePattern(const std::string& pat) {
 
 MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {
     if (m_render_handler->renderInited()) {
+        // First chance after INIT_VULKAN: forward property values that arrived
+        // before the renderer existed (they were cached and otherwise never
+        // sent — the refresh rate had no replay path at all).  Dedup guards
+        // downstream make this idempotent on later scene loads.
+        if (m_output_refresh_mhz > 0) {
+            auto rmsg = CreateMsgWithCmd(m_render_handler,
+                                         RenderHandler::CMD::CMD_SET_OUTPUT_REFRESH_MHZ);
+            rmsg->setInt32("value", m_output_refresh_mhz);
+            rmsg->post();
+        }
+        auto pmsg =
+            CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+        pmsg->setInt32("value", m_present_mode_policy);
+        pmsg->post();
+
         loadScene();
     }
 }
