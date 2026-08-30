@@ -890,6 +890,13 @@ bool VulkanRender::passDumpDone() const {
 
 void VulkanRender::setSwapchainPresentPolicy(int policy) {
     if (! pImpl->m_device) return;
+    if (! pImpl->m_with_surface) {
+        // Offscreen (the plasmashell plugin): there is no swapchain and never
+        // will be — the recreate flag would rot unset.  Say so instead of
+        // logging "will recreate" for a recreate that cannot happen.
+        LOG_INFO("swapchain setting ignored: offscreen renderer has no swapchain");
+        return;
+    }
     auto p = static_cast<PresentModePolicy>(policy);
     auto& swap = pImpl->m_device->mut_swapchain();
     if (swap.presentPolicy() == p) return;
@@ -903,6 +910,13 @@ void VulkanRender::setSwapchainPresentPolicy(int policy) {
 
 void VulkanRender::setSwapchainOutputRefreshHz(int hz) {
     if (! pImpl->m_device) return;
+    if (! pImpl->m_with_surface) {
+        // Offscreen (the plasmashell plugin): there is no swapchain and never
+        // will be — the recreate flag would rot unset.  Say so instead of
+        // logging "will recreate" for a recreate that cannot happen.
+        LOG_INFO("swapchain setting ignored: offscreen renderer has no swapchain");
+        return;
+    }
     auto& swap = pImpl->m_device->mut_swapchain();
     if (swap.outputRefreshHz() == hz) return;
     swap.setOutputRefreshHz(hz);
@@ -915,12 +929,20 @@ void VulkanRender::setSwapchainOutputRefreshHz(int hz) {
 
 void VulkanRender::setSwapchainTargetFps(int fps) {
     if (! pImpl->m_device) return;
+    if (! pImpl->m_with_surface) {
+        // Offscreen (the plasmashell plugin): there is no swapchain and never
+        // will be — the recreate flag would rot unset.  Say so instead of
+        // logging "will recreate" for a recreate that cannot happen.
+        LOG_INFO("swapchain setting ignored: offscreen renderer has no swapchain");
+        return;
+    }
     auto& swap = pImpl->m_device->mut_swapchain();
     if (swap.targetFps() == fps) return;
     swap.setTargetFps(fps);
     // Same rationale as setSwapchainOutputRefreshHz — Auto policy reads this
     // at Create()/Recreate() time, so recreate to pick the right mode.
     pImpl->m_swapchain_needs_recreate = true;
+    LOG_INFO("swapchain target fps queued: %d (will recreate)", fps);
 }
 
 bool VulkanRender::Impl::init(RenderInitInfo info) {

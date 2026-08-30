@@ -37,40 +37,6 @@ const char* present_mode_name(VkPresentModeKHR m) {
 //   target_fps < output_refresh * 0.9 → FIFO_RELAXED (sub-refresh smoothing)
 //   otherwise                          → FIFO (matched, no tearing)
 //
-// Explicit non-Auto policies (Fifo / FifoRelaxed / Mailbox / Immediate)
-// pin the requested mode, falling back to FIFO when the surface does
-// not advertise it (e.g. MAILBOX on some Wayland surfaces, IMMEDIATE on
-// frame-pacing-strict drivers).
-VkPresentModeKHR pickPresentMode(const std::vector<VkPresentModeKHR>& supported,
-                                  PresentModePolicy policy,
-                                  int               target_fps,
-                                  int               output_refresh_hz) {
-    auto has = [&](VkPresentModeKHR m) {
-        return std::find(supported.begin(), supported.end(), m) != supported.end();
-    };
-
-    switch (policy) {
-    case PresentModePolicy::Auto: {
-        if (target_fps > output_refresh_hz * 11 / 10 && has(VK_PRESENT_MODE_MAILBOX_KHR))
-            return VK_PRESENT_MODE_MAILBOX_KHR;
-        if (target_fps < output_refresh_hz * 9 / 10 && has(VK_PRESENT_MODE_FIFO_RELAXED_KHR))
-            return VK_PRESENT_MODE_FIFO_RELAXED_KHR;
-        return VK_PRESENT_MODE_FIFO_KHR;
-    }
-    case PresentModePolicy::Mailbox:
-        return has(VK_PRESENT_MODE_MAILBOX_KHR) ? VK_PRESENT_MODE_MAILBOX_KHR
-                                                : VK_PRESENT_MODE_FIFO_KHR;
-    case PresentModePolicy::FifoRelaxed:
-        return has(VK_PRESENT_MODE_FIFO_RELAXED_KHR) ? VK_PRESENT_MODE_FIFO_RELAXED_KHR
-                                                     : VK_PRESENT_MODE_FIFO_KHR;
-    case PresentModePolicy::Immediate:
-        return has(VK_PRESENT_MODE_IMMEDIATE_KHR) ? VK_PRESENT_MODE_IMMEDIATE_KHR
-                                                  : VK_PRESENT_MODE_FIFO_KHR;
-    case PresentModePolicy::Fifo:
-    default:
-        return VK_PRESENT_MODE_FIFO_KHR;
-    }
-}
 
 bool querySwapChainSupport(const vvk::PhysicalDevice& gpu, VkSurfaceKHR surface,
                            SwapChainSupportDetails& details) {

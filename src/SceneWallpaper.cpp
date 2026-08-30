@@ -2672,7 +2672,7 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             if (msg->findInt32("value", &policy)) {
                 if (policy != m_present_mode_policy) {
                     m_present_mode_policy = policy;
-                    LOG_INFO("present-mode policy requested: %d", policy);
+                    LOG_INFO("present-mode policy stored: %d", policy);
                     if (m_render_handler->renderInited()) {
                         auto nmsg = CreateMsgWithCmd(
                             m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
