@@ -36,4 +36,66 @@ constexpr i64 RefreshPeriodNs(u32 refresh_mhz) noexcept {
     return (1'000'000'000'000LL + m / 2) / m;
 }
 
+
+// One tick grid: absolute deadlines D(i) = base + round(i*num/den) ns.
+// Anchor+index instead of deadline+=period so per-tick rounding never
+// accumulates; D(i) is exact on the rational grid for any i.
+//   fps grid:      num = 1e9,      den = fps        (period 1e9/fps s)
+//   refresh grid:  num = k * 1e12, den = refresh_mhz (period = k vsyncs)
+struct TickGrid {
+    i64 base_ns { 0 };
+    u64 index { 0 }; // index of the next deadline
+    i64 num { kNsPerSec };
+    i64 den { 15 };
+
+    constexpr i64 DeadlineNs() const noexcept {
+        return base_ns + (static_cast<i64>(index) * num + den / 2) / den;
+    }
+    constexpr i64 ApproxPeriodNs() const noexcept { return (num + den / 2) / den; }
+};
+
+// Vsyncs per engine tick when snapping to the display grid:
+// round(refresh_hz / fps) with refresh in mHz.
+constexpr u32 SnapDivisor(u32 fps, u32 refresh_mhz) noexcept {
+    const u32 den = 1000u * ClampFps(fps);
+    return (refresh_mhz + den / 2) / den;
+}
+
+// Snap only when the display grid divides down to within tol of the
+// requested rate (default 2%): accepts 30->29.97-on-59.94, rejects
+// 28->30-on-60.  A looser tolerance would silently rewrite the user's fps.
+constexpr bool SnapAccepted(u32 fps, u32 refresh_mhz, u32 k,
+                            u32 tol_permille) noexcept {
+    if (k == 0 || refresh_mhz == 0) return false;
+    const i64 target = static_cast<i64>(ClampFps(fps)) * 1000 * static_cast<i64>(k);
+    const i64 mhz    = static_cast<i64>(refresh_mhz);
+    const i64 diff   = mhz > target ? mhz - target : target - mhz;
+    return diff * 1000 <= target * static_cast<i64>(tol_permille);
+}
+
+constexpr TickGrid MakeGrid(i64 base_ns, u32 fps, u32 refresh_mhz,
+                            u32 tol_permille = 20) noexcept {
+    const u32 f = ClampFps(fps);
+    const u32 k = SnapDivisor(f, refresh_mhz);
+    if (SnapAccepted(f, refresh_mhz, k, tol_permille)) {
+        return TickGrid { base_ns, 0, static_cast<i64>(k) * 1'000'000'000'000LL,
+                          static_cast<i64>(refresh_mhz) };
+    }
+    return TickGrid { base_ns, 0, kNsPerSec, static_cast<i64>(f) };
+}
+
+// Largest safe index: keep index*num well inside i64 (headroom factor 2).
+constexpr u64 RebaseIndexLimit(i64 num) noexcept {
+    return static_cast<u64>(4'600'000'000'000'000'000LL / num);
+}
+
+// Re-anchor at the current next deadline (index 0).  D() is on-grid, so the
+// rebase is phase-exact — no jump, testable with injected large indices.
+constexpr void RebaseIfNeeded(TickGrid& g) noexcept {
+    if (g.index >= RebaseIndexLimit(g.num)) {
+        g.base_ns = g.DeadlineNs();
+        g.index   = 0;
+    }
+}
+
 } // namespace wallpaper::pacing
