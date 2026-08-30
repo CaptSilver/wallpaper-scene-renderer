@@ -43,6 +43,8 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <chrono>
+#include "Timer/FrameTimer.hpp"
 #include <utility>
 #include <vector>
 
@@ -478,6 +480,31 @@ int repro_pending_update_queues(int iters) {
     return torn.load() == 0 ? 0 : 1;
 }
 
+
+int repro_frame_timer_pacing(int /*iters*/) {
+    // The old timer mutated its frametime deque from two threads unlocked
+    // and read a plain u16 fps cross-thread; TSAN flags both.
+    wallpaper::FrameTimer timer([] {});
+    std::atomic<bool> go { true };
+    std::thread fps([&] {
+        uint16_t v = 5;
+        while (go.load()) timer.SetRequiredFps(static_cast<uint16_t>(v++ % 240 + 5));
+    });
+    std::thread frames([&] {
+        while (go.load()) {
+            timer.FrameBegin();
+            timer.FrameEnd();
+        }
+    });
+    timer.Run();
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    go.store(false);
+    fps.join();
+    frames.join();
+    timer.Stop();
+    return timer.RequiredFps() >= 5 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -503,6 +530,9 @@ int main(int argc, char** argv) {
     std::printf("[thread-repro] PendingUpdateQueues setters vs. withXLocked drains, %d iters...\n",
                 iters);
     rc |= repro_pending_update_queues(iters);
+
+    std::printf("[thread-repro] FrameTimer SetRequiredFps vs FrameEnd vs Run/Stop...\n");
+    rc |= repro_frame_timer_pacing(iters);
 
     std::printf("[thread-repro] done (rc=%d)%s\n", rc,
                 rc == 0 ? " — clean (check TSAN output for races)" : " — FAILED invariant");

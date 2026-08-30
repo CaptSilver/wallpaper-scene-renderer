@@ -1542,7 +1542,8 @@ private:
                     s_last_scene       = scene->elapsingTime;
                     LOG_INFO(
                         "TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
-                        "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f dt_wall=%.4f",
+                        "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f "
+                        "dt_wall=%.4f skipped=%llu",
                         s_tick_count,
                         wall,
                         scene->elapsingTime,
@@ -1551,7 +1552,8 @@ private:
                         frame_timer.IdeaTime(),
                         frame_timer.RequiredFps(),
                         delta_scene,
-                        dt_wall);
+                        dt_wall,
+                        static_cast<unsigned long long>(frame_timer.SkippedTicks()));
                 }
             }
 

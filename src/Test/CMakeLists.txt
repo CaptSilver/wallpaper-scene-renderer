@@ -163,6 +163,8 @@ add_executable(backend_scene_tests
     # lib), so pull the queue's .cpp in directly for the unit test.
     ${SRC_DIR}/Scene/PendingUpdateQueues.cpp
     test_FramePacing.cpp
+    test_ThreadTimer.cpp
+    test_FrameTimer.cpp
     # Pacing math lifted out of FrameTimer.  backend_scene_tests compiles the
     # header's self-containment TU directly rather than linking all of wpTimer.
     ${SRC_DIR}/Timer/FramePacing.cpp
@@ -267,6 +269,8 @@ target_link_libraries(backend_scene_tests PRIVATE
     # RenderGraph (DependencyGraph cycle detection / topo sort). Vulkan-free
     # static lib — its .cpp files include only their own headers + Logging.
     wpRGraph
+    # ThreadTimer is a real library now (absolute-deadline loop), not a header.
+    wpTimer
     # wpVulkan supplies the glslang/SPIRV-Reflect symbols WPShaderParser.cpp
     # references (CompileToSpv / Init/FinalGlslang).  It is the host-CPU shader
     # toolchain, not a Vulkan device — the binary stays headless-safe.
@@ -395,7 +399,7 @@ target_include_directories(backend_scene_thread_tests PRIVATE
     ${SRC_DIR}/Scene/include/Scene
 )
 target_link_libraries(backend_scene_thread_tests PRIVATE
-    wpScene wpUtils wpFs wpVulkan Eigen3::Eigen nlohmann_json Threads::Threads
+    wpScene wpUtils wpFs wpVulkan wpTimer Eigen3::Eigen nlohmann_json Threads::Threads
 )
 option(WEK_THREAD_REPRO_PROVE_RACE
        "Compile the thread repro with a deliberately racy plain shared_ptr \
