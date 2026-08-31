@@ -9,6 +9,8 @@
 #include <GLFW/glfw3.h>
 #include <atomic>
 #include "arg.hpp"
+#include "Timer/FramePacing.hpp"
+#include "Vulkan/SwapchainPolicy.hpp"
 #include "SceneWallpaper.hpp"
 #include "SceneWallpaperSurface.hpp"
 
@@ -187,6 +189,33 @@ int main(int argc, char** argv) {
     auto fps_val = program.get<int32_t>(OPT_FPS);
     if (fps_val < 5) fps_val = 60; // default to 60fps
     psw->setPropertyInt32(wallpaper::PROPERTY_FPS, fps_val);
+
+    // GLFW reports whole Hz only, so --refresh-mhz is the only way to feed a
+    // fractional rate (59.94) to the snap-to-refresh grid.  This is the one
+    // binary with a real swapchain, so it is also the only place the
+    // present-mode picker actually runs.
+    {
+        unsigned detected = 0;
+        if (GLFWmonitor* mon = glfwGetPrimaryMonitor()) {
+            if (const GLFWvidmode* mode = glfwGetVideoMode(mon)) {
+                detected = static_cast<unsigned>(mode->refreshRate) * 1000u;
+            }
+        }
+        const auto mhz = wallpaper::pacing::ResolveRefreshMhz(
+            detected, program.get<int32_t>(OPT_REFRESH_MHZ));
+        std::cout << "output refresh: " << mhz << " mHz (detected " << detected << ")"
+                  << std::endl;
+        psw->setPropertyInt32(wallpaper::PROPERTY_OUTPUT_REFRESH_MHZ,
+                              static_cast<int32_t>(mhz));
+    }
+    {
+        const auto pm = program.get<int32_t>(OPT_PRESENT_MODE);
+        if (! wallpaper::vulkan::IsValidPresentModePolicy(pm)) {
+            std::cerr << "--present-mode must be 0..4, got " << pm << std::endl;
+            return -1;
+        }
+        psw->setPropertyInt32(wallpaper::PROPERTY_PRESENT_MODE, pm);
+    }
 
     std::string cache_path = program.get<std::string>(OPT_CACHE_PATH);
     if (cache_path.empty()) cache_path = wallpaper::platform::GetCachePath("wescene-renderer");

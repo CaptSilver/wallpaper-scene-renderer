@@ -12,6 +12,8 @@ constexpr std::string_view ARG_SCENE             = "<scene>";
 constexpr std::string_view OPT_VALID_LAYER       = "--valid-layer";
 constexpr std::string_view OPT_GRAPHVIZ          = "--graphviz";
 constexpr std::string_view OPT_FPS               = "--fps";
+constexpr std::string_view OPT_REFRESH_MHZ       = "--refresh-mhz";
+constexpr std::string_view OPT_PRESENT_MODE      = "--present-mode";
 constexpr std::string_view OPT_RESOLUTION        = "--resolution";
 constexpr std::string_view OPT_CACHE_PATH        = "--cache-path";
 constexpr std::string_view OPT_HDR               = "--hdr";
@@ -49,6 +51,23 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
     arg.add_argument("-f", OPT_FPS)
         .help("fps")
         .default_value<int32_t>(60)
+        .nargs(1)
+        .scan<'i', int32_t>();
+
+    // Display rate in millihertz (59.94Hz -> 59940).  0 = auto-detect from the
+    // screen.  An explicit value lets a 144Hz desk exercise the 59.94Hz snap
+    // path, which is the case the fractional plumbing exists for.
+    arg.add_argument(OPT_REFRESH_MHZ)
+        .help("display refresh in millihertz (0 = detect from screen)")
+        .default_value<int32_t>(0)
+        .nargs(1)
+        .scan<'i', int32_t>();
+
+    // 0=Auto 1=Fifo 2=FifoRelaxed 3=Mailbox 4=Immediate, matching
+    // PresentModePolicy.  Only the GLFW viewer owns a swapchain to apply it to.
+    arg.add_argument(OPT_PRESENT_MODE)
+        .help("swapchain present mode (0=Auto 1=Fifo 2=FifoRelaxed 3=Mailbox 4=Immediate)")
+        .default_value<int32_t>(0)
         .nargs(1)
         .scan<'i', int32_t>();
 

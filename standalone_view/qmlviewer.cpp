@@ -16,6 +16,7 @@
 #include <sys/statfs.h>
 #include <linux/magic.h>
 #include "arg.hpp"
+#include "Vulkan/SwapchainPolicy.hpp"
 
 // Returns true iff `p` is on a RAM-backed filesystem (tmpfs / ramfs).  Pass
 // dumps default to /tmp on many systems, which IS tmpfs on Bazzite — 128 HDR
@@ -97,7 +98,32 @@ int main(int argc, char** argv) {
         }
     }
     sv->setProperty("source", QUrl::fromLocalFile(program.get<std::string>(ARG_SCENE).c_str()));
-    sv->setProperty("fps", program.get<int32_t>(OPT_FPS));
+    // Match the GLFW viewer's clamp: SceneWallpaper drops an fps < 5 message
+    // outright, so an unclamped value silently leaves the timer at main.qml's
+    // default instead of reporting anything.
+    {
+        auto fps_val = program.get<int32_t>(OPT_FPS);
+        if (fps_val < 5) fps_val = 60;
+        sv->setProperty("fps", fps_val);
+    }
+    // 0 leaves the screen-detected rate in place; a non-zero value overrides it.
+    {
+        const auto mhz = program.get<int32_t>(OPT_REFRESH_MHZ);
+        if (mhz != 0) {
+            std::cout << "refresh override: " << mhz << " mHz" << std::endl;
+            sv->setProperty("outputRefreshMillihertz", mhz);
+        }
+    }
+    // The QML viewer renders offscreen and Qt presents, so this is recorded
+    // but cannot reach a swapchain — only sceneviewer (GLFW) applies it.
+    {
+        const auto pm = program.get<int32_t>(OPT_PRESENT_MODE);
+        if (! wallpaper::vulkan::IsValidPresentModePolicy(pm)) {
+            std::cerr << "--present-mode must be 0..4, got " << pm << std::endl;
+            return 1;
+        }
+        sv->setProperty("presentMode", pm);
+    }
     sv->setProperty("hdrOutput", program.get<bool>(OPT_HDR));
     // Pin the Vulkan render target to the exact -R physical pixel size.
     // Set before the first updatePaintNode (show() below triggers it) so

@@ -46,6 +46,11 @@ target_link_libraries(${PROJECT_NAME}
     PUBLIC 
         ${GLFW_LIBRARIES}
         wescene-renderer
+        # glfwviewer resolves the refresh rate and validates the present-mode
+        # flag itself; both libs are PRIVATE to the renderer, so link them here
+        # rather than widen that interface.
+        wpTimer
+        wpVulkan
 )
 
 if(BUILD_QML)
@@ -70,6 +75,8 @@ if(BUILD_QML)
     target_link_libraries(${PROJECT_NAME}-script
         PUBLIC
         wescene-renderer-qml
+        # qmlviewer validates --present-mode against the production enum.
+        wpVulkan
     )
 
     # Back-compat alias target: old docs referred to sceneviewer-qml.
