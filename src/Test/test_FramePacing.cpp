@@ -35,6 +35,40 @@ TEST_SUITE("FramePacing") {
     TEST_CASE("refresh 0 means unknown and returns 0") {
         CHECK(RefreshPeriodNs(0) == 0);
     }
+
+    // =======================================================================
+    // resolving the rate a caller feeds the grid
+    // =======================================================================
+
+    TEST_CASE("an explicit override beats the rate detected from the screen") {
+        // the whole point of the flag: test a 59.94Hz panel from a 144Hz desk
+        CHECK(ResolveRefreshMhz(143'999, 59'940) == 59'940u);
+    }
+    TEST_CASE("without an override the detected rate passes through") {
+        CHECK(ResolveRefreshMhz(143'999, 0) == 143'999u);
+    }
+    TEST_CASE("a negative override means unset, not invalid") {
+        CHECK(ResolveRefreshMhz(143'999, -1) == 143'999u);
+    }
+    TEST_CASE("nothing known stays 0 so MakeGrid falls back to the exact fps grid") {
+        CHECK(ResolveRefreshMhz(0, 0) == 0u);
+        CHECK(MakeGrid(0, 60, ResolveRefreshMhz(0, 0)).den == 60);
+    }
+    TEST_CASE("a sub-1Hz rate is nonsense and reads as unknown") {
+        // glfwGetVideoMode reports refreshRate 0 on some drivers; 0*1000 = 0
+        CHECK(ResolveRefreshMhz(0, 0) == 0u);
+        CHECK(ResolveRefreshMhz(999, 0) == 0u);
+    }
+    TEST_CASE("a rate above 1000Hz reads as unknown rather than snapping to garbage") {
+        CHECK(ResolveRefreshMhz(1'000'001, 0) == 0u);
+    }
+    TEST_CASE("an out-of-range override is rejected, not silently used") {
+        CHECK(ResolveRefreshMhz(143'999, 5) == 0u);
+    }
+    TEST_CASE("the 1Hz and 1000Hz bounds are inclusive") {
+        CHECK(ResolveRefreshMhz(1'000, 0) == 1'000u);
+        CHECK(ResolveRefreshMhz(1'000'000, 0) == 1'000'000u);
+    }
     // =======================================================================
     // tick grid
     // =======================================================================

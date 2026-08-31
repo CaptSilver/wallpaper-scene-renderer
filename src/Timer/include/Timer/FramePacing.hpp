@@ -37,6 +37,23 @@ constexpr i64 RefreshPeriodNs(u32 refresh_mhz) noexcept {
 }
 
 
+
+// A display rate below 1Hz or above 1000Hz is a driver reporting nonsense
+// rather than a panel we can pace to — glfwGetVideoMode hands back 0 on some
+// drivers, and a stray CLI value should not become a tick grid.
+inline constexpr u32 kMinRefreshMhz = 1'000;
+inline constexpr u32 kMaxRefreshMhz = 1'000'000;
+
+// The rate a caller should hand MakeGrid: an explicit override wins over
+// whatever the screen reported, and anything implausible collapses to the
+// 0 "unknown" sentinel so the grid falls back to the exact fps period.
+// override_mhz <= 0 means "not supplied", which is why it is signed.
+constexpr u32 ResolveRefreshMhz(u32 detected_mhz, i32 override_mhz) noexcept {
+    const u32 chosen = override_mhz > 0 ? static_cast<u32>(override_mhz) : detected_mhz;
+    if (chosen < kMinRefreshMhz || chosen > kMaxRefreshMhz) return 0;
+    return chosen;
+}
+
 // One tick grid: absolute deadlines D(i) = base + round(i*num/den) ns.
 // Anchor+index instead of deadline+=period so per-tick rounding never
 // accumulates; D(i) is exact on the rational grid for any i.

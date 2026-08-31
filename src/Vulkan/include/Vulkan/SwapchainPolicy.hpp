@@ -39,6 +39,22 @@ enum class PresentModePolicy
     Immediate   = 4, // no vsync at all (rare; mostly benchmarking)
 };
 
+// Highest valid enumerator above; keep in step when adding a policy.
+inline constexpr int kMaxPresentModePolicy = 4;
+
+// An int arriving from a CLI flag or a QML property has not been range
+// checked.  Casting one straight into the enum yields an enumerator no
+// switch arm below handles, so validate before converting.
+constexpr bool IsValidPresentModePolicy(int v) noexcept {
+    return v >= 0 && v <= kMaxPresentModePolicy;
+}
+
+// Out-of-range degrades to Auto — the same thing an unset setting does.
+constexpr PresentModePolicy ToPresentModePolicy(int v) noexcept {
+    return IsValidPresentModePolicy(v) ? static_cast<PresentModePolicy>(v)
+                                       : PresentModePolicy::Auto;
+}
+
 // Explicit non-Auto policies (Fifo / FifoRelaxed / Mailbox / Immediate)
 // pin the requested mode, falling back to FIFO when the surface does
 // not advertise it (e.g. MAILBOX on some Wayland surfaces, IMMEDIATE on

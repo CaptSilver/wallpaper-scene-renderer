@@ -2,6 +2,7 @@
 #include "Utils/Logging.h"
 
 #include <numeric>
+#include <cstdio>
 
 using namespace wallpaper;
 using micros = std::chrono::microseconds;
@@ -59,8 +60,25 @@ double FrameTimer::IdeaTime() const {
 }
 
 void FrameTimer::RecomputePeriod() {
-    m_period_ns.store(
-        pacing::MakeGrid(0, m_req_fps.load(), m_refresh_mhz.load()).ApproxPeriodNs());
+    const u32  fps  = m_req_fps.load();
+    const u32  mhz  = m_refresh_mhz.load();
+    const auto grid = pacing::MakeGrid(0, fps, mhz);
+    m_period_ns.store(grid.ApproxPeriodNs());
+
+    // Without this there is no way to tell from a running instance whether the
+    // display-grid snap engaged or the exact-fps fallback did — the two look
+    // identical from the outside until you count frames.  refresh=0 means
+    // nothing ever fed us a rate.
+    const u32  k       = pacing::SnapDivisor(fps, mhz);
+    const bool snapped = pacing::SnapAccepted(fps, mhz, k, 20);
+    char       ksuffix[24] = "";
+    if (snapped) std::snprintf(ksuffix, sizeof(ksuffix), " k=%u", k);
+    LOG_INFO("frame pacing: fps=%u refresh=%u mHz snap=%s%s period=%.4f ms",
+             fps,
+             mhz,
+             snapped ? "yes" : "no",
+             ksuffix,
+             static_cast<double>(grid.ApproxPeriodNs()) / 1e6);
 }
 
 void FrameTimer::ReseedFrametimeQueue() {

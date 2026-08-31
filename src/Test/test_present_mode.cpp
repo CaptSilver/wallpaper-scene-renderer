@@ -11,9 +11,34 @@
 
 using wallpaper::vulkan::PresentModePolicy;
 using wallpaper::vulkan::pickPresentMode;
+using wallpaper::vulkan::IsValidPresentModePolicy;
+using wallpaper::vulkan::ToPresentModePolicy;
 
 TEST_SUITE("pickPresentMode")
 {
+
+// --- validating an int from the CLI / a QML property before it becomes an enum
+
+TEST_CASE("every advertised policy value is accepted") {
+    CHECK(IsValidPresentModePolicy(0));
+    CHECK(IsValidPresentModePolicy(4));
+    CHECK(ToPresentModePolicy(0) == PresentModePolicy::Auto);
+    CHECK(ToPresentModePolicy(1) == PresentModePolicy::Fifo);
+    CHECK(ToPresentModePolicy(2) == PresentModePolicy::FifoRelaxed);
+    CHECK(ToPresentModePolicy(3) == PresentModePolicy::Mailbox);
+    CHECK(ToPresentModePolicy(4) == PresentModePolicy::Immediate);
+}
+
+TEST_CASE("values outside the enum are rejected instead of cast into it") {
+    CHECK_FALSE(IsValidPresentModePolicy(-1));
+    CHECK_FALSE(IsValidPresentModePolicy(5));
+    CHECK_FALSE(IsValidPresentModePolicy(99));
+}
+
+TEST_CASE("an invalid value degrades to Auto rather than an undefined enumerator") {
+    CHECK(ToPresentModePolicy(-1) == PresentModePolicy::Auto);
+    CHECK(ToPresentModePolicy(5) == PresentModePolicy::Auto);
+}
 
 TEST_CASE("Auto with Fps > refresh prefers MAILBOX when available") {
     std::vector<VkPresentModeKHR> supported = {
