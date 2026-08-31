@@ -290,6 +290,11 @@ private slots:
     // calls SceneWallpaper::abortLoad to stop the parse thread mid-load.
     // Removals on other screens are ignored.
     void onScreenRemoved(QScreen* removed);
+    // The display rate is read from the QScreen the item's window sits on.
+    // QQuickWindowAttached has no `screen` member, so QML cannot supply it —
+    // this is the only path that produces a real rate.
+    void updateDetectedRefresh();
+    void onWindowChangedForRefresh(QQuickWindow* win);
 
 signals:
     void sourceChanged();
@@ -324,7 +329,16 @@ private:
     // viewer) lands the same FIFO behaviour the plugin had before this surface
     // existed.
     int     m_presentMode { 0 };
-    int     m_outputRefreshMillihertz { 0 }; // 0 = unknown until mapped
+    int     m_outputRefreshMillihertz { 0 }; // resolved value pushed to the engine
+    unsigned m_detectedRefreshMhz { 0 };     // from QScreen::refreshRate
+    // Explicit request from QML / the viewer's --refresh-mhz; <= 0 = unset.
+    // Wins over the detected rate so a 59.94Hz panel can be simulated.
+    int      m_refreshOverrideMhz { 0 };
+    QMetaObject::Connection m_screenRefreshConn;
+
+    // Recompute m_outputRefreshMillihertz from detected + override and push
+    // it down if it moved.
+    void applyResolvedRefresh();
     int     m_fillMode { FillMode::ASPECTCROP };
     float   m_speed { 1.0f };
     float   m_volume { 1.0f };

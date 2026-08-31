@@ -371,7 +371,7 @@ if(Qt6_FOUND)
         ${DOCTEST_INCLUDE_DIR}
     )
     target_link_libraries(scenescript_tests PRIVATE
-        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer)
+        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer)
     wek_apply_sanitizers(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
     set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)

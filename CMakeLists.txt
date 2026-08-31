@@ -135,6 +135,8 @@ if(BUILD_QML)
         Qt::Qml
         glad
         ${PROJECT_NAME}
+    PRIVATE
+        wpTimer
     )
     target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper third_party
         PRIVATE src/Audio/include)

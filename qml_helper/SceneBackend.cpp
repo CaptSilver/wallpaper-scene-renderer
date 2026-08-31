@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "Timer/FramePacing.hpp"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
 #include "SceneCursorEvent.h"
@@ -287,6 +288,11 @@ SceneObject::SceneObject(QQuickItem* parent): QQuickItem(parent) {
     // surface that's gone.  Debounced 500 ms so KVM-switch / brief monitor-
     // sleep cycles (remove + add within the debounce) don't trigger a wasteful
     // abort+restart.
+    connect(this,
+            &QQuickItem::windowChanged,
+            this,
+            &SceneObject::onWindowChangedForRefresh);
+
     if (auto* app = qApp) {
         connect(app, &QGuiApplication::screenRemoved, this, &SceneObject::onScreenRemoved);
         connect(app, &QGuiApplication::screenAdded, this, [this](QScreen*) {
@@ -424,11 +430,57 @@ void SceneObject::setPresentMode(int value) {
     SET_PROPERTY(Int32, wallpaper::PROPERTY_PRESENT_MODE, value);
     Q_EMIT presentModeChanged();
 }
+// Writing the property is an explicit override (the viewer's --refresh-mhz,
+// or a test).  It does not clobber the detected rate, so clearing the
+// override with 0 falls back to whatever the screen reports.
 void SceneObject::setOutputRefreshMillihertz(int value) {
-    if (m_outputRefreshMillihertz == value) return;
-    m_outputRefreshMillihertz = value;
-    SET_PROPERTY(Int32, wallpaper::PROPERTY_OUTPUT_REFRESH_MHZ, value);
+    if (m_refreshOverrideMhz == value) return;
+    m_refreshOverrideMhz = value;
+    applyResolvedRefresh();
+}
+
+void SceneObject::updateDetectedRefresh() {
+    QQuickWindow* win = window();
+    QScreen*      sc  = win ? win->screen() : nullptr;
+    // refreshRate() is 0 on some offscreen/headless platforms; ResolveRefreshMhz
+    // maps that to the 0 "unknown" sentinel rather than a bogus grid.
+    m_detectedRefreshMhz =
+        sc ? static_cast<unsigned>(qRound(sc->refreshRate() * 1000.0)) : 0u;
+    applyResolvedRefresh();
+}
+
+void SceneObject::applyResolvedRefresh() {
+    const int resolved = static_cast<int>(
+        wallpaper::pacing::ResolveRefreshMhz(m_detectedRefreshMhz, m_refreshOverrideMhz));
+    if (m_outputRefreshMillihertz == resolved) return;
+    m_outputRefreshMillihertz = resolved;
+    SET_PROPERTY(Int32, wallpaper::PROPERTY_OUTPUT_REFRESH_MHZ, resolved);
+    _Q_INFO("output refresh: %d mHz (detected %u, override %d)",
+            resolved,
+            m_detectedRefreshMhz,
+            m_refreshOverrideMhz);
     Q_EMIT outputRefreshMillihertzChanged();
+}
+
+// The window arrives after construction, and can change when the containment
+// is moved to another monitor.  Re-read the rate on both, and follow a mode
+// change on the screen we are already on.
+void SceneObject::onWindowChangedForRefresh(QQuickWindow* win) {
+    QObject::disconnect(m_screenRefreshConn);
+    if (win) {
+        connect(win,
+                &QWindow::screenChanged,
+                this,
+                &SceneObject::updateDetectedRefresh,
+                Qt::UniqueConnection);
+        if (QScreen* sc = win->screen()) {
+            m_screenRefreshConn =
+                connect(sc, &QScreen::refreshRateChanged, this, [this](qreal) {
+                    updateDetectedRefresh();
+                });
+        }
+    }
+    updateDetectedRefresh();
 }
 void SceneObject::setFillMode(int value) {
     if (m_fillMode == value) return;
