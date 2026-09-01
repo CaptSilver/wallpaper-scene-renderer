@@ -2,12 +2,18 @@
 
 #include <QCoreApplication>
 #include <QJSValue>
+#include <QString>
+
+#include <QMetaMethod>
+#include <QMetaObject>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "SceneBackend.hpp"
+#include "SceneScriptBridge.h"
 #include "IPropertyDispatchSink.hpp"
 
 // Drives the real 30 Hz SceneScript property/text/color dispatch in
@@ -260,5 +266,241 @@ TEST_SUITE("SceneScript dispatch sink") {
         // _runAllPropertyScripts suppresses it, so no new dispatch.
         obj->evaluatePropertyScriptsForTesting();
         CHECK(sink->count("updateNodeAlpha") == 1);
+    }
+}
+
+// The `__sceneBridge` global is the one C++ object untrusted Steam-Workshop
+// SceneScript can reach.  Scene bodies are lifted verbatim out of scene.json
+// (WPPropertyScriptExtract.hpp) and compiled into this same QJSEngine, so
+// whatever `__sceneBridge` reflects is granted to hostile content.  These cases
+// pin that surface to the shim allowlist from both directions: the dangerous
+// names must be absent, and all 22 names the shims dispatch through must stay
+// callable.
+TEST_SUITE("SceneScript bridge surface") {
+    // Bootstraps the JS engine through the only public seam that does it, then
+    // hands back an object whose `__sceneBridge` global is installed exactly as
+    // production installs it.
+    std::unique_ptr<scenebackend::SceneObject> makeBridgedObj(RecordingDispatchSink * *outSink) {
+        auto obj = makeObj(outSink);
+        obj->seedPropertyScriptForTesting(1, Kind::Alpha, "alpha", "(function(v){ return v; })");
+        return obj;
+    }
+
+    TEST_CASE("scene script cannot reach the debug/tooling methods through __sceneBridge") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+
+        // Guards against a vacuous pass: every assertion below would also hold
+        // if no bridge were installed at all.
+        REQUIRE(obj->debugEvalJs("typeof __sceneBridge").toStdString() == "object");
+
+        for (const char* m : { "requestScreenshot",
+                               "requestPassDump",
+                               "setHidePattern",
+                               "debugEvalJs",
+                               "simulateClickAt",
+                               "simulateHoverAt",
+                               "simulateDragAt" }) {
+            INFO("member: " << std::string(m));
+            CHECK(
+                obj->debugEvalJs(QStringLiteral("typeof __sceneBridge.%1").arg(m)).toStdString() ==
+                "undefined");
+        }
+    }
+
+    TEST_CASE("a scene.json property script body cannot call into arbitrary C++") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // The string below is the same shape WPPropertyScriptExtract lifts out
+        // of an untrusted scene.json, dispatched through the real tick loop.
+        obj->seedPropertyScriptForTesting(
+            5,
+            Kind::Alpha,
+            "alpha",
+            "(function(v){ try { __sceneBridge.requestScreenshot('/tmp/wek-escape-probe.ppm');"
+            "                    _probe.v = 'reached'; }"
+            "              catch(e) { _probe.v = 'blocked'; } return v; })");
+        // Container object so the script body writes a property rather than
+        // creating an implicit global.
+        obj->debugEvalJs("var _probe = { v: '' };");
+        obj->evaluatePropertyScriptsForTesting();
+
+        // No file-existence assertion on purpose: under WEKDE_TEST_NO_SCENE
+        // m_scene is null, so SceneObject::requestScreenshot no-ops and nothing
+        // is ever written here.  The reachability of the call is the defect; the
+        // write itself lands in VulkanRender's fopen(path, "wb").
+        CHECK(obj->debugEvalJs("_probe.v").toStdString() == "blocked");
+    }
+
+    TEST_CASE("scene script cannot reach SceneObject or QQuickItem properties") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+
+        // Declared on SceneObject.  Assignment is deliberately never attempted:
+        // `__sceneBridge.source = ...` really runs setSource, which deletes the
+        // running QJSEngine out from under the caller.
+        for (const char* p : { "source",
+                               "assets",
+                               "userProperties",
+                               "postprocessingOverride",
+                               "renderPixelWidth",
+                               "renderPixelHeight",
+                               "fps" }) {
+            INFO("member: " << std::string(p));
+            CHECK(
+                obj->debugEvalJs(QStringLiteral("typeof __sceneBridge.%1").arg(p)).toStdString() ==
+                "undefined");
+        }
+
+        // Inherited from QQuickItem — the larger half of the surface, and not
+        // this project's code.  `grabToImage` hands its callback a
+        // QQuickItemGrabResult carrying a Q_INVOKABLE saveToFile(), i.e. a
+        // second arbitrary-file-write path; `parent` walks the live item tree.
+        for (const char* p : { "parent", "grabToImage", "mapToGlobal", "visible", "enabled" }) {
+            INFO("member: " << std::string(p));
+            CHECK(
+                obj->debugEvalJs(QStringLiteral("typeof __sceneBridge.%1").arg(p)).toStdString() ==
+                "undefined");
+        }
+
+        // Whole-surface bound rather than a name-by-name list: wrapping the
+        // QQuickItem reflects 88 enumerable names, the narrow bridge 23.
+        CAPTURE(obj->debugEvalJs("Object.keys(__sceneBridge).length").toStdString());
+        CHECK(obj->debugEvalJs("Object.keys(__sceneBridge).length < 30").toStdString() == "true");
+    }
+
+    TEST_CASE("the shim surface scripts depend on stays intact") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+
+        // Every name the first-party JS shims dispatch through.  The shims guard
+        // each call with `typeof __sceneBridge.X === 'function'`, so a dropped or
+        // misspelled forwarder silently stops working instead of erroring —
+        // enumerate all of them rather than spot-checking.
+        for (const char* m : { "materialSetValue",
+                               "effectMaterialSetValue",
+                               "setLayerSpriteFrame",
+                               "getLayerSpriteInfo",
+                               "setTextStyle",
+                               "getLayerWorldTransform",
+                               "getBoneIndex",
+                               "setLayerParent",
+                               "sortLayer",
+                               "openUserShortcut",
+                               "lsGet",
+                               "lsSet",
+                               "lsRemove",
+                               "lsClear",
+                               "videoGetCurrentTime",
+                               "videoGetDuration",
+                               "videoIsPlaying",
+                               "videoPlay",
+                               "videoPause",
+                               "videoStop",
+                               "videoSetCurrentTime",
+                               "videoSetRate" }) {
+            INFO("member: " << std::string(m));
+            CHECK(
+                obj->debugEvalJs(QStringLiteral("typeof __sceneBridge.%1").arg(m)).toStdString() ==
+                "function");
+        }
+    }
+
+    TEST_CASE("a shim call through __sceneBridge still reaches the dispatch sink") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+        // Registers "testlayer_5" -> 5 in the layer-name map (and records one
+        // updateTextStyle call, which is why the assertion below is specific).
+        obj->seedTextStyleScriptForTesting(5, "", "", "seed.otf");
+
+        obj->debugEvalJs("__sceneBridge.materialSetValue('testlayer_5','g_Color',[1,0,0]);");
+
+        REQUIRE(sink->count("updateMaterialValue") == 1);
+        const auto* c = sink->find("updateMaterialValue");
+        REQUIRE(c != nullptr);
+        CHECK(c->id == 5);
+        CHECK(c->s0 == "g_Color");
+    }
+
+    TEST_CASE("a scene script cannot hijack the __sceneBridge global") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+        obj->seedTextStyleScriptForTesting(5, "", "", "seed.otf");
+
+        // Every first-party shim resolves `__sceneBridge` by global name at call
+        // time, so a script that lands its own object there intercepts all of
+        // them.  Neither assignment nor redefinition may take.
+        obj->debugEvalJs(
+            "try { __sceneBridge = { materialSetValue: function(){} }; } catch (e) {}");
+        obj->debugEvalJs("try { Object.defineProperty(this, '__sceneBridge', "
+                         "{ value: { materialSetValue: function(){} } }); } catch (e) {}");
+        obj->debugEvalJs("try { delete __sceneBridge; } catch (e) {}");
+
+        // Still the real bridge: the call reaches C++, not the impostor.
+        obj->debugEvalJs("__sceneBridge.materialSetValue('testlayer_5','g_Color',[1,0,0]);");
+        CHECK(sink->count("updateMaterialValue") == 1);
+    }
+
+    TEST_CASE("the destroy-time bridge re-install keeps shim calls working") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeBridgedObj(&sink);
+        obj->seedTextStyleScriptForTesting(5, "", "", "seed.otf");
+
+        // fireDestroyEvent re-installs the bridge before running destroy
+        // handlers, because a wrapper handed out earlier can go stale by
+        // teardown.  If the re-install stops resolving, destroy handlers lose
+        // their lsSet calls and user state silently stops persisting.
+        obj->reinstallSceneBridgeForTesting();
+        obj->reinstallSceneBridgeForTesting();
+
+        CHECK(obj->debugEvalJs("typeof __sceneBridge.lsSet").toStdString() == "function");
+        obj->debugEvalJs("__sceneBridge.materialSetValue('testlayer_5','g_Color',[1,0,0]);");
+        CHECK(sink->count("updateMaterialValue") == 1);
+    }
+
+    TEST_CASE("the bridge metaobject declares nothing beyond the allowlist") {
+        // Pins the surface from the C++ side, with no engine involved: the
+        // metaobject IS the allowlist, so a Q_INVOKABLE added to the bridge
+        // fails here until someone widens this set deliberately.  A null owner
+        // is fine — every forwarder guards on it.
+        scenebackend::SceneScriptBridge b(nullptr);
+        const QMetaObject*              mo = b.metaObject();
+
+        // No Q_PROPERTY of its own, so no script assignment can reach a C++
+        // setter (`__sceneBridge.source = ...` used to run SceneObject::setSource,
+        // which deletes the QJSEngine that is mid-assignment).
+        CHECK(mo->propertyCount() == mo->propertyOffset());
+
+        const std::set<std::string> allowed { "materialSetValue",
+                                              "effectMaterialSetValue",
+                                              "setLayerSpriteFrame",
+                                              "getLayerSpriteInfo",
+                                              "setTextStyle",
+                                              "getLayerWorldTransform",
+                                              "getBoneIndex",
+                                              "setLayerParent",
+                                              "sortLayer",
+                                              "openUserShortcut",
+                                              "lsGet",
+                                              "lsSet",
+                                              "lsRemove",
+                                              "lsClear",
+                                              "videoGetCurrentTime",
+                                              "videoGetDuration",
+                                              "videoIsPlaying",
+                                              "videoPlay",
+                                              "videoPause",
+                                              "videoStop",
+                                              "videoSetCurrentTime",
+                                              "videoSetRate" };
+        int                         invokables = 0;
+        for (int i = mo->methodOffset(); i < mo->methodCount(); ++i) {
+            const QMetaMethod m = mo->method(i);
+            if (m.methodType() != QMetaMethod::Method) continue;
+            ++invokables;
+            INFO("method: " << m.name().toStdString());
+            CHECK(allowed.count(m.name().toStdString()) == 1);
+        }
+        CHECK(invokables == static_cast<int>(allowed.size()));
     }
 }

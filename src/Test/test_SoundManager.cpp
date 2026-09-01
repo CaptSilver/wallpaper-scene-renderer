@@ -270,3 +270,43 @@ TEST_SUITE("miniaudio::Device::SetSpectrumCallback") {
         CHECK(cb_invocations.load() > 0);
     }
 }
+
+TEST_SUITE("miniaudio::Device channel lifetime") {
+    TEST_CASE("a failed device open leaves already-mounted channels alone") {
+        // Init() bails through AbortInit() when the backend won't open (no
+        // PipeWire socket, wrong playback format, device won't start).  The
+        // channels were mounted before that attempt and their owners hold
+        // non-owning aliases to the streams inside them, so a failed open must
+        // not destroy them — the next successful Init() re-issues
+        // PassDeviceDesc to whatever is still mounted.
+        miniaudio::Device dev;
+        dev.MountChannel(std::make_shared<ToneChannel>(0.5f, 2, /*frames=*/128));
+        REQUIRE(dev.ChannelCount() == 1u);
+
+        dev.AbortInit();
+
+        CHECK(dev.ChannelCount() == 1u);
+    }
+
+    TEST_CASE("UnInit drops the channels the device was mixing") {
+        // The teardown path (destructor / deliberate shutdown) does own the
+        // channels and must release them.
+        miniaudio::Device dev;
+        dev.MountChannel(std::make_shared<ToneChannel>(0.5f, 2, /*frames=*/128));
+        REQUIRE(dev.ChannelCount() == 1u);
+
+        dev.UnInit();
+
+        CHECK(dev.ChannelCount() == 0u);
+    }
+
+    TEST_CASE("ChannelCount tracks mounts and UnmountAll") {
+        miniaudio::Device dev;
+        CHECK(dev.ChannelCount() == 0u);
+        dev.MountChannel(std::make_shared<ToneChannel>(0.25f, 2, 64));
+        dev.MountChannel(std::make_shared<ToneChannel>(0.25f, 2, 64));
+        CHECK(dev.ChannelCount() == 2u);
+        dev.UnmountAll();
+        CHECK(dev.ChannelCount() == 0u);
+    }
+}

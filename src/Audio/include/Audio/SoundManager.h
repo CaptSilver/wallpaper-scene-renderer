@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include "Utils/Logging.h"
@@ -39,11 +40,15 @@ public:
     ~SoundManager();
     void MountStream(std::unique_ptr<SoundStream>&&);
     void UnMountAll();
-    void Test(std::shared_ptr<fs::IBinaryStream>);
-    bool Init();
-    bool IsInited() const;
-    void Play();
-    void Pause();
+    // Number of streams still mounted.  Callers hold non-owning aliases to the
+    // streams they mounted, so this is how they (and the tests) can tell
+    // whether an alias still names a live object.
+    std::size_t MountedChannelCount() const;
+    void        Test(std::shared_ptr<fs::IBinaryStream>);
+    bool        Init();
+    bool        IsInited() const;
+    void        Play();
+    void        Pause();
 
     float Volume() const;
     bool  Muted() const;

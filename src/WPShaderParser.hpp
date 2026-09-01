@@ -54,12 +54,18 @@ public:
     static void InitGlslang();
     static void FinalGlslang();
 
+    // Compile `units` to SPIR-V into `spvs`, going through the on-disk SPV cache
+    // when a "cache" mount exists.  The SPV is published into `spvs` BEFORE this
+    // returns and nothing about `spvs` is remembered afterwards, so a scene load
+    // that dies mid-parse leaves nothing here pointing at the buffers it freed.
     static bool CompileToSpv(std::string_view         scene_id, std::span<WPShaderUnit>,
                              std::vector<ShaderCode>& spvs, fs::VFS&, WPShaderInfo*,
                              std::span<const WPShaderTexInfo>);
 
-    // Wait for all deferred async shader compilations and write results to disk cache.
-    // Call after all CompileToSpv calls are done (before FinalGlslang).
-    static void FlushPendingCompilations(fs::VFS& vfs);
+    // Drop the in-memory sha1 -> SPV memo CompileToSpv builds up, and log the
+    // compile summary for the batch.  Call at end-of-parse: the SPV is already
+    // on disk by then, and holding it costs a few MB per wallpaper that would
+    // otherwise accumulate for the life of the process.
+    static void ClearSpvMemo();
 };
 } // namespace wallpaper

@@ -72,6 +72,7 @@ add_executable(backend_scene_tests
     test_WPCommon_OrthoCameraSize.cpp
     test_WPSoundHelpers.cpp
     test_WPSoundParser.cpp
+    test_SoundStreamTable.cpp
     test_SceneTickHelpers.cpp
     test_FpsCounter.cpp
     test_Logging.cpp
@@ -364,6 +365,7 @@ if(Qt6_FOUND)
         test_SceneScript.cpp
         test_SceneScriptDispatch.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
+        ${CMAKE_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
         ${CMAKE_SOURCE_DIR}/qml_helper/glExtra.cpp
     )

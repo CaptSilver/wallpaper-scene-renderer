@@ -46,11 +46,11 @@ public:
     auto&       GetEffect(std::size_t index) { return m_effects.at(index); }
 
     // Remove effects whose first node's shader has empty SPIR-V codes
-    // (compilation failed during async flush — typically workshop shaders
-    // that didn't survive HLSL→GLSL).  Returns the number removed.
-    // Intended to be called once after WPShaderParser::FlushPendingCompilations
-    // so ResolveEffect can pick the previous successfully-compiled effect as
-    // last_output instead of leaving a hole at the end of the chain.
+    // (the compile failed — typically workshop shaders that didn't survive
+    // HLSL→GLSL).  Returns the number removed.  Intended to be called once
+    // after the scene's shaders are compiled so ResolveEffect can pick the
+    // previous successfully-compiled effect as last_output instead of leaving
+    // a hole at the end of the chain.
     std::size_t RemoveFailedEffects();
     const auto& FirstTarget() const { return m_pingpong_a; }
     SceneMesh&  FinalMesh() const { return *m_final_mesh; }

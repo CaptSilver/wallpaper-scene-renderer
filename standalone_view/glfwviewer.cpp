@@ -218,7 +218,8 @@ int main(int argc, char** argv) {
     }
 
     std::string cache_path = program.get<std::string>(OPT_CACHE_PATH);
-    if (cache_path.empty()) cache_path = wallpaper::platform::GetCachePath("wescene-renderer");
+    if (cache_path.empty())
+        cache_path = wallpaper::platform::GetCachePath(wallpaper::platform::kRendererCacheDir);
     psw->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, cache_path);
 
     std::string user_props = BuildUserPropsJson(program);

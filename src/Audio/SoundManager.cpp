@@ -110,8 +110,9 @@ bool SoundManager::IsInited() const { return pImpl->device.IsInited(); }
 void SoundManager::Play() { pImpl->device.Start(); }
 void SoundManager::Pause() { pImpl->device.Stop(); }
 
-void  SoundManager::UnMountAll() { pImpl->device.UnmountAll(); }
-float SoundManager::Volume() const { return pImpl->device.Volume(); }
+void        SoundManager::UnMountAll() { pImpl->device.UnmountAll(); }
+std::size_t SoundManager::MountedChannelCount() const { return pImpl->device.ChannelCount(); }
+float       SoundManager::Volume() const { return pImpl->device.Volume(); }
 
 bool SoundManager::Muted() const { return pImpl->device.Muted(); }
 void SoundManager::SetMuted(bool v) {

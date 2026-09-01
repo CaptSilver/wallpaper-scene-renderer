@@ -12,6 +12,7 @@
 #include "EngineResolution.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
+#include "SceneScriptBridge.h"
 #include "SceneTimerBridge.h"
 #include "TextScriptResult.hpp"
 
@@ -698,15 +699,10 @@ void SceneObject::fireDestroyEvent() {
     // can have its underlying metaobject torn down — property access on the
     // wrapper then surfaces as "Property 'lsSet' of object TypeError: Type
     // error is not a function" (the wrapper's .toString() returns a wrapped
-    // error).  Re-newQObject(this) yields a fresh wrapper that still resolves
-    // against the live `this` pointer, so destroy handlers' lsSet calls
-    // (Game of Life 3453251764 brush persistence is the canonical driver)
-    // reach the C++ side and save state to disk.  Routed through the live
-    // globalObject() call (not the cached m_globalObj) per the same defensive
-    // pattern as setupEngineGlobals — keeps the __sceneBridge re-registration
-    // path on the same code path it has had since the GoL brush-persistence
-    // fix landed.
-    m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
+    // error).  A fresh wrapper still resolves against the live bridge, so
+    // destroy handlers' lsSet calls (Game of Life 3453251764 brush persistence
+    // is the canonical driver) reach the C++ side and save state to disk.
+    installSceneBridge();
 
     for (auto& state : m_propertyScriptStates) {
         if (! state.destroyFn.isCallable()) continue;
@@ -1256,10 +1252,13 @@ void SceneObject::openUserShortcut(const QString& name) {
 // id like "3662790108" or a defaultproject folder name like "dino_run").
 
 QString SceneObject::localStoragePath(bool global) const {
+    const auto name = [](std::string_view v) {
+        return QString::fromUtf8(v.data(), static_cast<qsizetype>(v.size()));
+    };
     QString base = QString::fromStdString(GetDefaultCachePath());
-    if (global) return base + "/localstorage_global.json";
+    if (global) return base + "/" + name(wallpaper::platform::kLocalStorageGlobalFile);
     if (m_lsSceneId.isEmpty()) return {};
-    return base + "/" + m_lsSceneId + "/localstorage.json";
+    return base + "/" + m_lsSceneId + "/" + name(wallpaper::platform::kLocalStorageSceneFile);
 }
 
 void SceneObject::ensureLocalStorageLoaded() {
@@ -3281,15 +3280,7 @@ void SceneObject::setupEngineGlobals() {
     m_consecutiveColorInterrupts = 0;
     m_colorScriptsDisabled       = false;
 
-    // Expose SceneObject to JS as __sceneBridge so layer proxies can call its
-    // Q_INVOKABLE methods (videoXxx, ...).  Parent is `this`, lifetime is tied
-    // to the QJSEngine which we own; newQObject wraps without taking ownership
-    // (QJSEngine::ObjectOwnership::CppOwnership by default for child QObjects).
-    // Routed through the live globalObject() call (not the cached m_globalObj)
-    // to keep the __sceneBridge install path on the same code path as the
-    // re-registration in fireDestroyEvent — both are load-bearing for the GoL
-    // 3453251764 brush-persistence case that motivated the original workaround.
-    m_jsEngine->globalObject().setProperty("__sceneBridge", m_jsEngine->newQObject(this));
+    installSceneBridge();
 
     // Provide a minimal 'engine' global with runtime and timeOfDay
     m_runtimeTimer.start();
@@ -3664,6 +3655,51 @@ void SceneObject::setupEngineGlobals() {
                          "  builder.finish = function() { return builder; };\n"
                          "  return builder;\n"
                          "}\n");
+}
+
+void SceneObject::installSceneBridge() {
+    if (! m_jsEngine) return;
+    // Built once and reused.  The bridge is parented to this SceneObject, so it
+    // outlives the QJSEngine that cleanupTextScripts deletes on a wallpaper
+    // switch — a reload re-wraps the same object rather than rebuilding it, and
+    // Qt hands the wrapper CppOwnership because the bridge has a parent.
+    if (! m_scriptBridge) m_scriptBridge = new SceneScriptBridge(this);
+    // Re-wrapped on every engine bootstrap AND again before destroy handlers
+    // fire.  A wrapper handed out earlier can have its underlying metaobject
+    // torn down by teardown time; property access on it then surfaces as
+    // "Property 'lsSet' of object TypeError: Type error is not a function", and
+    // destroy handlers silently stop persisting state (Game of Life 3453251764
+    // brush persistence is the canonical casualty).  A fresh wrapper resolves
+    // against the live bridge.
+    QJSValue wrapper = m_jsEngine->newQObject(m_scriptBridge);
+
+    // First install on this engine defines __sceneBridge as an accessor over a
+    // closure variable no script can name.  The shims resolve `__sceneBridge` by
+    // global name at call time, so a plain writable global lets a hostile scene
+    // assign over it and intercept every first-party shim call; a
+    // non-configurable getter makes both the assignment and a redefinition fail.
+    // The setter it returns is kept C++-side only — publishing it as a global
+    // would just move the hijack one name across.  QJSEngine has no globalThis,
+    // hence `this` at top level.
+    if (! m_sceneBridgeSetter.isCallable()) {
+        m_sceneBridgeSetter = m_jsEngine->evaluate(
+            "(function(g){\n"
+            "   var b = null;\n"
+            "   Object.defineProperty(g, '__sceneBridge', {\n"
+            "     get: function() { return b; }, enumerable: true, configurable: false });\n"
+            "   return function(v) { b = v; };\n"
+            " })(this)");
+    }
+    if (m_sceneBridgeSetter.isCallable()) {
+        m_sceneBridgeSetter.call({ wrapper });
+    } else {
+        // Accessor install failed.  Fall back to a plain global rather than
+        // leaving destroy handlers with no bridge at all — losing localStorage
+        // persistence would be a worse outcome than a writable global.
+        LOG_INFO("__sceneBridge accessor install failed (%s) — falling back to a plain global",
+                 qPrintable(m_sceneBridgeSetter.toString()));
+        m_jsEngine->globalObject().setProperty("__sceneBridge", wrapper);
+    }
 }
 
 void SceneObject::installTimerBridge() {
@@ -5669,12 +5705,15 @@ void SceneObject::cleanupTextScripts() {
     m_vec4Fn                  = QJSValue();
     m_engineObj               = QJSValue();
     m_globalObj               = QJSValue();
-    m_inputObj                = QJSValue();
-    m_cwpObj                  = QJSValue();
-    m_cspObj                  = QJSValue();
-    m_consoleObj              = QJSValue();
-    m_cachedTimeOfDay         = -1.0;
-    m_lastTimeOfDayMs         = -1;
+    // Belongs to the engine deleted at the tail of this function; a stale one
+    // would be re-called on the next bootstrap.
+    m_sceneBridgeSetter = QJSValue();
+    m_inputObj          = QJSValue();
+    m_cwpObj            = QJSValue();
+    m_cspObj            = QJSValue();
+    m_consoleObj        = QJSValue();
+    m_cachedTimeOfDay   = -1.0;
+    m_lastTimeOfDayMs   = -1;
     // Drain the JS-side script array so a reload starts fresh.  The engine
     // itself stays alive; just its cached references need to clear.
     if (m_jsEngine) {
@@ -5750,13 +5789,18 @@ void SceneObject::bootstrapScriptEngineForTesting() {
     m_jsWatchdog.start();
     m_runtimeTimer.start();
 
-    // A test SceneObject is a top-level QQuickItem (no QObject parent).
-    // fireDestroyEvent (run from cleanupTextScripts at teardown) re-wraps
-    // `this` via newQObject, which hands JavaScriptOwnership to parentless
-    // QObjects — the engine would then delete `this` during its own teardown,
-    // re-entering ~SceneObject.  In production `this` has a parent so Qt picks
-    // CppOwnership; pin that here so the test path matches.
+    // A test SceneObject is a top-level QQuickItem (no QObject parent), and
+    // newQObject hands JavaScriptOwnership to parentless QObjects — the engine
+    // would then delete it during its own teardown, re-entering ~SceneObject.
+    // Nothing wraps `this` any more (scripts only ever see m_scriptBridge, which
+    // is parented and so gets CppOwnership), but pin it anyway: any future
+    // wrap of `this` from the test path would otherwise reintroduce that
+    // double-delete silently.
     QJSEngine::setObjectOwnership(this, QJSEngine::CppOwnership);
+
+    // Same __sceneBridge global production installs, so the headless dispatch
+    // tests assert against the environment a real scene script actually sees.
+    installSceneBridge();
 
     // Minimal 'engine' + 'console' globals (the eval loops touch engine.* per
     // tick and console._buf on the property tick).
@@ -5851,9 +5895,118 @@ void SceneObject::seedTextStyleScriptForTesting(int32_t id, const std::string& h
                  QString::fromStdString(fontName));
 }
 
+void SceneObject::reinstallSceneBridgeForTesting() { installSceneBridge(); }
+
 void SceneObject::evaluatePropertyScriptsForTesting() { evaluatePropertyScripts(); }
 void SceneObject::evaluateTextScriptsForTesting() { evaluateTextScripts(); }
 void SceneObject::evaluateColorScriptsForTesting() { evaluateColorScripts(); }
 
+// ── SceneScriptBridge forwarders ────────────────────────────────────────────
+// Defined here rather than in the header because each one needs the complete
+// SceneObject; the header only forward-declares it to stay include-cheap.
+// Every method is a straight pass-through — all validation (unknown layer
+// names, malformed values, null m_scene) already lives on the SceneObject side,
+// so duplicating it here would just create two places to keep in sync.
+
+namespace scenebackend
+{
+
+SceneScriptBridge::SceneScriptBridge(SceneObject* owner): QObject(owner), m_owner(owner) {}
+
+void SceneScriptBridge::materialSetValue(const QString& layerName, const QString& name,
+                                         const QJSValue& value) {
+    if (m_owner) m_owner->materialSetValue(layerName, name, value);
+}
+
+void SceneScriptBridge::effectMaterialSetValue(const QString& layerName, int effectIdx,
+                                               const QString& name, const QJSValue& value) {
+    if (m_owner) m_owner->effectMaterialSetValue(layerName, effectIdx, name, value);
+}
+
+void SceneScriptBridge::setLayerSpriteFrame(const QString& layerName, bool wantsManual,
+                                            int frameIdx) {
+    if (m_owner) m_owner->setLayerSpriteFrame(layerName, wantsManual, frameIdx);
+}
+
+QJSValue SceneScriptBridge::getLayerSpriteInfo(const QString& layerName) const {
+    return m_owner ? m_owner->getLayerSpriteInfo(layerName) : QJSValue();
+}
+
+void SceneScriptBridge::setTextStyle(const QString& layerName, const QString& halign,
+                                     const QString& valign, const QString& fontName) {
+    if (m_owner) m_owner->setTextStyle(layerName, halign, valign, fontName);
+}
+
+QJSValue SceneScriptBridge::getLayerWorldTransform(const QString& layerName) const {
+    return m_owner ? m_owner->getLayerWorldTransform(layerName) : QJSValue();
+}
+
+int SceneScriptBridge::getBoneIndex(const QString& layerName, const QString& boneName) const {
+    return m_owner ? m_owner->getBoneIndex(layerName, boneName) : 0;
+}
+
+void SceneScriptBridge::setLayerParent(int childId, int parentId) {
+    if (m_owner) m_owner->setLayerParent(childId, parentId);
+}
+
+void SceneScriptBridge::sortLayer(int childId, int targetIndex) {
+    if (m_owner) m_owner->sortLayer(childId, targetIndex);
+}
+
+void SceneScriptBridge::openUserShortcut(const QString& name) {
+    if (m_owner) m_owner->openUserShortcut(name);
+}
+
+QJSValue SceneScriptBridge::lsGet(int loc, const QString& key) {
+    return m_owner ? m_owner->lsGet(loc, key) : QJSValue();
+}
+
+void SceneScriptBridge::lsSet(int loc, const QString& key, const QJSValue& value) {
+    if (m_owner) m_owner->lsSet(loc, key, value);
+}
+
+void SceneScriptBridge::lsRemove(int loc, const QString& key) {
+    if (m_owner) m_owner->lsRemove(loc, key);
+}
+
+void SceneScriptBridge::lsClear(int loc) {
+    if (m_owner) m_owner->lsClear(loc);
+}
+
+double SceneScriptBridge::videoGetCurrentTime(const QString& layerName) const {
+    return m_owner ? m_owner->videoGetCurrentTime(layerName) : 0.0;
+}
+
+double SceneScriptBridge::videoGetDuration(const QString& layerName) const {
+    return m_owner ? m_owner->videoGetDuration(layerName) : 0.0;
+}
+
+bool SceneScriptBridge::videoIsPlaying(const QString& layerName) const {
+    return m_owner ? m_owner->videoIsPlaying(layerName) : false;
+}
+
+void SceneScriptBridge::videoPlay(const QString& layerName) {
+    if (m_owner) m_owner->videoPlay(layerName);
+}
+
+void SceneScriptBridge::videoPause(const QString& layerName) {
+    if (m_owner) m_owner->videoPause(layerName);
+}
+
+void SceneScriptBridge::videoStop(const QString& layerName) {
+    if (m_owner) m_owner->videoStop(layerName);
+}
+
+void SceneScriptBridge::videoSetCurrentTime(const QString& layerName, double t) {
+    if (m_owner) m_owner->videoSetCurrentTime(layerName, t);
+}
+
+void SceneScriptBridge::videoSetRate(const QString& layerName, double rate) {
+    if (m_owner) m_owner->videoSetRate(layerName, rate);
+}
+
+} // namespace scenebackend
+
 #include "SceneBackend.moc"
 #include "moc_SceneTimerBridge.cpp"
+#include "moc_SceneScriptBridge.cpp"

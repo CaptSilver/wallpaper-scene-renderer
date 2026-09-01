@@ -1,6 +1,7 @@
 #include "PipelineCacheIO.hpp"
 
 #include "Utils/Logging.h"
+#include "Utils/Platform.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -20,7 +21,7 @@ std::filesystem::path PathFromEnv() {
         if (! home || ! *home) return {};
         base = std::filesystem::path(home) / ".cache";
     }
-    return base / "wallpaper-scene-renderer" / "pipeline.cache";
+    return base / platform::kPipelineCacheDir / "pipeline.cache";
 }
 
 bool HeaderMatches(const std::vector<char>& blob, const VkPhysicalDeviceProperties& props) {

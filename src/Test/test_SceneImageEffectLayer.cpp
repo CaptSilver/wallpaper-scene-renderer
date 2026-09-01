@@ -83,7 +83,7 @@ TEST_SUITE("SceneImageEffectLayer::RemoveFailedEffects")
         layer.AddEffect(makeEffectWithNode("shake",
                                             makeNodeWithCodes({ goodCode() })));
         // Lens flare = workshop shader that fails HLSL→GLSL.  All its nodes
-        // end up with empty codes after FlushPendingCompilations.
+        // come back from CompileToSpv with empty codes.
         layer.AddEffect(makeEffectWithNode("Lens Flare Sun",
                                             makeNodeWithCodes({})));
         CHECK(layer.EffectCount() == 3);

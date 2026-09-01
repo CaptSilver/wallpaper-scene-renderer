@@ -522,7 +522,7 @@ function _makeNullMaterialProxy() {
 //
 // JS-authoritative: each proxy carries a cached `_parent` reference and
 // `_children` array.  Reads are synchronous against the cache; writes
-// validate cycles JS-side and dispatch via __sceneBridge.setParent into
+// validate cycles JS-side and dispatch via __sceneBridge.setLayerParent into
 // Scene::QueueParentChange (drained at the start of RenderHandler::DRAW).
 //
 // Sound-layer variant stubs every method as a graceful no-op since

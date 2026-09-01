@@ -2,6 +2,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <cstddef>
 #include <cstdint>
 #include <algorithm>
 #include <functional>
@@ -130,17 +131,17 @@ public:
         }
         if (result != MA_SUCCESS || ! IsInited()) {
             LOG_ERROR("can't init sound device");
-            UnInit();
+            AbortInit();
             return false;
         }
         if (m_device.playback.format != ma_format_f32) {
             LOG_ERROR("wrong playback format");
-            UnInit();
+            AbortInit();
             return false;
         }
         if (ma_device_start(&m_device) != MA_SUCCESS) {
             LOG_ERROR("can't start sound device");
-            UnInit();
+            AbortInit();
             return false;
         }
         {
@@ -160,6 +161,12 @@ public:
         UnmountAll();
         ma_device_uninit(&m_device); // always do it
     }
+    // Bail out of a half-open device.  Deliberately NOT UnInit: the channels
+    // were mounted before this attempt and their owners hold non-owning
+    // aliases into them, so a device that refused to open must not destroy
+    // them.  The next successful Init() re-PassDeviceDesc's whatever is still
+    // mounted.
+    void AbortInit() { ma_device_uninit(&m_device); }
     // bool IsStarted() const { return ma_device_is_started(&m_device); }
     // bool IsStopped() const { return ma_device_get_state(&m_device) == MA_STATE_STOPPED; }
     void Start() {
@@ -211,6 +218,13 @@ public:
             std::unique_lock<std::mutex> lock { m_mutex };
             m_channels.clear();
         }
+    }
+    // How many channels are still mounted.  The channel list is otherwise
+    // write-only from outside, so this is the only way a caller (or a test)
+    // can tell whether a stream it handed over is still alive.
+    std::size_t ChannelCount() const {
+        std::unique_lock<std::mutex> lock { m_mutex };
+        return m_channels.size();
     }
     DeviceDesc GetDesc() const {
         return DeviceDesc { .phyChannels = m_device.playback.channels,
@@ -306,9 +320,10 @@ private:
         bool                     end { false };
         std::shared_ptr<Channel> chn;
     };
-    ma_device         m_device {}; // must init c struct
-    std::mutex        m_mutex;     // for operating channel vector
-    std::atomic<bool> m_running { false };
+    ma_device m_device {}; // must init c struct
+    // mutable: ChannelCount() is a const observer of the channel vector.
+    mutable std::mutex m_mutex; // for operating channel vector
+    std::atomic<bool>  m_running { false };
 
     // Atomic so SetVolume/SetMuted (called from the main looper) don't tear
     // against the audio-thread data callback's reads inside ProcessFrame.

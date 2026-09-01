@@ -30,6 +30,7 @@
 #include "Scene/SceneCamera.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneLight.hpp"
+#include "Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
 #include "SpecTexs.hpp"
 #include "WPUserProperties.hpp"
@@ -38,9 +39,11 @@
 
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
+#include "Fs/PhysicalFs.h"
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <initializer_list>
 #include <memory>
@@ -50,6 +53,8 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <unistd.h> // getpid
 
 using namespace wallpaper;
 
@@ -789,6 +794,70 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // observable: enabled is now false, per_light is empty.
         CHECK(scene->volumetricsConfig.enabled == false);
         CHECK(scene->volumetricsConfig.per_light.empty());
+    }
+
+    TEST_CASE("volumetric materials get their SPV on the FIRST load") {
+        // The volumetric chain is built and its materials compiled AFTER the
+        // rest of the scene, so it is the one shader consumer that an
+        // end-of-parse step running too early can skip entirely.  Drive a real
+        // parse with a mounted SPV cache (the production configuration) and
+        // require every volumetric node to come out with usable SPV.
+        ensureGlslangInit();
+
+        const std::string cache_dir = "/tmp/wek_volumetric_spv_" + std::to_string(::getpid());
+        std::filesystem::remove_all(cache_dir);
+        std::filesystem::create_directories(cache_dir);
+
+        const char* kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 10, "name": "fog", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "lpoint", "color": "1 1 1", "radius": 100.0, "intensity": 1.0,
+      "castvolumetrics": true,
+      "density": 5.0,
+      "visible": true }
+  ]
+}
+)JSON";
+
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/volumetricsback.vert", kTrivialVert },
+            { "/shaders/volumetricsback.frag", kTrivialFrag },
+            { "/shaders/volumetricsfront.vert", kTrivialVert },
+            { "/shaders/volumetricsfront.frag", kTrivialFrag },
+            { "/shaders/blur_k3.vert", kTrivialVert },
+            { "/shaders/blur_k3.frag", kTrivialFrag },
+            { "/shaders/passthrough.vert", kTrivialVert },
+            { "/shaders/passthrough.frag", kTrivialFrag },
+        });
+        REQUIRE(vfs->Mount("/cache", fs::CreatePhysicalFs(cache_dir, true), "cache"));
+        REQUIRE(vfs->IsMounted("cache"));
+
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_volumetric_spv", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->volumetricsConfig.enabled);
+        REQUIRE(scene->volumetricsConfig.per_light.size() == 1);
+
+        auto spvOf = [](const std::shared_ptr<SceneNode>& n) -> size_t {
+            if (! n || ! n->Mesh() || ! n->Mesh()->Material()) return 0;
+            const auto& sh = n->Mesh()->Material()->customShader.shader;
+            return sh ? sh->codes.size() : 0;
+        };
+
+        const auto& pl = scene->volumetricsConfig.per_light.front();
+        CHECK(spvOf(pl.back_node) > 0);
+        CHECK(spvOf(pl.front_node) > 0);
+        CHECK(spvOf(pl.fullscreen_node) > 0);
+        CHECK(spvOf(scene->volumetricsConfig.blur_h_node) > 0);
+        CHECK(spvOf(scene->volumetricsConfig.blur_v_node) > 0);
+        CHECK(spvOf(scene->volumetricsConfig.combine_node) > 0);
+
+        std::filesystem::remove_all(cache_dir);
     }
 
     TEST_CASE("Scene::volumetricsConfig.enabled stays false when no light casts") {

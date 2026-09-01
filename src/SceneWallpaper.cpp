@@ -28,6 +28,7 @@
 #include "WPPkgFs.hpp"
 
 #include "WPSoundParser.hpp"
+#include "SoundStreamTable.hpp"
 #include "Audio/SoundManager.h"
 #include "Audio/AudioAnalyzer.h"
 #include "Audio/AudioBus.h"
@@ -159,8 +160,7 @@ public:
     }
 
     std::vector<SoundVolumeScriptInfo> getSoundVolumeScripts() const {
-        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
-        return m_sound_volume_scripts;
+        return m_sound_volumes.infos();
     }
 
     std::string getUserPropertiesJson() const {
@@ -169,41 +169,18 @@ public:
     }
 
     void updateSoundVolume(int32_t index, float volume) {
-        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_volume_streams.size()) {
-            WPSoundParser::SetStreamVolume(m_sound_volume_streams[index], volume);
-        }
+        m_sound_volumes.setVolume(index, volume);
     }
 
     std::vector<SoundLayerControlInfo> getSoundLayerControls() const {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        return m_sound_layer_controls;
+        return m_sound_layers.infos();
     }
-    void soundLayerPlay(int32_t index) {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
-            WPSoundParser::StreamPlay(m_sound_layer_streams[index]);
-    }
-    void soundLayerStop(int32_t index) {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
-            WPSoundParser::StreamStop(m_sound_layer_streams[index]);
-    }
-    void soundLayerPause(int32_t index) {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
-            WPSoundParser::StreamPause(m_sound_layer_streams[index]);
-    }
-    bool soundLayerIsPlaying(int32_t index) const {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
-            return WPSoundParser::StreamIsPlaying(m_sound_layer_streams[index]);
-        return false;
-    }
+    void soundLayerPlay(int32_t index) { m_sound_layers.play(index); }
+    void soundLayerStop(int32_t index) { m_sound_layers.stop(index); }
+    void soundLayerPause(int32_t index) { m_sound_layers.pause(index); }
+    bool soundLayerIsPlaying(int32_t index) const { return m_sound_layers.isPlaying(index); }
     void soundLayerSetVolume(int32_t index, float volume) {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        if (index >= 0 && index < (int32_t)m_sound_layer_streams.size())
-            WPSoundParser::SetStreamVolume(m_sound_layer_streams[index], volume);
+        m_sound_layers.setVolume(index, volume);
     }
 
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const {
@@ -335,12 +312,8 @@ private:
     std::vector<ShaderValueScriptInfo>       m_shader_value_scripts;
     mutable std::mutex                       m_property_scripts_mutex;
     std::vector<PropertyScriptInfo>          m_property_scripts;
-    mutable std::mutex                       m_sound_volume_scripts_mutex;
-    std::vector<SoundVolumeScriptInfo>       m_sound_volume_scripts;
-    std::vector<void*>                       m_sound_volume_streams; // parallel: WPSoundStream*
-    mutable std::mutex                       m_sound_layers_mutex;
-    std::vector<SoundLayerControlInfo>       m_sound_layer_controls;
-    std::vector<void*>                       m_sound_layer_streams; // parallel: WPSoundStream*
+    SoundStreamTable<SoundVolumeScriptInfo>  m_sound_volumes;
+    SoundStreamTable<SoundLayerControlInfo>  m_sound_layers;
     mutable std::mutex                       m_name_map_mutex;
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
     mutable std::mutex                       m_layer_init_mutex;
@@ -2962,11 +2935,16 @@ void MainHandler::loadScene() {
 
     LOG_INFO("loading scene: %s", m_source.c_str());
 
+    // Drop the published stream aliases before anything can free the streams
+    // they name.  Unconditional and ahead of the init check because both
+    // branches can free: UnMountAll() obviously, and Init() by way of the
+    // device teardown on its failure path.  The QML property tick keeps
+    // calling soundLayer*/updateSoundVolume by index for the whole parse below
+    // — and forever, on the error returns, which never republish.
+    UnmountSoundStreams(*m_sound_manager, m_sound_layers, m_sound_volumes);
     if (! m_sound_manager->IsInited()) {
         m_sound_manager->Init();
         m_sound_manager->Play();
-    } else {
-        m_sound_manager->UnMountAll();
     }
 
     // Acquire shared analyzer + capture from the process-singleton AudioBus.
@@ -2995,7 +2973,8 @@ void MainHandler::loadScene() {
     if (! vfs.IsMounted("assets")) {
         bool sus = vfs.Mount("/assets", fs::CreatePhysicalFs(m_assets), "assets");
         if (! sus) {
-            LOG_ERROR("Mount assets dir failed");
+            LOG_ERROR("Mount assets dir failed; sound stays off until the next successful "
+                      "load");
             return;
         }
     }
@@ -3065,7 +3044,9 @@ void MainHandler::loadScene() {
     if (! pkg_mounted) {
         LOG_INFO("falling back to physical dir: %s", pkgDir.c_str());
         if (! vfs.Mount("/assets", fs::CreatePhysicalFs(pkgDir))) {
-            LOG_ERROR("can't load pkg directory: %s", pkgDir.c_str());
+            LOG_ERROR("can't load pkg directory: %s; sound stays off until the next "
+                      "successful load",
+                      pkgDir.c_str());
             return;
         }
     }
@@ -3115,7 +3096,9 @@ void MainHandler::loadScene() {
         }
 
         if (scene_src.empty()) {
-            LOG_ERROR("Not supported scene type (no scene JSON found under %s)", pkgDir.c_str());
+            LOG_ERROR("Not supported scene type (no scene JSON found under %s); sound stays "
+                      "off until the next successful load",
+                      pkgDir.c_str());
             for (const auto& c : candidates) {
                 LOG_ERROR("  tried /assets/%s", c.c_str());
             }
@@ -3142,9 +3125,12 @@ void MainHandler::loadScene() {
 
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, userProps);
         if (! scene) {
-            LOG_ERROR("scene parse failed for id=%s — malformed scene.json, aborting load",
+            LOG_ERROR("scene parse failed for id=%s — malformed scene.json, aborting load; "
+                      "sound stays off until the next successful load",
                       scene_id.c_str());
-            return; // MainHandler::loadScene is void; nothing published yet, safe to bail
+            // loadScene is void, and the sound tables were invalidated up front,
+            // so bailing here leaves no alias pointing at a freed stream.
+            return;
         }
         scene->vfs.swap(pVfs);
 
@@ -3294,9 +3280,8 @@ void MainHandler::loadScene() {
 
     // Extract sound volume scripts for QML-side evaluation
     {
-        std::lock_guard<std::mutex> lock(m_sound_volume_scripts_mutex);
-        m_sound_volume_scripts.clear();
-        m_sound_volume_streams.clear();
+        std::vector<SoundVolumeScriptInfo> infos;
+        std::vector<void*>                 streams;
         for (int32_t i = 0; i < (int32_t)scene->soundVolumeScripts.size(); i++) {
             const auto&           svs = scene->soundVolumeScripts[i];
             SoundVolumeScriptInfo info;
@@ -3314,31 +3299,32 @@ void MainHandler::loadScene() {
                 for (const auto& kf : svs.animation.keyframes)
                     info.animation.keyframes.push_back({ kf.frame, kf.value });
             }
-            m_sound_volume_scripts.push_back(std::move(info));
-            m_sound_volume_streams.push_back(svs.streamPtr);
+            infos.push_back(std::move(info));
+            streams.push_back(svs.streamPtr);
         }
-        if (! m_sound_volume_scripts.empty()) {
-            LOG_INFO("loadScene: %zu sound volume scripts", m_sound_volume_scripts.size());
+        // Log before publishing — publish() moves both vectors out.
+        if (! infos.empty()) {
+            LOG_INFO("loadScene: %zu sound volume scripts", infos.size());
         }
+        m_sound_volumes.publish(std::move(infos), std::move(streams));
     }
 
     // Extract sound layers for SceneScript play/stop/pause API
     {
-        std::lock_guard<std::mutex> lock(m_sound_layers_mutex);
-        m_sound_layer_controls.clear();
-        m_sound_layer_streams.clear();
+        std::vector<SoundLayerControlInfo> infos;
+        std::vector<void*>                 streams;
         for (const auto& sl : scene->soundLayers) {
             SoundLayerControlInfo info;
             info.name          = sl.name;
             info.initialVolume = sl.initialVolume;
             info.startsilent   = sl.startsilent;
-            m_sound_layer_controls.push_back(std::move(info));
-            m_sound_layer_streams.push_back(sl.streamPtr);
+            infos.push_back(std::move(info));
+            streams.push_back(sl.streamPtr);
         }
-        if (! m_sound_layer_controls.empty()) {
-            LOG_INFO("loadScene: %zu sound layers for SceneScript API",
-                     m_sound_layer_controls.size());
+        if (! infos.empty()) {
+            LOG_INFO("loadScene: %zu sound layers for SceneScript API", infos.size());
         }
+        m_sound_layers.publish(std::move(infos), std::move(streams));
     }
 
     // Store layer name → node ID mapping for thisScene.getLayer()

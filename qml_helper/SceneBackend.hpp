@@ -20,6 +20,7 @@
 #include "JsWatchdog.h"
 #include "ScriptDiagState.h"
 #include "SceneWallpaper.hpp"
+#include "Utils/Platform.hpp"
 #include "IPropertyDispatchSink.hpp"
 
 #include <memory>
@@ -30,6 +31,7 @@ namespace scenebackend
 {
 
 class SceneTimerBridge;
+class SceneScriptBridge;
 
 class SceneObject : public QQuickItem {
     Q_OBJECT
@@ -76,7 +78,7 @@ class SceneObject : public QQuickItem {
     // instead of the renderer drawing them itself.
     Q_PROPERTY(qreal nativeAspectRatio READ nativeAspectRatio NOTIFY nativeAspectRatioChanged)
 public:
-    constexpr static std::string_view CACHE_DIR { "wescene-renderer" };
+    constexpr static std::string_view CACHE_DIR { wallpaper::platform::kRendererCacheDir };
     static std::string                GetDefaultCachePath();
 
     enum FillMode
@@ -386,6 +388,9 @@ public:
     void evaluatePropertyScriptsForTesting();
     void evaluateTextScriptsForTesting();
     void evaluateColorScriptsForTesting();
+    // Re-runs the __sceneBridge install the way fireDestroyEvent does before it
+    // calls destroy handlers.  Not Q_INVOKABLE — scripts never see SceneObject.
+    void reinstallSceneBridgeForTesting();
 
 private:
     // Build the minimal JS engine (Vec shims + property-dispatch loop) used by
@@ -395,6 +400,7 @@ private:
     void setupTextScripts();
     void setupEngineGlobals();
     void installTimerBridge();
+    void installSceneBridge();
     void buildLayerProxyStates();
     void buildSoundStates();
     void buildCursorTargets();
@@ -594,6 +600,16 @@ private:
     };
     QJSEngine*                               m_jsEngine { nullptr };
     SceneTimerBridge*                        m_timerBridge { nullptr };
+    // The narrow `__sceneBridge` facade handed to untrusted scene scripts.
+    // Parented to this SceneObject, so it survives the QJSEngine being deleted
+    // and recreated on a wallpaper switch — a reload re-wraps it, never rebuilds
+    // it.  See SceneScriptBridge.h for why scripts must not see `this`.
+    SceneScriptBridge*                       m_scriptBridge { nullptr };
+    // JS closure that rebinds the __sceneBridge accessor's backing variable.
+    // Deliberately kept off the global object — a script-reachable handle would
+    // reopen the hijack the accessor exists to close.  Reset in
+    // cleanupTextScripts along with the engine that owns it.
+    QJSValue                                 m_sceneBridgeSetter;
     // A3-T2 — off-GUI-thread watchdog that aborts a runaway author script via
     // QJSEngine::setInterrupted(true) when a JS .call() exceeds its budget.
     // Armed/disarmed around each dispatch site (property/text/color/lifecycle).

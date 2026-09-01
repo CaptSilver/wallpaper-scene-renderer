@@ -5507,8 +5507,11 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, 
 }
 
 void finalizeParse(ParseContext& context) {
-    // Wait for all deferred async shader compilations
-    WPShaderParser::FlushPendingCompilations(*context.vfs);
+    // Every shader this parse needed has already been compiled and published
+    // by CompileToSpv; drop the sha1 -> SPV memo it accumulated so the blobs
+    // don't sit in the process for the life of the wallpaper.  Must come after
+    // the LAST CompileToSpv of the parse — including the volumetric chain's.
+    WPShaderParser::ClearSpvMemo();
 
     // Filter dead effects whose shaders failed to compile (workshop shaders
     // that didn't survive HLSL→GLSL — e.g. workshop/2487531853 lens_flare_sun
@@ -5750,8 +5753,6 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
 
     buildBloomAndReflection(context, sc, effective_hdr);
 
-    finalizeParse(context);
-
     // Volumetric scene-level enable flag.  True iff any light's
     // isVolumetricEmitterCandidate() predicate is true at scene-build time
     // (castsVolumetrics() AND kind ∈ {Point, LPoint} — the chain doesn't
@@ -5790,6 +5791,11 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             attachVolumetricMaterials(context);
         }
     }
+
+    // finalizeParse LAST: it tears glslang down (FinalGlslang), so every
+    // CompileToSpv of this parse — the volumetric chain's included — has to
+    // have run by the time it does.
+    finalizeParse(context);
 
     return context.scene;
 }

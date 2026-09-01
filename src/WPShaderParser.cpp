@@ -13,13 +13,13 @@
 
 #include "Vulkan/ShaderComp.hpp"
 
+#include <algorithm>
 #include <regex>
 #include <stack>
 #include <charconv>
 #include <string>
 #include <fstream>
 #include <sstream>
-#include <future>
 #include <mutex>
 #include <atomic>
 #include <chrono>
@@ -560,25 +560,47 @@ inline std::string GetCachePath(std::string_view scene_id, std::string_view file
            std::string(filename) + "." SHADER_SUFFIX;
 }
 
+// Read one SPV cache entry.  Everything here is validated: the cache file may
+// be truncated (disk full, a crash mid-write, a half-synced ostree deploy) and
+// what it feeds is vkCreateShaderModule.  A malformed entry must lose the cache
+// hit, not the process.
 inline bool LoadShaderFromFile(std::vector<ShaderCode>& codes, fs::IBinaryStream& file) {
     codes.clear();
-    i32 ver = ReadSPVVesion(file);
 
-    usize count = file.ReadUint32();
-    assert(count <= 16 && count >= 0);
+    const i32 ver = ReadSPVVesion(file);
+    if (ver != 1) {
+        LOG_ERROR("spv cache: unsupported format version %d", ver);
+        return false;
+    }
+
+    const usize count = file.ReadUint32();
     if (count > 16) return false;
 
-    codes.resize(count);
+    // Build into a local and publish only on success, so a rejected entry
+    // leaves `codes` empty rather than half-filled.
+    std::vector<ShaderCode> out(count);
     for (usize i = 0; i < count; i++) {
-        auto& c = codes[i];
+        auto& c = out[i];
 
-        u32 size = file.ReadUint32();
-        assert(size % 4 == 0);
+        const u32 size = file.ReadUint32();
         if (size % 4 != 0) return false;
+        // A declared size larger than the bytes actually left in the file would
+        // turn into a multi-GB resize inside plasmashell before any read fails.
+        if (! CountFitsStream(file, size)) {
+            LOG_ERROR("spv cache: entry %zu declares %u bytes past end of file", i, size);
+            return false;
+        }
 
         c.resize(size / 4);
-        file.Read((char*)c.data(), size);
+        if (file.Read((char*)c.data(), size) != size) {
+            // A short read leaves zero-padded, malformed SPIR-V that would go
+            // straight to the driver.
+            LOG_ERROR("spv cache: short read on entry %zu (%u bytes)", i, size);
+            return false;
+        }
     }
+
+    codes = std::move(out);
     return true;
 }
 
@@ -868,16 +890,26 @@ static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<Sha
     return true;
 }
 
-// Deferred parallel compilation state
-struct PendingShaderCompilation {
-    std::string              sha1;
-    std::string              cache_path;
-    std::vector<ShaderCode>* output;
+// Compiled-SPV memo, keyed by the sha1 of the post-preprocess unit sources.
+//
+// This holds VALUES, never a handle into caller memory.  It used to hold
+// `std::vector<ShaderCode>*` pointers into the `SceneShader`s a scene load was
+// building, written through by an end-of-parse flush — so a load that died
+// between the two (a throw out of WPSceneParser::Parse, or an effect chain
+// dropped after some of its passes had already compiled) left dangling
+// pointers that the NEXT load's flush wrote through.  Values cannot express
+// that bug.
+//
+// The dedupe is what the memo is for: a scene references the same shader from
+// many materials and glslang is the expensive part of a cold load.
+// `s_compileMtx` covers the whole find-compile-insert so one shader compiles
+// once even when two screens load the same wallpaper at the same time.
+static std::mutex                                               s_compileMtx;
+static std::unordered_map<std::string, std::vector<ShaderCode>> s_spvMemo;
+static std::size_t                                              s_memoCompiles { 0 };
+static std::chrono::steady_clock::duration                      s_memoCompileTime {
+    std::chrono::steady_clock::duration::zero()
 };
-static std::mutex s_compileMtx;
-static std::unordered_map<std::string, std::shared_future<std::vector<ShaderCode>>>
-                                             s_asyncCompilations;
-static std::vector<PendingShaderCompilation> s_pendingOutputs;
 
 } // namespace
 
@@ -1004,11 +1036,28 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     for (auto& unit : units) {
         if (unit.stage != ShaderType::GEOMETRY) continue;
 
-        int  maxVerts = 4;
-        auto it       = shader_info->combos.find("TRAILSUBDIVISION");
+        // TRAILSUBDIVISION comes from workshop content (a scene's material
+        // `combos`, or a `// [COMBO]` line in a shipped shader), so it is an
+        // attacker-controlled int32.  std::stoi would throw on a non-numeric
+        // value and `4 + subdiv * 2` overflows for anything past INT_MAX/2.
+        // Clamp to what a geometry shader can actually emit: Vulkan guarantees
+        // maxGeometryOutputVertices >= 256, and WE ropes subdivide in the low
+        // tens.
+        constexpr int kMaxSubdiv = 126; // 4 + 126*2 == 256
+        int           maxVerts   = 4;
+        auto          it         = shader_info->combos.find("TRAILSUBDIVISION");
         if (it != shader_info->combos.end()) {
-            int subdiv = std::stoi(it->second);
-            maxVerts   = 4 + subdiv * 2;
+            int  subdiv = 0;
+            auto first  = it->second.data();
+            auto last   = first + it->second.size();
+            if (std::from_chars(first, last, subdiv).ec != std::errc()) {
+                LOG_ERROR("TRAILSUBDIVISION '%s' is not a number - using %d",
+                          it->second.c_str(),
+                          maxVerts);
+            } else {
+                subdiv   = std::clamp(subdiv, 0, kMaxSubdiv);
+                maxVerts = 4 + subdiv * 2;
+            }
         }
 
         std::string layouts = "layout(points) in;\n"
@@ -1042,31 +1091,46 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
             return true;
         }
 
-        // Cache miss — defer compilation until FlushPendingCompilations.
+        // Cache miss — compile now, memoise the RESULT, publish it into `codes`
+        // before returning.
         //
-        // Originally compilation ran in a std::async(std::launch::async) thread per
-        // SHA1.  glslang's keyword scanner caches `const char*` keys in a process-
-        // global hash table that is not safe under concurrent reads — concurrent
-        // tokenizeIdentifier triggers UAF on hashtable buckets even when individual
-        // calls are externally serialised, because glslang's per-stage symbol-
-        // table init still races against other threads' thread-local pools.
-        // We instead defer the work as a no-arg packaged_task and run it
-        // synchronously inside FlushPendingCompilations on the calling thread.
-        // Cache dedupe is preserved (one task per SHA1).
-        {
-            std::lock_guard<std::mutex> lock(s_compileMtx);
-            if (s_asyncCompilations.find(sha1) == s_asyncCompilations.end()) {
-                auto units_copy = std::vector<WPShaderUnit>(units.begin(), units.end());
-                auto future = std::async(std::launch::deferred,
-                                         [u = std::move(units_copy)]() mutable {
-                                             std::vector<ShaderCode> result;
-                                             CompileShaderUnits(u, result);
-                                             return result;
-                                         });
-                s_asyncCompilations[sha1] = future.share();
+        // Compilation is serialised, not parallel: glslang's keyword scanner
+        // caches `const char*` keys in a process-global hash table that is not
+        // safe under concurrent reads, so CompileShaderUnits takes
+        // g_glslangSerialiseMtx anyway.  This used to be a
+        // std::async(std::launch::deferred) task run from an end-of-parse
+        // flush, which bought dedupe and batched disk writes but ran the
+        // compile on the flushing thread all the same — while parking a raw
+        // pointer to the caller's buffer for the whole parse.
+        std::lock_guard<std::mutex> lock(s_compileMtx);
+
+        auto memo = s_spvMemo.find(sha1);
+        if (memo == s_spvMemo.end()) {
+            const auto              t0        = std::chrono::steady_clock::now();
+            auto                    units_vec = std::vector<WPShaderUnit>(units.begin(),
+                                                                          units.end());
+            std::vector<ShaderCode> result;
+            if (! CompileShaderUnits(units_vec, result)) {
+                result.clear(); // never publish or cache a partial module set
             }
-            s_pendingOutputs.push_back({ sha1, cache_file_path, &codes });
+            if (result.empty()) {
+                // Memoise the empty result so a shader that will never compile
+                // is not retried once per material that references it.
+                LOG_ERROR("shader compilation failed for %s", sha1.c_str());
+            } else if (auto cache_file = vfs.OpenW(cache_file_path); cache_file) {
+                ::SaveShaderToFile(result, *cache_file);
+            }
+            s_memoCompileTime += std::chrono::steady_clock::now() - t0;
+            s_memoCompiles++;
+            memo = s_spvMemo.emplace(std::move(sha1), std::move(result)).first;
         }
+
+        // A failed compile publishes an empty `codes` and still reports success,
+        // which is what the deferred path did: the material stays alive and
+        // SceneImageEffectLayer::RemoveFailedEffects reaps just the dead pass.
+        // Returning false here would fail the whole material and drop the entire
+        // effect chain instead of the one bad pass.
+        codes = memo->second;
         return true;
 
     } else {
@@ -1076,45 +1140,16 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     }
 }
 
-void WPShaderParser::FlushPendingCompilations(fs::VFS& vfs) {
-    WEK_PROFILE_SCOPE("WPShaderParser::FlushPendingCompilations");
+void WPShaderParser::ClearSpvMemo() {
     std::lock_guard<std::mutex> lock(s_compileMtx);
-
-    if (s_pendingOutputs.empty()) return;
-
-    auto t0 = std::chrono::steady_clock::now();
-
-    LOG_INFO("Flushing %zu deferred shader compilations (%zu unique)...",
-             s_pendingOutputs.size(),
-             s_asyncCompilations.size());
-
-    std::set<std::string> saved_to_disk;
-    for (auto& pending : s_pendingOutputs) {
-        auto it = s_asyncCompilations.find(pending.sha1);
-        if (it == s_asyncCompilations.end()) continue;
-
-        const auto& compiled = it->second.get(); // blocks until compilation finishes
-        if (compiled.empty()) {
-            LOG_ERROR("async shader compilation failed for %s", pending.sha1.c_str());
-            continue;
-        }
-        *pending.output = compiled;
-
-        // Write to disk cache (once per unique SHA1)
-        if (saved_to_disk.find(pending.sha1) == saved_to_disk.end()) {
-            if (auto cache_file = vfs.OpenW(pending.cache_path); cache_file) {
-                ::SaveShaderToFile(compiled, *cache_file);
-            }
-            saved_to_disk.insert(pending.sha1);
-        }
+    if (s_memoCompiles > 0) {
+        const auto ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(s_memoCompileTime).count();
+        LOG_INFO("Shader compilation: %zu unique shaders in %lld ms",
+                 s_memoCompiles,
+                 (long long)ms);
     }
-
-    auto t1 = std::chrono::steady_clock::now();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-    LOG_INFO("Shader compilation complete: %zu unique shaders in %lld ms",
-             saved_to_disk.size(),
-             (long long)ms);
-
-    s_pendingOutputs.clear();
-    s_asyncCompilations.clear();
+    s_spvMemo.clear();
+    s_memoCompiles    = 0;
+    s_memoCompileTime = std::chrono::steady_clock::duration::zero();
 }
