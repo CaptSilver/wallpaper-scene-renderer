@@ -51,15 +51,29 @@ bool Looper::loop() {
 status_t Looper::start() {
     Lock lock(m_mutex);
     if (m_running) return status_t::INVALID_OPERATION;
+    // Mark running HERE, not from inside the worker.  stop() and a second start()
+    // must observe a started looper the instant start() returns.  While the worker
+    // owned this flag, a stop() (or ~Looper) that landed before the worker was
+    // first scheduled read false, returned without swapping or joining m_thread,
+    // and left a joinable std::thread for the destructor — std::terminate, on
+    // plasmashell's GUI thread.  Setting it before the thread is constructed also
+    // keeps the worker's own loop condition from reading false and exiting at once.
+    m_running = true;
     // using weak_ptr to allow looper deleted at looper->loop() end
     std::weak_ptr<Looper> wlooper = shared_from_this();
     m_thread                      = std::thread(
         [](std::weak_ptr<Looper> wlooper) {
             Looper* looper = nullptr;
             {
-                looper = wlooper.lock().get();
+                // lock() returns null when the owner dropped its last reference
+                // before this thread was first scheduled — the ordinary shape when
+                // ~MainHandler destroys a looper right after start().  ~Looper is
+                // already running at that point, so there is nothing to loop over;
+                // dereferencing the null was a segfault on the worker thread.
+                auto self = wlooper.lock();
+                if (! self) return;
+                looper = self.get();
                 LOG_INFO("%s looper started", looper->name().data());
-                looper->m_running = true;
             }
             std::string name { looper->name() };
             // expired is safe here
@@ -83,8 +97,11 @@ status_t Looper::start() {
 }
 
 void Looper::stop() {
-    if (! m_running) return;
-
+    // No early-out on m_running: the flag says whether the loop should keep
+    // running, not whether a thread needs joining.  Returning here skipped the
+    // join and handed a joinable thread to ~Looper.  Both the never-started and
+    // the already-stopped case fall out naturally below — m_thread is empty, so
+    // the joinable() check is a no-op.
     std::thread thd;
     {
         Lock lock(m_mutex);

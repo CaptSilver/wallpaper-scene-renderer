@@ -131,6 +131,7 @@ add_executable(backend_scene_tests
     test_WPScenePostprocessing.cpp
     test_WPImageObject.cpp
     test_ParticleEmitter.cpp
+    test_Looper.cpp
     test_Determinism.cpp
     test_WPSoundObject.cpp
     test_WPScene.cpp
@@ -263,6 +264,9 @@ target_include_directories(backend_scene_tests SYSTEM PRIVATE
 
 target_link_libraries(backend_scene_tests PRIVATE
     wpUtils
+    # Looper owns the wallpaper worker thread; test_Looper.cpp pins its
+    # start/stop/destroy lifecycle, so the tests need the real library.
+    wpLooper
     wpFs
     wpAudio
     wpParticle

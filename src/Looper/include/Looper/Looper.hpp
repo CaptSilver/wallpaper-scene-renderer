@@ -51,7 +51,10 @@ private:
     };
     bool loop();
 
-    bool                    m_running { false };
+    // Atomic: written by start()/stop() on the owning thread and read by the
+    // worker's loop condition, so a plain bool was a data race as well as a
+    // visibility problem.
+    std::atomic<bool>       m_running { false };
     std::string             m_name { "unknown" };
     std::mutex              m_mutex;
     std::condition_variable m_condition;
