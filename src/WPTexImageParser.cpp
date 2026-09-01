@@ -405,9 +405,23 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 }
                 total_bytes += stbi_out;
 
-                int32_t w, h, n;
+                int32_t w = 0, h = 0, n = 0;
                 auto*   data = stbi_load_from_memory(
                     (const unsigned char*)result.data(), src_size, &w, &h, &n, 4);
+                // stbi_info above only parses the container header, so it accepts
+                // an image whose pixel stream is truncated or corrupt -- exactly
+                // what a partially-downloaded workshop item carries.  The load can
+                // still fail, and on failure stbi leaves w/h/n untouched, so
+                // discarding this NULL stored a mip with no data and a size read
+                // from uninitialised stack.  The Vulkan staging memcpy dereferenced
+                // it later, far from the cause.
+                if (data == nullptr) {
+                    LOG_ERROR("tex '%s' mip[%zu]: embedded image failed to decode: %s",
+                              name.c_str(),
+                              i_mipmap,
+                              stbi_failure_reason());
+                    return nullptr;
+                }
                 mipmap.data = ImageDataPtr((uint8_t*)data, [](uint8_t* data) {
                     stbi_image_free((unsigned char*)data);
                 });
@@ -510,10 +524,19 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
         for (int32_t i = 0; i < framecount; i++) {
             SpriteFrame sf;
             sf.imageId = file.ReadInt32();
-            if (sf.imageId < 0 || (usize)sf.imageId >= imageDatas.size()) {
-                LOG_ERROR("invalid sprite imageId %d (image_count=%zu), skipping sprite",
+            // The imageId range check alone is not enough: a slot whose declared
+            // mipmap_count was 0 never had its {width,height} pair written, so it
+            // is still an empty vector even though its index is in range.  Reading
+            // [0]/[1] off it is an out-of-bounds access on a valid-looking id.
+            if (sf.imageId < 0 || (usize)sf.imageId >= imageDatas.size() ||
+                imageDatas.at((usize)sf.imageId).size() < 2) {
+                LOG_ERROR("invalid sprite imageId %d (image_count=%zu, slot has %zu dims), "
+                          "skipping sprite",
                           sf.imageId,
-                          imageDatas.size());
+                          imageDatas.size(),
+                          (usize)sf.imageId < imageDatas.size()
+                              ? imageDatas.at((usize)sf.imageId).size()
+                              : (usize)0);
                 header.isSprite = false;
                 break;
             }

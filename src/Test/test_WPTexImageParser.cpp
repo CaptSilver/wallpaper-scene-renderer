@@ -1813,3 +1813,87 @@ TEST_SUITE("regression: minimised fuzz crashes") {
         }
     }
 }
+
+// ===========================================================================
+// Hostile / malformed .tex input
+//
+// A .tex is untrusted: it arrives inside a Steam Workshop package. Every case
+// here is a byte pattern a downloaded (or partially-downloaded) wallpaper can
+// carry, and the parser must reject it rather than hand the renderer a mip it
+// will dereference.
+// ===========================================================================
+
+TEST_SUITE("WPTexImageParser hostile input") {
+    // A PNG with a well-formed IHDR (1x1, 8-bit truecolour) and a deliberately
+    // corrupt IDAT payload. stbi_info_from_memory parses only IHDR, so it reports
+    // 1x1x3 and clears the parser's pre-validation gate; stbi_load_from_memory
+    // then fails inflating the garbage zlib stream and returns NULL. This is what
+    // a partially-downloaded or bit-rotted workshop texture looks like.
+    //
+    // A truncated TGA does NOT work here: stb pads missing scanline bytes with
+    // zeros and reports success, so it never exercises the NULL path.
+    // stb does not verify chunk CRCs, so the CRC fields are left zero.
+    static const uint8_t kCorruptIdatPng[] = {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R',  // len=13, IHDR
+        0x00, 0x00, 0x00, 0x01,                         // width  = 1
+        0x00, 0x00, 0x00, 0x01,                         // height = 1
+        0x08,                                           // bit depth = 8
+        0x02,                                           // colour type = 2 (RGB)
+        0x00, 0x00, 0x00,                               // compression/filter/interlace
+        0x00, 0x00, 0x00, 0x00,                         // CRC (unchecked)
+        0x00, 0x00, 0x00, 0x04, 'I',  'D',  'A',  'T',  // len=4, IDAT
+        0xFF, 0xFF, 0xFF, 0xFF,                         // invalid zlib stream
+        0x00, 0x00, 0x00, 0x00,                         // CRC (unchecked)
+        0x00, 0x00, 0x00, 0x00, 'I',  'E',  'N',  'D',  // len=0, IEND
+        0x00, 0x00, 0x00, 0x00,                         // CRC (unchecked)
+    };
+
+    TEST_CASE("stbi decode failure rejects the texture instead of storing a null mip") {
+        auto buf = makeTexHeader(1, 1, 3, /*tex_fmt=*/0, /*flags=*/0, 1, 1, 1, 1, /*count=*/1);
+        appendInt32(buf, (int32_t)ImageType::PNG); // -> stbi container path
+        appendInt32(buf, 1);                       // mipmap_count
+        std::vector<uint8_t> corrupt(kCorruptIdatPng, kCorruptIdatPng + sizeof(kCorruptIdatPng));
+        appendMipmapV2(buf, 1, 1, corrupt);
+
+        VFS vfs;
+        mountTex(vfs, "stbi_corrupt", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             img = parser.Parse("stbi_corrupt");
+
+        // Before the fix stbi_load_from_memory's NULL return was discarded: the
+        // mip got a null data pointer and a size computed from uninitialised
+        // w/h, which the Vulkan staging memcpy later dereferenced.
+        CHECK(img == nullptr);
+    }
+
+    TEST_CASE("sprite slot with zero mipmaps disables sprite instead of indexing an empty slot") {
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 2, 0, spriteFlag, 16, 16, 16, 16, /*count=*/1);
+
+        // Image 0 declares NO mipmaps, so the loop that fills imageDatas[0]
+        // never runs and slot 0 stays an empty vector.
+        appendInt32(buf, 0); // mipmap_count = 0
+
+        appendTexVersion(buf, 2); // texs version
+        appendInt32(buf, 1);      // framecount = 1
+
+        // imageId 0 is a valid OUTER index, so the existing range check passes;
+        // the read that follows indexes the empty inner vector.
+        appendInt32(buf, 0);     // imageId = 0
+        appendFloat(buf, 0.1f);  // frametime
+        appendFloat(buf, 0.0f);  // x
+        appendFloat(buf, 0.0f);  // y
+        appendFloat(buf, 16.0f); // xAxis[0]
+        appendFloat(buf, 0.0f);  // xAxis[1]
+        appendFloat(buf, 0.0f);  // yAxis[0]
+        appendFloat(buf, 16.0f); // yAxis[1]
+
+        VFS vfs;
+        mountTex(vfs, "sprite_zero_mip", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_zero_mip");
+
+        CHECK(header.isSprite == false);
+    }
+}
