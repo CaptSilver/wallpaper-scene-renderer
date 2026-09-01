@@ -26,6 +26,14 @@ inline std::tuple<u32, bool> FindLastParticle(std::span<const Particle> ps, u32 
 }
 
 inline u32 GetEmitNum(double& timer, float speed) {
+    // Rate comes from workshop JSON ("rate"), and instanceoverride.count can flip its
+    // sign on the way in, so it is untrusted.  A negative rate makes emitDur negative:
+    // the `emitDur > timer` early-out can never fire, and `timer -= emitDur` raises the
+    // timer every pass, so the loop below never terminates -- on the render thread, which
+    // then deadlocks the GUI thread at Looper::stop()'s join.  Reject anything that is not
+    // positive; the comparison also swallows NaN.  A rate of exactly 0 already returned 0
+    // here via emitDur == +inf, and still does.
+    if (! (speed > 0.0f)) return 0;
     double emitDur = 1.0f / speed;
     if (emitDur > timer) return 0;
     u32 num = timer / emitDur;

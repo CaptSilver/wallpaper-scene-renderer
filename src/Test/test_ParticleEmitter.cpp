@@ -396,3 +396,83 @@ TEST_SUITE("ParticleSphereEmitter") {
         CHECK(ps[0].position.z() == doctest::Approx(6.0f));
     }
 }
+
+// ============================================================================
+// Hostile emit rates
+//
+// A scene.pkg is untrusted input: "rate" comes straight out of workshop JSON,
+// and instanceoverride.count can flip its sign.  A rate <= 0 must degrade to
+// "emits nothing", never wedge the caller.  These run on a watchdog thread
+// because the pre-fix failure is an infinite loop inside GetEmitNum, which
+// would hang the whole test binary instead of failing this case.
+// ============================================================================
+
+#include <chrono>
+#include <future>
+#include <memory>
+#include <thread>
+#include <utility>
+
+namespace
+{
+constexpr int kEmitHangTimeoutMs = 5000;
+
+struct EmitCall {
+    std::vector<Particle>       ps;
+    std::vector<ParticleInitOp> inis;
+};
+
+// Runs one emit tick under a timeout. Returns {returned_in_time, spawned}.
+// State is heap-owned and captured by value so a detached (spinning) worker
+// cannot dangle into this frame's stack after a timeout.
+std::pair<bool, size_t> emitTick(ParticleEmittOp op, double timepass, u32 maxcount = 100u) {
+    auto                       state = std::make_shared<EmitCall>();
+    std::packaged_task<void()> task([op, state, timepass, maxcount]() mutable {
+        op(state->ps, state->inis, maxcount, timepass);
+    });
+    auto                       fut = task.get_future();
+    std::thread                worker(std::move(task));
+    bool                       done =
+        fut.wait_for(std::chrono::milliseconds(kEmitHangTimeoutMs)) == std::future_status::ready;
+    if (! done) {
+        worker.detach(); // a spinning thread cannot be killed safely
+        return { false, 0u };
+    }
+    fut.get();
+    worker.join();
+    return { true, state->ps.size() };
+}
+} // namespace
+
+TEST_SUITE("ParticleEmitter hostile emit rates") {
+    TEST_CASE("box emitter: negative rate emits nothing instead of spinning forever") {
+        auto args                = MakeBox();
+        args.emitSpeed           = -1.0f; // scene.json "rate": -1
+        auto [returned, spawned] = emitTick(ParticleBoxEmitterArgs::MakeEmittOp(args), 0.5);
+        REQUIRE(returned);
+        CHECK(spawned == 0u);
+    }
+
+    TEST_CASE("sphere emitter: negative rate emits nothing instead of spinning forever") {
+        auto args                = MakeSphere();
+        args.emitSpeed           = -1.0f;
+        auto [returned, spawned] = emitTick(ParticleSphereEmitterArgs::MakeEmittOp(args), 0.5);
+        REQUIRE(returned);
+        CHECK(spawned == 0u);
+    }
+
+    TEST_CASE("box emitter: negative zero rate emits nothing") {
+        auto args                = MakeBox();
+        args.emitSpeed           = -0.0f; // 1/-0.0 is -inf, which is not > timer
+        auto [returned, spawned] = emitTick(ParticleBoxEmitterArgs::MakeEmittOp(args), 0.5);
+        REQUIRE(returned);
+        CHECK(spawned == 0u);
+    }
+
+    TEST_CASE("box emitter: positive rate still emits (control)") {
+        auto args                = MakeBox(); // emitSpeed = 2.0 -> emitDur 0.5
+        auto [returned, spawned] = emitTick(ParticleBoxEmitterArgs::MakeEmittOp(args), 0.5);
+        REQUIRE(returned);
+        CHECK(spawned == 1u);
+    }
+}
