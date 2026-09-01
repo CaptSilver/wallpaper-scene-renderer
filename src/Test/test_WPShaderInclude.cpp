@@ -88,6 +88,77 @@ TEST_SUITE("PreShaderSrc #include handling") {
     }
 }
 
+TEST_SUITE("LoadGlslInclude cycles and malformed tails") {
+    TEST_CASE("self-including header terminates instead of overflowing the stack") {
+        auto memfs = std::make_unique<MemFs>();
+        // A header that includes itself. Real toolchains break this with the
+        // #ifndef guard; this scanner is purely textual and never evaluates
+        // preprocessor conditionals, so the guard cannot stop it.
+        memfs->add("/shaders/selfref.h",
+                   "#ifndef SELFREF_H\n#define SELFREF_H\n"
+                   "#include \"selfref.h\"\n"
+                   "float WEK_SELFREF_MARKER = 1.0;\n"
+                   "#endif\n");
+        auto         vfs = makeAssetsVfs(std::move(memfs));
+        WPShaderInfo info;
+        std::string  src = "#include \"selfref.h\"\nvoid main(){}\n";
+        std::string  out;
+        CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(*vfs, src, &info, {}));
+        // The include is expanded to a bounded depth, then refused; the shader
+        // body and the header's own content still survive.
+        CHECK(out.find("main") != std::string::npos);
+        CHECK(out.find("WEK_SELFREF_MARKER") != std::string::npos);
+    }
+
+    TEST_CASE("mutually including headers terminate") {
+        auto memfs = std::make_unique<MemFs>();
+        memfs->add("/shaders/a.h",
+                   "#ifndef A_H\n#define A_H\n#include \"b.h\"\n"
+                   "float WEK_A_MARKER = 1.0;\n#endif\n");
+        memfs->add("/shaders/b.h",
+                   "#ifndef B_H\n#define B_H\n#include \"a.h\"\n"
+                   "float WEK_B_MARKER = 1.0;\n#endif\n");
+        auto         vfs = makeAssetsVfs(std::move(memfs));
+        WPShaderInfo info;
+        std::string  src = "#include \"a.h\"\nvoid main(){}\n";
+        std::string  out;
+        CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(*vfs, src, &info, {}));
+        CHECK(out.find("WEK_A_MARKER") != std::string::npos);
+        CHECK(out.find("WEK_B_MARKER") != std::string::npos);
+    }
+
+    TEST_CASE("included file ending in #include with no trailing newline does not throw") {
+        auto memfs = std::make_unique<MemFs>();
+        // No trailing newline after the nested #include. PreShaderSrc normalises
+        // the TOP-level source, so only a nested file can reach the unclamped
+        // `pos = lineEnd` and the substr(npos) that follows it.
+        memfs->add("/shaders/tail.h", "#include \"leaf.h\"");
+        memfs->add("/shaders/leaf.h", "float WEK_LEAF_MARKER = 1.0;\n");
+        auto         vfs = makeAssetsVfs(std::move(memfs));
+        WPShaderInfo info;
+        std::string  src = "#include \"tail.h\"\nvoid main(){}\n";
+        std::string  out;
+        CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(*vfs, src, &info, {}));
+        CHECK(out.find("WEK_LEAF_MARKER") != std::string::npos);
+        CHECK(out.find("main") != std::string::npos);
+    }
+
+    TEST_CASE("nested includes still expand fully (positive control)") {
+        auto memfs = std::make_unique<MemFs>();
+        memfs->add("/shaders/lvl1.h", "#include \"lvl2.h\"\nfloat WEK_L1 = 1.0;\n");
+        memfs->add("/shaders/lvl2.h", "#include \"lvl3.h\"\nfloat WEK_L2 = 1.0;\n");
+        memfs->add("/shaders/lvl3.h", "float WEK_L3 = 1.0;\n");
+        auto         vfs = makeAssetsVfs(std::move(memfs));
+        WPShaderInfo info;
+        std::string  src = "#include \"lvl1.h\"\nvoid main(){}\n";
+        std::string  out;
+        CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(*vfs, src, &info, {}));
+        CHECK(out.find("WEK_L1") != std::string::npos);
+        CHECK(out.find("WEK_L2") != std::string::npos);
+        CHECK(out.find("WEK_L3") != std::string::npos);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fuzz crash regression replay.
 //

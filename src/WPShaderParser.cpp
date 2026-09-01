@@ -56,7 +56,17 @@ static constexpr const char* pre_shader_code_vert = ::wallpaper::kPreShaderCodeV
 static constexpr const char* pre_shader_code_frag = ::wallpaper::kPreShaderCodeFrag;
 static constexpr const char* pre_shader_code_geom = ::wallpaper::kPreShaderCodeGeom;
 
-inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
+// Bound on #include expansion.  A workshop shader package is untrusted input and
+// this scanner is purely textual -- it never evaluates #ifndef / #pragma once, so
+// an author's include guard does NOT break a cycle here the way it would in a real
+// preprocessor.  Two headers that include each other is an ordinary authoring
+// pattern, and without a bound it recurses until the parse thread's stack
+// overflows.  That lands as a SIGSEGV, which the Looper's catch(...) -- the net
+// that otherwise keeps a bad scene from killing plasmashell -- cannot intercept.
+constexpr unsigned kMaxIncludeDepth = 16;
+
+inline std::string LoadGlslIncludeImpl(fs::VFS& vfs, const std::string& input, unsigned depth,
+                                       std::set<std::string>& active) {
     std::string::size_type pos = 0;
     std::string            output;
     std::string::size_type linePos = std::string::npos;
@@ -74,6 +84,11 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
 
     while (linePos = input.find("#include", pos), linePos != std::string::npos) {
         auto lineEnd  = input.find_first_of('\n', linePos);
+        // Last line with no trailing newline: clamp so none of the `pos = lineEnd`
+        // assignments below can leave pos == npos, which made the closing
+        // input.substr(pos) throw std::out_of_range.  PreShaderSrc newline-terminates
+        // the top-level source, so only a nested include could reach this.
+        if (lineEnd == std::string::npos) lineEnd = input.size();
         if (includeIsCommented(linePos)) {
             // Copy verbatim through the rest of this line and keep scanning.
             auto next = (lineEnd == std::string::npos) ? input.size() : lineEnd;
@@ -99,15 +114,40 @@ inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
         }
         auto inP         = qOpen + 1;
         auto includeName = lineStr.substr(inP, qClose - inP);
+        if (depth >= kMaxIncludeDepth) {
+            LOG_ERROR("#include \"%s\" nested deeper than %u, skipping (include cycle?)",
+                      includeName.c_str(),
+                      kMaxIncludeDepth);
+            output.append(lineStr);
+            pos = lineEnd;
+            continue;
+        }
+        // Already being expanded further up this chain -> a cycle.  Skip it and
+        // keep going, so the rest of the header still reaches the compiler.
+        // Erased again below, so a diamond (two headers including a third) still
+        // expands both times, exactly as before.
+        if (! active.insert(includeName).second) {
+            LOG_ERROR("#include \"%s\" is already being expanded, skipping (include cycle)",
+                      includeName.c_str());
+            output.append(lineStr);
+            pos = lineEnd;
+            continue;
+        }
         auto includeSrc  = fs::GetFileContent(vfs, "/assets/shaders/" + includeName);
         output.append("\n//-----include " + includeName + "\n");
-        output.append(LoadGlslInclude(vfs, includeSrc));
+        output.append(LoadGlslIncludeImpl(vfs, includeSrc, depth + 1, active));
         output.append("\n//-----include end\n");
+        active.erase(includeName);
 
         pos = lineEnd;
     }
     output.append(input.substr(pos));
     return output;
+}
+
+inline std::string LoadGlslInclude(fs::VFS& vfs, const std::string& input) {
+    std::set<std::string> active;
+    return LoadGlslIncludeImpl(vfs, input, 0u, active);
 }
 
 inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
