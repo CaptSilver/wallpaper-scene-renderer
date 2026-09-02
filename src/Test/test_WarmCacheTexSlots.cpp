@@ -256,6 +256,10 @@ TEST_CASE("two materials sharing one shader source both receive SPV from one com
     std::vector<WPShaderTexInfo> texs;
     REQUIRE(WPShaderParser::CompileToSpv("shader_pub", units_a, a->codes, vfs, &info_a, texs));
     REQUIRE(WPShaderParser::CompileToSpv("shader_pub", units_b, b->codes, vfs, &info_b, texs));
+    // The disk cache holds one entry whether the second call was served from the
+    // memo or recompiled over the top of it, so assert the compile count too --
+    // it is the only thing that distinguishes dedupe from redundant work.
+    CHECK(WPShaderParser::MemoCompileCount() == 1);
     WPShaderParser::ClearSpvMemo();
 
     CHECK_FALSE(a->codes.empty());

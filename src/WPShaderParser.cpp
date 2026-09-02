@@ -1140,6 +1140,11 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     }
 }
 
+std::size_t WPShaderParser::MemoCompileCount() {
+    std::lock_guard<std::mutex> lock(s_compileMtx);
+    return s_memoCompiles;
+}
+
 void WPShaderParser::ClearSpvMemo() {
     std::lock_guard<std::mutex> lock(s_compileMtx);
     if (s_memoCompiles > 0) {

@@ -143,6 +143,44 @@ TEST_SUITE("LoadGlslInclude cycles and malformed tails") {
         CHECK(out.find("main") != std::string::npos);
     }
 
+    // Pins which side of the depth bound is inclusive.  The guard is
+    // `depth >= kMaxIncludeDepth`, and nothing else here distinguishes it from
+    // `>`: every other case either terminates far below the bound or cycles.
+    // A chain built exactly to the limit must still expand, and one link longer
+    // must not -- an off-by-one either silently truncates a legal include chain
+    // or leaves one more frame of recursion than intended.
+    TEST_CASE("an include chain expands to exactly the depth bound and no further") {
+        // Kept in step with kMaxIncludeDepth in WPShaderParser.cpp by the two
+        // assertions below: if the constant moves, one of them fails.
+        constexpr unsigned kBound = 16;
+
+        auto chain = [](unsigned links) {
+            auto memfs = std::make_unique<MemFs>();
+            for (unsigned i = 1; i < links; ++i) {
+                memfs->add("/shaders/d" + std::to_string(i) + ".h",
+                           "#include \"d" + std::to_string(i + 1) + ".h\"\n");
+            }
+            memfs->add("/shaders/d" + std::to_string(links) + ".h", "float WEK_LEAF = 1.0;\n");
+            return makeAssetsVfs(std::move(memfs));
+        };
+        auto expand = [](VFS& vfs) {
+            WPShaderInfo info;
+            std::string  out;
+            CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(
+                              vfs, "#include \"d1.h\"\nvoid main(){}\n", &info, {}));
+            return out;
+        };
+
+        SUBCASE("a chain ending at the bound still reaches its leaf") {
+            auto vfs = chain(kBound);
+            CHECK(expand(*vfs).find("WEK_LEAF") != std::string::npos);
+        }
+        SUBCASE("one link past the bound stops before the leaf") {
+            auto vfs = chain(kBound + 1);
+            CHECK(expand(*vfs).find("WEK_LEAF") == std::string::npos);
+        }
+    }
+
     TEST_CASE("nested includes still expand fully (positive control)") {
         auto memfs = std::make_unique<MemFs>();
         memfs->add("/shaders/lvl1.h", "#include \"lvl2.h\"\nfloat WEK_L1 = 1.0;\n");

@@ -67,5 +67,11 @@ public:
     // on disk by then, and holding it costs a few MB per wallpaper that would
     // otherwise accumulate for the life of the process.
     static void ClearSpvMemo();
+
+    /// Number of shader compiles the memo has actually performed since the last
+    /// ClearSpvMemo().  Exists so a test can assert that a source shared by two
+    /// materials is compiled once rather than twice -- the disk cache shows one
+    /// entry either way, so it cannot tell dedupe from a redundant recompile.
+    static std::size_t MemoCompileCount();
 };
 } // namespace wallpaper
