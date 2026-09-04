@@ -26,6 +26,32 @@ namespace scenebackend
 // The loop runs iff there is something to run AND we are not paused.
 inline bool scriptLoopShouldRun(bool hasStates, bool paused) { return hasStates && ! paused; }
 
+// Does this scene carry any author script at all?  setupTextScripts() builds
+// the QJSEngine and every proxy only when this is true, so a script kind left
+// out of it is silently inert: nothing compiles, nothing logs, and the value it
+// was supposed to animate sits at whatever the parser produced.
+// constantshadervalues scripts were the kind left out — a scene whose only
+// scripts are shader-value scripts (a hue cycle on an effect uniform, say)
+// never built an engine and never moved.
+inline bool sceneHasAuthorScripts(bool hasTextScripts, bool hasColorScripts,
+                                  bool hasPropertyScripts, bool hasSoundLayerControls,
+                                  bool hasShaderValueScripts) {
+    return hasTextScripts || hasColorScripts || hasPropertyScripts || hasSoundLayerControls ||
+           hasShaderValueScripts;
+}
+
+// Does the color loop have anything to evaluate?  Shader-value scripts have no
+// timer of their own — evaluateColorScripts() runs both kinds, so the color
+// loop is their only driver.  This one predicate answers the question at all
+// three places that ask it (whether to create m_colorTimer, the loop body's own
+// early return, and the chained call from the property tick); before, the timer
+// gate named only the color states, so a scene with shader-value scripts but no
+// color scripts compiled them and then never called them unless it happened to
+// also run the property loop.
+inline bool colorLoopHasWork(bool hasColorStates, bool hasShaderValueStates) {
+    return hasColorStates || hasShaderValueStates;
+}
+
 // render-frame gate for the property loop (mirrors the gate baked
 // into evaluateTextScripts).  The property timer polls at ~125Hz, but unless
 // this wallpaper opted into sub-frame physics stepping the script output is

@@ -2018,13 +2018,21 @@ void SceneObject::setupTextScripts() {
     auto colorScripts       = m_scene->getColorScripts();
     auto propertyScripts    = m_scene->getPropertyScripts();
     auto soundLayerControls = m_scene->getSoundLayerControls();
-    LOG_INFO("setupTextScripts: text=%zu color=%zu property=%zu soundLayers=%zu",
+    // Fetched up here with the rest because the early return below has to count
+    // it: a scene whose only scripts are constantshadervalues is still a
+    // scripted scene, and it needs the engine built like any other.
+    auto shaderValueScripts = m_scene->getShaderValueScripts();
+    LOG_INFO("setupTextScripts: text=%zu color=%zu property=%zu soundLayers=%zu shaderValue=%zu",
              scripts.size(),
              colorScripts.size(),
              propertyScripts.size(),
-             soundLayerControls.size());
-    if (scripts.empty() && colorScripts.empty() && propertyScripts.empty() &&
-        soundLayerControls.empty())
+             soundLayerControls.size(),
+             shaderValueScripts.size());
+    if (! sceneHasAuthorScripts(! scripts.empty(),
+                                ! colorScripts.empty(),
+                                ! propertyScripts.empty(),
+                                ! soundLayerControls.empty(),
+                                ! shaderValueScripts.empty()))
         return;
 
     setupEngineGlobals();
@@ -2260,7 +2268,6 @@ void SceneObject::setupTextScripts() {
     // m_pending_effect_material_values via the existing alias-resolution
     // drain so the renderer picks them up on the next tick.  Game of
     // Life (3453251764) Canvas wallpaper exercises this with ~50 scripts.
-    auto shaderValueScripts = m_scene->getShaderValueScripts();
     for (const auto& svi : shaderValueScripts) {
         QString scriptSrc = QString::fromStdString(svi.script);
         stripESModuleSyntax(scriptSrc);
@@ -3233,7 +3240,9 @@ void SceneObject::setupTextScripts() {
         LOG_INFO("TextTimer NOT started: no text scripts");
     }
 
-    if (! m_colorScriptStates.empty()) {
+    // Shader-value scripts ride this timer too — it is the only driver they have,
+    // so leaving them out of the gate froze them on any scene without color scripts.
+    if (colorLoopHasWork(! m_colorScriptStates.empty(), ! m_shaderValueScriptStates.empty())) {
         m_colorTimer = new QTimer(this);
         m_colorTimer->setInterval(33); // ~30Hz for smooth audio-reactive color
         connect(m_colorTimer, &QTimer::timeout, this, &SceneObject::evaluateColorScripts);
@@ -4467,7 +4476,8 @@ void SceneObject::evaluateColorScripts() {
     // Idle when there is nothing to evaluate OR the wallpaper is paused (F19).
     // pause() also stops m_colorTimer; this guards the setup-time seed eval and
     // any tick already queued when pause() ran.
-    const bool hasStates = ! m_colorScriptStates.empty() || ! m_shaderValueScriptStates.empty();
+    const bool hasStates =
+        colorLoopHasWork(! m_colorScriptStates.empty(), ! m_shaderValueScriptStates.empty());
     if (! scriptLoopShouldRun(hasStates, m_paused)) return;
 
     // A3-T2 — OR'd across the color + shader-value guarded calls; drives the
@@ -5607,7 +5617,7 @@ void SceneObject::evaluatePropertyScripts() {
     // — but with property at 8ms and color at 33ms cadence, color always
     // lands after hasChanged has been cleared, and tool selection never
     // visually updated.  Running color in the same tick removes the race.
-    if (! m_colorScriptStates.empty() || ! m_shaderValueScriptStates.empty()) {
+    if (colorLoopHasWork(! m_colorScriptStates.empty(), ! m_shaderValueScriptStates.empty())) {
         evaluateColorScripts();
     }
 }

@@ -7956,6 +7956,68 @@ TEST_SUITE("Script loop gate (F19)") {
 } // TEST_SUITE Script loop gate (F19)
 
 // ------------------------------------------------------------------
+// Shader-value scripts (effects[].passes[].constantshadervalues) have no timer
+// of their own — they ride the color loop.  Two outer decisions used to name
+// only the color states and silently froze them:
+//   * setupTextScripts' "does this scene have any scripts?" early return, which
+//     never looked at the shader-value list, so a scene whose ONLY scripts are
+//     constantshadervalues (workshop 1888636115's hue cycle) never built a JS
+//     engine at all — no compile, no warning, the uniform stuck at its parsed
+//     value forever.
+//   * the color-timer creation gate.  A scene with text scripts AND
+//     shader-value scripts cleared the first hurdle and compiled its scripts,
+//     then started neither the color timer nor (no property scripts) the
+//     property tick that chains color evaluation — so the compiled scripts sat
+//     there, never evaluated.
+// Both decisions are pure predicates so they can be pinned without a
+// Vulkan-backed SceneObject; the invariant is that a shader-value script always
+// gets an engine AND a driver.
+TEST_SUITE("Shader-value script driver") {
+    using scenebackend::colorLoopHasWork;
+    using scenebackend::sceneHasAuthorScripts;
+
+    TEST_CASE("a scene whose only scripts are shader-value scripts still builds an engine") {
+        CHECK(sceneHasAuthorScripts(/*text*/ false,
+                                    /*color*/ false,
+                                    /*property*/ false,
+                                    /*soundLayerControls*/ false,
+                                    /*shaderValue*/ true) == true);
+    }
+
+    TEST_CASE("a scene with no scripts of any kind skips engine setup") {
+        CHECK(sceneHasAuthorScripts(false, false, false, false, false) == false);
+    }
+
+    TEST_CASE("shader-value states alone give the color loop work to do") {
+        // The color timer is the only driver these scripts have; without this
+        // the compiled script is never called.
+        CHECK(colorLoopHasWork(/*colorStates*/ false, /*shaderValueStates*/ true) == true);
+    }
+
+    TEST_CASE("neither kind of state means the color loop stays idle") {
+        CHECK(colorLoopHasWork(false, false) == false);
+    }
+
+    TEST_CASE("every scene carrying a shader-value script gets both an engine and a driver") {
+        // Whatever else a scene has, the presence of a shader-value script must
+        // decide both questions on its own.  The text+shader-value corner is the
+        // one that used to compile the script and then never evaluate it.
+        // Every combination of the four other script kinds, shader-value always on.
+        for (int mask = 0; mask < 16; ++mask) {
+            const bool text     = (mask & 1) != 0;
+            const bool color    = (mask & 2) != 0;
+            const bool property = (mask & 4) != 0;
+            const bool sound    = (mask & 8) != 0;
+            INFO("text=" << text << " color=" << color << " property=" << property
+                         << " soundLayerControls=" << sound);
+            CHECK(sceneHasAuthorScripts(text, color, property, sound, /*shaderValue*/ true) ==
+                  true);
+            CHECK(colorLoopHasWork(color, /*shaderValueStates*/ true) == true);
+        }
+    }
+} // TEST_SUITE Shader-value script driver
+
+// ------------------------------------------------------------------
 // render-frame gate for the property loop.  The property timer
 // fires at 125Hz but a non-high-rate wallpaper must not evaluate its scripts
 // faster than the render thread draws (script output is sampled at the render
