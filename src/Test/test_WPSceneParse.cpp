@@ -1261,6 +1261,87 @@ TEST_SUITE("WPSceneParser_Hotplug") {
         CHECK(parser.IsAborted() == true);
     }
 
+    // A screen removal that lands *during* object dispatch, not before it.
+    // dispatchObjects stops enumerating and hands back only the objects it
+    // built, so the scene is missing every layer after the abort point --
+    // nothing reloads it, so the user would stare at that truncated wallpaper
+    // for the rest of the session and getLayer() would resolve to nothing for
+    // the missing names.  Parse must throw the half-built scene away.
+    TEST_CASE("Parse aborted mid-dispatch discards the half-built scene") {
+        ensureGlslangInit();
+
+        // Flips the abort flag when the first layer's shader source is read.
+        // That read happens inside the first object's dispatch -- past Parse's
+        // entry checkpoint and past the first object's own poll -- so the flag
+        // is seen by the *second* object's poll, which is exactly the window
+        // the real screen-removal abort lands in.
+        class AbortOnReadFs : public MemFs {
+        public:
+            AbortOnReadFs(std::atomic_bool& flag, std::string trigger)
+                : m_flag(flag), m_trigger(std::move(trigger)) {}
+            std::shared_ptr<fs::IBinaryStream> Open(std::string_view path) override {
+                if (path.find(m_trigger) != std::string_view::npos) {
+                    ++m_hits;
+                    m_flag.store(true, std::memory_order_release);
+                }
+                return MemFs::Open(path);
+            }
+            int hits() const { return m_hits; }
+
+        private:
+            std::atomic_bool& m_flag;
+            std::string       m_trigger;
+            int               m_hits { 0 };
+        };
+
+        constexpr const char* kFirstMaterialJson = R"({
+    "passes": [{ "shader": "first", "blending": "translucent", "textures": [] }]
+})";
+        constexpr const char* kFirstImageJson    = R"({
+    "material": "materials/first.json", "width": 256, "height": 256
+})";
+
+        std::atomic_bool abort_flag { false };
+        auto             fs_owned = std::make_unique<AbortOnReadFs>(abort_flag, "/shaders/first.");
+        auto*            trigger_fs = fs_owned.get();
+        fs_owned->add("/shaders/first.vert", kTrivialVert);
+        fs_owned->add("/shaders/first.frag", kTrivialFrag);
+        fs_owned->add("/models/first.json", kFirstImageJson);
+        fs_owned->add("/materials/first.json", kFirstMaterialJson);
+        fs_owned->add("/shaders/_t.vert", kTrivialVert);
+        fs_owned->add("/shaders/_t.frag", kTrivialFrag);
+        fs_owned->add("/models/_plain.json", kPlainImageJson);
+        fs_owned->add("/materials/_plain.json", kPlainMaterialJson);
+
+        fs::VFS vfs;
+        REQUIRE(vfs.Mount("/assets", std::move(fs_owned)));
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "center": "0 0 0", "eye": "0 0 1", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 300, "name": "first_layer", "image": "models/first.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true },
+    { "id": 301, "name": "second_layer", "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetAbortFlag(&abort_flag);
+
+        auto scene = parser.Parse("aborted_mid_dispatch", kSceneJson, vfs, sm, props);
+
+        // The flag really did flip from inside the parse, not before it.
+        REQUIRE(trigger_fs->hits() >= 1);
+        CHECK(parser.IsAborted() == true);
+        CHECK(scene == nullptr);
+    }
+
     TEST_CASE("Parse with cleared abort flag completes normally") {
         // Defending against the bricked-subsequent-load regression: even after
         // a prior abort, calling Parse with a cleared flag must succeed.

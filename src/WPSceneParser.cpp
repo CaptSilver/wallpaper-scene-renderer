@@ -5506,13 +5506,19 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, 
     }
 }
 
-void finalizeParse(ParseContext& context) {
-    // Every shader this parse needed has already been compiled and published
-    // by CompileToSpv; drop the sha1 -> SPV memo it accumulated so the blobs
-    // don't sit in the process for the life of the wallpaper.  Must come after
-    // the LAST CompileToSpv of the parse — including the volumetric chain's.
+// Undo initShaderAndTextSubsystems and drop the parse-scoped shader memo.
+// Split out so the abort path can release the same process-global state
+// without running the scene-finishing work on a scene it is about to throw
+// away.  Must come after the LAST CompileToSpv of the parse — including the
+// volumetric chain's — because FinalGlslang tears the compiler down and the
+// memo holds the SPV blobs those compiles published.
+void releaseParseSubsystems() {
     WPShaderParser::ClearSpvMemo();
+    WPShaderParser::FinalGlslang();
+    WPTextRenderer::Shutdown();
+}
 
+void finalizeParse(ParseContext& context) {
     // Filter dead effects whose shaders failed to compile (workshop shaders
     // that didn't survive HLSL→GLSL — e.g. workshop/2487531853 lens_flare_sun
     // on the Naruto-family wallpapers).  Without this, ResolveEffect would
@@ -5538,8 +5544,7 @@ void finalizeParse(ParseContext& context) {
         }
     }
 
-    WPShaderParser::FinalGlslang();
-    WPTextRenderer::Shutdown();
+    releaseParseSubsystems();
 
     // End-of-parse hide-pattern summary — prints once to stderr so it's easy
     // to see what the --hide-pattern flag filtered out without greping logs.
@@ -5720,6 +5725,21 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     allocateAssetPools(context, vfs, wp_objs, json_order, obj_idx, pool_id_to_name);
 
     auto nameToObjState = dispatchObjects(context, wp_objs, sm);
+
+    // The flag flipped after the entry checkpoint, so dispatchObjects returned
+    // only the objects it managed to build.  Throw the scene away rather than
+    // publish it: nothing re-loads a wallpaper whose screen came back, so a
+    // truncated scene is what the user would be left with for the rest of the
+    // session — every layer after the abort point missing, and getLayer()
+    // resolving to nothing for their names.  Bailing here also skips the
+    // remaining shader compiles (the bloom/reflection chain and the volumetric
+    // materials' LoadMaterial calls), which is the parse budget the abort was
+    // meant to save.
+    if (context.abort_flag && context.abort_flag->load(std::memory_order_relaxed)) {
+        LOG_INFO("[WEK] Parse discarded: aborted mid-dispatch");
+        releaseParseSubsystems();
+        return nullptr;
+    }
 
     // has_skybox is final after object parsing; skybox scenes render
     // single-sampled — the per-layer MSAA resolve would overwrite the

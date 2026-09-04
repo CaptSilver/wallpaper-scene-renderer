@@ -3160,6 +3160,17 @@ void MainHandler::loadScene() {
             // so bailing here leaves no alias pointing at a freed stream.
             return;
         }
+        // The parser polls the abort flag at its own checkpoints; a screen
+        // removal landing between its last poll and here still means this
+        // scene belongs to an output that is gone.  Publishing it would store
+        // and render a scene for a screen nobody is looking at, and — because
+        // only a source/props/HDR change or device-lost recovery re-loads —
+        // that stale scene is what survives if the wallpaper item outlives the
+        // output bounce.  Same bail shape as the parse-failure path above.
+        if (isAborted()) {
+            LOG_INFO("scene load for id=%s discarded: screen removed mid-load", scene_id.c_str());
+            return;
+        }
         scene->vfs.swap(pVfs);
 
         // Store for runtime re-resolution of combo visibility
