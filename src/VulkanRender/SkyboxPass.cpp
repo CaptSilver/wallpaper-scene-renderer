@@ -6,6 +6,8 @@
 #include "Utils/Logging.h"
 #include "Utils/SceneProfiler.h"
 
+#include <optional>
+
 using namespace wallpaper::vulkan;
 
 // Fullscreen quad.  Position is clip-space NDC; the vertex shader reconstructs a
@@ -308,21 +310,28 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
                  outext.height);
     }
 
-    vvk::Framebuffer& framebuffer = m_fb_cache.getOrCreate(m_desc.vk_output.mip0_view, [&] {
-        VkFramebufferCreateInfo info {
-            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext           = nullptr,
-            .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = 1,
-            .pAttachments    = &m_desc.vk_output.mip0_view,
-            .width           = m_desc.vk_output.extent.width,
-            .height          = m_desc.vk_output.extent.height,
-            .layers          = 1,
-        };
-        vvk::Framebuffer fb;
-        (void)device.handle().CreateFramebuffer(info, fb);
-        return fb;
-    });
+    vvk::Framebuffer* framebuffer = m_fb_cache.getOrCreate(
+        m_desc.vk_output.mip0_view, [&]() -> std::optional<vvk::Framebuffer> {
+            VkFramebufferCreateInfo info {
+                .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .pNext           = nullptr,
+                .renderPass      = *m_desc.pipeline.pass,
+                .attachmentCount = 1,
+                .pAttachments    = &m_desc.vk_output.mip0_view,
+                .width           = m_desc.vk_output.extent.width,
+                .height          = m_desc.vk_output.extent.height,
+                .layers          = 1,
+            };
+            vvk::Framebuffer fb;
+            if (auto res = device.handle().CreateFramebuffer(info, fb); res != VK_SUCCESS) {
+                VVK_CHECK(res);
+                return std::nullopt;
+            }
+            return fb;
+        });
+    // Nothing to draw into: skip the frame rather than record against a null
+    // framebuffer.  The next frame retries the create.
+    if (framebuffer == nullptr) return;
 
     // Rewrite the UBO every frame — dyn_buf's current staging slot is what the
     // GPU sees this frame, and slots rotate with frames-in-flight.  Increment A
@@ -373,7 +382,7 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
         .renderPass  = *m_desc.pipeline.pass,
-        .framebuffer = *framebuffer,
+        .framebuffer = **framebuffer,
         .renderArea =
             VkRect2D {
                 .offset = { 0, 0 },

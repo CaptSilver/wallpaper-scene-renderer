@@ -49,6 +49,10 @@ public:
     // Force re-prepare so the tonemap shader is rebuilt with the current
     // hdr_content/hdr_passthrough setting.  Called when scene HDR mode changes.
     void markNeedsReprepare() { setPrepared(false); }
+    // Drop the framebuffers cached against the present image views.  The
+    // swapchain owns those views and destroys them on a recreate; prepare() does
+    // not re-run for that, so the owner has to say when they die.
+    void invalidateFramebuffers() { m_fb_cache.clear(); }
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;

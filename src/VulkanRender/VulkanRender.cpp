@@ -27,11 +27,13 @@
 #include "VulkanPass.hpp"
 #include "PrePass.hpp"
 #include "FinPass.hpp"
+#include "SwapchainRecreate.hpp"
 #include "CustomShaderPass.hpp"
 #include "CopyPass.hpp"
 #include "Resource.hpp"
 #include "VulkanRender/PassCacheAlias.hpp"
 #include "VulkanRender/FenceWaitRetry.hpp"
+#include "FrameFenceCycle.hpp"
 
 #include "Core/ArrayHelper.hpp"
 #include "Core/MapSet.hpp"
@@ -62,8 +64,9 @@ constexpr uint32_t kFramesInFlight = 2;
 // render cmds (one per in-flight slot).
 constexpr uint32_t vk_command_num { 1 + kFramesInFlight };
 
-// Like VVK_CHECK_VOID_RE but also sets m_device_lost on VK_ERROR_DEVICE_LOST
-#define VVK_CHECK_DEVICE_LOST(f)                                  \
+// Like vvk's VVK_CHECK_ACT but also sets m_device_lost on VK_ERROR_DEVICE_LOST,
+// so the caller's frame bails out through the device-lost recovery path.
+#define VVK_CHECK_DEVICE_LOST_ACT(act, f)                         \
     {                                                             \
         VkResult _res = (f);                                      \
         if (_res != VK_SUCCESS && _res != VK_SUBOPTIMAL_KHR) {    \
@@ -71,9 +74,13 @@ constexpr uint32_t vk_command_num { 1 + kFramesInFlight };
             if (_res == VK_ERROR_DEVICE_LOST) {                   \
                 m_device_lost = true;                             \
             }                                                     \
-            return;                                               \
+            act;                                                  \
         }                                                         \
     }
+#define VVK_CHECK_DEVICE_LOST(f) VVK_CHECK_DEVICE_LOST_ACT(return, f)
+// For the frame steps that report "abandoned" as a bool instead of returning
+// from the draw call itself.
+#define VVK_CHECK_DEVICE_LOST_BOOL(f) VVK_CHECK_DEVICE_LOST_ACT(return false, f)
 
 constexpr std::array base_inst_exts {
     Extension { false, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME },
@@ -1252,108 +1259,122 @@ void VulkanRender::Impl::drawFrameSwapchain() {
     const size_t        slot = m_frame_index % kFramesInFlight;
     RenderingResources& rr   = m_rendering_resources[slot];
 
-    // Wait for the slot's previous in-flight submission (two frames ago)
-    // to complete.  This is the new "GPU done" barrier — moved from end
-    // of the previous frame so frame N+1's CPU record can overlap with
-    // frame N's GPU execution.  waitFenceWithRetry rides VK_TIMEOUT as
-    // operational (3 × 10 s grace) before promoting to DEVICE_LOST so
-    // sustained GPU starvation (gaming + video encoding + wallpaper) no
-    // longer wedges the renderer with an unsignalled fence.
-    VVK_CHECK_DEVICE_LOST(waitFenceWithRetry(
-        [&rr](uint64_t wait_ns) {
-            return rr.fence_frame.Wait(wait_ns);
-        },
-        vk_wait_time));
-    VVK_CHECK_DEVICE_LOST(rr.fence_frame.Reset());
-
-    // If the previous frame's Acquire/Present saw OUT_OF_DATE (Wayland
-    // resize, output unplug, etc.), recreate the swapchain before doing
-    // any further work. The half-signaled image-available semaphore from
-    // the failed Acquire must also be replaced (no way to "unsignal" it).
-    if (m_swapchain_needs_recreate) {
-        // Make sure no GPU work is still reading the old swapchain images.
-        VVK_CHECK_DEVICE_LOST(m_device->handle().WaitIdle());
-        const VkExtent2D ext = m_device->swapchain().extent();
-        if (! m_device->mut_swapchain().Recreate(
-                *m_device, *m_instance.surface(), ext)) {
-            LOG_ERROR("Swapchain::Recreate failed after OUT_OF_DATE — skipping frame");
-            return;
-        }
-        m_sem_image_available[slot].reset();
-        VkSemaphoreCreateInfo sem_ci {
-            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-        };
-        VVK_CHECK_VOID_RE(
-            m_device->handle().CreateSemaphore(sem_ci, m_sem_image_available[slot]));
-        m_swapchain_needs_recreate = false;
-        // Skip rendering this frame; let the next one go against the new chain.
-        return;
-    }
-
-    // Point m_dyn_buf's staging writes at this slot before we begin
-    // recording.  update_op lambdas called during execute() will hit the
-    // selected slot; recordUpload / gpuBuf likewise.
-    m_dyn_buf->setCurrentSlot(slot);
-
     uint32_t image_index = 0;
-    {
-        VkResult acq = m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
-                                                              vk_wait_time,
-                                                              *m_sem_image_available[slot],
-                                                              {},
-                                                              &image_index);
-        const SwapResult sr = classifySwapResult(acq);
-        if (sr == SwapResult::NeedsRecreate) {
-            m_swapchain_needs_recreate = true;
-            return;
-        }
-        if (sr == SwapResult::Fatal) {
-            LOG_ERROR("AcquireNextImageKHR fatal: %s", vvk::ToString(acq));
-            if (acq == VK_ERROR_DEVICE_LOST) m_device_lost = true;
-            return;
-        }
-    }
-    const auto& image = m_device->swapchain().images()[image_index];
 
-    m_finpass->setPresent(image);
+    // Everything between the slot fence's wait and the submit.  Returning
+    // false abandons the frame; runFrameFenceCycle then leaves the fence and
+    // the frame index alone, so the next frame retries this same slot against
+    // a fence it can still wait on.
+    auto record_frame = [&]() -> bool {
+        // If the previous frame's Acquire/Present saw OUT_OF_DATE (Wayland
+        // resize, output unplug, etc.), recreate the swapchain before doing
+        // any further work. The half-signaled image-available semaphore from
+        // the failed Acquire must also be replaced (no way to "unsignal" it).
+        if (m_swapchain_needs_recreate) {
+            const bool ready = runSwapchainRecreate(SwapchainRecreateOps {
+                // Make sure no GPU work is still reading the old swapchain images.
+                .wait_device_idle =
+                    [this]() {
+                        VVK_CHECK_DEVICE_LOST_BOOL(m_device->handle().WaitIdle());
+                        return true;
+                    },
+                .recreate =
+                    [this]() {
+                        const VkExtent2D ext = m_device->swapchain().extent();
+                        if (! m_device->mut_swapchain().Recreate(
+                                *m_device, *m_instance.surface(), ext)) {
+                            LOG_ERROR(
+                                "Swapchain::Recreate failed after OUT_OF_DATE — skipping frame");
+                            return false;
+                        }
+                        return true;
+                    },
+                .invalidate_view_caches =
+                    [this]() {
+                        m_finpass->invalidateFramebuffers();
+                    },
+                .replace_acquire_semaphore =
+                    [this, slot]() {
+                        m_sem_image_available[slot].reset();
+                        VkSemaphoreCreateInfo sem_ci {
+                            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+                            .pNext = nullptr,
+                            .flags = 0,
+                        };
+                        VVK_CHECK_BOOL_RE(m_device->handle().CreateSemaphore(
+                            sem_ci, m_sem_image_available[slot]));
+                        return true;
+                    },
+            });
+            // Leave the flag set on failure so the next frame retries.
+            if (ready) m_swapchain_needs_recreate = false;
+            // Skip rendering this frame; let the next one go against the new chain.
+            return false;
+        }
 
-    (void)rr.command.Begin(VkCommandBufferBeginInfo {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .pNext = nullptr,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    });
-    m_dyn_buf->recordUpload(rr.command);
-    {
-        static bool _dumped             = false;
-        static int  _render_frame_count = 0;
-        int         prepared_count = 0, skipped_count = 0;
-        // Reset per-frame exec pass counter (extern from CustomShaderPass)
-        extern int                         g_exec_pass_counter;
-        extern int                         g_exec_frame_counter;
-        extern std::unordered_set<VkImage> g_depth_inited_frame;
-        g_exec_pass_counter  = 0;
-        g_exec_frame_counter = _render_frame_count;
-        g_depth_inited_frame.clear();
-        for (auto* p : m_passes) {
-            if (p->prepared()) {
-                p->execute(*m_device, rr);
-                prepared_count++;
-            } else {
-                skipped_count++;
+        // Point m_dyn_buf's staging writes at this slot before we begin
+        // recording.  update_op lambdas called during execute() will hit the
+        // selected slot; recordUpload / gpuBuf likewise.
+        m_dyn_buf->setCurrentSlot(slot);
+
+        {
+            VkResult acq = m_device->handle().AcquireNextImageKHR(*m_device->swapchain().handle(),
+                                                                  vk_wait_time,
+                                                                  *m_sem_image_available[slot],
+                                                                  {},
+                                                                  &image_index);
+            const SwapResult sr = classifySwapResult(acq);
+            if (sr == SwapResult::NeedsRecreate) {
+                m_swapchain_needs_recreate = true;
+                return false;
+            }
+            if (sr == SwapResult::Fatal) {
+                LOG_ERROR("AcquireNextImageKHR fatal: %s", vvk::ToString(acq));
+                if (acq == VK_ERROR_DEVICE_LOST) m_device_lost = true;
+                return false;
             }
         }
-        if (! _dumped) {
-            LOG_INFO("render frame: %d passes executed, %d skipped (not prepared), %zu total",
-                     prepared_count,
-                     skipped_count,
-                     m_passes.size());
-            _dumped = true;
+        const auto& image = m_device->swapchain().images()[image_index];
+
+        m_finpass->setPresent(image);
+
+        (void)rr.command.Begin(VkCommandBufferBeginInfo {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .pNext = nullptr,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+        });
+        m_dyn_buf->recordUpload(rr.command);
+        {
+            static bool _dumped             = false;
+            static int  _render_frame_count = 0;
+            int         prepared_count = 0, skipped_count = 0;
+            // Reset per-frame exec pass counter (extern from CustomShaderPass)
+            extern int                         g_exec_pass_counter;
+            extern int                         g_exec_frame_counter;
+            extern std::unordered_set<VkImage> g_depth_inited_frame;
+            g_exec_pass_counter  = 0;
+            g_exec_frame_counter = _render_frame_count;
+            g_depth_inited_frame.clear();
+            for (auto* p : m_passes) {
+                if (p->prepared()) {
+                    p->execute(*m_device, rr);
+                    prepared_count++;
+                } else {
+                    skipped_count++;
+                }
+            }
+            if (! _dumped) {
+                LOG_INFO("render frame: %d passes executed, %d skipped (not prepared), %zu total",
+                         prepared_count,
+                         skipped_count,
+                         m_passes.size());
+                _dumped = true;
+            }
+            _render_frame_count++;
         }
-        _render_frame_count++;
-    }
-    (void)rr.command.End();
+        (void)rr.command.End();
+        return true;
+    };
 
     VkPipelineStageFlags wait_dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo         sub_info {
@@ -1368,9 +1389,41 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                 .pSignalSemaphores    = m_sem_render_finished[slot].address(),
     };
 
-    // Submit with this slot's fence — consumed at the start of a future
-    // drawFrame call when the same slot is re-selected.
-    VVK_CHECK_DEVICE_LOST(m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame));
+    // Wait for the slot's previous in-flight submission (two frames ago)
+    // to complete.  This is the "GPU done" barrier — it sits at the head of
+    // the frame rather than the tail of the previous one so frame N+1's CPU
+    // record can overlap with frame N's GPU execution.  waitFenceWithRetry
+    // rides VK_TIMEOUT as operational (3 × 10 s grace) before promoting to
+    // DEVICE_LOST so sustained GPU starvation (gaming + video encoding +
+    // wallpaper) no longer wedges the renderer with an unsignalled fence.
+    bool submitted = false;
+    VVK_CHECK_DEVICE_LOST(runFrameFenceCycle(
+        FrameFenceCycleOps {
+            .wait_fence =
+                [&rr]() {
+                    return waitFenceWithRetry(
+                        [&rr](uint64_t wait_ns) {
+                            return rr.fence_frame.Wait(wait_ns);
+                        },
+                        vk_wait_time);
+                },
+            .record = record_frame,
+            .reset_fence =
+                [&rr]() {
+                    return rr.fence_frame.Reset();
+                },
+            // Submit with this slot's fence — consumed at the start of a future
+            // drawFrame call when the same slot is re-selected.
+            .submit =
+                [&]() {
+                    return m_device->present_queue().handle.Submit(sub_info, *rr.fence_frame);
+                },
+        },
+        m_frame_index,
+        submitted));
+    if (! submitted) return;
+
+    const auto&      image = m_device->swapchain().images()[image_index];
     VkPresentInfoKHR present_info {
         .sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .pNext              = nullptr,
@@ -1419,8 +1472,6 @@ void VulkanRender::Impl::drawFrameSwapchain() {
                                   m_device->swapchain().extent().height);
         dumpPassesIfRequested();
     }
-
-    m_frame_index++;
 }
 void VulkanRender::Impl::drawFrameOffscreen() {
     WEK_PROFILE_SCOPE("VulkanRender::drawFrameOffscreen");

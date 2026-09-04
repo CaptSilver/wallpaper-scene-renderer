@@ -4,6 +4,8 @@
 #include "PassCommon.hpp"
 #include "Utils/SceneProfiler.h"
 
+#include <optional>
+
 using namespace wallpaper::vulkan;
 
 constexpr std::string_view vert_code = R"(#version 320 es
@@ -253,21 +255,28 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
     // The present image cycles a fixed set of swapchain views; cache one
     // framebuffer per view instead of recreating it every frame.  Cleared on
     // re-prepare (prepare()) when the render pass may change.
-    vvk::Framebuffer& framebuffer = m_fb_cache.getOrCreate(m_desc.vk_present.view, [&] {
-        VkFramebufferCreateInfo info {
-            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext           = nullptr,
-            .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = 1,
-            .pAttachments    = &m_desc.vk_present.view,
-            .width           = m_desc.vk_present.extent.width,
-            .height          = m_desc.vk_present.extent.height,
-            .layers          = 1,
-        };
-        vvk::Framebuffer fb;
-        (void)device.handle().CreateFramebuffer(info, fb);
-        return fb;
-    });
+    vvk::Framebuffer* framebuffer = m_fb_cache.getOrCreate(
+        m_desc.vk_present.view, [&]() -> std::optional<vvk::Framebuffer> {
+            VkFramebufferCreateInfo info {
+                .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .pNext           = nullptr,
+                .renderPass      = *m_desc.pipeline.pass,
+                .attachmentCount = 1,
+                .pAttachments    = &m_desc.vk_present.view,
+                .width           = m_desc.vk_present.extent.width,
+                .height          = m_desc.vk_present.extent.height,
+                .layers          = 1,
+            };
+            vvk::Framebuffer fb;
+            if (auto res = device.handle().CreateFramebuffer(info, fb); res != VK_SUCCESS) {
+                VVK_CHECK(res);
+                return std::nullopt;
+            }
+            return fb;
+        });
+    // Nothing to draw into: skip the frame rather than record against a null
+    // framebuffer.  The next frame retries the create.
+    if (framebuffer == nullptr) return;
     {
         VkDescriptorImageInfo desc_img {
             .sampler     = m_desc.vk_result.sampler,
@@ -310,7 +319,7 @@ void FinPass::execute(const Device& device, RenderingResources& rr) {
         .sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .pNext       = nullptr,
         .renderPass  = *m_desc.pipeline.pass,
-        .framebuffer = *framebuffer,
+        .framebuffer = **framebuffer,
         .renderArea =
             VkRect2D {
                 .offset = { 0, 0 },
