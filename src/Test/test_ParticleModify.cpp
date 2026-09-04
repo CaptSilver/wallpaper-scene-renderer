@@ -476,6 +476,16 @@ TEST_SUITE("ParticleModify_Getters") {
         CHECK(vel.z() == doctest::Approx(1.5f));
     }
 
+    TEST_CASE("GetRotation returns the angle, not the angular velocity") {
+        Particle p        = makeParticle();
+        p.rotation        = Eigen::Vector3f(7.0f, 8.0f, 9.0f);
+        p.angularVelocity = Eigen::Vector3f(0.1f, 0.2f, 0.3f);
+        const auto& rot   = ParticleModify::GetRotation(p);
+        CHECK(rot.x() == doctest::Approx(7.0f));
+        CHECK(rot.y() == doctest::Approx(8.0f));
+        CHECK(rot.z() == doctest::Approx(9.0f));
+    }
+
     TEST_CASE("InitVelocity sets velocity") {
         Particle p = makeParticle();
         ParticleModify::InitVelocity(p, 10.0, 20.0, 30.0);
@@ -499,6 +509,19 @@ TEST_SUITE("ParticleModify_Getters") {
         CHECK(p.velocity.x() == doctest::Approx(1.0f));
         CHECK(p.velocity.y() == doctest::Approx(2.0f));
         CHECK(p.velocity.z() == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("MutiplyAngularVelocity scales spin and leaves the angle alone") {
+        Particle p        = makeParticle();
+        p.rotation        = Eigen::Vector3f(1.0f, 1.0f, 1.0f);
+        p.angularVelocity = Eigen::Vector3f(2.0f, 4.0f, 6.0f);
+        ParticleModify::MutiplyAngularVelocity(p, 0.5);
+        CHECK(p.angularVelocity.x() == doctest::Approx(1.0f));
+        CHECK(p.angularVelocity.y() == doctest::Approx(2.0f));
+        CHECK(p.angularVelocity.z() == doctest::Approx(3.0f));
+        CHECK(p.rotation.x() == doctest::Approx(1.0f));
+        CHECK(p.rotation.y() == doctest::Approx(1.0f));
+        CHECK(p.rotation.z() == doctest::Approx(1.0f));
     }
 
 } // TEST_SUITE

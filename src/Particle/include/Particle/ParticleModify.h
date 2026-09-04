@@ -146,6 +146,7 @@ inline void MutiplyColor(Particle& p, double r, double g, double b) {
     MutiplyColor(p, { r, g, b });
 }
 inline void MutiplyVelocity(Particle& p, double m) { p.velocity *= m; }
+inline void MutiplyAngularVelocity(Particle& p, double m) { p.angularVelocity *= m; }
 
 inline void ChangeSize(Particle& p, double s) { p.size += s; }
 inline void ChangeAlpha(Particle& p, double a) { p.alpha += a; }
@@ -235,7 +236,7 @@ inline bool IsNew(const Particle& p) { return p.mark_new; }
 
 inline const Eigen::Vector3f& GetPos(const Particle& p) { return p.position; }
 inline const Eigen::Vector3f& GetVelocity(const Particle& p) { return p.velocity; }
-inline const Eigen::Vector3f& GetAngular(const Particle& p) { return p.rotation; }
+inline const Eigen::Vector3f& GetRotation(const Particle& p) { return p.rotation; }
 
 }; // namespace ParticleModify
 } // namespace wallpaper

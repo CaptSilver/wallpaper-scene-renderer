@@ -671,6 +671,71 @@ TEST_SUITE("angularmovement operator") {
         // Positive force component imparts angular velocity in z.
         CHECK(p.angularVelocity.z() == doctest::Approx(5.0f));
     }
+
+    TEST_CASE("drag bleeds off angular velocity instead of oscillating it") {
+        json j  = { { "name", "angularmovement" }, { "drag", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p       = fx.spawn();
+        p.angularVelocity = Eigen::Vector3f(0, 0, 3.0f);
+        fx.time_pass      = 1.0 / 60.0;
+
+        float prev_spin  = p.angularVelocity.z();
+        float prev_angle = p.rotation.z();
+        for (int i = 0; i < 240; i++) {
+            op(fx.info());
+            const float spin = p.angularVelocity.z();
+            // Drag only ever removes spin: it must never speed the particle
+            // back up and never reverse it, which is what a restoring force
+            // on the angle would do.
+            REQUIRE(spin < prev_spin);
+            REQUIRE(spin > 0.0f);
+            // The sprite keeps turning the same way while it coasts to rest;
+            // it must not rock back toward where it started.
+            REQUIRE(p.rotation.z() > prev_angle);
+            prev_spin  = spin;
+            prev_angle = p.rotation.z();
+        }
+        // After 4 s at drag=1 nearly all of the seeded spin is gone.
+        CHECK(p.angularVelocity.z() < 0.1f);
+    }
+
+    // Drag is blended by the same lifetime window as the force, so a
+    // half-strength window has to halve the drag too.  Both of these pin the
+    // exact surviving spin rather than a direction, because drag, blend factor
+    // and step all meet in one product: only an exact value separates
+    // `drag * blend * dt` from the same three numbers combined any other way.
+    TEST_CASE("drag at half blend strength removes half as much spin") {
+        json j  = { { "name", "angularmovement" },
+                    { "drag", 2.0 },
+                    { "blendinstart", 0.0 },
+                    { "blendinend", 1.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        // Half-spent lifetime under a full-life fade-in window → blend = 0.5.
+        Particle& p       = fx.spawn();
+        p.angularVelocity = Eigen::Vector3f(0, 0, 4.0f);
+        p.lifetime        = 0.5f;
+        p.init.lifetime   = 1.0f;
+        fx.time_pass      = 0.25;
+        op(fx.info());
+        // 1 - drag*blend*dt = 1 - 2*0.5*0.25 = 0.75 → 4 * 0.75.
+        CHECK(p.angularVelocity.z() == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("the same drag over the same step damps twice as hard unblended") {
+        json j  = { { "name", "angularmovement" }, { "drag", 2.0 } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        OpFixture fx;
+        Particle& p       = fx.spawn();
+        p.angularVelocity = Eigen::Vector3f(0, 0, 4.0f);
+        p.lifetime        = 0.5f;
+        p.init.lifetime   = 1.0f;
+        fx.time_pass      = 0.25;
+        op(fx.info());
+        // No blend window → factor 1 → 1 - 2*1*0.25 = 0.5 → 4 * 0.5.
+        CHECK(p.angularVelocity.z() == doctest::Approx(2.0f));
+    }
 }
 
 TEST_SUITE("colorchange operator with non-default times") {

@@ -943,10 +943,19 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             return [=](const ParticleInfo& info) {
                 for (auto& p : info.particles) {
                     const double f = bw.Factor(p);
-                    Vector3d acc =
-                        algorism::DragForce(PM::GetAngular(p).cast<double>(), drag) + vecF;
-                    PM::AngularAccelerate(p, acc * f, info.time_pass);
+                    PM::AngularAccelerate(p, vecF * f, info.time_pass);
                     PM::RotateByTime(p, info.time_pass);
+                    // Drag damps the SPIN, not the angle: angularVelocity *=
+                    // (1 - drag * dt), the rotational twin of the linear drag
+                    // above.  Applying it to the rotation instead turns drag
+                    // into a restoring force and the sprite rocks about its
+                    // start angle for its whole life rather than coasting to
+                    // rest.  Blended like the force, so factor=0 leaves the
+                    // spin untouched.
+                    if (drag > 0.0f) {
+                        double factor = std::max(0.0, 1.0 - drag * f * info.time_pass);
+                        PM::MutiplyAngularVelocity(p, factor);
+                    }
                 }
             };
         } else if (name == "sizechange") {
