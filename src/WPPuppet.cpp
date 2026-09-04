@@ -86,10 +86,20 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
             assert(i < layer.anim->bframes_array.size());
             if (i >= layer.anim->bframes_array.size()) continue;
 
+            // The declared frame count and the stored bone track are separate
+            // fields in the .mdl, so untrusted content can make them disagree.
+            // An MDLA variant we do not model exactly degrades to the nearest
+            // stored frame rather than reading past the track — libstdc++'s
+            // hardened operator[] (on by default in distro builds) would abort
+            // plasmashell outright.  An empty track leaves the bone at bind.
+            const auto& track = layer.anim->bframes_array[i].frames;
+            if (track.empty()) continue;
+            const idx last_frame = (idx)track.size() - 1;
+
             auto& info       = layer.interp_info;
-            auto& frame_base = layer.anim->bframes_array[i].frames[(usize)0];
-            auto& frame_a    = layer.anim->bframes_array[i].frames[(usize)info.frame_a];
-            auto& frame_b    = layer.anim->bframes_array[i].frames[(usize)info.frame_b];
+            auto& frame_base = track[(usize)0];
+            auto& frame_a    = track[(usize)std::clamp<idx>(info.frame_a, 0, last_frame)];
+            auto& frame_b    = track[(usize)std::clamp<idx>(info.frame_b, 0, last_frame)];
 
             float  t     = (float)info.t;
             float  one_t = 1.0f - t;
@@ -182,6 +192,12 @@ static constexpr void genInterpolationInfo(WPPuppet::Animation::InterpolationInf
 
 WPPuppet::Animation::InterpolationInfo
 WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
+    // No playable frame: `% length` below would divide by zero, and a negative
+    // count wraps to negative indices that become huge unsigned subscripts.
+    // The parser rejects such animations, but hold frame 0 for any puppet
+    // assembled in-process too.
+    if (length <= 0) return InterpolationInfo { 0, 0, 0.0 };
+
     InterpolationInfo _info;
     auto&             _cur_time = *cur_time;
 

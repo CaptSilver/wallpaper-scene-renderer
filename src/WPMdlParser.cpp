@@ -604,6 +604,21 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                          anim.name.c_str(),
                          anim.length);
 #endif
+                // fps divides into every derived playback time and length is
+                // the modulus for frame selection, so neither survives a
+                // non-positive or NaN value.  Reaching one means the MDLA
+                // trailer misparsed — same recovery as the b_num overrun
+                // below: keep the static puppet, drop the animations.
+                if (! (anim.fps > 0.0) || anim.length <= 0) {
+                    LOG_INFO("mdl: anim %d has unusable timing (fps=%f length=%d) — keeping "
+                             "%zu parsed animation(s), finalizing bind pose",
+                             anim.id,
+                             anim.fps,
+                             anim.length,
+                             ai);
+                    anims.resize(ai);
+                    break;
+                }
                 f.ReadInt32();
 
                 uint32_t b_num = f.ReadUint32();
@@ -651,6 +666,25 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     }
                 }
 
+                // Report a track that stores a different number of frames than
+                // the animation declares — the renderer clamps into what is
+                // stored, so this shows up as a stiff limb rather than an
+                // error.  Do NOT drop the animation over it: some MDLA variants
+                // store length as a last-frame index, and rejecting them is
+                // what made the Totoro puppet (2891663007) invisible.
+                for (usize bi = 0; bi < anim.bframes_array.size(); bi++) {
+                    const auto& fr = anim.bframes_array[bi].frames;
+                    if (fr.size() != (usize)anim.length) {
+                        LOG_INFO("mdl: anim %d declares %d frame(s) but bone track %zu stores "
+                                 "%zu — playback clamps into the stored frames",
+                                 anim.id,
+                                 anim.length,
+                                 bi,
+                                 fr.size());
+                        break;
+                    }
+                }
+
                 // in the alternative MDL format there are 2 empty bytes followed
                 // by a variable number of 32-bit 0s between animations. We'll read
                 // the two bytes now so that the cursor is aligned to read through the
@@ -670,6 +704,24 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
                     //   string — small JSON blob: {"frame":N,"name":"eventName",...}
                     // SceneScripts react to these via animationEvent(event,value).
                     uint32_t event_count = f.ReadUint32();
+                    // Each record is at least a float plus a string terminator.
+                    // A count that cannot fit in what is left of the stream
+                    // means the trailer misparsed; iterating it anyway spins
+                    // the scene-load thread through billions of no-op reads
+                    // past EOF with nothing in the log, and nothing polls the
+                    // abort flag in here to stop it.
+                    if (! CountFitsStream(f, event_count, 5)) {
+                        // Unlike the b_num bail-out above, this animation's
+                        // bone frames are already fully parsed — keep it and
+                        // drop only the unreadable event list (plus any
+                        // trailing animations we never reached).
+                        LOG_INFO("mdl: anim %d event_count %u exceeds stream — dropping its "
+                                 "keyframe events",
+                                 anim.id,
+                                 event_count);
+                        anims.resize(ai + 1);
+                        break;
+                    }
                     for (uint i = 0; i < event_count; i++) {
                         f.ReadFloat();
                         std::string evt_json = f.ReadStr();

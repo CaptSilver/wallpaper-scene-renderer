@@ -3,10 +3,13 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Fs/MemBinaryStream.h"
+#include "Utils/Logging.h"
 #include "Scene/SceneMesh.h"
 #include "WPMdlParser.hpp"
 #include "WPPuppet.hpp"
@@ -82,6 +85,34 @@ struct Bytes {
 };
 
 std::vector<uint8_t> takeBuffer(Bytes&& b) { return std::move(b.data); }
+
+// Collects log bodies for the duration of a scope. Some parser findings are
+// recoverable enough that the parser keeps the animation and carries on — the
+// log line is then the only thing they produce, so it is what a test has to
+// assert on.
+struct LogCapture {
+    LogCapture() {
+        lines().clear();
+        wallpaper_log_test::setSink(&append);
+    }
+    ~LogCapture() { wallpaper_log_test::setSink(nullptr); }
+
+    LogCapture(const LogCapture&)            = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+
+    static std::vector<std::string>& lines() {
+        static std::vector<std::string> v;
+        return v;
+    }
+    static void append(int, const char* msg) { lines().emplace_back(msg); }
+
+    static bool saw(std::string_view needle) {
+        for (const auto& l : lines()) {
+            if (l.find(needle) != std::string_view::npos) return true;
+        }
+        return false;
+    }
+};
 
 } // namespace
 
@@ -1305,6 +1336,215 @@ TEST_SUITE("WPMdlParser.Puppet") {
             REQUIRE(WPMdlParser::ParseStream(f, "s.mdl", mdl));
             CHECK(mdl.puppet->anims[0].mode == WPPuppet::PlayMode::Single);
         }
+    }
+
+    // An MDLA animation record carries the frame count and the bone tracks as
+    // two independent fields, so a misparsed or hostile trailer can declare a
+    // frame count that means nothing.  A non-positive count is unusable —
+    // downstream it divides the playback rate — so drop the animation and keep
+    // the static puppet rather than failing the whole model.
+    namespace
+    {
+    std::vector<uint8_t> makeAnimWithLengthAndFps(int32_t length, float fps) {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 1);
+        b.u32(0);
+        b.u16(0);
+        b.u16(0); // no bones
+
+        b.str("MDLA0001");
+        b.u32(0); // end_size
+        b.u32(1); // anim_num
+
+        b.u32(42); // anim id
+        b.i32(0);  // unk
+        b.str("walk");
+        b.str("loop");
+        b.f32(fps);
+        b.i32(length);
+        b.i32(0); // unk
+
+        b.u32(1); // b_num
+        b.i32(0);
+        b.u32(36); // one frame
+        for (int i = 0; i < 9; i++) b.f32(0);
+        b.u32(0); // no events
+        return takeBuffer(std::move(b));
+    }
+    } // namespace
+
+    TEST_CASE("animation with zero declared frames is dropped but the puppet survives") {
+        fs::MemBinaryStream f(makeAnimWithLengthAndFps(0, 30.0f));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "len0.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        CHECK(mdl.puppet->anims.empty());
+    }
+
+    TEST_CASE("animation with a negative declared frame count is dropped") {
+        fs::MemBinaryStream f(makeAnimWithLengthAndFps(-1, 30.0f));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "lenneg.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        CHECK(mdl.puppet->anims.empty());
+    }
+
+    TEST_CASE("animation with a non-positive fps is dropped") {
+        // fps divides into frame_time; zero or negative makes every derived
+        // playback time infinite or reversed.
+        fs::MemBinaryStream f(makeAnimWithLengthAndFps(60, 0.0f));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "fps0.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        CHECK(mdl.puppet->anims.empty());
+    }
+
+    TEST_CASE("animation with a NaN fps is dropped") {
+        fs::MemBinaryStream f(
+            makeAnimWithLengthAndFps(60, std::numeric_limits<float>::quiet_NaN()));
+        WPMdl mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "fpsnan.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        CHECK(mdl.puppet->anims.empty());
+    }
+
+    // The event trailer's count is 4 raw bytes; when the parser lands on this
+    // region misaligned it can be any 32-bit value.  Iterating it blindly
+    // spins the scene-load thread for billions of no-op reads past EOF.
+    TEST_CASE("event count larger than the remaining stream drops the events") {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 1);
+        b.u32(0);
+        b.u16(0);
+        b.u16(0); // no bones
+
+        b.str("MDLA0001");
+        b.u32(0); // end_size
+        b.u32(1); // anim_num
+
+        b.u32(42); // anim id
+        b.i32(0);  // unk
+        b.str("walk");
+        b.str("loop");
+        b.f32(30.0f);
+        b.i32(60);
+        b.i32(0); // unk
+
+        b.u32(1); // b_num
+        b.i32(0);
+        b.u32(36); // one frame
+        for (int i = 0; i < 9; i++) b.f32(0);
+
+        b.u32(0xFFFFFFFFu); // event_count — stream ends right here
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "evtflood.mdl", mdl));
+        REQUIRE(mdl.puppet != nullptr);
+        // The bone frames before the trailer parsed fine, so the animation is
+        // kept — only its unreadable event list is dropped.
+        REQUIRE(mdl.puppet->anims.size() == 1);
+        CHECK(mdl.puppet->anims[0].events.empty());
+    }
+
+    // The declared frame count and the bone tracks are independent fields, so
+    // some MDLA variants disagree between the two (a few store `length` as a
+    // last-frame index). Playback clamps into whatever the track actually
+    // stores, which reads as a stiff limb rather than an error, so the parser
+    // reports the disagreement and keeps the animation. Rejecting these is
+    // what used to leave skinned puppets collapsed at the origin.
+    namespace
+    {
+    std::vector<uint8_t> makeAnimWithTrackFrames(int32_t                      length,
+                                                 const std::vector<uint32_t>& frames_per_track) {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 1);
+        b.u32(0);
+        b.u16(0);
+        b.u16(0); // no bones
+
+        b.str("MDLA0001");
+        b.u32(0); // end_size
+        b.u32(1); // anim_num
+
+        b.u32(42); // anim id
+        b.i32(0);  // unk
+        b.str("walk");
+        b.str("loop");
+        b.f32(30.0f);
+        b.i32(length);
+        b.i32(0); // unk
+
+        b.u32(static_cast<uint32_t>(frames_per_track.size())); // b_num
+        for (uint32_t n : frames_per_track) {
+            b.i32(0);
+            b.u32(n * 36); // 36 bytes per frame: position, angle, scale
+            for (uint32_t fr = 0; fr < n; fr++) {
+                for (int i = 0; i < 9; i++) b.f32(0);
+            }
+        }
+        b.u32(0); // no events
+        return takeBuffer(std::move(b));
+    }
+    } // namespace
+
+    TEST_CASE("a bone track shorter than the declared frame count is reported") {
+        LogCapture          log;
+        fs::MemBinaryStream f(makeAnimWithTrackFrames(5, { 2 }));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "shorttrack.mdl", mdl));
+        // Kept, not dropped — the stored frames are still playable.
+        REQUIRE(mdl.puppet->anims.size() == 1);
+        CHECK(mdl.puppet->anims[0].bframes_array[0].frames.size() == 2);
+        CHECK(LogCapture::saw("declares 5 frame(s) but bone track 0 stores 2"));
+    }
+
+    TEST_CASE("a bone track matching the declared frame count is not reported") {
+        LogCapture          log;
+        fs::MemBinaryStream f(makeAnimWithTrackFrames(2, { 2 }));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "matchedtrack.mdl", mdl));
+        REQUIRE(mdl.puppet->anims.size() == 1);
+        CHECK_FALSE(LogCapture::saw("but bone track"));
+    }
+
+    TEST_CASE("a mismatch on a later bone track is still reported") {
+        // The first track agrees with the header, so the scan only reaches the
+        // short one if it walks the whole array.
+        LogCapture          log;
+        fs::MemBinaryStream f(makeAnimWithTrackFrames(3, { 3, 2 }));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "latetrack.mdl", mdl));
+        REQUIRE(mdl.puppet->anims.size() == 1);
+        REQUIRE(mdl.puppet->anims[0].bframes_array.size() == 2);
+        CHECK(LogCapture::saw("bone track 1 stores 2"));
     }
 
 } // Puppet

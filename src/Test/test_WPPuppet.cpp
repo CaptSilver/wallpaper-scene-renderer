@@ -1264,3 +1264,125 @@ TEST_SUITE("WPPuppet_ZeroBones") {
         CHECK(wallpaper::boneAffinesAsUploadFloats(frames).empty());
     }
 }
+
+// ===========================================================================
+// A .mdl whose declared animation length disagrees with the bone tracks it
+// actually carries must not index past those tracks.  MDLA is untrusted
+// Workshop content and the two numbers are stored independently.
+// ===========================================================================
+
+namespace
+{
+// One bone, one Loop animation declaring `length` frames but storing only
+// `stored_frames` of them (position.x = frame index * 10).
+std::shared_ptr<WPPuppet> makeShortTrackPuppet(int length, int stored_frames,
+                                               WPPuppet::PlayMode mode = WPPuppet::PlayMode::Loop) {
+    auto           puppet = std::make_shared<WPPuppet>();
+    WPPuppet::Bone bone;
+    bone.transform = Eigen::Affine3f::Identity();
+    bone.parent    = 0xFFFFFFFFu;
+    puppet->bones.push_back(bone);
+
+    WPPuppet::Animation anim;
+    anim.id     = 1;
+    anim.fps    = 10.0;
+    anim.length = length;
+    anim.mode   = mode;
+    anim.name   = "short";
+    WPPuppet::Animation::BoneFrames bf;
+    for (int f = 0; f < stored_frames; f++) {
+        WPPuppet::BoneFrame frame;
+        frame.position = Eigen::Vector3f((float)f * 10.0f, 0, 0);
+        frame.angle    = Eigen::Vector3f::Zero();
+        frame.scale    = Eigen::Vector3f::Ones();
+        bf.frames.push_back(frame);
+    }
+    anim.bframes_array.push_back(bf);
+    puppet->anims.push_back(anim);
+    puppet->prepared();
+    return puppet;
+}
+
+WPPuppetLayer makeSingleFullWeightLayer(std::shared_ptr<WPPuppet> puppet) {
+    WPPuppetLayer                              layer(puppet);
+    std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+    alayers[0] = { 1, 1.0, 1.0, true, 0.0 };
+    layer.prepared(alayers);
+    return layer;
+}
+} // namespace
+
+TEST_SUITE("WPPuppet_ShortBoneTrack") {
+    TEST_CASE("genFrame clamps to the last stored frame when length overruns the track") {
+        // length=10 with 2 stored frames: at t=0.55 the interpolator asks for
+        // frames 5 and 6, which do not exist.  Both clamp to the last stored
+        // frame (x=10), so the pose stays finite and on a real keyframe.
+        auto puppet = makeShortTrackPuppet(10, 2);
+        auto layer  = makeSingleFullWeightLayer(puppet);
+        layer.genFrame(0.0);
+        auto  frames = layer.genFrame(0.55);
+        float x      = frames[0].translation().x();
+        CHECK(std::isfinite(x));
+        CHECK(x == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("genFrame clamps a Mirror animation whose track is short") {
+        auto puppet = makeShortTrackPuppet(10, 2, WPPuppet::PlayMode::Mirror);
+        auto layer  = makeSingleFullWeightLayer(puppet);
+        layer.genFrame(0.0);
+        auto  frames = layer.genFrame(0.75);
+        float x      = frames[0].translation().x();
+        CHECK(std::isfinite(x));
+        CHECK(x == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("genFrame clamps a Single animation holding past its stored frames") {
+        // Single holds frame length-1 once playback passes max_time.
+        auto puppet = makeShortTrackPuppet(10, 2, WPPuppet::PlayMode::Single);
+        auto layer  = makeSingleFullWeightLayer(puppet);
+        layer.genFrame(0.0);
+        auto  frames = layer.genFrame(5.0);
+        float x      = frames[0].translation().x();
+        CHECK(std::isfinite(x));
+        CHECK(x == doctest::Approx(10.0f));
+    }
+
+    TEST_CASE("genFrame skips a bone whose frame track is empty") {
+        // byte_size==0 for a track leaves it empty; the bone keeps its bind
+        // pose instead of dereferencing an empty vector.
+        auto puppet = makeShortTrackPuppet(10, 0);
+        auto layer  = makeSingleFullWeightLayer(puppet);
+        auto frames = layer.genFrame(0.0);
+        REQUIRE(frames.size() == 1);
+        CHECK(frames[0].matrix().isApprox(Eigen::Affine3f::Identity().matrix(), 1e-5f));
+    }
+
+    TEST_CASE("zero-length animation yields frame 0 instead of dividing by zero") {
+        auto   anim = makeAnimation(WPPuppet::PlayMode::Loop, 0, 10.0);
+        double t    = 0.3;
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 0);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.0));
+    }
+
+    TEST_CASE("negative-length animation yields frame 0 in every play mode") {
+        for (auto mode :
+             { WPPuppet::PlayMode::Loop, WPPuppet::PlayMode::Mirror, WPPuppet::PlayMode::Single }) {
+            auto   anim = makeAnimation(mode, -1, 10.0);
+            double t    = 0.3;
+            auto   info = anim.getInterpolationInfo(&t);
+            CHECK(info.frame_a == 0);
+            CHECK(info.frame_b == 0);
+        }
+    }
+
+    TEST_CASE("zero-length animation still renders a finite pose") {
+        auto puppet = makeShortTrackPuppet(0, 2);
+        auto layer  = makeSingleFullWeightLayer(puppet);
+        layer.genFrame(0.0);
+        auto frames = layer.genFrame(0.25);
+        REQUIRE(frames.size() == 1);
+        CHECK(std::isfinite(frames[0].translation().x()));
+    }
+}
