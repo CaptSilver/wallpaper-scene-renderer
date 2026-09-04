@@ -3,9 +3,12 @@
 #include "HWVideoTextureDecoder.hpp"
 
 #include <cstdlib>
+#include <cstring>
+#include <dirent.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
 
 using namespace wallpaper;
 namespace fs = std::filesystem;
@@ -95,5 +98,75 @@ TEST_SUITE("HWVideoTextureDecoder::initEGL diagnostics") {
 
         unsetenv("WEK_HW_DECODE_DRI_PATH");
         fs::remove_all(tmp);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GPU buffer lifetime
+//
+// Needs a working render node, so it degrades to a MESSAGE on a machine
+// without one (lavapipe, containers with no /dev/dri).  Where it does run it
+// is the only check that the decoder hands back the GPU memory it took.
+// ──────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+// The kernel names a descriptor pointing at a dma-buf "/dmabuf:" in
+// /proc/self/fd, which tells it apart from the DRI render node and from
+// libmpv's own descriptors.  Counting only those keeps the assertion immune to
+// unrelated fd churn inside mpv.  Returns -1 if /proc is unreadable.
+int countDmaBufFds() {
+    DIR* d = ::opendir("/proc/self/fd");
+    if (! d) return -1;
+    int n = 0;
+    while (const dirent* e = ::readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        const std::string link = std::string("/proc/self/fd/") + e->d_name;
+        char              target[256];
+        const ssize_t     len = ::readlink(link.c_str(), target, sizeof(target) - 1);
+        if (len <= 0) continue;
+        target[len] = '\0';
+        if (std::strncmp(target, "/dmabuf:", 8) == 0) ++n;
+    }
+    ::closedir(d);
+    return n;
+}
+
+// renderFrame() normally runs only when libmpv signals a new frame; drive it
+// directly so the test doesn't wait on decode timing.
+struct RenderProbe : HWVideoTextureDecoder {
+    RenderProbe(int w, int h): HWVideoTextureDecoder(w, h) {}
+    void renderOnce() {
+        m_needsRender.store(true);
+        renderFrame();
+    }
+};
+} // namespace
+
+TEST_SUITE("HWVideoTextureDecoder GPU buffer lifetime") {
+    TEST_CASE("a destroyed decoder holds no dma-buf from the frames it rendered") {
+        // Probe the real render node, not the fake-DRI fixture the diagnostics
+        // cases install.
+        ::unsetenv("WEK_HW_DECODE_DRI_PATH");
+
+        const int before = countDmaBufFds();
+        REQUIRE(before >= 0);
+
+        bool opened = false;
+        {
+            RenderProbe dec(64, 64);
+            // The path never resolves, and it doesn't need to: open() only
+            // needs EGL, the GL FBO and an mpv render context — mpv reports the
+            // missing file asynchronously.  A blank frame still renders, which
+            // is all the GPU-side resource handling depends on.
+            opened = dec.open("/var/empty/wek-no-such-video.mp4");
+            if (opened) dec.renderOnce();
+        }
+
+        if (! opened) {
+            MESSAGE("skipped: no usable GPU render node (EGL/GBM init failed)");
+            return;
+        }
+        CHECK(countDmaBufFds() == before);
     }
 }
