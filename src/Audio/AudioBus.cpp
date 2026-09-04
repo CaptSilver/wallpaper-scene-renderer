@@ -31,6 +31,11 @@ int                            g_subscriber_count { 0 };
 // drops to zero, the capture is torn down even if other (playback-tap-only)
 // subscribers are still alive.
 int                            g_capture_want_count { 0 };
+// How many subscribers actually read the spectrum.  Zero means no FFT.
+int                            g_spectrum_want_count { 0 };
+// Address handed out as the spectrum-lease handle's pointee.  Never
+// dereferenced — the shared_ptr exists purely for its deleter.
+char                           g_spectrum_lease_tag { 0 };
 int                            g_init_count { 0 }; // test-only counter (capture opens)
 bool                           g_capture_active { false };
 std::thread                    g_process_thread;
@@ -46,6 +51,10 @@ bool isNullCaptureMode() {
 // 60 Hz Process loop — the ONLY caller of analyzer->Process() in the
 // whole process.  Subscribers sample read-side spectrum APIs only,
 // preserving the MPSC + lock-free-read invariants.
+//
+// The FFT runs only while somebody holds a spectrum lease.  Leaving the
+// analyzer null when nobody does skips a 512-sample stereo transform 60
+// times a second for every scene that never looks at the spectrum.
 void processLoop() {
     while (true) {
         std::shared_ptr<AudioAnalyzer> analyzer;
@@ -54,7 +63,7 @@ void processLoop() {
             g_process_wake.wait_for(lk, std::chrono::milliseconds(16),
                                     [] { return g_process_quit; });
             if (g_process_quit) return;
-            analyzer = g_analyzer_strong;
+            if (g_spectrum_want_count > 0) analyzer = g_analyzer_strong;
         }
         if (analyzer) analyzer->Process();
     }
@@ -152,6 +161,22 @@ struct SubscriberDeleter {
     }
 };
 
+// Deleter for AcquireSpectrumConsumer's handle.  Withdraws one
+// spectrum declaration; the analyzer itself is untouched (the bus owns
+// it).  Runs on whatever thread drops the last reference.
+//
+// teardownAll deliberately does NOT zero g_spectrum_want_count: every
+// lease holder also holds an Acquire() handle, so a teardown implies the
+// leases are already gone.  Zeroing would hide a leaked lease instead of
+// letting the count stay honest; the floor check below keeps a stray
+// deleter from driving it negative.
+struct SpectrumConsumerDeleter {
+    void operator()(void* /*tag*/) const {
+        std::lock_guard<std::mutex> lk(g_mutex);
+        if (g_spectrum_want_count > 0) --g_spectrum_want_count;
+    }
+};
+
 // Opens an AudioCapture (or pretends to, in test mode).  Must be
 // called with g_mutex held.  Returns true on success.
 bool openCaptureLocked() {
@@ -244,6 +269,12 @@ std::shared_ptr<AudioAnalyzer> AudioBus::Acquire(bool wantSystemCapture) {
     }
 
     return handle;
+}
+
+AudioBus::SpectrumConsumer AudioBus::AcquireSpectrumConsumer() {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    ++g_spectrum_want_count;
+    return SpectrumConsumer(&g_spectrum_lease_tag, SpectrumConsumerDeleter {});
 }
 
 bool AudioBus::HasSystemCapture() {

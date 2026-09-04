@@ -10,8 +10,10 @@
 #include "Scene/SceneRenderTarget.h"
 #include "Scene/SceneShader.h"
 #include "SpecTexs.hpp"
+#include "Audio/AudioAnalyzer.h"
 
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -346,6 +348,40 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::parallax_position") {
         REQUIRE(w->values.size() == 2);
         CHECK(w->values[0] == doctest::Approx(0.7f));
         CHECK(w->values[1] == doctest::Approx(0.8f));
+    }
+
+    TEST_CASE("a zero parallax delay snaps the mouse to the input, never NaN") {
+        // Wallpaper Engine ships scenes with cameraparallaxdelay: 0.  The
+        // delayed-mouse lerp divides the frame time by that delay, so an
+        // unguarded 0/0 poisons m_mousePos with NaN for the rest of the
+        // scene's life — lerp is a + t*(b-a), so once a is NaN no later t
+        // rescues it, and SceneWallpaper feeds that NaN straight into every
+        // mouse-linked particle control point.  Zero delay means "follow the
+        // cursor instantly".
+        Scene scene;
+        installActiveCamera(scene);
+        scene.frameTime = 0.016;
+
+        WPShaderValueUpdater updater(&scene);
+        WPCameraParallax     p;
+        p.delay = 0.0f;
+        updater.SetCameraParallax(p);
+
+        updater.MouseInput(0.7, 0.2);
+        updater.FrameBegin();
+
+        auto pos = updater.GetMousePosition();
+        REQUIRE(std::isfinite(pos[0]));
+        REQUIRE(std::isfinite(pos[1]));
+        CHECK(pos[0] == doctest::Approx(0.7f));
+        CHECK(pos[1] == doctest::Approx(0.2f));
+
+        // A second frame must stay finite too — a NaN would have latched.
+        updater.MouseInput(0.3, 0.9);
+        updater.FrameBegin();
+        pos = updater.GetMousePosition();
+        CHECK(pos[0] == doctest::Approx(0.3f));
+        CHECK(pos[1] == doctest::Approx(0.9f));
     }
 }
 
@@ -886,6 +922,31 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::init_audio_flag") {
         WPShaderValueUpdater updater(&scene);
         updater.InitUniforms(f.node.get(), makeExistsOp({ G_TIME, G_M }));
         CHECK_FALSE(updater.hasAudioConsumer());
+    }
+    TEST_CASE("FrameBegin never runs the FFT — the audio bus owns Process()") {
+        // AudioAnalyzer::Process() is single-consumer by contract: the bus's
+        // own 60 Hz thread is the only caller.  A second call from the render
+        // thread races the bus on readPos, the kissfft scratch and every band
+        // array, and garbles whole FFT windows.  Even with the gate latched
+        // and PCM waiting, FrameBegin must leave the FFT alone.
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_AUDIOSPECTRUM32LEFT }));
+        REQUIRE(updater.hasAudioConsumer());
+
+        // One full FFT window (512 stereo frames) is queued and ready.
+        auto               analyzer = std::make_shared<audio::AudioAnalyzer>();
+        std::vector<float> pcm(1024, 0.25f);
+        analyzer->FeedPcm(pcm.data(), 512, 2);
+        updater.SetAudioAnalyzer(analyzer);
+
+        updater.FrameBegin();
+        CHECK(analyzer->WindowsProcessedForTest() == 0);
     }
 }
 

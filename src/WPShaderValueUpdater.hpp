@@ -195,8 +195,11 @@ public:
     }
     // Audio-consumer terms.  m_hasAudioUniform is OR'd from the
     // per-node has_AUDIOSPECTRUM* bits in InitUniforms; these two are pushed in
-    // from the scene-build / SceneObject side.  Process() runs iff
-    // hasAudioConsumer() — non-audio scenes skip the per-frame FFT entirely.
+    // from the scene-build / SceneObject side.  SceneWallpaper turns the
+    // hasAudioConsumer() verdict into an AudioBus spectrum lease, and the bus
+    // thread runs the FFT only while a lease is held — non-audio scenes pay
+    // nothing.  The updater itself never calls Process(): that would be a
+    // second, unsynchronised consumer racing the bus thread.
     void SetHasReactiveParticles(bool v) { m_hasReactiveParticles = v; }
     // Written from the QML thread (SceneObject::setupTextScripts, fired on
     // firstFrame) and read on the render thread (FrameBegin); atomic to avoid a

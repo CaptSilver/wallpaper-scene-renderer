@@ -35,8 +35,14 @@ void WPShaderValueUpdater::FrameBegin() {
     double new_time    = m_mouseDelayedTime + m_scene->frameTime;
     new_time           = new_time > m_parallax.delay ? m_parallax.delay : new_time;
     m_mouseDelayedTime = new_time;
-    double t           = new_time / m_parallax.delay;
-    m_mousePos         = std::array { (float)algorism::lerp(t, m_mousePos[0], m_mousePosInput[0]),
+    // A zero delay means "the mouse follows instantly", so snap t to 1 instead
+    // of dividing.  Wallpaper Engine really does ship cameraparallaxdelay: 0,
+    // and 0/0 would put NaN into m_mousePos permanently — lerp is a + t*(b-a),
+    // so no later t recovers once a is NaN, and the NaN reaches every
+    // mouse-linked particle control point.  `> 0.0` also catches a negative
+    // delay.
+    double t   = m_parallax.delay > 0.0f ? new_time / m_parallax.delay : 1.0;
+    m_mousePos = std::array { (float)algorism::lerp(t, m_mousePos[0], m_mousePosInput[0]),
                               (float)algorism::lerp(t, m_mousePos[1], m_mousePosInput[1]) };
 
     // Compute camera shake offset (sum-of-sinusoids pseudo-noise)
@@ -53,14 +59,6 @@ void WPShaderValueUpdater::FrameBegin() {
                    std::cos(t * 5.1f + 0.9f) * r * r;
         float norm    = 1.0f + r + r * r;
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
-    }
-
-    // Process audio FFT for this frame — only if the scene actually consumes
-    // audio (a spectrum uniform, a reactive particle, or a SceneScript audio
-    // buffer).  Non-audio scenes skip the full 512-sample x2 FFT every frame
-    //.
-    if (m_audioAnalyzer && hasAudioConsumer()) {
-        m_audioAnalyzer->Process();
     }
 
     // Advance camera path animation

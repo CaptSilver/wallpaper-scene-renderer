@@ -19,7 +19,9 @@ class AudioAnalyzer;
 // thread; subscribers only read the spectrum via the analyzer's
 // documented lock-free APIs (GetRawSpectrum / GetSpectrum16Left etc.).
 // This preserves the MPSC + lock-free-read invariants while still
-// running a single FFT pipeline for the whole process.
+// running a single FFT pipeline for the whole process.  Nobody else may
+// call Process() — a second caller races the bus thread on readPos, the
+// kissfft scratch and every band array.
 //
 // Acquire is thread-safe.  When wantSystemCapture is true and capture
 // init fails (no PulseAudio / PipeWire monitor source available) the
@@ -33,6 +35,15 @@ public:
     // true-Acquire).  Returns a usable analyzer even when capture init
     // fails — subscribers that need real audio detect via HasData().
     static std::shared_ptr<AudioAnalyzer> Acquire(bool wantSystemCapture);
+
+    // RAII declaration that the holder reads the spectrum.  The bus thread
+    // runs the FFT only while at least one of these is alive, so a wallpaper
+    // with no spectrum uniform, no audio-reactive particle and no SceneScript
+    // audio buffer costs nothing.  Reset the handle to withdraw the
+    // declaration; re-acquire to reinstate it.  Callers must also hold an
+    // Acquire() handle — a lease alone doesn't keep the bus up.
+    using SpectrumConsumer = std::shared_ptr<void>;
+    static SpectrumConsumer AcquireSpectrumConsumer();
 
     // True when an AudioCapture (or the WEK_TEST_AUDIO_NULL_CAPTURE
     // stand-in) is currently feeding the shared analyzer.  Subscribers

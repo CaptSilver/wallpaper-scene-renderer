@@ -23,7 +23,11 @@ public:
     // producers serialize via an internal mutex; consumer is unaffected.
     void FeedPcm(const float* interleavedStereo, uint32_t frameCount, uint32_t channels);
 
-    // Called once per render frame — runs FFT on accumulated samples
+    // Runs the FFT over accumulated samples.  SINGLE CONSUMER: exactly one
+    // thread may ever call this on a given analyzer.  For the shared analyzer
+    // that is the AudioBus 60Hz thread and nobody else — it mutates readPos,
+    // the kissfft scratch and every band array with no lock, so a second
+    // caller garbles whole windows.
     void Process();
 
     // Read spectrum bands — std140-padded (vec4 stride: value at [i*4], zeros at [i*4+1..3])

@@ -41,9 +41,12 @@ public:
     bool                 FromJson(const nlohmann::json&);
     std::array<float, 3> clearcolor { 0.0f, 0.0f, 0.0f };
     bool                 cameraparallax { false };
-    float                cameraparallaxamount;
-    float                cameraparallaxdelay;
-    float                cameraparallaxmouseinfluence;
+    // Mirror WPCameraParallax's defaults: GET_JSON_NAME_VALUE leaves the
+    // destination untouched when the key is absent, and plenty of scenes ship
+    // a `general` block with no cameraparallax* keys at all.
+    float                cameraparallaxamount { 1.0f };
+    float                cameraparallaxdelay { 0.5f };
+    float                cameraparallaxmouseinfluence { 1.0f };
     bool                 isOrtho { true };
     Orthogonalprojection orthogonalprojection { 1920, 1080 };
     float                zoom { 1.0f };

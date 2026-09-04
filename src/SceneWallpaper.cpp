@@ -226,16 +226,35 @@ public:
     std::shared_ptr<audio::AudioAnalyzer> audioAnalyzer() const { return m_audio_analyzer; }
 
     // push the SceneScript audio-consumer term (engine._audioRegs
-    // non-empty) into the current scene's updater so the FFT gate keeps
-    // Process() running for script-only-audio scenes (the CRITICAL starvation
-    // guard).  Called from the QML thread (SceneObject::setupTextScripts, fired
-    // on firstFrame, so the scene is already published); .load() stabilises the
-    // pointer and the updater flag is atomic.
+    // non-empty) into the current scene's updater so the spectrum lease keeps
+    // the bus FFT running for script-only-audio scenes (the CRITICAL
+    // starvation guard).  Called from the QML thread
+    // (SceneObject::setupTextScripts, fired on firstFrame, so the scene is
+    // already published); .load() stabilises the pointer and the updater flag
+    // is atomic.
     void setHasScriptAudio(bool v) {
         auto scene = m_scene.load();
         if (! scene) return;
-        if (auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get()))
+        if (auto* updater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
             updater->SetHasScriptAudio(v);
+            // A script-only-audio scene registers its buffers well after load,
+            // so the lease has to be re-evaluated here or the bus never starts
+            // the FFT for it.
+            refreshAudioSpectrumLease(*updater);
+        }
+    }
+
+    // Turn the updater's audio-consumer verdict into an AudioBus spectrum
+    // lease.  Idempotent: re-taking a lease we already hold would double-count
+    // the bus's refcount, so only the transitions do anything.
+    void refreshAudioSpectrumLease(const WPShaderValueUpdater& updater) {
+        std::lock_guard<std::mutex> lk(m_audio_spectrum_lease_mutex);
+        if (updater.hasAudioConsumer()) {
+            if (! m_audio_spectrum_lease)
+                m_audio_spectrum_lease = audio::AudioBus::AcquireSpectrumConsumer();
+        } else {
+            m_audio_spectrum_lease.reset();
+        }
     }
 
     std::vector<AnimationEventInfo> drainAnimationEvents() {
@@ -295,6 +314,12 @@ private:
     WPSceneParser                         m_scene_parser;
     std::unique_ptr<audio::SoundManager>  m_sound_manager;
     std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
+    // Live "this scene reads the spectrum" declaration handed to the AudioBus;
+    // the bus thread runs the FFT only while it is held.  Taken/dropped from
+    // the load thread (loadScene) and the QML thread (setHasScriptAudio),
+    // hence the mutex.
+    audio::AudioBus::SpectrumConsumer     m_audio_spectrum_lease;
+    std::mutex                            m_audio_spectrum_lease_mutex;
     FirstFrameCallback                    m_first_frame_callback;
     VideoDecodeFailedCallback             m_video_decode_failed_callback;
     std::string                           m_user_props_json;
@@ -1807,7 +1832,10 @@ private:
                          m_init_info.fixed_dt,
                          m_init_info.rng_seed);
             }
-            m_render->init(m_init_info);
+            if (! m_render->init(m_init_info)) {
+                LOG_ERROR("Failed to initialize Vulkan");
+                return;
+            }
 
             // inited, callback to laod scene
             main_handler.sendCmdLoadScene();
@@ -3144,11 +3172,16 @@ void MainHandler::loadScene() {
     scene->audioAnalyzer = m_audio_analyzer;
     if (auto* wpUpdater = dynamic_cast<WPShaderValueUpdater*>(scene->shaderValueUpdater.get())) {
         wpUpdater->SetAudioAnalyzer(m_audio_analyzer);
-        // push the reactive-particle term so the FFT gate keeps
-        // Process() running for audio-reactive-particle scenes.  Set here (load
+        // push the reactive-particle term so the spectrum lease keeps the bus
+        // FFT running for audio-reactive-particle scenes.  Set here (load
         // thread, before the scene is published) so it happens-before the first
         // render-thread FrameBegin read.
         wpUpdater->SetHasReactiveParticles(scene->hasAudioReactiveParticles);
+        // Declare (or withdraw) this scene's spectrum lease now that both
+        // load-time consumer terms are known.  A scene with no spectrum
+        // uniform and no reactive particle leaves the bus FFT off until a
+        // SceneScript audio registration flips it via setHasScriptAudio.
+        refreshAudioSpectrumLease(*wpUpdater);
         LOG_INFO("Audio analyzer connected to shader value updater");
     }
 

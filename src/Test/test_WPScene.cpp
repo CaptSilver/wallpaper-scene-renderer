@@ -144,6 +144,23 @@ TEST_SUITE("WPSceneGeneral::FromJson") {
         CHECK(g.camerashakeroughness == doctest::Approx(0.25f));
     }
 
+    TEST_CASE("parallax fields keep their defaults when the general block omits them") {
+        // Plenty of installed wallpapers ship a `general` block with no
+        // cameraparallax* keys at all.  GET_JSON_NAME_VALUE leaves its
+        // destination untouched on an absent key, so these floats have to
+        // carry in-class defaults or the runtime reads indeterminate memory —
+        // and a garbage 0 delay divides by zero in the delayed-mouse lerp.
+        auto j = nlohmann::json::parse(R"({
+            "ambientcolor":"0 0 0","skylightcolor":"0 0 0","clearcolor":"0 0 0"
+        })");
+        WPSceneGeneral g;
+        REQUIRE(g.FromJson(j));
+        CHECK_FALSE(g.cameraparallax);
+        CHECK(g.cameraparallaxamount == doctest::Approx(1.0f));
+        CHECK(g.cameraparallaxdelay == doctest::Approx(0.5f));
+        CHECK(g.cameraparallaxmouseinfluence == doctest::Approx(1.0f));
+    }
+
     TEST_CASE("camerafade flag parses") {
         auto j = nlohmann::json::parse(R"({
             "ambientcolor":"0 0 0","skylightcolor":"0 0 0","clearcolor":"0 0 0",
