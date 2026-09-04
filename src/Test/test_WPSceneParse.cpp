@@ -25,6 +25,7 @@
 // a `Scene` without compiling any SPIR-V and without a Vulkan device.
 
 #include "WPSceneParser.hpp"
+#include "test_scratch.hpp"
 #include "WPShaderParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneCamera.h"
@@ -101,7 +102,9 @@ std::unique_ptr<fs::VFS> makeEmptyAssetsVfs() {
 // FinalGlslang() — process exit handles teardown.
 void ensureGlslangInit() {
     static std::once_flag once;
-    std::call_once(once, [] { WPShaderParser::InitGlslang(); });
+    std::call_once(once, [] {
+        WPShaderParser::InitGlslang();
+    });
 }
 
 // Trivial GLSL pair shared by every E2E image/effect fixture below.  The WE
@@ -376,7 +379,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     // Real-Time Earth scene (group + parented light + exponent) without any
     // material/shader assets so the test stays Vulkan-free.
     TEST_CASE("ParseLightObj honors JSON `parent` and exponent") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -394,7 +397,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -415,8 +418,8 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
         // Walk down sceneGraph to find the GROUP and confirm the light node
         // sits beneath it.
-        std::function<SceneNode*(SceneNode*, i32)> findById =
-            [&](SceneNode* n, i32 id) -> SceneNode* {
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
             if (n->ID() == id) return n;
             for (auto& c : n->GetChildren()) {
                 if (auto* hit = findById(c.get(), id)) return hit;
@@ -484,7 +487,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     TEST_CASE("ParseLightObj reads density and routes through SceneLight predicate") {
         // Mirrors a real preview scene: density=7.48, volumetricsexponent=4.0,
         // no explicit castvolumetrics (heuristic opts in via density>0).
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -500,7 +503,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -516,7 +519,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
     TEST_CASE("ParseLightObj honors explicit castvolumetrics:false despite density>0") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -532,7 +535,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -546,7 +549,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
     TEST_CASE("ParseLightObj parses ltube / ldirectional / lspot kinds") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -560,7 +563,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -573,7 +576,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
     TEST_CASE("ParseLightObj falls back to Point on unknown kind string") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -584,7 +587,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -595,7 +598,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
     TEST_CASE("ParseLightObj reads castshadow and cascade distances") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -612,7 +615,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -631,7 +634,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // assets/scenes/particleelementpreviews/collisionmodel/scene.json.  The
         // light is an lpoint with all volumetric fields populated and the
         // cascade defaults (0/100/200).
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1920, "height": 1080 } },
@@ -655,7 +658,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -681,7 +684,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // Workshop 3287715210 (发光少女 4K) — the only scene in the inventoried
         // corpus carrying castvolumetrics: true explicitly.  Density + exp are
         // the author-tuned values.
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1920, "height": 1080 } },
@@ -701,7 +704,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -724,7 +727,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // this test slices just the light entry (no parenting) since the
         // parent linkage is exercised by the pre-existing parented-light test
         // above.
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1920, "height": 1080 } },
@@ -744,7 +747,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -767,7 +770,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // weren't loadable.  Production wallpapers always carry the WE shader
         // assets so the chain stays enabled there; this test simply locks
         // the no-asset failure path so a malformed install can't crash.
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -782,7 +785,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -804,7 +807,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // require every volumetric node to come out with usable SPV.
         ensureGlslangInit();
 
-        const std::string cache_dir = "/tmp/wek_volumetric_spv_" + std::to_string(::getpid());
+        const std::string cache_dir = wallpaper::test::ScratchDir("volumetric_spv", ::getpid());
         std::filesystem::remove_all(cache_dir);
         std::filesystem::create_directories(cache_dir);
 
@@ -861,7 +864,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     }
 
     TEST_CASE("Scene::volumetricsConfig.enabled stays false when no light casts") {
-        const char* kJson = R"JSON(
+        const char*         kJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 640, "height": 480 } },
@@ -872,7 +875,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
   ]
 }
 )JSON";
-        auto                vfs = makeEmptyAssetsVfs();
+        auto                vfs   = makeEmptyAssetsVfs();
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
@@ -914,7 +917,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         ensureGlslangInit();
         auto vfs = makeAssetsVfsWith({});
 
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -932,7 +935,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
-        auto                scene = parser.Parse("scene_image_no_effect", kSceneJson, *vfs, sm, props);
+        auto scene = parser.Parse("scene_image_no_effect", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
         // Walk the graph to find id=300 — same recursive findById pattern
@@ -969,7 +972,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
             { "/effects/tint.json", kEffectFileJson },
         });
 
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -990,7 +993,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         audio::SoundManager sm;
         WPUserProperties    props {};
         WPSceneParser       parser;
-        auto                scene = parser.Parse("scene_image_effect_chain", kSceneJson, *vfs, sm, props);
+        auto scene = parser.Parse("scene_image_effect_chain", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
         std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
@@ -1058,10 +1061,10 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // bare local offset (Hoshi-Tele 3042492564: the puppet's head + legs,
         // the only effect-less parts, piled in the lower-left corner).
         ensureGlslangInit();
-        auto vfs = makeAssetsVfsWith({
+        auto                vfs        = makeAssetsVfsWith({
             { "/effects/tint.json", kEffectFileJson },
         });
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -1116,7 +1119,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
             { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
         });
 
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -1175,7 +1178,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // `dependencies:[64,64,64]` self-reference shape exactly.
         auto vfs = makeAssetsVfsWith({});
 
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "general": { "clearcolor": "0 0 0",
                "orthogonalprojection": { "width": 1280, "height": 720 } },
@@ -1305,15 +1308,15 @@ TEST_SUITE("WPSceneParser_Hotplug") {
 TEST_SUITE("regression: minimised fuzz crashes") {
     TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
         namespace fs2 = std::filesystem;
-        const fs2::path dir = wallpaper::test::test_data_root()
-                              / "fuzz_regressions" / "WPSceneParser";
+        const fs2::path dir =
+            wallpaper::test::test_data_root() / "fuzz_regressions" / "WPSceneParser";
         if (! fs2::exists(dir)) return;
         for (auto& entry : fs2::directory_iterator(dir)) {
             if (entry.path().extension() != ".bin") continue;
             SUBCASE(entry.path().filename().string().c_str()) {
                 std::ifstream in(entry.path(), std::ios::binary);
-                std::string buf(std::istreambuf_iterator<char>(in), {});
-                auto j = nlohmann::json::parse(buf, nullptr, false);
+                std::string   buf(std::istreambuf_iterator<char>(in), {});
+                auto          j = nlohmann::json::parse(buf, nullptr, false);
                 if (j.is_discarded()) return;
                 wallpaper::wpscene::WPScene sc;
                 CHECK_NOTHROW([&] {

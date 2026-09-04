@@ -3,8 +3,10 @@
 #include "WPShaderParser.hpp" // transitively pulls ShaderCode/ShaderType/WPShaderInfo
 #include "Fs/VFS.h"
 #include "Fs/PhysicalFs.h"
+#include "test_scratch.hpp"
 
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -25,7 +27,9 @@ namespace
 // paired Final after other suites' compiles would be order-fragile).
 void EnsureGlslang() {
     static std::once_flag once;
-    std::call_once(once, [] { WPShaderParser::InitGlslang(); });
+    std::call_once(once, [] {
+        WPShaderParser::InitGlslang();
+    });
 }
 
 // A fragment unit that DECLARES g_Texture0 so the preprocessor records slot 0
@@ -68,10 +72,9 @@ size_t CountFilesRec(const std::string& dir) {
 TEST_CASE("warm SPV cache hit still populates active_tex_slots") {
     EnsureGlslang();
 
-    // Unique scratch cache dir, self-cleaned (project test convention uses a
-    // named /tmp dir; PID-suffix it so parallel ctest shards don't collide).
-    const std::string cache_dir =
-        "/tmp/wek_warm_cache_texslots_" + std::to_string(::getpid());
+    // Unique scratch cache dir, self-cleaned; PID-suffixed so parallel ctest
+    // shards don't collide.  On disk, not tmpfs -- see test_scratch.hpp.
+    const std::string cache_dir = wallpaper::test::ScratchDir("warm_cache_texslots", ::getpid());
     std::filesystem::remove_all(cache_dir);
     std::filesystem::create_directories(cache_dir);
 
@@ -82,7 +85,7 @@ TEST_CASE("warm SPV cache hit still populates active_tex_slots") {
 
     // ---- Run 1: COLD (empty cache) -> miss -> deferred compile, flush to disk.
     {
-        fs::VFS                      vfs;
+        fs::VFS vfs;
         mount_cache(vfs);
         WPShaderInfo                 info;
         auto                         units = MakeUnits();
@@ -103,7 +106,7 @@ TEST_CASE("warm SPV cache hit still populates active_tex_slots") {
 
     // ---- Run 2: WARM (cache populated) -> HIT -> must STILL preprocess first.
     {
-        fs::VFS                      vfs;
+        fs::VFS vfs;
         mount_cache(vfs);
         WPShaderInfo                 info;
         auto                         units = MakeUnits(); // fresh: empty active_tex_slots
@@ -140,11 +143,11 @@ namespace
 // post-preprocess unit source, so varying the constant guarantees a distinct
 // cache path -> a guaranteed MISS -> the cold-compile branch under test.
 std::vector<WPShaderUnit> MakeTaggedUnits(int tag) {
-    std::string src = "void main() {\n"
-                      "    gl_FragColor = vec4(" +
-                      std::to_string(tag) +
-                      ".0 / 255.0, 0.0, 0.0, 1.0);\n"
-                      "}\n";
+    std::string               src = "void main() {\n"
+                                    "    gl_FragColor = vec4(" +
+                                    std::to_string(tag) +
+                                    ".0 / 255.0, 0.0, 0.0, 1.0);\n"
+                                    "}\n";
     std::vector<WPShaderUnit> units;
     units.push_back(WPShaderUnit { ShaderType::FRAGMENT, std::move(src), {} });
     return units;
@@ -155,8 +158,7 @@ std::vector<WPShaderUnit> MakeTaggedUnits(int tag) {
 struct ScratchCache {
     std::string dir;
 
-    explicit ScratchCache(std::string_view tag)
-        : dir("/tmp/wek_" + std::string(tag) + "_" + std::to_string(::getpid())) {
+    explicit ScratchCache(std::string_view tag): dir(wallpaper::test::ScratchDir(tag, ::getpid())) {
         std::filesystem::remove_all(dir);
         std::filesystem::create_directories(dir);
     }
@@ -229,8 +231,7 @@ TEST_CASE("a compile whose shader died before the next load is not written throu
         auto                         units = MakeTaggedUnits(33);
         WPShaderInfo                 info;
         std::vector<WPShaderTexInfo> texs;
-        REQUIRE(
-            WPShaderParser::CompileToSpv("shader_pub", units, doomed->codes, vfs, &info, texs));
+        REQUIRE(WPShaderParser::CompileToSpv("shader_pub", units, doomed->codes, vfs, &info, texs));
     }
     REQUIRE(dead.expired());
 

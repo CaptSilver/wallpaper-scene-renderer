@@ -10,9 +10,13 @@
 #include "WPCommon.hpp"
 #include "Fs/MemBinaryStream.h"
 #include "Utils/Logging.h"
+#include "test_scratch.hpp"
 
 #include <cmath>
 #include <cstring>
+#include <unistd.h>
+#include <string_view>
+#include <cstdlib>
 #include <cstdio>
 #include <vector>
 
@@ -836,6 +840,14 @@ static bool load(const std::string& path, Pkg& p) {
 #ifndef WP_PKG_TOOL_PATH
 #    define WP_PKG_TOOL_PATH ""
 #endif
+// wp-pkg fixture paths: per-process, and on disk rather than tmpfs.  These were
+// fixed names under /tmp, so the fixtures were resident memory and every
+// mutation worker running this binary concurrently raced on the same paths.
+static std::string wp_pkg_fixture(std::string_view name) {
+    static const std::string base = wallpaper::test::ScratchDir("wp_pkg", ::getpid());
+    return base + "/" + std::string(name);
+}
+
 static bool wp_pkg_tool_available() {
     constexpr std::string_view kPath = WP_PKG_TOOL_PATH;
     return ! kPath.empty() && std::filesystem::exists(kPath);
@@ -853,8 +865,8 @@ TEST_SUITE("wp-pkg pack format") {
         }
         // Build a tiny pkg with known entries under a temp dir, run wp-pkg pack,
         // load it back via load(), check byte-level correctness.
-        const std::string dir = "/tmp/wp_pkg_pack_test_fixture";
-        const std::string pkg = "/tmp/wp_pkg_pack_test.pkg";
+        const std::string dir = wp_pkg_fixture("pack_test_fixture");
+        const std::string pkg = wp_pkg_fixture("pack_test.pkg");
         std::filesystem::remove_all(dir);
         std::filesystem::remove(pkg);
         std::filesystem::create_directories(dir + "/sub");
@@ -908,12 +920,12 @@ TEST_SUITE("wp-pkg pack format") {
         }
         const std::string tool = WP_PKG_TOOL_PATH;
         // Non-existent dir should exit non-zero without creating output.
-        std::filesystem::remove("/tmp/wp_pkg_nope_out.pkg");
-        std::string cmd = tool + " pack /tmp/__not_a_real_dir_for_wp_pkg "
-                                 "/tmp/wp_pkg_nope_out.pkg > /dev/null 2>&1";
+        std::filesystem::remove(wp_pkg_fixture("nope_out.pkg"));
+        std::string cmd = tool + " pack " + wp_pkg_fixture("__not_a_real_dir") + " " +
+                          wp_pkg_fixture("nope_out.pkg") + " > /dev/null 2>&1";
         int         rc  = std::system(cmd.c_str());
         CHECK(rc != 0);
-        CHECK_FALSE(std::filesystem::exists("/tmp/wp_pkg_nope_out.pkg"));
+        CHECK_FALSE(std::filesystem::exists(wp_pkg_fixture("nope_out.pkg")));
     }
 
     TEST_CASE("Pack skips .info.txt sidecars extract --raw=off writes") {
@@ -923,8 +935,8 @@ TEST_SUITE("wp-pkg pack format") {
         }
         // Extract writes <file>.info.txt next to each .tex for human-readable
         // header summaries.  Repacking should NOT include those synthetic files.
-        const std::string dir = "/tmp/wp_pkg_pack_skip_test";
-        const std::string pkg = "/tmp/wp_pkg_pack_skip_test.pkg";
+        const std::string dir = wp_pkg_fixture("pack_skip_test");
+        const std::string pkg = wp_pkg_fixture("pack_skip_test.pkg");
         std::filesystem::remove_all(dir);
         std::filesystem::remove(pkg);
         std::filesystem::create_directories(dir);
@@ -980,8 +992,8 @@ TEST_SUITE("wp-pkg scripts") {
             MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
             return;
         }
-        const std::string dir = "/tmp/wp_pkg_scripts_fixture";
-        const std::string out = "/tmp/wp_pkg_scripts_out";
+        const std::string dir = wp_pkg_fixture("scripts_fixture");
+        const std::string out = wp_pkg_fixture("scripts_out");
         std::filesystem::remove_all(dir);
         std::filesystem::remove_all(out);
         std::filesystem::create_directories(dir);
@@ -1049,8 +1061,8 @@ TEST_SUITE("wp-pkg scripts") {
             MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
             return;
         }
-        const std::string dir = "/tmp/wp_pkg_scripts_empty_fixture";
-        const std::string out = "/tmp/wp_pkg_scripts_empty_out";
+        const std::string dir = wp_pkg_fixture("scripts_empty_fixture");
+        const std::string out = wp_pkg_fixture("scripts_empty_out");
         std::filesystem::remove_all(dir);
         std::filesystem::remove_all(out);
         std::filesystem::create_directories(dir);
@@ -1076,8 +1088,8 @@ TEST_SUITE("wp-pkg scripts") {
             MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
             return;
         }
-        const std::string dir = "/tmp/wp_pkg_scripts_pj_fixture";
-        const std::string out = "/tmp/wp_pkg_scripts_pj_out";
+        const std::string dir = wp_pkg_fixture("scripts_pj_fixture");
+        const std::string out = wp_pkg_fixture("scripts_pj_out");
         std::filesystem::remove_all(dir);
         std::filesystem::remove_all(out);
         std::filesystem::create_directories(dir);
