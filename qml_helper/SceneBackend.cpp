@@ -3379,47 +3379,9 @@ void SceneObject::setupEngineGlobals() {
                                  .arg(orthoSize[1]));
     }
 
-    m_jsEngine->evaluate(
-        // cursorWorldPosition / cursorScreenPosition are Vec2 (not plain
-        // objects) so wallpapers that compose them — Game of Life
-        // (3453251764) tooltip layer does
-        // `return input.cursorWorldPosition.add(new Vec2(offX, offY))`
-        // every tick — find the .add/.subtract/etc. methods.  The per-frame
-        // refresh below mutates .x/.y in place, which preserves the Vec2
-        // prototype link.
-        "var input = { cursorWorldPosition: Vec2(0, 0),\n"
-        "  cursorScreenPosition: Vec2(0, 0),\n"
-        "  cursorLeftDown: false };\n"
-        // Safe String.match: return empty array instead of null (prevents null.forEach crashes)
-        "var _origMatch = String.prototype.match;\n"
-        "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
-        // localStorage — backed by __sceneBridge for disk persistence.
-        // WE defines two locations: GLOBAL (shared) and SCREEN (per-scene).
-        // Scripts that omit the argument default to SCREEN (the solar system
-        // wallpaper's icon-state save/load flow relies on this — without a
-        // `loc` arg it expects per-scene persistence so switching to another
-        // wallpaper doesn't inherit the last wallpaper's icon state).
-        "var localStorage = (function() {\n"
-        "  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }\n"
-        "  return {\n"
-        "    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,\n"
-        "    get: function(key, loc) {\n"
-        "      return __sceneBridge ? __sceneBridge.lsGet(_loc(loc), String(key)) : undefined;\n"
-        "    },\n"
-        "    set: function(key, value, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsSet(_loc(loc), String(key), value);\n"
-        "    },\n"
-        "    remove: function(key, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
-        "    },\n"
-        "    'delete': function(key, loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));\n"
-        "    },\n"
-        "    clear: function(loc) {\n"
-        "      if (__sceneBridge) __sceneBridge.lsClear(_loc(loc));\n"
-        "    }\n"
-        "  };\n"
-        "})();\n");
+    // `input` + `localStorage` globals — shared with scenescript_tests via
+    // SceneScriptShimsJs.hpp.  Must follow kVecClassesJs (input holds Vec2s).
+    m_jsEngine->evaluate(wek::qml_helper::kInputAndLocalStorageJs);
     m_inputObj = m_jsEngine->globalObject().property("input");
     m_cwpObj   = m_inputObj.property("cursorWorldPosition");
     m_cspObj   = m_inputObj.property("cursorScreenPosition");

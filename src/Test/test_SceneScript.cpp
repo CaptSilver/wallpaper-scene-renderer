@@ -2271,18 +2271,20 @@ TEST_SUITE("SceneScript engine.colorScheme") {
 // Fixtures for comprehensive SceneScript tests
 // ===================================================================
 
-// JS string constants copied from SceneBackend.cpp (lines 662-700)
-// Non-vec test-setup JS: `input` placeholder + String.match null-safety +
-// a minimal localStorage stub.  Vec2 / Vec3 / Vec4 come from
-// wek::qml_helper::kVecClassesJs (evaluated right after this in the
-// MathEnv / ScriptEnv ctors), so the three classes share a single source
-// of truth with production.
+// Test-only stand-ins for the two non-Vec globals production installs: an
+// `input` placeholder and an in-memory localStorage.  Production's own
+// versions live in wek::qml_helper::kInputAndLocalStorageJs, but neither can
+// be reused verbatim here — `input` holds Vec2s and is evaluated before
+// kVecClassesJs in these fixtures, and localStorage is backed by
+// __sceneBridge, which has no disk behind it headless.  Vec2 / Vec3 / Vec4
+// do come from kVecClassesJs (evaluated right after this in the MathEnv /
+// ScriptEnv ctors), so the three classes share one source of truth with
+// production.  Nothing here may patch a built-in prototype: the suite would
+// then be asserting against an engine the plugin does not ship.
 static const char* JS_VEC3_AND_UTILS =
     "var input = { cursorWorldPosition: { x: 0, y: 0 },\n"
     "  cursorScreenPosition: { x: 0, y: 0 },\n"
     "  cursorLeftDown: false };\n"
-    "var _origMatch = String.prototype.match;\n"
-    "String.prototype.match = function(re) { return _origMatch.call(this, re) || []; };\n"
     "var localStorage = (function() {\n"
     "  var _store = {};\n"
     "  return {\n"
@@ -2600,13 +2602,9 @@ static const char* JS_SOUND_INFRA =
 struct MathEnv {
     QJSEngine engine;
     MathEnv() {
-        // Evaluate in two phases: JS_VEC3_AND_UTILS sets up `input` +
-        // String.match patch + localStorage + closure Vec2/3/4, then
-        // kVecClassesJs overrides Vec2/3/4 with the canonical prototype-
-        // based implementations shared with production.  Closures-first
-        // keeps the non-Vec pieces of JS_VEC3_AND_UTILS intact; the later
-        // kVecClassesJs rewrites the Vec symbols so tests exercise the
-        // same class surface production scripts see.
+        // JS_VEC3_AND_UTILS sets up `input` + localStorage, then kVecClassesJs
+        // brings in the canonical Vec2/3/4 shared with production so tests
+        // exercise the same class surface scripts see.
         engine.evaluate(JS_VEC3_AND_UTILS);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
@@ -2645,9 +2643,8 @@ struct ScriptEnv {
         // console
         engine.evaluate(JS_CONSOLE);
 
-        // Vec3, String.match, localStorage (closure Vec3/Vec4) — then
-        // kVecClassesJs overrides Vec2/3/4 with the canonical prototype-
-        // based implementations shared with production.
+        // `input` + localStorage, then the canonical Vec2/3/4 shared with
+        // production.
         engine.evaluate(JS_VEC3_AND_UTILS);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
         engine.evaluate(wek::qml_helper::kVecClassesJs);
@@ -3977,17 +3974,70 @@ TEST_SUITE("_applyLayerLiteral guard") {
 // ------------------------------------------------------------------
 // SceneScript Globals
 // ------------------------------------------------------------------
+// The two non-Vec globals production installs in setupTextScripts, built from
+// production's own source string rather than a hand copy — a prototype patch
+// added there shows up here instead of drifting past the suite.
+struct ProductionGlobalsEnv {
+    QJSEngine engine;
+    ProductionGlobalsEnv() {
+        engine.evaluate(wek::qml_helper::kVecClassesJs);
+        engine.evaluate(wek::qml_helper::kInputAndLocalStorageJs);
+    }
+};
+
 TEST_SUITE("SceneScript Globals") {
     TEST_CASE("String.match works normally") {
         MathEnv env;
         CHECK(env.engine.evaluate("'hello world'.match(/hello/)[0]").toString() == "hello");
     }
 
-    TEST_CASE("String.match returns empty array on no match") {
+    // Author scripts are written against a stock JS engine, where a failed
+    // match yields null.  An empty array is truthy, so substituting one would
+    // invert every `if (!m)` and `m ? m[0] : ""` guard the scripts rely on.
+    TEST_CASE("String.match returns null when the pattern does not match") {
         MathEnv  env;
         QJSValue v = env.engine.evaluate("'hello'.match(/xyz/)");
-        CHECK(v.isArray());
-        CHECK(v.property("length").toInt() == 0);
+        CHECK(v.isNull());
+        CHECK(env.engine.evaluate("'hello'.match(/xyz/) === null").toBool());
+        CHECK(env.engine.evaluate("'hello'.match(/xyz/) ? 1 : 0").toInt() == 0);
+    }
+
+    // The engine the plugin ships must agree with the fixtures above, so the
+    // same contract is asserted against the globals production evaluates.
+    TEST_CASE("production globals leave String.prototype.match standard") {
+        ProductionGlobalsEnv env;
+        CHECK(env.engine.evaluate("'hello'.match(/xyz/) === null").toBool());
+        CHECK(env.engine.evaluate("'hello'.match(/hello/)[0]").toString() == "hello");
+        CHECK(env.engine.evaluate("'aaa'.match(/a/g).length").toInt() == 3);
+    }
+
+    // Shape of the ruleset validator in Game of Life (3453251764): an
+    // unparseable text user property must take the early-return branch rather
+    // than index the match result and hand undefined to the caller.
+    TEST_CASE("failed match takes the guard branch instead of indexing") {
+        MathEnv     env;
+        const char* validate = "(function(rule) {\n"
+                               "  var m = rule.match(/^B([0-8]{0,9})\\/S([0-8]{0,9})$/);\n"
+                               "  if (!m) return 'guarded';\n"
+                               "  return 'birth=' + m[1];\n"
+                               "})";
+        CHECK(env.engine.evaluate(QString(validate) + "('nonsense')").toString() == "guarded");
+        CHECK(env.engine.evaluate(QString(validate) + "('B3/S23')").toString() == "birth=3");
+    }
+
+    // Shape of the clock's format-token lookup (2638328545): a token the
+    // user's format string omits must fall to the empty-string branch instead
+    // of indexing a truthy no-match result and yielding undefined.
+    TEST_CASE("omitted format token falls to the empty-string branch") {
+        MathEnv env;
+        CHECK(env.engine
+                  .evaluate("var fmt = 'yyyy/MM/dd';\n"
+                            "fmt.match(/W+/) ? fmt.match(/W+/)[0] : '';")
+                  .toString() == "");
+        CHECK(env.engine
+                  .evaluate("var fmt2 = 'yyyy/MM/dd';\n"
+                            "fmt2.match(/y+/) ? fmt2.match(/y+/)[0] : '';")
+                  .toString() == "yyyy");
     }
 
     TEST_CASE("String.match global regex returns all") {

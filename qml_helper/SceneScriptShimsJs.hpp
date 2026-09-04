@@ -188,9 +188,8 @@ inline constexpr const char* kInternalNamespaceJs =
 
 // Vec2 / Vec3 / Vec4 JS classes — the shared source of truth for the three
 // linear-algebra shims SceneScripts use.  Extracted from inline JS strings
-// in SceneBackend.cpp so the class surface lives in one place; tests still
-// ship their own simplified copies under JS_VEC3_AND_UTILS for now (a
-// follow-up migrates the test fixtures to consume this shim).
+// in SceneBackend.cpp so the class surface lives in one place; the test
+// fixtures evaluate this same constant rather than a copy.
 //
 // Vec2 is closure-based (fresh methods per instance); Vec3 is prototype-
 // based so the ~24 methods + r/g/b accessors are shared across thousands
@@ -375,6 +374,54 @@ Vec4.lerp = function(a, b, t) {
   return Vec4(a.x+(b.x-a.x)*t, a.y+(b.y-a.y)*t,
               a.z+(b.z-a.z)*t, a.w+(b.w-a.w)*t);
 };
+)JS";
+
+// `input` (cursor state) + `localStorage`, the two non-Vec globals production
+// installs right after the Vec classes.
+//
+// cursorWorldPosition / cursorScreenPosition are Vec2 (not plain objects) so
+// wallpapers that compose them — Game of Life (3453251764) tooltip layer does
+// `return input.cursorWorldPosition.add(new Vec2(offX, offY))` every tick —
+// find the .add/.subtract/etc. methods.  The per-frame refresh mutates .x/.y
+// in place, which preserves the Vec2 prototype link.
+//
+// localStorage is backed by `__sceneBridge` for disk persistence.  WE defines
+// two locations: GLOBAL (shared) and SCREEN (per-scene).  Scripts that omit
+// the argument default to SCREEN (the solar system wallpaper's icon-state
+// save/load flow relies on this — without a `loc` arg it expects per-scene
+// persistence so switching to another wallpaper doesn't inherit the last
+// wallpaper's icon state).
+//
+// Nothing here patches a built-in prototype.  Author scripts are written
+// against a stock JS engine, so String/Array/Object semantics must stay
+// standard — see the no-match contract pinned in test_SceneScript.cpp.
+//
+// Requires Vec2 to already exist on the global object.
+inline constexpr const char* kInputAndLocalStorageJs = R"JS(
+var input = { cursorWorldPosition: Vec2(0, 0),
+  cursorScreenPosition: Vec2(0, 0),
+  cursorLeftDown: false };
+var localStorage = (function() {
+  function _loc(l) { return (l === 0 || l === 1) ? l : 1; }
+  return {
+    LOCATION_GLOBAL: 0, LOCATION_SCREEN: 1,
+    get: function(key, loc) {
+      return __sceneBridge ? __sceneBridge.lsGet(_loc(loc), String(key)) : undefined;
+    },
+    set: function(key, value, loc) {
+      if (__sceneBridge) __sceneBridge.lsSet(_loc(loc), String(key), value);
+    },
+    remove: function(key, loc) {
+      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));
+    },
+    'delete': function(key, loc) {
+      if (__sceneBridge) __sceneBridge.lsRemove(_loc(loc), String(key));
+    },
+    clear: function(loc) {
+      if (__sceneBridge) __sceneBridge.lsClear(_loc(loc));
+    }
+  };
+})();
 )JS";
 
 // thisScene.createLayer's helper that applies an object-literal-form asset's
