@@ -11,6 +11,10 @@
 #include "Fs/MemBinaryStream.h"
 #include "Utils/Logging.h"
 #include "test_scratch.hpp"
+// The extraction-path resolver lives with the tool it guards; the tool is a
+// standalone main() that links nothing, so reach the header directly rather
+// than coupling the test target to the tools/ build.
+#include "../../tools/PkgEntryPath.h"
 
 #include <cmath>
 #include <cstring>
@@ -833,6 +837,35 @@ static bool load(const std::string& path, Pkg& p) {
     p.data_start = static_cast<uint32_t>(f.tellg());
     return true;
 }
+
+static void write_u32_le(std::ofstream& f, uint32_t v) {
+    const uint8_t b[4] { uint8_t(v), uint8_t(v >> 8), uint8_t(v >> 16), uint8_t(v >> 24) };
+    f.write(reinterpret_cast<const char*>(b), 4);
+}
+static void write_sized_string(std::ofstream& f, const std::string& s) {
+    write_u32_le(f, static_cast<uint32_t>(s.size()));
+    f.write(s.data(), static_cast<std::streamsize>(s.size()));
+}
+// Hand-write a container with caller-chosen entry paths.  `wp-pkg pack` derives
+// entry names from real files on disk and so can never produce a hostile one;
+// pkgs off the Steam Workshop can, hence building the bytes directly.
+static bool write_pkg(const std::string&                                      path,
+                      const std::vector<std::pair<std::string, std::string>>& entries) {
+    std::ofstream f(path, std::ios::binary);
+    if (! f) return false;
+    write_sized_string(f, "PKGV0023");
+    write_u32_le(f, static_cast<uint32_t>(entries.size()));
+    uint32_t off = 0;
+    for (const auto& [entryPath, data] : entries) {
+        write_sized_string(f, entryPath);
+        write_u32_le(f, off);
+        write_u32_le(f, static_cast<uint32_t>(data.size()));
+        off += static_cast<uint32_t>(data.size());
+    }
+    for (const auto& [entryPath, data] : entries)
+        f.write(data.data(), static_cast<std::streamsize>(data.size()));
+    return static_cast<bool>(f);
+}
 } // namespace wp_pkg_fmt
 
 // Resolve wp-pkg at runtime.  Populated by CMake via -DWP_PKG_TOOL_PATH when
@@ -977,7 +1010,124 @@ TEST_SUITE("wp-pkg pack format") {
         std::filesystem::remove(pkg);
     }
 
+    TEST_CASE("extract refuses entries that escape outdir") {
+        if (! wp_pkg_tool_available()) {
+            MESSAGE("wp-pkg not built; skipping (configure with -DBUILD_TOOLS=ON)");
+            return;
+        }
+        // Entry paths inside a .pkg are attacker-controlled — Steam Workshop
+        // content ships them verbatim.  A stored "../x" or a stored absolute
+        // path must not put a file anywhere but under outdir.
+        const std::string base   = wp_pkg_fixture("traversal");
+        const std::string outdir = base + "/out";
+        const std::string pkg    = wp_pkg_fixture("traversal.pkg");
+        std::filesystem::remove_all(base);
+        std::filesystem::remove(pkg);
+        std::filesystem::create_directories(outdir);
+
+        // Both escape targets stay inside the per-process scratch dir, so a
+        // regression writes into the fixture rather than over real files.
+        const std::string relTarget = base + "/escaped_relative.txt";
+        const std::string absTarget = base + "/escaped_absolute.txt";
+        REQUIRE(wp_pkg_fmt::write_pkg(pkg,
+                                      { { "../escaped_relative.txt", "pwned" },
+                                        { absTarget, "pwned" },
+                                        { "ok.txt", "benign" } }));
+
+        const std::string tool = WP_PKG_TOOL_PATH;
+        const int         rc =
+            std::system((tool + " extract " + pkg + " " + outdir + " > /dev/null 2>&1").c_str());
+
+        CHECK_FALSE(std::filesystem::exists(relTarget));
+        CHECK_FALSE(std::filesystem::exists(absTarget));
+        // The stored absolute path is re-rooted rather than honoured, so its
+        // content is still recoverable — just not at the path it asked for.
+        CHECK(std::filesystem::exists(outdir + absTarget));
+        // The harmless entry still lands, and the refused one is counted as a
+        // failure so the summary line and the exit status stay honest.
+        CHECK(std::filesystem::exists(outdir + "/ok.txt"));
+        CHECK(rc != 0);
+
+        std::filesystem::remove_all(base);
+        std::filesystem::remove(pkg);
+    }
+
 } // TEST_SUITE wp-pkg pack format
+
+// Where a stored .pkg entry is allowed to land.  Entry strings come straight
+// from Workshop content, so this is the boundary that keeps extraction inside
+// the output directory.
+TEST_SUITE("wp-pkg entry path resolution") {
+    using wp_pkg::resolve_entry_dest;
+
+    TEST_CASE("Ordinary rooted entry lands under outdir") {
+        const std::filesystem::path out  = wp_pkg_fixture("resolve_root");
+        auto                        dest = resolve_entry_dest(out, "/scene.json", false, "");
+        REQUIRE(dest.has_value());
+        CHECK(*dest == out / "scene.json");
+    }
+
+    TEST_CASE("Nested entry keeps its stored folder structure") {
+        const std::filesystem::path out = wp_pkg_fixture("resolve_root");
+        auto dest = resolve_entry_dest(out, "/shaders/effect.frag", false, "");
+        REQUIRE(dest.has_value());
+        CHECK(*dest == out / "shaders" / "effect.frag");
+    }
+
+    TEST_CASE("Parent traversal is refused") {
+        const std::filesystem::path out = wp_pkg_fixture("resolve_root");
+        CHECK_FALSE(resolve_entry_dest(out, "/../escaped.txt", false, "").has_value());
+        CHECK_FALSE(
+            resolve_entry_dest(out, "/../../.config/autostart/x.desktop", false, "").has_value());
+    }
+
+    TEST_CASE("Sibling directory sharing a name prefix is refused") {
+        // A raw string-prefix containment test would accept this: the sibling
+        // "<out>-evil" starts with "<out>".  Components must be compared.
+        const std::filesystem::path out    = wp_pkg_fixture("resolve_root");
+        const std::string           sister = std::string(wp_pkg_fixture("resolve_root")) + "-evil";
+        CHECK_FALSE(resolve_entry_dest(out, "/../resolve_root-evil/x.txt", false, "").has_value());
+        CHECK(std::string_view(sister).substr(0, out.string().size()) == out.string());
+    }
+
+    TEST_CASE("Stored absolute path is re-rooted under outdir, not honoured") {
+        // load_pkg prefixes every stored path with '/', so an entry that already
+        // began with one arrives doubled.  Dropping every leading separator turns
+        // it into a relative path inside outdir instead of an absolute escape.
+        const std::filesystem::path out  = wp_pkg_fixture("resolve_root");
+        auto                        dest = resolve_entry_dest(out, "//etc/cron.d/x", false, "");
+        REQUIRE(dest.has_value());
+        CHECK(*dest == out / "etc" / "cron.d" / "x");
+    }
+
+    TEST_CASE("Interior traversal that stays inside is normalised away") {
+        // Leaving the ".." in place would make extraction mkdir a directory the
+        // pkg never named, just to step back out of it.
+        const std::filesystem::path out  = wp_pkg_fixture("resolve_root");
+        auto                        dest = resolve_entry_dest(out, "/a/../b.txt", false, "");
+        REQUIRE(dest.has_value());
+        CHECK(*dest == out / "b.txt");
+    }
+
+    TEST_CASE("Entry naming outdir itself, or nothing at all, is refused") {
+        const std::filesystem::path out = wp_pkg_fixture("resolve_root");
+        CHECK_FALSE(resolve_entry_dest(out, "/", false, "").has_value());
+        CHECK_FALSE(resolve_entry_dest(out, "///", false, "").has_value());
+        CHECK_FALSE(resolve_entry_dest(out, "/.", false, "").has_value());
+    }
+
+    TEST_CASE("Flat mode collapses separators into one contained filename") {
+        const std::filesystem::path out = wp_pkg_fixture("resolve_root");
+        auto dest = resolve_entry_dest(out, "/shaders/effect.frag", true, "shaders");
+        REQUIRE(dest.has_value());
+        CHECK(*dest == out / "shaders" / "shaders_effect.frag");
+
+        auto escaped = resolve_entry_dest(out, "/../escaped.txt", true, "other");
+        REQUIRE(escaped.has_value());
+        CHECK(*escaped == out / "other" / ".._escaped.txt");
+    }
+
+} // TEST_SUITE wp-pkg entry path resolution
 
 TEST_SUITE("wp-pkg scripts") {
     // `wp-pkg scripts <dir>` walks scene.json and dumps every inlined

@@ -44,6 +44,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "PkgEntryPath.h"
+
 namespace fs = std::filesystem;
 
 namespace
@@ -378,24 +380,17 @@ int cmd_extract(int argc, char** argv) {
         bool             is_tex = (ext == "tex");
         std::string_view cat    = category_of(ext);
 
-        fs::path dest;
-        if (flat) {
-            std::string leaf(e.path);
-            // strip leading '/'
-            if (! leaf.empty() && leaf.front() == '/') leaf.erase(0, 1);
-            // replace remaining slashes with '_' so names stay unique inside one dir
-            for (auto& c : leaf)
-                if (c == '/') c = '_';
-            dest = outdir / std::string(cat) / leaf;
-        } else {
-            std::string rel(e.path);
-            if (! rel.empty() && rel.front() == '/') rel.erase(0, 1);
-            dest = outdir / rel;
+        auto dest = wp_pkg::resolve_entry_dest(outdir, e.path, flat, cat);
+        if (! dest) {
+            std::fprintf(
+                stderr, "refusing entry outside %s: %s\n", outdir.string().c_str(), e.path.c_str());
+            fail++;
+            continue;
         }
 
-        if (extract_entry(f, e, dest, is_tex, raw, dry_run)) {
+        if (extract_entry(f, e, *dest, is_tex, raw, dry_run)) {
             ok++;
-            std::printf("%s  %s\n", dry_run ? "DRY " : "WROTE", dest.string().c_str());
+            std::printf("%s  %s\n", dry_run ? "DRY " : "WROTE", dest->string().c_str());
         } else {
             fail++;
         }
