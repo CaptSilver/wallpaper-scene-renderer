@@ -653,11 +653,34 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
         const std::size_t total     = detail::packedTotalBytes(mip_sizes, offsets);
 
         VmaBufferParameters staging;
-        (void)CreateStagingBuffer(m_device.vma_allocator(), total, staging);
+        VkResult            map_res = VK_SUCCESS;
+        const auto          mapped  = detail::acquireMappedStaging(
+            /*reusable=*/false,
+            [&] {
+                return CreateStagingBuffer(m_device.vma_allocator(), total, staging);
+            },
+            [&](void** out) {
+                map_res = staging.handle.MapMemory(out);
+                return map_res == VK_SUCCESS;
+            });
+        // Give up on this texture rather than copy through a pointer no driver
+        // wrote; matches how a failed CreateImage above bails out of the loop.
+        if (mapped.status == detail::StagingMapStatus::CreateFailed) {
+            LOG_ERROR("CreateTex '%s': staging alloc failed for slot %zu (%zu bytes)",
+                      image.key.c_str(),
+                      i,
+                      total);
+            break;
+        }
+        if (mapped.status != detail::StagingMapStatus::Ok) {
+            LOG_ERROR("CreateTex '%s': staging map failed for slot %zu: %s",
+                      image.key.c_str(),
+                      i,
+                      vvk::ToString(map_res));
+            break;
+        }
         {
-            void* v_data = nullptr;
-            VVK_CHECK(staging.handle.MapMemory(&v_data));
-            auto* dst = static_cast<std::uint8_t*>(v_data);
+            auto* dst = static_cast<std::uint8_t*>(mapped.data);
             for (usize j = 0; j < image_slot.mipmaps.size(); j++) {
                 const auto& image_data = image_slot.mipmaps[j];
                 memcpy(dst + offsets[j], image_data.data.get(), (u32)image_data.size);
@@ -914,18 +937,46 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
         for (usize j = 0; j < mip_count; j++) {
             auto& image_data = image_slot.mipmaps[j];
             auto& buf        = stage_bufs[j];
-            if (! stagingBufferReusable(
-                    static_cast<bool>(buf.handle), buf.req_size, image_data.size)) {
-                VmaBufferParameters newbuf;
-                (void)CreateStagingBuffer(m_device.vma_allocator(), (u32)image_data.size, newbuf);
-                buf = std::move(newbuf);
+            VkResult   map_res = VK_SUCCESS;
+            const auto mapped  = detail::acquireMappedStaging(
+                stagingBufferReusable(
+                    static_cast<bool>(buf.handle), buf.req_size, image_data.size),
+                [&] {
+                    // Only adopt the new buffer once it exists, so a transient
+                    // OOM leaves last frame's buffer in place to retry with.
+                    VmaBufferParameters newbuf;
+                    if (! CreateStagingBuffer(
+                            m_device.vma_allocator(), (u32)image_data.size, newbuf))
+                        return false;
+                    buf = std::move(newbuf);
+                    return true;
+                },
+                [&](void** out) {
+                    map_res = buf.handle.MapMemory(out);
+                    return map_res == VK_SUCCESS;
+                });
+            // Skipping just this mip would desync stage_bufs from extents and
+            // upload the wrong level, so drop the whole re-upload; the caller
+            // keeps showing the last frame that did land.
+            if (mapped.status == detail::StagingMapStatus::CreateFailed) {
+                LOG_ERROR("ReuploadTex '%s': staging alloc failed for slot %zu mip %zu "
+                          "(%zu bytes)",
+                          key.c_str(),
+                          i,
+                          j,
+                          (usize)image_data.size);
+                return false;
             }
-            {
-                void* v_data;
-                VVK_CHECK(buf.handle.MapMemory(&v_data));
-                memcpy(v_data, image_data.data.get(), (u32)image_data.size);
-                buf.handle.UnMapMemory();
+            if (mapped.status != detail::StagingMapStatus::Ok) {
+                LOG_ERROR("ReuploadTex '%s': staging map failed for slot %zu mip %zu: %s",
+                          key.c_str(),
+                          i,
+                          j,
+                          vvk::ToString(map_res));
+                return false;
             }
+            memcpy(mapped.data, image_data.data.get(), (u32)image_data.size);
+            buf.handle.UnMapMemory();
             extents.push_back(VkExtent3D { (u32)image_data.width, (u32)image_data.height, 1 });
         }
 

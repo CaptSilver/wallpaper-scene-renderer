@@ -13,10 +13,12 @@
 
 #include "Vulkan/TextureCacheDetail.hpp"
 
+using wallpaper::vulkan::detail::acquireMappedStaging;
 using wallpaper::vulkan::detail::bytesPerBlockForFormat;
 using wallpaper::vulkan::detail::mipOffsets;
 using wallpaper::vulkan::detail::packMipsIntoBuffer;
 using wallpaper::vulkan::detail::packedTotalBytes;
+using wallpaper::vulkan::detail::StagingMapStatus;
 
 namespace
 {
@@ -260,5 +262,107 @@ TEST_SUITE("TextureCache per-mip staging") {
             counter);
         CHECK(mip_count == sizes.size());
         CHECK(counter.calls == 1u);
+    }
+}
+
+// -- Staging acquire: the two failure channels ----------------------------
+//
+// Both TextureCache upload paths (CreateTex's packed load and ReuploadTex's
+// per-frame video/text re-upload) allocate a host-visible staging buffer and
+// map it before copying pixels in.  Either step can refuse under memory
+// pressure, and each refusal has to stop the sequence: mapping a buffer whose
+// allocation failed goes through a null VMA allocator, and copying after a
+// failed map writes a whole frame through a pointer the driver never set.
+// These cases pin the short-circuit ordering without a Vulkan device.
+TEST_SUITE("TextureCache staging acquire") {
+
+    TEST_CASE("a failed allocation stops before the map") {
+        int  create_calls = 0;
+        int  map_calls    = 0;
+        auto res          = acquireMappedStaging(
+            /*reusable=*/false,
+            [&] {
+                ++create_calls;
+                return false;
+            },
+            [&](void** out) {
+                ++map_calls;
+                *out = reinterpret_cast<void*>(0xDEADBEEF);
+                return true;
+            });
+        CHECK(create_calls == 1);
+        CHECK(map_calls == 0);
+        CHECK(res.data == nullptr);
+        CHECK(res.status == StagingMapStatus::CreateFailed);
+    }
+
+    TEST_CASE("a failed map hands back no pointer to copy through") {
+        std::uint8_t scratch = 0;
+        auto         res     = acquireMappedStaging(
+            /*reusable=*/false,
+            [] {
+                return true;
+            },
+            [&](void** out) {
+                // A driver may leave the out-param untouched or scribble on
+                // it; either way a failed map means "do not copy".
+                *out = &scratch;
+                return false;
+            });
+        CHECK(res.data == nullptr);
+        CHECK(res.status == StagingMapStatus::MapFailed);
+    }
+
+    TEST_CASE("a map reporting success without a pointer is a failure") {
+        auto res = acquireMappedStaging(
+            /*reusable=*/false,
+            [] {
+                return true;
+            },
+            [](void** out) {
+                *out = nullptr;
+                return true;
+            });
+        CHECK(res.data == nullptr);
+        CHECK(res.status == StagingMapStatus::MapFailed);
+    }
+
+    TEST_CASE("a reusable buffer is mapped without reallocating") {
+        std::uint8_t scratch      = 0;
+        int          create_calls = 0;
+        auto         res          = acquireMappedStaging(
+            /*reusable=*/true,
+            [&] {
+                ++create_calls;
+                return true;
+            },
+            [&](void** out) {
+                *out = &scratch;
+                return true;
+            });
+        CHECK(create_calls == 0);
+        CHECK(res.data == static_cast<void*>(&scratch));
+        CHECK(res.status == StagingMapStatus::Ok);
+    }
+
+    TEST_CASE("a fresh buffer is allocated then mapped") {
+        std::uint8_t scratch      = 0;
+        int          create_calls = 0;
+        int          map_calls    = 0;
+        auto         res          = acquireMappedStaging(
+            /*reusable=*/false,
+            [&] {
+                ++create_calls;
+                return true;
+            },
+            [&](void** out) {
+                ++map_calls;
+                *out = &scratch;
+                return true;
+            });
+        CHECK(create_calls == 1);
+        CHECK(map_calls == 1);
+        CHECK(res.data == static_cast<void*>(&scratch));
+        CHECK(res.status == StagingMapStatus::Ok);
     }
 }

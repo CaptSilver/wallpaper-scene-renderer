@@ -25,6 +25,28 @@ inline SwapResult classifySwapResult(VkResult r) noexcept {
 }
 
 
+// Where the final composite lands.  The renderer either owns a window surface
+// (on-screen swapchain) or exports an offscreen swapchain the host samples as
+// a dma-buf.  The exported one has to allocate three external images, which
+// fails on a GPU that has just reset or has run out of VRAM, so "offscreen"
+// alone does not imply there is anything to present into.
+enum class PresentTarget
+{
+    Surface,           // present through the on-screen swapchain
+    ExportedOffscreen, // present into the dma-buf-exported swapchain
+    None,              // offscreen was asked for and could not be created
+};
+
+// None is a hard stop, not a degraded mode: every downstream user of the
+// exported swapchain (final-pass format, per-frame image acquire) dereferences
+// it, so the renderer must fail init and let the caller retry.
+constexpr PresentTarget classifyPresentTarget(bool with_surface,
+                                              bool ex_swapchain_created) noexcept {
+    if (with_surface) return PresentTarget::Surface;
+    return ex_swapchain_created ? PresentTarget::ExportedOffscreen : PresentTarget::None;
+}
+
+
 // Policy by which the swapchain picks among supported present modes.
 // Auto is the default and selects based on target_fps vs output_refresh_hz.
 // The four explicit modes are fall-backs the user can pin from the

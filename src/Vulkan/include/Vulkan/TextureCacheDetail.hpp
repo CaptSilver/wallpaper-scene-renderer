@@ -6,6 +6,7 @@
 #include <cstring>
 #include <span>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <vulkan/vulkan.h>
@@ -98,6 +99,44 @@ inline void packMipsIntoBuffer(std::span<const std::pair<const std::uint8_t*, st
     for (std::size_t j = 0; j < mips.size(); ++j) {
         std::memcpy(dst + offsets[j], mips[j].first, mips[j].second);
     }
+}
+
+// Which step of a staging acquire refused, so the caller can name the failing
+// Vulkan call in its log rather than reporting a generic upload failure.
+enum class StagingMapStatus
+{
+    Ok,
+    CreateFailed,
+    MapFailed,
+};
+
+struct MappedStaging {
+    void*            data { nullptr };
+    StagingMapStatus status { StagingMapStatus::Ok };
+};
+
+// Reuse-or-allocate a host-visible staging buffer and map it, stopping at the
+// first refusal.  Both stops matter under memory pressure: mapping a buffer
+// whose allocation failed reaches VMA through a null allocator (VMA_ASSERT is
+// compiled out in release builds, so it segfaults the host process instead of
+// tripping), and copying after a failed map pushes a whole frame through a
+// pointer the driver never wrote.  A success that yields no pointer is treated
+// as a failure for the same reason.
+//
+// `create` returns false when the allocation failed; `map` writes the host
+// pointer through its out-param and returns false on a non-success VkResult.
+// Injecting both keeps the ordering testable without a Vulkan device or an
+// allocation-failure injector.
+template<class CreateFn, class MapFn>
+inline MappedStaging acquireMappedStaging(bool reusable, CreateFn&& create, MapFn&& map) {
+    if (! reusable && ! std::forward<CreateFn>(create)()) {
+        return MappedStaging { nullptr, StagingMapStatus::CreateFailed };
+    }
+    void* data = nullptr;
+    if (! std::forward<MapFn>(map)(&data) || data == nullptr) {
+        return MappedStaging { nullptr, StagingMapStatus::MapFailed };
+    }
+    return MappedStaging { data, StagingMapStatus::Ok };
 }
 
 // Parse WEK_TEXCACHE_QUERY_CAP-style env override into a uint32_t soft cap.

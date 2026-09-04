@@ -1018,6 +1018,13 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
                                                 : VK_IMAGE_TILING_LINEAR),
                                            ex_fmt);
         m_with_surface = false;
+        // Three external images have to allocate and export an fd; a GPU that
+        // has just reset or is out of VRAM fails that.  Bail here so the
+        // caller's device-lost retry runs, and name the stage in the journal.
+        if (! m_ex_swapchain) {
+            LOG_ERROR("create offscreen swapchain failed");
+            return false;
+        }
     }
 
     m_hdr_output  = info.hdr_output;
@@ -1038,14 +1045,24 @@ bool VulkanRender::Impl::initRes() {
     m_finpass = std::make_unique<FinPass>(FinPass::Desc {});
     m_finpass->setHdrPassthrough(m_hdr_output);
     m_finpass->setHdrContent(m_hdr_content);
-    if (m_with_surface) {
+    switch (classifyPresentTarget(m_with_surface, m_ex_swapchain != nullptr)) {
+    case PresentTarget::Surface:
         m_finpass->setPresentFormat(m_device->swapchain().format());
         m_finpass->setPresentQueueIndex(m_device->present_queue().family_index);
         m_finpass->setPresentLayout(VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    } else {
+        break;
+    case PresentTarget::ExportedOffscreen:
         m_finpass->setPresentFormat(m_ex_swapchain->format());
         m_finpass->setPresentLayout(VK_IMAGE_LAYOUT_GENERAL);
         m_finpass->setPresentQueueIndex(VK_QUEUE_FAMILY_EXTERNAL);
+        break;
+    case PresentTarget::None:
+        // init() already refuses to get here, and the exhaustive switch is what
+        // keeps it that way: the format read above can only run once we know
+        // the swapchain exists, so m_inited never promises a present target
+        // that the per-frame acquire will then dereference and fault on.
+        LOG_ERROR("no present target: offscreen swapchain missing");
+        return false;
     }
     /*
     m_testpass = std::make_unique<FinPass>(FinPass::Desc{});
