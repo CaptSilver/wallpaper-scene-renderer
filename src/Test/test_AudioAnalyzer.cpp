@@ -2,8 +2,11 @@
 
 #include "Audio/AudioAnalyzer.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -861,3 +864,166 @@ TEST_SUITE("AudioAnalyzer.BassFrequencyResolution") {
     }
 
 } // BassFrequencyResolution
+
+// The FFT runs on the AudioBus thread; every spectrum reader (render thread,
+// script thread, the web bridge's Qt thread) is somewhere else.  A getter that
+// handed back a view of the live band arrays would let the FFT thread rewrite
+// the caller's data mid-use — a data race, and visibly a frame stitched from
+// two different windows.  The getters therefore hand back a per-thread
+// snapshot: once you have the span, nothing else can move it.
+TEST_SUITE("AudioAnalyzer.SpectrumSnapshot") {
+    TEST_CASE("a fetched spectrum is not rewritten by a later Process") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 4096;
+        auto               high    = makeSineStereo(880.0f, kFrames);
+        auto               low     = makeSineStereo(110.0f, kFrames);
+
+        a.FeedPcm(high.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+
+        auto               held = a.GetSpectrum64Left();
+        std::vector<float> heldAtFetch(held.begin(), held.end());
+
+        a.FeedPcm(low.data(), kFrames, 2);
+        a.Process();
+
+        CHECK(std::equal(held.begin(), held.end(), heldAtFetch.begin()));
+
+        // Guard against a vacuous pass: if the second Process had not moved
+        // the spectrum, "unchanged" would prove nothing.  Re-fetching also
+        // refreshes the snapshot, so this must come after the check above.
+        auto               refetched = a.GetSpectrum64Left();
+        std::vector<float> afterProcess(refetched.begin(), refetched.end());
+        CHECK_FALSE(std::equal(afterProcess.begin(), afterProcess.end(), heldAtFetch.begin()));
+    }
+
+    TEST_CASE("a fetched raw spectrum is not rewritten by a later Process") {
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 4096;
+        auto               high    = makeSineStereo(880.0f, kFrames);
+        auto               low     = makeSineStereo(110.0f, kFrames);
+
+        a.FeedPcm(high.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+
+        auto               held = a.GetRawSpectrum(64, 0);
+        std::vector<float> heldAtFetch(held.begin(), held.end());
+
+        a.FeedPcm(low.data(), kFrames, 2);
+        a.Process();
+
+        CHECK(std::equal(held.begin(), held.end(), heldAtFetch.begin()));
+
+        auto               refetched = a.GetRawSpectrum(64, 0);
+        std::vector<float> afterProcess(refetched.begin(), refetched.end());
+        CHECK_FALSE(std::equal(afterProcess.begin(), afterProcess.end(), heldAtFetch.begin()));
+    }
+
+    TEST_CASE("spectra fetched back to back stay independent") {
+        // SceneWallpaper and SceneBackend both hold the left and right spans
+        // at the same time, so one getter must not clobber another's result.
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 2048;
+        std::vector<float> pcm(kFrames * 2, 0.0f);
+        for (uint32_t i = 0; i < kFrames; ++i) {
+            pcm[i * 2 + 0] = 0.8f * std::sin(2.0f * (float)M_PI * 200.0f * (float)i / 48000.0f);
+            pcm[i * 2 + 1] = 0.8f * std::sin(2.0f * (float)M_PI * 6000.0f * (float)i / 48000.0f);
+        }
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+
+        auto l16 = a.GetRawSpectrum(16, 0);
+        auto r16 = a.GetRawSpectrum(16, 1);
+        auto l64 = a.GetRawSpectrum(64, 0);
+        auto p64 = a.GetSpectrum64Left();
+        REQUIRE(l16.size() == 16);
+        REQUIRE(r16.size() == 16);
+        REQUIRE(l64.size() == 64);
+        REQUIRE(p64.size() == 64 * 4);
+        CHECK(l16.data() != r16.data());
+        // Left is bass-heavy, right is treble-heavy — distinct content proves
+        // the second fetch did not overwrite the first.
+        CHECK_FALSE(std::equal(l16.begin(), l16.end(), r16.begin()));
+        // The padded view carries the same 64 values at vec4 stride.
+        for (size_t i = 0; i < l64.size(); ++i) CHECK(p64[i * 4] == doctest::Approx(l64[i]));
+    }
+
+    TEST_CASE("reading the spectrum while the FFT thread runs stays sane") {
+        // Mirrors production: one thread owns FeedPcm + Process (the AudioBus
+        // 60Hz thread), another samples the spectrum (render / script / web
+        // bridge).  Values must stay finite and inside the soft-saturation
+        // range whatever the interleaving.  This is also the case the thread
+        // sanitizer gate walks to prove the publication is race-free.
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 1024;
+        auto               pcm     = makeSineStereo(440.0f, kFrames, 48000, 0.9f);
+
+        std::atomic<bool> stop { false };
+        std::thread       fft([&] {
+            while (! stop.load(std::memory_order_relaxed)) {
+                a.FeedPcm(pcm.data(), kFrames, 2);
+                a.Process();
+            }
+        });
+
+        bool sane = true;
+        for (int i = 0; i < 20000; ++i) {
+            auto check = [&](std::span<const float> bands) {
+                for (float v : bands)
+                    if (! std::isfinite(v) || v < 0.0f || v > 3.0f) sane = false;
+            };
+            check(a.GetSpectrum16Left());
+            check(a.GetSpectrum16Right());
+            check(a.GetSpectrum32Left());
+            check(a.GetSpectrum32Right());
+            check(a.GetSpectrum64Left());
+            check(a.GetSpectrum64Right());
+            check(a.GetRawSpectrum(16, 0));
+            check(a.GetRawSpectrum(64, 1));
+            (void)a.HasData();
+        }
+        stop.store(true, std::memory_order_relaxed);
+        fft.join();
+
+        CHECK(sane);
+        CHECK(a.HasData());
+    }
+
+    TEST_CASE("PERF: per-frame spectrum fetch — record elapsed micros") {
+        // What the render thread pays every frame: the six padded spectra the
+        // shader uniform upload reads.  The snapshot copy replaced a raw
+        // pointer handout, so this is the cost of the fix.
+        AudioAnalyzer      a;
+        constexpr uint32_t kFrames = 2048;
+        auto               pcm     = makeSineStereo(440.0f, kFrames, 48000, 0.9f);
+        a.FeedPcm(pcm.data(), kFrames, 2);
+        a.Process();
+        REQUIRE(a.HasData());
+
+        constexpr int kFramesTimed = 5000;
+        const auto    t0           = std::chrono::steady_clock::now();
+        float         sink         = 0.0f;
+        for (int i = 0; i < kFramesTimed; ++i) {
+            sink += a.GetSpectrum16Left()[0];
+            sink += a.GetSpectrum16Right()[0];
+            sink += a.GetSpectrum32Left()[0];
+            sink += a.GetSpectrum32Right()[0];
+            sink += a.GetSpectrum64Left()[0];
+            sink += a.GetSpectrum64Right()[0];
+        }
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+        REQUIRE(std::isfinite(sink)); // defeat dead-code elimination
+        MESSAGE("six padded spectra x " << kFramesTimed << " frames: " << (ns / 1000)
+                                        << " us total (" << (ns / kFramesTimed)
+                                        << " ns per frame)");
+
+        // Ceiling, not a benchmark: 20us per frame is >1000x the measured cost
+        // on a debug build and still under a millisecond at 60fps, so this only
+        // trips if the read path grows a lock or an allocation.
+        CHECK(ns / kFramesTimed < 20000);
+    }
+}

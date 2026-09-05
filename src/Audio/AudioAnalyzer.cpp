@@ -22,7 +22,7 @@ constexpr uint32_t NUM_BANDS_64     = 64;
 constexpr uint32_t NUM_BANDS_32     = 32;
 constexpr uint32_t NUM_BANDS_16     = 16;
 // RING_SIZE: floats held in the producer→consumer ring.  Sized so the
-// consumer (one Process per render frame, reads the latest FFT_SIZE*2 = 1024
+// consumer (one Process per AudioBus tick, reads the latest FFT_SIZE*2 = 1024
 // floats) has comfortable headroom against the producer's ~10ms miniaudio
 // ticks before the producer laps the consumer's read window.  Must remain a
 // power of two so wp % RING_SIZE lowers to an AND with RING_SIZE - 1.
@@ -90,6 +90,56 @@ struct BandMapping {
     }
 };
 
+// ── Reader-visible publication ───────────────────────────────────────────────
+// The FFT thread rewrites the band arrays several times per Process call (once
+// per overlap window).  Every reader is on another thread — the render thread's
+// uniform upload, the script thread's audio buffers, the web bridge's Qt timer
+// — so none of them touch that scratch.  Process copies the finished frame into
+// a published block under a seqlock, and each reader snapshots it out into
+// thread-local storage.  Payload accesses go through atomic_ref so a reader
+// that catches a publish in flight retries instead of committing a torn frame,
+// and neither side ever blocks the other.
+struct PublishedSpectrum {
+    std::array<float, NUM_BANDS_16>     raw16L {}, raw16R {};
+    std::array<float, NUM_BANDS_32>     raw32L {}, raw32R {};
+    std::array<float, NUM_BANDS_64>     raw64L {}, raw64R {};
+    std::array<float, NUM_BANDS_16 * 4> pad16L {}, pad16R {};
+    std::array<float, NUM_BANDS_32 * 4> pad32L {}, pad32R {};
+    std::array<float, NUM_BANDS_64 * 4> pad64L {}, pad64R {};
+};
+
+// Per-thread landing pads, one slot per getter so a caller can hold several
+// spans at once: SceneWallpaper reads the left and right 16-band spectra side
+// by side, SceneBackend does the same per registered script buffer.
+thread_local PublishedSpectrum t_reader {};
+
+template<std::size_t N>
+void publishBand(std::array<float, N>& dst, const std::array<float, N>& src) {
+    for (std::size_t i = 0; i < N; i++)
+        std::atomic_ref<float>(dst[i]).store(src[i], std::memory_order_relaxed);
+}
+
+// Seqlock read side.  A publish is a few hundred nanoseconds of straight-line
+// stores, so a reader that loses eight races in a row will not win the ninth
+// either — hand back the previous (consistent, one frame older) snapshot rather
+// than spin on the render thread.
+template<std::size_t N>
+void snapshotBand(const std::atomic<uint32_t>& seq, std::array<float, N>& src,
+                  std::array<float, N>& dst) {
+    std::array<float, N> staging;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        const uint32_t before = seq.load(std::memory_order_acquire);
+        if ((before & 1u) != 0u) continue; // publish in flight
+        for (std::size_t i = 0; i < N; i++)
+            staging[i] = std::atomic_ref<float>(src[i]).load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (seq.load(std::memory_order_relaxed) == before) {
+            dst = staging;
+            return;
+        }
+    }
+}
+
 } // namespace
 
 struct AudioAnalyzer::Impl {
@@ -142,10 +192,16 @@ struct AudioAnalyzer::Impl {
 
     bool hasData { false };
 
+    // Reader-visible copy of the finished frame; see PublishedSpectrum above.
+    PublishedSpectrum     pub {};
+    std::atomic<uint32_t> pubSeq { 0 }; // odd while a publish is in flight
+    std::atomic<bool>     pubHasData { false };
+
     // Test-only: cumulative count of FFT windows computed since construction.
     // Incremented inside the Process loop once per FFT (i.e. once per
     // FFT_SIZE-stereo-frame overlap stride).  Read by WindowsProcessedForTest().
-    uint64_t windowsProcessed { 0 };
+    // Atomic because tests read it while the FFT thread is still running.
+    std::atomic<uint64_t> windowsProcessed { 0 };
 
     // One-shot diagnostic breadcrumbs.  The overlap rewrite shifted Process()
     // from a single FFT-per-call to a while-loop that runs N FFTs in one
@@ -185,6 +241,10 @@ struct AudioAnalyzer::Impl {
     // padL/R{64,32,16}.  Called in a loop by Process() — each successive call
     // shares half its window with the previous one (50% Hanning-COLA overlap).
     void DoOneFFTWindow(uint32_t rp_start);
+
+    // Pad and hand the finished frame to the readers.  Called once per Process
+    // call, after the last overlap window.
+    void PublishFrame();
 };
 
 void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
@@ -194,7 +254,7 @@ void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
         windowedL[i] = ring[idx] * g_hanning.w[i];
         windowedR[i] = ring[(idx + 1) % RING_SIZE] * g_hanning.w[i];
     }
-    windowsProcessed++;
+    windowsProcessed.fetch_add(1, std::memory_order_relaxed);
 
     // FFT
     kiss_fftr(fftCfg, windowedL.data(), freqL.data());
@@ -289,7 +349,13 @@ void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
         rawR16[b] = (rawR32[b * 2] + rawR32[b * 2 + 1]) * 0.5f;
     }
 
-    // Generate std140-padded output
+    hasData = true;
+}
+
+void AudioAnalyzer::Impl::PublishFrame() {
+    // std140 padding happens here rather than per window: with 50% overlap one
+    // Process call can run a dozen windows, and only the last one's padding
+    // would have survived anyway.
     PadSpectrum(rawL16.data(), padL16.data(), NUM_BANDS_16);
     PadSpectrum(rawR16.data(), padR16.data(), NUM_BANDS_16);
     PadSpectrum(rawL32.data(), padL32.data(), NUM_BANDS_32);
@@ -297,7 +363,23 @@ void AudioAnalyzer::Impl::DoOneFFTWindow(uint32_t rp_start) {
     PadSpectrum(rawL64.data(), padL64.data(), NUM_BANDS_64);
     PadSpectrum(rawR64.data(), padR64.data(), NUM_BANDS_64);
 
-    hasData = true;
+    const uint32_t seq = pubSeq.load(std::memory_order_relaxed);
+    pubSeq.store(seq + 1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+    publishBand(pub.raw16L, rawL16);
+    publishBand(pub.raw16R, rawR16);
+    publishBand(pub.raw32L, rawL32);
+    publishBand(pub.raw32R, rawR32);
+    publishBand(pub.raw64L, rawL64);
+    publishBand(pub.raw64R, rawR64);
+    publishBand(pub.pad16L, padL16);
+    publishBand(pub.pad16R, padR16);
+    publishBand(pub.pad32L, padL32);
+    publishBand(pub.pad32R, padR32);
+    publishBand(pub.pad64L, padL64);
+    publishBand(pub.pad64R, padR64);
+    pubSeq.store(seq + 2, std::memory_order_release);
+    pubHasData.store(hasData, std::memory_order_release);
 }
 
 AudioAnalyzer::AudioAnalyzer(): m_impl(std::make_unique<Impl>()) {}
@@ -361,6 +443,7 @@ void AudioAnalyzer::Process() {
     }
     d.readPos = rp; // next-start, NOT wp — leaves residual (< FFT_SIZE*2 floats)
                     // for the next call to combine with new samples
+    d.PublishFrame();
 
     // One-shot breadcrumb: confirm the 50%-overlap branch ran more than the
     // legacy single-window count (pre-rewrite Process always executed
@@ -375,27 +458,53 @@ void AudioAnalyzer::Process() {
     }
 }
 
-std::span<const float> AudioAnalyzer::GetSpectrum16Left() const { return m_impl->padL16; }
-std::span<const float> AudioAnalyzer::GetSpectrum16Right() const { return m_impl->padR16; }
-std::span<const float> AudioAnalyzer::GetSpectrum32Left() const { return m_impl->padL32; }
-std::span<const float> AudioAnalyzer::GetSpectrum32Right() const { return m_impl->padR32; }
-std::span<const float> AudioAnalyzer::GetSpectrum64Left() const { return m_impl->padL64; }
-std::span<const float> AudioAnalyzer::GetSpectrum64Right() const { return m_impl->padR64; }
+// Every getter copies its band array out of the published block into this
+// thread's slot and hands back a span over the copy — see PublishedSpectrum.
+std::span<const float> AudioAnalyzer::GetSpectrum16Left() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad16L, t_reader.pad16L);
+    return t_reader.pad16L;
+}
+std::span<const float> AudioAnalyzer::GetSpectrum16Right() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad16R, t_reader.pad16R);
+    return t_reader.pad16R;
+}
+std::span<const float> AudioAnalyzer::GetSpectrum32Left() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad32L, t_reader.pad32L);
+    return t_reader.pad32L;
+}
+std::span<const float> AudioAnalyzer::GetSpectrum32Right() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad32R, t_reader.pad32R);
+    return t_reader.pad32R;
+}
+std::span<const float> AudioAnalyzer::GetSpectrum64Left() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad64L, t_reader.pad64L);
+    return t_reader.pad64L;
+}
+std::span<const float> AudioAnalyzer::GetSpectrum64Right() const {
+    snapshotBand(m_impl->pubSeq, m_impl->pub.pad64R, t_reader.pad64R);
+    return t_reader.pad64R;
+}
 
 std::span<const float> AudioAnalyzer::GetRawSpectrum(int resolution, int channel) const {
-    auto& d = *m_impl;
-    // channel: 0=left, 1=right
+    auto& d    = *m_impl;
+    auto  snap = [&d](auto& src, auto& dst) -> std::span<const float> {
+        snapshotBand(d.pubSeq, src, dst);
+        return dst;
+    };
+    const bool left = channel == 0;
     switch (resolution) {
     case 16:
-        return channel == 0 ? std::span<const float>(d.rawL16) : std::span<const float>(d.rawR16);
+        return left ? snap(d.pub.raw16L, t_reader.raw16L) : snap(d.pub.raw16R, t_reader.raw16R);
     case 32:
-        return channel == 0 ? std::span<const float>(d.rawL32) : std::span<const float>(d.rawR32);
+        return left ? snap(d.pub.raw32L, t_reader.raw32L) : snap(d.pub.raw32R, t_reader.raw32R);
     case 64:
-        return channel == 0 ? std::span<const float>(d.rawL64) : std::span<const float>(d.rawR64);
+        return left ? snap(d.pub.raw64L, t_reader.raw64L) : snap(d.pub.raw64R, t_reader.raw64R);
     default: return {};
     }
 }
 
-bool AudioAnalyzer::HasData() const { return m_impl->hasData; }
+bool AudioAnalyzer::HasData() const { return m_impl->pubHasData.load(std::memory_order_acquire); }
 
-uint64_t AudioAnalyzer::WindowsProcessedForTest() const { return m_impl->windowsProcessed; }
+uint64_t AudioAnalyzer::WindowsProcessedForTest() const {
+    return m_impl->windowsProcessed.load(std::memory_order_relaxed);
+}

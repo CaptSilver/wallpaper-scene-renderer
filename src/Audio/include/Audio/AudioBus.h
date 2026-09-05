@@ -16,12 +16,12 @@ class AudioAnalyzer;
 // when the last subscriber drops.
 //
 // Process() ownership stays single-consumer via a bus-internal 60Hz
-// thread; subscribers only read the spectrum via the analyzer's
-// documented lock-free APIs (GetRawSpectrum / GetSpectrum16Left etc.).
-// This preserves the MPSC + lock-free-read invariants while still
-// running a single FFT pipeline for the whole process.  Nobody else may
-// call Process() — a second caller races the bus thread on readPos, the
-// kissfft scratch and every band array.
+// thread; subscribers only read the spectrum via the analyzer's getters
+// (GetRawSpectrum / GetSpectrum16Left etc.), which snapshot the last
+// published frame without blocking the bus thread or each other.  That
+// keeps one FFT pipeline for the whole process behind an MPSC feed and
+// lock-free reads.  Nobody else may call Process() — a second caller
+// races the bus thread on readPos and the kissfft scratch.
 //
 // Acquire is thread-safe.  When wantSystemCapture is true and capture
 // init fails (no PulseAudio / PipeWire monitor source available) the
