@@ -32,10 +32,10 @@ class VulkanExSwapchain : public ExSwapchain {
 
 public:
     VulkanExSwapchain(std::array<VulkanExHandle, 3> handles, VkExtent2D ext,
-                      VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM)
+                      VkFormat fmt = kExSwapchainSdrFormat)
         : m_handles(std::move(handles)), m_extent(ext), m_format(fmt) {
         // GL_RGBA8 = 0x8058, GL_RGBA16F = 0x881A
-        uint32_t gl_fmt = (fmt == VK_FORMAT_R16G16B16A16_SFLOAT) ? 0x881Au : 0x8058u;
+        uint32_t gl_fmt = (fmt == kExSwapchainHdrFormat) ? 0x881Au : 0x8058u;
         int      index  = 0;
         for (auto& h : m_handles) {
             auto& handle     = h.handle;
@@ -77,17 +77,42 @@ private:
     VkFormat                      m_format;
 };
 
+// Build the three exportable images the host samples as dma-bufs.  Walks the
+// candidate formats rather than failing on the first refusal: 16-bit float is
+// only ever asked for by HDR output, and a driver that will not export it
+// would otherwise leave the wallpaper blank until the setting is toggled
+// back.  Ask the driver about each format before spending three allocations
+// on it.  Returns nullptr only when nothing works -- the caller must fail
+// init then, since there is nothing to present into.
 inline std::unique_ptr<VulkanExSwapchain>
 CreateExSwapchain(const Device& device, uint w, uint h, VkImageTiling tiling,
-                  VkFormat format = VK_FORMAT_R8G8B8A8_UNORM) {
-    std::array<VulkanExHandle, 3> handles;
-    for (auto& handle : handles) {
-        if (auto rv = device.tex_cache().CreateExTex(w, h, format, tiling); rv.has_value())
-            handle.image = std::move(rv.value());
-        else
-            return nullptr;
+                  VkFormat format = kExSwapchainSdrFormat) {
+    for (VkFormat candidate : exSwapchainFormatCandidates(format)) {
+        if (! exSwapchainFormatUsable(device.gpu().GetFormatProperties(candidate), tiling)) {
+            LOG_INFO("offscreen swapchain: driver does not support %s for this tiling",
+                     vvk::ToString(candidate));
+            continue;
+        }
+        std::array<VulkanExHandle, 3> handles;
+        bool                          built = true;
+        for (auto& handle : handles) {
+            if (auto rv = device.tex_cache().CreateExTex(w, h, candidate, tiling); rv.has_value())
+                handle.image = std::move(rv.value());
+            else {
+                built = false;
+                break;
+            }
+        }
+        if (! built) continue;
+        if (candidate != format) {
+            LOG_INFO("offscreen swapchain: %s unavailable, falling back to %s",
+                     vvk::ToString(format),
+                     vvk::ToString(candidate));
+        }
+        return std::make_unique<VulkanExSwapchain>(
+            std::move(handles), VkExtent2D { w, h }, candidate);
     }
-    return std::make_unique<VulkanExSwapchain>(std::move(handles), VkExtent2D { w, h }, format);
+    return nullptr;
 }
 
 } // namespace vulkan

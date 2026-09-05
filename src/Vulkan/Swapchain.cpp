@@ -27,22 +27,18 @@ const char* present_mode_name(VkPresentModeKHR m) {
     }
 }
 
-// Pick the best available present mode given the user's policy and the
-// output's refresh rate (Hz).  Falls back to FIFO if no preferred mode is
-// supported — FIFO is guaranteed by the Vulkan spec on every conformant
-// implementation.
-//
-// Auto policy thresholds (10% slack avoids flapping when Fps≈refresh):
-//   target_fps > output_refresh * 1.1 → MAILBOX (low-latency, drop frames)
-//   target_fps < output_refresh * 0.9 → FIFO_RELAXED (sub-refresh smoothing)
-//   otherwise                          → FIFO (matched, no tearing)
-//
-
 bool querySwapChainSupport(const vvk::PhysicalDevice& gpu, VkSurfaceKHR surface,
                            SwapChainSupportDetails& details) {
     VVK_CHECK_BOOL_RE(gpu.GetSurfaceCapabilitiesKHR(surface, details.capabilities));
     VVK_CHECK_BOOL_RE(gpu.GetSurfaceFormatsKHR(surface, details.formats));
     VVK_CHECK_BOOL_RE(gpu.GetSurfacePresentModesKHR(surface, details.presentModes));
+    // chooseSwapSurfaceFormat indexes element 0 unconditionally, so an empty
+    // list is a read past the end rather than a failed create.  A surface
+    // advertising no format cannot be presented to anyway.
+    if (details.formats.empty()) {
+        LOG_ERROR("surface advertises no formats");
+        return false;
+    }
     return true;
 }
 
@@ -59,32 +55,6 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(std::span<const VkSurfaceFormatKHR> a
              vvk::ToString(format.format),
              vvk::ToString(format.colorSpace));
     return format;
-}
-
-VkExtent2D GetSwapChainExtent(VkSurfaceCapabilitiesKHR& surface_capabilities, VkExtent2D ext) {
-    auto min     = surface_capabilities.minImageExtent;
-    auto max     = surface_capabilities.maxImageExtent;
-    auto currExt = surface_capabilities.currentExtent;
-
-    if (currExt.width == 0 || currExt.width < min.width || currExt.width > max.width ||
-        currExt.height < min.height || currExt.height > max.height) {
-        if (ext.width < min.width) {
-            ext.width = min.width;
-        }
-        if (ext.height < min.height) {
-            ext.height = min.height;
-        }
-        if (ext.width > max.width) {
-            ext.width = max.width;
-        }
-        if (ext.height > max.height) {
-            ext.height = max.height;
-        }
-        return ext;
-    }
-
-    // Most of the cases we define size of the swap_chain images equal to current window's size
-    return surface_capabilities.currentExtent;
 }
 
 std::optional<vvk::ImageView> CreateSwapImageView(const vvk::Device& device, VkFormat format,
@@ -126,15 +96,10 @@ bool Swapchain::Create(Device& device, VkSurfaceKHR surface, VkExtent2D extent, 
 
     swap.m_format = chooseSwapSurfaceFormat(swap_details.formats);
 
-    auto& surfaceCapabilities = swap_details.capabilities;
+    const auto& surfaceCapabilities = swap_details.capabilities;
 
-    // triple
-    uint32_t image_count = surfaceCapabilities.minImageCount + 1;
-    if (surfaceCapabilities.maxImageCount > 0 && image_count > surfaceCapabilities.maxImageCount)
-        image_count = surfaceCapabilities.maxImageCount;
-    surfaceCapabilities.currentExtent = swap.m_extent;
-
-    swap.m_extent = GetSwapChainExtent(surfaceCapabilities, extent);
+    const uint32_t image_count = chooseSwapchainImageCount(surfaceCapabilities);
+    swap.m_extent              = chooseSwapchainExtent(surfaceCapabilities, extent);
 
     swap.m_present_mode = pickPresentMode(swap_details.presentModes,
                                           swap.m_present_policy,
@@ -195,16 +160,12 @@ bool Swapchain::Recreate(Device& device, VkSurfaceKHR surface, VkExtent2D extent
 
     m_format = chooseSwapSurfaceFormat(swap_details.formats);
 
-    auto& surfaceCapabilities = swap_details.capabilities;
+    const auto& surfaceCapabilities = swap_details.capabilities;
 
-    uint32_t image_count = surfaceCapabilities.minImageCount + 1;
-    if (surfaceCapabilities.maxImageCount > 0 && image_count > surfaceCapabilities.maxImageCount)
-        image_count = surfaceCapabilities.maxImageCount;
-    m_extent       = GetSwapChainExtent(surfaceCapabilities, extent);
-    m_present_mode = pickPresentMode(swap_details.presentModes,
-                                      m_present_policy,
-                                      m_target_fps,
-                                      m_output_refresh_hz);
+    const uint32_t image_count = chooseSwapchainImageCount(surfaceCapabilities);
+    m_extent                   = chooseSwapchainExtent(surfaceCapabilities, extent);
+    m_present_mode             = pickPresentMode(
+        swap_details.presentModes, m_present_policy, m_target_fps, m_output_refresh_hz);
     // No LOG_INFO at the Recreate site — would spam on Wayland resize.
     // The Create-site log suffices for first-frame diagnostics.
 

@@ -41,10 +41,15 @@ public:
     int               targetFps() const { return m_target_fps; }
 
 private:
+    // Device holds a Swapchain by value and its own constructor is
+    // user-provided, so these are default-initialized, never zeroed.  The
+    // accessors are reachable before Create() runs (and stay reachable when
+    // it fails), so give them values that mean "nothing has been picked yet"
+    // rather than whatever was on the stack.
     vvk::SwapchainKHR            m_handle;
-    VkSurfaceFormatKHR           m_format;
-    VkExtent2D                   m_extent;
-    VkPresentModeKHR             m_present_mode;
+    VkSurfaceFormatKHR           m_format {};
+    VkExtent2D                   m_extent {};
+    VkPresentModeKHR             m_present_mode { VK_PRESENT_MODE_FIFO_KHR };
     std::vector<ImageParameters> m_images;
     std::vector<vvk::ImageView>  m_imageviews;
 

@@ -24,6 +24,37 @@ inline SwapResult classifySwapResult(VkResult r) noexcept {
     }
 }
 
+// The size the swapchain is created at.  The driver's currentExtent is the
+// answer whenever it is one the driver will actually accept -- a surface that
+// declines to name a size reports 0xFFFFFFFF (Wayland) or 0 (mid-teardown),
+// and some drivers report a currentExtent outside their own advertised range,
+// which is what made vkCreateSwapchainKHR fail on resize.  In those cases fall
+// back to the extent the caller asked for, clamped per axis.
+inline VkExtent2D chooseSwapchainExtent(const VkSurfaceCapabilitiesKHR& caps,
+                                        VkExtent2D                      requested) noexcept {
+    const VkExtent2D min  = caps.minImageExtent;
+    const VkExtent2D max  = caps.maxImageExtent;
+    const VkExtent2D curr = caps.currentExtent;
+
+    // A zero axis is checked on its own rather than left to the min test:
+    // the spec floors minImageExtent at 1, but a driver reporting 0 there
+    // would otherwise let a degenerate size through.
+    const bool usable = curr.width != 0 && curr.height != 0 && curr.width >= min.width &&
+                        curr.width <= max.width && curr.height >= min.height &&
+                        curr.height <= max.height;
+    if (usable) return curr;
+
+    return VkExtent2D { std::clamp(requested.width, min.width, max.width),
+                        std::clamp(requested.height, min.height, max.height) };
+}
+
+// One image over the surface minimum, so there is always one to render into
+// while the driver holds the rest.  maxImageCount == 0 means "no limit".
+inline uint32_t chooseSwapchainImageCount(const VkSurfaceCapabilitiesKHR& caps) noexcept {
+    const uint32_t wanted = caps.minImageCount + 1;
+    if (caps.maxImageCount > 0 && wanted > caps.maxImageCount) return caps.maxImageCount;
+    return wanted;
+}
 
 // Where the final composite lands.  The renderer either owns a window surface
 // (on-screen swapchain) or exports an offscreen swapchain the host samples as
@@ -46,6 +77,42 @@ constexpr PresentTarget classifyPresentTarget(bool with_surface,
     return ex_swapchain_created ? PresentTarget::ExportedOffscreen : PresentTarget::None;
 }
 
+// Formats for the exported offscreen swapchain -- the one whose images the
+// host imports as dma-bufs.  HDR output wants 16-bit float; everything else
+// gets the 8-bit format.
+inline constexpr VkFormat kExSwapchainSdrFormat = VK_FORMAT_R8G8B8A8_UNORM;
+inline constexpr VkFormat kExSwapchainHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+
+constexpr VkFormat exSwapchainFormat(bool hdr_output) noexcept {
+    return hdr_output ? kExSwapchainHdrFormat : kExSwapchainSdrFormat;
+}
+
+// Formats to try for the exported swapchain, best first.  A driver is free
+// to refuse 16-bit float for an exportable colour attachment, and turning
+// HDR on rebuilds the whole renderer -- without a second candidate the
+// refusal fails init and the wallpaper stays blank until the user toggles
+// the setting back.  8-bit is what the SDR path already runs on, so it is
+// the one substitution worth making; a caller naming anything else knows
+// what it wants and gets it or nothing.
+inline std::vector<VkFormat> exSwapchainFormatCandidates(VkFormat preferred) {
+    if (preferred == kExSwapchainHdrFormat) return { kExSwapchainHdrFormat, kExSwapchainSdrFormat };
+    return { preferred };
+}
+
+// Whether the driver advertises everything the exported images are used for:
+// rendered into, sampled back for the final composite, and blitted to.  This
+// is the cheap half of the question -- whether the memory can actually be
+// exported is only answered by trying, so a caller still walks the candidate
+// list on a creation failure.
+constexpr bool exSwapchainFormatUsable(const VkFormatProperties& props,
+                                       VkImageTiling             tiling) noexcept {
+    constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                              VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                                              VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    const VkFormatFeatureFlags     have =
+        tiling == VK_IMAGE_TILING_LINEAR ? props.linearTilingFeatures : props.optimalTilingFeatures;
+    return (have & required) == required;
+}
 
 // Policy by which the swapchain picks among supported present modes.
 // Auto is the default and selects based on target_fps vs output_refresh_hz.
