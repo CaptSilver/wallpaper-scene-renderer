@@ -9,7 +9,6 @@
 #include "Particle/RemapValueOps.hpp"
 #include <cassert>
 #include <chrono>
-#include <cstring>
 #include <ctime>
 #include <random>
 #include <memory>
@@ -295,8 +294,12 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             };
         } else if (name == "remapinitialvalue") {
             std::string input, output, operation;
-            float       inMin = 0, inMax = 100, outMin = 0, outMax = 1;
-            int         inputCP = 0;
+            float       inMin = 0, inMax = 100;
+            // Output ranges are read as vec3 so the "0 0 1" / "1 0 0" colour
+            // ramps WE authors survive; a bare number broadcasts to all three
+            // channels, so a scalar output reads component 0 either way.
+            std::array<float, 3> outMin { 0.0f, 0.0f, 0.0f }, outMax { 1.0f, 1.0f, 1.0f };
+            int                  inputCP = 0;
             GET_JSON_NAME_VALUE_NOWARN(wpj, "input", input);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "output", output);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "operation", operation);
@@ -305,28 +308,67 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemin", outMin);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "outputrangemax", outMax);
             GET_JSON_NAME_VALUE_NOWARN(wpj, "inputcontrolpoint0", inputCP);
-            inputCP = std::clamp(inputCP, 0, 7);
+            inputCP = ClampCpIndex(inputCP);
+
+            // Same string vocabulary as the remapvalue operator, decoded once
+            // here so the per-spawn body switches on integers.
+            const std::string      output_authored = output;
+            const std::string_view prefix_op       = stripRemapOperationPrefix(output);
+            if (! wpj.contains("operation") && ! prefix_op.empty()) operation = prefix_op;
+
+            const RemapInput  in_kind  = parseRemapInput(input);
+            const RemapOutput out_kind = parseRemapOutput(output);
+            // parseRemapOperation() answers Multiply for a string it doesn't
+            // know, which the operator needs for back-compat.  Here an absent
+            // key has always meant "assign" — also what the editor's own
+            // operation dropdown defaults to — so only decode what was authored.
+            const RemapOperation op_kind =
+                operation.empty() ? RemapOperation::SetRemap : parseRemapOperation(operation);
+
+            if (in_kind != RemapInput::DistanceToControlPoint) {
+                LOG_INFO("remapinitialvalue: input '%s' is not one this initializer reads "
+                         "(distancetocontrolpoint only) — reading 0",
+                         input.empty() ? "<absent>" : input.c_str());
+            }
+            if (out_kind != RemapOutput::Size && out_kind != RemapOutput::Color) {
+                // Most instances in WE's shipped assets omit `output`
+                // altogether, and nothing WE ships as text says what the editor
+                // substitutes for it — guessing would restyle the lightning
+                // presets on a hunch.  Name the value instead: an initializer
+                // that computes a number and throws it away is otherwise
+                // invisible in a journal.
+                LOG_INFO("remapinitialvalue: output '%s' is not one this initializer writes "
+                         "(size and color) — the remapped value is discarded",
+                         output_authored.empty() ? "<absent>" : output_authored.c_str());
+                return [](Particle&, double) {};
+            }
 
             const ParticleControlpoint* cp_data = controlpoints.data();
             usize                       cp_size = controlpoints.size();
 
             return [=](Particle& p, double) {
                 double val = 0;
-                if (input == "distancetocontrolpoint") {
-                    if ((usize)inputCP < cp_size) {
-                        val = (PM::GetPos(p).cast<double>() - cp_data[inputCP].resolved).norm();
-                    }
+                if (in_kind == RemapInput::DistanceToControlPoint && (usize)inputCP < cp_size) {
+                    val = (PM::GetPos(p).cast<double>() - cp_data[inputCP].resolved).norm();
                 }
                 // Map val from [inMin, inMax] to [outMin, outMax]
                 double t =
                     (inMax > inMin) ? std::clamp((val - inMin) / (inMax - inMin), 0.0, 1.0) : 0.0;
-                double outVal = algorism::lerp(t, (double)outMin, (double)outMax);
 
-                if (output == "size") {
-                    if (operation == "multiply")
-                        PM::MutiplySize(p, outVal);
-                    else
-                        PM::InitSize(p, outVal);
+                // Init* rather than the plain setters: ParticleSystem calls
+                // Reset() on every live particle each tick, restoring size and
+                // colour from init.*, so a write that skipped the init copy
+                // would be gone before the particle's first draw.
+                if (out_kind == RemapOutput::Color) {
+                    Vector3d c = p.color.cast<double>();
+                    for (int32_t i = 0; i < 3; i++) {
+                        double v = algorism::lerp(t, (double)outMin[i], (double)outMax[i]);
+                        c[i]     = applyRemapOperation(op_kind, c[i], v, 1.0);
+                    }
+                    PM::InitColor(p, c[0], c[1], c[2]);
+                } else {
+                    double v = algorism::lerp(t, (double)outMin[0], (double)outMax[0]);
+                    PM::InitSize(p, applyRemapOperation(op_kind, p.size, v, 1.0));
                 }
             };
         } else if (name == "mapsequencebetweencontrolpoints") {
@@ -1274,46 +1316,18 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             if (transformoctaves < 1) transformoctaves = 1;
             if (transformoctaves > 8) transformoctaves = 8;
 
-            // The source editor exposes a single dropdown that pre-bakes the
-            // (operation, output) pair: e.g. "set velocity" maps to
-            // (operation="set", output="particlevelocity").  Wallpapers
-            // authored that way ship the JSON as `output: "setvelocity"` with
-            // no explicit `operation` key, so normalise such aliases here.
-            //
-            // The normalisation only fires when the alias is recognised and
-            // an explicit operation key was NOT authored — so a scene that
-            // happens to ship `output: "setvelocity"` AND
-            // `operation: "multiply"` (rare but possible) keeps its explicit
-            // operation, matching author intent.
-            const bool operation_explicit = wpj.contains("operation");
-            auto strip_prefix = [](std::string& s, const char* prefix) -> bool {
-                const std::size_t n = std::strlen(prefix);
-                if (s.size() > n && s.compare(0, n, prefix) == 0) {
-                    s.erase(0, n);
-                    return true;
-                }
-                return false;
-            };
             // Strip operation-prefix sugar from the output string regardless
             // of whether `operation` was authored — author intent for the
             // (operation, output) tuple lives in two places that need to be
             // kept consistent.  Only update the `operation` capture when no
-            // explicit key was authored, so an explicit key always wins.
-            std::string output_norm = output;
-            std::string prefix_op;
-            if (strip_prefix(output_norm, "set")) prefix_op = "set";
-            else if (strip_prefix(output_norm, "add")) prefix_op = "add";
-            else if (strip_prefix(output_norm, "multiply")) prefix_op = "multiply";
-            else if (strip_prefix(output_norm, "subtract")) prefix_op = "subtract";
-            else if (strip_prefix(output_norm, "fade")) prefix_op = "multiply";
-            output = std::move(output_norm);
+            // explicit key was authored, so a scene shipping both
+            // `output: "setvelocity"` AND `operation: "multiply"` keeps its
+            // explicit operation.  Short-form output names ("velocity",
+            // "color", ...) are resolved by parseRemapOutput below.
+            const bool             operation_explicit = wpj.contains("operation");
+            const std::string      output_authored    = output;
+            const std::string_view prefix_op          = stripRemapOperationPrefix(output);
             if (! operation_explicit && ! prefix_op.empty()) operation = prefix_op;
-            // Canonicalise short-form output names that the editor uses
-            // interchangeably with the long-form `particle*` names.
-            if (output == "velocity") output = "particlevelocity";
-            else if (output == "angularvelocity") output = "particleangularvelocity";
-            else if (output == "rotation") output = "particlerotation";
-            else if (output == "color" || output == "coloropacity") output = "particlecolor";
             inputCP0  = ClampCpIndex(inputCP0);
             outputCP0 = ClampCpIndex(outputCP0);
             BlendWindow bw = BlendWindow::FromJson(wpj);
@@ -1341,6 +1355,18 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
             const RemapOutput    out_kind = parseRemapOutput(output);
             const RemapComponent in_comp  = parseRemapComponent(inputcomponent);
             const RemapComponent out_comp = parseRemapComponent(outputcomponent);
+
+            if (out_kind == RemapOutput::Unhandled) {
+                // Writing a particle position back into world space would need
+                // a pending-position queue we don't have.  Name the value here
+                // — a silent no-op leaves nothing to find in a journal — and
+                // skip the per-frame maths, since every input read in the loop
+                // below is side-effect free and the result has nowhere to go.
+                LOG_INFO("remapvalue: output '%s' is not one this operator writes "
+                         "— the remapped value is discarded",
+                         output_authored.empty() ? "<absent>" : output_authored.c_str());
+                return [](const ParticleInfo&) {};
+            }
 
             return [in_kind,
                     tx_kind,
@@ -1655,10 +1681,7 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                         }
                         break;
                     case RemapOutput::Unhandled:
-                        // Other outputs (position) intentionally unhandled —
-                        // writing back into world space would need a pending
-                        // particle-position queue we don't have; report loudly
-                        // the first time we see one in the wild.
+                        // Unreachable: reported and short-circuited at parse time.
                         break;
                     }
                 }

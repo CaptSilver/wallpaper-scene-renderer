@@ -148,6 +148,26 @@ TEST_SUITE("RemapValueOps resolvers") {
         CHECK(parseRemapComponent("magnitude") == RemapComponent::Norm);
         CHECK(parseRemapComponent("")          == RemapComponent::Norm);
     }
+
+    TEST_CASE("an output that is only the sugar prefix keeps its name") {
+        // The prefix is sugar in front of a real output ("setvelocity" =
+        // operation "set" on output "velocity").  A bare "set" names no output
+        // to write, so stripping it would leave an empty output string and
+        // silently invent an operation the author never asked for.  Every
+        // prefix in the table has to hold that line, including "fade", which
+        // maps to a different operation name than itself.
+        for (std::string_view bare : { "set", "add", "multiply", "subtract", "fade" }) {
+            std::string output { bare };
+            CHECK(stripRemapOperationPrefix(output).empty());
+            CHECK(output == bare);
+        }
+    }
+
+    TEST_CASE("one character past the prefix is enough to strip it") {
+        std::string output = "setx";
+        CHECK(stripRemapOperationPrefix(output) == "set");
+        CHECK(output == "x");
+    }
 }
 
 TEST_SUITE("RemapValueOps kernels match the string oracle") {

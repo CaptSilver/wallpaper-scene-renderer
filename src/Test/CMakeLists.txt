@@ -43,6 +43,7 @@ add_executable(backend_scene_tests
     test_ParticleSubSystem_BurstDoneQueue.cpp
     test_ParticleTrail.cpp
     test_SceneClockClamp.cpp
+    test_SceneLoadFailure.cpp
     test_AudioRateMultiplier.cpp
     test_WPPuppet.cpp
     test_WPSceneAttachmentCompose.cpp
@@ -108,6 +109,8 @@ add_executable(backend_scene_tests
     test_TextureCacheQueryLRU.cpp
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
+    test_SwapchainSetup.cpp
+    test_ExSwapchainFormat.cpp
     test_present_mode.cpp
     test_PipelineCacheIO.cpp
     test_Shader.cpp
@@ -147,6 +150,7 @@ add_executable(backend_scene_tests
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
     test_WPParticleParser_SS8.cpp
+    test_WPParticleParserRemapInitial.cpp
     test_WPSceneParse.cpp
     test_WPLightObject.cpp
     test_WPLightKindParse.cpp
@@ -161,6 +165,7 @@ add_executable(backend_scene_tests
     test_ImagePayload.cpp
     test_AudioConsumerGate.cpp
     test_TextStyleMerge.cpp
+    test_TextUploadCommit.cpp
     test_PendingUpdateQueues.cpp
     # Pending-update queue lifted out of RenderHandler.  backend_scene_tests
     # compiles individual Scene .cpp files (it does not link the whole wpScene
@@ -366,6 +371,7 @@ if(Qt6_FOUND)
         test_main_qt.cpp
         test_SceneScript.cpp
         test_SceneScriptDispatch.cpp
+        test_SceneLocalStorageDisk.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h

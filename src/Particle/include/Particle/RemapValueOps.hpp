@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string_view>
+#include <string>
 #include <algorithm>
 #include <cmath>
 #include <Eigen/Core>
@@ -76,16 +77,45 @@ inline RemapOperation parseRemapOperation(std::string_view s) noexcept {
     if (s == "subtract")            return RemapOperation::Subtract;
     return RemapOperation::Multiply; // default
 }
+// Both the long `particle*` names and the editor's short forms land here, so a
+// caller never has to canonicalise before asking.
 inline RemapOutput parseRemapOutput(std::string_view s) noexcept {
     if (s == "opacity" || s == "particlealpha" || s == "alpha") return RemapOutput::Alpha;
     if (s == "size" || s == "particlesize")        return RemapOutput::Size;
-    if (s == "particlevelocity")                   return RemapOutput::Velocity;
-    if (s == "particleangularvelocity")            return RemapOutput::AngularVelocity;
-    if (s == "particlerotation")                   return RemapOutput::Rotation;
-    if (s == "particlecolor")                      return RemapOutput::Color;
+    if (s == "particlevelocity" || s == "velocity") return RemapOutput::Velocity;
+    if (s == "particleangularvelocity" || s == "angularvelocity")
+        return RemapOutput::AngularVelocity;
+    if (s == "particlerotation" || s == "rotation") return RemapOutput::Rotation;
+    if (s == "particlecolor" || s == "color" || s == "coloropacity")
+        return RemapOutput::Color;
     if (s == "controlpoint")                       return RemapOutput::ControlPoint;
     return RemapOutput::Unhandled; // position etc.
 }
+
+// The editor's output dropdown pre-bakes an (operation, output) pair: picking
+// "set velocity" serialises as output:"setvelocity" with no operation key.
+// Strips that sugar off `output` in place and returns the operation it names,
+// or an empty view when there was none.  Lives here so the initializer and the
+// operator read one vocabulary instead of two that drift apart.
+inline std::string_view stripRemapOperationPrefix(std::string& output) noexcept {
+    struct Sugar {
+        std::string_view prefix;
+        std::string_view operation;
+    };
+    // `fade` is the editor's wording for a multiply that decays a value away.
+    static constexpr Sugar kSugar[] = {
+        { "set", "set" },           { "add", "add" },  { "multiply", "multiply" },
+        { "subtract", "subtract" }, { "fade", "multiply" },
+    };
+    for (const auto& [prefix, operation] : kSugar) {
+        if (output.size() > prefix.size() && output.compare(0, prefix.size(), prefix) == 0) {
+            output.erase(0, prefix.size());
+            return operation;
+        }
+    }
+    return {};
+}
+
 inline RemapComponent parseRemapComponent(std::string_view s) noexcept {
     if (s == "x")       return RemapComponent::X;
     if (s == "y")       return RemapComponent::Y;
