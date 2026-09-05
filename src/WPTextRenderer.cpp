@@ -304,15 +304,55 @@ std::string s_fallbackFontBytes;
 FT_Face     s_fallbackFace { nullptr };
 FT_UInt     s_fallbackPixelSize { 0 };
 
-// MUST be called under s_ftLibMutex.  Loads the fallback face on first
-// call (returns nullptr if no CJK font is installed) and sets pixel size.
+// Counts system font searches for the fallback face.  Test-only observable,
+// distinct from s_fallbackProbeCount: a consult answered from the
+// remembered result bumps the probe counter but not this one.
+std::atomic<int> s_fallbackResolveCount { 0 };
+
+// Swapped by the test hook so the "no CJK font installed" branch can run on
+// a host that has one.  Null means the real system resolver.  Read and
+// written under s_ftLibMutex.
+std::string (*s_cjkResolverOverride)() { nullptr };
+
+std::string resolveFallbackPathLocked() {
+    s_fallbackResolveCount.fetch_add(1, std::memory_order_relaxed);
+    return s_cjkResolverOverride ? s_cjkResolverOverride() : ResolveCJKHanFallback();
+}
+
+// True once the fallback search has run in this Init/Shutdown cycle,
+// whether or not it produced a usable face.  s_fallbackFace == nullptr on
+// its own cannot carry that: a host with no pan-CJK font would redo the
+// whole search for every Han codepoint of every re-raster.
+bool s_fallbackResolveTried { false };
+
+// MUST be called under s_ftLibMutex.  Loads the fallback face on the first
+// call of an Init/Shutdown cycle and sets pixel size.  Returns nullptr when
+// no usable CJK font was found — and then keeps returning it without
+// searching again until the next Shutdown.
 FT_Face acquireFallbackFaceLocked(FT_UInt pixelSize) {
     s_fallbackProbeCount.fetch_add(1, std::memory_order_relaxed);
     if (! s_fallbackFace) {
-        std::string path = ResolveCJKHanFallback();
-        if (path.empty()) return nullptr;
+        // Remember the miss as firmly as a hit.  Searching costs four
+        // fontconfig matches plus a stat per candidate, and the
+        // FT_New_Memory_Face exit below re-reads and re-parses a
+        // multi-megabyte .ttc; repeating that per Han codepoint on the
+        // render thread, under this mutex, buys the user the same tofu.
+        // Set before the attempt so all three failure exits are covered.
+        if (s_fallbackResolveTried) return nullptr;
+        s_fallbackResolveTried = true;
+        std::string path       = resolveFallbackPathLocked();
+        if (path.empty()) {
+            // Once per scene load now that the answer sticks, so it is worth
+            // saying out loud — otherwise CJK text is just tofu with no clue
+            // that the host is missing a pan-CJK font.
+            LOG_INFO("WPTextRenderer: no CJK font found; Han text renders as .notdef");
+            return nullptr;
+        }
         s_fallbackFontBytes = ReadSystemFile(path);
-        if (s_fallbackFontBytes.empty()) return nullptr;
+        if (s_fallbackFontBytes.empty()) {
+            LOG_ERROR("WPTextRenderer: CJK fallback %s could not be read", path.c_str());
+            return nullptr;
+        }
         FT_Error err =
             FT_New_Memory_Face(s_ftLib,
                                reinterpret_cast<const FT_Byte*>(s_fallbackFontBytes.data()),
@@ -320,6 +360,9 @@ FT_Face acquireFallbackFaceLocked(FT_UInt pixelSize) {
                                0,
                                &s_fallbackFace);
         if (err || ! s_fallbackFace) {
+            LOG_ERROR("WPTextRenderer: CJK fallback %s is not a font FreeType accepts: %d",
+                      path.c_str(),
+                      err);
             s_fallbackFace = nullptr;
             s_fallbackFontBytes.clear();
             return nullptr;
@@ -344,6 +387,9 @@ void purgeFallbackFaceLocked() {
     }
     s_fallbackFontBytes.clear();
     s_fallbackPixelSize = 0;
+    // Re-probe after a Shutdown/Init cycle: a user who installs Noto CJK
+    // mid-session gets it on the next scene load.
+    s_fallbackResolveTried = false;
 }
 
 } // namespace
@@ -991,6 +1037,19 @@ void WPTextRenderer::TEST_resetFallbackProbeCounter() {
 
 int WPTextRenderer::TEST_getFallbackProbeCount() {
     return s_fallbackProbeCount.load(std::memory_order_relaxed);
+}
+
+void WPTextRenderer::TEST_resetFallbackResolveCounter() {
+    s_fallbackResolveCount.store(0, std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getFallbackResolveCount() {
+    return s_fallbackResolveCount.load(std::memory_order_relaxed);
+}
+
+void WPTextRenderer::TEST_setCJKFallbackResolver(std::string (*resolver)()) {
+    std::lock_guard<std::mutex> lock(s_ftLibMutex);
+    s_cjkResolverOverride = resolver;
 }
 
 void WPTextRenderer::TEST_resetMissingGlyphLogCounter() {

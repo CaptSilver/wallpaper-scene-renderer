@@ -100,6 +100,12 @@ public:
     //   TEST_reset/getKerningProbeCounter — counts FT_Get_Kerning attempts.
     //   TEST_hostFontHasKerning — wraps FT_HAS_KERNING on the passed font.
     //   TEST_reset/getFallbackProbeCounter — counts CJK fallback consults.
+    //   TEST_reset/getFallbackResolveCounter — counts system font searches
+    //   for the CJK fallback; a consult answered from the remembered
+    //   result does not count.
+    //   TEST_setCJKFallbackResolver — swap in a stand-in resolver so a test
+    //   can drive the "no CJK font installed" branch on a host that has
+    //   one.  nullptr restores the system resolver.
     //   TEST_reset/getMissingGlyphLogCount — counts rate-limited LOG_INFO
     //   firings for missing glyphs in this process.
     static int  TEST_measureLineWidthWithKerning(const std::string& fontData, float pointsize,
@@ -111,6 +117,9 @@ public:
     static bool TEST_hostFontHasKerning(const std::string& fontData);
     static void TEST_resetFallbackProbeCounter();
     static int  TEST_getFallbackProbeCount();
+    static void TEST_resetFallbackResolveCounter();
+    static int  TEST_getFallbackResolveCount();
+    static void TEST_setCJKFallbackResolver(std::string (*resolver)());
     static void TEST_resetMissingGlyphLogCounter();
     static int  TEST_getMissingGlyphLogCount();
     static void TEST_resetLoadGlyphFailLogCounter();

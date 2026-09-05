@@ -4,6 +4,8 @@
 #include "SystemFontFallback.hpp"
 
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -809,5 +811,147 @@ TEST_SUITE("WPTextRenderer FT_Load_Glyph failure logging") {
         // the .notdef glyph load succeeds; no FT_Load_Glyph error is
         // signalled.
         CHECK(WPTextRenderer::TEST_getLoadGlyphFailLogCount() == 0);
+    }
+}
+
+// -------- CJK fallback resolution caching --------
+//
+// The fallback face is resolved from the system, so "there is no CJK font
+// here" is as much an answer as a hit and has to be remembered the same
+// way.  Before it was, a Latin-only font rendering Han text redid the whole
+// system font search — four fontconfig matches plus a stat per candidate —
+// for every Han codepoint of every re-raster, on the render thread, holding
+// the FreeType mutex.  A Chinese clock layer does that once a second
+// forever; a script-driven ticker does it every frame.
+//
+// The resolver seam keeps these cases host-independent: the assertions must
+// hold on a host that has Noto CJK installed and on one that does not.
+
+TEST_SUITE("WPTextRenderer CJK fallback resolution caching") {
+    static std::string loadHostFont() {
+        const std::string path = wallpaper::ResolveSystemFontFallback("systemfont_sans");
+        if (path.empty()) return {};
+        return wallpaper::ReadSystemFile(path);
+    }
+
+    // Stands in for a host with no pan-CJK font installed.
+    static std::string noCJKFontInstalled() { return {}; }
+
+    // Path to a file that exists but holds no font; FT_New_Memory_Face
+    // rejects it, which is the most expensive of the three failure exits
+    // (a real .ttc is multiple megabytes read and parsed per attempt).
+    static std::string s_junkFontPath;
+    static std::string junkFontOnDisk() { return s_junkFontPath; }
+
+    // Full teardown around each case: a fallback face left loaded by an
+    // earlier case short-circuits the resolver before it is ever consulted,
+    // and the face LRU is keyed on buffer identity, so a half-reset lets a
+    // recycled malloc slab hit a stale entry.  Restoring the resolver on
+    // scope exit keeps a failed REQUIRE from poisoning the rest of the
+    // binary with the stand-in.
+    struct ResolverSwap {
+        explicit ResolverSwap(std::string (*resolver)()) {
+            WPTextRenderer::Shutdown();
+            WPTextRenderer::Init();
+            WPTextRenderer::TEST_setCJKFallbackResolver(resolver);
+        }
+        ~ResolverSwap() {
+            WPTextRenderer::TEST_setCJKFallbackResolver(nullptr);
+            WPTextRenderer::Shutdown();
+            WPTextRenderer::Init();
+        }
+        ResolverSwap(const ResolverSwap&)            = delete;
+        ResolverSwap& operator=(const ResolverSwap&) = delete;
+    };
+
+    // Drop the remembered result without dropping the stand-in resolver —
+    // what a scene reload does to the renderer mid-session.
+    static void reinitRenderer() {
+        WPTextRenderer::Shutdown();
+        WPTextRenderer::Init();
+    }
+
+    TEST_CASE("no CJK font on the host: the system font search runs once, not per codepoint") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        ResolverSwap swap(&noCJKFontInstalled);
+        WPTextRenderer::TEST_resetFallbackResolveCounter();
+        WPTextRenderer::TEST_resetFallbackProbeCounter();
+
+        const std::string han = "\xE4\xB8\xAD\xE6\x96\x87"; // 中文
+        for (int i = 0; i < 100; ++i) {
+            auto img =
+                WPTextRenderer::RenderText(fontData, 16.f, han, 64, 32, "center", "center", 0);
+            REQUIRE(img != nullptr);
+        }
+
+        // Both codepoints of every call still miss on the Latin face and
+        // consult the fallback...
+        CHECK(WPTextRenderer::TEST_getFallbackProbeCount() >= 100);
+        // ...but they all share one answer.
+        CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 1);
+    }
+
+    TEST_CASE("a resolved font FreeType cannot parse is not re-read per codepoint") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        std::error_code ec;
+        const auto      junk =
+            std::filesystem::temp_directory_path(ec) / "wek-text-fallback-not-a-font.bin";
+        if (ec) {
+            MESSAGE("No writable temp directory; skipping");
+            return;
+        }
+        {
+            std::ofstream out(junk, std::ios::binary);
+            if (! out) {
+                MESSAGE("Could not write the temp file; skipping");
+                return;
+            }
+            out << std::string(4096, 'x');
+        }
+        s_junkFontPath = junk.string();
+
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        ResolverSwap swap(&junkFontOnDisk);
+        WPTextRenderer::TEST_resetFallbackResolveCounter();
+
+        for (int i = 0; i < 50; ++i) {
+            auto img = WPTextRenderer::RenderText(
+                fontData, 16.f, "\xE4\xB8\xAD", 64, 32, "center", "center", 0);
+            REQUIRE(img != nullptr);
+        }
+        CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 1);
+
+        std::filesystem::remove(junk, ec);
+    }
+
+    TEST_CASE("Shutdown/Init re-probes so a font installed mid-session is picked up") {
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        ResolverSwap swap(&noCJKFontInstalled);
+        WPTextRenderer::TEST_resetFallbackResolveCounter();
+
+        (void)WPTextRenderer::RenderText(
+            fontData, 16.f, "\xE4\xB8\xAD", 64, 32, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 1);
+
+        // A scene reload tears FreeType down and back up; that is where the
+        // remembered "nothing installed" has to expire.
+        reinitRenderer();
+        (void)WPTextRenderer::RenderText(
+            fontData, 16.f, "\xE4\xB8\xAD", 64, 32, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 2);
     }
 }
