@@ -67,10 +67,13 @@ public:
         Eigen::Quaterniond quaternion;
     };
     struct Animation {
-        i32         id;
-        double      fps;
-        i32         length;
-        PlayMode    mode;
+        // Defaulted so a puppet assembled in-process (rather than parsed from
+        // an .mdl) starts out unplayable instead of reading indeterminate
+        // timings — a garbage `mode` in particular selects no branch at all.
+        i32         id { 0 };
+        double      fps { 0.0 };
+        i32         length { 0 };
+        PlayMode    mode { PlayMode::Loop };
         std::string name;
 
         struct BoneFrames {
@@ -88,8 +91,8 @@ public:
         std::vector<Event> events;
 
         // prepared
-        double max_time;
-        double frame_time;
+        double max_time { 0.0 };
+        double frame_time { 0.0 };
         struct InterpolationInfo {
             idx    frame_a;
             idx    frame_b;

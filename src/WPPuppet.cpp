@@ -32,8 +32,16 @@ void WPPuppet::prepared() {
         */
     }
     for (auto& anim : anims) {
-        anim.frame_time = 1.0f / anim.fps;
-        anim.max_time   = anim.length / anim.fps;
+        // fps divides into both derived times, so a zero, negative or NaN
+        // value hands getInterpolationInfo an inf/NaN frame rate: it casts the
+        // result to unsigned and picks garbage frames, or produces a NaN
+        // blend factor that spreads through every bone transform.  The mdl
+        // parser drops such animations, but a puppet assembled in-process can
+        // still reach here — zero the timings and let the animation hold
+        // frame 0.
+        const bool usable_fps = anim.fps > 0.0;
+        anim.frame_time       = usable_fps ? 1.0 / anim.fps : 0.0;
+        anim.max_time         = usable_fps ? anim.length / anim.fps : 0.0;
         for (auto& b : anim.bframes_array) {
             for (auto& f : b.frames) {
                 f.quaternion = ToQuaternion(f.angle);
@@ -194,11 +202,16 @@ WPPuppet::Animation::InterpolationInfo
 WPPuppet::Animation::getInterpolationInfo(double* cur_time) const {
     // No playable frame: `% length` below would divide by zero, and a negative
     // count wraps to negative indices that become huge unsigned subscripts.
-    // The parser rejects such animations, but hold frame 0 for any puppet
-    // assembled in-process too.
-    if (length <= 0) return InterpolationInfo { 0, 0, 0.0 };
+    // Non-positive or NaN timings are the same story one step earlier — fmod
+    // by 0 or NaN, then an unsigned cast of the result.  The parser rejects
+    // such animations, but hold frame 0 for any puppet assembled in-process
+    // too.
+    if (length <= 0 || ! (frame_time > 0.0) || ! (max_time > 0.0))
+        return InterpolationInfo { 0, 0, 0.0 };
 
-    InterpolationInfo _info;
+    // Value-initialized: an unrecognised mode matches none of the branches
+    // below and would otherwise return whatever was on the stack.
+    InterpolationInfo _info {};
     auto&             _cur_time = *cur_time;
 
     if (mode == PlayMode::Single) {

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -312,6 +313,58 @@ TEST_SUITE("WPPuppet_Prepared") {
                 product.matrix().isApprox(Eigen::Affine3f::Identity().matrix(), 1e-5f),
                 "world_transform × offset_trans should be identity for bone " << i);
         }
+    }
+
+    TEST_CASE("an fps of zero still yields finite frame timings") {
+        // fps divides into both derived times, so 0 turns them into inf and
+        // poisons every playback time computed from them.
+        auto puppet = makePuppet(1, 1, 0.0, 5);
+        puppet->prepared();
+        CHECK(std::isfinite(puppet->anims[0].frame_time));
+        CHECK(std::isfinite(puppet->anims[0].max_time));
+    }
+
+    TEST_CASE("a negative or NaN fps still yields finite frame timings") {
+        for (double fps : { -30.0, std::numeric_limits<double>::quiet_NaN() }) {
+            auto puppet = makePuppet(1, 1, fps, 5);
+            puppet->prepared();
+            CHECK(std::isfinite(puppet->anims[0].frame_time));
+            CHECK(std::isfinite(puppet->anims[0].max_time));
+        }
+    }
+
+    TEST_CASE("an animation with unusable fps holds frame 0 in every play mode") {
+        for (auto mode :
+             { WPPuppet::PlayMode::Loop, WPPuppet::PlayMode::Mirror, WPPuppet::PlayMode::Single }) {
+            for (double fps : { 0.0, -30.0, std::numeric_limits<double>::quiet_NaN() }) {
+                auto puppet = makePuppet(1, 1, fps, 5, mode);
+                puppet->prepared();
+                double t    = 0.3;
+                auto   info = puppet->anims[0].getInterpolationInfo(&t);
+                CHECK(info.frame_a == 0);
+                CHECK(info.frame_b == 0);
+                CHECK(info.t == doctest::Approx(0.0));
+            }
+        }
+    }
+
+    TEST_CASE("an unrecognised play mode still yields a defined frame") {
+        // getInterpolationInfo dispatches on three known modes; anything else
+        // must not fall through and hand back whatever was on the stack.
+        auto puppet = makePuppet(1, 1, 10.0, 5);
+        puppet->prepared();
+        // Run a real mode first so the call reuses a stack frame already
+        // holding a non-zero result.
+        double warm = 0.3;
+        auto   seen = puppet->anims[0].getInterpolationInfo(&warm);
+        REQUIRE(seen.frame_a != 0);
+
+        puppet->anims[0].mode = static_cast<WPPuppet::PlayMode>(99);
+        double t              = 0.3;
+        auto   info           = puppet->anims[0].getInterpolationInfo(&t);
+        CHECK(info.frame_a == 0);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.0));
     }
 
 } // TEST_SUITE("WPPuppet_Prepared")
@@ -1384,5 +1437,64 @@ TEST_SUITE("WPPuppet_ShortBoneTrack") {
         auto frames = layer.genFrame(0.25);
         REQUIRE(frames.size() == 1);
         CHECK(std::isfinite(frames[0].translation().x()));
+    }
+
+    // makeAnimation() derives frame_time and max_time from fps and length, so a
+    // zero length also zeroes max_time and every guard term trips at once.  The
+    // three cases below set the fields directly, which is what an in-process
+    // puppet can do, so each term of the guard is the only thing standing
+    // between the caller and the arithmetic it protects.  Each checks cur_time
+    // as well: holding frame 0 means the clock is left alone too, and that is
+    // the one observation that does not depend on what the unguarded
+    // double-to-unsigned cast happens to produce.
+
+    TEST_CASE("length exactly zero holds frame 0 even when the timings are playable") {
+        // Single mode past max_time is the branch that indexes length - 1
+        // directly, so an unguarded zero length reads frame -1 rather than
+        // faulting on `% 0`.
+        WPPuppet::Animation anim;
+        anim.mode       = WPPuppet::PlayMode::Single;
+        anim.length     = 0;
+        anim.frame_time = 0.25;
+        anim.max_time   = 1.0;
+
+        double t    = 2.0;
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 0);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.0));
+        CHECK(t == doctest::Approx(2.0));
+    }
+
+    TEST_CASE("frame_time exactly zero holds frame 0 instead of dividing the clock by it") {
+        WPPuppet::Animation anim;
+        anim.mode       = WPPuppet::PlayMode::Loop;
+        anim.length     = 4;
+        anim.frame_time = 0.0;
+        anim.max_time   = 1.0;
+
+        double t    = 1.5;
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 0);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.0));
+        CHECK(t == doctest::Approx(1.5));
+    }
+
+    TEST_CASE("max_time exactly zero holds frame 0 instead of wrapping the clock by it") {
+        // fmod(x, 0.0) is NaN, which then poisons the frame index; a length of 4
+        // and a playable frame_time leave this term as the only guard in play.
+        WPPuppet::Animation anim;
+        anim.mode       = WPPuppet::PlayMode::Loop;
+        anim.length     = 4;
+        anim.frame_time = 0.25;
+        anim.max_time   = 0.0;
+
+        double t    = 1.5;
+        auto   info = anim.getInterpolationInfo(&t);
+        CHECK(info.frame_a == 0);
+        CHECK(info.frame_b == 0);
+        CHECK(info.t == doctest::Approx(0.0));
+        CHECK(t == doctest::Approx(1.5));
     }
 }

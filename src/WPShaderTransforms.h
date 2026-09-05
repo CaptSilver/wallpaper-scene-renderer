@@ -4,6 +4,7 @@
 // diagnostics).
 
 #include <atomic>
+#include <cctype>
 #include <fstream>
 #include <functional>
 #include <map>
@@ -93,9 +94,10 @@ inline CallInfo findEnclosingCallInfo(const std::string& text, size_t innerPos) 
                 }
                 // Extract function name before '('
                 size_t ne = scan;
-                while (ne > 0 && std::isspace(text[ne - 1])) --ne;
+                while (ne > 0 && std::isspace((unsigned char)text[ne - 1])) --ne;
                 size_t ns = ne;
-                while (ns > 0 && (std::isalnum(text[ns - 1]) || text[ns - 1] == '_')) --ns;
+                while (ns > 0 && (std::isalnum((unsigned char)text[ns - 1]) || text[ns - 1] == '_'))
+                    --ns;
                 return { text.substr(ns, ne - ns), argIdx };
             }
             --depth;
@@ -334,7 +336,8 @@ inline std::string TranslateGeometryShader(const std::string& src) {
             size_t after = found + gl_pos.size();
             // If followed by . or alnum (already has swizzle), skip
             if (after < result.size() &&
-                (result[after] == '.' || std::isalnum(result[after]) || result[after] == '_')) {
+                (result[after] == '.' || std::isalnum((unsigned char)result[after]) ||
+                 result[after] == '_')) {
                 out.append(result, pos, after - pos);
                 pos = after;
                 continue;

@@ -277,6 +277,40 @@ TEST_SUITE("findEnclosingCallInfo") {
         CHECK(info.funcName == "func");
     }
 
+    TEST_CASE("high bytes ahead of the name are separators, not name characters") {
+        // Shader sources carry UTF-8 in comments and string-ish literals, so
+        // the classifier sees bytes >= 0x80.  They must terminate the name
+        // scan the same way a space would rather than being folded into it.
+        auto info = findEnclosingCallInfo("/* \xE4\xB8\xAD */ myFunc(X)", 18);
+        CHECK(info.funcName == "myFunc");
+        CHECK(info.argIndex == 0);
+    }
+
+    TEST_CASE("a high byte directly against the name does not extend it") {
+        auto info = findEnclosingCallInfo("\xC3\xA9myFunc(X)", 9);
+        CHECK(info.funcName == "myFunc");
+    }
+
+    TEST_CASE("a nameless group still reports the argument index") {
+        // Both backward scans start at the '(' and walk left, so a '(' that is
+        // the very first character leaves them nothing to read.  A parenthesised
+        // expression in a shader body — `(a + X)` — is exactly that: no callee,
+        // but still argument 0 of the group.
+        auto info = findEnclosingCallInfo("(X)", 1);
+        CHECK(info.funcName == "");
+        CHECK(info.argIndex == 0);
+
+        auto padded = findEnclosingCallInfo("   (X)", 4);
+        CHECK(padded.funcName == "");
+        CHECK(padded.argIndex == 0);
+
+        // Long enough to be heap-allocated rather than stored inside the string
+        // object, in case the two differ in what sits before the first byte.
+        auto commas = findEnclosingCallInfo("(aaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbb, X)", 45);
+        CHECK(commas.funcName == "");
+        CHECK(commas.argIndex == 2);
+    }
+
 } // TEST_SUITE findEnclosingCallInfo
 
 // ===========================================================================
