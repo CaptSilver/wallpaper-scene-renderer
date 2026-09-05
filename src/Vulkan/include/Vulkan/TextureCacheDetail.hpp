@@ -139,6 +139,43 @@ inline MappedStaging acquireMappedStaging(bool reusable, CreateFn&& create, MapF
     return MappedStaging { data, StagingMapStatus::Ok };
 }
 
+// What to do with a texture upload once the per-slot loop has stopped.
+//
+// CreateTex builds a texture one slot at a time and bails out of the loop on
+// the first refusal (image create, staging alloc, staging map).  Two things
+// hang off that: whether the built slots may be published to the cache map,
+// and whether the decoded CPU mip bytes may be freed.  Publishing a half-built
+// slot vector turns a transient allocation failure into a permanent one — the
+// next CreateTex for that key hits the cache and hands back null VkImage
+// handles — and freeing the CPU bytes destroys the only copy a retry could
+// upload from.
+struct UploadPublish {
+    bool cache;   // insert the built slots into the cache map
+    bool release; // free the decoded CPU mip bytes
+};
+
+// `may_release` is the caller's own policy for the image (video placeholders
+// keep their bytes; an env escape hatch can force-keep everything).  An
+// incomplete build overrides it: those bytes are the retry's source.
+inline UploadPublish planUploadPublish(std::size_t slots_built, std::size_t slots_total,
+                                       bool may_release) {
+    const bool complete = slots_built >= slots_total;
+    return UploadPublish { complete, complete && may_release };
+}
+
+// Rate-limit a per-texture upload-failure log.  `prior_failures` is how many
+// times in a row this texture already refused.  Video textures re-upload every
+// frame and a text layer retries every frame until it lands, so a permanently
+// unusable texture would otherwise write a line per frame forever; a transient
+// one still shows up immediately.  Log the first few, then one per long
+// interval so the condition stays visible without drowning the journal.
+inline bool shouldLogUploadFailure(std::uint64_t prior_failures) {
+    constexpr std::uint64_t verbose_head = 3;
+    constexpr std::uint64_t interval     = 600; // ~10 s at 60 fps
+    if (prior_failures < verbose_head) return true;
+    return (prior_failures - verbose_head) % interval == 0;
+}
+
 // Parse WEK_TEXCACHE_QUERY_CAP-style env override into a uint32_t soft cap.
 // Returns the default when env is null, empty, malformed, or out of the
 // accepted [min_cap, max_cap] band.  Out-of-band values must fall back to

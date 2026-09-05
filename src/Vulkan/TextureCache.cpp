@@ -585,13 +585,17 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
     auto& sam      = image.header.sample;
     float maxAniso = m_device.maxAnisotropy();
 
+    usize slots_built = 0;
     for (usize i = 0; i < image.slots.size(); i++) {
         auto& image_paras   = img_slots.slots[i];
         auto& image_slot    = image.slots[i];
         auto  mipmap_levels = image_slot.mipmaps.size();
 
         // check data
-        if (! image_slot) return {};
+        if (! image_slot) {
+            LOG_ERROR("CreateTex '%s': slot %zu has no usable pixel data", image.key.c_str(), i);
+            return {};
+        }
 
         bool                useAniso = (sam.magFilter == TextureFilter::LINEAR) && maxAniso > 1.0f;
         VkSamplerCreateInfo sampler_info {
@@ -624,8 +628,15 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
             opt.has_value()) {
             image_paras = std::move(opt.value());
-        } else
+        } else {
+            LOG_ERROR("CreateTex '%s': image create failed for slot %zu (%ux%u, %zu mips)",
+                      image.key.c_str(),
+                      i,
+                      ext.width,
+                      ext.height,
+                      mipmap_levels);
             break;
+        }
 
         // MEM4: pack all mip levels into one CPU-only VMA staging buffer
         // sized to the sum of mip byte counts; record one
@@ -702,16 +713,36 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
                                  image_paras);
 
         m_device.handle().WaitIdle();
+        ++slots_built;
+    }
+
+    // The GPU image is only authoritative once every slot landed.  Publishing a
+    // half-built texture would remember one transient allocation failure for
+    // the process lifetime — the next CreateTex for this key hits the cache and
+    // hands back null image handles — and freeing the decoded CPU bytes would
+    // destroy the only source a retry could upload from.  Callers treat an
+    // empty result as "no texture" and fall back to the 1x1 dummy.
+    const auto publish = detail::planUploadPublish(slots_built,
+                                                   image.slots.size(),
+                                                   mayReleaseDecodedPayload(image) &&
+                                                       ! std::getenv("WEKDE_KEEP_TEXBYTES"));
+    if (! publish.cache) {
+        LOG_ERROR("CreateTex '%s': upload stopped after %zu of %zu slots; not cached so a "
+                  "later prepare can retry",
+                  image.key.c_str(),
+                  slots_built,
+                  image.slots.size());
+        return {};
     }
     m_tex_map[image.key] = std::move(img_slots);
-    // The GPU image is now authoritative; the decoded CPU mip bytes were the
-    // staging source and are dead after the WaitIdle above.  Free them but
-    // keep the Image shell so the parser cache (m_registered) still serves
-    // ParseHeader and a duplicate CreateTex early-returns on the m_tex_map
-    // key.  Video-texture placeholders are left intact (policy == false);
-    // their per-frame frames come from the live decoder, not from this image.
-    // WEKDE_KEEP_TEXBYTES is a zero-rebuild A/B / rollback escape hatch.
-    if (mayReleaseDecodedPayload(image) && ! std::getenv("WEKDE_KEEP_TEXBYTES")) {
+    // The decoded CPU mip bytes were the staging source and are dead after the
+    // WaitIdle above.  Free them but keep the Image shell so the parser cache
+    // (m_registered) still serves ParseHeader and a duplicate CreateTex
+    // early-returns on the m_tex_map key.  Video-texture placeholders are left
+    // intact (policy == false); their per-frame frames come from the live
+    // decoder, not from this image.  WEKDE_KEEP_TEXBYTES is a zero-rebuild
+    // A/B / rollback escape hatch.
+    if (publish.release) {
         if (std::getenv("WEKDE_DEBUG_TEXBYTES")) {
             isize freed = 0;
             for (auto& s : image.slots)
@@ -839,6 +870,7 @@ TextureCache::~TextureCache() {};
 void TextureCache::Clear() {
     m_tex_map.clear();
     m_reupload_staging.clear();
+    m_reupload_fail_streak.clear();
     m_query_texs.clear();
     m_query_map.clear();
     // Clear the sampler cache LAST.  Samplers must be destroyed AFTER the
@@ -908,13 +940,25 @@ void TextureCache::MarkShareReady(std::string_view key) {
     }
 }
 
+bool TextureCache::noteReuploadFailure(const std::string& key) {
+    return detail::shouldLogUploadFailure(m_reupload_fail_streak[key]++);
+}
+
 bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
     if (! exists(m_tex_map, key)) {
-        LOG_ERROR("ReuploadTex: key '%s' not found in cache", key.c_str());
+        if (noteReuploadFailure(key))
+            LOG_ERROR("ReuploadTex: key '%s' not found in cache", key.c_str());
         return false;
     }
     auto& img_slots = m_tex_map.at(key);
-    if (img_slots.slots.empty() || image.slots.empty()) return false;
+    if (img_slots.slots.empty() || image.slots.empty()) {
+        if (noteReuploadFailure(key))
+            LOG_ERROR("ReuploadTex '%s': nothing to upload (%zu cached slots, %zu source slots)",
+                      key.c_str(),
+                      img_slots.slots.size(),
+                      image.slots.size());
+        return false;
+    }
 
     if (! m_tex_cmd) allocateCmd();
 
@@ -959,20 +1003,22 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
             // upload the wrong level, so drop the whole re-upload; the caller
             // keeps showing the last frame that did land.
             if (mapped.status == detail::StagingMapStatus::CreateFailed) {
-                LOG_ERROR("ReuploadTex '%s': staging alloc failed for slot %zu mip %zu "
-                          "(%zu bytes)",
-                          key.c_str(),
-                          i,
-                          j,
-                          (usize)image_data.size);
+                if (noteReuploadFailure(key))
+                    LOG_ERROR("ReuploadTex '%s': staging alloc failed for slot %zu mip %zu "
+                              "(%zu bytes)",
+                              key.c_str(),
+                              i,
+                              j,
+                              (usize)image_data.size);
                 return false;
             }
             if (mapped.status != detail::StagingMapStatus::Ok) {
-                LOG_ERROR("ReuploadTex '%s': staging map failed for slot %zu mip %zu: %s",
-                          key.c_str(),
-                          i,
-                          j,
-                          vvk::ToString(map_res));
+                if (noteReuploadFailure(key))
+                    LOG_ERROR("ReuploadTex '%s': staging map failed for slot %zu mip %zu: %s",
+                              key.c_str(),
+                              i,
+                              j,
+                              vvk::ToString(map_res));
                 return false;
             }
             memcpy(mapped.data, image_data.data.get(), (u32)image_data.size);
@@ -1058,8 +1104,16 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
         } while (false);
 
         m_device.handle().WaitIdle();
-        if (result != VK_SUCCESS) return false;
+        if (result != VK_SUCCESS) {
+            if (noteReuploadFailure(key))
+                LOG_ERROR("ReuploadTex '%s': copy submit failed for slot %zu: %s",
+                          key.c_str(),
+                          i,
+                          vvk::ToString(result));
+            return false;
+        }
     }
+    m_reupload_fail_streak.erase(key);
     return true;
 }
 

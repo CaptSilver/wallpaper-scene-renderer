@@ -18,6 +18,8 @@ using wallpaper::vulkan::detail::bytesPerBlockForFormat;
 using wallpaper::vulkan::detail::mipOffsets;
 using wallpaper::vulkan::detail::packMipsIntoBuffer;
 using wallpaper::vulkan::detail::packedTotalBytes;
+using wallpaper::vulkan::detail::planUploadPublish;
+using wallpaper::vulkan::detail::shouldLogUploadFailure;
 using wallpaper::vulkan::detail::StagingMapStatus;
 
 namespace
@@ -364,5 +366,95 @@ TEST_SUITE("TextureCache staging acquire") {
         CHECK(map_calls == 1);
         CHECK(res.data == static_cast<void*>(&scratch));
         CHECK(res.status == StagingMapStatus::Ok);
+    }
+}
+
+// -- Publish policy after an interrupted upload ---------------------------
+//
+// CreateTex stops at the first slot that refuses.  What it does with the
+// partial result decides whether a transient allocation failure is survivable:
+// caching the half-built slots makes every later lookup hit a texture with null
+// image handles, and freeing the decoded CPU bytes throws away the only source
+// a retry could upload from.
+TEST_SUITE("TextureCache upload publish") {
+
+    TEST_CASE("a complete build is cached and its CPU bytes freed") {
+        const auto p = planUploadPublish(/*slots_built=*/3, /*slots_total=*/3,
+                                         /*may_release=*/true);
+        CHECK(p.cache);
+        CHECK(p.release);
+    }
+
+    TEST_CASE("a complete build honours a caller that wants its bytes kept") {
+        const auto p = planUploadPublish(3, 3, /*may_release=*/false);
+        CHECK(p.cache);
+        CHECK_FALSE(p.release);
+    }
+
+    TEST_CASE("an interrupted build is not cached, so a later attempt can retry") {
+        const auto p = planUploadPublish(/*slots_built=*/1, /*slots_total=*/3,
+                                         /*may_release=*/true);
+        CHECK_FALSE(p.cache);
+    }
+
+    TEST_CASE("an interrupted build keeps its CPU bytes — they are the retry's source") {
+        const auto p = planUploadPublish(1, 3, /*may_release=*/true);
+        CHECK_FALSE(p.release);
+    }
+
+    TEST_CASE("a build that refused on the very first slot is not cached either") {
+        const auto p = planUploadPublish(0, 1, true);
+        CHECK_FALSE(p.cache);
+        CHECK_FALSE(p.release);
+    }
+
+    TEST_CASE("an image with no slots is complete by definition") {
+        const auto p = planUploadPublish(0, 0, true);
+        CHECK(p.cache);
+    }
+}
+
+// -- Upload-failure log rate limit ----------------------------------------
+//
+// Video textures re-upload every frame, and a text layer whose upload was
+// refused keeps its dirty flags set and tries again every frame.  A texture
+// that can never upload (a key that was never created) would write one log line
+// per frame forever, so the first few refusals are verbose and the rest are
+// spaced out.
+TEST_SUITE("TextureCache upload failure log") {
+
+    TEST_CASE("the first refusals are all reported") {
+        CHECK(shouldLogUploadFailure(0));
+        CHECK(shouldLogUploadFailure(1));
+        CHECK(shouldLogUploadFailure(2));
+    }
+
+    TEST_CASE("a texture stuck at frame rate goes quiet after the first few") {
+        int logged = 0;
+        for (std::uint64_t i = 0; i < 600; ++i)
+            if (shouldLogUploadFailure(i)) ++logged;
+        CHECK(logged < 10);
+    }
+
+    TEST_CASE("a long-running failure still reports periodically") {
+        int logged = 0;
+        for (std::uint64_t i = 0; i < 6000; ++i)
+            if (shouldLogUploadFailure(i)) ++logged;
+        CHECK(logged >= 5);
+    }
+
+    // The periodic line is spaced from the end of the verbose head, not from
+    // the very first refusal.  Off-by-an-offset here shifts every later line:
+    // counting from zero would fire at 600 and 1200 rather than 603 and 1203,
+    // and a sign slip would fire just short of each interval instead.
+    TEST_CASE("the periodic line is spaced from the end of the verbose head") {
+        CHECK(shouldLogUploadFailure(3));
+        CHECK_FALSE(shouldLogUploadFailure(4));
+        CHECK_FALSE(shouldLogUploadFailure(597));
+        CHECK_FALSE(shouldLogUploadFailure(600));
+        CHECK_FALSE(shouldLogUploadFailure(602));
+        CHECK(shouldLogUploadFailure(603));
+        CHECK_FALSE(shouldLogUploadFailure(604));
+        CHECK(shouldLogUploadFailure(1203));
     }
 }

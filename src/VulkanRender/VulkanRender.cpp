@@ -1015,16 +1015,15 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
     }
 
     if (info.offscreen) {
-        VkFormat ex_fmt =
-            info.hdr_output ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
-        m_ex_swapchain = CreateExSwapchain(*m_device,
-                                           extent.width,
-                                           extent.height,
-                                           (info.offscreen_tiling == TexTiling::OPTIMAL
-                                                ? VK_IMAGE_TILING_OPTIMAL
-                                                : VK_IMAGE_TILING_LINEAR),
-                                           ex_fmt);
-        m_with_surface = false;
+        VkFormat ex_fmt = exSwapchainFormat(info.hdr_output);
+        m_ex_swapchain  = CreateExSwapchain(*m_device,
+                                            extent.width,
+                                            extent.height,
+                                            (info.offscreen_tiling == TexTiling::OPTIMAL
+                                                 ? VK_IMAGE_TILING_OPTIMAL
+                                                 : VK_IMAGE_TILING_LINEAR),
+                                            ex_fmt);
+        m_with_surface  = false;
         // Three external images have to allocate and export an fd; a GPU that
         // has just reset or is out of VRAM fails that.  Bail here so the
         // caller's device-lost retry runs, and name the stage in the journal.
@@ -1034,8 +1033,13 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
         }
     }
 
-    m_hdr_output  = info.hdr_output;
-    m_hdr_content = info.hdr_content || info.hdr_output; // HDR output implies HDR content
+    // The exported swapchain may have dropped to 8-bit when the driver would
+    // not export 16-bit float.  Passthrough skips the tonemap, so believing
+    // the request rather than the result would clip a linear HDR image into
+    // an 8-bit target.
+    m_hdr_output =
+        m_ex_swapchain ? m_ex_swapchain->format() == kExSwapchainHdrFormat : info.hdr_output;
+    m_hdr_content = info.hdr_content || m_hdr_output; // HDR output implies HDR content
 
     if (! initRes()) return false;
 

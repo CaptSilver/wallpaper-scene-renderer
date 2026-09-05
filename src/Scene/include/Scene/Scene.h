@@ -54,7 +54,8 @@ struct TextLayerInfo {
     bool        pointsizeDirty { false }; // set when pointsize changes at runtime
     // Forces a re-rasterization with the current text when halign/valign/fontData
     // change at runtime (SceneScript thisLayer.horizontalalign/verticalalign/font/alignment).
-    // Cleared after the next successful RenderText call in SceneWallpaper::CMD_DRAW.
+    // Cleared once the re-rasterized bitmap has actually reached the GPU; a refused
+    // upload leaves it set so the next frame retries.
     bool        textStyleDirty { false };
 };
 

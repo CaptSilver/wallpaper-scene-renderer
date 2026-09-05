@@ -60,7 +60,10 @@ public:
     std::optional<ExImageParameters> CreateExTex(uint32_t witdh, uint32_t height, VkFormat,
                                                  VkImageTiling);
     ImageSlotsRef                    CreateTex(Image&);
-    bool                             ReuploadTex(const std::string& key, Image& image);
+    // Nodiscard because the two things a caller does after a re-upload —
+    // clearing the layer's dirty flags, handing the frame back to the decoder —
+    // are only correct once the pixels actually landed.
+    [[nodiscard]] bool ReuploadTex(const std::string& key, Image& image);
 
     std::optional<ImageParameters> Query(std::string_view key, TextureKey content_hash,
                                          bool persist = false);
@@ -110,6 +113,17 @@ private:
     // frames) instead of reallocating a ~frame-sized buffer every frame.
     // Indexed [slot][mip]; cleared in Clear().
     Map<std::string, std::vector<std::vector<VmaBufferParameters>>> m_reupload_staging;
+
+    // Consecutive ReuploadTex refusals per texture key.  Feeds
+    // detail::shouldLogUploadFailure: video textures re-upload every frame and
+    // a text layer whose upload was refused retries every frame, so a texture
+    // that can never upload would otherwise write a log line per frame forever.
+    // Reset by the first upload that lands.
+    Map<std::string, std::uint64_t> m_reupload_fail_streak;
+
+    // Record one refused re-upload of `key`; returns whether it should be
+    // logged under the rate limit.
+    bool noteReuploadFailure(const std::string& key);
 
     struct QueryTex {
         idx                index { 0 };

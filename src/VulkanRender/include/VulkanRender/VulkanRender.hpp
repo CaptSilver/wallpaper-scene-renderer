@@ -28,7 +28,9 @@ public:
     void destroy();
 
     void drawFrame(Scene&);
-    bool reuploadTexture(const std::string& key, Image& image);
+    // Nodiscard: a refused re-upload leaves the old pixels on screen, so the
+    // caller must decide whether to retry rather than clear its dirty state.
+    [[nodiscard]] bool reuploadTexture(const std::string& key, Image& image);
 
     void clearLastRenderGraph(Scene* scene = nullptr);
     void compileRenderGraph(Scene&, rg::RenderGraph&);
