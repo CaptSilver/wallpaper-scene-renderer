@@ -16,6 +16,7 @@
 #include "Scene/WorldCacheGate.h"
 #include "Scene/SpriteSnapshotGate.h"
 #include "Scene/TextStyleMerge.hpp"
+#include "Scene/TextUploadCommit.hpp"
 #include "Scene/PendingUpdateQueues.hpp"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
@@ -300,8 +301,8 @@ private:
     // PROPERTY_FPS path (which mirrors fps into the swapchain) can re-issue
     // the same policy without expecting QML to repost it.  Defaults match the
     // Swapchain's pre-Create defaults: Auto (0) + 60Hz.
-    int32_t     m_present_mode_policy { 0 };
-    int32_t     m_output_refresh_mhz { 0 }; // 0 = unknown
+    int32_t m_present_mode_policy { 0 };
+    int32_t m_output_refresh_mhz { 0 }; // 0 = unknown
 
     // Cooperative abort flag for an in-flight CMD_LOAD_SCENE.  Written by
     // SceneWallpaper::abortLoad() (called when QGuiApplication::screenRemoved
@@ -318,11 +319,12 @@ private:
     // the bus thread runs the FFT only while it is held.  Taken/dropped from
     // the load thread (loadScene) and the QML thread (setHasScriptAudio),
     // hence the mutex.
-    audio::AudioBus::SpectrumConsumer     m_audio_spectrum_lease;
-    std::mutex                            m_audio_spectrum_lease_mutex;
-    FirstFrameCallback                    m_first_frame_callback;
-    VideoDecodeFailedCallback             m_video_decode_failed_callback;
-    std::string                           m_user_props_json;
+    audio::AudioBus::SpectrumConsumer m_audio_spectrum_lease;
+    std::mutex                        m_audio_spectrum_lease_mutex;
+    FirstFrameCallback                m_first_frame_callback;
+    VideoDecodeFailedCallback         m_video_decode_failed_callback;
+    SceneLoadFailedCallback           m_scene_load_failed_callback;
+    std::string                       m_user_props_json;
     // Atomic: written on the main looper thread (loadScene) and read on the
     // QML thread (getOrthoSize / getParallaxInfo / drainAnimationEvents).  Every
     // access goes through .load()/.store() so a reload's re-publish can't tear
@@ -442,8 +444,7 @@ public:
     // SceneScript users typically write each property independently
     // (`thisLayer.horizontalalign = 'right'; thisLayer.font = 'Heavy.otf';`),
     // so each setter posts only the field it touches.
-    void setTextStyle(i32 id, std::string halign, std::string valign,
-                      std::string fontName) {
+    void setTextStyle(i32 id, std::string halign, std::string valign, std::string fontName) {
         m_queues.setTextStyle(id, std::move(halign), std::move(valign), std::move(fontName));
     }
 
@@ -459,7 +460,7 @@ public:
         // the documented not-yet-cached behavior.
         markWorldCacheNeeded(m_needs_world_cache);
         std::lock_guard<std::mutex> lk(m_world_cache_mutex);
-        auto it = m_layer_world_cache.find(id);
+        auto                        it = m_layer_world_cache.find(id);
         if (it != m_layer_world_cache.end()) return it->second;
         return worldCacheIdentity();
     }
@@ -847,12 +848,20 @@ private:
                         break;
                     }
                 }
-                for (auto& [id, newText] : m_pending_text_updates) {
+                // A refused GPU upload leaves the layer showing its old
+                // texture, so the queued text stays queued (and the dirty flags
+                // stay set) and the next frame tries again.  Dropping it here
+                // would strand the layer on stale pixels until some unrelated
+                // text mutation came along.
+                for (auto it = m_pending_text_updates.begin();
+                     it != m_pending_text_updates.end();) {
+                    const i32          id      = it->first;
+                    const std::string& newText = it->second;
+                    bool               retry   = false;
                     for (auto& tl : scene->textLayers) {
                         if (tl.id != id) continue;
                         // Re-rasterize if text, pointsize, or style changed
-                        if (tl.currentText == newText && ! tl.pointsizeDirty
-                            && ! tl.textStyleDirty)
+                        if (tl.currentText == newText && ! tl.pointsizeDirty && ! tl.textStyleDirty)
                             break;
                         auto img = WPTextRenderer::RenderText(tl.fontData,
                                                               tl.pointsize,
@@ -864,22 +873,30 @@ private:
                                                               tl.padding);
                         if (img) {
                             img->key = tl.textureKey;
-                            m_render->reuploadTexture(tl.textureKey, *img);
-                            tl.currentText    = newText;
-                            tl.pointsizeDirty = false;
-                            tl.textStyleDirty = false;
+                            retry    = ! commitTextUpload(
+                                tl, &newText, m_render->reuploadTexture(tl.textureKey, *img));
                         }
                         break;
                     }
+                    if (retry)
+                        ++it;
+                    else
+                        it = m_pending_text_updates.erase(it);
                 }
-                // Style-only updates: layers whose style changed but had no
-                // pending text update still need a re-render against the
-                // existing currentText.  (Without this pass, halign/font
-                // changes wouldn't manifest until the next text mutation.)
+                // Style/pointsize-only updates: layers whose style or point
+                // size changed but had no pending text update still need a
+                // re-render against the existing currentText.  (Without this
+                // pass, halign/font/pointsize changes wouldn't manifest until
+                // the next text mutation.)
                 for (auto& tl : scene->textLayers) {
-                    if (! tl.textStyleDirty) continue;
+                    if (! tl.textStyleDirty && ! tl.pointsizeDirty) continue;
+                    // Anything still queued above is a layer whose upload was
+                    // refused; re-rendering it here would put its OLD text back
+                    // on screen.  Leave the retry to the text loop next frame.
+                    if (m_pending_text_updates.count(tl.id) != 0) continue;
                     if (tl.currentText.empty()) {
                         tl.textStyleDirty = false;
+                        tl.pointsizeDirty = false;
                         continue;
                     }
                     auto img = WPTextRenderer::RenderText(tl.fontData,
@@ -892,11 +909,16 @@ private:
                                                           tl.padding);
                     if (img) {
                         img->key = tl.textureKey;
-                        m_render->reuploadTexture(tl.textureKey, *img);
-                        tl.textStyleDirty = false;
+                        // Flags stay set on a refused upload so the next frame
+                        // re-renders instead of forgetting the change.
+                        commitTextUpload(
+                            tl, nullptr, m_render->reuploadTexture(tl.textureKey, *img));
                     }
                 }
-                m_pending_text_updates.clear();
+                // The text map is drained entry-by-entry above (a refused
+                // upload keeps its entry for the next frame); the pointsize and
+                // style maps are fully applied to the layers by now, and the
+                // dirty flags carry any retry.
                 m_pending_pointsize_updates.clear();
                 m_pending_text_style_updates.clear();
             });
@@ -950,7 +972,11 @@ private:
                 slot.mipmaps.push_back(std::move(mip));
                 img.slots.push_back(std::move(slot));
 
-                m_render->reuploadTexture(vd.textureKey, img);
+                // A refused upload costs exactly one video frame: the layer
+                // keeps the last frame that landed and the decoder has another
+                // ready next tick, so there is no dirty state to preserve here.
+                // TextureCache logs the reason (rate-limited).
+                (void)m_render->reuploadTexture(vd.textureKey, img);
                 vd.decoder->releaseFrame();
             }
 
@@ -992,26 +1018,26 @@ private:
             // Held under m_property_mutex across the whole apply, as before.  The
             // queue is passed by ref so the body references q.m_pending_* verbatim.
             m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
-                auto& m_pending_transform_updates         = q.m_pending_transform_updates;
-                auto& m_pending_visible_updates           = q.m_pending_visible_updates;
-                auto& m_pending_alpha_updates             = q.m_pending_alpha_updates;
-                auto& m_pending_particle_rate             = q.m_pending_particle_rate;
-                auto& m_pending_effect_visible            = q.m_pending_effect_visible;
-                auto& m_pending_material_values           = q.m_pending_material_values;
-                auto& m_pending_effect_material_values    = q.m_pending_effect_material_values;
-                auto& m_pending_sprite_frame              = q.m_pending_sprite_frame;
-                auto& m_pending_clear_color               = q.m_pending_clear_color;
-                auto& m_pending_bloom_strength            = q.m_pending_bloom_strength;
-                auto& m_pending_bloom_threshold           = q.m_pending_bloom_threshold;
-                auto& m_pending_camera_fov                = q.m_pending_camera_fov;
-                auto& m_pending_camera_lookat             = q.m_pending_camera_lookat;
-                auto& m_pending_ambient_color             = q.m_pending_ambient_color;
-                auto& m_pending_skylight_color            = q.m_pending_skylight_color;
-                auto& m_pending_light_colors              = q.m_pending_light_colors;
-                auto& m_pending_light_radii               = q.m_pending_light_radii;
-                auto& m_pending_light_intensities         = q.m_pending_light_intensities;
-                auto& m_pending_light_positions           = q.m_pending_light_positions;
-                static int                  drawDiagCount = 0;
+                auto&      m_pending_transform_updates      = q.m_pending_transform_updates;
+                auto&      m_pending_visible_updates        = q.m_pending_visible_updates;
+                auto&      m_pending_alpha_updates          = q.m_pending_alpha_updates;
+                auto&      m_pending_particle_rate          = q.m_pending_particle_rate;
+                auto&      m_pending_effect_visible         = q.m_pending_effect_visible;
+                auto&      m_pending_material_values        = q.m_pending_material_values;
+                auto&      m_pending_effect_material_values = q.m_pending_effect_material_values;
+                auto&      m_pending_sprite_frame           = q.m_pending_sprite_frame;
+                auto&      m_pending_clear_color            = q.m_pending_clear_color;
+                auto&      m_pending_bloom_strength         = q.m_pending_bloom_strength;
+                auto&      m_pending_bloom_threshold        = q.m_pending_bloom_threshold;
+                auto&      m_pending_camera_fov             = q.m_pending_camera_fov;
+                auto&      m_pending_camera_lookat          = q.m_pending_camera_lookat;
+                auto&      m_pending_ambient_color          = q.m_pending_ambient_color;
+                auto&      m_pending_skylight_color         = q.m_pending_skylight_color;
+                auto&      m_pending_light_colors           = q.m_pending_light_colors;
+                auto&      m_pending_light_radii            = q.m_pending_light_radii;
+                auto&      m_pending_light_intensities      = q.m_pending_light_intensities;
+                auto&      m_pending_light_positions        = q.m_pending_light_positions;
+                static int drawDiagCount                    = 0;
                 if (m_drawDiagReset) {
                     drawDiagCount   = 0;
                     m_drawDiagReset = false;
@@ -1082,8 +1108,7 @@ private:
                     // per frame).  IsComposeLayer covers ALL compose layers,
                     // unlike IsPassthrough which only fires when copybackground
                     // is false or scene.json sets config.passthrough.
-                    const bool composeWorldTracks =
-                        resolvedOutput && eit->second->IsComposeLayer();
+                    const bool composeWorldTracks = resolvedOutput && eit->second->IsComposeLayer();
                     if (prop == "origin") {
                         if (resolvedOutput) {
                             resolvedOutput->SetTranslate(v);
@@ -1205,8 +1230,7 @@ private:
                     auto* mat = mesh->Material();
                     if (! mat) continue;
                     auto&             aliasMap = mat->customShader.alias;
-                    const std::string resolved =
-                        aliasMap.count(uName) ? aliasMap.at(uName) : uName;
+                    const std::string resolved = aliasMap.count(uName) ? aliasMap.at(uName) : uName;
                     mat->customShader.constValues[resolved] =
                         ShaderValue(floats.data(), floats.size());
                     mat->customShader.constValuesDirty = true;
@@ -1228,8 +1252,7 @@ private:
                     auto* mat = fn.sceneNode->Mesh()->Material();
                     if (! mat) continue;
                     auto&             aliasMap = mat->customShader.alias;
-                    const std::string resolved =
-                        aliasMap.count(uName) ? aliasMap.at(uName) : uName;
+                    const std::string resolved = aliasMap.count(uName) ? aliasMap.at(uName) : uName;
                     mat->customShader.constValues[resolved] =
                         ShaderValue(floats.data(), floats.size());
                     mat->customShader.constValuesDirty = true;
@@ -1377,10 +1400,10 @@ private:
             if (m_init_info.deterministic) {
                 dt_wall = m_init_info.fixed_dt;
             } else {
-                auto now              = std::chrono::steady_clock::now();
-                dt_wall               = m_last_draw_wall_time
-                                            ? std::chrono::duration<double>(now - *m_last_draw_wall_time).count()
-                                            : frame_timer.IdeaTime();
+                auto now = std::chrono::steady_clock::now();
+                dt_wall  = m_last_draw_wall_time
+                               ? std::chrono::duration<double>(now - *m_last_draw_wall_time).count()
+                               : frame_timer.IdeaTime();
                 m_last_draw_wall_time = now;
                 if (dt_wall < 0.0) dt_wall = 0.0;
                 if (dt_wall > 0.1) dt_wall = 0.1;
@@ -1417,20 +1440,17 @@ private:
                 // the flag is OR'd over particleSubByNodeId once at scene
                 // build.
                 if (scene->hasAudioReactiveParticles) {
-                    auto                   analyzer = scene->audioAnalyzer;
-                    std::span<const float> specLeft = analyzer && analyzer->HasData()
-                                                          ? analyzer->GetRawSpectrum(16, 0)
-                                                          : std::span<const float> {};
+                    auto                   analyzer  = scene->audioAnalyzer;
+                    std::span<const float> specLeft  = analyzer && analyzer->HasData()
+                                                           ? analyzer->GetRawSpectrum(16, 0)
+                                                           : std::span<const float> {};
                     std::span<const float> specRight = analyzer && analyzer->HasData()
                                                            ? analyzer->GetRawSpectrum(16, 1)
                                                            : std::span<const float> {};
                     for (auto& [nodeId, sub] : scene->particleSubByNodeId) {
                         if (! sub || ! sub->IsAudioReactive()) continue;
-                        auto r = audio_reactive::computeRateMultiplier(specLeft,
-                                                                       specRight,
-                                                                       sub->AudioSmoothedRef(),
-                                                                       step,
-                                                                       sub->AudioParams());
+                        auto r = audio_reactive::computeRateMultiplier(
+                            specLeft, specRight, sub->AudioSmoothedRef(), step, sub->AudioParams());
                         sub->AudioSmoothedRef() = r.newSmoothed;
                         sub->SetAudioRateMultiplier(r.multiplier);
                     }
@@ -1506,8 +1526,7 @@ private:
                     // Column-major flat layout matches Eigen's default storage
                     // and WE/GLSL conventions; matrix.m[12..14] are translation.
                     for (int c = 0; c < 4; ++c)
-                        for (int r = 0; r < 4; ++r)
-                            arr[c * 4 + r] = static_cast<float>(wt(r, c));
+                        for (int r = 0; r < 4; ++r) arr[c * 4 + r] = static_cast<float>(wt(r, c));
                     worldCacheAssign(m_layer_world_cache, id, arr); // in-place reuse
                 }
             }
@@ -1538,20 +1557,19 @@ private:
                                       .count();
                     double delta_scene = scene->elapsingTime - s_last_scene;
                     s_last_scene       = scene->elapsingTime;
-                    LOG_INFO(
-                        "TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
-                        "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f "
-                        "dt_wall=%.4f skipped=%llu",
-                        s_tick_count,
-                        wall,
-                        scene->elapsingTime,
-                        wall > 0.01 ? scene->elapsingTime / wall : 0.0,
-                        frame_timer.FrameTime(),
-                        frame_timer.IdeaTime(),
-                        frame_timer.RequiredFps(),
-                        delta_scene,
-                        dt_wall,
-                        static_cast<unsigned long long>(frame_timer.SkippedTicks()));
+                    LOG_INFO("TIME_DIAG tick=%d wall=%.3fs scene=%.3fs ratio=%.3f "
+                             "frametime=%.4f ideatime=%.4f required_fps=%d delta30=%.3f "
+                             "dt_wall=%.4f skipped=%llu",
+                             s_tick_count,
+                             wall,
+                             scene->elapsingTime,
+                             wall > 0.01 ? scene->elapsingTime / wall : 0.0,
+                             frame_timer.FrameTime(),
+                             frame_timer.IdeaTime(),
+                             frame_timer.RequiredFps(),
+                             delta_scene,
+                             dt_wall,
+                             static_cast<unsigned long long>(frame_timer.SkippedTicks()));
                 }
             }
 
@@ -1868,10 +1886,12 @@ public:
         }
         auto depths = attachmentLinkDepths(childIds, parentIds);
         for (std::size_t i = 0; i < links.size(); ++i) links[i].depth = depths[i];
-        std::stable_sort(links.begin(),
-                         links.end(),
-                         [](const Scene::AttachmentProxyLink& a,
-                            const Scene::AttachmentProxyLink& b) { return a.depth < b.depth; });
+        std::stable_sort(
+            links.begin(),
+            links.end(),
+            [](const Scene::AttachmentProxyLink& a, const Scene::AttachmentProxyLink& b) {
+                return a.depth < b.depth;
+            });
         auto liveWorld = [&](i32 id) -> Eigen::Matrix4d {
             auto eit = scene->nodeEffectLayerMap.find(id);
             if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
@@ -2187,8 +2207,8 @@ private:
     // World-transform cache for SceneScript thisLayer.getTransformMatrix().
     // Populated at the end of every drawFrame; keyed by node id; column-major
     // 16-float matrices.  Mutable so const accessors can lock it.
-    mutable std::mutex                                       m_world_cache_mutex;
-    std::unordered_map<i32, std::array<float, 16>>           m_layer_world_cache;
+    mutable std::mutex                             m_world_cache_mutex;
+    std::unordered_map<i32, std::array<float, 16>> m_layer_world_cache;
     // set true the first time the GUI-thread bridge reads the world
     // cache (thisLayer.getTransformMatrix() / hit-test).  Until then the render
     // thread skips the whole O(named-nodes) rebuild below.  mutable so the const
@@ -2289,9 +2309,7 @@ void SceneWallpaper::abortLoad() {
     m_main_handler->abortForSurface();
 }
 
-bool SceneWallpaper::isAborted() const {
-    return m_main_handler && m_main_handler->isAborted();
-}
+bool SceneWallpaper::isAborted() const { return m_main_handler && m_main_handler->isAborted(); }
 
 void SceneWallpaper::pause() {
     auto msg = CreateMsgWithCmd(m_main_handler, MainHandler::CMD::CMD_STOP);
@@ -2377,16 +2395,12 @@ void SceneWallpaper::updateEffectVisible(int32_t nodeId, int32_t effectIndex, bo
     m_main_handler->renderHandler()->setEffectVisible(nodeId, effectIndex, visible);
 }
 
-void SceneWallpaper::updateMaterialValue(int32_t            nodeId,
-                                         std::string        name,
+void SceneWallpaper::updateMaterialValue(int32_t nodeId, std::string name,
                                          std::vector<float> floats) {
-    m_main_handler->renderHandler()->setMaterialValue(
-        nodeId, std::move(name), std::move(floats));
+    m_main_handler->renderHandler()->setMaterialValue(nodeId, std::move(name), std::move(floats));
 }
 
-void SceneWallpaper::updateEffectMaterialValue(int32_t            nodeId,
-                                               int32_t            effectIdx,
-                                               std::string        name,
+void SceneWallpaper::updateEffectMaterialValue(int32_t nodeId, int32_t effectIdx, std::string name,
                                                std::vector<float> floats) {
     m_main_handler->renderHandler()->setEffectMaterialValue(
         nodeId, effectIdx, std::move(name), std::move(floats));
@@ -2396,9 +2410,7 @@ void SceneWallpaper::setLayerSpriteFrame(int32_t nodeId, bool wantsManual, int32
     m_main_handler->renderHandler()->setLayerSpriteFrame(nodeId, wantsManual, frameIdx);
 }
 
-void SceneWallpaper::updateTextStyle(int32_t     nodeId,
-                                     std::string halign,
-                                     std::string valign,
+void SceneWallpaper::updateTextStyle(int32_t nodeId, std::string halign, std::string valign,
                                      std::string fontName) {
     m_main_handler->renderHandler()->setTextStyle(
         nodeId, std::move(halign), std::move(valign), std::move(fontName));
@@ -2410,8 +2422,7 @@ std::array<float, 16> SceneWallpaper::getLayerWorldMatrix(int32_t nodeId) const 
     return rh->getLayerWorldMatrix(nodeId);
 }
 
-int32_t SceneWallpaper::getLayerBoneIndex(int32_t            nodeId,
-                                          const std::string& boneName) const {
+int32_t SceneWallpaper::getLayerBoneIndex(int32_t nodeId, const std::string& boneName) const {
     auto rh = m_main_handler->renderHandler();
     if (! rh) return 0;
     return rh->getLayerBoneIndex(nodeId, boneName);
@@ -2611,9 +2622,7 @@ bool SceneWallpaper::screenshotDone() const {
     return m_main_handler->renderHandler()->screenshotDone();
 }
 
-void SceneWallpaper::setHidePattern(const std::string& pat) {
-    m_main_handler->setHidePattern(pat);
-}
+void SceneWallpaper::setHidePattern(const std::string& pat) { m_main_handler->setHidePattern(pat); }
 
 MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {
     if (m_render_handler->renderInited()) {
@@ -2622,13 +2631,12 @@ MHANDLER_CMD_IMPL(MainHandler, LOAD_SCENE) {
         // sent — the refresh rate had no replay path at all).  Dedup guards
         // downstream make this idempotent on later scene loads.
         if (m_output_refresh_mhz > 0) {
-            auto rmsg = CreateMsgWithCmd(m_render_handler,
-                                         RenderHandler::CMD::CMD_SET_OUTPUT_REFRESH_MHZ);
+            auto rmsg =
+                CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_OUTPUT_REFRESH_MHZ);
             rmsg->setInt32("value", m_output_refresh_mhz);
             rmsg->post();
         }
-        auto pmsg =
-            CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+        auto pmsg = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
         pmsg->setInt32("value", m_present_mode_policy);
         pmsg->post();
 
@@ -2662,8 +2670,8 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                 // looper (Swapchain owns the field; render thread reads it
                 // at every Create()/Recreate()).
                 if (m_render_handler->renderInited()) {
-                    auto nmsg = CreateMsgWithCmd(
-                        m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+                    auto nmsg = CreateMsgWithCmd(m_render_handler,
+                                                 RenderHandler::CMD::CMD_SET_PRESENT_MODE);
                     nmsg->setInt32("value", static_cast<int32_t>(m_present_mode_policy));
                     nmsg->post();
                 }
@@ -2675,8 +2683,8 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                     m_present_mode_policy = policy;
                     LOG_INFO("present-mode policy stored: %d", policy);
                     if (m_render_handler->renderInited()) {
-                        auto nmsg = CreateMsgWithCmd(
-                            m_render_handler, RenderHandler::CMD::CMD_SET_PRESENT_MODE);
+                        auto nmsg = CreateMsgWithCmd(m_render_handler,
+                                                     RenderHandler::CMD::CMD_SET_PRESENT_MODE);
                         nmsg->setInt32("value", policy);
                         nmsg->post();
                     }
@@ -2747,6 +2755,10 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
             std::shared_ptr<VideoDecodeFailedCallback> cb;
             msg->findObject("value", &cb);
             m_video_decode_failed_callback = *cb;
+        } else if (property == PROPERTY_SCENE_LOAD_FAILED_CALLBACK) {
+            std::shared_ptr<SceneLoadFailedCallback> cb;
+            msg->findObject("value", &cb);
+            m_scene_load_failed_callback = *cb;
         } else if (property == PROPERTY_SPEED) {
             float speed { 1.0f };
             if (msg->findFloat("value", &speed)) {
@@ -3012,7 +3024,7 @@ void MainHandler::loadScene() {
     // separate instead of relying on replace_extension() to DWIM.
     std::filesystem::path src_fs { m_source };
     std::error_code       dir_ec;
-    bool source_is_dir = std::filesystem::is_directory(src_fs, dir_ec);
+    bool                  source_is_dir = std::filesystem::is_directory(src_fs, dir_ec);
 
     std::filesystem::path pkgDir_fs;
     std::filesystem::path pkgPath_fs;
@@ -3035,8 +3047,7 @@ void MainHandler::loadScene() {
     // before falling back to a physical-dir mount.
     bool pkg_mounted = vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(pkgPath));
     if (! pkg_mounted) {
-        LOG_INFO("load pkg file %s failed, trying alternate pkg names",
-                 pkgPath.c_str());
+        LOG_INFO("load pkg file %s failed, trying alternate pkg names", pkgPath.c_str());
         // Read project.json to discover the wallpaper's declared `file`
         // (e.g. "gifscene.json"); use its stem as <stem>.pkg.
         std::filesystem::path projPath = pkgDir_fs / "project.json";
@@ -3047,19 +3058,16 @@ void MainHandler::loadScene() {
                                    std::istreambuf_iterator<char>() };
                 try {
                     auto proj = nlohmann::json::parse(body);
-                    auto it = proj.find("file");
+                    auto it   = proj.find("file");
                     if (it != proj.end() && it->is_string()) {
                         std::filesystem::path f { it->get<std::string>() };
                         f.replace_extension("pkg");
                         std::filesystem::path altPath = pkgDir_fs / f.filename();
-                        if (std::filesystem::exists(altPath) &&
-                            altPath.native() != pkgPath) {
-                            LOG_INFO("trying alternate pkg: %s",
-                                     altPath.native().c_str());
-                            if (vfs.Mount("/assets",
-                                          fs::WPPkgFs::CreatePkgFs(altPath.native()))) {
+                        if (std::filesystem::exists(altPath) && altPath.native() != pkgPath) {
+                            LOG_INFO("trying alternate pkg: %s", altPath.native().c_str());
+                            if (vfs.Mount("/assets", fs::WPPkgFs::CreatePkgFs(altPath.native()))) {
                                 pkg_mounted = true;
-                                pkgPath = altPath.native();
+                                pkgPath     = altPath.native();
                             }
                         }
                     }
@@ -3075,6 +3083,8 @@ void MainHandler::loadScene() {
             LOG_ERROR("can't load pkg directory: %s; sound stays off until the next "
                       "successful load",
                       pkgDir.c_str());
+            dispatchSceneLoadFailure(
+                m_scene_load_failed_callback, SceneLoadFailure::PkgDirUnmountable, pkgDir);
             return;
         }
     }
@@ -3130,6 +3140,8 @@ void MainHandler::loadScene() {
             for (const auto& c : candidates) {
                 LOG_ERROR("  tried /assets/%s", c.c_str());
             }
+            dispatchSceneLoadFailure(
+                m_scene_load_failed_callback, SceneLoadFailure::NoSceneJson, pkgDir);
             return;
         }
         LOG_INFO("Loaded scene from /assets/%s", scene_src_entry.c_str());
@@ -3141,8 +3153,7 @@ void MainHandler::loadScene() {
         {
             if (! project_json_str.empty()) {
                 if (userProps.LoadFromProjectJson(project_json_str)) {
-                    LOG_INFO("Loaded user property defaults from %s/project.json",
-                             pkgDir.c_str());
+                    LOG_INFO("Loaded user property defaults from %s/project.json", pkgDir.c_str());
                 }
             }
             if (! m_user_props_json.empty()) {
@@ -3158,6 +3169,8 @@ void MainHandler::loadScene() {
                       scene_id.c_str());
             // loadScene is void, and the sound tables were invalidated up front,
             // so bailing here leaves no alias pointing at a freed stream.
+            dispatchSceneLoadFailure(
+                m_scene_load_failed_callback, SceneLoadFailure::SceneJsonMalformed, scene_id);
             return;
         }
         // The parser polls the abort flag at its own checkpoints; a screen
@@ -3447,8 +3460,7 @@ void MainHandler::sendCmdLoadScene() {
     msg->post();
 }
 void MainHandler::sendVideoDecodeFailed(const std::string& summary) {
-    auto msg =
-        CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_VIDEO_DECODE_FAILED);
+    auto msg = CreateMsgWithCmd(shared_from_this(), MainHandler::CMD::CMD_VIDEO_DECODE_FAILED);
     msg->setString("summary", summary);
     msg->post();
 }

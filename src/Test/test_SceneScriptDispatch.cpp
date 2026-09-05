@@ -15,6 +15,7 @@
 #include "SceneBackend.hpp"
 #include "SceneScriptBridge.h"
 #include "IPropertyDispatchSink.hpp"
+#include "Utils/Logging.h"
 
 // Drives the real 30 Hz SceneScript property/text/color dispatch in
 // SceneBackend.cpp against a recording fake, with no SceneWallpaper / Vulkan
@@ -502,5 +503,131 @@ TEST_SUITE("SceneScript bridge surface") {
             CHECK(allowed.count(m.name().toStdString()) == 1);
         }
         CHECK(invokables == static_cast<int>(allowed.size()));
+    }
+}
+
+// The media dispatchers and the debounced cursorLeave are author-JS entry
+// points with no JS-side try/catch — the QJSValue the call returns is the only
+// place a throwing handler can surface.  A media handler that throws on every
+// MPRIS track change (or a leave handler that throws and so never fades the
+// hover UI back out) has to leave a trail in the journal, otherwise it is
+// undiagnosable from a log dump.
+namespace
+{
+
+// Captures WallpaperLog output so a case can assert a throw was reported.
+struct DispatchLogCapture {
+    static inline std::string text;
+    DispatchLogCapture() {
+        text = {};
+        wallpaper_log_test::setSink([](int, const char* msg) {
+            text += msg;
+            text += '\n';
+        });
+    }
+    ~DispatchLogCapture() { wallpaper_log_test::setSink(nullptr); }
+    static bool mentions(const char* needle) { return text.find(needle) != std::string::npos; }
+};
+
+constexpr const char* kThrower = "(function(ev){ throw new Error('boom'); })";
+
+} // namespace
+
+TEST_SUITE("SceneScript event dispatch error surface") {
+    TEST_CASE("a throwing media handler is reported with its id and property") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+
+        SUBCASE("mediaPlaybackChanged") {
+            obj->seedMediaHandlerForTesting(11, "alpha", "mediaPlaybackChanged", kThrower);
+            DispatchLogCapture log;
+            obj->mediaPlaybackChanged(1);
+            INFO("log: " << DispatchLogCapture::text);
+            CHECK(DispatchLogCapture::mentions("mediaPlaybackChanged error id=11 prop=alpha"));
+            CHECK(DispatchLogCapture::mentions("boom"));
+        }
+        SUBCASE("mediaPropertiesChanged") {
+            obj->seedMediaHandlerForTesting(12, "origin", "mediaPropertiesChanged", kThrower);
+            DispatchLogCapture log;
+            obj->mediaPropertiesChanged("t", "a", "al", "aa", "", 60.0);
+            INFO("log: " << DispatchLogCapture::text);
+            CHECK(DispatchLogCapture::mentions("mediaPropertiesChanged error id=12 prop=origin"));
+        }
+        SUBCASE("mediaThumbnailChanged") {
+            obj->seedMediaHandlerForTesting(13, "color", "mediaThumbnailChanged", kThrower);
+            DispatchLogCapture log;
+            obj->mediaThumbnailChanged(true, {});
+            INFO("log: " << DispatchLogCapture::text);
+            CHECK(DispatchLogCapture::mentions("mediaThumbnailChanged error id=13 prop=color"));
+        }
+        SUBCASE("mediaTimelineChanged") {
+            obj->seedMediaHandlerForTesting(14, "scale", "mediaTimelineChanged", kThrower);
+            DispatchLogCapture log;
+            obj->mediaTimelineChanged(1.0, 60.0, 1);
+            INFO("log: " << DispatchLogCapture::text);
+            CHECK(DispatchLogCapture::mentions("mediaTimelineChanged error id=14 prop=scale"));
+        }
+        SUBCASE("mediaStatusChanged") {
+            obj->seedMediaHandlerForTesting(15, "visible", "mediaStatusChanged", kThrower);
+            DispatchLogCapture log;
+            obj->mediaStatusChanged(true);
+            INFO("log: " << DispatchLogCapture::text);
+            CHECK(DispatchLogCapture::mentions("mediaStatusChanged error id=15 prop=visible"));
+        }
+    }
+
+    TEST_CASE("a media handler that returns normally logs nothing") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->seedMediaHandlerForTesting(
+            21, "alpha", "mediaTimelineChanged", "(function(ev){ return ev.position; })");
+        DispatchLogCapture log;
+        obj->mediaTimelineChanged(3.0, 60.0, 1);
+        CHECK_FALSE(DispatchLogCapture::mentions("error"));
+    }
+
+    TEST_CASE("every media dispatcher binds thisObject even for an unnamed state") {
+        // kPropWrap shadows thisLayer inside the script IIFE but not thisObject,
+        // so a state with no layer name must still overwrite the global — else
+        // it inherits whatever layer was dispatched last.
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // Seed first — that is what builds the JS engine, and debugEvalJs
+        // only queues its snippet until one exists.
+        obj->seedMediaHandlerForTesting(
+            31, "alpha", "mediaStatusChanged", "(function(ev){ _seen = String(thisObject); })");
+        obj->debugEvalJs("var _seen = 'unset'; var thisObject = 'stale';");
+        REQUIRE(obj->debugEvalJs("_seen").toStdString() == "unset");
+        obj->mediaStatusChanged(true);
+        CHECK(obj->debugEvalJs("_seen").toStdString() != "stale");
+        CHECK(obj->debugEvalJs("_seen").toStdString() != "unset");
+    }
+
+    TEST_CASE("a throwing cursorLeave handler is reported and the log does not claim success") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->seedExpiredCursorLeaveForTesting("hoverzone", kThrower);
+        DispatchLogCapture log;
+        obj->flushPendingCursorLeavesForTesting();
+        INFO("log: " << DispatchLogCapture::text);
+        CHECK(DispatchLogCapture::mentions("cursorLeave"));
+        CHECK(DispatchLogCapture::mentions("hoverzone"));
+        CHECK(DispatchLogCapture::mentions("boom"));
+        // The pre-call line used to read "cursorLeave: layer 'X' (after grace)"
+        // whether or not the handler threw.  Nothing may assert a clean
+        // dispatch when the handler blew up.
+        CHECK_FALSE(DispatchLogCapture::text.find("(after grace)\n") != std::string::npos);
+    }
+
+    TEST_CASE("a cursorLeave handler that returns normally still logs the dispatch") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->seedExpiredCursorLeaveForTesting("hoverzone", "(function(ev){ return 1; })");
+        DispatchLogCapture log;
+        obj->flushPendingCursorLeavesForTesting();
+        INFO("log: " << DispatchLogCapture::text);
+        CHECK(DispatchLogCapture::mentions("cursorLeave"));
+        CHECK(DispatchLogCapture::mentions("hoverzone"));
+        CHECK_FALSE(DispatchLogCapture::mentions("boom"));
     }
 }

@@ -6,6 +6,7 @@
 #include <QtCore/QTimer>
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonObject>
+#include <QtCore/QSet>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QHoverEvent>
 #include <QtGui/QScreen>
@@ -321,6 +322,10 @@ signals:
     // (Scene.qml).  Deliberately bundled (not per-texture) to avoid stacked
     // overlays on scenes with multiple failed textures.
     void videoDecodeFailed(const QString& summary);
+    // The scene will never produce a frame.  Carries a short human-readable
+    // reason so Scene.qml can name the failure in the recovery pane instead of
+    // leaving the desktop on the bare background colour.
+    void sceneLoadFailed(const QString& reason);
 
 private:
     QUrl m_source;
@@ -351,6 +356,9 @@ private:
     QString m_userProperties;
     int     m_renderPixelWidth { 0 };
     int     m_renderPixelHeight { 0 };
+    // Latches the GL-interop failure so a rebuilt scene graph node cannot
+    // stack a second recovery pane on top of the first.
+    bool    m_glInitFailed { false };
 
 public:
     static void on_update(void* ctx);
@@ -384,6 +392,16 @@ public:
     // updateTextStyle(id, halign, valign, fontName).
     void seedTextStyleScriptForTesting(int32_t id, const std::string& halign,
                                        const std::string& valign, const std::string& fontName);
+    // Seed one media handler (`event` is the export name, e.g.
+    // "mediaTimelineChanged") so a test can drive the real media dispatchers
+    // without a scene.  `jsSource` must evaluate to a function.
+    void seedMediaHandlerForTesting(int32_t id, const std::string& property,
+                                    const std::string& event, const std::string& jsSource);
+    // Seed a cursor target whose hover-leave grace has already elapsed, so
+    // flushPendingCursorLeavesForTesting() fires its cursorLeave immediately.
+    void seedExpiredCursorLeaveForTesting(const std::string& layerName,
+                                          const std::string& jsSource);
+    void flushPendingCursorLeavesForTesting();
     // Public aliases for the private eval slots so a test can tick dispatch.
     void evaluatePropertyScriptsForTesting();
     void evaluateTextScriptsForTesting();
@@ -391,6 +409,10 @@ public:
     // Re-runs the __sceneBridge install the way fireDestroyEvent does before it
     // calls destroy handlers.  Not Q_INVOKABLE — scripts never see SceneObject.
     void reinstallSceneBridgeForTesting();
+    // Runs the debounced localStorage disk write immediately, and reports
+    // whether a scope is still waiting to be written.
+    void flushLocalStorageForTesting();
+    bool localStorageDirtyForTesting(bool global) const;
 
 private:
     // Build the minimal JS engine (Vec shims + property-dispatch loop) used by
@@ -728,6 +750,11 @@ private:
     QJSValue m_cspObj;      // m_inputObj.property("cursorScreenPosition")
     QJSValue m_consoleObj;  // globalObject().property("console"); stable after setupTextScripts
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
+    // Fire one media event on every property script that exports a handler for
+    // it, then on the scene bus.  `handler` picks which export to call, so the
+    // five MPRIS entry points share one loop instead of five copies that drift.
+    void     dispatchMediaEvent(const char* eventName, QJSValue PropertyScriptState::*handler,
+                                const QJSValue& event);
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {
@@ -815,6 +842,23 @@ private:
     bool        m_lsScreenDirty { false };
     bool        m_lsLoaded { false };
     QTimer*     m_lsFlushTimer { nullptr };
+    // Which keys this instance actually touched since the last successful
+    // write.  Plasma runs one SceneObject per screen inside one plasmashell,
+    // and they all share the global scope file, so a flush merges these into
+    // whatever is on disk *now* rather than writing its own snapshot over the
+    // top — otherwise the second instance to flush drops every key the first
+    // one persisted.  `cleared` means localStorage.clear(): write the scope
+    // verbatim, no merge.
+    QSet<QString> m_lsGlobalPending;
+    QSet<QString> m_lsScreenPending;
+    QSet<QString> m_lsGlobalRemoved;
+    QSet<QString> m_lsScreenRemoved;
+    bool          m_lsGlobalCleared { false };
+    bool          m_lsScreenCleared { false };
+    // One-shot latch per scope so a read-only or full cache logs once instead
+    // of once per 500 ms debounce tick; cleared as soon as a write lands.
+    bool m_lsGlobalWriteErrorLogged { false };
+    bool m_lsScreenWriteErrorLogged { false };
     // Cached serialized-byte count per scope, invalidated on every mutation
     // (insert/remove/clear) and recomputed lazily on the next lsSet.  Cheaper
     // than serializing on every set — write rate is ~30 Hz worst case, scope
@@ -826,11 +870,24 @@ private:
     // One-shot quota-warning latch — matches the RL-PARTICLE1 pattern.
     // Cleared by cleanupTextScripts on every scene swap so a reloaded
     // wallpaper re-arms the LOG_INFO line.
-    bool        m_lsQuotaWarned { false };
-    void        ensureLocalStorageLoaded();
-    void        scheduleLocalStorageFlush();
-    void        flushLocalStorage();
-    QString     localStoragePath(bool global) const;
+    bool    m_lsQuotaWarned { false };
+    void    ensureLocalStorageLoaded();
+    void    scheduleLocalStorageFlush();
+    void    flushLocalStorage();
+    // Merges one scope's pending changes into the on-disk copy and writes the
+    // result.  False means nothing landed and the caller must keep the scope
+    // dirty so the next tick retries.
+    bool    flushLocalStorageScope(bool global);
+    QString localStoragePath(bool global) const;
+    // Reads one scope file.  `rejected` reports a file that exists but is
+    // unusable (oversized or not a JSON object) so the caller overwrites it
+    // instead of merging into garbage.
+    static QJsonObject readLocalStorageScope(const QString& path, bool* rejected);
+    // Replaces the live scope file in one rename(2).  False on any failure,
+    // with the previous file left intact.  `errorLogged` is the caller's
+    // one-shot log latch.
+    static bool writeLocalStorageScope(const QString& path, const QJsonObject& obj,
+                                       bool& errorLogged);
 
 protected:
     QSGNode* updatePaintNode(QSGNode*, UpdatePaintNodeData*) override;

@@ -34,6 +34,9 @@
 
 #include <clocale>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
+#include <utility>
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -189,6 +192,22 @@ public:
             });
         m_scene->setPropertyObject(wallpaper::PROPERTY_VIDEO_DECODE_FAILED_CALLBACK, videoFailCb);
 
+        // The three loadScene bail-outs run on the load thread, so hop to the
+        // GUI thread before emitting.  Without this the only surface for a
+        // failed load is the watchdog's generic timeout, which cannot tell a
+        // broken package from a slow cold start.
+        auto loadFailCb =
+            std::make_shared<wallpaper::SceneLoadFailedCallback>([this](const std::string& reason) {
+                QString qs = QString::fromStdString(reason);
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, qs]() {
+                        Q_EMIT this->nodeSceneLoadFailed(qs);
+                    },
+                    Qt::QueuedConnection);
+            });
+        m_scene->setPropertyObject(wallpaper::PROPERTY_SCENE_LOAD_FAILED_CALLBACK, loadFailCb);
+
         // this send to looper, not in this thread
         m_scene->initVulkan(info);
     }
@@ -204,6 +223,9 @@ signals:
     // SceneObject::videoDecodeFailed Q_EMIT so the QML side receives it
     // on the GUI thread.
     void sceneVideoDecodeFailed(const QString& summary);
+    // Forwarded from the load-thread SceneLoadFailedCallback (see initVulkan),
+    // wired to SceneObject::sceneLoadFailed in updatePaintNode.
+    void nodeSceneLoadFailed(const QString& reason);
 
 public slots:
     void newTexture() {
@@ -289,10 +311,7 @@ SceneObject::SceneObject(QQuickItem* parent): QQuickItem(parent) {
     // surface that's gone.  Debounced 500 ms so KVM-switch / brief monitor-
     // sleep cycles (remove + add within the debounce) don't trigger a wasteful
     // abort+restart.
-    connect(this,
-            &QQuickItem::windowChanged,
-            this,
-            &SceneObject::onWindowChangedForRefresh);
+    connect(this, &QQuickItem::windowChanged, this, &SceneObject::onWindowChangedForRefresh);
 
     if (auto* app = qApp) {
         connect(app, &QGuiApplication::screenRemoved, this, &SceneObject::onScreenRemoved);
@@ -369,10 +388,26 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                     &TextureNode::newTexture,
                     Qt::DirectConnection);
             connect(node, &TextureNode::sceneFirstFrame, this, &SceneObject::firstFrame);
-            connect(node,
-                    &TextureNode::sceneVideoDecodeFailed,
-                    this,
-                    &SceneObject::videoDecodeFailed);
+            connect(
+                node, &TextureNode::sceneVideoDecodeFailed, this, &SceneObject::videoDecodeFailed);
+            connect(node, &TextureNode::nodeSceneLoadFailed, this, &SceneObject::sceneLoadFailed);
+        } else if (! m_glInitFailed) {
+            // No GL/Vulkan interop means no initVulkan and no firstFrame
+            // connection — the renderer never starts and the desktop is left
+            // on the bare background colour.  Say so once (updatePaintNode
+            // keeps the node, so this branch is not retaken, but a window
+            // change can rebuild it) and queue the emit: we are on the render
+            // thread and the QML handler must run on the GUI thread.
+            m_glInitFailed = true;
+            LOG_ERROR("gl interop init failed — the scene renderer cannot start");
+            QMetaObject::invokeMethod(
+                this,
+                [this]() {
+                    Q_EMIT this->sceneLoadFailed(
+                        QStringLiteral("The graphics driver does not provide the OpenGL/Vulkan "
+                                       "memory-sharing extensions this renderer needs."));
+                },
+                Qt::QueuedConnection);
         }
     }
 
@@ -380,7 +415,12 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     return node;
 }
 
-#define SET_PROPERTY(type, name, value) m_scene->setProperty##type(name, value);
+// m_scene is null on the headless test path (WEKDE_TEST_NO_SCENE); without the
+// guard every property setter is a null deref there.
+#define SET_PROPERTY(type, name, value)                       \
+    do {                                                      \
+        if (m_scene) m_scene->setProperty##type(name, value); \
+    } while (0)
 
 void SceneObject::setScenePropertyQurl(std::string_view name, QUrl value) {
     auto str_value = QDir::toNativeSeparators(value.toLocalFile()).toStdString();
@@ -445,8 +485,7 @@ void SceneObject::updateDetectedRefresh() {
     QScreen*      sc  = win ? win->screen() : nullptr;
     // refreshRate() is 0 on some offscreen/headless platforms; ResolveRefreshMhz
     // maps that to the 0 "unknown" sentinel rather than a bogus grid.
-    m_detectedRefreshMhz =
-        sc ? static_cast<unsigned>(qRound(sc->refreshRate() * 1000.0)) : 0u;
+    m_detectedRefreshMhz = sc ? static_cast<unsigned>(qRound(sc->refreshRate() * 1000.0)) : 0u;
     applyResolvedRefresh();
 }
 
@@ -475,10 +514,9 @@ void SceneObject::onWindowChangedForRefresh(QQuickWindow* win) {
                 &SceneObject::updateDetectedRefresh,
                 Qt::UniqueConnection);
         if (QScreen* sc = win->screen()) {
-            m_screenRefreshConn =
-                connect(sc, &QScreen::refreshRateChanged, this, [this](qreal) {
-                    updateDetectedRefresh();
-                });
+            m_screenRefreshConn = connect(sc, &QScreen::refreshRateChanged, this, [this](qreal) {
+                updateDetectedRefresh();
+            });
         }
     }
     updateDetectedRefresh();
@@ -680,15 +718,14 @@ void SceneObject::setScriptIdentity() {
         fp += s.property;
         fp += ';';
     }
-    std::size_t   h       = std::hash<std::string>{}(fp);
+    std::size_t   h       = std::hash<std::string> {}(fp);
     quint32       idTrunc = static_cast<quint32>(h & 0xFFFFFFFFu);
     const QString hashHex = QString::number(static_cast<qulonglong>(h), 16);
-    m_jsEngine->evaluate(
-        QString("engine.scriptId = %1;\n"
-                "engine.scriptName = 'scene';\n"
-                "engine.getScriptHash = function() { return '%2'; };\n")
-            .arg(idTrunc)
-            .arg(hashHex));
+    m_jsEngine->evaluate(QString("engine.scriptId = %1;\n"
+                                 "engine.scriptName = 'scene';\n"
+                                 "engine.getScriptHash = function() { return '%2'; };\n")
+                             .arg(idTrunc)
+                             .arg(hashHex));
 }
 
 void SceneObject::fireDestroyEvent() {
@@ -758,26 +795,43 @@ void SceneObject::fireResizeScreen(int width, int height) {
 
 // Media integration event dispatch — called from QML MprisMonitor via Q_INVOKABLE
 
+void SceneObject::dispatchMediaEvent(const char* eventName, QJSValue PropertyScriptState::* handler,
+                                     const QJSValue& event) {
+    for (auto& s : m_propertyScriptStates) {
+        QJSValue& fn = s.*handler;
+        if (! fn.isCallable()) continue;
+        if (! s.layerName.empty()) m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+        // Unconditional, unlike thisLayer: kPropWrap shadows thisLayer inside
+        // the script IIFE but not thisObject, so putting this under the
+        // layerName guard hands an unnamed state whatever layer was dispatched
+        // last (Hoshi-Tele 3042492564 saw a sibling's object that way).
+        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
+        QJSValue r = callJsGuarded([&] {
+            return fn.call({ event });
+        });
+        // The media exports get no JS-side try/catch the way animationEvent
+        // does, so this error value is the only trace a throwing handler
+        // leaves — and it throws once per track change or position poll.
+        if (r.isError())
+            LOG_INFO("%s error id=%d prop=%s: %s",
+                     eventName,
+                     s.id,
+                     s.property.c_str(),
+                     qPrintable(r.toString()));
+    }
+    fireSceneEventListeners(QString::fromLatin1(eventName), { event });
+}
+
 void SceneObject::mediaPlaybackChanged(int state) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("state", state);
-    for (auto& s : m_propertyScriptStates) {
-        if (! s.mediaPlaybackChangedFn.isCallable()) continue;
-        if (! s.layerName.empty())
-            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
-        callJsGuarded([&] {
-            return s.mediaPlaybackChangedFn.call({ event });
-        });
-    }
-    fireSceneEventListeners("mediaPlaybackChanged", { event });
+    dispatchMediaEvent("mediaPlaybackChanged", &PropertyScriptState::mediaPlaybackChangedFn, event);
 }
 
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
                                          const QString& albumTitle, const QString& albumArtist,
-                                         const QString& genres,
-                                         double         duration) {
+                                         const QString& genres, double duration) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("title", title);
@@ -789,16 +843,8 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
     // 8 corpus scripts (in 3155776049, 3662790108, others) read .duration from
     // this event — easier than waiting for the next timelineChanged tick.
     event.setProperty("duration", duration);
-    for (auto& s : m_propertyScriptStates) {
-        if (! s.mediaPropertiesChangedFn.isCallable()) continue;
-        if (! s.layerName.empty())
-            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
-        callJsGuarded([&] {
-            return s.mediaPropertiesChangedFn.call({ event });
-        });
-    }
-    fireSceneEventListeners("mediaPropertiesChanged", { event });
+    dispatchMediaEvent(
+        "mediaPropertiesChanged", &PropertyScriptState::mediaPropertiesChangedFn, event);
 }
 
 void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors) {
@@ -818,16 +864,8 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
     event.setProperty("tertiaryColor", toVec3(2));
     event.setProperty("textColor", toVec3(3));
     event.setProperty("highContrastColor", toVec3(4));
-    for (auto& s : m_propertyScriptStates) {
-        if (! s.mediaThumbnailChangedFn.isCallable()) continue;
-        if (! s.layerName.empty())
-            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
-        callJsGuarded([&] {
-            return s.mediaThumbnailChangedFn.call({ event });
-        });
-    }
-    fireSceneEventListeners("mediaThumbnailChanged", { event });
+    dispatchMediaEvent(
+        "mediaThumbnailChanged", &PropertyScriptState::mediaThumbnailChangedFn, event);
 }
 
 void SceneObject::mediaTimelineChanged(double position, double duration, int state) {
@@ -839,32 +877,14 @@ void SceneObject::mediaTimelineChanged(double position, double duration, int sta
     // 13 corpus scripts read event.state from this event so they can react to
     // play/pause transitions without a separate playbackStateChanged subscriber.
     event.setProperty("state", state);
-    for (auto& s : m_propertyScriptStates) {
-        if (! s.mediaTimelineChangedFn.isCallable()) continue;
-        if (! s.layerName.empty())
-            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
-        callJsGuarded([&] {
-            return s.mediaTimelineChangedFn.call({ event });
-        });
-    }
-    fireSceneEventListeners("mediaTimelineChanged", { event });
+    dispatchMediaEvent("mediaTimelineChanged", &PropertyScriptState::mediaTimelineChangedFn, event);
 }
 
 void SceneObject::mediaStatusChanged(bool enabled) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("enabled", enabled);
-    for (auto& s : m_propertyScriptStates) {
-        if (! s.mediaStatusChangedFn.isCallable()) continue;
-        if (! s.layerName.empty())
-            m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
-        callJsGuarded([&] {
-            return s.mediaStatusChangedFn.call({ event });
-        });
-    }
-    fireSceneEventListeners("mediaStatusChanged", { event });
+    dispatchMediaEvent("mediaStatusChanged", &PropertyScriptState::mediaStatusChangedFn, event);
 }
 
 void SceneObject::play() {
@@ -1084,8 +1104,7 @@ void SceneObject::videoSetRate(const QString& layerName, double rate) {
 // thread.  value is a plain JS array of numbers (the JS proxy guarantees
 // shape; we only defensively skip empty / oversized arrays here and filter
 // non-finite entries so a stray NaN never reaches the GPU).
-void SceneObject::materialSetValue(const QString&  layerName,
-                                   const QString&  name,
+void SceneObject::materialSetValue(const QString& layerName, const QString& name,
                                    const QJSValue& value) {
     if (! m_dispatch) return;
     if (name.isEmpty()) return;
@@ -1110,10 +1129,8 @@ void SceneObject::materialSetValue(const QString&  layerName,
 // effect index so the render thread can target the per-effect material.
 // JS pre-validates numerics (same _packMaterialValue guards as materialSetValue);
 // we still defensively skip empty/oversized arrays and non-finite entries.
-void SceneObject::effectMaterialSetValue(const QString&  layerName,
-                                         int             effectIdx,
-                                         const QString&  name,
-                                         const QJSValue& value) {
+void SceneObject::effectMaterialSetValue(const QString& layerName, int effectIdx,
+                                         const QString& name, const QJSValue& value) {
     if (! m_dispatch) return;
     if (name.isEmpty()) return;
     if (effectIdx < 0) return;
@@ -1185,9 +1202,9 @@ int SceneObject::getBoneIndex(const QString& layerName, const QString& boneName)
 QJSValue SceneObject::getLayerWorldTransform(const QString& layerName) const {
     QJSValue arr = m_jsEngine ? m_jsEngine->newArray(16) : QJSValue();
     if (! m_scene || ! m_jsEngine) return arr;
-    auto it = m_nodeNameToId.find(layerName.toStdString());
+    auto    it     = m_nodeNameToId.find(layerName.toStdString());
     int32_t nodeId = (it == m_nodeNameToId.end()) ? -1 : it->second;
-    auto m = m_scene->getLayerWorldMatrix(nodeId);
+    auto    m      = m_scene->getLayerWorldMatrix(nodeId);
     for (int i = 0; i < 16; ++i) arr.setProperty(i, m[i]);
     return arr;
 }
@@ -1196,10 +1213,8 @@ QJSValue SceneObject::getLayerWorldTransform(const QString& layerName) const {
 // JS shim parses `alignment` into h+v before calling, so we only carry two
 // axis strings + a font name.  Empty strings = no change.  Font resolution
 // (name → VFS bytes) happens render-side so the VFS-owning thread does I/O.
-void SceneObject::setTextStyle(const QString& layerName,
-                               const QString& halign,
-                               const QString& valign,
-                               const QString& fontName) {
+void SceneObject::setTextStyle(const QString& layerName, const QString& halign,
+                               const QString& valign, const QString& fontName) {
     if (! m_dispatch) return;
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
@@ -1261,6 +1276,43 @@ QString SceneObject::localStoragePath(bool global) const {
     return base + "/" + m_lsSceneId + "/" + name(wallpaper::platform::kLocalStorageSceneFile);
 }
 
+QJsonObject SceneObject::readLocalStorageScope(const QString& path, bool* rejected) {
+    if (rejected) *rejected = false;
+    if (path.isEmpty()) return {};
+    QFile f(path);
+    if (! f.open(QIODevice::ReadOnly)) return {};
+    // Pre-load cap: refuse to readAll() on a file larger than 2x the
+    // per-scope cap.  Tolerates pre-existing slightly-oversized files from
+    // older pre-cap versions of this codebase; an empty load +
+    // flush-on-first-write overwrites the bloated file, so nothing under
+    // ~/.cache has to be deleted by hand.  Without this, a 100 GB hostile
+    // blob written by an old runaway script would OOM plasmashell on scene
+    // load via f.readAll().
+    const auto file_size = f.size();
+    if (file_size > wek::qml_helper::kMaxLsPreloadBytes) {
+        LOG_ERROR("localStorage file '%s' size %lld exceeds pre-load cap %lld; treating scope as "
+                  "empty",
+                  qPrintable(path),
+                  (long long)file_size,
+                  (long long)wek::qml_helper::kMaxLsPreloadBytes);
+        if (rejected) *rejected = true;
+        return {};
+    }
+    QJsonParseError err {};
+    QJsonDocument   doc = QJsonDocument::fromJson(f.readAll(), &err);
+    if (err.error != QJsonParseError::NoError || ! doc.isObject()) {
+        // A truncated write from an older build (or a hand-edited file) used
+        // to come back as a silently empty scope, so the wallpaper looked
+        // like it had never saved anything.  Say so.
+        LOG_ERROR("localStorage file '%s' is not a JSON object (%s); treating scope as empty",
+                  qPrintable(path),
+                  qPrintable(err.errorString()));
+        if (rejected) *rejected = true;
+        return {};
+    }
+    return doc.object();
+}
+
 void SceneObject::ensureLocalStorageLoaded() {
     if (m_lsLoaded) return;
     m_lsLoaded = true;
@@ -1275,39 +1327,26 @@ void SceneObject::ensureLocalStorageLoaded() {
         }
     }
 
+    m_lsGlobalPending.clear();
+    m_lsScreenPending.clear();
+    m_lsGlobalRemoved.clear();
+    m_lsScreenRemoved.clear();
+    m_lsGlobalCleared = false;
+    m_lsScreenCleared = false;
+
     auto loadFile = [this](const QString& path, bool global) -> QJsonObject {
-        if (path.isEmpty()) return {};
-        QFile f(path);
-        if (! f.open(QIODevice::ReadOnly)) return {};
-        // Pre-load cap: refuse to readAll() on a file larger than 2x the
-        // per-scope cap.  Tolerates pre-existing slightly-oversized files
-        // from older pre-cap versions of this codebase; an empty load +
-        // flush-on-first-write will atomically overwrite the bloated file
-        // without manual rm (respects the user's ~/.cache no-delete rule
-        // per feedback_no_delete_outside).  Without this, a 100 GB hostile
-        // blob written by an old runaway script would OOM plasmashell on
-        // scene load via f.readAll().
-        const auto file_size = f.size();
-        if (file_size > wek::qml_helper::kMaxLsPreloadBytes) {
-            LOG_ERROR(
-                "localStorage file '%s' size %lld exceeds pre-load cap %lld; treating scope as "
-                "empty",
-                qPrintable(path),
-                (long long)file_size,
-                (long long)wek::qml_helper::kMaxLsPreloadBytes);
-            // Arm flush-on-first-write so a subsequent lsSet rewrites the
-            // file at normal size, recovering without manual cleanup.
+        bool        rejected = false;
+        QJsonObject obj      = readLocalStorageScope(path, &rejected);
+        // Arm flush-on-first-write so the next debounce tick rewrites an
+        // unusable file at normal size, recovering without manual cleanup.
+        if (rejected) {
             if (global) {
                 m_lsGlobalDirty = true;
             } else {
                 m_lsScreenDirty = true;
             }
-            return {};
         }
-        QJsonParseError err {};
-        QJsonDocument   doc = QJsonDocument::fromJson(f.readAll(), &err);
-        if (err.error != QJsonParseError::NoError || ! doc.isObject()) return {};
-        return doc.object();
+        return obj;
     };
     m_lsGlobal = loadFile(localStoragePath(true), true);
     m_lsScreen = loadFile(localStoragePath(false), false);
@@ -1335,28 +1374,110 @@ void SceneObject::scheduleLocalStorageFlush() {
     if (m_lsFlushTimer && ! m_lsFlushTimer->isActive()) m_lsFlushTimer->start();
 }
 
-void SceneObject::flushLocalStorage() {
-    auto writeAtomic = [](const QString& path, const QJsonObject& obj) {
-        if (path.isEmpty()) return;
-        QDir().mkpath(QFileInfo(path).absolutePath());
-        QString tmpPath = path + ".tmp";
-        QFile   tmp(tmpPath);
-        if (! tmp.open(QIODevice::WriteOnly | QIODevice::Truncate)) return;
-        tmp.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
-        tmp.close();
-        // Atomic rename: on POSIX rename(2) replaces the target in one step,
-        // so readers never see a partial file.
-        QFile::remove(path);
-        QFile::rename(tmpPath, path);
+bool SceneObject::writeLocalStorageScope(const QString& path, const QJsonObject& obj,
+                                         bool& errorLogged) {
+    const auto fail = [&errorLogged](
+                          const char* what, const QString& target, const QString& detail) {
+        // Latched: a read-only or full cache would otherwise log twice a
+        // second for as long as the wallpaper keeps writing.
+        if (! errorLogged) {
+            errorLogged = true;
+            LOG_ERROR("localStorage %s '%s' failed: %s -- keys stay pending, retrying on the next "
+                      "write",
+                      what,
+                      qPrintable(target),
+                      qPrintable(detail));
+        }
+        return false;
     };
-    if (m_lsGlobalDirty) {
-        writeAtomic(localStoragePath(true), m_lsGlobal);
-        m_lsGlobalDirty = false;
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const QByteArray bytes   = QJsonDocument(obj).toJson(QJsonDocument::Compact);
+    const QString    tmpPath = path + ".tmp";
+
+    QFile tmp(tmpPath);
+    if (! tmp.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return fail("open", tmpPath, tmp.errorString());
     }
-    if (m_lsScreenDirty) {
-        writeAtomic(localStoragePath(false), m_lsScreen);
-        m_lsScreenDirty = false;
+    // A short write is what a full or quota-limited ~/.cache looks like, and
+    // it is exactly the case that used to install truncated JSON over good
+    // data.  Nothing gets renamed unless every byte is out of the buffer.
+    if (tmp.write(bytes) != bytes.size() || ! tmp.flush()) {
+        const QString detail = tmp.errorString();
+        tmp.close();
+        QFile::remove(tmpPath);
+        return fail("write", tmpPath, detail);
     }
+    tmp.close();
+    if (tmp.error() != QFileDevice::NoError) {
+        const QString detail = tmp.errorString();
+        QFile::remove(tmpPath);
+        return fail("close", tmpPath, detail);
+    }
+
+    // rename(2) replaces the target in one step, so a reader never sees a
+    // partial file and a failure here leaves the previous file untouched.
+    // Deleting the target first (as this used to) throws that away: the good
+    // copy is gone before the replacement is known to be good.
+    const std::filesystem::path fsTmp(QFile::encodeName(tmpPath).toStdString());
+    const std::filesystem::path fsDst(QFile::encodeName(path).toStdString());
+    std::error_code             ec;
+    std::filesystem::rename(fsTmp, fsDst, ec);
+    if (ec) {
+        std::error_code rm;
+        std::filesystem::remove(fsTmp, rm);
+        return fail("rename", path, QString::fromStdString(ec.message()));
+    }
+    errorLogged = false;
+    return true;
+}
+
+bool SceneObject::flushLocalStorageScope(bool global) {
+    const QString path = localStoragePath(global);
+    // No scene id means there is no per-scene file to write; the scope lives
+    // in memory for the session.  Report success or the flag retries forever.
+    if (path.isEmpty()) return true;
+
+    QJsonObject&   scope   = global ? m_lsGlobal : m_lsScreen;
+    QSet<QString>& pending = global ? m_lsGlobalPending : m_lsScreenPending;
+    QSet<QString>& removed = global ? m_lsGlobalRemoved : m_lsScreenRemoved;
+    bool&          cleared = global ? m_lsGlobalCleared : m_lsScreenCleared;
+
+    // Re-read rather than trusting the snapshot taken at scene load: a
+    // sibling instance on another screen shares this file and may have
+    // written keys we have never seen.  clear() is the one case that means
+    // "replace the whole scope", so it skips the merge.
+    QJsonObject merged;
+    if (! cleared) {
+        bool rejected = false;
+        merged        = readLocalStorageScope(path, &rejected);
+        // An unusable file is what we are recovering from -- overwrite it.
+        if (rejected) merged = {};
+    }
+    for (const QString& key : std::as_const(pending)) {
+        if (scope.contains(key)) merged.insert(key, scope.value(key));
+    }
+    for (const QString& key : std::as_const(removed)) merged.remove(key);
+
+    bool& errorLogged = global ? m_lsGlobalWriteErrorLogged : m_lsScreenWriteErrorLogged;
+    if (! writeLocalStorageScope(path, merged, errorLogged)) return false;
+
+    // Adopt the merged view so reads see the sibling's keys and the next
+    // flush starts from a clean slate.
+    scope = merged;
+    (global ? m_lsGlobalBytes : m_lsScreenBytes).reset();
+    pending.clear();
+    removed.clear();
+    cleared = false;
+    return true;
+}
+
+void SceneObject::flushLocalStorage() {
+    // Only drop the dirty flag once the bytes are on disk: a transient ENOSPC
+    // or a read-only cache must retry on the next tick, not silently discard
+    // everything the wallpaper persisted this session.
+    if (m_lsGlobalDirty && flushLocalStorageScope(true)) m_lsGlobalDirty = false;
+    if (m_lsScreenDirty && flushLocalStorageScope(false)) m_lsScreenDirty = false;
 }
 
 QJSValue SceneObject::lsGet(int loc, const QString& key) {
@@ -1432,6 +1553,10 @@ void SceneObject::lsSet(int loc, const QString& key, const QJSValue& value) {
 
     scope.insert(key, jv);
     dirty = true;
+    // Remember which key changed so the flush writes it over the on-disk
+    // copy instead of writing this instance's whole snapshot.
+    (loc == 0 ? m_lsGlobalPending : m_lsScreenPending).insert(key);
+    (loc == 0 ? m_lsGlobalRemoved : m_lsScreenRemoved).remove(key);
     // Invalidate -- a replace of an existing key with a different-sized
     // value would make any delta-update wrong; lazy recompute on the next
     // lsSet is cheap enough at observed write rates.
@@ -1445,6 +1570,10 @@ void SceneObject::lsRemove(int loc, const QString& key) {
         if (m_lsGlobal.contains(key)) {
             m_lsGlobal.remove(key);
             m_lsGlobalDirty = true;
+            // The flush merges against the file, so a deletion has to be
+            // carried explicitly or the on-disk copy puts the key back.
+            m_lsGlobalRemoved.insert(key);
+            m_lsGlobalPending.remove(key);
             // Invalidate cached byte count -- a future lsSet must re-
             // serialize to see the freed space.
             m_lsGlobalBytes.reset();
@@ -1454,6 +1583,8 @@ void SceneObject::lsRemove(int loc, const QString& key) {
         if (m_lsScreen.contains(key)) {
             m_lsScreen.remove(key);
             m_lsScreenDirty = true;
+            m_lsScreenRemoved.insert(key);
+            m_lsScreenPending.remove(key);
             m_lsScreenBytes.reset();
             scheduleLocalStorageFlush();
         }
@@ -1466,6 +1597,11 @@ void SceneObject::lsClear(int loc) {
         if (! m_lsGlobal.isEmpty()) {
             m_lsGlobal      = {};
             m_lsGlobalDirty = true;
+            // clear() means the whole scope goes, including anything a
+            // sibling instance added -- so the flush writes verbatim.
+            m_lsGlobalCleared = true;
+            m_lsGlobalPending.clear();
+            m_lsGlobalRemoved.clear();
             // Empty object serializes to "{}" -- 2 bytes.  Setting the
             // cache directly avoids the next lsSet re-serializing on miss.
             m_lsGlobalBytes = 2;
@@ -1473,8 +1609,11 @@ void SceneObject::lsClear(int loc) {
         }
     } else {
         if (! m_lsScreen.isEmpty()) {
-            m_lsScreen      = {};
-            m_lsScreenDirty = true;
+            m_lsScreen        = {};
+            m_lsScreenDirty   = true;
+            m_lsScreenCleared = true;
+            m_lsScreenPending.clear();
+            m_lsScreenRemoved.clear();
             m_lsScreenBytes = 2;
             scheduleLocalStorageFlush();
         }
@@ -1572,15 +1711,15 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
     // hit with moveFn.  downFn / upFn ride on the selected drag target,
     // which prefers moveIdx (drag scripts) and falls back to clickIdx.
     CursorParallax para     = buildCursorParallax(this,
-                                              m_mouseNx,
-                                              m_mouseNy,
-                                              m_sceneOrthoW,
-                                              m_sceneOrthoH,
-                                              m_parallaxCache.enable,
-                                              m_parallaxCache.amount,
-                                              m_parallaxCache.mouseInfluence,
-                                              m_parallaxCache.camX,
-                                              m_parallaxCache.camY);
+                                                  m_mouseNx,
+                                                  m_mouseNy,
+                                                  m_sceneOrthoW,
+                                                  m_sceneOrthoH,
+                                                  m_parallaxCache.enable,
+                                                  m_parallaxCache.amount,
+                                                  m_parallaxCache.mouseInfluence,
+                                                  m_parallaxCache.camX,
+                                                  m_parallaxCache.camY);
     QJSValue       ev       = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
     int            clickIdx = -1, moveIdx = -1, downIdx = -1;
     double         clickArea = 0.0, moveArea = 0.0, downArea = 0.0;
@@ -1643,7 +1782,8 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
             downFired++;
             if (r.isError())
                 LOG_INFO("cursorDown error on '%s': %s",
-                         target.layerName.c_str(), qPrintable(r.toString()));
+                         target.layerName.c_str(),
+                         qPrintable(r.toString()));
         }
     } else if (clickIdx < 0 && moveIdx < 0) {
         // Nothing hit-tested.  Fall back to global cursorDown fan-out for
@@ -1655,7 +1795,6 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
         for (auto& target : m_cursorTargets) {
             if (! target.downFn.isCallable()) continue;
             m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
-            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue r = callJsGuarded([&] {
                 return target.downFn.callWithInstance(target.thisLayerProxy, { ev });
@@ -1734,16 +1873,16 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
     QJSValue       ev      = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
     int            upFired = 0;
     CursorParallax para    = buildCursorParallax(this,
-                                              m_mouseNx,
-                                              m_mouseNy,
-                                              m_sceneOrthoW,
-                                              m_sceneOrthoH,
-                                              m_parallaxCache.enable,
-                                              m_parallaxCache.amount,
-                                              m_parallaxCache.mouseInfluence,
-                                              m_parallaxCache.camX,
-                                              m_parallaxCache.camY);
-    auto fire = [&](CursorTarget& target) {
+                                                 m_mouseNx,
+                                                 m_mouseNy,
+                                                 m_sceneOrthoW,
+                                                 m_sceneOrthoH,
+                                                 m_parallaxCache.enable,
+                                                 m_parallaxCache.amount,
+                                                 m_parallaxCache.mouseInfluence,
+                                                 m_parallaxCache.camX,
+                                                 m_parallaxCache.camY);
+    auto           fire    = [&](CursorTarget& target) {
         if (! target.upFn.isCallable()) return;
         m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
         m_globalObj.setProperty("thisObject", target.thisObjectProxy);
@@ -1752,9 +1891,8 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
         });
         upFired++;
         if (r.isError())
-            LOG_INFO("cursorUp error on '%s': %s",
-                     target.layerName.c_str(),
-                     qPrintable(r.toString()));
+            LOG_INFO(
+                "cursorUp error on '%s': %s", target.layerName.c_str(), qPrintable(r.toString()));
     };
     // cursorUp fans out to every cursor target the cursor is currently over
     // (WE convention — each geometrically-hit layer receives its own
@@ -1821,7 +1959,6 @@ void SceneObject::mouseMoveEvent(QMouseEvent* event) {
             if (target.layerName != m_dragTarget || ! target.moveFn.isCallable()) continue;
             m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
             m_globalObj.setProperty("thisObject", target.thisObjectProxy);
-            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
                 return target.moveFn.callWithInstance(target.thisLayerProxy, { ev });
@@ -1885,15 +2022,15 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
     float          screenX = m_cursorScreenX;
     float          screenY = m_cursorScreenY;
     CursorParallax para    = buildCursorParallax(this,
-                                              m_mouseNx,
-                                              m_mouseNy,
-                                              m_sceneOrthoW,
-                                              m_sceneOrthoH,
-                                              m_parallaxCache.enable,
-                                              m_parallaxCache.amount,
-                                              m_parallaxCache.mouseInfluence,
-                                              m_parallaxCache.camX,
-                                              m_parallaxCache.camY);
+                                                 m_mouseNx,
+                                                 m_mouseNy,
+                                                 m_sceneOrthoW,
+                                                 m_sceneOrthoH,
+                                                 m_parallaxCache.enable,
+                                                 m_parallaxCache.amount,
+                                                 m_parallaxCache.mouseInfluence,
+                                                 m_parallaxCache.camX,
+                                                 m_parallaxCache.camY);
 
     // Hover-leave debounce: see HoverLeaveDebounce.h for the state machine.
     // kHoverLeaveGraceMs is the grace window between the cursor leaving a
@@ -1921,7 +2058,6 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             if (target.layerName != name || ! target.enterFn.isCallable()) continue;
             LOG_INFO("cursorEnter: layer '%s' at scene=(%.1f,%.1f)", name.c_str(), sceneX, sceneY);
             m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
-            m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             m_globalObj.setProperty("thisObject", target.thisObjectProxy);
             QJSValue ev = makeCursorEvent(m_jsEngine, sceneX, sceneY, screenX, screenY);
             QJSValue r  = callJsGuarded([&] {
@@ -1961,16 +2097,21 @@ void SceneObject::flushPendingLeaves() {
         for (auto& target : m_cursorTargets) {
             if (target.layerName != name) continue;
             if (target.leaveFn.isCallable()) {
-                LOG_INFO("cursorLeave: layer '%s' (after grace)", target.layerName.c_str());
                 m_globalObj.setProperty("thisLayer", target.thisLayerProxy);
-                m_globalObj.setProperty("thisObject", target.thisObjectProxy);
-                m_globalObj.setProperty("thisObject", target.thisObjectProxy);
                 m_globalObj.setProperty("thisObject", target.thisObjectProxy);
                 QJSValue ev = makeCursorEvent(
                     m_jsEngine, m_cursorSceneX, m_cursorSceneY, m_cursorScreenX, m_cursorScreenY);
-                callJsGuarded([&] {
+                QJSValue r = callJsGuarded([&] {
                     return target.leaveFn.callWithInstance(target.thisLayerProxy, { ev });
                 });
+                // Logged after the call, not before: a leave handler that
+                // throws leaves the hover UI pinned on screen (2866203962's
+                // music-player never fades), and the line has to say so
+                // instead of asserting a dispatch that blew up.
+                LOG_INFO("cursorLeave: layer '%s' (after grace)%s",
+                         target.layerName.c_str(),
+                         r.isError() ? " ERROR" : "");
+                if (r.isError()) LOG_INFO("  cursorLeave error: %s", qPrintable(r.toString()));
             }
             m_hoveredLayers.erase(name);
             break;
@@ -2172,48 +2313,50 @@ void SceneObject::setupTextScripts() {
         // leaving the 8 color-palette buttons stuck on their JSON default
         // (red).
         QString wrapped =
-            QString("(function(_tlo) {\n"
-                    "  'use strict';\n"
-                    "  var exports = {};\n"
-                    "  var thisLayer = _tlo;\n"
-                    "  %1\n" // scriptProperties override
-                    "  %2\n" // script body
-                    // Alias scriptProperties onto thisLayer (WE convention).
-                    // Must run after the body so scriptProperties is populated.
-                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                    "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                    "              (typeof init === 'function' ? init : null);\n"
-                    "  if (_init) {\n"
-                    "    try { _init(undefined); }\n"
-                    "    catch(e) { console.log('color script init err: ' + (e && e.message ? e.message : e)); }\n"
-                    "  }\n"
-                    "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                    "             (typeof update === 'function' ? update : null);\n"
-                    // Capture cursor handlers so the cursor-target collector
-                    // can wire them up.  WE attaches hover/click logic to
-                    // the layer's color script for tinted buttons (Game of
-                    // Life 3453251764 Pen/Stamp/Color etc.); without
-                    // surfacing them here the buttons render correctly but
-                    // never respond to clicks.
-                    "  var _ent  = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-                    "              (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-                    "  var _lv   = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-                    "              (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-                    "  var _up   = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-                    "              (typeof cursorUp === 'function' ? cursorUp : null);\n"
-                    "  var _dn   = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-                    "              (typeof cursorDown === 'function' ? cursorDown : null);\n"
-                    "  var _clk  = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-                    "              (typeof cursorClick === 'function' ? cursorClick : null);\n"
-                    "  var _mv   = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-                    "              (typeof cursorMove === 'function' ? cursorMove : null);\n"
-                    "  if (!_upd) return null;\n"
-                    "  return { update: _upd,\n"
-                    "           cursorEnter: _ent, cursorLeave: _lv,\n"
-                    "           cursorUp: _up, cursorDown: _dn,\n"
-                    "           cursorClick: _clk, cursorMove: _mv };\n"
-                    "})(thisLayer)\n")
+            QString(
+                "(function(_tlo) {\n"
+                "  'use strict';\n"
+                "  var exports = {};\n"
+                "  var thisLayer = _tlo;\n"
+                "  %1\n" // scriptProperties override
+                "  %2\n" // script body
+                // Alias scriptProperties onto thisLayer (WE convention).
+                // Must run after the body so scriptProperties is populated.
+                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                "              (typeof init === 'function' ? init : null);\n"
+                "  if (_init) {\n"
+                "    try { _init(undefined); }\n"
+                "    catch(e) { console.log('color script init err: ' + (e && e.message ? "
+                "e.message : e)); }\n"
+                "  }\n"
+                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+                "             (typeof update === 'function' ? update : null);\n"
+                // Capture cursor handlers so the cursor-target collector
+                // can wire them up.  WE attaches hover/click logic to
+                // the layer's color script for tinted buttons (Game of
+                // Life 3453251764 Pen/Stamp/Color etc.); without
+                // surfacing them here the buttons render correctly but
+                // never respond to clicks.
+                "  var _ent  = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+                "              (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+                "  var _lv   = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+                "              (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+                "  var _up   = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+                "              (typeof cursorUp === 'function' ? cursorUp : null);\n"
+                "  var _dn   = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+                "              (typeof cursorDown === 'function' ? cursorDown : null);\n"
+                "  var _clk  = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+                "              (typeof cursorClick === 'function' ? cursorClick : null);\n"
+                "  var _mv   = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+                "              (typeof cursorMove === 'function' ? cursorMove : null);\n"
+                "  if (!_upd) return null;\n"
+                "  return { update: _upd,\n"
+                "           cursorEnter: _ent, cursorLeave: _lv,\n"
+                "           cursorUp: _up, cursorDown: _dn,\n"
+                "           cursorClick: _clk, cursorMove: _mv };\n"
+                "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
@@ -2302,46 +2445,50 @@ void SceneObject::setupTextScripts() {
         QString initArg = wek::qml_helper::shaderValueInitExpr(svi.initialValue, svi.argShape);
 
         QString wrapped =
-            QString("(function(_tlo) {\n"
-                    "  'use strict';\n"
-                    "  var exports = {};\n"
-                    "  var thisLayer = _tlo;\n"
-                    "  %1\n"  // scriptProperties override
-                    "  %2\n"  // script body
-                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                    "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                    "              (typeof init === 'function' ? init : null);\n"
-                    "  if (_init) {\n"
-                    "    try { _init(%3); }\n"
-                    "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : e)); }\n"
-                    "  }\n"
-                    "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                    "             (typeof update === 'function' ? update : null);\n"
-                    "  var _ent = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-                    "             (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-                    "  var _lv  = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-                    "             (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-                    "  var _up  = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-                    "             (typeof cursorUp === 'function' ? cursorUp : null);\n"
-                    "  var _dn  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-                    "             (typeof cursorDown === 'function' ? cursorDown : null);\n"
-                    "  var _clk = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-                    "             (typeof cursorClick === 'function' ? cursorClick : null);\n"
-                    "  var _mv  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-                    "             (typeof cursorMove === 'function' ? cursorMove : null);\n"
-                    "  return { update: _upd,\n"
-                    "           cursorEnter: _ent, cursorLeave: _lv,\n"
-                    "           cursorUp: _up, cursorDown: _dn,\n"
-                    "           cursorClick: _clk, cursorMove: _mv };\n"
-                    "})(thisLayer)\n")
+            QString(
+                "(function(_tlo) {\n"
+                "  'use strict';\n"
+                "  var exports = {};\n"
+                "  var thisLayer = _tlo;\n"
+                "  %1\n" // scriptProperties override
+                "  %2\n" // script body
+                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                "              (typeof init === 'function' ? init : null);\n"
+                "  if (_init) {\n"
+                "    try { _init(%3); }\n"
+                "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : "
+                "e)); }\n"
+                "  }\n"
+                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+                "             (typeof update === 'function' ? update : null);\n"
+                "  var _ent = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+                "             (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+                "  var _lv  = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+                "             (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+                "  var _up  = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+                "             (typeof cursorUp === 'function' ? cursorUp : null);\n"
+                "  var _dn  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+                "             (typeof cursorDown === 'function' ? cursorDown : null);\n"
+                "  var _clk = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+                "             (typeof cursorClick === 'function' ? cursorClick : null);\n"
+                "  var _mv  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+                "             (typeof cursorMove === 'function' ? cursorMove : null);\n"
+                "  return { update: _upd,\n"
+                "           cursorEnter: _ent, cursorLeave: _lv,\n"
+                "           cursorUp: _up, cursorDown: _dn,\n"
+                "           cursorClick: _clk, cursorMove: _mv };\n"
+                "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc, initArg);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError() || result.isNull() || result.isUndefined()) {
             qCWarning(wekdeScene,
                       "Shader-value script compile error id=%d effect=%d uniform=%s: %s",
-                      svi.id, svi.effectIdx, svi.uniformName.c_str(),
+                      svi.id,
+                      svi.effectIdx,
+                      svi.uniformName.c_str(),
                       result.isError() ? qPrintable(result.toString()) : "null");
             continue;
         }
@@ -2366,7 +2513,8 @@ void SceneObject::setupTextScripts() {
     }
     if (! m_shaderValueScriptStates.empty()) {
         LOG_INFO("Compiled %zu shader-value scripts (of %zu total)",
-                 m_shaderValueScriptStates.size(), shaderValueScripts.size());
+                 m_shaderValueScriptStates.size(),
+                 shaderValueScripts.size());
     }
 
     // Load property scripts (visible, origin, scale, angles, alpha)
@@ -2399,10 +2547,9 @@ void SceneObject::setupTextScripts() {
         // Set thisLayer before compilation so closures can capture it
         if (! psi.layerName.empty()) {
             // Escaped layer-name lookup (was unescaped pre-F18; see JsStringEscape.hpp).
-            m_globalObj.setProperty(
-                "thisLayer",
-                m_jsEngine->evaluate(
-                    wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName))));
+            m_globalObj.setProperty("thisLayer",
+                                    m_jsEngine->evaluate(wek::qml_helper::jsLayerLookupExpr(
+                                        QString::fromStdString(psi.layerName))));
         } else {
             // Unnamed scripted object: our layer proxies are name-keyed, so there
             // is nothing to bind here.  But the IIFE below captures whatever
@@ -2421,125 +2568,127 @@ void SceneObject::setupTextScripts() {
         // set before the error point remain available to update).
         // `_tlo` carries the current global `thisLayer` into a local shadow so
         // the scriptProperties overlay below doesn't contaminate sibling scripts.
-        const QString kPropWrap =
-            QStringLiteral(
-                "(function(_tlo) {\n"
-                "  'use strict';\n"
-                "  var exports = {};\n"
-                "  var thisLayer = _tlo;\n"
-                "  %1\n"
-                "  %2\n"
-                // Alias scriptProperties onto thisLayer (WE convention) — e.g.
-                // solar system's media script reads `thisLayer.debug` to gate
-                // its logging where `debug` is an addCheckbox scriptProperty.
-                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                "             (typeof update === 'function' ? update : null);\n"
-                "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
-                "                 (typeof init === 'function' ? init : null);\n"
-                "  var _init = _rawInit ? function(v) {\n"
-                "    try { return _rawInit(v); }\n"
-                "    catch(e) { console.log('SceneScript init error: ' + e.message + ' line=' + "
-                "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
-                "  } : null;\n"
-                "  var _rawUpd = _upd;\n"
-                "  var _firstFail = true;\n"
-                "  if (_rawUpd) _upd = function(v) {\n"
-                "    try { return _rawUpd(v); }\n"
-                "    catch(e) {\n"
-                // Log the first throw verbosely (for diagnosis); thereafter
-                // silently return the prior value so the wallpaper keeps
-                // running.  Many wallpapers (Game of Life 3453251764) bundle
-                // 100+ scripts where 1-2 throw at 30Hz from author-side
-                // assumption gaps; the 30Hz spam dominated logs without
-                // adding signal.  Use 'update tick-throw' (not 'error') so
-                // the audit classifier doesn't escalate to JS_ERROR for a
-                // wallpaper that's otherwise rendering.
-                "      if (_firstFail) {\n"
-                "        _firstFail = false;\n"
-                // Format avoids audit-classifier hot words ('error',
-                // 'undefined', 'null', 'NaN') so a single-script script-side
-                // bug doesn't escalate the whole wallpaper to JS_ERROR.  The
-                // wallpaper continues rendering — we just skip that one tick
-                // and reuse the prior return value.  Detail kept verbose for
-                // diagnostics: wsId + JS exception type + stack frame.
-                "        var _kind = (e.name||'?').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval');\n"
-                "        var _frame = (e.stack||'').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval').replace(/null/g,'_null_').replace(/NaN/g,'_NaN_');\n"
-                "        console.log('JS tick-skipped: kind=' + _kind + "
-                "' at=' + e.lineNumber + ' wsId=' + "
-                "(typeof __workshopId !== 'undefined' ? __workshopId : '?') + ' frame=' + _frame);\n"
-                "      }\n"
-                "      return v;\n"
-                "    }\n"
-                "  };\n"
-                "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-                "               (typeof cursorClick === 'function' ? cursorClick : null);\n"
-                "  var _enter = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-                "               (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-                "  var _leave = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-                "               (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-                "  var _down  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-                "               (typeof cursorDown === 'function' ? cursorDown : null);\n"
-                "  var _up    = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-                "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
-                "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-                "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
-                "  var _aup   = typeof exports.applyUserProperties === 'function' ? "
-                "exports.applyUserProperties :\n"
-                "               (typeof applyUserProperties === 'function' ? applyUserProperties : "
-                "null);\n"
-                "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
-                "               (typeof destroy === 'function' ? destroy : null);\n"
-                "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen "
-                ":\n"
-                "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
-                "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? "
-                "exports.mediaPlaybackChanged :\n"
-                "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged "
-                ": null);\n"
-                // Two corpus scripts export `propertiesChanged` instead of
-                // `mediaPropertiesChanged` — fall back to that spelling so the
-                // hook still fires.  Production sites should still prefer the
-                // full name; this is purely an author-typo accommodation.
-                "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
-                "exports.mediaPropertiesChanged :\n"
-                "              (typeof mediaPropertiesChanged === 'function' ? "
-                "mediaPropertiesChanged :\n"
-                "              (typeof exports.propertiesChanged === 'function' ? "
-                "exports.propertiesChanged :\n"
-                "              (typeof propertiesChanged === 'function' ? "
-                "propertiesChanged : null)));\n"
-                "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
-                "exports.mediaThumbnailChanged :\n"
-                "              (typeof mediaThumbnailChanged === 'function' ? "
-                "mediaThumbnailChanged : null);\n"
-                "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? "
-                "exports.mediaTimelineChanged :\n"
-                "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged "
-                ": null);\n"
-                "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? "
-                "exports.mediaStatusChanged :\n"
-                "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : "
-                "null);\n"
-                "  var _anim = typeof exports.animationEvent === 'function' ? "
-                "exports.animationEvent :\n"
-                "              (typeof animationEvent === 'function' ? animationEvent : null);\n"
-                "  var _animSafe = _anim ? function(ev, v) {\n"
-                "    try { return _anim(ev, v); }\n"
-                "    catch(e) { console.log('SceneScript animationEvent error: ' + e.message); "
-                "return v; }\n"
-                "  } : null;\n"
-                "  return { update: _upd, init: _init, cursorClick: _click,\n"
-                "           cursorEnter: _enter, cursorLeave: _leave,\n"
-                "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
-                "           applyUserProperties: _aup, destroy: _destr,\n"
-                "           resizeScreen: _resize,\n"
-                "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
-                "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
-                "           mediaStatusChanged: _mstc,\n"
-                "           animationEvent: _animSafe };\n"
-                "})(thisLayer)\n");
+        const QString kPropWrap = QStringLiteral(
+            "(function(_tlo) {\n"
+            "  'use strict';\n"
+            "  var exports = {};\n"
+            "  var thisLayer = _tlo;\n"
+            "  %1\n"
+            "  %2\n"
+            // Alias scriptProperties onto thisLayer (WE convention) — e.g.
+            // solar system's media script reads `thisLayer.debug` to gate
+            // its logging where `debug` is an addCheckbox scriptProperty.
+            "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+            "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+            "             (typeof update === 'function' ? update : null);\n"
+            "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
+            "                 (typeof init === 'function' ? init : null);\n"
+            "  var _init = _rawInit ? function(v) {\n"
+            "    try { return _rawInit(v); }\n"
+            "    catch(e) { console.log('SceneScript init error: ' + e.message + ' line=' + "
+            "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
+            "  } : null;\n"
+            "  var _rawUpd = _upd;\n"
+            "  var _firstFail = true;\n"
+            "  if (_rawUpd) _upd = function(v) {\n"
+            "    try { return _rawUpd(v); }\n"
+            "    catch(e) {\n"
+            // Log the first throw verbosely (for diagnosis); thereafter
+            // silently return the prior value so the wallpaper keeps
+            // running.  Many wallpapers (Game of Life 3453251764) bundle
+            // 100+ scripts where 1-2 throw at 30Hz from author-side
+            // assumption gaps; the 30Hz spam dominated logs without
+            // adding signal.  Use 'update tick-throw' (not 'error') so
+            // the audit classifier doesn't escalate to JS_ERROR for a
+            // wallpaper that's otherwise rendering.
+            "      if (_firstFail) {\n"
+            "        _firstFail = false;\n"
+            // Format avoids audit-classifier hot words ('error',
+            // 'undefined', 'null', 'NaN') so a single-script script-side
+            // bug doesn't escalate the whole wallpaper to JS_ERROR.  The
+            // wallpaper continues rendering — we just skip that one tick
+            // and reuse the prior return value.  Detail kept verbose for
+            // diagnostics: wsId + JS exception type + stack frame.
+            "        var _kind = "
+            "(e.name||'?').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval');\n"
+            "        var _frame = "
+            "(e.stack||'').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval').replace(/"
+            "null/g,'_null_').replace(/NaN/g,'_NaN_');\n"
+            "        console.log('JS tick-skipped: kind=' + _kind + "
+            "' at=' + e.lineNumber + ' wsId=' + "
+            "(typeof __workshopId !== 'undefined' ? __workshopId : '?') + ' frame=' + _frame);\n"
+            "      }\n"
+            "      return v;\n"
+            "    }\n"
+            "  };\n"
+            "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+            "               (typeof cursorClick === 'function' ? cursorClick : null);\n"
+            "  var _enter = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+            "               (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+            "  var _leave = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+            "               (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+            "  var _down  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+            "               (typeof cursorDown === 'function' ? cursorDown : null);\n"
+            "  var _up    = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+            "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
+            "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+            "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
+            "  var _aup   = typeof exports.applyUserProperties === 'function' ? "
+            "exports.applyUserProperties :\n"
+            "               (typeof applyUserProperties === 'function' ? applyUserProperties : "
+            "null);\n"
+            "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
+            "               (typeof destroy === 'function' ? destroy : null);\n"
+            "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen "
+            ":\n"
+            "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
+            "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? "
+            "exports.mediaPlaybackChanged :\n"
+            "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged "
+            ": null);\n"
+            // Two corpus scripts export `propertiesChanged` instead of
+            // `mediaPropertiesChanged` — fall back to that spelling so the
+            // hook still fires.  Production sites should still prefer the
+            // full name; this is purely an author-typo accommodation.
+            "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
+            "exports.mediaPropertiesChanged :\n"
+            "              (typeof mediaPropertiesChanged === 'function' ? "
+            "mediaPropertiesChanged :\n"
+            "              (typeof exports.propertiesChanged === 'function' ? "
+            "exports.propertiesChanged :\n"
+            "              (typeof propertiesChanged === 'function' ? "
+            "propertiesChanged : null)));\n"
+            "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
+            "exports.mediaThumbnailChanged :\n"
+            "              (typeof mediaThumbnailChanged === 'function' ? "
+            "mediaThumbnailChanged : null);\n"
+            "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? "
+            "exports.mediaTimelineChanged :\n"
+            "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged "
+            ": null);\n"
+            "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? "
+            "exports.mediaStatusChanged :\n"
+            "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : "
+            "null);\n"
+            "  var _anim = typeof exports.animationEvent === 'function' ? "
+            "exports.animationEvent :\n"
+            "              (typeof animationEvent === 'function' ? animationEvent : null);\n"
+            "  var _animSafe = _anim ? function(ev, v) {\n"
+            "    try { return _anim(ev, v); }\n"
+            "    catch(e) { console.log('SceneScript animationEvent error: ' + e.message); "
+            "return v; }\n"
+            "  } : null;\n"
+            "  return { update: _upd, init: _init, cursorClick: _click,\n"
+            "           cursorEnter: _enter, cursorLeave: _leave,\n"
+            "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
+            "           applyUserProperties: _aup, destroy: _destr,\n"
+            "           resizeScreen: _resize,\n"
+            "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
+            "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
+            "           mediaStatusChanged: _mstc,\n"
+            "           animationEvent: _animSafe };\n"
+            "})(thisLayer)\n");
 
         auto buildWrapped = [&](const QString& body) {
             return kPropWrap.arg(propsInit, body);
@@ -2554,14 +2703,15 @@ void SceneObject::setupTextScripts() {
         // is never touched, so this cannot regress a valid wallpaper.  Real hit:
         // Gariam parenting system (id=31 in 2992803622) ends with '}}'.
         for (int retry = 0; result.isError() && retry < 3; ++retry) {
-            if (! wek::qml_helper::dropOneTrailingBrace(scriptSrc))
-                break;
+            if (! wek::qml_helper::dropOneTrailingBrace(scriptSrc)) break;
             wrapped = buildWrapped(scriptSrc);
             result  = m_jsEngine->evaluate(wrapped);
             if (! result.isError()) {
                 LOG_INFO("Property script id=%d prop=%s recovered after stripping "
                          "%d trailing brace(s)",
-                         psi.id, psi.property.c_str(), retry + 1);
+                         psi.id,
+                         psi.property.c_str(),
+                         retry + 1);
             }
         }
         if (result.isError()) {
@@ -2884,16 +3034,16 @@ void SceneObject::setupTextScripts() {
             if (! hasCursor || state.layerName.empty()) continue;
 
             m_cursorTargets.push_back({});
-            CursorTarget& tgt    = m_cursorTargets.back();
-            tgt.layerName        = state.layerName;
-            tgt.thisLayerProxy   = state.thisLayerProxy;
-            tgt.thisObjectProxy  = state.thisObjectProxy;
-            tgt.clickFn          = state.cursorClickFn;
-            tgt.enterFn          = state.cursorEnterFn;
-            tgt.leaveFn          = state.cursorLeaveFn;
-            tgt.downFn           = state.cursorDownFn;
-            tgt.upFn             = state.cursorUpFn;
-            tgt.moveFn           = state.cursorMoveFn;
+            CursorTarget& tgt   = m_cursorTargets.back();
+            tgt.layerName       = state.layerName;
+            tgt.thisLayerProxy  = state.thisLayerProxy;
+            tgt.thisObjectProxy = state.thisObjectProxy;
+            tgt.clickFn         = state.cursorClickFn;
+            tgt.enterFn         = state.cursorEnterFn;
+            tgt.leaveFn         = state.cursorLeaveFn;
+            tgt.downFn          = state.cursorDownFn;
+            tgt.upFn            = state.cursorUpFn;
+            tgt.moveFn          = state.cursorMoveFn;
         }
         if (! m_cursorTargets.empty()) {
             LOG_INFO("cursor targets: %zu layers registered", m_cursorTargets.size());
@@ -2947,10 +3097,9 @@ void SceneObject::setupTextScripts() {
         // Set thisLayer to the sound layer proxy for this script's own layer.
         // Shared escaped lookup (was a bespoke '-only escape pre-F18; see JsStringEscape.hpp).
         if (! svsi.layerName.empty()) {
-            m_globalObj.setProperty(
-                "thisLayer",
-                m_jsEngine->evaluate(
-                    wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(svsi.layerName))));
+            m_globalObj.setProperty("thisLayer",
+                                    m_jsEngine->evaluate(wek::qml_helper::jsLayerLookupExpr(
+                                        QString::fromStdString(svsi.layerName))));
         }
 
         // Inject scriptProperties
@@ -3083,25 +3232,26 @@ void SceneObject::setupTextScripts() {
         // the scriptProperties overlay (WE `thisLayer.<propName>` convention —
         // solar media script reads `thisLayer.debug` to gate logging).
         QString wrapped =
-            QString("(function(_tlo) {\n"
-                    "  'use strict';\n"
-                    "  var exports = {};\n"
-                    "  var thisLayer = _tlo;\n"
-                    "  %1\n"
-                    "  %2\n"
-                    "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                    "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                    "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                    "             (typeof update === 'function' ? update : null);\n"
-                    "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                    "              (typeof init === 'function' ? init : null);\n"
-                    "  var _aup  = typeof exports.applyUserProperties === 'function' ? "
-                    "exports.applyUserProperties :\n"
-                    "              (typeof applyUserProperties === 'function' ? applyUserProperties "
-                    ": null);\n"
-                    "  if (!_upd) return null;\n"
-                    "  return { update: _upd, init: _init, applyUserProperties: _aup };\n"
-                    "})(thisLayer)\n")
+            QString(
+                "(function(_tlo) {\n"
+                "  'use strict';\n"
+                "  var exports = {};\n"
+                "  var thisLayer = _tlo;\n"
+                "  %1\n"
+                "  %2\n"
+                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+                "             (typeof update === 'function' ? update : null);\n"
+                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                "              (typeof init === 'function' ? init : null);\n"
+                "  var _aup  = typeof exports.applyUserProperties === 'function' ? "
+                "exports.applyUserProperties :\n"
+                "              (typeof applyUserProperties === 'function' ? applyUserProperties "
+                ": null);\n"
+                "  if (!_upd) return null;\n"
+                "  return { update: _upd, init: _init, applyUserProperties: _aup };\n"
+                "})(thisLayer)\n")
                 .arg(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
@@ -3409,30 +3559,29 @@ void SceneObject::setupEngineGlobals() {
     //     `shared.currentBrush.hue`, etc. — 124 inline scripts share state.
     // Empty objects let `typeof shared.X.Y === 'undefined'` short-circuit
     // correctly; populated camera fields default to common orbit baselines.
-    m_jsEngine->evaluate(
-        "if (!shared.camera) {\n"
-        "  shared.camera = {\n"
-        "    mode: 'orbital',\n"
-        "    targetPosition: new Vec3(0, 0, 0),\n"
-        "    targetAngles:   new Vec2(0, 90),\n"
-        "    targetDistance: 0,\n"
-        "    currentPosition: new Vec3(0, 0, 0),\n"
-        "    currentAngles:   new Vec2(0, 90),\n"
-        "    currentDistance: 0,\n"
-        "    isDragging: false,\n"
-        "    mouseInput: true\n"
-        "  };\n"
-        "}\n"
-        "if (!shared.autoDraw)    shared.autoDraw    = {};\n"
-        "if (!shared.brushEditor) shared.brushEditor = {};\n"
-        "if (!shared.brushes)     shared.brushes     = [];\n"
-        "if (!shared.currentBrush) shared.currentBrush = {\n"
-        "  hue: 0, saturation: 0, value: 0,\n"
-        "  hardness: 1, size: 1, spacing: 1,\n"
-        "  brush_type: 0, draw_mode: 0,\n"
-        "  hi_vel: 0, lo_vel: 0, pat: 0, tex: 0,\n"
-        "  stroke_type: 0, brush: 0, hi: 0\n"
-        "};\n");
+    m_jsEngine->evaluate("if (!shared.camera) {\n"
+                         "  shared.camera = {\n"
+                         "    mode: 'orbital',\n"
+                         "    targetPosition: new Vec3(0, 0, 0),\n"
+                         "    targetAngles:   new Vec2(0, 90),\n"
+                         "    targetDistance: 0,\n"
+                         "    currentPosition: new Vec3(0, 0, 0),\n"
+                         "    currentAngles:   new Vec2(0, 90),\n"
+                         "    currentDistance: 0,\n"
+                         "    isDragging: false,\n"
+                         "    mouseInput: true\n"
+                         "  };\n"
+                         "}\n"
+                         "if (!shared.autoDraw)    shared.autoDraw    = {};\n"
+                         "if (!shared.brushEditor) shared.brushEditor = {};\n"
+                         "if (!shared.brushes)     shared.brushes     = [];\n"
+                         "if (!shared.currentBrush) shared.currentBrush = {\n"
+                         "  hue: 0, saturation: 0, value: 0,\n"
+                         "  hardness: 1, size: 1, spacing: 1,\n"
+                         "  brush_type: 0, draw_mode: 0,\n"
+                         "  hi_vel: 0, lo_vel: 0, pat: 0, tex: 0,\n"
+                         "  stroke_type: 0, brush: 0, hi: 0\n"
+                         "};\n");
 
     // IMaterial proxy — defines _materialValueCache + _makeMaterialProxy.
     // Must come AFTER Vec2/Vec3/Vec4 (the proxy unpacks Vec instances).
@@ -3508,7 +3657,8 @@ void SceneObject::setupEngineGlobals() {
         // 360 * (i / N)` and feed that to angleVector2; treating it as radians
         // scrambles the spectrum-ring layout.
         "var WEVector = {\n"
-        "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return Vec2(Math.cos(r), Math.sin(r)); },\n"
+        "  angleVector2: function(angle) { var r = angle * WEMath.deg2rad; return "
+        "Vec2(Math.cos(r), Math.sin(r)); },\n"
         "  vectorAngle2: function(dir) { return Math.atan2(dir.y, dir.x) * WEMath.rad2deg; }\n"
         "};\n");
 
@@ -3522,17 +3672,16 @@ void SceneObject::setupEngineGlobals() {
     // rebuilds the bundle from the schemecolor user property when set;
     // without richer palette input only `primary` changes — the rest stay
     // at defaults.
-    m_jsEngine->evaluate(
-        "function _buildColorScheme(primary) {\n"
-        "  var cs = Vec3(primary.x, primary.y, primary.z);\n"
-        "  cs.primary      = Vec3(primary.x, primary.y, primary.z);\n"
-        "  cs.secondary    = Vec3(1, 1, 1);\n"
-        "  cs.tertiary     = Vec3(1, 1, 1);\n"
-        "  cs.text         = Vec3(0, 0, 0);\n"
-        "  cs.highContrast = Vec3(0, 0, 0);\n"
-        "  return cs;\n"
-        "}\n"
-        "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));\n");
+    m_jsEngine->evaluate("function _buildColorScheme(primary) {\n"
+                         "  var cs = Vec3(primary.x, primary.y, primary.z);\n"
+                         "  cs.primary      = Vec3(primary.x, primary.y, primary.z);\n"
+                         "  cs.secondary    = Vec3(1, 1, 1);\n"
+                         "  cs.tertiary     = Vec3(1, 1, 1);\n"
+                         "  cs.text         = Vec3(0, 0, 0);\n"
+                         "  cs.highContrast = Vec3(0, 0, 0);\n"
+                         "  return cs;\n"
+                         "}\n"
+                         "engine.colorScheme = _buildColorScheme(Vec3(1, 1, 1));\n");
 
     // Populate engine.userProperties with defaults from project.json first,
     // then apply QML-side overrides (if any). Must run AFTER Vec3 is defined
@@ -3869,9 +4018,9 @@ void SceneObject::buildLayerProxyStates() {
     // (thisScene.getLayerByID) and get a layer's id-index
     // (thisScene.getLayerIndex).  Also provides thisScene.getLayerCount.
     {
-        QString idToName   = "var _layerIdToName = {";
-        QString nameToId   = "var _layerNameToId = {";
-        bool    first      = true;
+        QString idToName = "var _layerIdToName = {";
+        QString nameToId = "var _layerNameToId = {";
+        bool    first    = true;
         for (const auto& [name, id] : m_nodeNameToId) {
             // Full JS-literal escape — these names are interpolated into the
             // single-quoted keys/values of the object literals below; a name
@@ -3885,7 +4034,7 @@ void SceneObject::buildLayerProxyStates() {
             }
             idToName += QString("'%1':'%2'").arg(id).arg(nameEsc);
             nameToId += QString("'%1':%2").arg(nameEsc).arg(id);
-            first     = false;
+            first = false;
         }
         idToName += "};\n";
         nameToId += "};\n";
@@ -3960,28 +4109,29 @@ void SceneObject::buildLayerProxyStates() {
             "  }\n"
             "};\n");
 
-        m_jsEngine->evaluate(idToName + nameToId
-                             + "thisScene.getLayerByID = function(id) {\n"
-                               "  var name = _layerIdToName[id];\n"
-                               "  return name ? thisScene.getLayer(name) : null;\n"
-                               "};\n"
-                               "thisScene.getLayerCount = function() {\n"
-                               "  return Object.keys(_layerInitStates).length;\n"
-                               "};\n"
-                               // Override the earlier stub (which read a
-                               // never-set _index) with a real id lookup.
-                               // Accepts either a name string or a layer
-                               // proxy (Blue Archive 2764537029 visualizer
-                               // calls `getLayerIndex(thisLayer)` with the
-                               // proxy directly).
-                               "thisScene.getLayerIndex = function(arg) {\n"
-                               "  var key = arg;\n"
-                               "  if (arg && typeof arg === 'object' && typeof arg.name === 'string')\n"
-                               "    key = arg.name;\n"
-                               "  if (typeof key !== 'string') return -1;\n"
-                               "  var id = _layerNameToId[key];\n"
-                               "  return (typeof id === 'number') ? id : -1;\n"
-                               "};\n");
+        m_jsEngine->evaluate(
+            idToName + nameToId +
+            "thisScene.getLayerByID = function(id) {\n"
+            "  var name = _layerIdToName[id];\n"
+            "  return name ? thisScene.getLayer(name) : null;\n"
+            "};\n"
+            "thisScene.getLayerCount = function() {\n"
+            "  return Object.keys(_layerInitStates).length;\n"
+            "};\n"
+            // Override the earlier stub (which read a
+            // never-set _index) with a real id lookup.
+            // Accepts either a name string or a layer
+            // proxy (Blue Archive 2764537029 visualizer
+            // calls `getLayerIndex(thisLayer)` with the
+            // proxy directly).
+            "thisScene.getLayerIndex = function(arg) {\n"
+            "  var key = arg;\n"
+            "  if (arg && typeof arg === 'object' && typeof arg.name === 'string')\n"
+            "    key = arg.name;\n"
+            "  if (typeof key !== 'string') return -1;\n"
+            "  var id = _layerNameToId[key];\n"
+            "  return (typeof id === 'number') ? id : -1;\n"
+            "};\n");
     }
 }
 
@@ -4228,37 +4378,36 @@ void SceneObject::buildCursorTargets() {
     // first) and returns the first visible AABB-containing proxy, or
     // null.  Parallax / rotation aren't accounted for — it's a coarse
     // quick-pick, not a full render-state hit test.
-    m_jsEngine->evaluate(
-        "engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
-        "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
-        "Object.defineProperty(engine, 'cursorLeftDown', {\n"
-        "  get: function() { return input.cursorLeftDown; },\n"
-        "  enumerable: true\n"
-        "});\n"
-        "engine.cursorHitTest = function(x, y) {\n"
-        "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
-        "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
-        "  if (typeof _layerList === 'undefined') return null;\n"
-        "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
-        "    var L = _layerList[i];\n"
-        "    if (!L || !L.visible) continue;\n"
-        "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
-        "    var o = L.origin, s = L.scale;\n"
-        "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
-        "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
-        "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
-        "  }\n"
-        "  return null;\n"
-        "};\n");
+    m_jsEngine->evaluate("engine.cursorWorldPosition  = input.cursorWorldPosition;\n"
+                         "engine.cursorScreenPosition = input.cursorScreenPosition;\n"
+                         "Object.defineProperty(engine, 'cursorLeftDown', {\n"
+                         "  get: function() { return input.cursorLeftDown; },\n"
+                         "  enumerable: true\n"
+                         "});\n"
+                         "engine.cursorHitTest = function(x, y) {\n"
+                         "  if (typeof x !== 'number') x = engine.cursorWorldPosition.x;\n"
+                         "  if (typeof y !== 'number') y = engine.cursorWorldPosition.y;\n"
+                         "  if (typeof _layerList === 'undefined') return null;\n"
+                         "  for (var i = _layerList.length - 1; i >= 0; i--) {\n"
+                         "    var L = _layerList[i];\n"
+                         "    if (!L || !L.visible) continue;\n"
+                         "    var sz = L.size; if (!sz || !sz.x || !sz.y) continue;\n"
+                         "    var o = L.origin, s = L.scale;\n"
+                         "    var hw = sz.x * 0.5 * (s ? s.x : 1);\n"
+                         "    var hh = sz.y * 0.5 * (s ? s.y : 1);\n"
+                         "    if (Math.abs(x - o.x) <= hw && Math.abs(y - o.y) <= hh) return L;\n"
+                         "  }\n"
+                         "  return null;\n"
+                         "};\n");
 }
 
 void SceneObject::refreshEngineTickGlobals(qint64& lastTickMs, double frametimeFallback,
                                            int64_t frametimeClampMs) {
     qint64 nowMs       = m_runtimeTimer.elapsed();
     double runtimeSecs = nowMs / 1000.0;
-    double frametime   = wallpaper::ComputeTickFrametime(nowMs, lastTickMs, frametimeFallback,
-                                                         frametimeClampMs);
-    lastTickMs         = nowMs;
+    double frametime =
+        wallpaper::ComputeTickFrametime(nowMs, lastTickMs, frametimeFallback, frametimeClampMs);
+    lastTickMs          = nowMs;
     QJSValue& engineObj = m_engineObj; // cached handle — no hash lookup per tick
     engineObj.setProperty("runtime", runtimeSecs);
     engineObj.setProperty("frametime", frametime);
@@ -4577,13 +4726,14 @@ void SceneObject::evaluateColorScripts() {
             &wasInterrupted);
         colorInterrupted = colorInterrupted || wasInterrupted;
         if (result.isError()) {
-            int64_t tag = ((int64_t)state.id << 32) ^
-                          ((int64_t)state.effectIdx << 24) ^
-                          (int64_t)std::hash<std::string>{}(state.uniformName);
+            int64_t tag = ((int64_t)state.id << 32) ^ ((int64_t)state.effectIdx << 24) ^
+                          (int64_t)std::hash<std::string> {}(state.uniformName);
             if (m_scriptDiag.svErrored.find(tag) == m_scriptDiag.svErrored.end()) {
                 m_scriptDiag.svErrored.insert(tag);
                 LOG_INFO("sv-script error id=%d effect=%d uniform=%s: %s",
-                         state.id, state.effectIdx, state.uniformName.c_str(),
+                         state.id,
+                         state.effectIdx,
+                         state.uniformName.c_str(),
                          qPrintable(result.toString()));
             }
             continue;
@@ -5034,8 +5184,8 @@ void SceneObject::evaluatePropertyScripts() {
         // the diagnostic is in evaluatePropertyScripts and the helper's
         // local is out of scope (extract chain commit 56afc1f).
         const double runtimeSecs = m_runtimeTimer.elapsed() / 1000.0;
-        QJSValue shared = m_jsEngine->globalObject().property("shared");
-        QJSValue keysFn =
+        QJSValue     shared      = m_jsEngine->globalObject().property("shared");
+        QJSValue     keysFn =
             m_jsEngine->evaluate("(function(o){var k=[]; for(var n in o) k.push(n); return k;})");
         QJSValue keys     = keysFn.call({ shared });
         int      keyCount = keys.property("length").toInt();
@@ -5088,8 +5238,8 @@ void SceneObject::evaluatePropertyScripts() {
     constexpr int      DIRTY_STRIDE = 17;
     constexpr uint32_t F_ORIGIN = 1, F_SCALE = 2, F_ANGLES = 4, F_VISIBLE = 8, F_ALPHA = 16,
                        F_TEXT = 32, F_PSIZE = 64, F_CMDS = 128, F_EFX = 256;
-    int dirtyLayerCount = 0;
-    int dirtyLayerMiss  = 0;
+    int                dirtyLayerCount = 0;
+    int                dirtyLayerMiss  = 0;
     if (m_collectDirtyLayersFn.isCallable()) {
         bool     wasInterrupted = false;
         QJSValue updates        = callJsGuarded(
@@ -5427,8 +5577,8 @@ void SceneObject::evaluatePropertyScripts() {
         bool     svInterrupted = false;
         QJSValue result        = callJsGuarded(
             [&] {
-                return svState.updateFn.callWithInstance(
-                    svState.thisLayerProxy, { QJSValue((double)baseVolume) });
+                return svState.updateFn.callWithInstance(svState.thisLayerProxy,
+                                                         { QJSValue((double)baseVolume) });
             },
             &svInterrupted);
         tickInterrupted = tickInterrupted || svInterrupted;
@@ -5581,7 +5731,7 @@ void SceneObject::evaluatePropertyScripts() {
                 // engine's PRNG is broken (bodies can't get random init).
                 if (! m_scriptDiag.mathRandomProbed) {
                     m_scriptDiag.mathRandomProbed = true;
-                    QJSValue r = m_jsEngine->evaluate(
+                    QJSValue r                    = m_jsEngine->evaluate(
                         "Math.random().toFixed(6) + ',' + Math.random().toFixed(6) +"
                         "',' + Math.random().toFixed(6)");
                     LOG_INFO("Math.random probe: %s", qPrintable(r.toString()));
@@ -5635,6 +5785,19 @@ void SceneObject::cleanupTextScripts() {
     m_lsGlobal = {};
     m_lsScreen = {};
     m_lsSceneId.clear();
+    // Drop the per-key change tracking with the scopes it describes; a
+    // pending key from the old wallpaper must not be written into the new
+    // one's file (and a failed write is not the next scene's problem).
+    m_lsGlobalPending.clear();
+    m_lsScreenPending.clear();
+    m_lsGlobalRemoved.clear();
+    m_lsScreenRemoved.clear();
+    m_lsGlobalCleared          = false;
+    m_lsScreenCleared          = false;
+    m_lsGlobalDirty            = false;
+    m_lsScreenDirty            = false;
+    m_lsGlobalWriteErrorLogged = false;
+    m_lsScreenWriteErrorLogged = false;
     // Reset quota-warning latch + byte-count cache so a reloaded wallpaper
     // re-arms the one-shot LOG_INFO and recomputes lazily on first lsSet.
     m_lsQuotaWarned = false;
@@ -5867,11 +6030,55 @@ void SceneObject::seedTextStyleScriptForTesting(int32_t id, const std::string& h
                  QString::fromStdString(fontName));
 }
 
+void SceneObject::seedMediaHandlerForTesting(int32_t id, const std::string& property,
+                                             const std::string& event,
+                                             const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+
+    PropertyScriptState state;
+    state.id       = id;
+    state.property = property;
+    QJSValue fn    = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    if (event == "mediaPlaybackChanged")
+        state.mediaPlaybackChangedFn = fn;
+    else if (event == "mediaPropertiesChanged")
+        state.mediaPropertiesChangedFn = fn;
+    else if (event == "mediaThumbnailChanged")
+        state.mediaThumbnailChangedFn = fn;
+    else if (event == "mediaTimelineChanged")
+        state.mediaTimelineChangedFn = fn;
+    else if (event == "mediaStatusChanged")
+        state.mediaStatusChangedFn = fn;
+    else
+        LOG_ERROR("seedMediaHandlerForTesting: unknown event '%s'", event.c_str());
+    m_propertyScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::seedExpiredCursorLeaveForTesting(const std::string& layerName,
+                                                   const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+
+    CursorTarget target;
+    target.layerName = layerName;
+    target.leaveFn   = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    m_cursorTargets.push_back(std::move(target));
+    m_hoveredLayers.insert(layerName);
+    // Deadline in the past so the next drain treats the grace window as over.
+    m_pendingLeaves[layerName] = { 0 };
+}
+
+void SceneObject::flushPendingCursorLeavesForTesting() { flushPendingLeaves(); }
+
 void SceneObject::reinstallSceneBridgeForTesting() { installSceneBridge(); }
 
 void SceneObject::evaluatePropertyScriptsForTesting() { evaluatePropertyScripts(); }
 void SceneObject::evaluateTextScriptsForTesting() { evaluateTextScripts(); }
 void SceneObject::evaluateColorScriptsForTesting() { evaluateColorScripts(); }
+
+void SceneObject::flushLocalStorageForTesting() { flushLocalStorage(); }
+bool SceneObject::localStorageDirtyForTesting(bool global) const {
+    return global ? m_lsGlobalDirty : m_lsScreenDirty;
+}
 
 // ── SceneScriptBridge forwarders ────────────────────────────────────────────
 // Defined here rather than in the header because each one needs the complete

@@ -9,6 +9,7 @@
 #include "WPVolumeAnimation.h"
 #include "Swapchain/ExSwapchain.hpp"
 #include "Scene/include/Scene/Scene.h"
+#include "Scene/include/Scene/SceneLoadFailure.hpp"
 
 namespace wallpaper::audio
 {
@@ -24,6 +25,8 @@ using FirstFrameCallback = std::function<void()>;
 // HW and SW decoders.  The string is a multi-line human-readable summary
 // suitable for QML display.
 using VideoDecodeFailedCallback = std::function<void(const std::string& summary)>;
+// SceneLoadFailedCallback + the reason strings live in Scene/SceneLoadFailure.hpp,
+// which the three bail-out sites in loadScene() also include.
 
 struct TextScriptInfo {
     int32_t     id;
@@ -117,6 +120,7 @@ constexpr std::string_view PROPERTY_MUTED                        = "muted";
 constexpr std::string_view PROPERTY_CACHE_PATH                   = "cache_path";
 constexpr std::string_view PROPERTY_FIRST_FRAME_CALLBACK         = "first_frame_callback";
 constexpr std::string_view PROPERTY_VIDEO_DECODE_FAILED_CALLBACK = "video_decode_failed_callback";
+constexpr std::string_view PROPERTY_SCENE_LOAD_FAILED_CALLBACK   = "scene_load_failed_callback";
 constexpr std::string_view PROPERTY_USER_PROPS                   = "user_props";
 constexpr std::string_view PROPERTY_HDR_OUTPUT                   = "hdr_output";
 constexpr std::string_view PROPERTY_HDR_CONTENT                  = "hdr_content";
@@ -126,13 +130,13 @@ constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE      = "postprocessi
 // Swapchain present-mode policy (Auto / Fifo / FifoRelaxed / Mailbox / Immediate).
 // Encoded as int matching the PresentModePolicy enum in Vulkan/Swapchain.hpp.
 // Default 0 = Auto, preserving today's FIFO behaviour for matched Fps/refresh.
-constexpr std::string_view PROPERTY_PRESENT_MODE                 = "present_mode";
+constexpr std::string_view PROPERTY_PRESENT_MODE = "present_mode";
 // Display refresh rate in millihertz (59.94Hz -> 59940), sourced from
 // Window.screen.refreshRate.  Feeds the frame timer's snap-to-refresh grid
 // and, on surface builds (standalone viewer), the swapchain Auto policy.
 // 0 = unknown (plasmoid not mapped yet) — the timer falls back to the exact
 // fps period.
-constexpr std::string_view PROPERTY_OUTPUT_REFRESH_MHZ           = "output_refresh_mhz";
+constexpr std::string_view PROPERTY_OUTPUT_REFRESH_MHZ = "output_refresh_mhz";
 
 #include "Core/NoCopyMove.hpp"
 class MainHandler;
@@ -219,16 +223,12 @@ public:
     void updateEffectVisible(int32_t nodeId, int32_t effectIndex, bool visible);
     // IMaterial.setValue from SceneScript — enqueues for the render thread,
     // applied to mesh.Material()->customShader.constValues with dirty flag.
-    void updateMaterialValue(int32_t            nodeId,
-                             std::string        name,
-                             std::vector<float> floats);
+    void updateMaterialValue(int32_t nodeId, std::string name, std::vector<float> floats);
 
     // Per-effect material write (effect chain index, not main material).
     // Render thread resolves nodeId → SceneImageEffectLayer → m_effects[effectIdx]
     // → first effect-node material; writes constValues + sets constValuesDirty.
-    void updateEffectMaterialValue(int32_t            nodeId,
-                                   int32_t            effectIdx,
-                                   std::string        name,
+    void updateEffectMaterialValue(int32_t nodeId, int32_t effectIdx, std::string name,
                                    std::vector<float> floats);
 
     // SceneScript thisLayer.getTextureAnimation().setFrame(N) bridge.
@@ -245,9 +245,7 @@ public:
     // Each string is "" to leave that field unchanged.  Font name is resolved to
     // bytes on the render thread (VFS access lives there).  Forces a re-rasterize
     // of the layer's text texture with the current text when any field changes.
-    void updateTextStyle(int32_t     nodeId,
-                         std::string halign,
-                         std::string valign,
+    void updateTextStyle(int32_t nodeId, std::string halign, std::string valign,
                          std::string fontName);
 
     // SceneScript thisLayer.getTransformMatrix() bridge.  Returns the layer's
@@ -295,7 +293,7 @@ public:
     // Real render-thread FPS measured wall-clock by FpsCounter (rolling 500ms
     // window).  0 until the first frame has been drawn.  This is what
     // `engine.fps` exposes to SceneScripts.
-    double   getFps() const;
+    double getFps() const;
     // Monotonic frame counter incremented at the end of every successful
     // drawFrame.  Lets the main thread tell whether a render frame has elapsed
     // since the last script tick, so text scripts using `Date.now()` math can
