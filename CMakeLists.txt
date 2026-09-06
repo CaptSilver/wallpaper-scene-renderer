@@ -139,8 +139,11 @@ if(BUILD_QML)
     PRIVATE
         wpTimer
     )
-    target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper third_party
+    target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper
         PRIVATE src/Audio/include)
+    # Vendored headers go in as -isystem so upstream's warnings are not reported
+    # against the bridge, which builds with -Wall -Wextra.
+    target_include_directories(${PROJECT_NAME}-qml SYSTEM PUBLIC third_party)
 
     # The QML bridge (SceneBackend.cpp ~2200 lines) is dlopen'd into plasmashell
     # via the plugin .so but previously carried NO warning flags.  Apply the

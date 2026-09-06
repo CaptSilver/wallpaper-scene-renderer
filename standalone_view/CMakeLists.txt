@@ -35,7 +35,7 @@ if(SCENE_VIEWER_ASAN)
     add_link_options($<$<CONFIG:Debug>:-fsanitize=address>)
 endif()
 
-include_directories(../third_party)
+include_directories(SYSTEM ../third_party)
 add_subdirectory(.. scenebackend)
 
 pkg_check_modules(GLFW REQUIRED glfw3)
