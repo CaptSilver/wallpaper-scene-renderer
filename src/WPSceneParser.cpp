@@ -2242,6 +2242,224 @@ AttachmentProxyWorld attachmentProxyWorld(const ParseContext& context, i32 paren
     return { pworld * offset, offset };
 }
 
+// The parts of an effect chain that genuinely differ between an image layer
+// and a text layer.  Everything else about assembling one is identical, so
+// both go through assembleEffects below.
+struct EffectChainOpts {
+    i32 layer_id { 0 };
+    // Layer size the intermediate FBOs are derived from.
+    i32 base_width { 0 };
+    i32 base_height { 0 };
+    // Fullscreen layers bind their FBOs to the screen and let the render
+    // graph size them, instead of taking the layer's own dimensions.
+    bool                 fullscreen { false };
+    std::array<float, 2> parallaxDepth { 0.0f, 0.0f };
+    // Puppet rig to bind onto effect materials that ask for one (images only;
+    // text layers have no puppet).
+    const WPMdl*                                mdl { nullptr };
+    std::vector<WPPuppetLayer::AnimationLayer>* puppet_layers { nullptr };
+};
+
+// Build every visible effect of a layer into `layer`: the intermediate FBO
+// render targets, the copy/swap commands between them, one node per material
+// pass, and the user-property uniform bindings.  Finally publishes the effect
+// names under the layer name, which is what SceneScript's getEffect() /
+// getEffectCount() resolve against.
+//
+// An effect whose material fails to load is dropped whole rather than added
+// half-built: its remaining passes would sample render targets nothing writes.
+void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEffect>& effects,
+                     SceneImageEffectLayer& layer, SceneNode* visibility_owner,
+                     const std::string& layer_name, const ShaderValueMap& baseConstSvs,
+                     const EffectChainOpts& opts) {
+    auto& vfs   = *context.vfs;
+    auto& scene = *context.scene;
+
+    int32_t i_eff = -1;
+    for (const auto& wpeffobj : effects) {
+        i_eff++;
+        if (! wpeffobj.visible) {
+            i_eff--;
+            continue;
+        }
+        auto imgEffect = std::make_shared<SceneImageEffect>();
+
+        // this will be replace when resolve, use here to get rt info
+        const std::string& inRT = layer.FirstTarget();
+
+        // fbo name map and effect command
+        std::string effaddr = getAddr(&layer);
+
+        std::unordered_map<std::string, std::string> fboMap;
+        {
+            fboMap["previous"] = inRT;
+            for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
+                const auto& wpfbo  = wpeffobj.fbos.at(i);
+                std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
+                if (opts.fullscreen) {
+                    scene.renderTargets[rtname]      = { 2, 2, true };
+                    scene.renderTargets[rtname].bind = {
+                        .enable = true,
+                        .screen = true,
+                        .scale  = 1.0 / wpfbo.scale,
+                    };
+                } else {
+                    // i+2 for not override object's rt
+                    scene.renderTargets[rtname] = {
+                        .width      = (uint16_t)(opts.base_width / (float)wpfbo.scale),
+                        .height     = (uint16_t)(opts.base_height / (float)wpfbo.scale),
+                        .allowReuse = true
+                    };
+                }
+                fboMap[wpfbo.name] = rtname;
+            }
+        }
+        // load! effect commands
+        {
+            for (const auto& el : wpeffobj.commands) {
+                SceneImageEffect::CmdType cmdType;
+                if (el.command == "copy") {
+                    cmdType = SceneImageEffect::CmdType::Copy;
+                } else if (el.command == "swap") {
+                    cmdType = SceneImageEffect::CmdType::Swap;
+                } else {
+                    LOG_ERROR("Unknown effect command: %s", el.command.c_str());
+                    continue;
+                }
+                if (fboMap.count(el.target) + fboMap.count(el.source) < 2) {
+                    LOG_ERROR("Unknown effect command dst or src: %s %s",
+                              el.target.c_str(),
+                              el.source.c_str());
+                    continue;
+                }
+                imgEffect->commands.push_back({ .cmd      = cmdType,
+                                                .dst      = fboMap[el.target],
+                                                .src      = fboMap[el.source],
+                                                .afterpos = el.afterpos });
+            }
+        }
+
+        bool eff_mat_ok { true };
+
+        for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
+            wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
+            std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
+            if (wpeffobj.passes.size() > i_mat) {
+                const auto& wppass = wpeffobj.passes.at(i_mat);
+                wpmat.MergePass(wppass);
+                // Set rendertarget, in and out
+                for (const auto& el : wppass.bind) {
+                    if (fboMap.count(el.name) == 0) {
+                        LOG_ERROR("fbo %s not found", el.name.c_str());
+                        continue;
+                    }
+                    if (wpmat.textures.size() <= (usize)el.index)
+                        wpmat.textures.resize((usize)el.index + 1);
+                    wpmat.textures[(usize)el.index] = fboMap[el.name];
+                }
+                if (! wppass.target.empty()) {
+                    if (fboMap.count(wppass.target) == 0) {
+                        LOG_ERROR("fbo %s not found", wppass.target.c_str());
+                    } else {
+                        matOutRT = fboMap.at(wppass.target);
+                    }
+                }
+            }
+            if (wpmat.textures.size() == 0) wpmat.textures.resize(1);
+            if (wpmat.textures.at(0).empty()) {
+                wpmat.textures[0] = inRT;
+            }
+            auto         spEffNode = std::make_shared<SceneNode>();
+            WPShaderInfo wpEffShaderInfo;
+            wpEffShaderInfo.baseConstSvs = baseConstSvs;
+            // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
+            // don't re-apply g_Color4 (would double-count alpha and re-tint)
+            if (wpmat.combos.count("BLENDMODE") != 0) {
+                wpEffShaderInfo.baseConstSvs["g_Color4"] =
+                    std::array<float, 4> { 1.0f, 1.0f, 1.0f, 1.0f };
+            }
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
+                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
+            SceneMaterial     material;
+            WPShaderValueData svData;
+            if (! LoadMaterial(vfs,
+                               wpmat,
+                               context.scene.get(),
+                               spEffNode.get(),
+                               &material,
+                               &svData,
+                               &wpEffShaderInfo)) {
+                eff_mat_ok = false;
+                break;
+            }
+
+            // load glname from alias and load to constvalue
+            LoadConstvalue(material, wpmat, wpEffShaderInfo);
+            auto spMesh = std::make_shared<SceneMesh>();
+            {
+                svData.parallaxDepth = opts.parallaxDepth;
+                if (opts.mdl && opts.puppet_layers && wpmat.use_puppet) {
+                    svData.puppet_layer = WPPuppetLayer(opts.mdl->puppet);
+                    svData.puppet_layer.prepared(*opts.puppet_layers);
+                }
+            }
+            spMesh->AddMaterial(std::move(material));
+            spEffNode->AddMesh(spMesh);
+
+            // Register user property bindings for effect material uniforms
+            if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
+                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                    std::string glname;
+                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
+                        glname = wpEffShaderInfo.alias.at(shaderConstName);
+                    } else {
+                        for (const auto& el : wpEffShaderInfo.alias) {
+                            if (el.second.substr(2) == shaderConstName) {
+                                glname = el.second;
+                                break;
+                            }
+                        }
+                    }
+                    if (glname.empty()) glname = shaderConstName;
+                    context.scene->userPropUniformBindings[propName].push_back(
+                        { spMesh->Material(), glname });
+                    LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
+                             propName.c_str(),
+                             glname.c_str(),
+                             opts.layer_id);
+                }
+            }
+
+            context.shader_updater->SetNodeData(spEffNode.get(), svData);
+            spEffNode->SetVisibilityOwner(visibility_owner);
+            imgEffect->nodes.push_back({ matOutRT, spEffNode });
+        }
+
+        if (eff_mat_ok) {
+            imgEffect->name = wpeffobj.name;
+            layer.AddEffect(imgEffect);
+            LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
+                     i_eff,
+                     wpeffobj.name.c_str(),
+                     imgEffect->nodes.size());
+        } else {
+            LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
+        }
+    }
+    // Store effect names per layer for SceneScript getEffect()
+    {
+        std::vector<std::string> effNames;
+        for (size_t i = 0; i < layer.EffectCount(); i++) {
+            effNames.push_back(layer.GetEffect(i)->name);
+        }
+        if (! effNames.empty()) {
+            context.scene->layerEffectNames[layer_name] = std::move(effNames);
+        }
+    }
+}
+
 void assembleEffectChain(ParseContext&                     context,
                          wpscene::WPImageObject&           wpimgobj,
                          const std::shared_ptr<SceneNode>& spImgNode,
@@ -2252,7 +2470,6 @@ void assembleEffectChain(ParseContext&                     context,
                          bool                              isOffscreen,
                          bool                              effectOffscreen,
                          bool                              isCompose) {
-    auto& vfs   = *context.vfs;
     auto& scene = *context.scene;
     // currently use addr for unique
     std::string nodeAddr = getAddr(spImgNode.get());
@@ -2398,190 +2615,19 @@ void assembleEffectChain(ParseContext&                     context,
         }
     }
 
-    int32_t i_eff = -1;
-    for (const auto& wpeffobj : wpimgobj.effects) {
-        i_eff++;
-        if (! wpeffobj.visible) {
-            i_eff--;
-            continue;
-        }
-        std::shared_ptr<SceneImageEffect> imgEffect = std::make_shared<SceneImageEffect>();
-
-        // this will be replace when resolve, use here to get rt info
-        const std::string inRT { effect_ppong_a };
-
-        // fbo name map and effect command
-        std::string effaddr = getAddr(imgEffectLayer.get());
-
-        std::unordered_map<std::string, std::string> fboMap;
-        {
-            fboMap["previous"] = inRT;
-            for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
-                const auto& wpfbo  = wpeffobj.fbos.at(i);
-                std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
-                if (wpimgobj.fullscreen) {
-                    scene.renderTargets[rtname]      = { 2, 2, true };
-                    scene.renderTargets[rtname].bind = {
-                        .enable = true,
-                        .screen = true,
-                        .scale  = 1.0 / wpfbo.scale,
-                    };
-                } else {
-                    // i+2 for not override object's rt
-                    scene.renderTargets[rtname] = {
-                        .width      = (uint16_t)(wpimgobj.size[0] / (float)wpfbo.scale),
-                        .height     = (uint16_t)(wpimgobj.size[1] / (float)wpfbo.scale),
-                        .allowReuse = true
-                    };
-                }
-                fboMap[wpfbo.name] = rtname;
-            }
-        }
-        // load! effect commands
-        {
-            for (const auto& el : wpeffobj.commands) {
-                SceneImageEffect::CmdType cmdType;
-                if (el.command == "copy") {
-                    cmdType = SceneImageEffect::CmdType::Copy;
-                } else if (el.command == "swap") {
-                    cmdType = SceneImageEffect::CmdType::Swap;
-                } else {
-                    LOG_ERROR("Unknown effect command: %s", el.command.c_str());
-                    continue;
-                }
-                if (fboMap.count(el.target) + fboMap.count(el.source) < 2) {
-                    LOG_ERROR("Unknown effect command dst or src: %s %s",
-                              el.target.c_str(),
-                              el.source.c_str());
-                    continue;
-                }
-                imgEffect->commands.push_back({ .cmd      = cmdType,
-                                                .dst      = fboMap[el.target],
-                                                .src      = fboMap[el.source],
-                                                .afterpos = el.afterpos });
-            }
-        }
-
-        bool eff_mat_ok { true };
-
-        for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
-            wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
-            std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
-            if (wpeffobj.passes.size() > i_mat) {
-                const auto& wppass = wpeffobj.passes.at(i_mat);
-                wpmat.MergePass(wppass);
-                // Set rendertarget, in and out
-                for (const auto& el : wppass.bind) {
-                    if (fboMap.count(el.name) == 0) {
-                        LOG_ERROR("fbo %s not found", el.name.c_str());
-                        continue;
-                    }
-                    if (wpmat.textures.size() <= (usize)el.index)
-                        wpmat.textures.resize((usize)el.index + 1);
-                    wpmat.textures[(usize)el.index] = fboMap[el.name];
-                }
-                if (! wppass.target.empty()) {
-                    if (fboMap.count(wppass.target) == 0) {
-                        LOG_ERROR("fbo %s not found", wppass.target.c_str());
-                    } else {
-                        matOutRT = fboMap.at(wppass.target);
-                    }
-                }
-            }
-            if (wpmat.textures.size() == 0) wpmat.textures.resize(1);
-            if (wpmat.textures.at(0).empty()) {
-                wpmat.textures[0] = inRT;
-            }
-            auto         spEffNode  = std::make_shared<SceneNode>();
-            std::string  effmataddr = getAddr(spEffNode.get());
-            WPShaderInfo wpEffShaderInfo;
-            wpEffShaderInfo.baseConstSvs = baseConstSvs;
-            // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
-            // don't re-apply g_Color4 (would double-count alpha and re-tint)
-            if (wpmat.combos.count("BLENDMODE") != 0) {
-                wpEffShaderInfo.baseConstSvs["g_Color4"] =
-                    std::array<float, 4> { 1.0f, 1.0f, 1.0f, 1.0f };
-            }
-            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
-                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
-                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-            SceneMaterial     material;
-            WPShaderValueData svData;
-            if (! LoadMaterial(vfs,
-                               wpmat,
-                               context.scene.get(),
-                               spEffNode.get(),
-                               &material,
-                               &svData,
-                               &wpEffShaderInfo)) {
-                eff_mat_ok = false;
-                break;
-            }
-
-            // load glname from alias and load to constvalue
-            LoadConstvalue(material, wpmat, wpEffShaderInfo);
-            auto spMesh = std::make_shared<SceneMesh>();
-            {
-                svData.parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] };
-                if (puppet && wpmat.use_puppet) {
-                    svData.puppet_layer = WPPuppetLayer(puppet->puppet);
-                    svData.puppet_layer.prepared(wpimgobj.puppet_layers);
-                }
-            }
-            spMesh->AddMaterial(std::move(material));
-            spEffNode->AddMesh(spMesh);
-
-            // Register user property bindings for effect material uniforms
-            if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
-                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
-                    std::string glname;
-                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
-                        glname = wpEffShaderInfo.alias.at(shaderConstName);
-                    } else {
-                        for (const auto& el : wpEffShaderInfo.alias) {
-                            if (el.second.substr(2) == shaderConstName) {
-                                glname = el.second;
-                                break;
-                            }
-                        }
-                    }
-                    if (glname.empty()) glname = shaderConstName;
-                    context.scene->userPropUniformBindings[propName].push_back(
-                        { spMesh->Material(), glname });
-                    LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
-                             propName.c_str(),
-                             glname.c_str(),
-                             wpimgobj.id);
-                }
-            }
-
-            context.shader_updater->SetNodeData(spEffNode.get(), svData);
-            spEffNode->SetVisibilityOwner(spImgNode.get());
-            imgEffect->nodes.push_back({ matOutRT, spEffNode });
-        }
-
-        if (eff_mat_ok) {
-            imgEffect->name = wpeffobj.name;
-            imgEffectLayer->AddEffect(imgEffect);
-            LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
-                     i_eff,
-                     wpeffobj.name.c_str(),
-                     imgEffect->nodes.size());
-        } else {
-            LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
-        }
-    }
-    // Store effect names per layer for SceneScript getEffect()
-    {
-        std::vector<std::string> effNames;
-        for (size_t i = 0; i < imgEffectLayer->EffectCount(); i++) {
-            effNames.push_back(imgEffectLayer->GetEffect(i)->name);
-        }
-        if (! effNames.empty()) {
-            context.scene->layerEffectNames[wpimgobj.name] = std::move(effNames);
-        }
-    }
+    assembleEffects(context,
+                    wpimgobj.effects,
+                    *imgEffectLayer,
+                    spImgNode.get(),
+                    wpimgobj.name,
+                    baseConstSvs,
+                    { .layer_id      = wpimgobj.id,
+                      .base_width    = (i32)wpimgobj.size[0],
+                      .base_height   = (i32)wpimgobj.size[1],
+                      .fullscreen    = wpimgobj.fullscreen,
+                      .parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] },
+                      .mdl           = puppet,
+                      .puppet_layers = &wpimgobj.puppet_layers });
     LOG_INFO("  ParseImageObj id=%d: %zu effects loaded, isCompose=%d, isOffscreen=%d",
              wpimgobj.id,
              imgEffectLayer->EffectCount(),
@@ -3700,8 +3746,8 @@ std::shared_ptr<SceneMesh> buildTextMesh(const wpscene::WPTextObject& textObj,
 
 // Assemble the per-text-layer effect chain when textObj.effects is non-empty:
 // create a per-layer camera + pingpong RTs, build the SceneImageEffectLayer,
-// load each visible effect's materials/passes, and register user-property
-// uniform bindings.  Mirrors the image-side assembleEffectChain.
+// then hand the effects themselves to the shared assembleEffects.  Only the
+// layer setup around it differs from the image side.
 void assembleTextEffectChain(ParseContext&                           context,
                               const wpscene::WPTextObject&           textObj,
                               const std::shared_ptr<SceneNode>&      spNode,
@@ -3709,7 +3755,6 @@ void assembleTextEffectChain(ParseContext&                           context,
                               i32                                    texH,
                               const WPShaderInfo&                    shaderInfo,
                               BlendMode                              imgBlendMode) {
-    auto& vfs     = *context.vfs;
     auto& scene   = *context.scene;
     std::string nodeAddr = getAddr(spNode.get());
 
@@ -3790,103 +3835,13 @@ void assembleTextEffectChain(ParseContext&                           context,
     };
     scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
 
-    ShaderValueMap baseConstSvs = shaderInfo.baseConstSvs;
-
-    int32_t i_eff = -1;
-    for (const auto& wpeffobj : textObj.effects) {
-        i_eff++;
-        if (! wpeffobj.visible) {
-            i_eff--;
-            continue;
-        }
-
-        auto              imgEffect = std::make_shared<SceneImageEffect>();
-        const std::string inRT { effect_ppong_a };
-
-        std::string                                  effaddr = getAddr(imgEffectLayer.get());
-        std::unordered_map<std::string, std::string> fboMap;
-        fboMap["previous"] = inRT;
-        for (usize i = 0; i < wpeffobj.fbos.size(); i++) {
-            const auto& wpfbo  = wpeffobj.fbos.at(i);
-            std::string rtname = std::string(WE_SPEC_PREFIX) + wpfbo.name + "_" + effaddr;
-            scene.renderTargets[rtname] = {
-                .width      = static_cast<uint16_t>(w / static_cast<float>(wpfbo.scale)),
-                .height     = static_cast<uint16_t>(h / static_cast<float>(wpfbo.scale)),
-                .allowReuse = true
-            };
-            fboMap[wpfbo.name] = rtname;
-        }
-
-        bool eff_mat_ok = true;
-        for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
-            wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
-            std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
-            if (wpeffobj.passes.size() > i_mat) {
-                const auto& wppass = wpeffobj.passes.at(i_mat);
-                wpmat.MergePass(wppass);
-                for (const auto& el : wppass.bind) {
-                    if (fboMap.count(el.name) == 0) continue;
-                    if (wpmat.textures.size() <= static_cast<usize>(el.index))
-                        wpmat.textures.resize(static_cast<usize>(el.index) + 1);
-                    wpmat.textures[static_cast<usize>(el.index)] = fboMap[el.name];
-                }
-                if (! wppass.target.empty() && fboMap.count(wppass.target))
-                    matOutRT = fboMap.at(wppass.target);
-            }
-            if (wpmat.textures.empty()) wpmat.textures.resize(1);
-            if (wpmat.textures.at(0).empty()) wpmat.textures[0] = inRT;
-
-            auto         spEffNode = std::make_shared<SceneNode>();
-            WPShaderInfo wpEffShaderInfo;
-            wpEffShaderInfo.baseConstSvs = baseConstSvs;
-            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
-                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-            wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrixInverse"] =
-                ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
-
-            SceneMaterial     effMaterial;
-            WPShaderValueData effSvData;
-            if (! LoadMaterial(vfs,
-                               wpmat,
-                               context.scene.get(),
-                               spEffNode.get(),
-                               &effMaterial,
-                               &effSvData,
-                               &wpEffShaderInfo)) {
-                eff_mat_ok = false;
-                break;
-            }
-            LoadConstvalue(effMaterial, wpmat, wpEffShaderInfo);
-            auto spEffMesh = std::make_shared<SceneMesh>();
-            spEffMesh->AddMaterial(std::move(effMaterial));
-            spEffNode->AddMesh(spEffMesh);
-
-            // Register user property bindings for text effect material uniforms
-            if (! wpmat.userShaderBindings.empty() && spEffMesh->Material()) {
-                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
-                    std::string glname;
-                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
-                        glname = wpEffShaderInfo.alias.at(shaderConstName);
-                    } else {
-                        for (const auto& el : wpEffShaderInfo.alias) {
-                            if (el.second.substr(2) == shaderConstName) {
-                                glname = el.second;
-                                break;
-                            }
-                        }
-                    }
-                    if (glname.empty()) glname = shaderConstName;
-                    context.scene->userPropUniformBindings[propName].push_back(
-                        { spEffMesh->Material(), glname });
-                }
-            }
-
-            context.shader_updater->SetNodeData(spEffNode.get(), effSvData);
-            spEffNode->SetVisibilityOwner(spNode.get());
-            imgEffect->nodes.push_back({ matOutRT, spEffNode });
-        }
-        if (eff_mat_ok) imgEffectLayer->AddEffect(imgEffect);
-    }
+    assembleEffects(context,
+                    textObj.effects,
+                    *imgEffectLayer,
+                    spNode.get(),
+                    textObj.name,
+                    shaderInfo.baseConstSvs,
+                    { .layer_id = textObj.id, .base_width = w, .base_height = h });
 }
 
 // Register every text layer — not just ones with a bundled textScript —

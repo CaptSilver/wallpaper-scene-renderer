@@ -34,6 +34,7 @@
 #include "Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
 #include "SpecTexs.hpp"
+#include "SystemFontFallback.hpp"
 #include "WPUserProperties.hpp"
 
 #include "Audio/SoundManager.h"
@@ -163,6 +164,20 @@ constexpr const char* kEffectFileJson = R"({
     }]
 })";
 
+// Effect file whose first pass is a bare `command` rather than a material —
+// the shape stock `motionblur` uses.  WPImageEffect::FromFileJson turns it
+// into a WPEffectCommand, and the chain assembly must translate it into a
+// SceneImageEffect::Command; without the copy, the accumulation pass samples
+// an FBO nothing ever writes.
+constexpr const char* kEffectWithCopyCommandJson = R"({
+    "name": "trail",
+    "fbos": [{ "name": "FullCompoBuffer1", "scale": 1 }],
+    "passes": [
+        { "command": "copy", "target": "FullCompoBuffer1", "source": "previous" },
+        { "material": "materials/_plain.json" }
+    ]
+})";
+
 // Build a /assets-mounted MemFs preloaded with the trivial shader pair, the
 // shared plain image/material JSONs, and any extra (path, content) pairs
 // each test wants to layer in.  VFS::GetPathInMount strips the "/assets"
@@ -180,6 +195,11 @@ makeAssetsVfsWith(std::initializer_list<std::pair<std::string, std::string>> ext
     // Trivial shader pair — every fixture below uses shader "_t".
     memfs->add("/shaders/_t.vert", kTrivialVert);
     memfs->add("/shaders/_t.frag", kTrivialFrag);
+
+    // Text layers hard-code the "genericimage2" shader (buildTextWpMaterial),
+    // so text fixtures need it under that name too.
+    memfs->add("/shaders/genericimage2.vert", kTrivialVert);
+    memfs->add("/shaders/genericimage2.frag", kTrivialFrag);
 
     // Shared plain image descriptor + material.
     memfs->add("/models/_plain.json", kPlainImageJson);
@@ -1218,6 +1238,66 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(node->IsOffscreen() == false);
         // No offscreen RT registered for the self-ref id.
         CHECK(scene->renderTargets.count(GenOffscreenRT(64)) == 0);
+    }
+
+    // A text layer's effect chain has to come out of the parser with the same
+    // shape an image layer's does: copy/swap commands translated, the effect
+    // named, and the name published for SceneScript's getEffect().
+    TEST_CASE("E2E: text layer effect keeps its copy command and registers its name") {
+        ensureGlslangInit();
+        // FreeType needs a real face; the box supplies one via the
+        // systemfont_* fallback resolver.
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
+
+        auto vfs = makeAssetsVfsWith({
+            { "/effects/trail.json", kEffectWithCopyCommandJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 501, "name": "clock_text",
+      "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 64",
+      "font": "systemfont_sans", "pointsize": 24,
+      "text": { "value": "12:00" },
+      "visible": true,
+      "effects": [
+        { "id": 11, "name": "trail", "visible": true,
+          "file": "effects/trail.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_text_effect_chain", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(501) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(501);
+        REQUIRE(effLayer != nullptr);
+        REQUIRE(effLayer->EffectCount() == 1);
+
+        const auto& eff = effLayer->GetEffect(0);
+        REQUIRE(eff != nullptr);
+
+        // Named effects are what getEffect(name) / getEffectCount() resolve
+        // against on the script side.
+        CHECK(eff->name == "trail");
+        CHECK(scene->layerEffectNames.count("clock_text") == 1);
+        CHECK(scene->layerEffectNames["clock_text"] == std::vector<std::string> { "trail" });
+
+        // The effect file's `command` pass must survive into the chain, or the
+        // accumulation pass reads an FBO nothing wrote and the effect is dead.
+        REQUIRE(eff->commands.size() == 1);
+        CHECK(eff->commands.at(0).cmd == SceneImageEffect::CmdType::Copy);
+        CHECK(eff->commands.at(0).src == effLayer->FirstTarget());
+        CHECK(eff->commands.at(0).dst.find("FullCompoBuffer1") != std::string::npos);
+        CHECK(scene->renderTargets.count(eff->commands.at(0).dst) == 1);
     }
 
 } // TEST_SUITE
