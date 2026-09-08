@@ -537,15 +537,82 @@ const CachedGlyph* acquireGlyphLocked(FT_Face face, FT_UInt pixelSize, FT_UInt g
 }
 } // namespace
 
+namespace
+{
+// Default ON; WEKDE_TEXT_CJK_FALLBACK=0 opts out.  Read per call rather than
+// cached in a static — the test suite toggles the var between cases, so a
+// process-lifetime cache would lock in the first value seen.  The getenv cost
+// (~30ns) is dwarfed by the per-call FT raster work.
+bool cjkFallbackEnabled() {
+    const char* env = std::getenv("WEKDE_TEXT_CJK_FALLBACK");
+    return ! (env && env[0] == '0');
+}
+
+// One glyph's worth of pen movement.  The measure pass and the raster loop
+// both go through this, and they have to: the measure sets startX for
+// center/right alignment while the raster loop lays down the ink, so a face
+// the two disagree on (Han routed to the fallback in one, .notdef in the
+// other) drops the line off its anchor by the full difference in advances.
+struct PenGlyph {
+    const CachedGlyph* glyph;   // nullptr on FT_Load_Glyph failure
+    int                kerning; // pen delta to apply before the glyph
+    FT_Face            face;    // primary face, or the CJK fallback
+    bool               missing; // primary face has no glyph for this codepoint
+};
+
+// MUST be called under s_ftLibMutex.  `prevIdx` carries kerning state across
+// calls; it comes back 0 for a glyph taken from the fallback face so the next
+// pair is not kerned against a glyph index from a different font.
+PenGlyph advanceGlyphLocked(FT_Face face, FT_UInt pixelSize, uint32_t cp, bool hasKerning,
+                            bool cjkFallbackOn, FT_UInt& prevIdx) {
+    // Explicit glyph-index lookup.  FT_Load_Char would silently substitute
+    // .notdef on a miss; FT_Get_Char_Index returns 0 so we can count the miss
+    // and (optionally) route to the fallback face.
+    PenGlyph out { nullptr, 0, face, false };
+    FT_UInt  idx = FT_Get_Char_Index(face, cp);
+    if (idx == 0) {
+        out.missing = true;
+        // Tier-2 CJK fallback.  Only attempted for codepoints in the Han
+        // block (CJK Unified Ideographs + Hangul + Kana + CJK punctuation)
+        // so Cyrillic / Arabic / Devanagari still fall through to .notdef.
+        if (cjkFallbackOn && isHanCodepoint(cp)) {
+            FT_Face fb = acquireFallbackFaceLocked(pixelSize);
+            if (fb) {
+                FT_UInt fbIdx = FT_Get_Char_Index(fb, cp);
+                if (fbIdx != 0) {
+                    out.face = fb;
+                    idx      = fbIdx;
+                    // out.missing stays set so the LOG_INFO still surfaces
+                    // the font/script mismatch — the fallback is a
+                    // render-quality band-aid, not a "this font covered it".
+                }
+            }
+        }
+    }
+    // Kerning comes from the primary face's legacy `kern` table, so it only
+    // means anything between two of its own glyphs.  Cross-face kerning is
+    // HarfBuzz scope.
+    const bool fromPrimary = out.face == face;
+    out.kerning            = fromPrimary ? getKerningDelta(face, prevIdx, idx, hasKerning) : 0;
+    // On a cache miss this calls FT_Load_Glyph(FT_LOAD_RENDER) and stores an
+    // owned copy of the 8-bit gray bitmap + metrics + EffectiveAdvance.  On a
+    // hit (second tick of a clock wallpaper, repeated digit in a line, the
+    // raster half of a measure+raster pair) we get the pixels at memcpy speed.
+    out.glyph = acquireGlyphLocked(out.face, pixelSize, idx);
+    prevIdx   = fromPrimary ? idx : 0;
+    return out;
+}
+} // namespace
+
 // Measure the pixel width of a single line — kerned variant.  Must match
-// the raster loop's pen advance byte-for-byte (same FT_Get_Char_Index →
-// kerning delta → FT_Load_Glyph sequence) or right/center alignment drifts
-// by the cumulative kerning.  If FT_Load_Glyph fails (pathological — corrupt
-// glyf, OOM), this measure and the raster loop both skip the same glyph for
-// the same FT_Error reason, so the cumulative pen_x stays consistent across
-// both paths.  The `loadGlyphFails` out-param accumulates into the raster-loop
-// counter that drives the LOG_ERROR rate-limit; we do not double-log
-// measurement-time failures.
+// the raster loop's pen advance byte-for-byte (same advanceGlyphLocked
+// sequence) or right/center alignment drifts by the cumulative kerning and by
+// every glyph the two passes resolved to a different face.  If FT_Load_Glyph
+// fails (pathological — corrupt glyf, OOM), this measure and the raster loop
+// both skip the same glyph for the same FT_Error reason, so the cumulative
+// pen_x stays consistent across both paths.  The `loadGlyphFails` out-param
+// accumulates into the raster-loop counter that drives the LOG_ERROR
+// rate-limit; we do not double-log measurement-time failures.
 //
 // Both the measure and the raster pass go through acquireGlyphLocked, so
 // the second-glyph-rendered-this-call hits the cache without re-issuing
@@ -558,7 +625,7 @@ const CachedGlyph* acquireGlyphLocked(FT_Face face, FT_UInt pixelSize, FT_UInt g
 // The cache stores EffectiveAdvance in the entry, so the pen advance is
 // the cached integer instead of a fresh g->advance.x>>6 read.
 static int MeasureLineWidth(FT_Face face, FT_UInt pixelSize, const std::string& line,
-                            int& loadGlyphFails, FT_Error& lastLoadGlyphErr) {
+                            bool cjkFallbackOn, int& loadGlyphFails, FT_Error& lastLoadGlyphErr) {
     const bool  hasKerning = FT_HAS_KERNING(face);
     int         pen_x      = 0;
     FT_UInt     prevIdx    = 0;
@@ -567,20 +634,17 @@ static int MeasureLineWidth(FT_Face face, FT_UInt pixelSize, const std::string& 
     while (p < end) {
         uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
         if (cp == 0) break;
-        FT_UInt idx = FT_Get_Char_Index(face, cp);
-        // idx == 0 → .notdef.  For measurement we still advance by the
-        // .notdef glyph's metrics — the raster loop also rasterizes it,
-        // and the two paths must agree on the width.
-        pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-        const CachedGlyph* cg = acquireGlyphLocked(face, pixelSize, idx);
-        if (! cg) {
+        // A codepoint the primary face lacks measures as whatever the raster
+        // loop will draw: the fallback face's glyph when one resolves, the
+        // .notdef box otherwise.
+        PenGlyph g = advanceGlyphLocked(face, pixelSize, cp, hasKerning, cjkFallbackOn, prevIdx);
+        pen_x += g.kerning;
+        if (! g.glyph) {
             ++loadGlyphFails;
             lastLoadGlyphErr = -1; // synthetic; underlying FT error LOG_INFO'd at miss time
-            prevIdx          = idx;
             continue;
         }
-        pen_x += cg->advance_x_pixels;
-        prevIdx = idx;
+        pen_x += g.glyph->advance_x_pixels;
     }
     return pen_x;
 }
@@ -722,13 +786,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     int        missingGlyphsThisCall  = 0;
     int        loadGlyphFailsThisCall = 0;
     FT_Error   lastLoadGlyphErr       = 0;
-    // Re-read the env var on every call rather than caching in a static —
-    // the test suite toggles WEKDE_TEXT_CJK_FALLBACK between cases, so a
-    // process-lifetime cache would lock in the first value seen.  The
-    // getenv cost (~30ns) is dwarfed by the per-call FT raster work.
-    // Semantics: default ON; WEKDE_TEXT_CJK_FALLBACK=0 disables (opt-out).
-    const char* cjkEnv        = std::getenv("WEKDE_TEXT_CJK_FALLBACK");
-    const bool  cjkFallbackOn = ! (cjkEnv && cjkEnv[0] == '0');
+    const bool cjkFallbackOn          = cjkFallbackEnabled();
 
     for (usize li = 0; li < lines.size(); ++li) {
         const auto& line = lines[li];
@@ -737,6 +795,7 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         i32 lineWidth = MeasureLineWidth(face,
                                          static_cast<FT_UInt>(pixelSize),
                                          line,
+                                         cjkFallbackOn,
                                          loadGlyphFailsThisCall,
                                          lastLoadGlyphErr);
 
@@ -761,53 +820,18 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         while (p < end) {
             uint32_t cp = WPTextRenderer::DecodeUtf8(p, end);
             if (cp == 0) break;
-            // Explicit glyph-index lookup.  FT_Load_Char would silently
-            // substitute .notdef on miss; FT_Get_Char_Index returns 0 so
-            // we can count the miss and (optionally) route to the
-            // fallback face.
-            FT_UInt idx       = FT_Get_Char_Index(face, cp);
-            FT_Face faceToUse = face;
-            if (idx == 0) {
-                ++missingGlyphsThisCall;
-                // Tier-2 CJK fallback — default ON, opt-OUT via
-                // WEKDE_TEXT_CJK_FALLBACK=0.  Only attempted for codepoints
-                // in the Han block (CJK Unified Ideographs + Hangul + Kana
-                // + CJK punctuation) so Cyrillic / Arabic / Devanagari
-                // still fall through to .notdef + log.
-                if (cjkFallbackOn && isHanCodepoint(cp)) {
-                    FT_Face fb = acquireFallbackFaceLocked(static_cast<FT_UInt>(pixelSize));
-                    if (fb) {
-                        FT_UInt fbIdx = FT_Get_Char_Index(fb, cp);
-                        if (fbIdx != 0) {
-                            faceToUse = fb;
-                            idx       = fbIdx;
-                            // missingGlyphsThisCall stays incremented so
-                            // the LOG_INFO still surfaces the font/script
-                            // mismatch — the fallback is a render-quality
-                            // band-aid, not a "this font covered it" win.
-                        }
-                    }
-                }
-            }
-            // Kerning is queried against the primary face (the only one
-            // with a known kern table).  When idx is a fallback-face glyph
-            // the call returns 0 — FT_Get_Kerning won't find the pair —
-            // and pen_x is unaffected.  Cross-face kerning is HarfBuzz scope.
-            pen_x += getKerningDelta(face, prevIdx, idx, hasKerning);
-            // Glyph-cache lookup.  On a miss the cache calls
-            // FT_Load_Glyph(FT_LOAD_RENDER) on faceToUse and stores an owned
-            // copy of the 8-bit gray bitmap + metrics + EffectiveAdvance.
-            // On a hit (second tick of a clock wallpaper, repeated digit in
-            // a line, second-half of a measure+raster pair) we get the
-            // cached pixels at memcpy speed.  nullptr means a pathological
-            // FT_Load_Glyph failure (corrupt glyf, OOM); the existing
-            // rate-limited LOG_ERROR fires after the line loop.
-            const CachedGlyph* cg =
-                acquireGlyphLocked(faceToUse, static_cast<FT_UInt>(pixelSize), idx);
+            // Same resolution MeasureLineWidth ran, so the pen lands where
+            // the alignment maths assumed it would.
+            PenGlyph g = advanceGlyphLocked(
+                face, static_cast<FT_UInt>(pixelSize), cp, hasKerning, cjkFallbackOn, prevIdx);
+            if (g.missing) ++missingGlyphsThisCall;
+            pen_x += g.kerning;
+            // nullptr means a pathological FT_Load_Glyph failure (corrupt
+            // glyf, OOM); the rate-limited LOG_ERROR fires after the loop.
+            const CachedGlyph* cg = g.glyph;
             if (! cg) {
                 ++loadGlyphFailsThisCall;
                 lastLoadGlyphErr = -1;
-                prevIdx          = idx;
                 continue;
             }
 
@@ -835,7 +859,6 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
                 }
             }
             pen_x += cg->advance_x_pixels;
-            prevIdx = idx;
         }
     }
 
@@ -973,8 +996,8 @@ int WPTextRenderer::TEST_measureLineWidthWithKerning(const std::string& fontData
     FT_Set_Pixel_Sizes(face, 0, static_cast<FT_UInt>(pixelSize));
     int      loadFails = 0;
     FT_Error lastErr   = 0;
-    int      w =
-        MeasureLineWidth(face, static_cast<FT_UInt>(pixelSize), line, loadFails, lastErr);
+    int      w         = MeasureLineWidth(
+        face, static_cast<FT_UInt>(pixelSize), line, cjkFallbackEnabled(), loadFails, lastErr);
     // Glyph cache invariant: purge entries keyed on this throwaway face
     // before we free it, otherwise the next acquireGlyphLocked hits a
     // dangling pointer.  Same guard as the LRU face-eviction branch.

@@ -955,3 +955,145 @@ TEST_SUITE("WPTextRenderer CJK fallback resolution caching") {
         CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 2);
     }
 }
+
+// -------- alignment across the CJK fallback face --------
+//
+// Centring and right-alignment come from the measured line width, while the
+// ink comes from the raster loop.  Both have to resolve a codepoint to the
+// same face: if the measure sums the primary face's .notdef advances for a
+// Han string while the raster loop draws the fallback face's glyphs, the two
+// numbers describe different lines and the text lands off its anchor.
+
+TEST_SUITE("WPTextRenderer alignment across the CJK fallback face") {
+    static std::string loadHostFont() {
+        const std::string path = wallpaper::ResolveSystemFontFallback("systemfont_sans");
+        if (path.empty()) return {};
+        return wallpaper::ReadSystemFile(path);
+    }
+
+    // Leftmost / rightmost (inclusive) canvas column carrying any alpha.
+    // left > right when nothing was drawn.
+    struct InkSpan {
+        int left;
+        int right;
+    };
+
+    static InkSpan inkSpan(const std::shared_ptr<Image>& img, int w, int h) {
+        const uint8_t* data = img->slots[0].mipmaps[0].data.get();
+        InkSpan        span { w, -1 };
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                if (data[(static_cast<std::size_t>(y) * static_cast<std::size_t>(w) +
+                          static_cast<std::size_t>(x)) *
+                             4 +
+                         3] == 0)
+                    continue;
+                if (x < span.left) span.left = x;
+                if (x > span.right) span.right = x;
+            }
+        }
+        return span;
+    }
+
+    // U+4E2D U+6587 "中文" — absent from every Latin face we resolve as the
+    // host sans, so both codepoints go through the fallback.
+    static const char* kHanLine = "\xE4\xB8\xAD\xE6\x96\x87";
+
+    TEST_CASE("Han drawn through the fallback face is centred on its anchor") {
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("No pan-CJK font on host; skipping");
+            return;
+        }
+        WPTextRenderer::Shutdown();
+        WPTextRenderer::Init();
+
+        const int w = 512, h = 192;
+        auto      img =
+            WPTextRenderer::RenderText(fontData, 24.f, kHanLine, w, h, "center", "center", 0);
+        REQUIRE(img != nullptr);
+        const InkSpan span = inkSpan(img, w, h);
+        REQUIRE(span.right >= span.left);
+        // Not clipped: a line that overruns the canvas can't be judged.
+        REQUIRE(span.left > 0);
+        REQUIRE(span.right < w - 1);
+        // Side bearings are small and roughly symmetric at this size, so the
+        // ink midpoint sits on the canvas midpoint to within a few pixels.
+        const int inkMid = (span.left + span.right) / 2;
+        CHECK(inkMid >= w / 2 - 8);
+        CHECK(inkMid <= w / 2 + 8);
+    }
+
+    TEST_CASE("no kerning is queried across a glyph taken from the fallback face") {
+        // A kern pair only means something between two glyphs of the same
+        // font.  Once a codepoint is drawn from the fallback face, its glyph
+        // index is meaningless in the primary face's `kern` table, so neither
+        // the pair entering it nor the pair leaving it may be looked up.
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (! WPTextRenderer::TEST_hostFontHasKerning(fontData)) {
+            MESSAGE("Host font has no legacy `kern` table; nothing to query");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("No pan-CJK font on host; skipping");
+            return;
+        }
+        WPTextRenderer::Shutdown();
+        WPTextRenderer::Init();
+
+        // Control: an all-Latin line does query the table, so a zero below
+        // means "suppressed", not "never reached".
+        WPTextRenderer::TEST_resetKerningProbeCounter();
+        REQUIRE(WPTextRenderer::RenderText(fontData, 24.f, "AVA", 256, 128, "left", "center", 0) !=
+                nullptr);
+        REQUIRE(WPTextRenderer::TEST_getKerningProbeCount() > 0);
+
+        // "A中B" — both pairs straddle the fallback glyph.
+        WPTextRenderer::TEST_resetKerningProbeCounter();
+        // Split literal: a bare "B" after the hex escape is swallowed into it.
+        const std::string mixed = "A\xE4\xB8\xAD"
+                                  "B";
+        REQUIRE(WPTextRenderer::RenderText(fontData, 24.f, mixed, 256, 128, "left", "center", 0) !=
+                nullptr);
+        CHECK(WPTextRenderer::TEST_getKerningProbeCount() == 0);
+    }
+
+    TEST_CASE("measured Han line width covers the ink the raster loop draws") {
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("No pan-CJK font on host; skipping");
+            return;
+        }
+        WPTextRenderer::Shutdown();
+        WPTextRenderer::Init();
+
+        const int w = 512, h = 192;
+        auto img = WPTextRenderer::RenderText(fontData, 24.f, kHanLine, w, h, "left", "center", 0);
+        REQUIRE(img != nullptr);
+        const InkSpan span = inkSpan(img, w, h);
+        REQUIRE(span.right >= span.left);
+        const int inkWidth = span.right - span.left + 1;
+
+        const int measured =
+            WPTextRenderer::TEST_measureLineWidthWithKerning(fontData, 24.f, kHanLine);
+        REQUIRE(measured > 0);
+        // Advances include the side bearings the ink does not, so the
+        // measured width can only be the larger of the two.
+        CHECK(measured >= inkWidth);
+    }
+}
