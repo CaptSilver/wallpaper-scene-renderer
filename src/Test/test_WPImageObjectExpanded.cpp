@@ -528,6 +528,41 @@ TEST_SUITE("WPImageObject::FromJson — image-backed") {
         CHECK(a.keyframes[1].value == doctest::Approx(1.0f));
     }
 
+    // A layer alpha animation that closes its own loop: WE writes
+    // options.wraploop alongside fps/length/mode, and the curve uses it to
+    // ride the last keyframe back to the first instead of holding the last
+    // value and snapping at the period boundary.  The flag has to survive
+    // the scalar parser to reach the evaluator.
+    TEST_CASE("alpha animation carries options.wraploop through to the curve") {
+        auto vfs = Vfs({
+            { "models/x.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 11055, "name":"heat", "image":"models/x.json",
+            "origin":"0 0 0", "scale":"1 1 1", "angles":"0 0 0", "size":"10 10",
+            "alpha": {
+                "value": 0.37,
+                "animation": {
+                    "c0": [
+                        {"frame": 0,  "value": 0.37},
+                        {"frame": 30, "value": 1.0}
+                    ],
+                    "options": { "name": "breathe", "fps": 30, "length": 60,
+                                 "mode": "loop", "wraploop": true }
+                }
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        REQUIRE(obj.propertyAnimations.size() == 1u);
+        const auto& a = obj.propertyAnimations[0];
+        CHECK(a.wraploop);
+        // Halfway down the tail segment (frame 45 = 1.5 s) the alpha sits
+        // midway between the last keyframe and the first, not pinned at 1.0.
+        CHECK(EvaluatePropertyAnimation(a, 1.5) == doctest::Approx(0.685f));
+    }
+
     // Rella whale (3363252053 id=173) origin animation: per-axis keyframe
     // tracks (c0/c1/c2) on a wrapped {value, animation, relative} object.
     // Until this parser landed, GET_JSON_NAME_VALUE pulled the `value`

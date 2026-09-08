@@ -1938,14 +1938,14 @@ public:
 
             for (auto& anim : anims) {
                 if (anim.playing) anim.time += dt;
-                float value = EvaluatePropertyAnimation(anim, anim.time);
+                // Compose here rather than per-consumer: relative tracks are
+                // deltas around initialValue whichever property they drive.
+                float value = ComposePropertyAnimation(anim, anim.time);
                 if (anim.property == "alpha") {
                     writeAlphaToAllMaterials(sourceNode, nodeId, value);
                 } else {
                     // Vec3 components: "origin.{x,y,z}", "scale.{x,y,z}",
-                    // "angles.{x,y,z}".  In relative mode evaluated value is a
-                    // delta added on top of the per-axis base in initialValue;
-                    // in absolute mode it replaces the component outright.
+                    // "angles.{x,y,z}".
                     applyVec3ComponentAnim(sourceNode, nodeId, anim, value);
                     animMoved.insert(nodeId);
                 }
@@ -1970,7 +1970,7 @@ public:
     // recognise (so legacy scalar entries that don't carry a suffix won't
     // accidentally clobber the transform).
     void applyVec3ComponentAnim(SceneNode* node, i32 nodeId, const PropertyAnimation& anim,
-                                float evaluated) {
+                                float value) {
         if (! node) return;
         const std::string& prop = anim.property;
         if (prop.size() < 3) return;
@@ -1983,8 +1983,6 @@ public:
             axis = 2;
         if (axis < 0) return;
         std::string_view base { prop.data(), prop.size() - 2 };
-
-        float target = anim.relative ? (anim.initialValue + evaluated) : evaluated;
 
         // For layers with an effect chain, the image node's transform must
         // stay at IDENTITY — the base pass renders into a pingpong RT using a
@@ -2011,15 +2009,15 @@ public:
 
         if (base == "origin") {
             Eigen::Vector3f v = target_node->Translate();
-            v[axis]           = target;
+            v[axis]           = value;
             target_node->SetTranslate(v);
         } else if (base == "scale") {
             Eigen::Vector3f v = target_node->Scale();
-            v[axis]           = target;
+            v[axis]           = value;
             target_node->SetScale(v);
         } else if (base == "angles") {
             Eigen::Vector3f v = target_node->Rotation();
-            v[axis]           = target;
+            v[axis]           = value;
             target_node->SetRotation(v);
         }
     }

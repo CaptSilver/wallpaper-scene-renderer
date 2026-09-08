@@ -333,4 +333,33 @@ TEST_SUITE("WPPropertyAnimation_Evaluate") {
         CHECK(EvaluatePropertyAnimation(a, 5.0) == doctest::Approx(0.25f));
     }
 
+    // Composition is the second half of a tick: the curve value still has to
+    // be placed against the property's static value.  Relative tracks author
+    // deltas around that base, absolute ones overwrite it.
+    TEST_CASE("relative animation adds its curve onto the base value") {
+        PropertyAnimation a = makeSimpleAnim();
+        a.relative          = true;
+        a.initialValue      = 100.0f;
+        a.keyframes         = { { 0, 0.0f }, { 1, 10.0f } };
+        CHECK(ComposePropertyAnimation(a, 0.0) == doctest::Approx(100.0f));
+        CHECK(ComposePropertyAnimation(a, 0.5) == doctest::Approx(105.0f));
+    }
+
+    TEST_CASE("absolute animation replaces the base value") {
+        PropertyAnimation a = makeSimpleAnim();
+        a.relative          = false;
+        a.initialValue      = 100.0f;
+        a.keyframes         = { { 0, 0.0f }, { 1, 10.0f } };
+        CHECK(ComposePropertyAnimation(a, 0.0) == doctest::Approx(0.0f));
+        CHECK(ComposePropertyAnimation(a, 0.5) == doctest::Approx(5.0f));
+    }
+
+    TEST_CASE("relative animation with no keyframes stays at the base value") {
+        PropertyAnimation a;
+        a.relative     = true;
+        a.initialValue = 0.6f;
+        CHECK(ComposePropertyAnimation(a, 0.0) == doctest::Approx(0.6f));
+        CHECK(ComposePropertyAnimation(a, 3.0) == doctest::Approx(0.6f));
+    }
+
 } // TEST_SUITE

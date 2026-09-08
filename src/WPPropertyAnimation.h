@@ -138,4 +138,16 @@ inline float EvaluatePropertyAnimation(const PropertyAnimation& anim, double tim
     return prev->value + frac * (it->value - prev->value);
 }
 
+// Place an evaluated curve value against the property's static value.
+// `relative` tracks author their keyframes as deltas around that base;
+// absolute ones overwrite it.  Alpha and vec3 components both come through
+// here so the rule has one home.
+inline float ComposePropertyAnimation(const PropertyAnimation& anim, double time) {
+    // A curve-less animation already evaluates to the base — adding it again
+    // would double a relative track.
+    if (anim.keyframes.empty()) return anim.initialValue;
+    const float value = EvaluatePropertyAnimation(anim, time);
+    return anim.relative ? anim.initialValue + value : value;
+}
+
 } // namespace wallpaper
