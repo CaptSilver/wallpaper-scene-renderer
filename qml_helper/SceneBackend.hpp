@@ -402,6 +402,19 @@ public:
     void seedExpiredCursorLeaveForTesting(const std::string& layerName,
                                           const std::string& jsSource);
     void flushPendingCursorLeavesForTesting();
+    // Seed one colour script (its `update` function) so the next colour tick
+    // runs it.  currentColor starts black, the same seed production uses for
+    // a script whose layer colour has not been read back yet.
+    void seedColorScriptForTesting(int32_t id, const std::string& jsSource);
+    // Seed one shader-value script.  argShape is how many components the
+    // script's argument carries (1 = scalar, 2/3/4 = VecN), matching the
+    // uniform it drives.
+    void seedShaderValueScriptForTesting(int32_t id, int32_t effectIdx,
+                                         const std::string& uniformName, int argShape,
+                                         const std::string& jsSource);
+    // Install the JS globals a wallpaper script sees, in production order:
+    // the createScriptProperties builder, then the SceneScript API layer.
+    void installScriptApiGlobalsForTesting();
     // Public aliases for the private eval slots so a test can tick dispatch.
     void evaluatePropertyScriptsForTesting();
     void evaluateTextScriptsForTesting();
@@ -421,6 +434,8 @@ private:
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
     void setupEngineGlobals();
+    void installScriptPropertiesGlobal();
+    void installScriptApiGlobals();
     void installTimerBridge();
     void installSceneBridge();
     void buildLayerProxyStates();

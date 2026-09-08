@@ -18,6 +18,7 @@
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
 #include "TextScriptResult.hpp"
+#include "PropertyScriptDispatchJs.hpp"
 
 using scenebackend::CursorParallax;
 using scenebackend::drainExpiredLeaves;
@@ -1825,17 +1826,17 @@ TEST_SUITE("SceneScript Material") {
         CHECK(env.engine.evaluate("__sceneBridge._calls[0].arr.length").toInt() == 16);
     }
 
-    TEST_CASE("setValue filters non-finite array elements") {
+    TEST_CASE("setValue refuses an array holding a non-finite element") {
         MaterialBridgeEnv env;
         env.engine.evaluate("var m = _makeMaterialProxy('bg');"
                             "m.setValue('g_X', [1, NaN, 2, 'oops', 3]);");
-        // Non-finite entries are dropped; the resulting array still passes
-        // through if at least one value survives.  Keeps malformed authoring
-        // from sending NaN to the GPU.
-        QJSValue arr = env.engine.evaluate("__sceneBridge._calls[0].arr");
-        CHECK(arr.property("length").toInt() == 3);
-        CHECK(arr.property(0).toNumber() == doctest::Approx(1));
-        CHECK(arr.property(2).toNumber() == doctest::Approx(3));
+        // The whole write is dropped rather than the bad entries: sending the
+        // three survivors would hand a five-component uniform a three-float
+        // value, and a NaN that reaches the GPU also latches the change cache.
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 0);
+        // Well-formed writes still go through.
+        env.engine.evaluate("m.setValue('g_X', [1, 2, 3]);");
+        CHECK(env.engine.evaluate("__sceneBridge._calls.length").toInt() == 1);
     }
 
     // ---- Direct property accessors (color, channelMask, alpha, tint) ----
@@ -2398,59 +2399,6 @@ static const char* JS_CONSOLE =
     "  error: function() { console.log.apply(console, arguments); }\n"
     "};\n";
 
-// Mirrors SceneBackend.cpp's production createScriptProperties.  Uses
-// getter/setter pairs so assignments fire the optional `onChange`
-// callback defined in each addX({name, value, onChange}) block.
-// Matching prod shape keeps drift-risk between test and production low.
-static const char* JS_CREATE_SCRIPT_PROPERTIES =
-    "function createScriptProperties() {\n"
-    "  var _values = {};\n"
-    "  var _onChange = {};\n"
-    "  var builder = {};\n"
-    "  function addProp(def) {\n"
-    "    if (!def) return builder;\n"
-    "    var n = def.name || def.n;\n"
-    "    if (!n) return builder;\n"
-    "    var fallback = (typeof def.value !== 'undefined') ? def.value\n"
-    "                     : (def.options && def.options.length > 0\n"
-    "                          ? def.options[0].value : null);\n"
-    "    _values[n] = fallback;\n"
-    "    if (def.onChange && typeof def.onChange === 'function') {\n"
-    "      _onChange[n] = def.onChange;\n"
-    "    }\n"
-    "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
-    "      Object.defineProperty(builder, n, {\n"
-    "        get: function() { return _values[n]; },\n"
-    "        set: function(v) {\n"
-    "          if (_values[n] === v) return;\n"
-    "          _values[n] = v;\n"
-    "          var h = _onChange[n];\n"
-    "          if (h) {\n"
-    "            try { h.call(builder, v); }\n"
-    "            catch (e) {\n"
-    "              if (typeof console !== 'undefined' && console.log)\n"
-    "                console.log('scriptProperty onChange error on ' + n\n"
-    "                            + ': ' + (e && e.message));\n"
-    "            }\n"
-    "          }\n"
-    "        },\n"
-    "        enumerable: true, configurable: true\n"
-    "      });\n"
-    "    }\n"
-    "    return builder;\n"
-    "  }\n"
-    "  builder.addCheckbox = addProp;\n"
-    "  builder.addSlider = addProp;\n"
-    "  builder.addCombo = addProp;\n"
-    "  builder.addText = addProp;\n"
-    "  builder.addTextInput = addProp;\n"
-    "  builder.addColor = addProp;\n"
-    "  builder.addFile = addProp;\n"
-    "  builder.addDirectory = addProp;\n"
-    "  builder.finish = function() { return builder; };\n"
-    "  return builder;\n"
-    "}\n";
-
 static const char* JS_AUDIO_BUFFERS =
     "engine.AUDIO_RESOLUTION_16 = 16;\n"
     "engine.AUDIO_RESOLUTION_32 = 32;\n"
@@ -2672,8 +2620,11 @@ struct ScriptEnv {
                         "engine.isLandscape = function() { return true; };\n"
                         "engine.openUserShortcut = function(name) {};\n");
 
-        // createScriptProperties
-        engine.evaluate(JS_CREATE_SCRIPT_PROPERTIES);
+        // createScriptProperties — the production builder verbatim, with an
+        // empty stored-props map (what a script whose scene block carries no
+        // `scriptproperties` gets).  Evaluating the real source keeps these
+        // cases a characterization test instead of a copy that can drift.
+        engine.evaluate(QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg("{}"));
 
         // _overlayScriptProps — scriptProperties-on-thisLayer alias helper
         engine.evaluate(JS_OVERLAY_SCRIPT_PROPS);
@@ -8452,7 +8403,6 @@ TEST_SUITE("Hover-leave cleanup contract (F19)") {
 // Uses the exact same JS source as production (shared header) so any
 // drift between prod and test causes these to fail.
 // ------------------------------------------------------------------
-#include "PropertyScriptDispatchJs.hpp"
 
 namespace
 {

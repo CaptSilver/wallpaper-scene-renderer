@@ -456,7 +456,7 @@ function _applyLayerLiteral(layer, asset) {
 //
 // Value packing rules:
 // - Number             -> [n]
-// - Array of numbers   -> filtered to finite, capped at 16 entries
+// - Array of numbers   -> capped at 16 entries; a non-finite entry rejects it
 // - Vec2/3/4 instance  -> [x], [x,y], [x,y,z], [x,y,z,w] depending on shape
 // - Anything else      -> null (setValue becomes a no-op)
 inline constexpr const char* kMaterialProxyJs = R"JS(
@@ -468,7 +468,11 @@ function _packMaterialValue(v) {
       var out = [];
       for (var i = 0; i < v.length && out.length < 16; i++) {
         var n = +v[i];
-        if (isFinite(n)) out.push(n);
+        // One bad entry refuses the whole write.  Skipping it would hand the
+        // uniform a shorter vector than the shader declares, which is just a
+        // different wrong value; the C++ side (JsFloatPack.hpp) refuses too.
+        if (!isFinite(n)) return null;
+        out.push(n);
       }
       return out.length ? out : null;
     }

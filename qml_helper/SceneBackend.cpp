@@ -6,6 +6,7 @@
 #include "SceneCursorHitTest.h"
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
+#include "JsFloatPack.hpp"
 #include "JsSyntaxNormalize.hpp"
 #include "LocalStorageQuota.hpp"
 #include "PropertyScriptDispatchJs.hpp"
@@ -1102,8 +1103,8 @@ void SceneObject::videoSetRate(const QString& layerName, double rate) {
 // Material uniform bridge — resolves layerName -> nodeId via m_nodeNameToId
 // and forwards to SceneWallpaper, which enqueues the update for the render
 // thread.  value is a plain JS array of numbers (the JS proxy guarantees
-// shape; we only defensively skip empty / oversized arrays here and filter
-// non-finite entries so a stray NaN never reaches the GPU).
+// shape; packJsFloats defensively refuses empty / oversized arrays and any
+// non-finite entry, so a stray NaN never reaches the GPU).
 void SceneObject::materialSetValue(const QString& layerName, const QString& name,
                                    const QJSValue& value) {
     if (! m_dispatch) return;
@@ -1111,24 +1112,15 @@ void SceneObject::materialSetValue(const QString& layerName, const QString& name
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
     if (! value.isArray()) return;
-    int n = value.property("length").toInt();
-    if (n <= 0 || n > 16) return;
-    std::vector<float> floats;
-    floats.reserve(n);
-    for (int i = 0; i < n; i++) {
-        QJSValue elem = value.property(i);
-        if (! elem.isNumber()) continue;
-        double d = elem.toNumber();
-        if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
-    }
-    if (floats.empty()) return;
-    m_dispatch->updateMaterialValue(it->second, name.toStdString(), std::move(floats));
+    auto floats = wek::qml_helper::packJsFloats(value, 16);
+    if (! floats) return;
+    m_dispatch->updateMaterialValue(it->second, name.toStdString(), std::move(*floats));
 }
 
 // Effect-material bridge — same shape as materialSetValue but carries an
 // effect index so the render thread can target the per-effect material.
 // JS pre-validates numerics (same _packMaterialValue guards as materialSetValue);
-// we still defensively skip empty/oversized arrays and non-finite entries.
+// packJsFloats still refuses empty/oversized arrays and non-finite entries.
 void SceneObject::effectMaterialSetValue(const QString& layerName, int effectIdx,
                                          const QString& name, const QJSValue& value) {
     if (! m_dispatch) return;
@@ -1137,19 +1129,10 @@ void SceneObject::effectMaterialSetValue(const QString& layerName, int effectIdx
     auto it = m_nodeNameToId.find(layerName.toStdString());
     if (it == m_nodeNameToId.end()) return;
     if (! value.isArray()) return;
-    int n = value.property("length").toInt();
-    if (n <= 0 || n > 16) return;
-    std::vector<float> floats;
-    floats.reserve(n);
-    for (int i = 0; i < n; i++) {
-        QJSValue elem = value.property(i);
-        if (! elem.isNumber()) continue;
-        double d = elem.toNumber();
-        if (std::isfinite(d)) floats.push_back(static_cast<float>(d));
-    }
-    if (floats.empty()) return;
+    auto floats = wek::qml_helper::packJsFloats(value, 16);
+    if (! floats) return;
     m_dispatch->updateEffectMaterialValue(
-        it->second, effectIdx, name.toStdString(), std::move(floats));
+        it->second, effectIdx, name.toStdString(), std::move(*floats));
 }
 
 // thisLayer.getTextureAnimation().setFrame(N) / .play() / .pause() bridge.
@@ -2216,59 +2199,7 @@ void SceneObject::setupTextScripts() {
                          "  }\n"
                          "};\n");
 
-    // Audio resolution constants. setupEngineGlobals() cached the engine
-    // handle in m_engineObj; the local `engineObj` lives only inside that
-    // function (extract chain commits d62e965 / 56afc1f).
-    m_engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
-    m_engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
-    m_engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
-
-    // Media playback event constants (WE SceneScript MediaPlaybackEvent)
-    m_jsEngine->evaluate("var MediaPlaybackEvent = { CYCLIC: -1, PLAYBACK_STOPPED: 0, "
-                         "PLAYBACK_PLAYING: 1, PLAYBACK_PAUSED: 2 };\n");
-
-    // engine.registerAudioBuffers(resolution) — JS shim shared with tests
-    // (see SceneScriptShimsJs.hpp).  Returns a buffer object the script
-    // retains; refreshAudioBuffers() fills it from the analyzer each tick.
-    {
-        QJSValue regFn = m_jsEngine->evaluate(wek::qml_helper::kRegisterAudioBuffersJs);
-        m_engineObj.setProperty("registerAudioBuffers", regFn);
-    }
-
-    // Wallpaper Engine SceneScript API stubs
-    // createScriptProperties() returns a builder with .addSlider/.addCheckbox/.addCombo/.finish()
-    m_jsEngine->evaluate(
-        "function createScriptProperties(defs) {\n"
-        "  var _props = {};\n"
-        "  // If called with an object arg (legacy), extract values directly\n"
-        "  if (defs && typeof defs === 'object') {\n"
-        "    for (var k in defs) {\n"
-        "      if (defs.hasOwnProperty(k))\n"
-        "        _props[k] = defs[k].value !== undefined ? defs[k].value : null;\n"
-        "    }\n"
-        "  }\n"
-        "  var builder = {\n"
-        "    addSlider: function(o) { _props[o.name] = o.value !== undefined ? o.value : 0; return "
-        "builder; },\n"
-        "    addCheckbox: function(o) { _props[o.name] = o.value !== undefined ? o.value : false; "
-        "return builder; },\n"
-        "    addCombo: function(o) { _props[o.name] = o.value !== undefined ? o.value : (o.options "
-        "&& o.options.length > 0 ? o.options[0].value : 0); return builder; },\n"
-        "    addTextInput: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; "
-        "return builder; },\n"
-        "    addText: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return "
-        "builder; },\n"
-        "    addColor: function(o) { _props[o.name] = o.value !== undefined ? o.value : '0 0 0'; "
-        "return builder; },\n"
-        "    addFile: function(o) { _props[o.name] = o.value !== undefined ? o.value : ''; return "
-        "builder; },\n"
-        "    finish: function() { return _props; }\n"
-        "  };\n"
-        "  return builder;\n"
-        "}\n");
-
-    // WEColor module — shared with tests via SceneScriptShimsJs.hpp.
-    m_jsEngine->evaluate(wek::qml_helper::kWEColorJs);
+    installScriptApiGlobals();
 
     // Load color scripts
     for (const auto& csi : colorScripts) {
@@ -3417,6 +3348,52 @@ void SceneObject::setupTextScripts() {
     }
 }
 
+void SceneObject::installScriptPropertiesGlobal() {
+    if (! m_jsEngine) return;
+    // createScriptProperties() — the WE SceneScript API for declaring
+    // user-configurable properties.  Chainable builder:
+    //   createScriptProperties().addSlider({name,value,...}).addCheckbox(...)
+    // after which each property is readable by name (scriptProperties.mode).
+    //
+    // Same source as the per-script shadow, with an empty stored-props map:
+    // a script whose scene block carries no `scriptproperties` still gets a
+    // builder whose writes fire `onChange` and which offers every add* method.
+    // Writes of the same value are suppressed, because WE wallpapers use
+    // mutual-exclusion patterns where one checkbox's onChange writes `false`
+    // to its siblings — without the suppression the siblings re-fire their own
+    // onChange and infinite-recurse.
+    m_jsEngine->evaluate(QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg("{}"));
+}
+
+// SceneScript API globals layered on top of setupEngineGlobals(): the audio
+// resolution constants, the media-playback enum, the audio-buffer shim and
+// WEColor.  Split out of setupTextScripts so a test can install the exact
+// globals a wallpaper script sees without a live scene behind them.
+void SceneObject::installScriptApiGlobals() {
+    if (! m_jsEngine) return;
+    // Audio resolution constants. setupEngineGlobals() cached the engine
+    // handle in m_engineObj; the local `engineObj` lives only inside that
+    // function (extract chain commits d62e965 / 56afc1f).
+    m_engineObj.setProperty("AUDIO_RESOLUTION_16", 16);
+    m_engineObj.setProperty("AUDIO_RESOLUTION_32", 32);
+    m_engineObj.setProperty("AUDIO_RESOLUTION_64", 64);
+
+    // Media playback event constants (WE SceneScript MediaPlaybackEvent)
+    m_jsEngine->evaluate("var MediaPlaybackEvent = { CYCLIC: -1, PLAYBACK_STOPPED: 0, "
+                         "PLAYBACK_PLAYING: 1, PLAYBACK_PAUSED: 2 };\n");
+
+    // engine.registerAudioBuffers(resolution) — JS shim shared with tests
+    // (see SceneScriptShimsJs.hpp).  Returns a buffer object the script
+    // retains; refreshAudioBuffers() fills it from the analyzer each tick.
+    {
+        QJSValue regFn = m_jsEngine->evaluate(wek::qml_helper::kRegisterAudioBuffersJs);
+        m_engineObj.setProperty("registerAudioBuffers", regFn);
+    }
+
+    // WEColor module — shared with tests via SceneScriptShimsJs.hpp.
+    m_jsEngine->evaluate(wek::qml_helper::kWEColorJs);
+}
+
 void SceneObject::setupEngineGlobals() {
     m_jsEngine = new QJSEngine(this);
     // Cache the globalObject() handle once for the lifetime of m_jsEngine.
@@ -3719,62 +3696,7 @@ void SceneObject::setupEngineGlobals() {
     m_jsEngine->evaluate("engine._assetPools = {};\n"
                          "engine.registerAsset = function(path) { return { __asset: path }; };\n");
 
-    // createScriptProperties() — WE SceneScript API for declaring user-configurable properties
-    // Returns a chainable builder:
-    // createScriptProperties().addSlider({name,value,...}).addCheckbox(...) After chaining, the
-    // result object has properties accessible by name (e.g. scriptProperties.mode)
-    // createScriptProperties: chainable builder that exposes each defined
-    // property via a getter/setter pair.  Writes fire the optional
-    // `onChange` callback with the new value (and `this` bound to the
-    // builder).  Same-value writes are suppressed — essential because
-    // WE wallpapers use mutual-exclusion patterns where one checkbox's
-    // onChange writes `false` to its siblings; without the suppression
-    // the siblings re-fire their own onChange and infinite-recurse.
-    // Lucy Clock's date-format checkboxes rely on this.
-    m_jsEngine->evaluate("function createScriptProperties() {\n"
-                         "  var _values = {};\n"
-                         "  var _onChange = {};\n"
-                         "  var builder = {};\n"
-                         "  function addProp(def) {\n"
-                         "    if (!def) return builder;\n"
-                         "    var n = def.name || def.n;\n"
-                         "    if (!n) return builder;\n"
-                         "    _values[n] = def.value;\n"
-                         "    if (def.onChange && typeof def.onChange === 'function') {\n"
-                         "      _onChange[n] = def.onChange;\n"
-                         "    }\n"
-                         "    if (!Object.getOwnPropertyDescriptor(builder, n)) {\n"
-                         "      Object.defineProperty(builder, n, {\n"
-                         "        get: function() { return _values[n]; },\n"
-                         "        set: function(v) {\n"
-                         "          if (_values[n] === v) return;\n"
-                         "          _values[n] = v;\n"
-                         "          var h = _onChange[n];\n"
-                         "          if (h) {\n"
-                         "            try { h.call(builder, v); }\n"
-                         "            catch (e) {\n"
-                         "              if (typeof console !== 'undefined' && console.log)\n"
-                         "                console.log('scriptProperty onChange error on ' + n\n"
-                         "                            + ': ' + (e && e.message));\n"
-                         "            }\n"
-                         "          }\n"
-                         "        },\n"
-                         "        enumerable: true, configurable: true\n"
-                         "      });\n"
-                         "    }\n"
-                         "    return builder;\n"
-                         "  }\n"
-                         "  builder.addCheckbox = addProp;\n"
-                         "  builder.addSlider = addProp;\n"
-                         "  builder.addCombo = addProp;\n"
-                         "  builder.addText = addProp;\n"
-                         "  builder.addTextInput = addProp;\n"
-                         "  builder.addColor = addProp;\n"
-                         "  builder.addFile = addProp;\n"
-                         "  builder.addDirectory = addProp;\n"
-                         "  builder.finish = function() { return builder; };\n"
-                         "  return builder;\n"
-                         "}\n");
+    installScriptPropertiesGlobal();
 }
 
 void SceneObject::installSceneBridge() {
@@ -4663,19 +4585,27 @@ void SceneObject::evaluateColorScripts() {
         }
 
         // Result is Vec3 {x, y, z} = RGB (r/g/b aliases also accepted as fallback)
-        float r, g, b;
-        if (result.isObject()) {
-            QJSValue rx = result.property("x");
-            r = (float)(rx.isUndefined() ? result.property("r").toNumber() : rx.toNumber());
-            QJSValue gy = result.property("y");
-            g = (float)(gy.isUndefined() ? result.property("g").toNumber() : gy.toNumber());
-            QJSValue bz = result.property("z");
-            b = (float)(bz.isUndefined() ? result.property("b").toNumber() : bz.toNumber());
-        } else {
+        if (! result.isObject()) {
             // Skip silently — color scripts that depend on shared.* may return
             // undefined until property scripts populate the data
             continue;
         }
+        auto channel = [&](const char* vecKey, const char* colorKey) {
+            QJSValue v = result.property(vecKey);
+            return wek::qml_helper::finiteJsNumber(v.isUndefined() ? result.property(colorKey) : v);
+        };
+        auto rc = channel("x", "r");
+        auto gc = channel("y", "g");
+        auto bc = channel("z", "b");
+        // Vec3's constructor coerces NaN to 0 but lets Infinity through, and a
+        // script can return a bare {x,y,z} that skips it entirely.  Take the
+        // whole colour or none of it: a non-finite channel written into
+        // currentColor latches this script — every later compare against it is
+        // false, so the colour stops updating for good.
+        if (! rc || ! gc || ! bc) continue;
+        const float r = *rc;
+        const float g = *gc;
+        const float b = *bc;
 
         // Periodic diagnostic logging (every ~3 seconds)
         static int evalCount = 0;
@@ -4740,26 +4670,11 @@ void SceneObject::evaluateColorScripts() {
         }
 
         // Pack result back into a float vector.  Accept scalars, Vec2/3/4
-        // objects, or plain arrays — same shape as
-        // SceneObject::effectMaterialSetValue.
-        std::vector<float> floats;
-        if (result.isNumber()) {
-            floats.push_back((float)result.toNumber());
-        } else if (result.isArray()) {
-            int n = result.property("length").toInt();
-            for (int i = 0; i < n && i < 16; ++i) {
-                QJSValue el = result.property(i);
-                if (el.isNumber()) floats.push_back((float)el.toNumber());
-            }
-        } else if (result.isObject()) {
-            const char* keys[] = { "x", "y", "z", "w" };
-            for (int k = 0; k < 4; ++k) {
-                QJSValue v = result.property(keys[k]);
-                if (! v.isNumber()) break;
-                floats.push_back((float)v.toNumber());
-            }
-        }
-        if (floats.empty()) continue;
+        // objects, or plain arrays — same shape (and same non-finite refusal)
+        // as SceneObject::effectMaterialSetValue.
+        auto packed = wek::qml_helper::packJsFloats(result, 16);
+        if (! packed) continue;
+        std::vector<float> floats = std::move(*packed);
 
         // Compare-and-push: only dispatch when the value actually changed.
         bool changed = floats.size() != state.cachedValue.size();
@@ -6015,6 +5930,38 @@ void SceneObject::seedPropertyScriptForTesting(int32_t id, TestScriptKind kind,
     m_globalObj.setProperty("_scriptPartVisEnd", QJSValue(visEnd));
     m_globalObj.setProperty("_scriptPartVec3End", QJSValue(vec3End));
     m_runAllPropertyScriptsFn = m_jsEngine->globalObject().property("_runAllPropertyScripts");
+}
+
+void SceneObject::seedColorScriptForTesting(int32_t id, const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+
+    ColorScriptState state;
+    state.id       = id;
+    state.updateFn = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    // Black seed: any non-black return is a change, so one tick is enough to
+    // see what the script dispatched.
+    state.currentColor = { 0.0f, 0.0f, 0.0f };
+    m_colorScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::seedShaderValueScriptForTesting(int32_t id, int32_t effectIdx,
+                                                  const std::string& uniformName, int argShape,
+                                                  const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+
+    ShaderValueScriptState state;
+    state.id          = id;
+    state.effectIdx   = effectIdx;
+    state.uniformName = uniformName;
+    state.argShape    = argShape;
+    state.updateFn    = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    m_shaderValueScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::installScriptApiGlobalsForTesting() {
+    bootstrapScriptEngineForTesting();
+    installScriptPropertiesGlobal();
+    installScriptApiGlobals();
 }
 
 void SceneObject::seedTextStyleScriptForTesting(int32_t id, const std::string& halign,

@@ -631,3 +631,145 @@ TEST_SUITE("SceneScript event dispatch error surface") {
         CHECK_FALSE(DispatchLogCapture::mentions("boom"));
     }
 }
+
+// ------------------------------------------------------------------
+// Non-finite guards on the colour / shader-value tick.
+//
+// A script can divide by a zero audio level or hand back 0/0; QJSValue says
+// NaN and Inf are numbers, so nothing downstream catches them.  Beyond the
+// poisoned uniform, a NaN that lands in a change cache latches it: every
+// later |new - cached| compare against NaN is false, so the slot stops
+// updating for the rest of the wallpaper's life.
+// ------------------------------------------------------------------
+TEST_SUITE("Non-finite script results") {
+    // Returns NaN on the first tick and `then` afterwards.
+    std::string nanThen(const char* then) {
+        return std::string("(function(){ var n = 0; return function(v) { n++; "
+                           "return n === 1 ? 0/0 : ") +
+               then + "; }; })()";
+    }
+
+    TEST_CASE("a NaN shader value is not dispatched and does not latch the slot") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->seedShaderValueScriptForTesting(5, 0, "g_Speed", 1, nanThen("1.5"));
+
+        obj->evaluateColorScriptsForTesting();
+        CHECK(sink->count("updateEffectMaterialValue") == 0);
+
+        obj->evaluateColorScriptsForTesting();
+        REQUIRE(sink->count("updateEffectMaterialValue") == 1);
+        const auto* c = sink->find("updateEffectMaterialValue");
+        REQUIRE(c != nullptr);
+        CHECK(c->s0 == "g_Speed");
+        REQUIRE(c->floats.size() == 1);
+        CHECK(c->floats[0] == doctest::Approx(1.5f));
+    }
+
+    TEST_CASE("an array shader value with one NaN component is refused whole") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // Dropping just the bad entry would send a two-float write to a
+        // three-float uniform, which is a different wrong answer.
+        obj->seedShaderValueScriptForTesting(
+            5, 0, "g_Tint", 3, "(function(v){ return [1, 0/0, 3]; })");
+
+        obj->evaluateColorScriptsForTesting();
+        CHECK(sink->count("updateEffectMaterialValue") == 0);
+    }
+
+    TEST_CASE("a Vec3 shader value with an infinite component is refused whole") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->seedShaderValueScriptForTesting(
+            5, 0, "g_Tint", 3, "(function(v){ return new Vec3(1, 1/0, 3); })");
+
+        obj->evaluateColorScriptsForTesting();
+        CHECK(sink->count("updateEffectMaterialValue") == 0);
+    }
+
+    TEST_CASE("a NaN colour channel is not dispatched and does not latch the cache") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // A colour script may hand back a bare {x,y,z} object — an average
+        // over an empty bucket lands NaN in one channel.  The second tick
+        // differs from the first only in that channel, so a latched cache
+        // swallows it and the colour never moves again.
+        obj->seedColorScriptForTesting(7,
+                                       "(function(){ var n = 0; return function(c) { n++; "
+                                       "return { x: n === 1 ? 0/0 : 0.5, y: 1, z: 0 }; }; })()");
+
+        obj->evaluateColorScriptsForTesting();
+        CHECK(sink->count("updateColor") == 0);
+
+        obj->evaluateColorScriptsForTesting();
+        REQUIRE(sink->count("updateColor") == 1);
+        const auto* c = sink->find("updateColor");
+        REQUIRE(c != nullptr);
+        CHECK(c->id == 7);
+        REQUIRE(c->floats.size() == 3);
+        CHECK(c->floats[0] == doctest::Approx(0.5f));
+        CHECK(c->floats[1] == doctest::Approx(1.0f));
+        CHECK(c->floats[2] == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("an infinite colour channel is not dispatched") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // Vec3's constructor coerces NaN to 0 but passes Infinity straight
+        // through, so dividing by a silent audio level reaches the renderer.
+        obj->seedColorScriptForTesting(7, "(function(c){ return new Vec3(1/0, 1, 0); })");
+
+        obj->evaluateColorScriptsForTesting();
+        CHECK(sink->count("updateColor") == 0);
+    }
+
+    TEST_CASE("a material write holding a NaN is refused instead of shrunk") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        // Seeding a script is the only public seam that builds the engine and
+        // installs __sceneBridge the way production does.
+        obj->seedPropertyScriptForTesting(1, Kind::Alpha, "alpha", "(function(v){ return v; })");
+        obj->seedTextStyleScriptForTesting(5, "", "", "seed.otf");
+
+        obj->debugEvalJs("__sceneBridge.materialSetValue('testlayer_5','g_Color',[1,0/0,0]);");
+        CHECK(sink->count("updateMaterialValue") == 0);
+
+        // The guard must not swallow well-formed writes.
+        obj->debugEvalJs("__sceneBridge.materialSetValue('testlayer_5','g_Color',[1,0,0]);");
+        CHECK(sink->count("updateMaterialValue") == 1);
+    }
+}
+
+// ------------------------------------------------------------------
+// The globals a wallpaper script actually sees.
+// ------------------------------------------------------------------
+TEST_SUITE("Script API globals") {
+    TEST_CASE("createScriptProperties keeps its onChange builder after the API layer loads") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->installScriptApiGlobalsForTesting();
+
+        // Mutual exclusion (one checkbox's onChange clearing its siblings) is
+        // the pattern that breaks when the builder degrades to plain values.
+        obj->debugEvalJs("var fired = 0;\n"
+                         "var p = createScriptProperties()\n"
+                         "  .addCheckbox({name:'a', value:false,\n"
+                         "                onChange:function(v){ fired++; }})\n"
+                         "  .finish();\n"
+                         "p.a = true;\n");
+        CHECK(obj->debugEvalJs("fired").toStdString() == "1");
+        CHECK(obj->debugEvalJs("String(p.a)").toStdString() == "true");
+    }
+
+    TEST_CASE("createScriptProperties offers addDirectory") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+        obj->installScriptApiGlobalsForTesting();
+
+        // A missing builder method is a TypeError mid-init, which kills the
+        // whole script rather than one property.
+        CHECK(obj->debugEvalJs("typeof createScriptProperties().addDirectory").toStdString() ==
+              "function");
+    }
+}
