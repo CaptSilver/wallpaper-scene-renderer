@@ -140,7 +140,7 @@ if(BUILD_QML)
         wpTimer
     )
     target_include_directories(${PROJECT_NAME}-qml PUBLIC qml_helper
-        PRIVATE src/Audio/include)
+        PRIVATE src/Audio/include src/Scene/include)
     # Vendored headers go in as -isystem so upstream's warnings are not reported
     # against the bridge, which builds with -Wall -Wextra.
     target_include_directories(${PROJECT_NAME}-qml SYSTEM PUBLIC third_party)

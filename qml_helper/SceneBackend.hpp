@@ -68,6 +68,13 @@ class SceneObject : public QQuickItem {
     // drawing), 1 = off, 2 or 4 = pinned.  The sample count is baked into the
     // render passes at scene load, so a change reloads the scene.
     Q_PROPERTY(int msaaMode READ msaaMode WRITE setMsaaMode)
+    // Fraction of the display's native resolution to render at, 1.0 = native.
+    // Almost everything the renderer does is per-pixel and per-pass, so
+    // rendering below native and letting Qt upscale is the largest single
+    // lever on a wallpaper that is too heavy for the screen it is on.  The
+    // Vulkan target size is fixed when the scene-graph node is built, so a
+    // change takes effect when the backend is next loaded.
+    Q_PROPERTY(qreal renderScale MEMBER m_renderScale)
     // Standalone viewer override: when non-zero, initVulkan() uses these
     // values verbatim instead of item-width * devicePixelRatio.  Lets -R
     // on sceneviewer-script land an exact physical pixel size regardless of
@@ -361,6 +368,7 @@ private:
     bool    m_systemAudioCapture { false };
     QString m_postprocessingOverride;
     int     m_msaaMode { 0 };
+    qreal   m_renderScale { 1.0 };
     QString m_userProperties;
     int     m_renderPixelWidth { 0 };
     int     m_renderPixelHeight { 0 };

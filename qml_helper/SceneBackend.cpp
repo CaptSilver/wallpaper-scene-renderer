@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "Scene/RenderExtent.h"
 #include "Timer/FramePacing.hpp"
 #include "SceneAspect.h"
 #include "ScriptLoopGate.h"
@@ -373,13 +374,15 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             // exact physical pixel size via the renderPixelWidth/Height
             // properties — needed because Wayland fractional scaling makes
             // dpr unstable around window-show time (see qmlviewer.cpp -R).
-            int vk_w = m_renderPixelWidth > 0
-                           ? m_renderPixelWidth
-                           : (int)std::lround(width() * window()->devicePixelRatio());
-            int vk_h = m_renderPixelHeight > 0
-                           ? m_renderPixelHeight
-                           : (int)std::lround(height() * window()->devicePixelRatio());
-            node->initVulkan(vk_w, vk_h, m_hdrOutput);
+            const auto dpr    = window()->devicePixelRatio();
+            using wallpaper::ResolveRenderExtent;
+            const auto extent =
+                ResolveRenderExtent((uint32_t)std::lround(width() * dpr),
+                                    (uint32_t)std::lround(height() * dpr),
+                                    m_renderScale,
+                                    (uint32_t)std::max(0, m_renderPixelWidth),
+                                    (uint32_t)std::max(0, m_renderPixelHeight));
+            node->initVulkan((int)extent.width, (int)extent.height, m_hdrOutput);
 
             connect(
                 node, &TextureNode::redraw, window(), &QQuickWindow::update, Qt::QueuedConnection);

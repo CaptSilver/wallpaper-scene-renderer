@@ -56,6 +56,7 @@ add_executable(backend_scene_tests
     test_SceneNode.cpp
     test_UniformDirtyGate.cpp
     test_CameraShakeGate.cpp
+    test_RenderExtent.cpp
     test_FramebufferCache.cpp
     test_StagingReuse.cpp
     test_StagingBufferIncrease.cpp
@@ -385,6 +386,7 @@ if(Qt6_FOUND)
         ${CMAKE_SOURCE_DIR}/qml_helper
         ${CMAKE_SOURCE_DIR}/third_party
         ${CMAKE_SOURCE_DIR}/src/Audio/include
+        ${CMAKE_SOURCE_DIR}/src/Scene/include
         ${DOCTEST_INCLUDE_DIR}
     )
     target_link_libraries(scenescript_tests PRIVATE
