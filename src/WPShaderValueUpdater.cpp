@@ -1,6 +1,7 @@
 #include "WPShaderValueUpdater.hpp"
 #include "Eigen/src/Core/Matrix.h"
 #include "Eigen/src/Geometry/Transform.h"
+#include "Scene/CameraShakeGate.h"
 #include "Scene/Scene.h"
 #include "Scene/SceneCamera.h"
 #include "Scene/SpriteSnapshotGate.h"
@@ -23,16 +24,31 @@ namespace
 {
 // WEKDE_DEBUG_SHAKE=1 dumps the camera-shake decision: the offset the
 // sum-of-sinusoids produced, and per node whether the shake branch was actually
-// taken.  The branch requires an EMPTY camera name, so every node that carries
-// one — a per-node effect camera, "global_perspective", "effect" — is skipped,
-// and which layers that covers is invisible without this.  Read once, so the
-// getenv cost stays off the per-node path.
+// taken.  Which nodes sway is otherwise invisible: the split falls along camera
+// names the scene file never mentions, so a layer standing still while the rest
+// of the picture moves gives no clue why.  Read once, so the getenv cost stays
+// off the per-node path.
 bool shakeDiagEnabled() {
     static const bool on = [] {
         const char* v = std::getenv("WEKDE_DEBUG_SHAKE");
         return v != nullptr && v[0] != '\0' && std::string_view(v) != "0";
     }();
     return on;
+}
+
+// Is this camera one of the followers the scene re-clones from "global" every
+// frame?  Only the per-node cameras a compose effect creates land in that list,
+// and only for them does the answer need looking up — the scene-wide names and
+// the post-process camera decide on their own, so skip the scan for those.
+bool followsLinkedGlobalCamera(const wallpaper::Scene& scene, std::string_view cam_name) {
+    if (wallpaper::isGlobalViewCameraName(cam_name) || wallpaper::isPostProcessCameraName(cam_name))
+        return false;
+    auto it = scene.linkedCameras.find("global");
+    if (it == scene.linkedCameras.end()) return false;
+    for (const auto& name : it->second) {
+        if (std::string_view(name) == cam_name) return true;
+    }
+    return false;
 }
 } // namespace
 
@@ -342,11 +358,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
     // ---- matrix/VP uniform block: recompute only when something moved ----
     // Parallax mutates the model matrix from live mouse input every frame;
-    // camera-shake mutates the VP for the global camera every frame.  Both
+    // camera-shake mutates the VP of every camera showing the global view.  Both
     // must stay volatile (never served from the static cache).  The flags
     // mirror the exact runtime conditions of the parallax/shake math below.
+    const bool linkedToGlobal = followsLinkedGlobalCamera(*m_scene, cam_name);
     const bool parallaxActive = m_parallax.enable && hasNodeData && cam_name != "effect";
-    const bool shakeActive    = m_shake.enable && cam_name.empty();
+    const bool shakeActive    = m_shake.enable && cameraFollowsGlobalView(cam_name, linkedToGlobal);
 
     auto&      mc        = m_nodeMatrixCache[{ pNode, std::string(cam_name) }];
     const bool recompute = uniformMatricesShouldRecompute(! mc.valid,
@@ -390,9 +407,9 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         Matrix4d viewProTrans = camera->GetViewProjectionMatrix();
 
         // Camera shake: translate the view-projection so all scene objects shift together.
-        // Only apply to the global camera (cam_name empty) — per-node effect cameras and
-        // the "effect" camera render to intermediate RTs and must not be shaken.
-        const bool shakeApplied = m_shake.enable && cam_name.empty();
+        // Reuses the dirty-gate flag verbatim — the two must never diverge, or a node the
+        // gate thinks is static gets shaken once and then frozen at that offset.
+        const bool shakeApplied = shakeActive;
         if (shakeDiagEnabled()) {
             // First sighting of each node only — a %N sample just re-prints the
             // busiest nodes and never shows the full shaken/unshaken split.

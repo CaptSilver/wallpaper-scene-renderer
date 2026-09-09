@@ -20,7 +20,8 @@ namespace wallpaper
 //                       input every frame; it must never be served from the
 //                       static cache while enabled,
 //   * shakeActive     — camera shake shifts the view-projection every frame
-//                       for the global camera; must stay volatile while on,
+//                       for every camera that follows the global view; must
+//                       stay volatile while on,
 //   * nodeEpoch  != cachedNodeEpoch — the node's world transform changed,
 //   * vpEpoch    != cachedVpEpoch   — the camera's view-projection changed.
 // parallaxActive / shakeActive keep the two volatile transform mutators out
