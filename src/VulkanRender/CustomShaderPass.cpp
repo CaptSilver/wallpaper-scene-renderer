@@ -1205,6 +1205,16 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
 
 void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::execute");
+    extern bool g_pass_dump_active;
+    // Per-pass RT dumps copy the output image, which is illegal inside a
+    // render pass instance, and a dump of a merged group would show the
+    // group's combined result under every member's name.  Fall the whole
+    // frame back to one render pass per pass: the flag never changes while a
+    // command buffer is being recorded, so every pass agrees on the fallback
+    // and nobody is left owing a begin or an end.
+    const PassMergeRole role   = g_pass_dump_active ? PassMergeRole::Standalone : m_desc.merge_role;
+    const bool          opens  = PassOpensRenderPass(role);
+    const bool          closes = PassClosesRenderPass(role);
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
     // uniforms, AND is the last writer of its output VkImage (see
     // canCache() / VulkanRender::compileRenderGraph for the alias check),
@@ -1222,7 +1232,11 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         auto* mat = m_desc.node->Mesh()->Material();
         if (mat && mat->customShader.constValuesDirty) invalidateCache();
     }
-    if (canCache() && isCached()) {
+    // compileRenderGraph never merges a cacheable pass, precisely because
+    // this early return would strand the group's begin or end.  The role
+    // check keeps that a local, checkable fact rather than an invariant
+    // spread across two files: a merged pass re-records instead.
+    if (canCache() && isCached() && role == PassMergeRole::Standalone) {
         g_cache_hits++;
         return;
     }
@@ -1240,12 +1254,19 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // that owns its RT's clear keeps recording, because dropping it would
     // leave the image holding last frame's pixels for the next pass that
     // samples it.
+    // A hidden pass that opens or closes a merged group still records the
+    // boundary — there is no way to hand a render pass instance over — but
+    // its draw is dropped below by the same visibility test.
     if (m_desc.node != nullptr &&
-        IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output)) {
+        IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output) &&
+        HiddenPassDropsRecording(role)) {
         // The hidden pass may still be the first user of its depth image this
         // frame.  Hand the initialisation over before bailing out rather than
         // leaving the image UNDEFINED for a later visible pass that shares it.
-        if (! IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame))
+        // Inside a group there is nothing to hand over: merging requires the
+        // same depth image, and the pass that opened the group cleared it.
+        if (role == PassMergeRole::Standalone &&
+            ! IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame))
             recordDepthInit(rr.command);
         g_invisible_skips++;
         return;
@@ -1305,7 +1326,11 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // with the VkImage handle — a driver-recycled handle for a fresh image
     // starts un-transitioned and re-emits the barrier (the old global
     // VkImage-keyed tracker would have incorrectly skipped it).
-    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_desc.msaaColorOwner &&
+    // Both this barrier and recordDepthInit below are illegal once a render
+    // pass instance is open, and both are unnecessary there: merging demands
+    // the same MSAA and depth images, so the pass that opened the group has
+    // already transitioned and cleared them.
+    if (opens && m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_desc.msaaColorOwner &&
         ! m_desc.msaaColorOwner->initial_layout_transitioned) {
         VkImageMemoryBarrier barrier {
             .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1326,7 +1351,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         m_desc.msaaColorOwner->initial_layout_transitioned = true;
     }
 
-    recordDepthInit(cmd);
+    if (opens) recordDepthInit(cmd);
 
     VkImageSubresourceRange base_srang {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1361,16 +1386,22 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             sampler   = img.sampler;
             view      = img.view;
 
-            m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
-                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .pNext            = nullptr,
-                .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-                .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
-                .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .image            = img.handle,
-                .subresourceRange = base_srang,
-            });
+            // Skipped for a pass recorded inside someone else's render pass:
+            // vkCmdPipelineBarrier may only name attachments there.  Nothing
+            // is lost — this barrier's source access is a read and its layout
+            // does not change, so it orders nothing, and a pass is only
+            // merged when it samples none of the group's attachments.
+            if (opens)
+                m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
+                    .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext            = nullptr,
+                    .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+                    .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .image            = img.handle,
+                    .subresourceRange = base_srang,
+                });
         }
 
         // Push the image-info FIRST so its address is stable for the
@@ -1456,7 +1487,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         .clearValueCount = clearCount,
         .pClearValues    = clear_values,
     };
-    cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+    if (opens) cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
     cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
     VkViewport viewport {
@@ -1489,15 +1520,16 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         }
     }
 
-    cmd.EndRenderPass();
+    if (closes) cmd.EndRenderPass();
 
     // Mip-chain refresh: when this pass wrote to an RT with mips enabled
     // (pingpongs allocated with has_mipmap=true by WPSceneParser), blit
     // mip 0 down through mip N-1 via VK_FILTER_LINEAR.  Next pass sampling
     // at high minification gets a pre-AA'd mip via trilinear LOD selection.
     // RecGenerateMipmaps handles layout transitions; no-op when mipmap_level == 1.
-    if (m_desc.vk_output.mipmap_level > 1 &&
-        m_desc.vk_output.handle != VK_NULL_HANDLE) {
+    // Blits are illegal inside a render pass, and every member of a group
+    // writes the same image: regenerate once, after the group's last write.
+    if (closes && m_desc.vk_output.mipmap_level > 1 && m_desc.vk_output.handle != VK_NULL_HANDLE) {
         device.tex_cache().RecGenerateMipmaps(cmd, m_desc.vk_output);
     }
 
@@ -1505,7 +1537,6 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // image into a pre-allocated staging buffer BEFORE any later pass
     // rewrites the same ping-pong slot.  VulkanRender maps the staging
     // buffers after the frame's submit+wait and writes PPMs.
-    extern bool                               g_pass_dump_active;
     extern std::vector<PassDumpEntry>*        g_pass_dump_entries;
     extern class Device const*                g_pass_dump_device;
     if (g_pass_dump_active && g_pass_dump_entries && g_pass_dump_device &&

@@ -97,6 +97,7 @@ add_executable(backend_scene_tests
     test_WPMdlParserFormats.cpp
     test_SceneProfiler.cpp
     test_PassCacheAlias.cpp
+    test_PassMerge.cpp
     test_BlendModeFactors.cpp
     test_CustomShaderPassDesc.cpp
     test_CustomShaderPass_DepthBinding.cpp

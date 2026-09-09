@@ -33,6 +33,7 @@
 #include "CopyPass.hpp"
 #include "Resource.hpp"
 #include "VulkanRender/PassCacheAlias.hpp"
+#include "VulkanRender/PassMerge.hpp"
 #include "VulkanRender/FenceWaitRetry.hpp"
 #include "FrameFenceCycle.hpp"
 
@@ -1935,6 +1936,90 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
         LOG_INFO("pass cache: %d cacheable, %d safe-to-skip → can skip on re-exec",
                  cacheable_total,
                  cache_gated);
+    }
+
+    // Render pass merging: a scene whose layers all composite into
+    // _rt_default emits one begin/store/transition per layer — plus a
+    // full-screen MSAA resolve per layer — and frame time tracks the pass
+    // count almost linearly.  Consecutive passes that target exactly the same
+    // attachments and read none of them are recorded as consecutive draws in
+    // one render pass instead.  ComputePassMergeRoles (pure, unit-tested in
+    // test_PassMerge.cpp) owns the decision; it only ever groups neighbours,
+    // so nothing is reordered.
+    {
+        // Escape hatch for the field: WEKDE_PASS_MERGE=0 puts every pass back
+        // in its own render pass instance, which is what to try first if a
+        // wallpaper renders differently on a driver we have not seen.
+        static const bool s_merge_enabled = []() {
+            const char* v = std::getenv("WEKDE_PASS_MERGE");
+            return ! (v && v[0] == '0');
+        }();
+
+        // Vulkan handles come in two shapes (dispatchable pointers and
+        // 64-bit non-dispatchable handles); both compare as one integer key.
+        // Two distinct handles must never collide into one key or the merge
+        // would fuse passes writing different targets.
+        using MergeH = std::uint64_t;
+        static_assert(sizeof(void*) == sizeof(MergeH), "handle key would truncate");
+        auto key = [](auto handle) -> MergeH {
+            return (MergeH)(std::uintptr_t)handle;
+        };
+
+        std::vector<PassMergeInfo<MergeH>> infos;
+        std::vector<CustomShaderPass*>     merge_csps;
+        infos.reserve(m_passes.size());
+        merge_csps.reserve(m_passes.size());
+        for (auto* p : m_passes) {
+            auto*                 csp = dynamic_cast<CustomShaderPass*>(p);
+            PassMergeInfo<MergeH> info {};
+            // A cacheable pass returns early on re-execute, so it can never
+            // hold a group's begin or end.  Everything that is not a plain
+            // CustomShaderPass draw — PrePass, FinPass, CopyPass — stays a
+            // hard boundary as well.
+            if (csp != nullptr && csp->prepared() && ! csp->canCache()) {
+                const auto& d      = csp->desc();
+                info.mergeable     = true;
+                info.color_view    = key(d.vk_output.mip0_view);
+                info.msaa_view     = key(d.msaaColorView);
+                info.depth_view    = key(d.depthView);
+                info.samples       = (unsigned)d.msaaSamples;
+                info.width         = d.vk_output.extent.width;
+                info.height        = d.vk_output.extent.height;
+                info.clears_output = d.clears_output;
+                for (auto h :
+                     { key(d.vk_output.handle), key(d.msaaColorImage), key(d.depthImage) }) {
+                    if (h != 0) info.attachment_images.push_back(h);
+                }
+                for (auto const& slots : d.vk_textures) {
+                    // Every slot, not just the active one: sprite animation
+                    // switches slots between frames while the role assignment
+                    // is made once per compile.
+                    for (auto const& img : slots.slots) {
+                        if (img.handle != VK_NULL_HANDLE) {
+                            info.sampled_images.push_back(key(img.handle));
+                        }
+                    }
+                }
+            }
+            infos.push_back(std::move(info));
+            merge_csps.push_back(csp);
+        }
+
+        auto roles  = s_merge_enabled
+                          ? ComputePassMergeRoles<MergeH>(infos)
+                          : std::vector<PassMergeRole>(m_passes.size(), PassMergeRole::Standalone);
+        int  groups = 0, merged_passes = 0;
+        for (std::size_t i = 0; i < m_passes.size(); ++i) {
+            if (merge_csps[i] != nullptr) merge_csps[i]->setMergeRole(roles[i]);
+            if (roles[i] == PassMergeRole::GroupBegin) groups++;
+            if (roles[i] != PassMergeRole::Standalone) merged_passes++;
+        }
+        LOG_INFO("pass merge: %d groups over %d passes, %d fewer render pass instances "
+                 "(%zu passes total)",
+                 groups,
+                 merged_passes,
+                 merged_passes - groups,
+                 m_passes.size());
     }
 
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {

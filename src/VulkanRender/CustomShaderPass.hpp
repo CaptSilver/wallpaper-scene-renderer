@@ -1,5 +1,6 @@
 #pragma once
 #include "VulkanPass.hpp"
+#include "VulkanRender/PassMerge.hpp"
 #include <string>
 #include <vector>
 
@@ -116,6 +117,12 @@ public:
         PipelineParameters    pipeline;
         u32                   draw_count { 0 };
 
+        // Whether this pass records its draw inside its own render pass
+        // instance or shares one with the neighbours that write the same
+        // attachments.  Assigned once per graph compile by
+        // VulkanRender::compileRenderGraph; see PassMerge.hpp.
+        PassMergeRole merge_role { PassMergeRole::Standalone };
+
         // uniforms
         std::function<void()> update_op;
     };
@@ -158,6 +165,10 @@ public:
     bool isCached() const { return m_cached; }
     void invalidateCache() { m_cached = false; }
     void markCached() { m_cached = true; }
+
+    // Assigned by VulkanRender::compileRenderGraph once every pass is
+    // prepared and its attachment handles are known.
+    void setMergeRole(PassMergeRole r) { m_desc.merge_role = r; }
 
     // Accessors for per-pass debug dump (VulkanRender::Impl reads output image
     // info after a frame WaitIdle to produce PPMs of each pass's render target).
