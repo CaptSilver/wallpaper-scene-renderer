@@ -1012,7 +1012,7 @@ static void applyMsaaSetting(Scene& scene, int mode, u32 scene_default, const ch
     auto req = Scene::msaaRequestFromMode(mode, scene_default);
     if (const char* env = std::getenv("WEKDE_MSAA")) {
         u32 want = (u32)std::atoi(env);
-        if (want == 1 || want == 2 || want == 4 || want == 8) req = { want, false };
+        if (Scene::isSupportedMsaaSampleCount(want)) req = { want, false };
     }
     scene.msaaRequested = req.samples;
     scene.msaaSamples   = req.samples;

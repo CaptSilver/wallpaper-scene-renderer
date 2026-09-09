@@ -43,6 +43,23 @@ TEST_SUITE("MsaaPolicy") {
               Scene::autoMsaaSamples(4, 3840, 2160, kHeavyPasses));
     }
 
+    TEST_CASE("the tier boundaries are inclusive at the exact pixel count") {
+        // A display landing exactly on a threshold belongs to the better tier.
+        // Tested at the edge because a comparison that slips from <= to < only
+        // misbehaves for the single resolution that sits on the line, and every
+        // other case in this suite sits comfortably inside a tier.
+        CHECK(Scene::autoMsaaSamples(4, 2000, 1500, 4) == 4);   // exactly 3.0 M
+        CHECK(Scene::autoMsaaSamples(4, 2000, 1501, 4) == 2);   // one row over
+        CHECK(Scene::autoMsaaSamples(4, 2600, 2500, 4) == 2);   // exactly 6.5 M
+        CHECK(Scene::autoMsaaSamples(4, 2600, 2501, 4) == 1);   // one row over
+    }
+
+    TEST_CASE("the concurrent term is counted at the boundary too") {
+        // Two screens summing exactly to a threshold stay in the better tier.
+        CHECK(Scene::autoMsaaSamples(4, 1000, 1500, 4, 1500000ull) == 4);
+        CHECK(Scene::autoMsaaSamples(4, 1000, 1500, 4, 1500001ull) == 2);
+    }
+
     TEST_CASE("a pathological pass count drops MSAA even on a small display") {
         // The tier is a ceiling, not a promise: the sample count multiplies
         // with the number of layers, so a scene that draws hundreds of them
@@ -87,6 +104,19 @@ TEST_SUITE("MsaaPolicy") {
         // from zero would silently disable MSAA for every scene.
         CHECK(Scene::autoMsaaSamples(4, 3840, 2160, 0) == 4);
         CHECK(Scene::autoMsaaSamples(4, 0, 0, kHeavyPasses) == 4);
+    }
+
+    TEST_CASE("only real sample counts are accepted") {
+        // Guards the override paths: a value the pipeline was never built for
+        // must be rejected outright rather than rounded to something plausible.
+        CHECK(Scene::isSupportedMsaaSampleCount(1));
+        CHECK(Scene::isSupportedMsaaSampleCount(2));
+        CHECK(Scene::isSupportedMsaaSampleCount(4));
+        CHECK(Scene::isSupportedMsaaSampleCount(8));
+        CHECK_FALSE(Scene::isSupportedMsaaSampleCount(0));
+        CHECK_FALSE(Scene::isSupportedMsaaSampleCount(3));
+        CHECK_FALSE(Scene::isSupportedMsaaSampleCount(6));
+        CHECK_FALSE(Scene::isSupportedMsaaSampleCount(16));
     }
 
     TEST_CASE("the user setting maps to a request and an auto flag") {

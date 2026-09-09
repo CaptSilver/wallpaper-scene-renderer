@@ -244,6 +244,13 @@ public:
     // these numbers came from.
     static constexpr u64 kMsaaResolveBudget = 3000ull * 1000 * 1000;
 
+    // Sample counts this renderer accepts.  Anything else — a typo in the
+    // override, a value from a newer build, 0 — is not "close enough to 4",
+    // it is a VkSampleCountFlagBits the pipeline was never built for.
+    static bool isSupportedMsaaSampleCount(u32 samples) {
+        return samples == 1 || samples == 2 || samples == 4 || samples == 8;
+    }
+
     // What the MSAA setting resolved to: the count to ask for, and whether the
     // automatic tiering still applies on top of it.
     struct MsaaRequest {
