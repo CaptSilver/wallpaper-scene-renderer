@@ -1134,7 +1134,14 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
 
         // Enable 4x MSAA for 2D scenes too — warp-streak particles and
         // similar thin additive quads alias badly at 1spp (blocky edges).
+        // WEKDE_MSAA=1|2|4|8 overrides it: every pass that writes _rt_default
+        // carries a full-screen resolve, so on a scene with many layers the
+        // sample count is a per-pass bandwidth multiplier worth measuring.
         scene.msaaSamples = 4;
+        if (const char* env = std::getenv("WEKDE_MSAA")) {
+            u32 want = (u32)std::atoi(env);
+            if (want == 1 || want == 2 || want == 4 || want == 8) scene.msaaSamples = want;
+        }
         LOG_INFO("MSAA enabled: x%d (2D scene)", scene.msaaSamples);
 
         scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
