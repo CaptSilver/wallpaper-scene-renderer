@@ -19,6 +19,23 @@
 #include <cstdlib>
 #include <set>
 
+namespace
+{
+// WEKDE_DEBUG_SHAKE=1 dumps the camera-shake decision: the offset the
+// sum-of-sinusoids produced, and per node whether the shake branch was actually
+// taken.  The branch requires an EMPTY camera name, so every node that carries
+// one — a per-node effect camera, "global_perspective", "effect" — is skipped,
+// and which layers that covers is invisible without this.  Read once, so the
+// getenv cost stays off the per-node path.
+bool shakeDiagEnabled() {
+    static const bool on = [] {
+        const char* v = std::getenv("WEKDE_DEBUG_SHAKE");
+        return v != nullptr && v[0] != '\0' && std::string_view(v) != "0";
+    }();
+    return on;
+}
+} // namespace
+
 using namespace wallpaper;
 using namespace Eigen;
 
@@ -59,6 +76,24 @@ void WPShaderValueUpdater::FrameBegin() {
                    std::cos(t * 5.1f + 0.9f) * r * r;
         float norm    = 1.0f + r + r * r;
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
+    }
+
+    if (shakeDiagEnabled()) {
+        static int s_shake_log = 0;
+        if (++s_shake_log % 120 == 1) {
+            LOG_INFO("[SHAKE] enable=%d amp=%.4f speed=%.3f rough=%.3f offset=(%.5f,%.5f) "
+                     "parallax=%d ortho=%dx%d t=%.2f",
+                     (int)m_shake.enable,
+                     (double)m_shake.amplitude,
+                     (double)m_shake.speed,
+                     (double)m_shake.roughness,
+                     (double)m_shakeOffset.x(),
+                     (double)m_shakeOffset.y(),
+                     (int)m_parallax.enable,
+                     (int)m_scene->ortho[0],
+                     (int)m_scene->ortho[1],
+                     m_scene->elapsingTime);
+        }
     }
 
     // Advance camera path animation
@@ -357,7 +392,22 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         // Camera shake: translate the view-projection so all scene objects shift together.
         // Only apply to the global camera (cam_name empty) — per-node effect cameras and
         // the "effect" camera render to intermediate RTs and must not be shaken.
-        if (m_shake.enable && cam_name.empty()) {
+        const bool shakeApplied = m_shake.enable && cam_name.empty();
+        if (shakeDiagEnabled()) {
+            // First sighting of each node only — a %N sample just re-prints the
+            // busiest nodes and never shows the full shaken/unshaken split.
+            static std::set<std::pair<int, std::string>> s_seen_nodes;
+            auto key = std::make_pair(pNode->ID(), std::string(cam_name));
+            if (s_seen_nodes.size() < 400 && s_seen_nodes.insert(key).second) {
+                LOG_INFO("[SHAKE] node=%d cam='%s' applied=%d persp=%d offscreen=%d",
+                         pNode->ID(),
+                         std::string(cam_name).c_str(),
+                         (int)shakeApplied,
+                         (int)camera->IsPerspective(),
+                         (int)pNode->IsOffscreen());
+            }
+        }
+        if (shakeApplied) {
             Vector2f shakeVec;
             if (camera->IsPerspective()) {
                 // Perspective: m_shakeOffset already contains amplitude, use directly
@@ -367,6 +417,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 // Ortho: scale by ortho dimensions for pixel-space shake
                 Vector2f ortho { (float)m_scene->ortho[0], (float)m_scene->ortho[1] };
                 shakeVec = m_shakeOffset.cwiseProduct(ortho) * 0.01f;
+            }
+            if (shakeDiagEnabled()) {
+                static int s_vec_log = 0;
+                if (++s_vec_log % 500 == 1) {
+                    LOG_INFO("[SHAKE] node=%d VP translate=(%.4f,%.4f)",
+                             pNode->ID(),
+                             (double)shakeVec.x(),
+                             (double)shakeVec.y());
+                }
             }
             viewProTrans =
                 viewProTrans *
