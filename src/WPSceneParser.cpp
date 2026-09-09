@@ -1039,8 +1039,9 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
                  general.farz);
 
         // Enable 4x MSAA for 3D scenes (perspective camera = 3D models)
-        scene.msaaSamples = 4;
-        LOG_INFO("MSAA enabled: x%d (3D scene)", scene.msaaSamples);
+        scene.msaaSamples   = 4;
+        scene.msaaRequested = scene.msaaSamples;
+        LOG_INFO("MSAA requested: x%d (3D scene)", scene.msaaRequested);
 
         // Create orthographic overlay camera for flat image layers in 3D scenes.
         // Image layers default to flat/ortho rendering unless perspective=true.
@@ -1140,9 +1141,15 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         scene.msaaSamples = 4;
         if (const char* env = std::getenv("WEKDE_MSAA")) {
             u32 want = (u32)std::atoi(env);
-            if (want == 1 || want == 2 || want == 4 || want == 8) scene.msaaSamples = want;
+            if (want == 1 || want == 2 || want == 4 || want == 8) {
+                scene.msaaSamples   = want;
+                scene.msaaAutoScale = false;
+            }
         }
-        LOG_INFO("MSAA enabled: x%d (2D scene)", scene.msaaSamples);
+        scene.msaaRequested = scene.msaaSamples;
+        LOG_INFO("MSAA requested: x%d (2D scene, auto=%d)",
+                 scene.msaaRequested,
+                 (int)scene.msaaAutoScale);
 
         scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
             (float)context.ortho_w / (float)context.ortho_h,
@@ -5710,7 +5717,8 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
             Scene::skyboxMsaaSamples(context.scene->has_skybox, context.scene->msaaSamples);
         msaa != context.scene->msaaSamples) {
         LOG_INFO("skybox scene: MSAA disabled (background pass writes the single-sampled RT)");
-        context.scene->msaaSamples = msaa;
+        context.scene->msaaSamples   = msaa;
+        context.scene->msaaRequested = msaa;
     }
 
     fixupDeferredGroupLinks(context, deferred_group_links, json_order);

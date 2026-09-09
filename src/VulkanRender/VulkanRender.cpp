@@ -1746,6 +1746,25 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     auto nodes             = rg.topologicalOrder();
     auto node_release_texs = rg.getLastReadTexs(nodes);
 
+    // Resolve MSAA here, the one point that knows both halves of its cost:
+    // the output extent and how many passes will resolve into _rt_default.
+    // Always from msaaRequested, never from the previous answer, so a
+    // recompile at a lower resolution can raise the count back up.
+    if (scene.msaaAutoScale) {
+        const auto& out = m_device->out_extent();
+        const u32   msaa =
+            Scene::autoMsaaSamples(scene.msaaRequested, out.width, out.height, (u32)nodes.size());
+        if (msaa != scene.msaaSamples) {
+            LOG_INFO("MSAA resolved: x%u -> x%u (%ux%u, %zu passes)",
+                     scene.msaaRequested,
+                     msaa,
+                     out.width,
+                     out.height,
+                     nodes.size());
+        }
+        scene.msaaSamples = msaa;
+    }
+
     m_passes.clear();
     m_passes.resize(nodes.size());
 

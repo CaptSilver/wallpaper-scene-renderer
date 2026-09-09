@@ -76,6 +76,7 @@ add_executable(backend_scene_tests
     test_SoundStreamTable.cpp
     test_SceneTickHelpers.cpp
     test_FpsCounter.cpp
+    test_MsaaPolicy.cpp
     test_Logging.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp

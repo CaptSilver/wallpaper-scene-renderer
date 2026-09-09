@@ -219,6 +219,39 @@ public:
         return has_skybox ? 1u : requested;
     }
 
+    // Budget for the automatic MSAA policy, in pixel-passes per frame (output
+    // pixels x passes).  Measured on an RX 9070 XT against workshop wallpaper
+    // 3705485676, which compiles to 206 passes, uncapped:
+    //
+    //     2560x1440 (759 M)  : 4x = 71 fps, 2x = 87 fps
+    //     3840x2160 (1.71 G) : 4x = 19 fps, 2x = 29 fps, 1x = 125 fps
+    //
+    // The line sits between those two.  Calibrated on a fast GPU, so it is a
+    // ceiling on obvious waste rather than a guarantee — the user-facing
+    // setting is what covers slower hardware.
+    static constexpr u64 kMsaaWorkBudget = 1000ull * 1000 * 1000;
+
+    // Choose a sample count that scales with how much resolving the scene will
+    // actually do.  Every pass writing _rt_default ends in a full-screen
+    // resolve, so the cost tracks (output pixels x passes): the sample count
+    // multiplies with the number of layers a scene draws, not with the
+    // complexity of any one of them.  A two-layer scene can afford 4x at 4K; a
+    // 206-pass scene cannot.
+    //
+    // Past the budget MSAA goes off rather than stepping down, because the
+    // measured cost is a cliff and not a slope — at 4K the same scene runs 19
+    // fps at 4x and still only 29 fps at 2x, so a halved sample count spends
+    // edge quality without buying a playable frame rate.
+    //
+    // Returns `requested` unchanged when the extent or the pass count is not
+    // known yet — estimating from zero would silently disable MSAA everywhere.
+    static u32 autoMsaaSamples(u32 requested, u32 out_w, u32 out_h, u32 pass_count) {
+        if (requested <= 1) return 1u;
+        if (out_w == 0 || out_h == 0 || pass_count == 0) return requested;
+        const u64 work = (u64)out_w * (u64)out_h * (u64)pass_count;
+        return work <= kMsaaWorkBudget ? requested : 1u;
+    }
+
     // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/
     // "low"/""), after the plugin-level override is applied on top of
     // scene.general.orthogonalprojection.postprocessing.  Stored on Scene so
@@ -228,8 +261,17 @@ public:
     // the scene nor the override sets a value.
     std::string resolved_postprocessing;
 
-    // MSAA: 1=off, 2/4/8=sample count (maps to VkSampleCountFlagBits)
+    // MSAA: 1=off, 2/4/8=sample count (maps to VkSampleCountFlagBits).
+    // msaaRequested is what the scene (and later the user setting) asked for;
+    // msaaSamples is what the render graph resolved it to for the current
+    // output extent and pass count.  They are separate because the graph is
+    // recompiled on resolution change — resolving in place would make a 4K
+    // downgrade permanent for the rest of the session.
+    u32 msaaRequested { 1 };
     u32 msaaSamples { 1 };
+    // False when WEKDE_MSAA pinned the count by hand, so a measurement run
+    // gets the sample count it asked for instead of the policy's answer.
+    bool msaaAutoScale { true };
     // Multisampled color images per render target (owned by Vulkan layer)
     std::unordered_map<std::string, std::shared_ptr<void>> msaaColorImages;
     // Multisampled depth buffers (main + reflection)
