@@ -24,6 +24,8 @@ namespace wallpaper
 // frame -> GPU wedge).
 inline constexpr uint32_t kMaxParticlesPerFrame = 200'000;
 
+class SceneNode;
+
 enum class ParticleAnimationMode
 {
     SEQUENCE,
@@ -254,6 +256,21 @@ public:
     void               SetDebugName(std::string name) { m_debug_name = std::move(name); }
     const std::string& DebugName() const { return m_debug_name; }
 
+    // The scene-graph node that draws this subsystem's mesh, or null when no
+    // node does (spawner-only subsystems never attach their mesh).  Bound by
+    // ParticleSystem::BindHostNodes; a subsystem consults it to find out
+    // whether anything is looking at what it emits.
+    void       SetHostNode(SceneNode* n) { m_host_node = n; }
+    SceneNode* HostNode() const { return m_host_node; }
+
+    // Mesh identity, used by the host-node binding walk to match a subsystem
+    // against the graph node that draws it.
+    const SceneMesh* MeshPtr() const { return m_mesh.get(); }
+
+    // True when a host node is bound and it (or an ancestor) is hidden.  A
+    // subsystem with no host node is never hidden.
+    bool IsHostHidden() const;
+
     // WE semantics: `starttime` is the number of seconds of simulation the
     // particle system is advanced BEFORE the first rendered frame, so
     // particles are already at steady-state distribution on frame 1.  Used
@@ -330,6 +347,10 @@ private:
     // resolver instead of being baked into per-CP `parent_cp_index` at parse time.
     int32_t m_cp_start_shift { 0 };
 
+    // See SetHostNode.  Raw pointer: the scene graph owns the node and both
+    // outlive this subsystem (Scene owns the ParticleSystem too).
+    SceneNode* m_host_node { nullptr };
+
     std::string m_debug_name;
 };
 
@@ -370,6 +391,14 @@ public:
     // is 0 (the overwhelming majority of wallpapers).
     void PreSimulate(double dt = 0.032);
 
+    // Walk the scene graph and give every subsystem the node that draws its
+    // mesh, matched on SceneMesh identity (the parser hands the same
+    // shared_ptr<SceneMesh> to the node and to the subsystem).  Emitt calls
+    // this on its first tick; the graph's node set is fixed at parse time, so
+    // one walk covers the scene's lifetime.  A subsystem whose mesh no node
+    // draws stays unbound and keeps simulating unconditionally.
+    void BindHostNodes();
+
     // Per-tick burst-done collector: filled by Emitt() with the NodeId of
     // each subsystem whose IsBurstDone() flipped false→true since the last
     // ack.  Drained by the render-thread draw loop in SceneWallpaper.cpp
@@ -401,6 +430,9 @@ public:
 
 private:
     std::vector<int32_t> m_burst_done_this_tick;
+
+    // One-shot latch for BindHostNodes — see its comment.
+    bool m_host_nodes_bound { false };
 
     // Sticky once-per-lifetime latch for the global emission budget warning.
     // Atomic guards against concurrent test reader; on x86 the load/store are

@@ -3,11 +3,13 @@
 #include "Scene/Scene.h"
 #include "ParticleModify.h"
 #include "Scene/SceneMesh.h"
+#include "Scene/SceneNode.h"
 #include "Core/Random.hpp"
 
 #include "Utils/Logging.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 using namespace wallpaper;
 
@@ -231,8 +233,26 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
 void ParticleSubSystem::Emitt()          { EmittImpl(false); }
 void ParticleSubSystem::EmittSkipSpawn() { EmittImpl(true);  }
 
+bool ParticleSubSystem::IsHostHidden() const {
+    return m_host_node != nullptr && ! m_host_node->IsVisible();
+}
+
 void ParticleSubSystem::EmittImpl(bool skip_spawn) {
     if (m_sys.scene.elapsingTime < (double)m_starttime) return;
+
+    // Nobody is looking: don't spawn, don't age particles, don't rebuild the
+    // vertex buffer.  Wallpapers wire their own switches to layer visibility,
+    // so a system that kept running while hidden would charge the user the
+    // full cost of a feature they just turned off — the ABRAR KHAN 4K rain
+    // layers are 107 systems' worth of exactly that.
+    //
+    // Freezing rather than fast-forwarding is the point: m_time and every
+    // particle's remaining lifetime stand still while hidden, so switching the
+    // layer back on continues from the state it was hidden in instead of
+    // dumping all the skipped seconds of emission into one tick.  Children are
+    // ticked from the tail of this function, so a hidden parent stops its whole
+    // subtree with it.
+    if (IsHostHidden()) return;
 
     // Cap per-frame particle time to avoid burst emission when the frame is
     // slow (e.g. first frame after scene compile, or when fps target is low
@@ -659,7 +679,36 @@ size_t particleCountOf(const ParticleSubSystem& sub) {
 }
 } // namespace
 
+void ParticleSystem::BindHostNodes() {
+    if (m_host_nodes_bound) return;
+    m_host_nodes_bound = true;
+    if (! scene.sceneGraph) return;
+
+    std::unordered_map<const SceneMesh*, SceneNode*> node_of_mesh;
+    auto collect = [&node_of_mesh](auto&& self, SceneNode* node) -> void {
+        if (node == nullptr) return;
+        if (node->Mesh() != nullptr) node_of_mesh.emplace(node->Mesh(), node);
+        for (auto& child : node->GetChildren()) self(self, child.get());
+    };
+    collect(collect, scene.sceneGraph.get());
+
+    auto bind = [&node_of_mesh](auto&& self, ParticleSubSystem& sub) -> void {
+        auto it = node_of_mesh.find(sub.MeshPtr());
+        if (it != node_of_mesh.end()) sub.SetHostNode(it->second);
+        for (const auto& child : sub.Children()) {
+            if (child) self(self, *child);
+        }
+    };
+    for (auto& sub : subsystems) {
+        if (sub) bind(bind, *sub);
+    }
+}
+
 void ParticleSystem::Emitt() {
+    // The parser finishes the scene graph before the first tick, so the one
+    // walk here covers every subsystem for the life of the scene.
+    BindHostNodes();
+
     static int s_ps_log = 0;
     if (++s_ps_log % 600 == 1) {
         LOG_INFO("ParticleSystem::Emitt: %zu subsystems, elapsed=%f",

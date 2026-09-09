@@ -41,6 +41,7 @@ add_executable(backend_scene_tests
     test_ParticleModify.cpp
     test_ParticleSystem.cpp
     test_ParticleSubSystem_BurstDoneQueue.cpp
+    test_HiddenLayerSkip.cpp
     test_ParticleTrail.cpp
     test_SceneClockClamp.cpp
     test_SceneLoadFailure.cpp

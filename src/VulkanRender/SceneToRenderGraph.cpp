@@ -286,8 +286,11 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
 }
 
 // Render a scene node into _rt_Reflection using the reflected camera.
-// Skips nodes that read _rt_Reflection (the reflecting surface itself)
-// and offscreen/invisible nodes.
+// Skips nodes that read _rt_Reflection (the reflecting surface itself) and
+// offscreen nodes.  Runtime visibility is deliberately NOT consulted here:
+// the graph is built once at scene compile, while a layer can be hidden and
+// shown again at any time.  CustomShaderPass::execute drops the record for a
+// hidden node instead.
 static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
@@ -301,7 +304,7 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
         if (url == WE_REFLECTION) return;
     }
 
-    // Skip offscreen/invisible nodes
+    // Skip offscreen nodes
     if (node->IsOffscreen()) return;
 
     // Skip effect camera nodes (internal compositing passes)

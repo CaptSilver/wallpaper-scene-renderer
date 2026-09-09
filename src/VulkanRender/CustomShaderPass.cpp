@@ -788,6 +788,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             //      the sun.  See test_BlendModeFactors "Blend math".
             const bool rt_already_cleared = scene.clearedRTs.count(m_desc.output) != 0;
             loadOp = SelectOutputLoadOp(m_desc.force_clear_output, rt_already_cleared);
+            m_desc.clears_output = (loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR);
             LOG_INFO("CSP_PREPARE loadOp for '%.*s': %s (force=%d already_cleared=%d)",
                      (int)m_desc.output.size(),
                      m_desc.output.data(),
@@ -1126,6 +1127,82 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     setPrepared();
 }
 
+void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
+    // Explicitly clear depth buffer to 1.0 on first use each frame.
+    // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
+    // to work around drivers where the render pass CLEAR doesn't execute
+    // correctly with a newly-created depth image (RADV GFX1201).
+    //
+    // Tracks per-image-handle in g_depth_inited_frame so scenes with
+    // multiple depth images (one per RT extent) transition each one on
+    // its own first use.  The previous global bool flagged the first
+    // depth image transitioned and silently skipped all others — Three-
+    // Body (3509243656) has 4+ depth-enabled passes with different RT
+    // sizes, so 3+ stayed UNDEFINED and their draws depth-failed.
+    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE &&
+        g_depth_inited_frame.find(m_desc.depthImage) == g_depth_inited_frame.end()) {
+        g_depth_inited_frame.insert(m_desc.depthImage);
+        VkImageSubresourceRange depth_range {
+            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        };
+
+        // The depth image arrives here in one of:
+        //   - VK_IMAGE_LAYOUT_UNDEFINED (first frame ever or first frame
+        //     after a Scene reload — the existing fast path)
+        //   - VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL (the path-A
+        //     consumer transition will leave it here at end-of-frame; we
+        //     re-arm it to ATTACHMENT_OPTIMAL via TRANSFER_DST + clear)
+        // Both transition into TRANSFER_DST_OPTIMAL for the clear command.
+        // Using UNDEFINED as oldLayout is permitted by spec regardless of
+        // actual prior layout — Vulkan treats it as "discard" — so we use
+        // UNDEFINED unconditionally here.  This keeps the barrier shape
+        // unchanged across the two paths.
+        VkImageMemoryBarrier to_transfer {
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = 0,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_desc.depthImage,
+            .subresourceRange    = depth_range,
+        };
+        cmd.PipelineBarrier(
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
+
+        // Explicit clear to 1.0
+        VkClearDepthStencilValue clear_depth { 1.0f, 0 };
+        cmd.ClearDepthStencilImage(
+            m_desc.depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, clear_depth, depth_range);
+
+        // Transition TRANSFER_DST → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+        VkImageMemoryBarrier to_attach {
+            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext         = nullptr,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = m_desc.depthImage,
+            .subresourceRange    = depth_range,
+        };
+        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                            0,
+                            to_attach);
+    }
+}
+
 void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::execute");
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
@@ -1151,20 +1228,25 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     }
     g_cache_misses++;
 
-    // Invisible-node fast path: if the owning node has been runtime-hidden
-    // via SceneScript (e.g. 3body's login UI hides most galaxy objects),
-    // the only work the pass would do is begin/end the render pass and
-    // leave the colour buffer unchanged (loadOp=LOAD is the common case
-    // for composite chains).  Skip the whole record.  Depth init for the
-    // depth image is self-healing — a later visible pass sharing that
-    // image will hit g_depth_inited_frame-miss and clear.
+    // Invisible-node fast path.  A node hidden at runtime — by SceneScript
+    // (3body's login UI hides most galaxy objects) or by a user property
+    // wired to layer visibility (a wallpaper's own "Rain on/off" switch) —
+    // draws nothing, so the only thing the pass contributes is its
+    // attachment load/store plus, on an MSAA target, a full-screen resolve.
+    // Skip the whole record so turning a feature off actually hands the GPU
+    // back.
     //
-    // Safety carve-out: preserve the record for passes that might be the
-    // first user of their depth image (to at least keep the depth init
-    // chain happy).  A conservative proxy: skip only when hasDepth is
-    // false, or the depth image has already been inited this frame.
-    if (m_desc.node != nullptr && ! m_desc.node->IsVisible() &&
-        IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame)) {
+    // IsHiddenPassSkippable holds the render-target safety condition: a pass
+    // that owns its RT's clear keeps recording, because dropping it would
+    // leave the image holding last frame's pixels for the next pass that
+    // samples it.
+    if (m_desc.node != nullptr &&
+        IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output)) {
+        // The hidden pass may still be the first user of its depth image this
+        // frame.  Hand the initialisation over before bailing out rather than
+        // leaving the image UNDEFINED for a later visible pass that shares it.
+        if (! IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame))
+            recordDepthInit(rr.command);
         g_invisible_skips++;
         return;
     }
@@ -1244,79 +1326,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         m_desc.msaaColorOwner->initial_layout_transitioned = true;
     }
 
-    // Explicitly clear depth buffer to 1.0 on first use each frame.
-    // Using vkCmdClearDepthStencilImage instead of render pass loadOp=CLEAR
-    // to work around drivers where the render pass CLEAR doesn't execute
-    // correctly with a newly-created depth image (RADV GFX1201).
-    //
-    // Tracks per-image-handle in g_depth_inited_frame so scenes with
-    // multiple depth images (one per RT extent) transition each one on
-    // its own first use.  The previous global bool flagged the first
-    // depth image transitioned and silently skipped all others — Three-
-    // Body (3509243656) has 4+ depth-enabled passes with different RT
-    // sizes, so 3+ stayed UNDEFINED and their draws depth-failed.
-    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE &&
-        g_depth_inited_frame.find(m_desc.depthImage) == g_depth_inited_frame.end()) {
-        g_depth_inited_frame.insert(m_desc.depthImage);
-        VkImageSubresourceRange depth_range {
-            .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
-            .baseMipLevel   = 0,
-            .levelCount     = 1,
-            .baseArrayLayer = 0,
-            .layerCount     = 1,
-        };
-
-        // The depth image arrives here in one of:
-        //   - VK_IMAGE_LAYOUT_UNDEFINED (first frame ever or first frame
-        //     after a Scene reload — the existing fast path)
-        //   - VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL (the path-A
-        //     consumer transition will leave it here at end-of-frame; we
-        //     re-arm it to ATTACHMENT_OPTIMAL via TRANSFER_DST + clear)
-        // Both transition into TRANSFER_DST_OPTIMAL for the clear command.
-        // Using UNDEFINED as oldLayout is permitted by spec regardless of
-        // actual prior layout — Vulkan treats it as "discard" — so we use
-        // UNDEFINED unconditionally here.  This keeps the barrier shape
-        // unchanged across the two paths.
-        VkImageMemoryBarrier to_transfer {
-            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext               = nullptr,
-            .srcAccessMask       = 0,
-            .dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = m_desc.depthImage,
-            .subresourceRange    = depth_range,
-        };
-        cmd.PipelineBarrier(
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, to_transfer);
-
-        // Explicit clear to 1.0
-        VkClearDepthStencilValue clear_depth { 1.0f, 0 };
-        cmd.ClearDepthStencilImage(
-            m_desc.depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, clear_depth, depth_range);
-
-        // Transition TRANSFER_DST → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-        VkImageMemoryBarrier to_attach {
-            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext         = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .image               = m_desc.depthImage,
-            .subresourceRange    = depth_range,
-        };
-        cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                                VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                            0,
-                            to_attach);
-    }
+    recordDepthInit(cmd);
 
     VkImageSubresourceRange base_srang {
         .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,

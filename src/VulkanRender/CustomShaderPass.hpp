@@ -27,6 +27,24 @@ inline VkAttachmentLoadOp SelectOutputLoadOp(bool force_clear, bool rt_already_c
                               : VK_ATTACHMENT_LOAD_OP_CLEAR;
 }
 
+// Can a pass whose node is hidden drop its whole execute() — no render pass
+// begin/end, no barriers, no descriptor pushes, and on MSAA targets no
+// full-screen resolve — instead of recording an empty pass that draws nothing?
+//
+// Hidden is not enough on its own.  `clears_output` says this pass is the one
+// that initialises its render target: SelectOutputLoadOp hands CLEAR to the
+// first writer of an RT and LOAD to every writer after it, baked in at
+// prepare time.  Drop the pass that owns the clear and the image keeps
+// whatever the previous frame left in it — nothing at all on the first frame —
+// and the effect chain that samples it downstream composites that instead.
+// The image also never reaches SHADER_READ_ONLY_OPTIMAL, which its reader
+// expects.  A later writer is safe to drop precisely because an earlier,
+// visible pass already produced and transitioned those contents; leaving them
+// alone is exactly what a draw-less LOAD would have done.
+inline bool IsHiddenPassSkippable(bool node_hidden, bool clears_output) {
+    return node_hidden && ! clears_output;
+}
+
 class CustomShaderPass : public VulkanPass {
 public:
     struct Desc {
@@ -77,8 +95,12 @@ public:
         StagingBufferRef              index_buf;
         StagingBufferRef              ubo_buf;
 
-        // pipeline
+        // pipeline.  clears_output mirrors the colour attachment's
+        // prepare-time load op: true means CLEAR, i.e. this pass is the first
+        // writer of its RT this frame and owns the target's initialisation.
+        // Read by IsHiddenPassSkippable.
         VkClearValue          clear_value;
+        bool                  clears_output { false };
         bool                  blending { false };
         bool                  hasDepth { false };
         VkImageView           depthView { VK_NULL_HANDLE };
@@ -142,6 +164,13 @@ public:
     const Desc& desc() const { return m_desc; }
 
 private:
+    // Clear this pass's depth image to 1.0 and leave it in
+    // DEPTH_STENCIL_ATTACHMENT_OPTIMAL, recording the barriers around the
+    // clear.  No-op once some pass has already done it for the same image
+    // this frame.  Called from the normal record path and, so that a hidden
+    // pass can hand the job over before it bails out, from the skip path.
+    void recordDepthInit(const vvk::CommandBuffer& cmd);
+
     Desc m_desc;
     bool m_cached { false };
     bool m_can_cache { false };
