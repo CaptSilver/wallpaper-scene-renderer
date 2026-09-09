@@ -5211,9 +5211,14 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, 
                 { Stage::Up, { std::string(WE_BLOOM_MIP4) }, std::string(WE_BLOOM_MIP3), 0.0625f },
                 { Stage::Up, { std::string(WE_BLOOM_MIP3) }, std::string(WE_BLOOM_MIP2), 0.125f },
                 { Stage::Up, { std::string(WE_BLOOM_MIP2) }, std::string(WE_BLOOM_MIP1), 0.25f },
-                // Final compose: combine_hdr LINEAR=0 path produces clamped linear
-                // (sRGB-decoded scene + 4-tap upsampled bloom · exposure).  FinPass
-                // sRGB-encodes for display.
+                // Final compose: combine_hdr LINEAR=1 path outputs the scene plus
+                // the 4-tap upsampled bloom, clamped and otherwise untouched.
+                // FinPass owns the single sRGB encode (see its srgb_encode note:
+                // render targets hold linear data and the compositor expects
+                // display-encoded).  The LINEAR=0 branch would sRGB-DECODE the
+                // scene first, which is right only if the RT held display-encoded
+                // values — it does not, so that decode was unpaired and darkened
+                // the composed frame by a full gamma.
                 { Stage::Compose,
                   { std::string(WE_BLOOM_SCENE), std::string(WE_BLOOM_MIP1) },
                   std::string(SpecTex_Default),
@@ -5237,6 +5242,8 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, 
                 // Combos drive the shader-side variant.
                 if (def.stage == Stage::Extract) wpmat.combos["BLOOM"] = 1;
                 if (def.stage == Stage::Up) wpmat.combos["UPSAMPLE"] = 1;
+                // Leave the sRGB encode to FinPass; see the compose note above.
+                if (def.stage == Stage::Compose) wpmat.combos["LINEAR"] = 1;
                 // Upsample passes additively accumulate into the destination —
                 // the destination mip already holds its downsampled-from-above
                 // content from a prior Down pass, and the Up pass adds the
