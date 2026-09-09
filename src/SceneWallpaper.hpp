@@ -127,6 +127,7 @@ constexpr std::string_view PROPERTY_HDR_CONTENT                  = "hdr_content"
 constexpr std::string_view PROPERTY_SYSTEM_AUDIO_CAPTURE         = "system_audio_capture";
 constexpr std::string_view PROPERTY_SCREENSHOT_PATH              = "screenshot_path";
 constexpr std::string_view PROPERTY_POSTPROCESSING_OVERRIDE      = "postprocessing_override";
+constexpr std::string_view PROPERTY_MSAA_MODE                   = "msaa_mode";
 // Swapchain present-mode policy (Auto / Fifo / FifoRelaxed / Mailbox / Immediate).
 // Encoded as int matching the PresentModePolicy enum in Vulkan/Swapchain.hpp.
 // Default 0 = Auto, preserving today's FIFO behaviour for matched Fps/refresh.

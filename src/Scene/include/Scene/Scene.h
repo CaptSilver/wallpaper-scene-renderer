@@ -219,37 +219,90 @@ public:
         return has_skybox ? 1u : requested;
     }
 
-    // Budget for the automatic MSAA policy, in pixel-passes per frame (output
-    // pixels x passes).  Measured on an RX 9070 XT against workshop wallpaper
-    // 3705485676, which compiles to 206 passes, uncapped:
-    //
-    //     2560x1440 (759 M)  : 4x = 71 fps, 2x = 87 fps
-    //     3840x2160 (1.71 G) : 4x = 19 fps, 2x = 29 fps, 1x = 125 fps
-    //
-    // The line sits between those two.  Calibrated on a fast GPU, so it is a
-    // ceiling on obvious waste rather than a guarantee — the user-facing
-    // setting is what covers slower hardware.
-    static constexpr u64 kMsaaWorkBudget = 1000ull * 1000 * 1000;
+    // Output-resolution tiers for the automatic MSAA policy, in pixels.
+    // Keyed on pixel COUNT, never on width, height or a named mode: a
+    // 1440-tall ultrawide is not a 1440p monitor (3440x1440 carries 34% more
+    // pixels than 2560x1440, and 5120x1440 nearly as many as 4K), and a
+    // rotated panel is the same cost as the landscape one.
+    //   <= 3.0 M  : 1920x1080 (2.07 M), 2560x1080 (2.76 M)          -> 4x
+    //   <= 6.5 M  : 2560x1440 (3.69 M), 3440x1440 (4.95 M),
+    //               3840x1600 (6.14 M)                              -> 2x
+    //   above     : 5120x1440 (7.37 M), 3840x2160 (8.29 M)          -> 1x
+    static constexpr u64 kMsaa4xMaxPixels = 3000ull * 1000;
+    static constexpr u64 kMsaa2xMaxPixels = 6500ull * 1000;
 
-    // Choose a sample count that scales with how much resolving the scene will
-    // actually do.  Every pass writing _rt_default ends in a full-screen
-    // resolve, so the cost tracks (output pixels x passes): the sample count
-    // multiplies with the number of layers a scene draws, not with the
-    // complexity of any one of them.  A two-layer scene can afford 4x at 4K; a
-    // 206-pass scene cannot.
+    // Backstop for scenes whose layer count is pathological rather than whose
+    // display is large, in resolved samples x pixels x passes.  Measured on an
+    // RX 9070 XT against wallpaper 3705485676 (206 passes), uncapped:
     //
-    // Past the budget MSAA goes off rather than stepping down, because the
-    // measured cost is a cliff and not a slope — at 4K the same scene runs 19
-    // fps at 4x and still only 29 fps at 2x, so a halved sample count spends
-    // edge quality without buying a playable frame rate.
+    //     1920x1080 4x (1.71 G) : 101 fps      2560x1440 2x (1.52 G) : 87 fps
+    //     2560x1440 4x (3.04 G) :  71 fps      3840x2160 2x (3.42 G) : 29 fps
+    //     3840x2160 4x (6.83 G) :  19 fps      3840x2160 1x (1.71 G) : 125 fps
+    //
+    // Set above every tier-approved combination so the tier is what normally
+    // decides; this only fires when a scene draws far more layers than the one
+    // these numbers came from.
+    static constexpr u64 kMsaaResolveBudget = 3000ull * 1000 * 1000;
+
+    // What the MSAA setting resolved to: the count to ask for, and whether the
+    // automatic tiering still applies on top of it.
+    struct MsaaRequest {
+        u32  samples;
+        bool autoScale;
+    };
+
+    // Map the user-facing MSAA setting onto a request.  0 means "let the
+    // policy decide" and carries the scene's own count through untouched — so
+    // a scene the parser already narrowed (a skybox scene, which must render
+    // single-sampled) is not handed MSAA back.  Any other recognised value is
+    // the user pinning a count, which also switches the tiering off; leaving
+    // it on would let the tier override the choice they just made.
+    //
+    // An unrecognised value — a stale config from an older build, or a newer
+    // one written by a future release — falls back to auto rather than to off,
+    // because silently disabling MSAA is the more surprising failure.
+    static MsaaRequest msaaRequestFromMode(int mode, u32 scene_default) {
+        switch (mode) {
+        case 1: return { 1u, false };
+        case 2: return { 2u, false };
+        case 4: return { 4u, false };
+        default: return { scene_default, true };
+        }
+    }
+
+    // Choose a sample count that fits the output the scene is actually drawn
+    // to.  Every pass writing _rt_default ends in a full-screen resolve, so
+    // the cost scales with output pixels AND with how many layers the scene
+    // draws — the sample count multiplies with the layer count, not with the
+    // complexity of any one layer.
+    //
+    // Past a tier the count drops rather than degrading smoothly, because the
+    // measured cost is a cliff: at 4K this scene runs 19 fps at 4x and still
+    // only 29 fps at 2x, so a halved sample count spends edge quality without
+    // buying a playable frame rate.
     //
     // Returns `requested` unchanged when the extent or the pass count is not
     // known yet — estimating from zero would silently disable MSAA everywhere.
-    static u32 autoMsaaSamples(u32 requested, u32 out_w, u32 out_h, u32 pass_count) {
+    // Never raises the request: it is a ceiling, not a target.
+    // concurrent_pixels is what OTHER wallpaper instances in this process are
+    // drawing at the same time.  Every screen is its own plasmoid with its own
+    // Vulkan device, all sharing one GPU, so two 1440p panels that each decide
+    // "2x is affordable" in isolation together push more pixels than the 4K
+    // screen that measured 19 fps.  The tier is therefore taken over the whole
+    // process's output, while the pass-count backstop stays per-scene (a pass
+    // count only describes the scene it belongs to).
+    static u32 autoMsaaSamples(u32 requested, u32 out_w, u32 out_h, u32 pass_count,
+                               u64 concurrent_pixels = 0) {
         if (requested <= 1) return 1u;
         if (out_w == 0 || out_h == 0 || pass_count == 0) return requested;
-        const u64 work = (u64)out_w * (u64)out_h * (u64)pass_count;
-        return work <= kMsaaWorkBudget ? requested : 1u;
+
+        const u64 pixels = (u64)out_w * (u64)out_h;
+        const u64 total  = pixels + concurrent_pixels;
+        const u32 tier = total <= kMsaa4xMaxPixels ? 4u : (total <= kMsaa2xMaxPixels ? 2u : 1u);
+
+        u32 samples = requested < tier ? requested : tier;
+        if (samples > 1 && pixels * (u64)pass_count * samples > kMsaaResolveBudget) samples = 1u;
+        return samples;
     }
 
     // Resolved per-scene post-processing tier ("ultra"/"displayhdr"/"medium"/

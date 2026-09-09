@@ -23,6 +23,8 @@ public:
     // bloom mip-chain on wallpapers that ship with hdr+bloom but no
     // postprocessing field.
     void SetPostprocessingOverride(const std::string& pp) { m_postprocessing_override = pp; }
+    // 0 = automatic (resolution/pass-count tiering), 1/2/4 = pinned by the user.
+    void SetMsaaMode(int mode) { m_msaa_mode = mode; }
 
     // Plumb a cooperative-cancellation atomic flag set by the host
     // (MainHandler) when the wallpaper's display surface goes away
@@ -39,6 +41,7 @@ public:
 private:
     std::string       m_hide_pattern;
     std::string       m_postprocessing_override;
+    int               m_msaa_mode { 0 };
     std::atomic_bool* m_abort_flag { nullptr };
 };
 } // namespace wallpaper

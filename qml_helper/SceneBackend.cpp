@@ -570,6 +570,14 @@ void SceneObject::setPostprocessingOverride(const QString& value) {
     SET_PROPERTY(String, wallpaper::PROPERTY_POSTPROCESSING_OVERRIDE, value.toStdString());
 }
 
+int SceneObject::msaaMode() const { return m_msaaMode; }
+
+void SceneObject::setMsaaMode(int value) {
+    if (m_msaaMode == value) return;
+    m_msaaMode = value;
+    SET_PROPERTY(Int32, wallpaper::PROPERTY_MSAA_MODE, value);
+}
+
 QString SceneObject::userProperties() const { return m_userProperties; }
 
 void SceneObject::setUserProperties(const QString& value) {

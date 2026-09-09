@@ -5,6 +5,7 @@
 #include "Utils/SceneProfiler.h"
 #include "RenderGraph/RenderGraph.hpp"
 #include "Scene/Scene.h"
+#include "Scene/ConcurrentRenderers.h"
 #include "Interface/IShaderValueUpdater.h"
 
 #include "Utils/Algorism.h"
@@ -96,7 +97,11 @@ constexpr std::array base_device_exts {
 
 struct VulkanRender::Impl {
     Impl()  = default;
-    ~Impl() = default;
+    ~Impl() {
+        // Stop counting toward other screens' quality tier once this renderer
+        // is gone (screen unplug, wallpaper switch, containment teardown).
+        ConcurrentRenderers::Instance().Remove(this);
+    }
 
     bool init(RenderInitInfo);
     void destroy();
@@ -1752,15 +1757,22 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     // recompile at a lower resolution can raise the count back up.
     if (scene.msaaAutoScale) {
         const auto& out = m_device->out_extent();
-        const u32   msaa =
-            Scene::autoMsaaSamples(scene.msaaRequested, out.width, out.height, (u32)nodes.size());
+        auto&       others = ConcurrentRenderers::Instance();
+        others.Set(this, (u64)out.width * (u64)out.height);
+        const u64 concurrent = others.PixelsExcluding(this);
+        const u32 msaa       = Scene::autoMsaaSamples(scene.msaaRequested,
+                                                out.width,
+                                                out.height,
+                                                (u32)nodes.size(),
+                                                concurrent);
         if (msaa != scene.msaaSamples) {
-            LOG_INFO("MSAA resolved: x%u -> x%u (%ux%u, %zu passes)",
+            LOG_INFO("MSAA resolved: x%u -> x%u (%ux%u, %zu passes, %llu px on other screens)",
                      scene.msaaRequested,
                      msaa,
                      out.width,
                      out.height,
-                     nodes.size());
+                     nodes.size(),
+                     (unsigned long long)concurrent);
         }
         scene.msaaSamples = msaa;
     }

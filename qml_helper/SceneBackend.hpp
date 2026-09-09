@@ -63,6 +63,11 @@ class SceneObject : public QQuickItem {
     // declares hdr+bloom; otherwise the legacy LDR bloom path runs.
     Q_PROPERTY(QString postprocessingOverride READ postprocessingOverride WRITE
                    setPostprocessingOverride)
+    // Anti-aliasing sample count chosen by the user: 0 = automatic (the
+    // renderer tiers it by output size, pass count and how many screens are
+    // drawing), 1 = off, 2 or 4 = pinned.  The sample count is baked into the
+    // render passes at scene load, so a change reloads the scene.
+    Q_PROPERTY(int msaaMode READ msaaMode WRITE setMsaaMode)
     // Standalone viewer override: when non-zero, initVulkan() uses these
     // values verbatim instead of item-width * devicePixelRatio.  Lets -R
     // on sceneviewer-script land an exact physical pixel size regardless of
@@ -106,6 +111,7 @@ public:
     bool    systemAudioCapture() const;
     QString userProperties() const;
     QString postprocessingOverride() const;
+    int     msaaMode() const;
     qreal   nativeAspectRatio() const;
 
     void setFps(int);
@@ -119,6 +125,7 @@ public:
     void setHdrOutput(bool);
     void setSystemAudioCapture(bool);
     void setPostprocessingOverride(const QString&);
+    void setMsaaMode(int);
 
     // debug
     bool vulkanValid() const;
@@ -353,6 +360,7 @@ private:
     bool    m_hdrOutput { false };
     bool    m_systemAudioCapture { false };
     QString m_postprocessingOverride;
+    int     m_msaaMode { 0 };
     QString m_userProperties;
     int     m_renderPixelWidth { 0 };
     int     m_renderPixelHeight { 0 };

@@ -134,6 +134,7 @@ struct ParseContext {
     // selection so users can force "ultra" on wallpapers that ship with
     // hdr+bloom but no postprocessing field.
     std::string postprocessing_override;
+    int         msaa_mode { 0 };
 
     // Layer names referenced by any SceneScript (via getLayer('X')).  These
     // layers may have their visibility toggled at runtime, so we keep them in
@@ -1003,6 +1004,22 @@ void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
 
 // parse
 
+// Settle the scene's MSAA request from the user setting, with WEKDE_MSAA
+// overriding both so a measurement run gets the count it asked for.  The
+// resolved count is decided later, per render-graph compile, once the output
+// extent and the pass count are known.
+static void applyMsaaSetting(Scene& scene, int mode, u32 scene_default, const char* what) {
+    auto req = Scene::msaaRequestFromMode(mode, scene_default);
+    if (const char* env = std::getenv("WEKDE_MSAA")) {
+        u32 want = (u32)std::atoi(env);
+        if (want == 1 || want == 2 || want == 4 || want == 8) req = { want, false };
+    }
+    scene.msaaRequested = req.samples;
+    scene.msaaSamples   = req.samples;
+    scene.msaaAutoScale = req.autoScale;
+    LOG_INFO("MSAA requested: x%u (%s, auto=%d)", req.samples, what, (int)req.autoScale);
+}
+
 void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
     auto& general = sc.general;
     auto& scene   = *context.scene;
@@ -1039,9 +1056,7 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
                  general.farz);
 
         // Enable 4x MSAA for 3D scenes (perspective camera = 3D models)
-        scene.msaaSamples   = 4;
-        scene.msaaRequested = scene.msaaSamples;
-        LOG_INFO("MSAA requested: x%d (3D scene)", scene.msaaRequested);
+        applyMsaaSetting(scene, context.msaa_mode, 4, "3D scene");
 
         // Create orthographic overlay camera for flat image layers in 3D scenes.
         // Image layers default to flat/ortho rendering unless perspective=true.
@@ -1138,18 +1153,7 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
         // WEKDE_MSAA=1|2|4|8 overrides it: every pass that writes _rt_default
         // carries a full-screen resolve, so on a scene with many layers the
         // sample count is a per-pass bandwidth multiplier worth measuring.
-        scene.msaaSamples = 4;
-        if (const char* env = std::getenv("WEKDE_MSAA")) {
-            u32 want = (u32)std::atoi(env);
-            if (want == 1 || want == 2 || want == 4 || want == 8) {
-                scene.msaaSamples   = want;
-                scene.msaaAutoScale = false;
-            }
-        }
-        scene.msaaRequested = scene.msaaSamples;
-        LOG_INFO("MSAA requested: x%d (2D scene, auto=%d)",
-                 scene.msaaRequested,
-                 (int)scene.msaaAutoScale);
+        applyMsaaSetting(scene, context.msaa_mode, 4, "2D scene");
 
         scene.cameras["global_perspective"] = std::make_shared<SceneCamera>(
             (float)context.ortho_w / (float)context.ortho_h,
@@ -5642,6 +5646,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     ParseContext context;
     context.hide_pattern            = m_hide_pattern;
     context.postprocessing_override = m_postprocessing_override;
+    context.msaa_mode               = m_msaa_mode;
     // Plumb the host's cooperative-cancellation flag (set by
     // SceneWallpaper::abortLoad when the wallpaper's screen goes away
     // mid-load) into the parse context so per-object hot loops can poll it.

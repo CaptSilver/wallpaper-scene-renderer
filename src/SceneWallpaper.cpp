@@ -297,6 +297,7 @@ private:
     bool        m_hdr_output { false };
     bool        m_system_audio_capture { false };
     std::string m_postprocessing_override;
+    int32_t     m_msaa_mode { 0 };
     // Last present-mode policy + refresh-hz seen from QML.  Cached so the
     // PROPERTY_FPS path (which mirrors fps into the swapchain) can re-issue
     // the same policy without expecting QML to repost it.  Defaults match the
@@ -2792,6 +2793,20 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
                     auto nmsg = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_SET_HDR);
                     nmsg->setBool("value", value);
                     nmsg->post();
+                }
+            }
+        } else if (property == PROPERTY_MSAA_MODE) {
+            int32_t value { 0 };
+            msg->findInt32("value", &value);
+            if (m_msaa_mode != value) {
+                m_msaa_mode = value;
+                m_scene_parser.SetMsaaMode(value);
+                LOG_INFO("MSAA mode: %d (0 = automatic)", value);
+                // The sample count is baked into every render pass and its
+                // attachments when the scene is parsed and the graph built, so
+                // a runtime change has to reload the scene to take effect.
+                if (! m_source.empty() && ! m_assets.empty()) {
+                    CALL_MHANDLER_CMD(LOAD_SCENE, msg);
                 }
             }
         } else if (property == PROPERTY_POSTPROCESSING_OVERRIDE) {
