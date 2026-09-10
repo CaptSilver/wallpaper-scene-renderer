@@ -715,3 +715,39 @@ TEST_SUITE("SceneImageEffectLayer::IsComposeLayer")
         CHECK(layer.IsPassthrough() == true);
     }
 }
+
+// ===========================================================================
+// Layer coordinate space
+// ===========================================================================
+
+#include "LayerSpace.hpp"
+
+TEST_SUITE("Layer space") {
+    // A sun-glare sprite parented to the sun model inherits a world transform
+    // in scene units.  Compositing it through the pixel-space ortho overlay
+    // scales it by the model's scale and it swamps the framebuffer.
+    TEST_CASE("a layer parented directly to a model is in model space") {
+        std::unordered_set<wallpaper::i32> models { 99 };
+        std::unordered_map<wallpaper::i32, wallpaper::i32> parents { { 185, 99 } };
+        CHECK(wallpaper::InheritsModelSpace(99, models, parents));
+    }
+
+    TEST_CASE("a layer parented to a group under a model is in model space") {
+        std::unordered_set<wallpaper::i32> models { 99 };
+        std::unordered_map<wallpaper::i32, wallpaper::i32> parents { { 300, 99 }, { 185, 300 } };
+        CHECK(wallpaper::InheritsModelSpace(300, models, parents));
+    }
+
+    TEST_CASE("an ordinary overlay layer is not in model space") {
+        std::unordered_set<wallpaper::i32> models { 99 };
+        std::unordered_map<wallpaper::i32, wallpaper::i32> parents { { 228, -1 } };
+        CHECK_FALSE(wallpaper::InheritsModelSpace(228, models, parents));
+        CHECK_FALSE(wallpaper::InheritsModelSpace(-1, models, parents));
+    }
+
+    TEST_CASE("a parent cycle terminates instead of hanging") {
+        std::unordered_set<wallpaper::i32> models {};
+        std::unordered_map<wallpaper::i32, wallpaper::i32> parents { { 1, 2 }, { 2, 1 } };
+        CHECK_FALSE(wallpaper::InheritsModelSpace(1, models, parents));
+    }
+}

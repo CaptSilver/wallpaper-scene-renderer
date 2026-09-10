@@ -97,6 +97,12 @@ struct ParseContext {
     // image-object ancestors without depending on parse order.
     std::unordered_map<i32, std::pair<i32, Eigen::Matrix4d>> id_authored_local;
 
+    // Ids of objects that are 3D models, plus every object's declared parent.
+    // A layer descending from a model lives in scene units, not screen pixels,
+    // so it must not be composited through the pixel-space ortho overlay.
+    std::unordered_set<i32>      model_object_ids;
+    std::unordered_map<i32, i32> declared_parent;
+
     // Child-attachment world transform for puppet nodes: equals the node's own
     // world * puppet.bone[0].transform (legacy — kept for fallback when a
     // child doesn't name a specific attachment).  For nodes without a
@@ -2627,8 +2633,12 @@ void assembleEffectChain(ParseContext&                     context,
              (int)isOffscreen);
 
     // In perspective scenes, flat image layers need the ortho overlay camera
-    // for their final composite (not the perspective camera).
-    if (scene.cameras.count("global_ortho") && ! wpimgobj.perspective) {
+    // for their final composite (not the perspective camera).  A layer that
+    // descends from a 3D model is not flat — its world transform is in scene
+    // units, and the ortho window would scale it by the model's scale.
+    if (scene.cameras.count("global_ortho") && ! wpimgobj.perspective &&
+        ! InheritsModelSpace(
+            wpimgobj.parent_id, context.model_object_ids, context.declared_parent)) {
         imgEffectLayer->SetFinalCamera("global_ortho");
     }
 }
@@ -2641,7 +2651,9 @@ void applyFlatPerspectiveOrthoCamera(const ParseContext& context,
     // overlay camera instead of the perspective camera.  This makes SceneScript
     // origin values (UV coordinates in [-0.5, 0.5]) map correctly to screen space.
     if (! hasEffect && context.scene->activeCamera->IsPerspective() && ! wpimgobj.perspective &&
-        context.scene->cameras.count("global_ortho")) {
+        context.scene->cameras.count("global_ortho") &&
+        ! InheritsModelSpace(
+            wpimgobj.parent_id, context.model_object_ids, context.declared_parent)) {
         spImgNode->SetCamera("global_ortho");
     }
 }
@@ -4314,12 +4326,17 @@ void computeGroupWorldTransforms(ParseContext& context, const nlohmann::json& js
                                  const std::vector<GroupInfo>& group_infos) {
     auto& id_local = context.id_authored_local;
     id_local.clear();
+    context.model_object_ids.clear();
+    context.declared_parent.clear();
     for (auto& obj : json.at("objects")) {
         if (! obj.contains("id") || ! obj.at("id").is_number_integer()) continue;
         i32 id  = obj.at("id").get<i32>();
         i32 pid = -1;
         if (obj.contains("parent") && obj.at("parent").is_number_integer())
             pid = obj.at("parent").get<i32>();
+        context.declared_parent[id] = pid;
+        if (obj.contains("model") && ! obj.at("model").is_null())
+            context.model_object_ids.insert(id);
         std::array<float, 3> origin { 0, 0, 0 };
         std::array<float, 3> scale { 1, 1, 1 };
         std::array<float, 3> angles { 0, 0, 0 };
