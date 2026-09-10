@@ -31,6 +31,20 @@ inline VkDeviceSize IndexAlignmentFor(VkIndexType type) {
     return type == VK_INDEX_TYPE_UINT32 ? 4u : 2u;
 }
 
+// Wallpaper Engine materials say "normal" or "nocull"; they never say
+// "back"/"front", which are this engine's own vocabulary.  An unrecognised
+// value used to fall through to no culling at all, so every model drew both
+// hemispheres — wasted fill on opaque meshes, and doubled compositing on
+// translucent shells such as a cloud or atmosphere layer.
+inline VkCullModeFlags CullModeFor(std::string_view cullmode, bool flip) {
+    const bool cull_back = (cullmode == "normal" || cullmode == "back");
+    const bool cull_front = (cullmode == "front");
+    if (! cull_back && ! cull_front) return VK_CULL_MODE_NONE;
+
+    const bool back = cull_back != flip;
+    return back ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
+}
+
 // Pure load-op selector for the per-pass output RT.  Returns CLEAR when:
 //   - force_clear is set (per-light volumetric back-depth path), OR
 //   - the RT has not yet been touched this frame (scene.clearedRTs check).

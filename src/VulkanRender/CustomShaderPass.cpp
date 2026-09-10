@@ -895,13 +895,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (mesh.Material()->depthWrite) {
             pipeline.depth.depthWriteEnable = VK_TRUE;
         }
-        if (mesh.Material()->cullmode == "back") {
-            pipeline.raster.cullMode =
-                m_desc.flipCullMode ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT;
-        } else if (mesh.Material()->cullmode == "front") {
-            pipeline.raster.cullMode =
-                m_desc.flipCullMode ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_FRONT_BIT;
-        }
+        pipeline.raster.cullMode = CullModeFor(mesh.Material()->cullmode, m_desc.flipCullMode);
         pipeline.addDescriptorSetInfo(spanone { descriptor_info })
             .setColorBlendStates(spanone { color_blend })
             .setTopology(m_desc.index_buf        ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST

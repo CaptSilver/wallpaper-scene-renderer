@@ -100,3 +100,48 @@ TEST_SUITE("CustomShaderPass msaa init handle-reuse") {
     }
 }
 
+// Cull mode comes from the material's own vocabulary.  Front faces are
+// counter-clockwise after the projection's z-flip cancels the viewport's
+// negative height, so "normal" means cull the back faces — verified on real
+// sphere geometry, where back-culling leaves the near hemisphere visible and
+// correctly oriented.
+TEST_SUITE("CustomShaderPass cull mode") {
+    using wallpaper::vulkan::CullModeFor;
+
+    TEST_CASE("normal culls back faces") {
+        CHECK(CullModeFor("normal", false) == VK_CULL_MODE_BACK_BIT);
+    }
+
+    TEST_CASE("nocull disables culling") {
+        CHECK(CullModeFor("nocull", false) == VK_CULL_MODE_NONE);
+    }
+
+    TEST_CASE("an unknown cullmode disables culling rather than guessing") {
+        CHECK(CullModeFor("", false) == VK_CULL_MODE_NONE);
+        CHECK(CullModeFor("sideways", false) == VK_CULL_MODE_NONE);
+    }
+
+    TEST_CASE("back and front keep their explicit meaning") {
+        CHECK(CullModeFor("back", false) == VK_CULL_MODE_BACK_BIT);
+        CHECK(CullModeFor("front", false) == VK_CULL_MODE_FRONT_BIT);
+    }
+
+    // Reflection passes render the scene mirrored, which reverses winding.
+    TEST_CASE("the flip swaps front and back but leaves nocull alone") {
+        CHECK(CullModeFor("normal", true) == VK_CULL_MODE_FRONT_BIT);
+        CHECK(CullModeFor("back", true) == VK_CULL_MODE_FRONT_BIT);
+        CHECK(CullModeFor("front", true) == VK_CULL_MODE_BACK_BIT);
+        CHECK(CullModeFor("nocull", true) == VK_CULL_MODE_NONE);
+    }
+}
+
+TEST_SUITE("CustomShaderPass index alignment") {
+    using wallpaper::vulkan::IndexAlignmentFor;
+
+    // A default alignment of 1 happened to work only because every prior
+    // sub-allocation was a multiple of 4.
+    TEST_CASE("alignment matches the index size") {
+        CHECK(IndexAlignmentFor(VK_INDEX_TYPE_UINT16) == 2u);
+        CHECK(IndexAlignmentFor(VK_INDEX_TYPE_UINT32) == 4u);
+    }
+}
