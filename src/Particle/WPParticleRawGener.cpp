@@ -2,6 +2,7 @@
 #include "WPParticleRawGener_TestHooks.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <Eigen/Dense>
 #include <array>
@@ -730,9 +731,35 @@ inline size_t GenSpriteTrailDataGS(std::span<const std::unique_ptr<ParticleInsta
     return total_segs;
 }
 
-inline void updateIndexArray(uint16_t index, size_t count, SceneIndexArray& iarray) noexcept {
-    constexpr size_t single_size = 6;
-    const uint16_t   cv          = index * 4;
+// A packed 16-bit index cannot name a vertex past 65535, and every quad eats
+// four vertices, so this is the last quad such an index buffer can reach.
+constexpr usize kMaxPackedU16Quads = 65536 / 4;
+
+// Writes the six indices (two triangles) of every quad in
+// [first_quad, quad_count) and returns how many quads the index buffer can
+// actually address.  Quads past that are dropped rather than wrapped — a
+// wrapped 16-bit index quietly re-points a quad at the first particle's
+// vertices, which is how an over-full particle system used to smear trails
+// across the wrong sprites.
+inline usize updateIndexArray(usize first_quad, usize quad_count,
+                              SceneIndexArray& iarray) noexcept {
+    constexpr usize single_size = 6;
+    const usize     reach       = std::min(quad_count, kMaxPackedU16Quads);
+
+    if (quad_count > kMaxPackedU16Quads) {
+        // The overshoot lasts as long as those particles do, so this would
+        // fire every frame.  Throttled, but never dropped.
+        static std::atomic<u64> s_reports { 0 };
+        if (s_reports.fetch_add(1, std::memory_order_relaxed) % 600 == 0) {
+            LOG_ERROR("particle mesh wants %zu quads but 16-bit indices only reach %zu; "
+                      "the remaining particles are not drawn",
+                      quad_count,
+                      kMaxPackedU16Quads);
+        }
+    }
+    if (first_quad >= reach) return reach;
+
+    const uint16_t cv = (uint16_t)(first_quad * 4);
 
     std::array<uint16_t, single_size> single;
     // 0 1 3
@@ -744,10 +771,11 @@ inline void updateIndexArray(uint16_t index, size_t count, SceneIndexArray& iarr
     single[4] = cv + 2;
     single[5] = cv + 3;
     // every particle
-    for (uint16_t i = index; i < count; i++) {
+    for (usize i = first_quad; i < reach; i++) {
         iarray.AssignHalf(i * single_size, single);
         for (auto& x : single) x += 4;
     }
+    return reach;
 }
 } // namespace
 
@@ -820,11 +848,14 @@ void WPParticleRawGener::GenGLData(std::span<const std::unique_ptr<ParticleInsta
 
     if (! opt.geometry_shader) {
         auto& si       = mesh.GetIndexArray(0);
-        u16   indexNum = (si.DataCount() * 2) / 6;
+        usize indexNum = (si.DataCount() * 2) / 6;
+        usize drawable = particle_num;
         if (particle_num > indexNum) {
-            updateIndexArray(indexNum, particle_num, si);
+            drawable = updateIndexArray(indexNum, particle_num, si);
         }
-        si.SetRenderDataCount(particle_num * 6 / 2);
+        // Draw only what got indexed, so a clamped frame ends on a real quad
+        // instead of trailing off into never-written index slots.
+        si.SetRenderDataCount(drawable * 6 / 2);
     }
 }
 
@@ -852,5 +883,12 @@ std::size_t TestGenRopeParticleDataGS(std::span<const Particle> particles,
         [](const Particle&, const ParticleRawGenSpec&) {};
     return GenRopeParticleDataGS(particles, inst_pos, s_noop_specOp, opt, sv, start_idx, anc_alpha);
 }
+
+std::size_t TestUpdateIndexArray(std::size_t first_quad, std::size_t quad_count,
+                                 SceneIndexArray& iarray) noexcept {
+    return updateIndexArray(first_quad, quad_count, iarray);
+}
+
+std::size_t MaxU16QuadCount() noexcept { return kMaxPackedU16Quads; }
 
 } // namespace wallpaper::test_hooks

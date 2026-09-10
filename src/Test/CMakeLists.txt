@@ -44,6 +44,7 @@ add_executable(backend_scene_tests
     test_HiddenLayerSkip.cpp
     test_ParticleTrail.cpp
     test_SceneClockClamp.cpp
+    test_ParticleIndexOverflow.cpp
     test_SceneLoadFailure.cpp
     test_AudioRateMultiplier.cpp
     test_WPPuppet.cpp

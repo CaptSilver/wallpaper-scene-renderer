@@ -12,6 +12,7 @@
 #include <span>
 #include "Particle/Particle.h"
 #include "Scene/SceneVertexArray.h"
+#include "Scene/SceneIndexArray.h"
 #include "Interface/IParticleRawGener.h"
 #include <Eigen/Core>
 
@@ -47,5 +48,14 @@ std::size_t TestGenRopeParticleData(std::span<const Particle> particles,
 std::size_t TestGenRopeParticleDataGS(std::span<const Particle> particles,
                                       const Eigen::Vector3f& inst_pos, SceneVertexArray& sv,
                                       std::size_t start_idx, float anc_alpha = 1.0f);
+
+// Writes packed 16-bit quad indices for quads [first_quad, quad_count) into
+// `iarray`, and returns how many quads ended up addressable — capped at
+// MaxU16QuadCount(), since a 16-bit index cannot name a vertex past 65535.
+std::size_t TestUpdateIndexArray(std::size_t first_quad, std::size_t quad_count,
+                                 SceneIndexArray& iarray) noexcept;
+
+// Largest number of four-vertex quads a packed 16-bit index buffer can reach.
+std::size_t MaxU16QuadCount() noexcept;
 
 } // namespace wallpaper::test_hooks
