@@ -1,4 +1,7 @@
 #include "WPSceneParser.hpp"
+#include "TextCanvasSize.hpp"
+#include "CameraLayer.hpp"
+#include "LayerSpace.hpp"
 #include <atomic>
 #include "WPJson.hpp"
 #include "WPCommon.hpp"
@@ -1020,7 +1023,7 @@ static void applyMsaaSetting(Scene& scene, int mode, u32 scene_default, const ch
     LOG_INFO("MSAA requested: x%u (%s, auto=%d)", req.samples, what, (int)req.autoScale);
 }
 
-void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
+void ParseCamera(ParseContext& context, wpscene::WPScene& sc, const nlohmann::json& json) {
     auto& general = sc.general;
     auto& scene   = *context.scene;
 
@@ -1032,25 +1035,44 @@ void ParseCamera(ParseContext& context, wpscene::WPScene& sc) {
 
     if (! general.isOrtho) {
         // 3D perspective scene — use eye/center/up from scene camera
+        const auto cam_layer = FindCameraLayer(json.contains("objects") ? json.at("objects")
+                                                                        : nlohmann::json::array());
+        const float fov = CameraFovFor(cam_layer, general.fov);
+
         float aspect = (float)context.ortho_w / (float)context.ortho_h;
         scene.cameras["global"] =
-            std::make_shared<SceneCamera>(aspect, general.nearz, general.farz, general.fov);
+            std::make_shared<SceneCamera>(aspect, general.nearz, general.farz, fov);
         scene.activeCamera = scene.cameras.at("global").get();
 
+        // The scene-level `camera` block is the editor's saved viewport.  When
+        // the layer list also carries a camera object, that is the runtime
+        // camera and the two can sit in very different places.
         Vector3d eye(sc.camera.eye[0], sc.camera.eye[1], sc.camera.eye[2]);
         Vector3d center(sc.camera.center[0], sc.camera.center[1], sc.camera.center[2]);
         Vector3d up(sc.camera.up[0], sc.camera.up[1], sc.camera.up[2]);
+
+        if (cam_layer.found) {
+            const auto basis = CameraBasisFromLayer(cam_layer);
+            eye              = Vector3d(basis.eye[0], basis.eye[1], basis.eye[2]);
+            center           = Vector3d(basis.center[0], basis.center[1], basis.center[2]);
+            up               = Vector3d(basis.up[0], basis.up[1], basis.up[2]);
+            LOG_INFO("Camera layer overrides the saved viewport: origin=(%.3f,%.3f,%.3f) fov=%.1f",
+                     cam_layer.origin[0],
+                     cam_layer.origin[1],
+                     cam_layer.origin[2],
+                     cam_layer.fov);
+        }
         scene.activeCamera->SetDirectLookAt(eye, center, up);
 
         LOG_INFO("Perspective camera: eye=(%.3f,%.3f,%.3f) center=(%.3f,%.3f,%.3f) "
                  "fov=%.1f aspect=%.3f near=%.3f far=%.1f",
-                 sc.camera.eye[0],
-                 sc.camera.eye[1],
-                 sc.camera.eye[2],
-                 sc.camera.center[0],
-                 sc.camera.center[1],
-                 sc.camera.center[2],
-                 general.fov,
+                 eye[0],
+                 eye[1],
+                 eye[2],
+                 center[0],
+                 center[1],
+                 center[2],
+                 fov,
                  aspect,
                  general.nearz,
                  general.farz);
@@ -5688,7 +5710,7 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     computeAutoOrthoSize(sc, wp_objs, *imageParser);
 
     InitContext(context, vfs, sc, std::move(imageParser));
-    ParseCamera(context, sc);
+    ParseCamera(context, sc, json);
 
     prescanDependencies(context, wp_objs);
 

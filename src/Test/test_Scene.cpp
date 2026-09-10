@@ -614,3 +614,85 @@ TEST_SUITE("Scene_Skybox") {
         CHECK(s.skyboxTexKey == "materials/pano.png");
     }
 }
+
+// ===========================================================================
+// Camera layer
+// ===========================================================================
+
+#include "CameraLayer.hpp"
+
+TEST_SUITE("Scene camera layer") {
+    // Wallpaper Engine keeps the runtime camera as an object in the layer list.
+    // The scene-level `camera` block is the editor's saved viewport, and in
+    // scenes that carry both they disagree — Real-Time Earth (3557068717) puts
+    // its camera layer at z=0.35 while the saved block sits at z=0.708.
+    TEST_CASE("a camera layer is found among ordinary objects") {
+        auto objects = nlohmann::json::parse(R"([
+            {"id": 156, "name": "GROUND", "model": "models/a.mdl"},
+            {"id": 210, "name": "", "camera": "default",
+             "origin": "0.00000 0.00000 0.35000", "fov": 50.0, "zoom": 1.0},
+            {"id": 225, "name": "clock", "text": {"value": "12:00"}}
+        ])");
+
+        auto layer = wallpaper::FindCameraLayer(objects);
+        REQUIRE(layer.found);
+        CHECK(layer.origin[2] == doctest::Approx(0.35f));
+        CHECK(layer.fov == doctest::Approx(50.0f));
+    }
+
+    TEST_CASE("a scene with no camera layer reports none") {
+        auto objects = nlohmann::json::parse(R"([
+            {"id": 1, "image": "materials/a.json"}
+        ])");
+        CHECK_FALSE(wallpaper::FindCameraLayer(objects).found);
+    }
+
+    // A camera layer without `angles` means identity orientation — looking
+    // down -Z.  Inheriting the saved block's `center` instead would tilt the
+    // view off the subject.
+    TEST_CASE("a camera layer without angles looks down negative Z") {
+        wallpaper::SceneCameraLayer layer;
+        layer.found  = true;
+        layer.origin = { 0.0f, 0.0f, 0.35f };
+
+        auto basis = wallpaper::CameraBasisFromLayer(layer);
+        CHECK(basis.eye[2] == doctest::Approx(0.35));
+        CHECK(basis.center[0] == doctest::Approx(0.0));
+        CHECK(basis.center[1] == doctest::Approx(0.0));
+        CHECK(basis.center[2] == doctest::Approx(-0.65)); // 0.35 - 1
+        CHECK(basis.up[1] == doctest::Approx(1.0));
+    }
+
+    TEST_CASE("a yaw of ninety degrees points the camera down negative X") {
+        wallpaper::SceneCameraLayer layer;
+        layer.found  = true;
+        layer.angles = { 0.0f, 1.57079633f, 0.0f };
+
+        auto basis = wallpaper::CameraBasisFromLayer(layer);
+        CHECK(basis.center[0] == doctest::Approx(-1.0).epsilon(0.001));
+        CHECK(basis.center[2] == doctest::Approx(0.0).epsilon(0.001));
+        CHECK(basis.up[1] == doctest::Approx(1.0));
+    }
+}
+
+
+TEST_SUITE("Scene camera layer fov") {
+    TEST_CASE("a camera layer's fov wins over the scene block") {
+        wallpaper::SceneCameraLayer layer;
+        layer.found = true;
+        layer.fov   = 50.0f;
+        CHECK(wallpaper::CameraFovFor(layer, 34.0f) == doctest::Approx(50.0f));
+    }
+
+    TEST_CASE("a camera layer without an fov falls back to the scene block") {
+        wallpaper::SceneCameraLayer layer;
+        layer.found = true;
+        layer.fov   = 0.0f;
+        CHECK(wallpaper::CameraFovFor(layer, 34.0f) == doctest::Approx(34.0f));
+    }
+
+    TEST_CASE("no camera layer means the scene block's fov") {
+        CHECK(wallpaper::CameraFovFor(wallpaper::SceneCameraLayer {}, 34.0f) ==
+              doctest::Approx(34.0f));
+    }
+}

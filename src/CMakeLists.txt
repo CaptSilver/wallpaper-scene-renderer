@@ -77,6 +77,7 @@ add_library(
   WPTexImageParser.cpp
   WPSoundParser.cpp
   WPMdlParser.cpp
+  CameraLayer.cpp
   WPPuppet.cpp
   VideoTextureDecoder.cpp
   $<$<BOOL:${WEK_HAVE_EGL_HWDEC}>:HWVideoTextureDecoder.cpp>
