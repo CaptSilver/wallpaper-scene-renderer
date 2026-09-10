@@ -42,10 +42,12 @@ struct WPMdl {
     struct Submesh {
         std::string                          mat_json_file;
         std::vector<Vertex>                  vertexs;
-        std::vector<std::array<uint16_t, 3>> indices;
+        std::vector<std::array<uint32_t, 3>> indices;
         bool                                 has_normals { false };
         bool                                 has_tangents { false };
         bool                                 has_texcoord1 { false };
+        // Indices came off disk as uint32 rather than uint16.
+        bool wide_indices { false };
     };
 
     // Model path: multiple submeshes, each with own material

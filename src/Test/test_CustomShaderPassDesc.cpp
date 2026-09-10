@@ -22,6 +22,21 @@ TEST_SUITE("CustomShaderPass::Desc") {
         CHECK(desc.flipCullMode == false);
         CHECK(desc.useReflectionDepth == false);
     }
+
+    // Index buffers used to be bound as UINT16 unconditionally, because every
+    // producer packed two 16-bit indices per 32-bit slot.  Meshes with more
+    // than 65535 vertices cannot do that, so the bind now follows the array.
+    TEST_CASE("index_type defaults to UINT16") {
+        CustomShaderPass::Desc desc;
+        CHECK(desc.index_type == VK_INDEX_TYPE_UINT16);
+    }
+
+    TEST_CASE("index type follows the array width") {
+        CHECK(wallpaper::vulkan::ToVkIndexType(wallpaper::SceneIndexArray::IndexWidth::U16) ==
+              VK_INDEX_TYPE_UINT16);
+        CHECK(wallpaper::vulkan::ToVkIndexType(wallpaper::SceneIndexArray::IndexWidth::U32) ==
+              VK_INDEX_TYPE_UINT32);
+    }
 }
 
 // MSAA first-use barrier latch lives on VmaImageParameters so it dies with
@@ -84,3 +99,4 @@ TEST_SUITE("CustomShaderPass msaa init handle-reuse") {
         CHECK_FALSE(recycled->initial_layout_transitioned);
     }
 }
+

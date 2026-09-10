@@ -282,6 +282,196 @@ TEST_SUITE("WPMdlParser.Model") {
         CHECK(s.vertexs[0].tangent[3] == doctest::Approx(1.0f));
     }
 
+    // The int32 between the material path and the bounding box is the index
+    // width: 0 = uint16, 1 = uint32.  It was long assumed to be a constant
+    // zero.  Meshes over 65535 vertices (e.g. the 520k-vertex spheres in
+    // Real-Time Earth 3557068717) set it to 1, and reading their indices as
+    // u16 splits every index into its low and high half — which stays in
+    // bounds and never desyncs the stream, so nothing catches it.
+    //
+    // indices_size 12 is one u32 triangle but two u16 triangles, so the
+    // triangle count alone separates the two readings.
+    TEST_CASE("index width flag 1 reads indices as uint32") {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(15);
+        b.i32(1);
+        b.u32(1);
+        b.str("wide.json");
+        b.i32(1); // index width: uint32
+        b.u32(3 * 12 * 4);
+        for (int i = 0; i < 3; i++) {
+            b.f32((float)i);
+            b.f32(0);
+            b.f32(0); // pos
+            b.f32(0);
+            b.f32(1);
+            b.f32(0); // normal
+            b.f32(1);
+            b.f32(0);
+            b.f32(0);
+            b.f32(1); // tangent
+            b.f32(0);
+            b.f32(0); // uv
+        }
+        b.u32(12); // one triangle, 3 * 4 bytes
+        b.u32(0);
+        b.u32(1);
+        b.u32(2);
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "wide.mdl", mdl));
+
+        REQUIRE(mdl.submeshes.size() == 1);
+        const auto& s = mdl.submeshes[0];
+        CHECK(s.wide_indices);
+        REQUIRE(s.indices.size() == 1);
+        CHECK(s.indices[0][0] == 0);
+        CHECK(s.indices[0][1] == 1);
+        CHECK(s.indices[0][2] == 2);
+    }
+
+    TEST_CASE("index width flag 0 keeps indices at uint16") {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(15);
+        b.i32(1);
+        b.u32(1);
+        b.str("narrow.json");
+        b.i32(0); // index width: uint16
+        b.u32(3 * 12 * 4);
+        for (int i = 0; i < 3; i++) {
+            b.f32((float)i);
+            b.f32(0);
+            b.f32(0);
+            b.f32(0);
+            b.f32(1);
+            b.f32(0);
+            b.f32(1);
+            b.f32(0);
+            b.f32(0);
+            b.f32(1);
+            b.f32(0);
+            b.f32(0);
+        }
+        b.u32(12); // two triangles at 3 * 2 bytes each
+        b.u16(0);
+        b.u16(1);
+        b.u16(2);
+        b.u16(2);
+        b.u16(1);
+        b.u16(0);
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "narrow.mdl", mdl));
+
+        REQUIRE(mdl.submeshes.size() == 1);
+        const auto& s = mdl.submeshes[0];
+        CHECK_FALSE(s.wide_indices);
+        REQUIRE(s.indices.size() == 2);
+        CHECK(s.indices[1][0] == 2);
+        CHECK(s.indices[1][2] == 0);
+    }
+
+    // A zero width flag on a mesh of more than 65535 vertices contradicts
+    // itself — a 16-bit index cannot reach the far end of the array.  The
+    // vertex count wins, provided the byte count really does divide into
+    // u32 triangles.
+    TEST_CASE("vertex count above 65535 overrides a zero index width flag") {
+        constexpr uint32_t verts = 65536;
+        Bytes              b;
+        b.append_mdlv(13);
+        b.i32(9); // pos(3) + texcoord(2), 20-byte stride
+        b.i32(1);
+        b.u32(1);
+        b.str("huge.json");
+        b.i32(0); // index width claims uint16
+        b.u32(verts * 5 * 4);
+        b.data.reserve(b.data.size() + verts * 20);
+        for (uint32_t i = 0; i < verts * 5; i++) b.f32(0.0f);
+        b.u32(12); // one u32 triangle
+        b.u32(0);
+        b.u32(1);
+        b.u32(65535);
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "huge.mdl", mdl));
+
+        REQUIRE(mdl.submeshes.size() == 1);
+        const auto& s = mdl.submeshes[0];
+        CHECK(s.vertexs.size() == verts);
+        CHECK(s.wide_indices);
+        REQUIRE(s.indices.size() == 1);
+        CHECK(s.indices[0][2] == 65535);
+    }
+
+    // An index past the end of the vertex array fetches undefined memory on
+    // the GPU.  RADV clamps it, so it surfaces as visual corruption rather
+    // than a device-lost — keep the good triangles, drop the bad ones.
+    // The safety net triggers above 65535, not at it: a mesh of exactly 65535
+    // vertices is still fully addressable by a 16-bit index.
+    TEST_CASE("a vertex count of exactly 65535 keeps 16-bit indices") {
+        constexpr uint32_t verts = 65535;
+        Bytes              b;
+        b.append_mdlv(13);
+        b.i32(9);
+        b.i32(1);
+        b.u32(1);
+        b.str("edge.json");
+        b.i32(0);
+        b.u32(verts * 5 * 4);
+        b.data.reserve(b.data.size() + verts * 20);
+        for (uint32_t i = 0; i < verts * 5; i++) b.f32(0.0f);
+        b.u32(12); // divides by both 6 and 12, so only the rule decides
+        b.u16(0);
+        b.u16(1);
+        b.u16(2);
+        b.u16(2);
+        b.u16(1);
+        b.u16(0);
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "edge.mdl", mdl));
+
+        REQUIRE(mdl.submeshes.size() == 1);
+        CHECK_FALSE(mdl.submeshes[0].wide_indices);
+        CHECK(mdl.submeshes[0].indices.size() == 2);
+    }
+
+    TEST_CASE("triangles indexing past the vertex array are dropped") {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(9);
+        b.i32(1);
+        b.u32(1);
+        b.str("oob.json");
+        b.i32(0);
+        b.u32(3 * 5 * 4);
+        for (int i = 0; i < 3 * 5; i++) b.f32(0.0f);
+        b.u32(12); // two u16 triangles
+        b.u16(0);
+        b.u16(1);
+        b.u16(2);
+        b.u16(0);
+        b.u16(1);
+        b.u16(3); // 3 is past the 3-vertex array
+
+        LogCapture log;
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "oob.mdl", mdl));
+
+        REQUIRE(mdl.submeshes.size() == 1);
+        const auto& s = mdl.submeshes[0];
+        REQUIRE(s.indices.size() == 1);
+        CHECK(s.indices[0][2] == 2);
+        CHECK(LogCapture::saw("indexing past"));
+    }
+
     TEST_CASE("flag 39: adds secondary texcoord") {
         Bytes b;
         b.append_mdlv(13);
@@ -1586,6 +1776,79 @@ TEST_SUITE("WPMdlParser.Gen") {
         }
         s.indices.push_back({ 0, 1, 2 });
         return s;
+    }
+
+    // Narrow meshes pack two 16-bit indices into each 32-bit slot, which is
+    // why the index buffer is bound as UINT16.  A wide mesh has to keep one
+    // index per slot and carry a tag saying so, or the GPU reads each index's
+    // two halves as separate indices.
+    TEST_CASE("GenModelMesh keeps wide indices one per slot") {
+        WPMdl::Submesh s = makeSubmesh(3, true, true, false);
+        s.wide_indices   = true;
+        s.indices[0]     = { 0, 1, 2 };
+
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, s);
+        REQUIRE(mesh.IndexCount() == 1);
+
+        const auto& ia = mesh.GetIndexArray(0);
+        CHECK(ia.Width() == SceneIndexArray::IndexWidth::U32);
+        REQUIRE(ia.DataCount() == 3);
+        CHECK(ia.Data()[0] == 0u);
+        CHECK(ia.Data()[1] == 1u);
+        CHECK(ia.Data()[2] == 2u);
+        CHECK(ia.IndexElemCount() == 3);
+    }
+
+    TEST_CASE("GenModelMesh packs narrow indices two per slot") {
+        WPMdl::Submesh s = makeSubmesh(3, true, true, false);
+        s.indices[0]     = { 0, 1, 2 };
+
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, s);
+        REQUIRE(mesh.IndexCount() == 1);
+
+        const auto& ia = mesh.GetIndexArray(0);
+        CHECK(ia.Width() == SceneIndexArray::IndexWidth::U16);
+        CHECK(ia.DataCount() == 2);
+        CHECK(ia.IndexElemCount() == 4);
+
+        const auto* packed = reinterpret_cast<const uint16_t*>(ia.Data());
+        CHECK(packed[0] == 0u);
+        CHECK(packed[1] == 1u);
+        CHECK(packed[2] == 2u);
+    }
+
+    // Two triangles, so the per-triangle stride is actually exercised — with
+    // one triangle every index arithmetic lands on slot zero regardless.
+    TEST_CASE("GenModelMesh lays out consecutive wide triangles in order") {
+        WPMdl::Submesh s = makeSubmesh(4, true, true, false);
+        s.wide_indices   = true;
+        s.indices[0]     = { 0, 1, 2 };
+        s.indices.push_back({ 3, 2, 1 });
+
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, s);
+        const auto& ia = mesh.GetIndexArray(0);
+        REQUIRE(ia.DataCount() == 6);
+        CHECK(ia.Data()[3] == 3u);
+        CHECK(ia.Data()[4] == 2u);
+        CHECK(ia.Data()[5] == 1u);
+        CHECK(ia.IndexElemCount() == 6);
+    }
+
+    TEST_CASE("GenModelMesh lays out consecutive narrow triangles in order") {
+        WPMdl::Submesh s = makeSubmesh(4, true, true, false);
+        s.indices[0]     = { 0, 1, 2 };
+        s.indices.push_back({ 3, 2, 1 });
+
+        SceneMesh mesh;
+        WPMdlParser::GenModelMesh(mesh, s);
+        const auto& ia     = mesh.GetIndexArray(0);
+        const auto* packed = reinterpret_cast<const uint16_t*>(ia.Data());
+        CHECK(packed[3] == 3u);
+        CHECK(packed[4] == 2u);
+        CHECK(packed[5] == 1u);
     }
 
     TEST_CASE("GenPuppetMesh packs position/blend/weight/texcoord at correct offsets") {

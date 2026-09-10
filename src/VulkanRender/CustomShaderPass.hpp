@@ -18,6 +18,19 @@ namespace wallpaper
 namespace vulkan
 {
 
+// Index buffers arrive either packed two-per-slot (16-bit) or one-per-slot
+// (32-bit).  The array carries the tag; this maps it to what the bind wants.
+inline VkIndexType ToVkIndexType(SceneIndexArray::IndexWidth width) {
+    return width == SceneIndexArray::IndexWidth::U32 ? VK_INDEX_TYPE_UINT32
+                                                     : VK_INDEX_TYPE_UINT16;
+}
+
+// vkCmdBindIndexBuffer requires the buffer offset be a multiple of the index
+// size, so the sub-allocation has to be aligned to it.
+inline VkDeviceSize IndexAlignmentFor(VkIndexType type) {
+    return type == VK_INDEX_TYPE_UINT32 ? 4u : 2u;
+}
+
 // Pure load-op selector for the per-pass output RT.  Returns CLEAR when:
 //   - force_clear is set (per-light volumetric back-depth path), OR
 //   - the RT has not yet been touched this frame (scene.clearedRTs check).
@@ -94,6 +107,7 @@ public:
         bool                          dyn_vertex { false };
         std::vector<StagingBufferRef> vertex_bufs;
         StagingBufferRef              index_buf;
+        VkIndexType                   index_type { VK_INDEX_TYPE_UINT16 };
         StagingBufferRef              ubo_buf;
 
         // pipeline.  clears_output mirrors the colour attachment's

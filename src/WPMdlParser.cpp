@@ -26,11 +26,55 @@ WPPuppet::PlayMode ToPlayMode(std::string_view m) {
     assert(m == "loop");
     return WPPuppet::PlayMode::Loop;
 }
+
+// An index past the end of the vertex array fetches undefined memory on the
+// GPU.  RADV clamps it, so it shows up as visual corruption rather than a
+// device-lost — i.e. it reads like a rendering bug and costs an afternoon.
+// Drop the offending triangles and say how many, rather than dropping the
+// whole mesh: the rest of the submesh is still good geometry.
+void DropOutOfRangeTriangles(std::vector<std::array<uint32_t, 3>>& indices, uint32_t vertex_num,
+                             uint32_t submesh) {
+    auto out_of_range = [vertex_num](const std::array<uint32_t, 3>& tri) {
+        return tri[0] >= vertex_num || tri[1] >= vertex_num || tri[2] >= vertex_num;
+    };
+    auto first_bad = std::remove_if(indices.begin(), indices.end(), out_of_range);
+    if (first_bad == indices.end()) return;
+
+    const auto dropped = static_cast<std::size_t>(std::distance(first_bad, indices.end()));
+    indices.erase(first_bad, indices.end());
+    LOG_ERROR("mdl: dropped %zu triangle(s) indexing past %u vertices, submesh=%u",
+              dropped,
+              vertex_num,
+              submesh);
+}
+
+// A 16-bit array packs two indices per 32-bit slot — that is what the UINT16
+// bind expects.  A wide array keeps one per slot and says so, so the bind can
+// switch to UINT32.
+SceneIndexArray MakeIndexArray(const std::vector<std::array<uint32_t, 3>>& tris, bool wide) {
+    const std::size_t elems = tris.size() * 3;
+
+    if (wide) {
+        std::vector<uint32_t> flat(elems);
+        for (std::size_t i = 0; i < tris.size(); i++)
+            for (int j = 0; j < 3; j++) flat[i * 3 + j] = tris[i][j];
+        return SceneIndexArray(flat, SceneIndexArray::IndexWidth::U32);
+    }
+
+    std::vector<uint16_t> narrow(elems);
+    for (std::size_t i = 0; i < tris.size(); i++)
+        for (int j = 0; j < 3; j++) narrow[i * 3 + j] = (uint16_t)tris[i][j];
+
+    std::vector<uint32_t> slots(U32SlotsForU16Triangles(tris.size()));
+    memcpy(slots.data(), narrow.data(), U16BytesForTriangles(tris.size()));
+    return SceneIndexArray(slots, SceneIndexArray::IndexWidth::U16);
+}
 } // namespace
 
 // bytes * size
 constexpr uint32_t singile_vertex                      = 4 * (3 + 4 + 4 + 2);
 constexpr uint32_t singile_indices                     = 2 * 3;
+constexpr uint32_t wide_indices_stride                 = 4 * 3;
 constexpr uint32_t std_format_vertex_size_herald_value = 0x01800009;
 
 // number of bytes in an MDAT attachment after the attachment name
@@ -101,7 +145,12 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         for (uint32_t si = 0; si < submesh_count; si++) {
             auto& sub         = mdl.submeshes[si];
             sub.mat_json_file = f.ReadStr();
-            f.ReadInt32(); // 0
+            // Index width: 0 = uint16, 1 = uint32.  A mesh with more than
+            // 65535 vertices cannot be addressed by a 16-bit index at all, so
+            // wide meshes set this.  Reading a wide block as u16 splits every
+            // index into its low and high half — which stays in bounds and
+            // leaves the stream aligned, so no other check can catch it.
+            const bool wide_flag = (f.ReadInt32() != 0);
 
             // The byte at +9 is `mdl_flag` (entry-point dispatch flag).
             // The byte AFTER bbox is `flags_repeat` — the actual vertex
@@ -186,20 +235,31 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
             }
 
             uint32_t indices_size = f.ReadUint32();
-            if (indices_size % singile_indices != 0) {
+
+            // A zero flag on a mesh too large for 16-bit indices contradicts
+            // itself.  Trust the vertex count, but only when the byte count
+            // actually divides into u32 triangles.
+            bool wide = wide_flag;
+            if (! wide && vertex_num > 0xFFFFu && indices_size % wide_indices_stride == 0)
+                wide = true;
+            sub.wide_indices = wide;
+
+            const uint32_t idx_stride = wide ? wide_indices_stride : singile_indices;
+            if (indices_size % idx_stride != 0) {
                 LOG_ERROR("unsupported model indices size %d submesh=%d", indices_size, si);
                 return false;
             }
 
-            uint32_t indices_num = indices_size / singile_indices;
-            if (! CountFitsStream(f, indices_num)) {
+            uint32_t indices_num = indices_size / idx_stride;
+            if (! CountFitsStream(f, indices_num, idx_stride)) {
                 LOG_ERROR("mdl: indices_num %u exceeds stream submesh=%d", indices_num, si);
                 return false;
             }
             sub.indices.resize(indices_num);
             for (auto& id : sub.indices) {
-                for (auto& v : id) v = f.ReadUint16();
+                for (auto& v : id) v = wide ? f.ReadUint32() : (uint32_t)f.ReadUint16();
             }
+            DropOutOfRangeTriangles(sub.indices, vertex_num, si);
 
             if (v23) {
                 // 6 bytes trailing padding per submesh
@@ -892,11 +952,7 @@ void WPMdlParser::GenModelMesh(SceneMesh& mesh, const WPMdl::Submesh& sub) {
         mesh.AddVertexArray(std::move(vertex));
     }
 
-    std::vector<uint32_t> indices;
-    indices.resize(U32SlotsForU16Triangles(sub.indices.size()));
-    memcpy(indices.data(), sub.indices.data(), U16BytesForTriangles(sub.indices.size()));
-
-    mesh.AddIndexArray(SceneIndexArray(indices));
+    mesh.AddIndexArray(MakeIndexArray(sub.indices, sub.wide_indices));
 }
 
 void WPMdlParser::AddPuppetShaderInfo(WPShaderInfo& info, const WPMdl& mdl) {

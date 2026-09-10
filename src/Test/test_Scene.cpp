@@ -164,9 +164,52 @@ TEST_SUITE("Scene_DefaultVolumeSphere") {
         CHECK(s.default_volume_sphere.IndexCount() == 1);
         const auto& va = s.default_volume_sphere.GetVertexArray(0);
         const auto& ia = s.default_volume_sphere.GetIndexArray(0);
-        // Icosahedron: 12 vertices, 20 triangles (60 index slots).
+        // Icosahedron: 12 vertices, 20 triangles.
         CHECK(va.VertexCount() == 12u);
         CHECK(ia.DataCount() == 60u);
+    }
+
+    // This mesh writes full 32-bit index values, unlike every other producer,
+    // which packs two 16-bit indices per slot.  Bound as UINT16 it draws 40
+    // triangles built from index halves instead of 20 real ones.
+    TEST_CASE("the volume sphere declares 32-bit indices") {
+        Scene s;
+        GenVolumeSphereMesh(s.default_volume_sphere);
+        const auto& ia = s.default_volume_sphere.GetIndexArray(0);
+        CHECK(ia.Width() == SceneIndexArray::IndexWidth::U32);
+        CHECK(ia.IndexElemCount() == 60u);
+        CHECK(ia.DrawIndexCount() == 60u);
+    }
+}
+
+TEST_SUITE("SceneIndexArray") {
+    // The draw call needs a whole number of triangles.  A 16-bit array's slot
+    // count times two can leave a trailing index that completes no triangle —
+    // the odd-triangle padding slot from the packing helper.
+    TEST_CASE("draw count rounds down to whole triangles") {
+        const std::array<uint32_t, 3> tri { 0, 1, 2 };
+
+        SceneIndexArray wide(std::span<const uint32_t> { tri.data(), tri.size() },
+                             SceneIndexArray::IndexWidth::U32);
+        CHECK(wide.IndexElemCount() == 3u);
+        CHECK(wide.DrawIndexCount() == 3u);
+
+        // Two slots hold four 16-bit indices: one triangle plus a spare.
+        SceneIndexArray narrow(std::span<const uint32_t> { tri.data(), 2 },
+                               SceneIndexArray::IndexWidth::U16);
+        CHECK(narrow.IndexElemCount() == 4u);
+        CHECK(narrow.DrawIndexCount() == 3u);
+    }
+
+    TEST_CASE("render draw count honours the render size cap") {
+        std::array<uint32_t, 6> six { 0, 1, 2, 3, 4, 5 };
+        SceneIndexArray         wide(std::span<const uint32_t> { six.data(), six.size() },
+                             SceneIndexArray::IndexWidth::U32);
+        CHECK(wide.DrawIndexCount() == 6u);
+
+        wide.SetRenderDataCount(4);
+        CHECK(wide.RenderIndexElemCount() == 4u);
+        CHECK(wide.RenderDrawIndexCount() == 3u);
     }
 
     TEST_CASE("all icosahedron vertices lie on a unit sphere") {

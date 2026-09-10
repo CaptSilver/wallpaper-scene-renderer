@@ -735,12 +735,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
 
         if (mesh.IndexCount() > 0) {
-            auto&  indice     = mesh.GetIndexArray(0);
-            size_t count      = (indice.DataCount() * 2) / 3;
-            m_desc.draw_count = (u32)count * 3;
-            auto& buf         = m_desc.index_buf;
+            auto& indice      = mesh.GetIndexArray(0);
+            m_desc.draw_count = (u32)indice.DrawIndexCount();
+            m_desc.index_type = ToVkIndexType(indice.Width());
+            const VkDeviceSize index_align = IndexAlignmentFor(m_desc.index_type);
+            auto&              buf         = m_desc.index_buf;
             if (! m_desc.dyn_vertex) {
-                if (! rr.vertex_buf->allocateSubRef(indice.CapacitySizeof(), buf)) {
+                if (! rr.vertex_buf->allocateSubRef(indice.CapacitySizeof(), buf, index_align)) {
                     LOG_ERROR("index buf alloc failed for shader '%s'",
                               mesh.Material()->customShader.shader->name.c_str());
                     return;
@@ -751,7 +752,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                     return;
                 }
             } else {
-                if (! rr.dyn_buf->allocateSubRef(indice.CapacitySizeof(), buf)) {
+                if (! rr.dyn_buf->allocateSubRef(indice.CapacitySizeof(), buf, index_align)) {
                     LOG_ERROR("dyn index buf alloc failed for shader '%s'",
                               mesh.Material()->customShader.shader->name.c_str());
                     return;
@@ -1011,8 +1012,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                         }
                         if (mesh.IndexCount() > 0) {
                             auto& indice = mesh.GetIndexArray(0);
-                            u32   count  = (u32)((indice.RenderDataCount() * 2) / 3);
-                            draw_count   = count * 3;
+                            draw_count   = (u32)indice.RenderDrawIndexCount();
                             auto& buf    = index_buf;
                             if (! dyn_buf->writeToBuf(
                                     buf, { (uint8_t*)indice.Data(), indice.DataSizeOf() }))
@@ -1513,7 +1513,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
         }
         if (m_desc.index_buf) {
-            cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, VK_INDEX_TYPE_UINT16);
+            cmd.BindIndexBuffer(gpu_buf, m_desc.index_buf.offset, m_desc.index_type);
             cmd.DrawIndexed(m_desc.draw_count, 1, 0, 0, 0);
         } else {
             cmd.Draw(m_desc.draw_count, 1, 0, 0);
