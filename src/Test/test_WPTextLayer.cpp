@@ -330,3 +330,48 @@ TEST_SUITE("WPTextObject.originIsScripted") {
         CHECK_FALSE(obj.originIsScripted);
     }
 }
+
+// ===========================================================================
+// Rasterization canvas sizing
+// ===========================================================================
+
+#include "TextCanvasSize.hpp"
+
+TEST_SUITE("Text canvas sizing") {
+    // kRasterDpiScale, passed explicitly so the rule stays independent of the
+    // renderer header.
+    constexpr float kDpi = 2.0f;
+
+    // A box too narrow to hold a useful string at its own point size is a stub
+    // the author expects to grow.  Game of Life (3453251764) declares an 18x18
+    // box at 8pt for a tooltip whose runtime text is "Stamp"; without growth
+    // the texture clipped it to about two characters.
+    TEST_CASE("a box too narrow for its point size grows to fit") {
+        auto c = wallpaper::ResolveTextCanvasSize(18.0f, 18.0f, 500.0f, 8.0f, kDpi);
+        CHECK(c.autosize_canvas);
+        CHECK(c.texW == 1000); // maxwidth * dpi
+    }
+
+    // A real box with a generous maxwidth is an ordinary wrap hint, not a
+    // request to grow.  Real-Time Earth (3557068717) sizes its clock 98x50 at
+    // 12pt with maxwidth 500; growing it re-scaled the clock relative to the
+    // UTC line beside it, which kept the authored path.
+    TEST_CASE("a real box keeps its authored size despite a generous maxwidth") {
+        auto c = wallpaper::ResolveTextCanvasSize(98.0f, 50.0f, 500.0f, 12.0f, kDpi);
+        CHECK_FALSE(c.autosize_canvas);
+        CHECK(c.texW == 196);
+        CHECK(c.texH == 100);
+    }
+
+    TEST_CASE("the two lines of one clock widget resolve the same way") {
+        auto clock = wallpaper::ResolveTextCanvasSize(98.0f, 50.0f, 500.0f, 12.0f, kDpi);
+        auto utc   = wallpaper::ResolveTextCanvasSize(267.0f, 33.0f, 500.0f, 8.0f, kDpi);
+        CHECK(clock.autosize_canvas == utc.autosize_canvas);
+    }
+
+    TEST_CASE("a placeholder box still autosizes") {
+        auto c = wallpaper::ResolveTextCanvasSize(2.0f, 2.0f, 0.0f, 14.0f, kDpi);
+        CHECK(c.autosize_canvas);
+        CHECK(c.texW == 2048); // no maxwidth hint -> generous fallback
+    }
+}
