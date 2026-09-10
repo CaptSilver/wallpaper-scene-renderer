@@ -102,6 +102,7 @@ constexpr std::string_view G_VP { "g_ViewProjectionMatrix" };
 constexpr std::string_view G_MVP { "g_ModelViewProjectionMatrix" };
 constexpr std::string_view G_AM { "g_AltModelMatrix" };
 constexpr std::string_view G_MI { "g_ModelMatrixInverse" };
+constexpr std::string_view G_NM { "g_NormalModelMatrix" };
 constexpr std::string_view G_MVPI { "g_ModelViewProjectionMatrixInverse" };
 constexpr std::string_view G_ETVP { "g_EffectTextureProjectionMatrix" };
 constexpr std::string_view G_ETVPI { "g_EffectTextureProjectionMatrixInverse" };

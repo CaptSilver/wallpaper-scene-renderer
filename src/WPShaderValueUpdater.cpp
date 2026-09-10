@@ -10,6 +10,7 @@
 #include "Audio/AudioAnalyzer.h"
 #include "Core/ArrayHelper.hpp"
 #include "Utils/Algorism.h"
+#include "NormalMatrix.hpp"
 #include "Utils/SceneProfiler.h"
 
 #include <Eigen/Dense>
@@ -19,6 +20,7 @@
 #include <ctime>
 #include <cstdlib>
 #include <set>
+#include <map>
 
 namespace
 {
@@ -144,6 +146,7 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     m_nodeUniformInfoMap[pNode] = WPUniformInfo();
     auto& info                  = m_nodeUniformInfoMap[pNode];
     info.has_MI                 = existsOp(G_MI);
+    info.has_NM                 = existsOp(G_NM);
     info.has_M                  = existsOp(G_M);
     info.has_AM                 = existsOp(G_AM);
     info.has_MVP                = existsOp(G_MVP);
@@ -350,6 +353,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
     bool reqMI    = info.has_MI;
     bool reqM     = info.has_M;
+    bool reqNM    = info.has_NM;
     bool reqAM    = info.has_AM;
     bool reqMVP   = info.has_MVP;
     bool reqMVPI  = info.has_MVPI;
@@ -400,6 +404,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         if (reqM && mc.has_m) updateOp(G_M, mc.m);
         if (reqAM && mc.has_am) updateOp(G_AM, mc.am);
         if (reqMI && mc.has_mi) updateOp(G_MI, mc.mi);
+        if (reqNM && mc.has_nm) updateOp(G_NM, mc.nm);
         if (reqMVP && mc.has_mvp) updateOp(G_MVP, mc.mvp);
         if (reqMVPI && mc.has_mvpi) updateOp(G_MVPI, mc.mvpi);
     } else {
@@ -454,7 +459,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             mc.has_vp = true;
             updateOp(G_VP, mc.vp);
         }
-        if (reqM || reqMVP || reqMI || reqMVPI) {
+        if (reqM || reqMVP || reqMI || reqMVPI || reqNM) {
             Matrix4d modelTrans = pNode->ModelTrans();
             if (hasNodeData && cam_name != "effect") {
                 const auto& nodeData = m_nodeDataMap.at(pNode);
@@ -498,6 +503,11 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
                 mc.mi     = ShaderValue::fromMatrix(modelTrans.inverse());
                 mc.has_mi = true;
                 updateOp(G_MI, mc.mi);
+            }
+            if (reqNM) {
+                mc.nm     = ShaderValue::fromMatrix(NormalMatrixFrom(modelTrans));
+                mc.has_nm = true;
+                updateOp(G_NM, mc.nm);
             }
 
             // Diagnostic for nodes using separate M + VP (3D models with custom shaders)
@@ -693,6 +703,26 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
             // falloff.  SceneLight defaults exponent to 1.0 (linear) for
             // legacy scenes; Real-Time Earth authors 0.1 for soft long-tail.
             lights[i * 4 + 3] = l->exponent();
+#ifndef WP_SUPPRESS_DEBUG_LOGGING
+            // The world position a light actually reaches the shader with.  A
+            // light parented to an animated node is easy to get wrong by a
+            // whole hemisphere, and the symptom — terminator on the side away
+            // from the light — reads as a normal-matrix or winding problem
+            // instead.  Throttled rather than one-shot because the first
+            // upload happens before any script has moved the light.
+            {
+                thread_local std::map<usize, u64> _lp_ticks;
+                if (_lp_ticks[i]++ % 1800 == 0) {
+                    LOG_INFO("light[%zu] world=(%.2f,%.2f,%.2f) radius=%.1f exponent=%.3f",
+                             i,
+                             lights[i * 4 + 0],
+                             lights[i * 4 + 1],
+                             lights[i * 4 + 2],
+                             l->radius(),
+                             l->exponent());
+                }
+            }
+#endif
             // Reflect light Y about the floor plane so the underside of
             // objects receives the dominant lighting in the reflection.
             if (reflect_lights) lights[i * 4 + 1] = -lights[i * 4 + 1];

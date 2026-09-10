@@ -696,3 +696,59 @@ TEST_SUITE("Scene camera layer fov") {
               doctest::Approx(34.0f));
     }
 }
+
+// ===========================================================================
+// Normal matrix
+// ===========================================================================
+
+#include "NormalMatrix.hpp"
+
+TEST_SUITE("Normal matrix") {
+    // A uniform scale leaves normal directions alone once renormalized, but a
+    // non-uniform one does not: stretching X by 2 must compress the normal's X
+    // by the same factor or lit surfaces shade as if unscaled.
+    TEST_CASE("a non-uniform scale inverts on each axis") {
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model(0, 0)           = 2.0;
+        model(1, 1)           = 1.0;
+        model(2, 2)           = 4.0;
+
+        auto n = wallpaper::NormalMatrixFrom(model);
+        CHECK(n(0, 0) == doctest::Approx(0.5));
+        CHECK(n(1, 1) == doctest::Approx(1.0));
+        CHECK(n(2, 2) == doctest::Approx(0.25));
+    }
+
+    // Under rotation the inverse transpose is the rotation itself.  This is the
+    // case that matters most: leaving it at identity leaves normals in object
+    // space while light positions are uploaded in world space, so the lit
+    // hemisphere ends up wherever the model's own rotation happens to put it.
+    TEST_CASE("a rotation passes through unchanged") {
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model.topLeftCorner<3, 3>() =
+            Eigen::AngleAxisd(1.0, Eigen::Vector3d::UnitY()).toRotationMatrix();
+
+        auto n = wallpaper::NormalMatrixFrom(model);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) CHECK(n(r, c) == doctest::Approx(model(r, c)));
+    }
+
+    TEST_CASE("translation does not reach the normal matrix") {
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model(0, 3)           = 2346.0;
+
+        auto n = wallpaper::NormalMatrixFrom(model);
+        CHECK(n(0, 3) == doctest::Approx(0.0));
+        CHECK(n(0, 0) == doctest::Approx(1.0));
+    }
+
+    // A zero scale on an axis has no inverse; the upload must stay finite.
+    TEST_CASE("a degenerate scale does not produce NaN") {
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model(1, 1)           = 0.0;
+
+        auto n = wallpaper::NormalMatrixFrom(model);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) CHECK(std::isfinite(n(r, c)));
+    }
+}

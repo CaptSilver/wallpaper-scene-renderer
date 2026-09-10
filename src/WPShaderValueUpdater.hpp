@@ -45,6 +45,7 @@ inline float            wrappedSceneTimeF(double elapsingTime) {
 
 struct WPUniformInfo {
     bool has_MI { false };
+    bool has_NM { false };
     bool has_M { false };
     bool has_AM { false };
     bool has_MVP { false };
@@ -117,6 +118,8 @@ struct WPNodeMatrixCache {
     bool        valid { false };
     bool        has_vp { false }, has_m { false }, has_am { false };
     bool        has_mi { false }, has_mvp { false }, has_mvpi { false };
+    ShaderValue nm;
+    bool        has_nm { false };
     ShaderValue vp, m, am, mi, mvp, mvpi;
 };
 
