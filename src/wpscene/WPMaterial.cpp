@@ -4,6 +4,25 @@
 
 using namespace wallpaper::wpscene;
 
+namespace
+{
+
+// The user-property reference a constant value carries, if any.  Two shapes
+// occur in shipped materials: {"user": "prop"} and the conditional
+// {"user": {"name": "prop", "condition": "..."}}.  Returns "" for a plain
+// literal.  WPUserProperties::ResolveValue reads the same two shapes to get
+// the value out.
+std::string UserPropertyNameOf(const nlohmann::json& value) {
+    if (! value.is_object() || ! value.contains("user")) return {};
+    const auto& user = value.at("user");
+    if (user.is_string()) return user.get<std::string>();
+    if (user.is_object() && user.contains("name") && user.at("name").is_string())
+        return user.at("name").get<std::string>();
+    return {};
+}
+
+} // namespace
+
 bool WPMaterialPassBindItem::FromJson(const nlohmann::json& json) {
     GET_JSON_NAME_VALUE(json, "name", name);
     GET_JSON_NAME_VALUE(json, "index", index);
@@ -115,6 +134,13 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
             GET_JSON_VALUE(jC.key(), name);
             GET_JSON_VALUE(jC.value(), value);
             constantshadervalues[name] = value;
+            // GET_JSON_VALUE already resolved an inline {"user": ...} to the
+            // property's current value, but the link back to the property is
+            // lost with it.  Record it so a settings change can reach the
+            // uniform without reparsing the scene.
+            if (auto prop = UserPropertyNameOf(jC.value()); ! prop.empty()) {
+                userShaderBindings[prop] = name;
+            }
         }
     }
     if (jContent.contains("combos")) {

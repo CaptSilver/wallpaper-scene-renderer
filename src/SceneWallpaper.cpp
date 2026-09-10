@@ -10,6 +10,7 @@
 #include "WPJson.hpp"
 #include "AttachmentLinkOrder.hpp"
 #include "SceneAlphaWrite.hpp"
+#include "UserPropRuntimeUpdate.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
@@ -2846,8 +2847,12 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
 
     // Apply visibility changes by re-resolving raw JSON with updated user properties.
     // This handles both boolean and combo properties without requiring a scene reload.
+    std::vector<std::string> changed;
     {
         std::lock_guard<std::mutex> lock(m_user_props_mutex);
+        // Diff before overwriting: the resolved copy is the only record of what
+        // the scene was actually built with.
+        changed = wek::changedUserProps(m_user_props_resolved, props);
         // Apply new overrides to our persistent copy
         for (auto it = props.begin(); it != props.end(); ++it) {
             m_user_props_resolved.SetProperty(it.key(), it.value());
@@ -2943,8 +2948,17 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
     }
 
-    // Always return true when bindings exist — unbound properties (script-driven
-    // dragging, hover effects, etc.) don't need a full scene reload.
+    // A property with no visibility, uniform or pointsize binding is read
+    // somewhere the live scene can't be edited — most often a property script,
+    // whose scriptProperties are seeded once when the script is compiled.
+    // Report failure so the caller reparses; otherwise the setting silently
+    // does nothing until the user switches the wallpaper away and back.
+    auto needReload = wek::userPropsNeedingReload(scene, changed);
+    if (! needReload.empty()) {
+        LOG_INFO("User property '%s' has no runtime binding, reloading scene",
+                 needReload.front().c_str());
+        return false;
+    }
     return true;
 }
 

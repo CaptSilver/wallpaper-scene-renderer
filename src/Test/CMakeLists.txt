@@ -153,6 +153,10 @@ add_executable(backend_scene_tests
     test_WPImageObjectExpanded.cpp
     test_WPParticleParserMore.cpp
     test_WPParticleParserGaps.cpp
+    # Inline `{"user": ...}` shader-constant bindings (WPMaterial.cpp).
+    test_WPMaterialUserBinding.cpp
+    # Which user-property changes the live scene can absorb without a reload.
+    test_UserPropRuntimeUpdate.cpp
     test_WPParticleParserDeepKill.cpp
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
