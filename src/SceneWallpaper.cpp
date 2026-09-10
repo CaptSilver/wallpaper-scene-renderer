@@ -9,7 +9,6 @@
 #include "Utils/FpsCounter.h"
 #include "WPJson.hpp"
 #include "AttachmentLinkOrder.hpp"
-#include "SceneAlphaWrite.hpp"
 #include "UserPropRuntimeUpdate.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
@@ -1186,7 +1185,12 @@ private:
                 for (auto& [id, alpha] : m_pending_alpha_updates) {
                     auto nit = scene->nodeById.find(id);
                     if (nit == scene->nodeById.end()) continue;
-                    writeAlphaToAllMaterials(nit->second, id, alpha);
+                    SceneNode* node = nit->second;
+                    if (node->HasMaterial()) {
+                        auto* mat                                    = node->Mesh()->Material();
+                        mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { alpha };
+                        mat->customShader.constValuesDirty           = true;
+                    }
                 }
                 // Scripted particle instance-override rate — write through
                 // to the corresponding ParticleSubSystem's dynamic multiplier.
@@ -2022,14 +2026,38 @@ public:
 
     // Apply an alpha value to every material participating in the node's
     // render path so layers with effect chains don't render with a stale
-    // baked-in alpha from their per-effect material copy.  Shared by the
-    // keyframe animation tick and the SceneScript alpha drain — both drive the
-    // same property and both hit shaders that keep alpha under different
-    // uniform names (see SceneAlphaWrite.hpp).
+    // baked-in alpha from their per-effect material copy.
     void writeAlphaToAllMaterials(SceneNode* sourceNode, i32 nodeId, float value) {
+        auto pushAlpha = [value](SceneMaterial* mat) {
+            if (! mat) return;
+            mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { value };
+            // Also update g_Color4.a so shaders that sample color alpha
+            // (rather than the explicit g_UserAlpha uniform) pick this up.
+            auto it = mat->customShader.constValues.find("g_Color4");
+            if (it != mat->customShader.constValues.end() && it->second.size() >= 4) {
+                it->second[3] = value;
+            }
+            mat->customShader.constValuesDirty = true;
+        };
+
+        if (sourceNode && sourceNode->HasMaterial()) {
+            pushAlpha(sourceNode->Mesh()->Material());
+        }
         auto scene = m_scene.load();
         if (! scene) return;
-        wek::writeNodeAlpha(*scene, sourceNode, nodeId, value);
+        auto eit = scene->nodeEffectLayerMap.find(nodeId);
+        if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
+            auto* eff = eit->second;
+            for (std::size_t i = 0; i < eff->EffectCount(); i++) {
+                auto& e = eff->GetEffect(i);
+                for (auto& en : e->nodes) {
+                    if (en.sceneNode && en.sceneNode->HasMaterial()) {
+                        pushAlpha(en.sceneNode->Mesh()->Material());
+                    }
+                }
+            }
+            pushAlpha(eff->FinalMesh().Material());
+        }
     }
 
     void propertyAnimCommand(int32_t nodeId, const std::string& name, const std::string& cmd) {

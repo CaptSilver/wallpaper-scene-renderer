@@ -135,7 +135,6 @@ add_executable(backend_scene_tests
     test_WPCreateLayerScan.cpp
     ${SRC_DIR}/Scene/SceneImageEffectLayer.cpp
     # Layer-alpha fan-out over a node's materials (SceneAlphaWrite.hpp).
-    test_SceneAlphaWrite.cpp
     test_WPPropertyScriptExtract.cpp
     test_WPParticleInstanceoverride.cpp
     test_WPSceneFileResolver.cpp
