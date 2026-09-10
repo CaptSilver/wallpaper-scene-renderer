@@ -159,8 +159,18 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
         m_resolved_last_output = last_output->sceneNode.get();
 
         auto& t = m_final_node->Translate();
+        // World transform and mesh extent of the node that actually composites.
+        // A composite mesh is sized in layer pixels; if it lands in a scene
+        // whose world is a fraction of a unit across, it swallows the frame.
+        m_resolved_last_output->UpdateTrans();
+        const auto& cw = m_resolved_last_output->ModelTrans();
+        const double wx = cw(0, 3);
+        const double wy = cw(1, 3);
+        const double wz = cw(2, 3);
+        const double sx = cw.topLeftCorner<3, 3>().col(0).norm();
         LOG_INFO("ResolveEffect final: output='%.*s' blend=%d (actual=%d) passthrough=%d "
-                 "inherit_parent=%d offscreen=%d translate=(%.1f,%.1f,%.1f) worldNode_id=%d",
+                 "inherit_parent=%d offscreen=%d translate=(%.1f,%.1f,%.1f) worldNode_id=%d "
+                 "world=(%.3f,%.3f,%.3f) world_scale=%.4f",
                  (int)last_output->output.size(),
                  last_output->output.data(),
                  (int)m_final_blend,
@@ -171,6 +181,10 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                  t[0],
                  t[1],
                  t[2],
-                 m_worldNode->ID());
+                 m_worldNode->ID(),
+                 wx,
+                 wy,
+                 wz,
+                 sx);
     }
 }

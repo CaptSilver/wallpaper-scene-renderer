@@ -2,6 +2,7 @@
 #include "TextCanvasSize.hpp"
 #include "CameraLayer.hpp"
 #include "LayerSpace.hpp"
+#include "AuthoredChain.hpp"
 #include <atomic>
 #include "WPJson.hpp"
 #include "WPCommon.hpp"
@@ -4352,20 +4353,18 @@ void computeGroupWorldTransforms(ParseContext& context, const nlohmann::json& js
         id_local[id] = { pid, t.matrix() };
     }
     for (auto& gi : group_infos) {
-        std::vector<i32> chain;
-        i32              c = gi.id;
-        for (int depth = 0; depth < 64 && c >= 0; ++depth) {
-            chain.push_back(c);
-            auto it = id_local.find(c);
-            if (it == id_local.end()) break;
-            c = it->second.first;
-        }
-        Eigen::Matrix4d w = Eigen::Matrix4d::Identity();
-        for (auto rit = chain.rbegin(); rit != chain.rend(); ++rit) {
-            auto lit = id_local.find(*rit);
-            if (lit != id_local.end()) w = w * lit->second.second;
-        }
-        context.original_world_transforms[gi.id] = w;
+        context.original_world_transforms[gi.id] = WorldFromAuthoredChain(gi.id, id_local);
+    }
+
+    // Models need the same entry.  A layer parented to a model builds its
+    // composite's parent proxy from this map, and without an entry the proxy
+    // is never created: the composite then inherits an identity world node and
+    // renders at the origin.  A sprite authored in layer pixels lands a few
+    // hundred units across right in front of the camera, which reads as a
+    // full-frame wash rather than as a misplaced sprite.
+    for (i32 model_id : context.model_object_ids) {
+        context.original_world_transforms[model_id] =
+            WorldFromAuthoredChain(model_id, id_local);
     }
 }
 

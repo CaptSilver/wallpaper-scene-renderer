@@ -752,3 +752,46 @@ TEST_SUITE("Normal matrix") {
             for (int c = 0; c < 3; c++) CHECK(std::isfinite(n(r, c)));
     }
 }
+
+// ===========================================================================
+// Authored parent chain
+// ===========================================================================
+
+#include "AuthoredChain.hpp"
+
+TEST_SUITE("Authored parent chain") {
+    using Chain = std::unordered_map<wallpaper::i32, std::pair<wallpaper::i32, Eigen::Matrix4d>>;
+
+    static Eigen::Matrix4d translation(double x) {
+        Eigen::Matrix4d m = Eigen::Matrix4d::Identity();
+        m(0, 3)           = x;
+        return m;
+    }
+
+    TEST_CASE("a child accumulates its ancestors' transforms") {
+        Chain c;
+        c[10] = { -1, translation(100.0) };
+        c[20] = { 10, translation(5.0) };
+        CHECK(wallpaper::WorldFromAuthoredChain(20, c)(0, 3) == doctest::Approx(105.0));
+    }
+
+    TEST_CASE("a root object keeps its own transform") {
+        Chain c;
+        c[10] = { -1, translation(100.0) };
+        CHECK(wallpaper::WorldFromAuthoredChain(10, c)(0, 3) == doctest::Approx(100.0));
+    }
+
+    TEST_CASE("an unknown id contributes identity") {
+        Chain c;
+        CHECK(wallpaper::WorldFromAuthoredChain(99, c).isIdentity());
+    }
+
+    // A malformed scene must not hang the parser.
+    TEST_CASE("a parent cycle terminates") {
+        Chain c;
+        c[1] = { 2, translation(1.0) };
+        c[2] = { 1, translation(1.0) };
+        auto w = wallpaper::WorldFromAuthoredChain(1, c);
+        CHECK(std::isfinite(w(0, 3)));
+    }
+}
