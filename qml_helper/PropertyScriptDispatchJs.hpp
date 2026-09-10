@@ -25,6 +25,25 @@ inline constexpr const char* kPropertyScriptDispatchJs =
     "var _scriptOut = [];\n"
     "var _scriptPartVisEnd = 0;\n"
     "var _scriptPartVec3End = 0;\n"
+    // A value only reaches the renderer when it differs from the one sent
+    // last tick.  Everything downstream is float32, so comparing the rounded
+    // floats is the exact question: would the renderer even see a different
+    // number?  Anything finer is noise it cannot represent.
+    //
+    // The obvious alternative, an absolute tolerance, cannot work here: it has
+    // to be wide enough for world-space positions in the thousands, and that
+    // same width freezes every script whose entire working range is narrower
+    // than it.  Real-Time Earth (3557068717) drives its lens-flare sprites
+    // over a scale range of 1e-5 to 1e-4, which never moved at all under a
+    // 1e-4 window; alpha fades stalled a percent short of transparent under
+    // the 1e-3 one the alpha loop used.
+    //
+    // A suppressed tick deliberately leaves the stored value alone, so a drift
+    // finer than one float step still accumulates and lands once it grows to
+    // a step.
+    "function _scriptValueMoved(nv, ov) {\n"
+    "  return Math.fround(nv) !== Math.fround(ov);\n"
+    "}\n"
     "function _runAllPropertyScripts() {\n"
     "  var out = _scriptOut;\n"
     "  out.length = 0;\n"
@@ -84,9 +103,8 @@ inline constexpr const char* kPropertyScriptDispatchJs =
     // WE semantic: returning a scalar broadcasts to all three components
     // (used by hover-zoom style scripts that do `return value.x + k`).
     "    if (typeof r === 'number') {\n"
-    "      if (Math.abs(r - s.cx) < 0.0001 &&\n"
-    "          Math.abs(r - s.cy) < 0.0001 &&\n"
-    "          Math.abs(r - s.cz) < 0.0001) continue;\n"
+    "      if (!_scriptValueMoved(r, s.cx) && !_scriptValueMoved(r, s.cy) &&\n"
+    "          !_scriptValueMoved(r, s.cz)) continue;\n"
     "      s.cx = r; s.cy = r; s.cz = r;\n"
     "      out.push(i, r, r, r);\n"
     "      continue;\n"
@@ -100,9 +118,8 @@ inline constexpr const char* kPropertyScriptDispatchJs =
     // world origin.
     "    var rx = r.x, ry = (typeof r.y === 'number') ? r.y : 0,\n"
     "        rz = (typeof r.z === 'number') ? r.z : 0;\n"
-    "    if (Math.abs(rx - s.cx) < 0.0001 &&\n"
-    "        Math.abs(ry - s.cy) < 0.0001 &&\n"
-    "        Math.abs(rz - s.cz) < 0.0001) continue;\n"
+    "    if (!_scriptValueMoved(rx, s.cx) && !_scriptValueMoved(ry, s.cy) &&\n"
+    "        !_scriptValueMoved(rz, s.cz)) continue;\n"
     "    s.cx = rx; s.cy = ry; s.cz = rz;\n"
     "    out.push(i, rx, ry, rz);\n"
     "  }\n"
@@ -124,7 +141,7 @@ inline constexpr const char* kPropertyScriptDispatchJs =
     "      continue;\n"
     "    }\n"
     "    if (r === undefined || r === null || typeof r !== 'number') continue;\n"
-    "    if (Math.abs(r - s.cf) < 0.001) continue;\n"
+    "    if (!_scriptValueMoved(r, s.cf)) continue;\n"
     "    s.cf = r;\n"
     "    out.push(i, r, 0, 0);\n"
     "  }\n"

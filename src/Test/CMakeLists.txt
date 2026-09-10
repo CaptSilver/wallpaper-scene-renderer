@@ -387,6 +387,7 @@ if(Qt6_FOUND)
         test_SceneLocalStorageDisk.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
+        test_PropertyScriptDispatchGate.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
         ${CMAKE_SOURCE_DIR}/qml_helper/glExtra.cpp
     )
