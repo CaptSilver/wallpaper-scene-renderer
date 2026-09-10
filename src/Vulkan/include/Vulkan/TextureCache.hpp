@@ -31,6 +31,12 @@ VkFilter             ToVkType(TextureFilter);
 // tests can pin the contract without a live device.
 VkSamplerCreateInfo GenDepthSamplerInfo();
 
+// Sampler configuration for a texture with the given wrap/filter flags and mip
+// count.  A free function rather than inline at the two CreateTex call sites so
+// a test can pin which wrap flag drives which axis without a live device.
+VkSamplerCreateInfo GenSamplerInfo(const TextureSample& sample, float max_lod,
+                                   float device_max_anisotropy);
+
 enum class TexUsage
 {
     COLOR,
@@ -49,6 +55,14 @@ struct TextureKey {
 
     static TexHash HashValue(const TextureKey&);
 };
+
+// Fill colour for a freshly created cache image.
+VkClearColorValue GenInitialClearColor(const TextureKey& key);
+
+// Records the initialisation of an image whose contents are still undefined:
+// clear it whole to `color`, then leave it in `final_layout`.
+void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClearColorValue& color,
+                      VkImageLayout final_layout);
 
 class TextureCache : NoCopy, NoMove {
 public:

@@ -70,47 +70,102 @@ VkSamplerCreateInfo GenDepthSamplerInfo() {
                                .unnormalizedCoordinates = VK_FALSE };
     return info;
 }
+
+VkSamplerCreateInfo GenSamplerInfo(const TextureSample& sample, float max_lod,
+                                   float device_max_anisotropy) {
+    const bool use_aniso =
+        (sample.magFilter == TextureFilter::LINEAR) && device_max_anisotropy > 1.0f;
+
+    // U and V each take their own wrap flag.  W has no flag of its own in a
+    // wallpaper texture header and nothing samples these images with a 3D
+    // coordinate, so it follows T.
+    VkSamplerCreateInfo sampler_info {
+        .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .pNext                   = nullptr,
+        .magFilter               = ToVkType(sample.magFilter),
+        .minFilter               = ToVkType(sample.minFilter),
+        .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU            = ToVkType(sample.wrapS),
+        .addressModeV            = ToVkType(sample.wrapT),
+        .addressModeW            = ToVkType(sample.wrapT),
+        .anisotropyEnable        = use_aniso,
+        .maxAnisotropy           = use_aniso ? device_max_anisotropy : 1.0f,
+        .compareEnable           = false,
+        .compareOp               = VK_COMPARE_OP_NEVER,
+        .minLod                  = 0.0f,
+        .maxLod                  = max_lod,
+        .borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = false,
+    };
+    return sampler_info;
+}
+
+VkClearColorValue GenInitialClearColor(const TextureKey& key) {
+    // A 1x1 cache image is never a render target — no pass draws into a single
+    // pixel — it is the placeholder bound to shader slots the material left
+    // empty.  Such a slot can be anything, but only a normal map has a real
+    // neutral: (0.5, 0.5, 1) decodes to +Z, the unperturbed surface normal, so
+    // lighting stays flat instead of being driven by the (-1,-1,-1) that black
+    // decodes to.  Alpha 1 so an unbound alpha mask does not erase the layer.
+    if (key.width == 1 && key.height == 1) {
+        return VkClearColorValue { { 0.5f, 0.5f, 1.0f, 1.0f } };
+    }
+    // Everything else is a render target.  Transparent black is the identity
+    // for the premultiplied compositing the passes do, so a target read before
+    // anything wrote it contributes nothing.
+    return VkClearColorValue { { 0.0f, 0.0f, 0.0f, 0.0f } };
+}
+
+void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClearColorValue& color,
+                      VkImageLayout final_layout) {
+    const VkImageSubresourceRange range {
+        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel   = 0,
+        .levelCount     = VK_REMAINING_MIP_LEVELS,
+        .baseArrayLayer = 0,
+        .layerCount     = VK_REMAINING_ARRAY_LAYERS,
+    };
+    const VkImageMemoryBarrier to_dst {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = 0,
+        .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .image            = image,
+        .subresourceRange = range,
+    };
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                        VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        to_dst);
+
+    cmd.ClearColorImage(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, range);
+
+    const VkImageMemoryBarrier to_final {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout        = final_layout,
+        .image            = image,
+        .subresourceRange = range,
+    };
+    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                        VK_DEPENDENCY_BY_REGION_BIT,
+                        to_final);
+}
 } // namespace vulkan
 } // namespace wallpaper
 
 namespace
 {
-VkSamplerCreateInfo GenSamplerInfo(TextureKey key, float deviceMaxAnisotropy) {
-    auto& sam = key.sample;
-
-    bool useAniso = (sam.magFilter == TextureFilter::LINEAR) && deviceMaxAnisotropy > 1.0f;
-
-    // maxLod gates the highest mip the hardware sampler may pick.  Set to
-    // the key's actual mip count so trilinear can pick lower mips when the
-    // image has them.  When mipmap_level == 1 (the normal case for current
-    // pingpongs and _rt_default), maxLod is 1.0 — equivalent to the prior
-    // hardcoded value.  When multi-mip RTs are ever re-enabled, this lifts
-    // the artificial clamp without exposing the rotated-quad pixelation we
-    // hit while experimenting with mip-gen for halo softening (see
-    // naruto-shippuden-scenescript.md "Path-not-taken: pingpong mip chain").
-    const float maxLod = std::max(1.0f, (float)key.mipmap_level);
-
-    VkSamplerCreateInfo sampler_info { .sType            = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-                                       .pNext            = nullptr,
-                                       .magFilter        = ToVkType(sam.magFilter),
-                                       .minFilter        = (ToVkType(sam.minFilter)),
-                                       .mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-                                       .addressModeU     = (ToVkType(sam.wrapS)),
-                                       .addressModeV     = (ToVkType(sam.wrapS)),
-                                       .addressModeW     = (ToVkType(sam.wrapT)),
-                                       .anisotropyEnable = useAniso,
-                                       .maxAnisotropy    = useAniso ? deviceMaxAnisotropy : 1.0f,
-                                       .compareEnable    = (false),
-                                       .compareOp        = VK_COMPARE_OP_NEVER,
-                                       .minLod           = (0.0f),
-                                       .maxLod           = maxLod,
-                                       .borderColor      = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-                                       .unnormalizedCoordinates = (false) };
-    return sampler_info;
-}
-
-VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
-                        const ImageParameters& image, VkImageLayout layout) {
+// Records `rec` into `cmd` and submits it on its own.  Callers wait for the
+// queue afterwards, so the buffer is safe to reuse for the next one-shot.
+template<typename Rec>
+VkResult SubmitOneShot(const vvk::Queue& queue, vvk::CommandBuffer& cmd, Rec&& rec) {
     VkResult result;
     do {
         result = cmd.Begin(VkCommandBufferBeginInfo {
@@ -120,29 +175,8 @@ VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
         });
         if (result != VK_SUCCESS) break;
 
-        VkImageSubresourceRange subresourceRange {
-            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel   = 0,
-            .levelCount     = VK_REMAINING_MIP_LEVELS,
-            .baseArrayLayer = 0,
-            .layerCount     = VK_REMAINING_ARRAY_LAYERS,
-        };
-        {
-            VkImageMemoryBarrier out_bar {
-                .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                .pNext            = nullptr,
-                .srcAccessMask    = VK_ACCESS_MEMORY_WRITE_BIT,
-                .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-                .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
-                .newLayout        = layout,
-                .image            = image.handle,
-                .subresourceRange = subresourceRange,
-            };
-            cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                VK_DEPENDENCY_BY_REGION_BIT,
-                                out_bar);
-        }
+        rec(cmd);
+
         result = cmd.End();
         if (result != VK_SUCCESS) break;
 
@@ -155,6 +189,33 @@ VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
         result = queue.Submit(sub_info);
     } while (false);
     return result;
+}
+
+VkResult TransImgLayout(const vvk::Queue& queue, vvk::CommandBuffer& cmd,
+                        const ImageParameters& image, VkImageLayout layout) {
+    return SubmitOneShot(queue, cmd, [&](vvk::CommandBuffer& rec_cmd) {
+        VkImageSubresourceRange subresourceRange {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount     = VK_REMAINING_ARRAY_LAYERS,
+        };
+        VkImageMemoryBarrier out_bar {
+            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext            = nullptr,
+            .srcAccessMask    = VK_ACCESS_MEMORY_WRITE_BIT,
+            .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout        = layout,
+            .image            = image.handle,
+            .subresourceRange = subresourceRange,
+        };
+        rec_cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                VK_DEPENDENCY_BY_REGION_BIT,
+                                out_bar);
+    });
 }
 
 std::optional<vvk::DeviceMemory> AllocateMemory(const vvk::Device& device, vvk::PhysicalDevice gpu,
@@ -597,27 +658,9 @@ ImageSlotsRef TextureCache::CreateTex(Image& image) {
             return {};
         }
 
-        bool                useAniso = (sam.magFilter == TextureFilter::LINEAR) && maxAniso > 1.0f;
-        VkSamplerCreateInfo sampler_info {
-            .sType                   = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .pNext                   = nullptr,
-            .magFilter               = ToVkType(sam.magFilter),
-            .minFilter               = (ToVkType(sam.minFilter)),
-            .mipmapMode              = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-            .addressModeU            = (ToVkType(sam.wrapS)),
-            .addressModeV            = (ToVkType(sam.wrapS)),
-            .addressModeW            = (ToVkType(sam.wrapT)),
-            .anisotropyEnable        = useAniso,
-            .maxAnisotropy           = useAniso ? maxAniso : 1.0f,
-            .compareEnable           = (false),
-            .compareOp               = VK_COMPARE_OP_NEVER,
-            .minLod                  = (0.0f),
-            .maxLod                  = (float)mipmap_levels,
-            .borderColor             = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-            .unnormalizedCoordinates = (false),
-        };
-        VkFormat   format = ToVkType(image.header.format);
-        VkExtent3D ext { (u32)image_slot.width, (u32)image_slot.height, 1 };
+        VkSamplerCreateInfo sampler_info = GenSamplerInfo(sam, (float)mipmap_levels, maxAniso);
+        VkFormat            format       = ToVkType(image.header.format);
+        VkExtent3D          ext { (u32)image_slot.width, (u32)image_slot.height, 1 };
 
         VkSampler shared_sampler = GetOrCreateSampler(sampler_info);
         if (auto opt = CreateImage(m_device,
@@ -765,10 +808,18 @@ void TextureCache::allocateCmd() {
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
-        VkSamplerCreateInfo sam_info       = GenSamplerInfo(tex_key, m_device.maxAnisotropy());
-        VkSampler           shared_sampler = GetOrCreateSampler(sam_info);
-        VkFormat            format         = ToVkType(tex_key.format);
-        VkExtent3D          ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
+        // maxLod gates the highest mip the hardware sampler may pick.  Set to
+        // the key's actual mip count so trilinear can pick lower mips when the
+        // image has them.  When mipmap_level == 1 (the normal case for current
+        // pingpongs and _rt_default), maxLod is 1.0.  When multi-mip RTs are
+        // ever re-enabled, this lifts the artificial clamp without exposing the
+        // rotated-quad pixelation that mip-gen for halo softening produced.
+        const float         max_lod = std::max(1.0f, (float)tex_key.mipmap_level);
+        VkSamplerCreateInfo sam_info =
+            GenSamplerInfo(tex_key.sample, max_lod, m_device.maxAnisotropy());
+        VkSampler  shared_sampler = GetOrCreateSampler(sam_info);
+        VkFormat   format         = ToVkType(tex_key.format);
+        VkExtent3D ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
 
         if (auto opt =
                 CreateImage(m_device,
@@ -784,10 +835,15 @@ std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
             break;
 
         if (! m_tex_cmd) allocateCmd();
-        TransImgLayout(m_device.graphics_queue().handle,
-                       m_tex_cmd,
-                       image_paras,
-                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        // Nothing has written this image yet, and the allocator hands back
+        // recycled memory — so fill it before the first sampler can read it.
+        // Costs the same single submit the layout transition already needed.
+        SubmitOneShot(m_device.graphics_queue().handle, m_tex_cmd, [&](vvk::CommandBuffer& cmd) {
+            RecClearNewImage(cmd,
+                             *image_paras.handle,
+                             GenInitialClearColor(tex_key),
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        });
 
         VVK_CHECK_ACT(break, m_device.handle().WaitIdle());
         return image_paras;
