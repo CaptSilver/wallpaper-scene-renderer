@@ -34,6 +34,7 @@ add_executable(backend_scene_tests
     test_helpers.cpp
     test_WPShaderTransforms.cpp
     test_WPShaderInclude.cpp
+    test_WPShaderTexCombos.cpp
     test_WPShaderPreamble_DepthGather.cpp
     test_StringUtils.cpp
     test_Algorism.cpp
@@ -43,8 +44,8 @@ add_executable(backend_scene_tests
     test_ParticleSubSystem_BurstDoneQueue.cpp
     test_HiddenLayerSkip.cpp
     test_ParticleTrail.cpp
-    test_SceneClockClamp.cpp
     test_ParticleIndexOverflow.cpp
+    test_SceneClockClamp.cpp
     test_SceneLoadFailure.cpp
     test_AudioRateMultiplier.cpp
     test_WPPuppet.cpp
@@ -111,9 +112,9 @@ add_executable(backend_scene_tests
     test_DepthSamplerConfig.cpp
     test_DepthUsageFlags.cpp
     test_TextureCache_SamplerDedup.cpp
-    test_TextureCache_LoadStaging.cpp
     test_TextureCacheSamplerAxes.cpp
     test_TextureCacheInitialContents.cpp
+    test_TextureCache_LoadStaging.cpp
     test_TextureCacheQueryLRU.cpp
     test_TexFormatVk.cpp
     test_SwapchainPolicy.cpp
@@ -133,12 +134,12 @@ add_executable(backend_scene_tests
     test_SceneImageEffectLayer.cpp
     test_WPCreateLayerScan.cpp
     ${SRC_DIR}/Scene/SceneImageEffectLayer.cpp
+    # Layer-alpha fan-out over a node's materials (SceneAlphaWrite.hpp).
+    test_SceneAlphaWrite.cpp
     test_WPPropertyScriptExtract.cpp
     test_WPParticleInstanceoverride.cpp
     test_WPSceneFileResolver.cpp
     test_WPMapSequenceParse.cpp
-    # Layer-alpha fan-out over a node's materials (SceneAlphaWrite.hpp).
-    test_SceneAlphaWrite.cpp
     test_WPRopeCombos.cpp
     test_RopeMedian.cpp
     test_RopeScratchThreadLocal.cpp
@@ -152,14 +153,14 @@ add_executable(backend_scene_tests
     test_WPSoundObject.cpp
     test_WPScene.cpp
     test_WPMaterial.cpp
-    test_WPParticleObject.cpp
-    test_WPImageObjectExpanded.cpp
-    test_WPParticleParserMore.cpp
-    test_WPParticleParserGaps.cpp
     # Inline `{"user": ...}` shader-constant bindings (WPMaterial.cpp).
     test_WPMaterialUserBinding.cpp
     # Which user-property changes the live scene can absorb without a reload.
     test_UserPropRuntimeUpdate.cpp
+    test_WPParticleObject.cpp
+    test_WPImageObjectExpanded.cpp
+    test_WPParticleParserMore.cpp
+    test_WPParticleParserGaps.cpp
     test_WPParticleParserDeepKill.cpp
     test_WPParticleParserResidual.cpp
     test_WPParticleParserResidual2.cpp
@@ -211,6 +212,7 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp
     ${SRC_DIR}/WPMdlParser.cpp
+    ${SRC_DIR}/CameraLayer.cpp
     ${SRC_DIR}/WPJson.cpp
     ${SRC_DIR}/WPParticleParser.cpp
     ${SRC_DIR}/WPSoundParser.cpp
@@ -221,7 +223,6 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/Scene/SceneIndexArray.cpp
     ${SRC_DIR}/Scene/SceneVertexArray.cpp
     ${SRC_DIR}/Scene/SceneShader.cpp
-    ${SRC_DIR}/CameraLayer.cpp
     ${SRC_DIR}/Scene/SceneLight.cpp
     # End-to-end WPSceneParser::Parse() coverage (test_WPSceneParse.cpp) needs
     # the parser TU plus its transitive non-Vulkan deps.  WPShaderParser.cpp
@@ -386,10 +387,10 @@ if(Qt6_FOUND)
         test_main_qt.cpp
         test_SceneScript.cpp
         test_SceneScriptDispatch.cpp
+        test_PropertyScriptDispatchGate.cpp
         test_SceneLocalStorageDisk.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
-        test_PropertyScriptDispatchGate.cpp
         ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
         ${CMAKE_SOURCE_DIR}/qml_helper/glExtra.cpp
     )

@@ -208,11 +208,19 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                         i32 index { 0 };
                         STRTONUM(name.substr(9), index);
                         if (! wput.default_.empty()) defTexs.push_back({ index, wput.default_ });
+
+                        // A slot that is present but empty still binds a 1x1 dummy
+                        // texture, so turning the combo on makes the shader read that
+                        // dummy as if it were real normal/roughness/etc data.  Gate on
+                        // the slot actually holding something.  A shader-declared
+                        // default counts as bound: scene parsing writes it into the
+                        // slot right after this runs.
+                        const bool slot_filled =
+                            index >= 0 && index < texcount && texinfos[(usize)index].enabled;
+                        const bool tex_bound = slot_filled || ! wput.default_.empty();
+
                         if (! wput.combo.empty()) {
-                            if (index >= texcount)
-                                combos[wput.combo] = "0";
-                            else
-                                combos[wput.combo] = "1";
+                            combos[wput.combo] = tex_bound ? "1" : "0";
                         }
                         // formatcombo: auto-generate combo from the format field name
                         // e.g. {"format":"normalmap","formatcombo":true} → NORMALMAP=1
@@ -226,10 +234,12 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                                                comboName.end(),
                                                comboName.begin(),
                                                ::toupper);
-                                combos[comboName] = (index < texcount) ? "1" : "0";
+                                combos[comboName] = tex_bound ? "1" : "0";
                             }
                         }
-                        if (index < texcount && texinfos[(usize)index].enabled) {
+                        // Component flags come out of the real texture header, so a
+                        // default that has not been loaded yet has nothing to offer.
+                        if (slot_filled) {
                             auto& compos = texinfos[(usize)index].composEnabled;
 
                             usize num = std::min(std::size(compos), std::size(wput.components));
