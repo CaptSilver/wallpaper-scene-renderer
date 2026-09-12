@@ -38,6 +38,7 @@ static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 // `::wallpaper::X`.
 #include "WPShaderTransforms.h"
 #include "WPShaderPreamble.hpp"
+#include "ShaderComboGuard.hpp"
 
 using namespace wallpaper;
 
@@ -158,11 +159,17 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
     auto& defTexs      = pWPShaderInfo->defTexs;
     idx   texcount     = std::ssize(texinfos);
 
+    // Follows the #if nesting so a texture declared inside its own combo's
+    // guard is not mistaken for one the scene bound.
+    ShaderComboGuard combo_guard;
+
     // pos start of line
     std::string::size_type pos = 0, lineEnd = std::string::npos;
     while ((lineEnd = src.find_first_of(('\n'), pos)), true) {
         const auto clineEnd = lineEnd;
         const auto line     = src.substr(pos, lineEnd - pos);
+
+        combo_guard.OnLine(line);
 
         /*
         if(line.find("attribute ") != std::string::npos || line.find("in ") != std::string::npos) {
@@ -217,7 +224,12 @@ inline void ParseWPShader(const std::string& src, WPShaderInfo* pWPShaderInfo,
                         // slot right after this runs.
                         const bool slot_filled =
                             index >= 0 && index < texcount && texinfos[(usize)index].enabled;
-                        const bool tex_bound = slot_filled || ! wput.default_.empty();
+                        // A declaration wrapped in its own combo's guard only
+                        // exists once that combo is on, so its default cannot be
+                        // what turns it on.
+                        const bool self_guarded = combo_guard.Guards(wput.combo);
+                        const bool tex_bound =
+                            slot_filled || (! wput.default_.empty() && ! self_guarded);
 
                         if (! wput.combo.empty()) {
                             combos[wput.combo] = tex_bound ? "1" : "0";
