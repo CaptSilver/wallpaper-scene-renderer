@@ -1,5 +1,6 @@
 #include "WPSceneParser.hpp"
 #include "TextCanvasSize.hpp"
+#include "CardMesh.hpp"
 #include "CameraLayer.hpp"
 #include "LayerSpace.hpp"
 #include "AuthoredChain.hpp"
@@ -254,20 +255,9 @@ void GenCardMesh(SceneMesh& mesh, const std::array<uint16_t, 2> size,
 
     float tw = mapRate[0], th = mapRate[1];
 
-    // clang-format off
-	const std::array pos = {
-		left, bottom, z,
-		left,  top, z,
-		right, bottom, z,
-		right,  top, z,
-	};
-	const std::array texCoord = {
-		0.0f, th,
-		0.0f, 0.0f,
-		tw, th,
-		tw, 0.0f,
-	};
-    // clang-format on
+    const auto  card = FlattenCardStrip(CardStrip(left, right, bottom, top, 0.0f, tw, 0.0f, th, z));
+    const auto& pos  = card.position;
+    const auto& texCoord = card.texcoord;
 
     SceneVertexArray vertex(
         {
@@ -3731,12 +3721,9 @@ std::shared_ptr<SceneMesh> buildTextMesh(const wpscene::WPTextObject& textObj,
         float                       right  = meshW / 2.0f + dx;
         float                       bottom = -meshH / 2.0f + dy;
         float                       top    = meshH / 2.0f + dy;
-        const std::array<float, 12> pos    = {
-            left, bottom, 0.0f, left, top, 0.0f, right, bottom, 0.0f, right, top, 0.0f,
-        };
-        const std::array<float, 8> tex = {
-            u0, v1, u0, v0, u1, v1, u1, v0,
-        };
+        const auto  card = FlattenCardStrip(CardStrip(left, right, bottom, top, u0, u1, v0, v1));
+        const auto& pos  = card.position;
+        const auto& tex  = card.texcoord;
         SceneVertexArray vertex({ { WE_IN_POSITION.data(), VertexType::FLOAT3 },
                                   { WE_IN_TEXCOORD.data(), VertexType::FLOAT2 } },
                                 4);
