@@ -77,6 +77,7 @@ add_executable(backend_scene_tests
     test_SceneVertexArray.cpp
     test_WPJson.cpp
     test_WPCommon_OrthoCameraSize.cpp
+    test_WPCommon_OrthoOverlayCamera.cpp
     test_WPSoundHelpers.cpp
     test_WPSoundParser.cpp
     test_SoundStreamTable.cpp

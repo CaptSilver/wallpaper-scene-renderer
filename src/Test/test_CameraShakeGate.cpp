@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace wallpaper;
@@ -141,6 +142,23 @@ TEST_SUITE("CameraShakeReach") {
         CHECK(vpForOneFrame(scene, node.get(), true) != vpForOneFrame(scene, node.get(), false));
     }
 
+    TEST_CASE("a compose layer's camera shakes because it follows the global_ortho camera") {
+        // A compose layer drawn flat in a 3D scene mirrors "global_ortho"
+        // instead of "global" (assembleEffectChain) and registers as a
+        // follower of "global_ortho"; it must sway with the overlay the same
+        // way a 2D scene's compose layer sways with "global".
+        Scene scene;
+        scene.elapsingTime = 1.0;
+        auto global        = registerPerspectiveCamera(scene, "global");
+        scene.activeCamera = global.get();
+        registerOrthoCamera(scene, "global_ortho");
+        registerOrthoCamera(scene, "compose_layer_cam");
+        scene.linkedCameras["global_ortho"] = { "compose_layer_cam" };
+        auto node                           = makeNode(scene, "compose_layer_cam");
+
+        CHECK(vpForOneFrame(scene, node.get(), true) != vpForOneFrame(scene, node.get(), false));
+    }
+
     TEST_CASE("a layer-local effect camera stays still") {
         // A non-compose effect chain renders its layer 1:1 into its own
         // intermediate target through a camera sized to that layer.  Shaking it
@@ -232,5 +250,25 @@ TEST_SUITE("CameraFollowsGlobalView") {
         CHECK_FALSE(isGlobalViewCameraName("0x55f0a1"));
         CHECK(isPostProcessCameraName("effect"));
         CHECK_FALSE(isPostProcessCameraName(""));
+    }
+
+    TEST_CASE("a camera listed only under global_ortho is linked to the global view") {
+        // A 3D scene's flat compose layers link under "global_ortho" instead
+        // of "global" (assembleEffectChain); the lookup must scan both.
+        std::unordered_map<std::string, std::vector<std::string>> linked;
+        linked["global_ortho"] = { "0x55f0a1" };
+        CHECK(isLinkedToGlobalView("0x55f0a1", linked));
+        CHECK_FALSE(isLinkedToGlobalView("0x55f0a2", linked));
+    }
+
+    TEST_CASE("a camera listed only under global is still linked (unchanged behaviour)") {
+        std::unordered_map<std::string, std::vector<std::string>> linked;
+        linked["global"] = { "0x55f0a1" };
+        CHECK(isLinkedToGlobalView("0x55f0a1", linked));
+    }
+
+    TEST_CASE("neither linkedCameras key present -> not linked") {
+        std::unordered_map<std::string, std::vector<std::string>> linked;
+        CHECK_FALSE(isLinkedToGlobalView("0x55f0a1", linked));
     }
 }

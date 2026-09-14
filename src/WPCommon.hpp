@@ -82,4 +82,17 @@ inline bool CountFitsStream(const fs::IBinaryStream& file, std::size_t count,
 inline int32_t ReadSPVVesion(fs::IBinaryStream& file) { return ReadVersion("SPV", file); }
 inline void WriteSPVVesion(fs::IBinaryStreamW& file, int ver) { WriteVersion("SPVS", file, ver); }
 
+// Whether a layer's final composite (or a compose layer's own effect camera)
+// should go through the ortho overlay camera ("global_ortho") instead of the
+// scene's real camera.  A perspective scene keeps "global_ortho" around
+// specifically so flat layers can composite in pixel space; a layer only
+// wants that when the overlay actually exists, the layer itself isn't
+// declared perspective, and it doesn't inherit a 3D model's transform (which
+// is already in scene units, so re-projecting it through the pixel-space
+// overlay would scale it by the model's scale).
+inline bool UsesOrthoOverlayCamera(bool hasGlobalOrtho, bool layerPerspective,
+                                   bool inheritsModelSpace) {
+    return hasGlobalOrtho && ! layerPerspective && ! inheritsModelSpace;
+}
+
 } // namespace wallpaper

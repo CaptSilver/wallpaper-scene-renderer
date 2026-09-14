@@ -61,6 +61,59 @@ TEST_SUITE("Scene") {
         CHECK(f2->Height() == doctest::Approx(1080.0));
     }
 
+    // UpdateLinkedCamera itself is name-agnostic — it clones whatever source
+    // camera the caller names into whatever followers are registered under
+    // that name.  VulkanRender::Impl::UpdateCameraFillMode's perspective
+    // branch resizes "global_ortho" every fill-mode change but (pre-fix)
+    // never called UpdateLinkedCamera for it, so a 3D scene's compose-layer
+    // followers never tracked the overlay's resize.  That call site needs a
+    // live Vulkan device and isn't reachable from a doctest; this pins the
+    // Scene-level contract the fix now actually invokes for "global_ortho"
+    // the same way it always has for "global".
+    TEST_CASE("UpdateLinkedCamera resizes an ortho-overlay follower and keeps it non-perspective") {
+        Scene s;
+
+        auto orthoOverlay         = std::make_shared<SceneCamera>(1920, 1080, -5000.0f, 5000.0f);
+        s.cameras["global_ortho"] = orthoOverlay;
+
+        auto follower                   = std::make_shared<SceneCamera>(2, 1, -1.0f, 1.0f);
+        s.cameras["compose_cam"]        = follower;
+        s.linkedCameras["global_ortho"] = { "compose_cam" };
+
+        // Mimic UpdateCameraFillMode's resize on a fill-mode change.
+        orthoOverlay->SetWidth(2560.0);
+        orthoOverlay->SetHeight(1440.0);
+        orthoOverlay->Update();
+
+        s.UpdateLinkedCamera("global_ortho");
+
+        CHECK(follower->Width() == doctest::Approx(2560.0));
+        CHECK(follower->Height() == doctest::Approx(1440.0));
+        CHECK_FALSE(follower->IsPerspective());
+    }
+
+    TEST_CASE("UpdateLinkedCamera propagates a direct-lookat source to a follower with no node") {
+        // The perspective "global" camera in a 3D scene is direct-lookat with
+        // no attached node (SetDirectLookAt never calls AttatchNode).  Clone()
+        // copies m_direct_lookat + eye/center/up but not m_node, so a follower
+        // still computes a real (non-Identity) view purely from those fields.
+        Scene s;
+
+        auto source = std::make_shared<SceneCamera>(16.0f / 9.0f, 0.1f, 5000.0f, 50.0f);
+        source->SetDirectLookAt(
+            Eigen::Vector3d(10, 20, 30), Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 1, 0));
+        s.cameras["global"] = source;
+
+        auto follower             = std::make_shared<SceneCamera>(16.0f / 9.0f, 0.1f, 5000.0f, 50.0f);
+        s.cameras["compose_cam"]  = follower;
+        s.linkedCameras["global"] = { "compose_cam" };
+
+        s.UpdateLinkedCamera("global");
+
+        CHECK(follower->GetViewMatrix().isApprox(source->GetViewMatrix()));
+        CHECK_FALSE(follower->GetViewMatrix().isApprox(Eigen::Matrix4d::Identity()));
+    }
+
     TEST_CASE("VolumetricsConfig defaults: disabled, density multiplier 1.0") {
         Scene s;
         CHECK(s.volumetricsConfig.enabled == false);
