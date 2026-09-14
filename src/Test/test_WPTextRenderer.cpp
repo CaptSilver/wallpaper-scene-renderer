@@ -2,6 +2,7 @@
 
 #include "WPTextRenderer.hpp"
 #include "SystemFontFallback.hpp"
+#include "Utils/Logging.h"
 
 #include <cstring>
 #include <filesystem>
@@ -572,7 +573,31 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         CHECK(totalAlpha > 5000);
     }
 
-    TEST_CASE("primary face missing glyph: WEKDE_TEXT_CJK_FALLBACK=0 disables → replacement glyph + LOG_INFO once") {
+    TEST_CASE("fallback resolves the glyph: the .notdef log must NOT fire") {
+        // Regression for the log lying about what got drawn: a Han
+        // codepoint the primary face lacks but the CJK fallback face
+        // resolves is not a .notdef box, so the "missing (.notdef glyph
+        // emitted)" counter must stay at 0 — only the fallback-specific
+        // counter should move.
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("Noto Sans CJK absent on host; skipping fallback test");
+            return;
+        }
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        (void)WPTextRenderer::RenderText(
+            fontData, 24.f, "\xE4\xB8\xAD", 64, 64, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getMissingGlyphLogCount() == 0);
+        CHECK(WPTextRenderer::TEST_getFallbackGlyphLogCount() >= 1);
+    }
+
+    TEST_CASE("primary face missing glyph: WEKDE_TEXT_CJK_FALLBACK=0 disables → replacement glyph "
+              "+ LOG_INFO once") {
         // Mirror of the default-ON case in reverse: with the env var set
         // to "0", RenderText must:
         //   (1) NOT consult the fallback face at all;
@@ -600,6 +625,9 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         const int logged = WPTextRenderer::TEST_getMissingGlyphLogCount();
         CHECK(logged >= 1);
         CHECK(logged <= 6);
+        // Every miss here is a real .notdef box (fallback disabled), so the
+        // fallback-specific counter must stay untouched.
+        CHECK(WPTextRenderer::TEST_getFallbackGlyphLogCount() == 0);
     }
 
     TEST_CASE("all-Latin font + Latin string: no fallback-face load") {
@@ -615,11 +643,62 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
             return;
         }
         WPTextRenderer::TEST_resetFallbackProbeCounter();
-        auto img =
-            WPTextRenderer::RenderText(fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
+        auto img = WPTextRenderer::RenderText(
+            fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
         REQUIRE(img != nullptr);
         // No missing glyph in the primary → no fallback probe.
         CHECK(WPTextRenderer::TEST_getFallbackProbeCount() == 0);
+    }
+
+    // Records every message reaching the test sink (Utils/Logging.h), not
+    // just the rate-limited fired-counters below — those only move when the
+    // .notdef/fallback branch inside the log block runs, so they can't tell
+    // "block skipped" from "block ran but had nothing to attribute the log
+    // to". A direct sink is the only way to see that the log call happened
+    // at all.
+    struct LogCapture {
+        LogCapture() {
+            lines().clear();
+            wallpaper_log_test::setSink(&append);
+        }
+        ~LogCapture() { wallpaper_log_test::setSink(nullptr); }
+        LogCapture(const LogCapture&)            = delete;
+        LogCapture& operator=(const LogCapture&) = delete;
+
+        static std::vector<std::string>& lines() {
+            static std::vector<std::string> v;
+            return v;
+        }
+        static void append(int, const char* msg) { lines().emplace_back(msg); }
+    };
+
+    TEST_CASE("a Latin string fully covered by the primary face logs no glyph-coverage "
+              "message") {
+        // BuildGlyphCoverageMessage returns "" when both the .notdef and
+        // fallback counts are zero, and RenderText's guard is supposed to
+        // skip the log entirely in that case. If the guard instead ran on
+        // every call, this test would see an empty-string LOG_INFO fire for
+        // ordinary, fully-covered text — a line no journal reader could
+        // make sense of.
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        // Zero the rate-limit tick so a broken guard would fire on this
+        // very first call rather than being masked by an earlier test
+        // having already advanced the shared tick past its next multiple
+        // of 32.
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        LogCapture capture;
+        auto       img = WPTextRenderer::RenderText(
+            fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
+        REQUIRE(img != nullptr);
+        for (const auto& line : LogCapture::lines()) {
+            CHECK(line.find("codepoint") == std::string::npos);
+            CHECK_FALSE(line.empty());
+        }
     }
 
     TEST_CASE("kerned line width <= unkerned line width") {

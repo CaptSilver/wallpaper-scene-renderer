@@ -54,6 +54,7 @@ add_executable(backend_scene_tests
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
     test_WPTextRendererGlyphCache.cpp
+    test_WPGlyphCoverageMessage.cpp
     test_SceneCamera.cpp
     test_SceneNode.cpp
     test_UniformDirtyGate.cpp
