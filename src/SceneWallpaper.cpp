@@ -520,13 +520,13 @@ public:
 
     void setColorUpdate(i32 id, float r, float g, float b) {
         m_queues.setColorUpdate(id, r, g, b);
-        LOG_INFO("setColorUpdate enqueued id=%d rgb=(%.3f,%.3f,%.3f)", id, r, g, b);
+        LOG_DEBUG("setColorUpdate enqueued id=%d rgb=(%.3f,%.3f,%.3f)", id, r, g, b);
     }
 
     void setNodeTransform(i32 id, const std::string& property, float x, float y, float z) {
         // Enqueue + jump-log stay under ONE property-mutex acquisition (as
         // before).  The enqueue is delegated into the queue's map; the
-        // diagnostic static/thread_local state + LOG_INFO stay here in
+        // diagnostic static/thread_local state + LOG_DEBUG stay here in
         // RenderHandler so the GPU-free queue keeps no renderer-log dependency
         // and the log lines stay byte-identical.
         m_queues.withPropertyLocked([&](PendingUpdateQueues& q) {
@@ -543,14 +543,14 @@ public:
                           (std::abs(prev->second[0] - x) + std::abs(prev->second[1] - y) +
                            std::abs(prev->second[2] - z)) > 50.0f;
             if (++s_transform_log <= 5 || jumped) {
-                LOG_INFO("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
-                         s_transform_log,
-                         id,
-                         property.c_str(),
-                         x,
-                         y,
-                         z,
-                         jumped ? " [jump]" : "");
+                LOG_DEBUG("setNodeTransform[%d]: id=%d prop=%s val=(%.4f,%.4f,%.4f)%s",
+                          s_transform_log,
+                          id,
+                          property.c_str(),
+                          x,
+                          y,
+                          z,
+                          jumped ? " [jump]" : "");
                 s_last_logged_transform[key] = { x, y, z };
             }
         });
@@ -564,7 +564,7 @@ public:
             auto                                       prev = s_last_logged_visible.find(id);
             bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
             if (++s_visible_log <= 5 || jumped) {
-                LOG_INFO("setNodeVisible[%d]: id=%d visible=%d%s",
+                LOG_DEBUG("setNodeVisible[%d]: id=%d visible=%d%s",
                          s_visible_log,
                          id,
                          (int)visible,
@@ -616,7 +616,7 @@ public:
             bool                                        jumped =
                 prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
             if (++s_alpha_log <= 5 || jumped) {
-                LOG_INFO("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
+                LOG_DEBUG("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
                          s_alpha_log,
                          id,
                          alpha,
@@ -637,7 +637,7 @@ public:
             // journal at every tick.
             bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
             if (++s_rate_log <= 5 || jumped) {
-                LOG_INFO("setParticleRate[%d]: id=%d rate=%.4f%s",
+                LOG_DEBUG("setParticleRate[%d]: id=%d rate=%.4f%s",
                          s_rate_log,
                          id,
                          rate,

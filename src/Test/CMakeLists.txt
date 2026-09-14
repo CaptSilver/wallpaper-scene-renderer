@@ -83,6 +83,7 @@ add_executable(backend_scene_tests
     test_FpsCounter.cpp
     test_MsaaPolicy.cpp
     test_Logging.cpp
+    test_ConsoleFlushDedup.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
     test_AudioCapture.cpp
@@ -282,6 +283,9 @@ target_include_directories(backend_scene_tests PRIVATE
     ${DOCTEST_INCLUDE_DIR}
     # libmpv headers (mpv/client.h, mpv/render.h) — VideoTextureDecoder.cpp.
     ${MPV_INCLUDE_DIRS}
+    # ConsoleFlushDedup.hpp (test_ConsoleFlushDedup.cpp) — QJSEngine-free, so it's
+    # exercised here rather than only through the Qt-gated scenescript_tests.
+    ${CMAKE_SOURCE_DIR}/qml_helper
 )
 target_include_directories(backend_scene_tests SYSTEM PRIVATE
     "${CMAKE_SOURCE_DIR}/third_party")

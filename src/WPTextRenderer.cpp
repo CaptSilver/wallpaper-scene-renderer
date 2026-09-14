@@ -929,12 +929,12 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     slot.mipmaps.push_back(std::move(mipmap));
     img.slots.push_back(std::move(slot));
 
-    LOG_INFO("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f, text=\"%s\"",
-             width,
-             height,
-             lines.size(),
-             pointsize,
-             text.c_str());
+    LOG_DEBUG("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f, text=\"%s\"",
+              width,
+              height,
+              lines.size(),
+              pointsize,
+              text.c_str());
 
     // Optional debug dump — set WEKDE_TEXT_DUMP_DIR=/tmp/foo to write each
     // rasterized text bitmap to PPM for diagnosis.
