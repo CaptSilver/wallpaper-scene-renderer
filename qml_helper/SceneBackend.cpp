@@ -2219,28 +2219,25 @@ void SceneObject::setupTextScripts() {
         "if (typeof thisScene.enumerateLayers === 'function') thisScene.enumerateLayers();\n"
         "if (typeof _linkupHierarchy === 'function') _linkupHierarchy();\n");
 
-    // Final null-safety wrapper: ensures getLayer() never returns null.
-    // The original getLayer returns null for unknown image layers so the sound-layer
-    // patch can fall through. This outermost wrapper catches any remaining nulls.
-    m_jsEngine->evaluate("var _innerGetLayer = thisScene.getLayer;\n"
-                         "thisScene.getLayer = function(name) {\n"
-                         "  var r = _innerGetLayer(name);\n"
-                         "  if (r !== null && r !== undefined) return r;\n"
-                         "  console.log('getLayer: unknown layer: ' + name);\n"
-                         "  return _nullProxy;\n"
-                         "};\n"
-                         // getLayerCount — returns total number of discoverable layers
-                         "thisScene.getLayerCount = function() {\n"
-                         "  return Object.keys(_layerInitStates).length;\n"
-                         "};\n"
-                         // thisObject global — context-dependent object (defaults to thisLayer)
-                         "var thisObject = {\n"
-                         "  getAnimation: function(name) {\n"
-                         "    if (thisLayer && thisLayer.getAnimationLayer) return "
-                         "thisLayer.getAnimationLayer(name || 0);\n"
-                         "    return null;\n"
-                         "  }\n"
-                         "};\n");
+    // Final getLayer wrapper: outermost link in the chain (kSoundLayerGetLayerPatchJs
+    // is the inner one, when installed).  getLayer's contract is null-on-miss —
+    // authors guard every call with `if (!layer) return;` — so this only needs to
+    // catch the case where no earlier patch handled the miss (no sound layers in
+    // the scene) and log+return null itself.
+    m_jsEngine->evaluate(wek::qml_helper::kFinalGetLayerSafetyJs);
+    m_jsEngine->evaluate(
+        // getLayerCount — returns total number of discoverable layers
+        "thisScene.getLayerCount = function() {\n"
+        "  return Object.keys(_layerInitStates).length;\n"
+        "};\n"
+        // thisObject global — context-dependent object (defaults to thisLayer)
+        "var thisObject = {\n"
+        "  getAnimation: function(name) {\n"
+        "    if (thisLayer && thisLayer.getAnimationLayer) return "
+        "thisLayer.getAnimationLayer(name || 0);\n"
+        "    return null;\n"
+        "  }\n"
+        "};\n");
 
     installScriptApiGlobals();
 
@@ -2257,11 +2254,12 @@ void SceneObject::setupTextScripts() {
         // Life 3453251764 buttons et al.) call thisLayer.getTextureAnimation()
         // / thisLayer.getEffect() in init.  Without this `thisLayer` stayed
         // pinned to whichever layer the prior property-script loop landed
-        // on, and init threw on the first method lookup.
+        // on, and init threw on the first method lookup.  Falls back to
+        // _nullProxy directly (not getLayer('')) since getLayer() now returns
+        // null on a miss — thisLayer must stay a safe stand-in either way.
         m_globalObj.setProperty(
             "thisLayer",
-            m_jsEngine->evaluate(
-                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(csi.id)));
+            m_jsEngine->evaluate(QString("thisScene.getLayerByID(%1) || _nullProxy").arg(csi.id)));
 
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
@@ -2397,10 +2395,13 @@ void SceneObject::setupTextScripts() {
                 break;
             }
         }
+        // Falls back to _nullProxy directly (not getLayer('')) since getLayer()
+        // now returns null on a miss — thisLayer must stay a safe stand-in
+        // either way (Game of Life 3453251764 shader-value scripts call
+        // thisLayer.getTextureAnimation() / thisLayer.getEffect()).
         m_globalObj.setProperty(
             "thisLayer",
-            m_jsEngine->evaluate(
-                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(svi.id)));
+            m_jsEngine->evaluate(QString("thisScene.getLayerByID(%1) || _nullProxy").arg(svi.id)));
 
         QString propsInit;
         if (! svi.scriptProperties.empty()) {
@@ -4242,21 +4243,9 @@ void SceneObject::buildSoundStates() {
                 "  return p;\n"
                 "}\n");
 
-            // Patch thisScene.getLayer to check sound layers too
-            m_jsEngine->evaluate("var _origGetLayer = thisScene.getLayer;\n"
-                                 "thisScene.getLayer = function(name) {\n"
-                                 "  // Check image layers first\n"
-                                 "  var r = _origGetLayer(name);\n"
-                                 "  if (r) return r;\n"
-                                 "  // Then check sound layers\n"
-                                 "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
-                                 "  if (_soundLayerStates[name]) {\n"
-                                 "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
-                                 "    return _soundLayerCache[name];\n"
-                                 "  }\n"
-                                 "  console.log('getLayer: unknown layer: ' + name);\n"
-                                 "  return _nullProxy;\n"
-                                 "};\n");
+            // Patch thisScene.getLayer to check sound layers too.  Shared
+            // verbatim with scenescript_tests via kSoundLayerGetLayerPatchJs.
+            m_jsEngine->evaluate(wek::qml_helper::kSoundLayerGetLayerPatchJs);
 
             // thisScene.enumerateLayers — returns array of proxies for all layers
             m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"

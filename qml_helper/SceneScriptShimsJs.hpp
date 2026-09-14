@@ -755,6 +755,12 @@ function _linkupHierarchy() {
 // =====================================================================
 inline constexpr const char* kLayerProxyJs = R"JS(var _layerCache = {};
 var _layerList = [];
+// Names getLayer() has already logged as unknown this scene load — the
+// getLayer wrapper chain (kSoundLayerGetLayerPatchJs / kFinalGetLayerSafetyJs)
+// consults this so a script that polls getLayer(typo) every tick logs once,
+// not once per frame.  Fresh per load since the QJSEngine is recreated on
+// every wallpaper switch.
+var _loggedUnknownLayers = {};
 function _makePoolLayerProxy(name) {
   var init = _layerInitStates[name];
   var _origin = init ? Vec3(init.o[0], init.o[1], init.o[2]) : Vec3(0,0,0);
@@ -1428,6 +1434,47 @@ function _collectDirtyLayers() {
   return out;
 }
 )JS";
+
+// getLayer patches: buildSoundStates() chains kSoundLayerGetLayerPatchJs in
+// front of the base kLayerProxyJs getLayer when the scene has sound layers;
+// kFinalGetLayerSafetyJs is always installed last.  A SceneScript author's
+// plain `if (!layer) return;` guard only works if a genuinely unknown name
+// comes back null all the way up the chain, not a truthy stand-in that lets
+// the guard fall through — so both patches return null on a miss, logging
+// through the shared _loggedUnknownLayers dedup so a script that polls the
+// same typo every tick doesn't flood the log.  Externalized so
+// scenescript_tests exercises the exact production wrapper chain instead of
+// a hand-mirrored copy.
+inline constexpr const char* kSoundLayerGetLayerPatchJs =
+    "var _origGetLayer = thisScene.getLayer;\n"
+    "thisScene.getLayer = function(name) {\n"
+    "  // Check image layers first\n"
+    "  var r = _origGetLayer(name);\n"
+    "  if (r) return r;\n"
+    "  // Then check sound layers\n"
+    "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
+    "  if (_soundLayerStates[name]) {\n"
+    "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
+    "    return _soundLayerCache[name];\n"
+    "  }\n"
+    "  if (!_loggedUnknownLayers[name]) {\n"
+    "    _loggedUnknownLayers[name] = true;\n"
+    "    console.log('getLayer: unknown layer: ' + name);\n"
+    "  }\n"
+    "  return null;\n"
+    "};\n";
+
+inline constexpr const char* kFinalGetLayerSafetyJs =
+    "var _innerGetLayer = thisScene.getLayer;\n"
+    "thisScene.getLayer = function(name) {\n"
+    "  var r = _innerGetLayer(name);\n"
+    "  if (r !== null && r !== undefined) return r;\n"
+    "  if (!_loggedUnknownLayers[name]) {\n"
+    "    _loggedUnknownLayers[name] = true;\n"
+    "    console.log('getLayer: unknown layer: ' + name);\n"
+    "  }\n"
+    "  return null;\n"
+    "};\n";
 
 // Timer shim — setTimeout / setInterval / clearTimeout / clearInterval, plus the
 // `engine.`-namespaced aliases (WE scripts use both spellings; Summer Vibes
