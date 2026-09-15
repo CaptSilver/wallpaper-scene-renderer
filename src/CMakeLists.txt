@@ -28,6 +28,14 @@ if(ENABLE_RENDERDOC)
   add_compile_definitions(ENABLE_RENDERDOC_API=1)
 endif()
 
+# Cumulative texture budget in bytes (WPTexImageParser). Low-VRAM machines can
+# set a smaller cap with -DWEK_MAX_TEX_BYTES=...; a high-VRAM card can raise it.
+# The source uses #ifndef WEK_MAX_TEX_BYTES with a 2 GiB default, so leaving this
+# unset is fine. Exposed here so packagers can override without touching the cpp.
+if(DEFINED WEK_MAX_TEX_BYTES)
+  add_compile_definitions(WEK_MAX_TEX_BYTES=${WEK_MAX_TEX_BYTES})
+endif()
+
 include(TestBigEndian)
 test_big_endian(ENDIAN)
 if(ENDIAN)

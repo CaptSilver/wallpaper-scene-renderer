@@ -61,7 +61,16 @@ using namespace wallpaper::teximage_helpers;
 constexpr usize kMaxImageCount   = 16;
 constexpr usize kMaxMipmapCount  = 24;
 constexpr i32   kMaxMipmapDim    = 16384;
-constexpr i64   kMaxTotalBytes   = 4096ll * 1024 * 1024;
+// Cumulative texture budget, overrideable at build time so low-VRAM
+// machines (8 GB GPUs) can use a small cap while a 24 GB card can raise it.
+// The old hard 1 GiB cap dropped huge sprites (e.g. 7680x8000 Hackercore)
+// to a 1x1 fallback (blank wallpaper). Default 2 GiB fits 8 GB GPUs and
+// lets higher-VRAM builds pass -DWEK_MAX_TEX_BYTES to raise it. Deliberately
+// a #ifndef so packagers can override without touching this file.
+#ifndef WEK_MAX_TEX_BYTES
+#  define WEK_MAX_TEX_BYTES (2ll * 1024 * 1024 * 1024)
+#endif
+constexpr i64 kMaxTotalBytes = WEK_MAX_TEX_BYTES;
 constexpr i32   kMaxEmbeddedDim  = 16384;
 
 std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size) {
