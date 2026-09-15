@@ -1796,6 +1796,109 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(img->slots[0].mipmaps[0].size == 4 * 4 * 4);
     }
 
+    TEST_CASE("A raw-copy mip that exactly fills the remaining budget is accepted") {
+        // Plain (non-LZ4, non-embedded) mip whose src_size is set to exactly
+        // the injected budget. The gate is `>`, so a charge equal to what's
+        // left must still pass -- only a charge that goes over may reject.
+        constexpr int kBudget = 128;
+        auto          buf     = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1); // mipmap_count
+        std::vector<uint8_t> pixels(kBudget, 0x33);
+        appendMipmapV1(buf, 4, 4, pixels);
+
+        VFS vfs;
+        mountTex(vfs, "raw_exact_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/kBudget);
+        auto             img = parser.Parse("raw_exact_budget");
+        REQUIRE(img != nullptr);
+        CHECK(img->slots[0].mipmaps[0].size == kBudget);
+    }
+
+    TEST_CASE("An embedded-image mip that exactly fills the remaining budget is accepted") {
+        // 2x2 TGA -> stbi_out = 2*2*4 = 16 bytes. Budget set to exactly 16:
+        // same boundary as the raw-copy case above, but on the branch that
+        // gates on stbi's decoded size instead of the container bytes.
+        std::vector<uint8_t> tga(18, 0);
+        tga[2]  = 2;             // uncompressed true-color
+        tga[12] = 2; tga[13] = 0; // width = 2
+        tga[14] = 2; tga[15] = 0; // height = 2
+        tga[16] = 24;             // bpp
+        for (int i = 0; i < 2 * 2 * 3; i++) tga.push_back(0x40); // pixel data
+
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 2, 2, 2, 2, 1);
+        appendInt32(buf, /*imageType=*/17); // TARGA
+        appendInt32(buf, /*mipmap_count=*/1);
+        appendMipmapV2(buf, /*mip_w=*/2, /*mip_h=*/2, tga);
+
+        VFS vfs;
+        mountTex(vfs, "stbi_exact_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/16); // == 2*2*4 stbi_out
+        auto             img = parser.Parse("stbi_exact_budget");
+        REQUIRE(img != nullptr);
+        CHECK(img->slots[0].mipmaps[0].size == 2 * 2 * 4);
+    }
+
+    TEST_CASE("An MP4-placeholder mip that exactly fills the remaining budget is accepted") {
+        // Same boundary again, on the third branch: the black placeholder
+        // buffer is Rgba8ByteSize(4, 4) = 64 bytes, and the budget is set to
+        // exactly that.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1); // mipmap_count
+        appendInt32(buf, 4); // mip width
+        appendInt32(buf, 4); // mip height
+        appendInt32(buf, 0); // LZ4_compressed = false
+        appendInt32(buf, 0); // decompressed_size
+        appendInt32(buf, 12); // src_size = 12 (>8, triggers MP4 detection)
+        const uint8_t fake[12] = {
+            0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'
+        };
+        for (uint8_t b : fake) buf.push_back(b);
+
+        VFS vfs;
+        mountTex(vfs, "mp4_exact_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/64); // == Rgba8ByteSize(4, 4)
+        auto             img = parser.Parse("mp4_exact_budget");
+        REQUIRE(img != nullptr);
+        CHECK(img->header.isVideoTexture);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        CHECK(img->slots[0].mipmaps[0].size == 64);
+    }
+
+    TEST_CASE("The second of two embedded-image mips that together exceed the budget is rejected") {
+        // Two 2x2 TGAs, each stbi_out = 2*2*4 = 16 bytes: individually under
+        // a 20-byte budget, but their sum (32) is not. The rejection has to
+        // come from the second mip's charge landing on top of the first's
+        // running total, not from either mip judged alone.
+        std::vector<uint8_t> tga(18, 0);
+        tga[2]  = 2;
+        tga[12] = 2; tga[13] = 0;
+        tga[14] = 2; tga[15] = 0;
+        tga[16] = 24;
+        for (int i = 0; i < 2 * 2 * 3; i++) tga.push_back(0x40);
+
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 2, 2, 2, 2, 1);
+        appendInt32(buf, /*imageType=*/17); // TARGA
+        appendInt32(buf, /*mipmap_count=*/2);
+        appendMipmapV2(buf, /*mip_w=*/2, /*mip_h=*/2, tga);
+        appendMipmapV2(buf, /*mip_w=*/2, /*mip_h=*/2, tga);
+
+        VFS vfs;
+        mountTex(vfs, "stbi_two_mip_over_budget", std::move(buf));
+
+        g_lastLogMessage.clear();
+        wallpaper_log_test::setSink(&captureLastLogMessage);
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/20);
+        auto             img = parser.Parse("stbi_two_mip_over_budget");
+        wallpaper_log_test::setSink(nullptr);
+
+        CHECK(img == nullptr);
+        CHECK(g_lastLogMessage.find("mip[1]") != std::string::npos);
+        CHECK(g_lastLogMessage.find("exceeds cumulative cap") != std::string::npos);
+    }
+
 } // TEST_SUITE
 
 // ===========================================================================
