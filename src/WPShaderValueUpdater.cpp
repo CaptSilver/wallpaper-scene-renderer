@@ -38,19 +38,16 @@ bool shakeDiagEnabled() {
     return on;
 }
 
-// Is this camera one of the followers the scene re-clones from "global" every
-// frame?  Only the per-node cameras a compose effect creates land in that list,
-// and only for them does the answer need looking up — the scene-wide names and
-// the post-process camera decide on their own, so skip the scan for those.
+// Is this camera one of the followers the scene re-clones from a global-view
+// camera ("global" or its 3D-scene "global_ortho" companion) every frame?
+// Only the per-node cameras a compose effect creates land in one of those
+// lists, and only for them does the answer need looking up — the scene-wide
+// names and the post-process camera decide on their own, so skip the scan
+// for those.
 bool followsLinkedGlobalCamera(const wallpaper::Scene& scene, std::string_view cam_name) {
     if (wallpaper::isGlobalViewCameraName(cam_name) || wallpaper::isPostProcessCameraName(cam_name))
         return false;
-    auto it = scene.linkedCameras.find("global");
-    if (it == scene.linkedCameras.end()) return false;
-    for (const auto& name : it->second) {
-        if (std::string_view(name) == cam_name) return true;
-    }
-    return false;
+    return wallpaper::isLinkedToGlobalView(cam_name, scene.linkedCameras);
 }
 } // namespace
 

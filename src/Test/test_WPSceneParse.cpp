@@ -38,11 +38,13 @@
 #include "WPUserProperties.hpp"
 
 #include "Audio/SoundManager.h"
+#include "Utils/Logging.h"
 
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 #include "Fs/PhysicalFs.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -84,6 +86,34 @@ public:
 
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
+};
+
+// Collects log bodies for the duration of a scope.  Same pattern as
+// test_WPMdlParserFormats.cpp's LogCapture — some parser decisions (e.g. a
+// camera silently failing to attach) are otherwise invisible: they don't
+// change the return value, only what gets logged.
+struct LogCapture {
+    LogCapture() {
+        lines().clear();
+        wallpaper_log_test::setSink(&append);
+    }
+    ~LogCapture() { wallpaper_log_test::setSink(nullptr); }
+
+    LogCapture(const LogCapture&)            = delete;
+    LogCapture& operator=(const LogCapture&) = delete;
+
+    static std::vector<std::string>& lines() {
+        static std::vector<std::string> v;
+        return v;
+    }
+    static void append(int, const char* msg) { lines().emplace_back(msg); }
+
+    static bool saw(std::string_view needle) {
+        for (const auto& l : lines()) {
+            if (l.find(needle) != std::string_view::npos) return true;
+        }
+        return false;
+    }
 };
 
 // Build a VFS with an empty /assets mount.  The fixture scene below references
@@ -1188,6 +1218,184 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // registers a /_rt_offscreen_<id>/ render target so the compose
         // blend's link-tex resolves to a real RT (WPSceneParser.cpp:2583).
         CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+    }
+
+    TEST_CASE("E2E: a 3D scene's compose layer camera mirrors the ortho overlay, not "
+              "an unattached node") {
+        ensureGlslangInit();
+        // A 3D (perspective) scene's active camera is a direct-lookat camera
+        // with no scene-graph node — SetDirectLookAt never attaches one.
+        // Before this fix, a compose layer's camera unconditionally shared
+        // that node; AttatchNode(nullptr) logs and bails out before Update(),
+        // so the camera's view-projection matrix stayed at Identity and the
+        // compose layer's effect chain drew through no projection at all.  A
+        // flat compose layer composites through the ortho overlay camera
+        // ("global_ortho") exactly like every other flat layer in a 3D scene,
+        // so its own camera should mirror THAT one instead of "global".
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/composelayer.json", kPlainImageJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
+        });
+
+        // A "camera" block is required for WPScene::FromJson to even call
+        // general.FromJson (its absence short-circuits with "scene no
+        // camera" and general.isOrtho is left at its struct default `true`).
+        // With "camera" present and no "orthogonalprojection" key,
+        // general.isOrtho ends up false -> the parser builds a perspective
+        // "global" + ortho-overlay "global_ortho".
+        const char* kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0" },
+  "objects": [
+    { "id": 601, "name": "compose_layer_3d",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+
+        LogCapture log;
+        auto scene = parser.Parse("scene_compose_3d", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK_FALSE(LogCapture::saw("Attach a null node to camera"));
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* compose = findById(scene->sceneGraph.get(), 601);
+        REQUIRE(compose != nullptr);
+
+        const std::string camName = compose->Camera();
+        REQUIRE(scene->cameras.count(camName) == 1);
+        REQUIRE(scene->cameras.count("global_ortho") == 1);
+
+        // Follows "global_ortho" — "global" in a 3D scene is the perspective
+        // camera, which UpdateCameraFillMode never resizes a linked follower
+        // against.
+        REQUIRE(scene->linkedCameras.count("global_ortho") == 1);
+        const auto& orthoFollowers = scene->linkedCameras.at("global_ortho");
+        CHECK(std::find(orthoFollowers.begin(), orthoFollowers.end(), camName) !=
+              orthoFollowers.end());
+        if (scene->linkedCameras.count("global") == 1) {
+            const auto& globalFollowers = scene->linkedCameras.at("global");
+            CHECK(std::find(globalFollowers.begin(), globalFollowers.end(), camName) ==
+                  globalFollowers.end());
+        }
+
+        // The compose camera shares the ortho overlay's node — not merely a
+        // clone of it — so a later camera-shake/parallax nudge to that node
+        // reaches the compose camera too.  Its view matrix (the node-derived
+        // part) must therefore match exactly; only the projection (near/far/
+        // size, sized to the compose effect's own bounds, same as it always
+        // was for the 2D "global" case) is free to differ.
+        auto composeCam = scene->cameras.at(camName);
+        auto orthoCam   = scene->cameras.at("global_ortho");
+        REQUIRE(composeCam->GetAttachedNode() != nullptr);
+        CHECK(composeCam->GetAttachedNode() == orthoCam->GetAttachedNode());
+
+        auto view      = composeCam->GetViewMatrix();
+        auto orthoView = orthoCam->GetViewMatrix();
+        CHECK(view.isApprox(orthoView));
+        // Pre-fix this stayed at the Eigen default -- Identity -- because
+        // AttatchNode(nullptr) bailed out before ever calling Update().
+        CHECK_FALSE(composeCam->GetViewProjectionMatrix().isApprox(Eigen::Matrix4d::Identity()));
+    }
+
+    TEST_CASE("E2E: a flat layer with an effect in a 3D scene composites through the ortho "
+              "overlay") {
+        ensureGlslangInit();
+        // Same "camera"-block-without-orthogonalprojection shape as the
+        // compose-layer case above, but a plain (non-compose) image with its
+        // own effect chain — assembleEffectChain's own SetFinalCamera call
+        // (WPSceneParser.cpp, just after assembleEffects), not the compose
+        // "mirror whichever camera" branch.
+        auto vfs = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0" },
+  "objects": [
+    { "id": 701, "name": "flat_with_effect",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "tint", "visible": true,
+          "file": "effects/tint.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_flat_effect_ortho_final_cam", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->cameras.count("global_ortho") == 1);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(701) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(701);
+        REQUIRE(effLayer != nullptr);
+
+        // The layer is flat (no "perspective" flag, no model parent), so its
+        // final composite must go through the ortho overlay, not the scene's
+        // perspective "global".
+        CHECK(effLayer->FinalCamera() == "global_ortho");
+    }
+
+    TEST_CASE("E2E: a flat layer without effects in a 3D scene uses the ortho overlay camera") {
+        ensureGlslangInit();
+        // Mirrors the effect case above but through applyFlatPerspectiveOrthoCamera's
+        // ! hasEffect branch, which sets the camera directly on the worldNode
+        // instead of on a SceneImageEffectLayer's final camera.
+        auto vfs = makeAssetsVfsWith({});
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0" },
+  "objects": [
+    { "id": 702, "name": "flat_no_effect",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_flat_noeffect_ortho_cam", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->cameras.count("global_ortho") == 1);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* node = findById(scene->sceneGraph.get(), 702);
+        REQUIRE(node != nullptr);
+
+        // No effect chain, so the camera is set directly on the world node
+        // rather than on a SceneImageEffectLayer's final camera.
+        CHECK(node->Camera() == "global_ortho");
     }
 
     TEST_CASE("E2E: self-referential dependency dropped, dependent NOT offscreen (b-2)") {

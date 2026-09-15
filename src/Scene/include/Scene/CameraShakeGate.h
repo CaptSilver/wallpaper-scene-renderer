@@ -1,5 +1,8 @@
 #pragma once
+#include <string>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace wallpaper
 {
@@ -37,6 +40,25 @@ inline bool isPostProcessCameraName(std::string_view cam_name) { return cam_name
 inline bool cameraFollowsGlobalView(std::string_view cam_name, bool linked_to_global_camera) {
     if (isPostProcessCameraName(cam_name)) return false;
     return isGlobalViewCameraName(cam_name) || linked_to_global_camera;
+}
+
+// Is `cam_name` registered as a follower under any linkedCameras key that
+// represents a global view?  A 2D scene's compose layers link under
+// "global"; a 3D scene's flat compose layers mirror the ortho overlay
+// instead and link under "global_ortho" (assembleEffectChain) — both need to
+// answer this the same way, or the ortho-overlay compose layers would sit
+// still while the rest of the picture shakes.
+inline bool isLinkedToGlobalView(
+    std::string_view cam_name,
+    const std::unordered_map<std::string, std::vector<std::string>>& linkedCameras) {
+    for (std::string_view global_name : { "global", "global_ortho" }) {
+        auto it = linkedCameras.find(std::string(global_name));
+        if (it == linkedCameras.end()) continue;
+        for (const auto& name : it->second) {
+            if (std::string_view(name) == cam_name) return true;
+        }
+    }
+    return false;
 }
 
 } // namespace wallpaper

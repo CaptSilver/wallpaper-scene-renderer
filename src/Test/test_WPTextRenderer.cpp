@@ -2,6 +2,7 @@
 
 #include "WPTextRenderer.hpp"
 #include "SystemFontFallback.hpp"
+#include "Utils/Logging.h"
 
 #include <cstring>
 #include <filesystem>
@@ -144,8 +145,7 @@ TEST_SUITE("WPTextRenderer Init/Shutdown race") {
         std::atomic<int>  render_count { 0 };
         std::thread       render([&] {
             while (! stop.load(std::memory_order_relaxed)) {
-                auto img =
-                    WPTextRenderer::RenderText("", 16.f, "", 32, 32, "center", "center", 0);
+                auto img = WPTextRenderer::RenderText("", 16.f, "", 32, 32, "center", "center", 0);
                 (void)img;
                 render_count.fetch_add(1, std::memory_order_relaxed);
             }
@@ -155,8 +155,7 @@ TEST_SUITE("WPTextRenderer Init/Shutdown race") {
         // render_count assertion can't flake to 0 when thread startup is
         // delayed under a loaded machine (e.g. the full preflight build running
         // this concurrently with other compiles).
-        while (render_count.load(std::memory_order_relaxed) == 0)
-            std::this_thread::yield();
+        while (render_count.load(std::memory_order_relaxed) == 0) std::this_thread::yield();
         for (int i = 0; i < 64; ++i) {
             WPTextRenderer::Init();
             WPTextRenderer::Shutdown();
@@ -178,14 +177,14 @@ TEST_SUITE("WPTextRenderer::RenderText — guard clauses") {
         // FontData with garbage — first dimension guard fires before we
         // ever reach FT_New_Memory_Face, so garbage is fine here.
         std::string fake_font(256, '\0');
-        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 0, 32, "center", "center", 0)
-              == nullptr);
-        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, 0, "center", "center", 0)
-              == nullptr);
-        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", -1, 32, "center", "center", 0)
-              == nullptr);
-        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, -10, "center", "center", 0)
-              == nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 0, 32, "center", "center", 0) ==
+              nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, 0, "center", "center", 0) ==
+              nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", -1, 32, "center", "center", 0) ==
+              nullptr);
+        CHECK(WPTextRenderer::RenderText(fake_font, 16.f, "X", 32, -10, "center", "center", 0) ==
+              nullptr);
     }
 
     TEST_CASE("invalid font bytes return nullptr (FT_New_Memory_Face fails)") {
@@ -212,34 +211,34 @@ TEST_SUITE("WPTextRenderer::RenderText — empty-text fast path") {
         auto              img                     = WPTextRenderer::RenderText(
             nonEmptyFontPlaceholder, 16.f, "", 64, 32, "center", "center", 0);
         REQUIRE(img != nullptr);
-        CHECK(img->header.width  == 64);
+        CHECK(img->header.width == 64);
         CHECK(img->header.height == 32);
-        CHECK(img->header.mapWidth  == 64);
+        CHECK(img->header.mapWidth == 64);
         CHECK(img->header.mapHeight == 32);
         CHECK(img->header.count == 1);
         CHECK(img->header.format == TextureFormat::RGBA8);
         REQUIRE(img->slots.size() == 1);
         REQUIRE(img->slots[0].mipmaps.size() == 1);
-        CHECK(img->slots[0].mipmaps[0].width  == 64);
+        CHECK(img->slots[0].mipmaps[0].width == 64);
         CHECK(img->slots[0].mipmaps[0].height == 32);
-        CHECK(img->slots[0].mipmaps[0].size   == 64 * 32 * 4);
+        CHECK(img->slots[0].mipmaps[0].size == 64 * 32 * 4);
         // Buffer is zero-initialised → alpha == 0 everywhere → fully
         // transparent. Sample a few bytes to confirm.
         const uint8_t* data = img->slots[0].mipmaps[0].data.get();
         REQUIRE(data != nullptr);
-        CHECK(data[0]            == 0);   // R first pixel
-        CHECK(data[3]            == 0);   // A first pixel
-        CHECK(data[64 * 32 * 4 - 1] == 0);   // A last pixel
+        CHECK(data[0] == 0);               // R first pixel
+        CHECK(data[3] == 0);               // A first pixel
+        CHECK(data[64 * 32 * 4 - 1] == 0); // A last pixel
     }
 
     TEST_CASE("empty text honours requested dimensions exactly (1x1)") {
         // Layout helpers depend on dimensions being preserved through the
         // empty-text path (no padding compensation, no minimum sizes).
         const std::string nonEmptyFontPlaceholder = "x";
-        auto              img                     = WPTextRenderer::RenderText(
-            nonEmptyFontPlaceholder, 16.f, "", 1, 1, "top", "top", 0);
+        auto              img =
+            WPTextRenderer::RenderText(nonEmptyFontPlaceholder, 16.f, "", 1, 1, "top", "top", 0);
         REQUIRE(img != nullptr);
-        CHECK(img->header.width  == 1);
+        CHECK(img->header.width == 1);
         CHECK(img->header.height == 1);
     }
 }
@@ -523,8 +522,7 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         // Kerning is only attempted when FT_HAS_KERNING(face) returns true;
         // record the host's verdict so the assertion can decline gracefully
         // on fonts without a legacy `kern` table.
-        auto img =
-            WPTextRenderer::RenderText(fontData, 24.f, "AVAVAV", 256, 64, "left", "top", 0);
+        auto img = WPTextRenderer::RenderText(fontData, 24.f, "AVAVAV", 256, 64, "left", "top", 0);
         REQUIRE(img != nullptr);
         const int attempts = WPTextRenderer::TEST_getKerningProbeCount();
         if (! WPTextRenderer::TEST_hostFontHasKerning(fontData)) {
@@ -557,8 +555,8 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
             return;
         }
         WPTextRenderer::TEST_resetFallbackProbeCounter();
-        auto img = WPTextRenderer::RenderText(fontData, 24.f, "\xE4\xB8\xAD", 64, 64, "center",
-                                              "center", 0);
+        auto img = WPTextRenderer::RenderText(
+            fontData, 24.f, "\xE4\xB8\xAD", 64, 64, "center", "center", 0);
         const int consulted = WPTextRenderer::TEST_getFallbackProbeCount();
         REQUIRE(img != nullptr);
         // The fallback path must have been consulted at least once for the
@@ -575,7 +573,31 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         CHECK(totalAlpha > 5000);
     }
 
-    TEST_CASE("primary face missing glyph: WEKDE_TEXT_CJK_FALLBACK=0 disables → replacement glyph + LOG_INFO once") {
+    TEST_CASE("fallback resolves the glyph: the .notdef log must NOT fire") {
+        // Regression for the log lying about what got drawn: a Han
+        // codepoint the primary face lacks but the CJK fallback face
+        // resolves is not a .notdef box, so the "missing (.notdef glyph
+        // emitted)" counter must stay at 0 — only the fallback-specific
+        // counter should move.
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        if (wallpaper::ResolveCJKHanFallback().empty()) {
+            MESSAGE("Noto Sans CJK absent on host; skipping fallback test");
+            return;
+        }
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        (void)WPTextRenderer::RenderText(
+            fontData, 24.f, "\xE4\xB8\xAD", 64, 64, "center", "center", 0);
+        CHECK(WPTextRenderer::TEST_getMissingGlyphLogCount() == 0);
+        CHECK(WPTextRenderer::TEST_getFallbackGlyphLogCount() >= 1);
+    }
+
+    TEST_CASE("primary face missing glyph: WEKDE_TEXT_CJK_FALLBACK=0 disables → replacement glyph "
+              "+ LOG_INFO once") {
         // Mirror of the default-ON case in reverse: with the env var set
         // to "0", RenderText must:
         //   (1) NOT consult the fallback face at all;
@@ -603,6 +625,9 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
         const int logged = WPTextRenderer::TEST_getMissingGlyphLogCount();
         CHECK(logged >= 1);
         CHECK(logged <= 6);
+        // Every miss here is a real .notdef box (fallback disabled), so the
+        // fallback-specific counter must stay untouched.
+        CHECK(WPTextRenderer::TEST_getFallbackGlyphLogCount() == 0);
     }
 
     TEST_CASE("all-Latin font + Latin string: no fallback-face load") {
@@ -618,11 +643,62 @@ TEST_SUITE("WPTextRenderer kerning + fallback") {
             return;
         }
         WPTextRenderer::TEST_resetFallbackProbeCounter();
-        auto img =
-            WPTextRenderer::RenderText(fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
+        auto img = WPTextRenderer::RenderText(
+            fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
         REQUIRE(img != nullptr);
         // No missing glyph in the primary → no fallback probe.
         CHECK(WPTextRenderer::TEST_getFallbackProbeCount() == 0);
+    }
+
+    // Records every message reaching the test sink (Utils/Logging.h), not
+    // just the rate-limited fired-counters below — those only move when the
+    // .notdef/fallback branch inside the log block runs, so they can't tell
+    // "block skipped" from "block ran but had nothing to attribute the log
+    // to". A direct sink is the only way to see that the log call happened
+    // at all.
+    struct LogCapture {
+        LogCapture() {
+            lines().clear();
+            wallpaper_log_test::setSink(&append);
+        }
+        ~LogCapture() { wallpaper_log_test::setSink(nullptr); }
+        LogCapture(const LogCapture&)            = delete;
+        LogCapture& operator=(const LogCapture&) = delete;
+
+        static std::vector<std::string>& lines() {
+            static std::vector<std::string> v;
+            return v;
+        }
+        static void append(int, const char* msg) { lines().emplace_back(msg); }
+    };
+
+    TEST_CASE("a Latin string fully covered by the primary face logs no glyph-coverage "
+              "message") {
+        // BuildGlyphCoverageMessage returns "" when both the .notdef and
+        // fallback counts are zero, and RenderText's guard is supposed to
+        // skip the log entirely in that case. If the guard instead ran on
+        // every call, this test would see an empty-string LOG_INFO fire for
+        // ordinary, fully-covered text — a line no journal reader could
+        // make sense of.
+        ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
+        auto fontData = loadHostFont();
+        if (fontData.empty()) {
+            MESSAGE("Liberation Sans not present on host; skipping");
+            return;
+        }
+        // Zero the rate-limit tick so a broken guard would fire on this
+        // very first call rather than being masked by an earlier test
+        // having already advanced the shared tick past its next multiple
+        // of 32.
+        WPTextRenderer::TEST_resetMissingGlyphLogCounter();
+        LogCapture capture;
+        auto       img = WPTextRenderer::RenderText(
+            fontData, 24.f, "Hello world", 256, 64, "center", "center", 0);
+        REQUIRE(img != nullptr);
+        for (const auto& line : LogCapture::lines()) {
+            CHECK(line.find("codepoint") == std::string::npos);
+            CHECK_FALSE(line.empty());
+        }
     }
 
     TEST_CASE("kerned line width <= unkerned line width") {
@@ -688,8 +764,8 @@ TEST_SUITE("WPTextRenderer FT_Load_Glyph failure logging") {
         };
         auto rd32 = [](const char* p) -> uint32_t {
             auto b = reinterpret_cast<const uint8_t*>(p);
-            return (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16) |
-                   (uint32_t(b[2]) << 8) | uint32_t(b[3]);
+            return (uint32_t(b[0]) << 24) | (uint32_t(b[1]) << 16) | (uint32_t(b[2]) << 8) |
+                   uint32_t(b[3]);
         };
         if (fontBytes.size() < 12) return {};
         uint32_t numTables = rd16(fontBytes.data() + 4);
@@ -800,8 +876,7 @@ TEST_SUITE("WPTextRenderer FT_Load_Glyph failure logging") {
         WPTextRenderer::TEST_resetLoadGlyphFailLogCounter();
         std::string cjk = "\xE4\xB8\xAD"; // U+4E2D '中'
         for (int i = 0; i < 100; ++i) {
-            (void)WPTextRenderer::RenderText(
-                fontData, 16.f, cjk, 32, 32, "center", "center", 0);
+            (void)WPTextRenderer::RenderText(fontData, 16.f, cjk, 32, 32, "center", "center", 0);
         }
         ::unsetenv("WEKDE_TEXT_CJK_FALLBACK");
         // Missing-glyph (benign) counter MUST fire — proves the test

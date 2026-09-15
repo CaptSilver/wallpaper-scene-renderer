@@ -107,7 +107,15 @@ public:
     //   can drive the "no CJK font installed" branch on a host that has
     //   one.  nullptr restores the system resolver.
     //   TEST_reset/getMissingGlyphLogCount — counts rate-limited LOG_INFO
-    //   firings for missing glyphs in this process.
+    //   firings that reported at least one codepoint with no glyph in any
+    //   face (a real .notdef box got drawn). TEST_resetMissingGlyphLogCounter
+    //   also clears TEST_getFallbackGlyphLogCount below — both share one
+    //   rate-limit cycle.
+    //   TEST_getFallbackGlyphLogCount — counts firings that reported at
+    //   least one codepoint resolved through the CJK fallback face (no
+    //   .notdef drawn for those). Distinct from the counter above so a test
+    //   can tell "the log said a box was drawn" from "the log said the
+    //   fallback covered it" — conflating the two was the bug.
     static int  TEST_measureLineWidthWithKerning(const std::string& fontData, float pointsize,
                                                  const std::string& line);
     static int  TEST_measureLineWidthNoKerning(const std::string& fontData, float pointsize,
@@ -122,6 +130,7 @@ public:
     static void TEST_setCJKFallbackResolver(std::string (*resolver)());
     static void TEST_resetMissingGlyphLogCounter();
     static int  TEST_getMissingGlyphLogCount();
+    static int  TEST_getFallbackGlyphLogCount();
     static void TEST_resetLoadGlyphFailLogCounter();
     static int  TEST_getLoadGlyphFailLogCount();
 

@@ -1,13 +1,34 @@
 #include "Logging.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdarg>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iterator>
 
 #include "Sha.hpp"
 
-constexpr const char* level_names[] = { "INFO", "ERROR" };
-constexpr const char* level_fmt[]   = { "%-5s", "%-5s %s:%d " };
+// DEBUG uses the same file:line-attributed format as ERROR -- it's the same
+// "here's exactly where this came from" need, just gated off by default
+// instead of always-on.
+constexpr const char* level_names[] = { "INFO", "ERROR", "DEBUG" };
+constexpr const char* level_fmt[]   = { "%-5s", "%-5s %s:%d ", "%-5s %s:%d " };
+
+namespace wallpaper {
+namespace {
+std::atomic<bool>& debugLogFlag() {
+    static std::atomic<bool> flag = [] {
+        const char* v = std::getenv("WEKDE_LOG_DEBUG");
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    }();
+    return flag;
+}
+} // namespace
+
+bool LogDebugEnabled() { return debugLogFlag().load(std::memory_order_relaxed); }
+void SetLogDebugEnabled(bool enabled) { debugLogFlag().store(enabled, std::memory_order_relaxed); }
+} // namespace wallpaper
 
 namespace wallpaper_log_test {
 static Sink g_sink = nullptr;
@@ -17,12 +38,14 @@ Sink        getSink() { return g_sink; }
 
 void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
     // Defensive clamp: level_names/level_fmt are sized to match the
-    // LOGLEVEL_* enum (currently 2 entries); a future enumerator added
+    // LOGLEVEL_* enum (currently 3 entries); a future enumerator added
     // without updating both tables would otherwise dereference an OOB
     // constexpr-array slot and either print garbage or SIGSEGV inside
-    // fprintf's %s expansion. Clamp into the highest defined level so the
-    // offending call surfaces as an ERROR-shaped log line — loud enough
-    // that the missing table row is obvious in the stderr stream.
+    // fprintf's %s expansion. Clamp to LOGLEVEL_ERROR specifically (not just
+    // "the highest defined level" -- DEBUG is highest by index but is the
+    // wrong fallback, since it's silent by default) so the offending call
+    // surfaces as an always-visible ERROR line, loud enough that the missing
+    // table row is obvious in the stderr stream.
     constexpr int kLevelCount = static_cast<int>(std::size(level_names));
     static_assert(std::size(level_fmt) == std::size(level_names),
                   "level_fmt and level_names must have matching counts");

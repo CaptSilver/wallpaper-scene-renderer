@@ -2507,17 +2507,6 @@ static const char* JS_SOUND_INFRA =
     "  if (typeof _installSoundHierarchyStubs === 'function') _installSoundHierarchyStubs(p);\n"
     "  return p;\n"
     "}\n"
-    "var _origGetLayer = thisScene.getLayer;\n"
-    "thisScene.getLayer = function(name) {\n"
-    "  var r = _origGetLayer(name);\n"
-    "  if (r) return r;\n"
-    "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
-    "  if (_soundLayerStates[name]) {\n"
-    "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
-    "    return _soundLayerCache[name];\n"
-    "  }\n"
-    "  return _nullProxy;\n"
-    "};\n"
     "thisScene.enumerateLayers = function() {\n"
     "  var layers = [];\n"
     "  for (var name in _layerInitStates) { layers.push(thisScene.getLayer(name)); }\n"
@@ -2537,14 +2526,7 @@ static const char* JS_SOUND_INFRA =
     "    s._cmds = [];\n"
     "  }\n"
     "  return updates;\n"
-    "}\n"
-    // Final null-safety wrapper
-    "var _innerGetLayer = thisScene.getLayer;\n"
-    "thisScene.getLayer = function(name) {\n"
-    "  var r = _innerGetLayer(name);\n"
-    "  if (r !== null && r !== undefined) return r;\n"
-    "  return _nullProxy;\n"
-    "};\n";
+    "}\n";
 
 // Lightweight fixture for math-only tests
 struct MathEnv {
@@ -2666,6 +2648,15 @@ struct ScriptEnv {
 
         // Sound layer infrastructure
         engine.evaluate(JS_SOUND_INFRA);
+
+        // getLayer patches — shared verbatim with production via
+        // SceneScriptShimsJs.hpp.  Same order buildSoundStates() then the
+        // final wrapper install in SceneBackend.cpp use: the sound-layer
+        // patch chains in front of the base kLayerProxyJs getLayer, then the
+        // final wrapper closes the chain so a genuinely unknown name comes
+        // back null (not a truthy stand-in) all the way to the caller.
+        engine.evaluate(wek::qml_helper::kSoundLayerGetLayerPatchJs);
+        engine.evaluate(wek::qml_helper::kFinalGetLayerSafetyJs);
 
         // Indexed-access methods layered on top of the production layer
         // block above (kLayerProxyJs defines thisScene.getLayer; kLayerRuntimeJs
@@ -5297,22 +5288,26 @@ TEST_SUITE("Layer Proxy") {
         CHECK_FALSE(env.engine.evaluate("e2.visible").toBool());
     }
 
+    // getLayer() itself now returns null for an unknown name (WE parity) —
+    // _nullProxy is no longer reachable through it.  It's still a live safe
+    // stand-in for the id-fallback expressions in SceneBackend.cpp
+    // (`getLayerByID(id) || _nullProxy`), so these cases exercise it
+    // directly instead of routing through a miss.
     TEST_CASE("nullProxy getEffect returns safe stub") {
         ScriptEnv env;
-        QJSValue  eff = env.engine.evaluate("thisScene.getLayer('nonexistent').getEffect('X')");
+        QJSValue  eff = env.engine.evaluate("_nullProxy.getEffect('X')");
         CHECK(eff.property("name").toString() == "X");
         CHECK(eff.property("visible").toBool() == false);
     }
 
     TEST_CASE("nullProxy getEffectCount returns 0") {
         ScriptEnv env;
-        CHECK(env.engine.evaluate("thisScene.getLayer('nonexistent').getEffectCount()").toInt() ==
-              0);
+        CHECK(env.engine.evaluate("_nullProxy.getEffectCount()").toInt() == 0);
     }
 
     TEST_CASE("nullProxy getAnimationLayer is safe") {
         ScriptEnv env;
-        env.engine.evaluate("var al = thisScene.getLayer('nonexistent').getAnimationLayer(0);");
+        env.engine.evaluate("var al = _nullProxy.getAnimationLayer(0);");
         CHECK(env.engine.evaluate("al.rate").toNumber() == doctest::Approx(0.0));
         CHECK(env.engine.evaluate("al.getFrame()").toInt() == 0);
         // Methods should not crash
@@ -5322,7 +5317,7 @@ TEST_SUITE("Layer Proxy") {
 
     TEST_CASE("nullProxy getters return defaults") {
         ScriptEnv env;
-        QJSValue  np = env.engine.evaluate("thisScene.getLayer('nonexistent')");
+        QJSValue  np = env.engine.evaluate("_nullProxy");
         CHECK(np.property("name").toString() == "");
         CHECK(np.property("visible").toBool() == false);
         CHECK(np.property("alpha").toNumber() == doctest::Approx(0.0));
@@ -5330,13 +5325,11 @@ TEST_SUITE("Layer Proxy") {
 
     TEST_CASE("nullProxy setters are no-ops") {
         ScriptEnv env;
-        env.engine.evaluate("var np = thisScene.getLayer('nonexistent');\n"
-                            "np.origin = {x:99,y:99,z:99};\n"
-                            "np.visible = true;\n"
-                            "np.alpha = 1.0;\n");
-        CHECK(env.engine.evaluate("thisScene.getLayer('nonexistent').origin.x").toNumber() ==
-              doctest::Approx(0.0));
-        CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('nonexistent').visible").toBool());
+        env.engine.evaluate("_nullProxy.origin = {x:99,y:99,z:99};\n"
+                            "_nullProxy.visible = true;\n"
+                            "_nullProxy.alpha = 1.0;\n");
+        CHECK(env.engine.evaluate("_nullProxy.origin.x").toNumber() == doctest::Approx(0.0));
+        CHECK_FALSE(env.engine.evaluate("_nullProxy.visible").toBool());
     }
 
     TEST_CASE("getLayer returns cached proxy") {
@@ -5345,11 +5338,65 @@ TEST_SUITE("Layer Proxy") {
             env.engine.evaluate("thisScene.getLayer('bg') === thisScene.getLayer('bg')").toBool());
     }
 
-    TEST_CASE("getLayer returns nullProxy for unknown") {
+    TEST_CASE("getLayer returns null for unknown name") {
         ScriptEnv env;
-        // nullProxy has name=='' and visible==false
-        CHECK(env.engine.evaluate("thisScene.getLayer('nope').name").toString() == "");
-        CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('nope').visible").toBool());
+        // WE parity: authors guard every getLayer() call with
+        // `if (!layer) return;` — a truthy stand-in would never trip that.
+        CHECK(env.engine.evaluate("thisScene.getLayer('nope') === null").toBool());
+    }
+
+    TEST_CASE("getLayer logs an unknown name once, not per call") {
+        ScriptEnv env;
+        // A 30Hz property-script tick calling getLayer(sameTypo) every frame
+        // would otherwise flood the log — one line per unresolved name per
+        // scene load is enough to diagnose a typo.
+        env.engine.evaluate("thisScene.getLayer('nope'); thisScene.getLayer('nope'); "
+                            "thisScene.getLayer('nope');");
+        QJSValue buf = env.engine.evaluate(
+            "console._buf.filter(function(m){ return m.indexOf('nope') >= 0; }).length");
+        CHECK(buf.toInt() == 1);
+    }
+
+    TEST_CASE("getLayer logs each distinct unknown name once") {
+        ScriptEnv env;
+        env.engine.evaluate("thisScene.getLayer('foo'); thisScene.getLayer('bar');");
+        QJSValue fooCount = env.engine.evaluate(
+            "console._buf.filter(function(m){ return m.indexOf('foo') >= 0; }).length");
+        QJSValue barCount = env.engine.evaluate(
+            "console._buf.filter(function(m){ return m.indexOf('bar') >= 0; }).length");
+        CHECK(fooCount.toInt() == 1);
+        CHECK(barCount.toInt() == 1);
+    }
+
+    TEST_CASE("getLayer still resolves a known image layer through the wrapper chain") {
+        // Null-on-miss only changes the miss path — a name present in
+        // _layerInitStates must still come back as the real proxy.
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').name").toString() == "bg");
+    }
+
+    TEST_CASE("getLayer still resolves a sound layer through the wrapper chain") {
+        // Sound layers are only reachable through kSoundLayerGetLayerPatchJs's
+        // own lookup, chained in front of the base image-layer getLayer.
+        ScriptEnv env;
+        QJSValue  sound = env.engine.evaluate("thisScene.getLayer('music.mp3')");
+        CHECK(sound.property("name").toString() == "music.mp3");
+        CHECK(sound.property("volume").toNumber() == doctest::Approx(0.8));
+    }
+
+    TEST_CASE("thisLayer id-fallback binds nullProxy, not a getLayer('') miss") {
+        // Mirrors the JS SceneBackend.cpp now evaluates for an id that
+        // doesn't resolve to a name (thisScene.getLayerByID(id) || _nullProxy):
+        // color/shader-value scripts (Game of Life 3453251764) call
+        // thisLayer.getTextureAnimation() unconditionally, so the fallback
+        // must stay a safe stand-in rather than the null a getLayer('') miss
+        // would now produce.
+        ScriptEnv env;
+        CHECK(env.engine.evaluate("(thisScene.getLayerByID(9999) || _nullProxy) === _nullProxy")
+                  .toBool());
+        QJSValue r = env.engine.evaluate(
+            "(thisScene.getLayerByID(9999) || _nullProxy).getTextureAnimation(); true;");
+        CHECK_FALSE(r.isError());
     }
 
     TEST_CASE("scene is alias for thisScene") {

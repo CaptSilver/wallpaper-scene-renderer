@@ -2470,9 +2470,35 @@ void assembleEffectChain(ParseContext&                     context,
         i32 cw = context.ortho_w > 0 ? context.ortho_w : (i32)scene.activeCamera->Width();
         i32 ch = context.ortho_h > 0 ? context.ortho_h : (i32)scene.activeCamera->Height();
         scene.cameras[nodeAddr] = std::make_shared<SceneCamera>(cw, ch, -1.0f, 1.0f);
-        scene.cameras.at(nodeAddr)->AttatchNode(scene.activeCamera->GetAttachedNode());
-        if (scene.linkedCameras.count("global") == 0) scene.linkedCameras["global"] = {};
-        scene.linkedCameras.at("global").push_back(nodeAddr);
+
+        // Mirror whichever camera this layer is actually finally drawn with,
+        // not always "global": a flat compose layer in a perspective (3D)
+        // scene composites through the ortho overlay ("global_ortho"), and
+        // that scene's "global" is a direct-lookat camera with no attached
+        // node — AttatchNode(nullptr) logs and bails out before Update(), so
+        // unconditionally sharing "global"'s node left this camera's VP at
+        // Identity for every 3D-scene compose layer.
+        const std::string finalCamName =
+            UsesOrthoOverlayCamera(
+                scene.cameras.count("global_ortho") != 0,
+                wpimgobj.perspective,
+                InheritsModelSpace(
+                    wpimgobj.parent_id, context.model_object_ids, context.declared_parent))
+                ? "global_ortho"
+                : "global";
+        auto& finalCam = scene.cameras.at(finalCamName);
+        if (auto node = finalCam->GetAttachedNode()) {
+            // Share the node so camera shake / parallax nudges applied to it
+            // reach the compose camera too.
+            scene.cameras.at(nodeAddr)->AttatchNode(node);
+        } else {
+            // No node to share (the perspective camera's direct-lookat) —
+            // copy its view/projection state directly.
+            scene.cameras.at(nodeAddr)->Clone(*finalCam);
+            scene.cameras.at(nodeAddr)->Update();
+        }
+        if (scene.linkedCameras.count(finalCamName) == 0) scene.linkedCameras[finalCamName] = {};
+        scene.linkedCameras.at(finalCamName).push_back(nodeAddr);
     } else {
         // applly scale to crop
         i32 w                   = (i32)wpimgobj.size[0];
@@ -2627,9 +2653,11 @@ void assembleEffectChain(ParseContext&                     context,
     // for their final composite (not the perspective camera).  A layer that
     // descends from a 3D model is not flat — its world transform is in scene
     // units, and the ortho window would scale it by the model's scale.
-    if (scene.cameras.count("global_ortho") && ! wpimgobj.perspective &&
-        ! InheritsModelSpace(
-            wpimgobj.parent_id, context.model_object_ids, context.declared_parent)) {
+    if (UsesOrthoOverlayCamera(
+            scene.cameras.count("global_ortho") != 0,
+            wpimgobj.perspective,
+            InheritsModelSpace(
+                wpimgobj.parent_id, context.model_object_ids, context.declared_parent))) {
         imgEffectLayer->SetFinalCamera("global_ortho");
     }
 }
@@ -2641,10 +2669,12 @@ void applyFlatPerspectiveOrthoCamera(const ParseContext& context,
     // In perspective scenes, flat image layers without effects use the ortho
     // overlay camera instead of the perspective camera.  This makes SceneScript
     // origin values (UV coordinates in [-0.5, 0.5]) map correctly to screen space.
-    if (! hasEffect && context.scene->activeCamera->IsPerspective() && ! wpimgobj.perspective &&
-        context.scene->cameras.count("global_ortho") &&
-        ! InheritsModelSpace(
-            wpimgobj.parent_id, context.model_object_ids, context.declared_parent)) {
+    if (! hasEffect && context.scene->activeCamera->IsPerspective() &&
+        UsesOrthoOverlayCamera(
+            context.scene->cameras.count("global_ortho") != 0,
+            wpimgobj.perspective,
+            InheritsModelSpace(
+                wpimgobj.parent_id, context.model_object_ids, context.declared_parent))) {
         spImgNode->SetCamera("global_ortho");
     }
 }

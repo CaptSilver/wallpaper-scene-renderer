@@ -1,5 +1,6 @@
 #include "WPTextRenderer.hpp"
 #include "SystemFontFallback.hpp"
+#include "WPGlyphCoverageMessage.hpp"
 #include "Utils/Logging.h"
 
 #include <ft2build.h>
@@ -248,10 +249,16 @@ std::atomic<int> s_kerningProbeCount { 0 };
 // Counts CJK fallback consults (i.e. how many times the missing-glyph branch
 // invoked acquireFallbackFaceLocked) process-wide.  Test-only observable.
 std::atomic<int> s_fallbackProbeCount { 0 };
-// Rate-limit state for the per-call missing-glyph LOG_INFO.  Ticks on every
-// call that has any missing glyph; fires LOG_INFO once per 32 ticks.
+// Rate-limit state for the per-call glyph-coverage LOG_INFO.  Ticks on
+// every call that has a codepoint the primary face lacked (whether or not
+// the CJK fallback resolved it); fires once per 32 ticks.  The two "Fired"
+// counters are separate because a single call can hit both — some
+// codepoints fall through to .notdef while others resolve via fallback —
+// and the message (built by BuildGlyphCoverageMessage) must say which
+// happened instead of always claiming a .notdef box was drawn.
 std::atomic<int> s_missingGlyphLogTick { 0 };
-std::atomic<int> s_missingGlyphLogFired { 0 };
+std::atomic<int> s_missingGlyphLogFired { 0 };  // .notdef actually drawn
+std::atomic<int> s_fallbackGlyphLogFired { 0 }; // resolved via CJK fallback
 
 // Rate-limit state for the per-call FT_Load_Glyph FAILURE LOG_ERROR.
 // Distinct from the missing-glyph (idx==0) machinery above: this fires on
@@ -554,10 +561,11 @@ bool cjkFallbackEnabled() {
 // the two disagree on (Han routed to the fallback in one, .notdef in the
 // other) drops the line off its anchor by the full difference in advances.
 struct PenGlyph {
-    const CachedGlyph* glyph;   // nullptr on FT_Load_Glyph failure
-    int                kerning; // pen delta to apply before the glyph
-    FT_Face            face;    // primary face, or the CJK fallback
-    bool               missing; // primary face has no glyph for this codepoint
+    const CachedGlyph* glyph;    // nullptr on FT_Load_Glyph failure
+    int                kerning;  // pen delta to apply before the glyph
+    FT_Face            face;     // primary face, or the CJK fallback
+    bool               missing;  // primary face has no glyph for this codepoint
+    bool               fellBack; // codepoint was resolved through the CJK fallback face
 };
 
 // MUST be called under s_ftLibMutex.  `prevIdx` carries kerning state across
@@ -568,7 +576,7 @@ PenGlyph advanceGlyphLocked(FT_Face face, FT_UInt pixelSize, uint32_t cp, bool h
     // Explicit glyph-index lookup.  FT_Load_Char would silently substitute
     // .notdef on a miss; FT_Get_Char_Index returns 0 so we can count the miss
     // and (optionally) route to the fallback face.
-    PenGlyph out { nullptr, 0, face, false };
+    PenGlyph out { nullptr, 0, face, false, false };
     FT_UInt  idx = FT_Get_Char_Index(face, cp);
     if (idx == 0) {
         out.missing = true;
@@ -580,11 +588,13 @@ PenGlyph advanceGlyphLocked(FT_Face face, FT_UInt pixelSize, uint32_t cp, bool h
             if (fb) {
                 FT_UInt fbIdx = FT_Get_Char_Index(fb, cp);
                 if (fbIdx != 0) {
-                    out.face = fb;
-                    idx      = fbIdx;
-                    // out.missing stays set so the LOG_INFO still surfaces
-                    // the font/script mismatch — the fallback is a
-                    // render-quality band-aid, not a "this font covered it".
+                    out.face     = fb;
+                    idx          = fbIdx;
+                    out.fellBack = true;
+                    // out.missing stays set — the primary face still lacks
+                    // the glyph, and that's the font/script mismatch worth
+                    // surfacing — but fellBack tells the caller a real
+                    // glyph got drawn, not a .notdef box.
                 }
             }
         }
@@ -783,7 +793,8 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     // bit).  Both MeasureLineWidth and the raster loop honour the same
     // hasKerning verdict so alignment stays in sync.
     const bool hasKerning             = FT_HAS_KERNING(face);
-    int        missingGlyphsThisCall  = 0;
+    int        notdefGlyphsThisCall   = 0; // no glyph in any face; .notdef drawn
+    int        fallbackGlyphsThisCall = 0; // resolved through the CJK fallback face
     int        loadGlyphFailsThisCall = 0;
     FT_Error   lastLoadGlyphErr       = 0;
     const bool cjkFallbackOn          = cjkFallbackEnabled();
@@ -824,7 +835,12 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
             // the alignment maths assumed it would.
             PenGlyph g = advanceGlyphLocked(
                 face, static_cast<FT_UInt>(pixelSize), cp, hasKerning, cjkFallbackOn, prevIdx);
-            if (g.missing) ++missingGlyphsThisCall;
+            if (g.missing) {
+                if (g.fellBack)
+                    ++fallbackGlyphsThisCall;
+                else
+                    ++notdefGlyphsThisCall;
+            }
             pen_x += g.kerning;
             // nullptr means a pathological FT_Load_Glyph failure (corrupt
             // glyf, OOM); the rate-limited LOG_ERROR fires after the loop.
@@ -862,17 +878,23 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
         }
     }
 
-    // Rate-limited missing-glyph log.  ~once per 32 calls that hit any
-    // missing glyph.  Acceptable journal density for a clock wallpaper
-    // that ticks through missing CJK glyphs at 1Hz (~one line every 32s).
-    if (missingGlyphsThisCall > 0) {
+    // Rate-limited glyph-coverage log.  ~once per 32 calls that hit a
+    // codepoint the primary face lacked.  Acceptable journal density for a
+    // clock wallpaper that ticks through missing CJK glyphs at 1Hz (~one
+    // line every 32s).  The message text distinguishes .notdef draws from
+    // fallback-face resolutions (BuildGlyphCoverageMessage) — a codepoint
+    // the fallback covered never hit the canvas as a box, so saying
+    // ".notdef glyph emitted" for it would be false.
+    if (notdefGlyphsThisCall > 0 || fallbackGlyphsThisCall > 0) {
         int n = s_missingGlyphLogTick.fetch_add(1, std::memory_order_relaxed);
         if ((n & 31) == 0) {
-            s_missingGlyphLogFired.fetch_add(1, std::memory_order_relaxed);
-            LOG_INFO("WPTextRenderer: %d codepoint(s) missing in font (.notdef glyph "
-                     "emitted) in text \"%.32s\" — font may not cover the script",
-                     missingGlyphsThisCall,
-                     text.c_str());
+            if (notdefGlyphsThisCall > 0)
+                s_missingGlyphLogFired.fetch_add(1, std::memory_order_relaxed);
+            if (fallbackGlyphsThisCall > 0)
+                s_fallbackGlyphLogFired.fetch_add(1, std::memory_order_relaxed);
+            std::string msg =
+                BuildGlyphCoverageMessage(notdefGlyphsThisCall, fallbackGlyphsThisCall, text);
+            LOG_INFO("%s", msg.c_str());
         }
     }
 
@@ -929,12 +951,12 @@ std::shared_ptr<Image> WPTextRenderer::RenderText(const std::string& fontData, f
     slot.mipmaps.push_back(std::move(mipmap));
     img.slots.push_back(std::move(slot));
 
-    LOG_INFO("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f, text=\"%s\"",
-             width,
-             height,
-             lines.size(),
-             pointsize,
-             text.c_str());
+    LOG_DEBUG("WPTextRenderer: rasterized %dx%d, %zu lines, pointsize=%.0f, text=\"%s\"",
+              width,
+              height,
+              lines.size(),
+              pointsize,
+              text.c_str());
 
     // Optional debug dump — set WEKDE_TEXT_DUMP_DIR=/tmp/foo to write each
     // rasterized text bitmap to PPM for diagnosis.
@@ -1078,10 +1100,15 @@ void WPTextRenderer::TEST_setCJKFallbackResolver(std::string (*resolver)()) {
 void WPTextRenderer::TEST_resetMissingGlyphLogCounter() {
     s_missingGlyphLogTick.store(0, std::memory_order_relaxed);
     s_missingGlyphLogFired.store(0, std::memory_order_relaxed);
+    s_fallbackGlyphLogFired.store(0, std::memory_order_relaxed);
 }
 
 int WPTextRenderer::TEST_getMissingGlyphLogCount() {
     return s_missingGlyphLogFired.load(std::memory_order_relaxed);
+}
+
+int WPTextRenderer::TEST_getFallbackGlyphLogCount() {
+    return s_fallbackGlyphLogFired.load(std::memory_order_relaxed);
 }
 
 void WPTextRenderer::TEST_resetLoadGlyphFailLogCounter() {

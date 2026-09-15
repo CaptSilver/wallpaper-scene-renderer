@@ -1654,7 +1654,17 @@ void VulkanRender::Impl::UpdateCameraFillMode(wallpaper::Scene&   scene,
             orthoCam.SetWidth(fboAspect);
             orthoCam.SetHeight(1.0);
             orthoCam.Update();
+            // A compose layer drawn flat in a 3D scene now mirrors
+            // "global_ortho" (assembleEffectChain), so its camera has to
+            // hear about this resize the same way "global"'s followers
+            // always have — otherwise it keeps the aspect it had at load
+            // time through every later fill-mode/orientation change.
+            scene.UpdateLinkedCamera("global_ortho");
         }
+        // Compose layers that draw through the perspective camera itself
+        // (parented to a 3D model, or declared perspective) are followers of
+        // "global" even in a 3D scene; propagate the aspect change to them.
+        scene.UpdateLinkedCamera("global");
         return;
     }
 

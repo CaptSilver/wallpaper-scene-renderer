@@ -5,6 +5,7 @@
 #include "ScriptLoopGate.h"
 #include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
+#include "ConsoleFlushDedup.hpp"
 #include "HoverLeaveDebounce.h"
 #include "JsStringEscape.hpp"
 #include "JsFloatPack.hpp"
@@ -1657,16 +1658,46 @@ static void stripESModuleSyntax(QString& src) {
 // the worldPosition/screenPosition unit contract is testable in isolation.
 using scenebackend::makeCursorEvent;
 
-// Helper: flush JS console.log buffer
-static void flushJsConsole(QJSEngine* engine, const char* ctx) {
-    QJSValue consoleBuf = engine->globalObject().property("console").property("_buf");
-    if (consoleBuf.isArray()) {
-        int len = consoleBuf.property("length").toInt();
-        for (int b = 0; b < len; b++) {
-            LOG_INFO("JS %s console.log: %s", ctx, qPrintable(consoleBuf.property(b).toString()));
+// Shared across every SceneObject (one per monitor) rather than one instance
+// per object: a wallpaper mirrored across screens logs the same text from
+// each, so collapsing duplicates process-wide is the more useful behaviour,
+// and it avoids threading new per-instance state through SceneObject.
+wek::qml_helper::ConsoleFlushDedup& jsConsoleDedup() {
+    static wek::qml_helper::ConsoleFlushDedup dedup;
+    return dedup;
+}
+
+// Drains console._buf into LOG_INFO. jsConsoleDedup() collapses a message a
+// script logs every tick down to one line per burst plus a repeat count --
+// see ConsoleFlushDedup.hpp for the window and why. `consoleObj` is the
+// caller's console global handle (callers that already cache it via
+// m_consoleObj pass that instead of re-deriving
+// globalObject().property("console") here); `tick` is the caller's
+// m_propFrameCount, the property-tick counter the dedup window is measured
+// against.
+static void flushJsConsole(QJSEngine* engine, const QJSValue& consoleObj, qint64 tick,
+                            const char* ctx) {
+    if (! engine) return;
+    QJSValue consoleBuf = consoleObj.property("_buf");
+    if (! consoleBuf.isArray()) return;
+    int len = consoleBuf.property("length").toInt();
+    for (int b = 0; b < len; b++) {
+        QString msg = consoleBuf.property(b).toString();
+        // Key on the call site too: a timer and the per-tick evaluator logging
+        // the same text are separate events and must not suppress each other.
+        auto decision =
+            jsConsoleDedup().recordAndDecide(std::string(ctx) + '\x1f' + msg.toStdString(), tick);
+        if (! decision.shouldLog) continue;
+        if (decision.repeatedCount > 0) {
+            LOG_INFO("JS %s console.log: %s (repeated %dx)",
+                     ctx,
+                     qPrintable(msg),
+                     decision.repeatedCount);
+        } else {
+            LOG_INFO("JS %s console.log: %s", ctx, qPrintable(msg));
         }
-        if (len > 0) engine->evaluate("console._buf = [];");
     }
+    if (len > 0) engine->evaluate("console._buf = [];");
 }
 
 void SceneObject::mousePressEvent(QMouseEvent* event) {
@@ -1827,7 +1858,7 @@ void SceneObject::mousePressEvent(QMouseEvent* event) {
              sceneY,
              downFired,
              m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
-    flushJsConsole(m_jsEngine, "click");
+    flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "click");
 }
 
 void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
@@ -1918,7 +1949,7 @@ void SceneObject::mouseReleaseEvent(QMouseEvent* event) {
              sceneY,
              upFired,
              m_dragTarget.empty() ? "(none)" : m_dragTarget.c_str());
-    flushJsConsole(m_jsEngine, "mouseUp");
+    flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "mouseUp");
     m_dragTarget.clear();
 }
 
@@ -2061,11 +2092,12 @@ void SceneObject::hoverMoveEvent(QHoverEvent* event) {
             break;
         }
     }
-    if (! result.toEnter.empty()) flushJsConsole(m_jsEngine, "cursorEnter");
+    if (! result.toEnter.empty())
+        flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "cursorEnter");
 
     bool stateChanged = (result.newHovered != m_hoveredLayers);
     m_hoveredLayers   = std::move(result.newHovered);
-    if (stateChanged) flushJsConsole(m_jsEngine, "hover");
+    if (stateChanged) flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "hover");
 
     // Arm the debounce timer so expired leaves actually fire.
     if (! m_pendingLeaves.empty()) {
@@ -2111,7 +2143,7 @@ void SceneObject::flushPendingLeaves() {
             break;
         }
     }
-    if (! toFire.empty()) flushJsConsole(m_jsEngine, "hover-leave");
+    if (! toFire.empty()) flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "hover-leave");
     if (! m_pendingLeaves.empty() && m_hoverLeaveTimer) {
         int64_t next   = nextLeaveDeadlineMs(m_pendingLeaves);
         int64_t remain = next > nowMs ? next - nowMs : 0;
@@ -2187,28 +2219,25 @@ void SceneObject::setupTextScripts() {
         "if (typeof thisScene.enumerateLayers === 'function') thisScene.enumerateLayers();\n"
         "if (typeof _linkupHierarchy === 'function') _linkupHierarchy();\n");
 
-    // Final null-safety wrapper: ensures getLayer() never returns null.
-    // The original getLayer returns null for unknown image layers so the sound-layer
-    // patch can fall through. This outermost wrapper catches any remaining nulls.
-    m_jsEngine->evaluate("var _innerGetLayer = thisScene.getLayer;\n"
-                         "thisScene.getLayer = function(name) {\n"
-                         "  var r = _innerGetLayer(name);\n"
-                         "  if (r !== null && r !== undefined) return r;\n"
-                         "  console.log('getLayer: unknown layer: ' + name);\n"
-                         "  return _nullProxy;\n"
-                         "};\n"
-                         // getLayerCount — returns total number of discoverable layers
-                         "thisScene.getLayerCount = function() {\n"
-                         "  return Object.keys(_layerInitStates).length;\n"
-                         "};\n"
-                         // thisObject global — context-dependent object (defaults to thisLayer)
-                         "var thisObject = {\n"
-                         "  getAnimation: function(name) {\n"
-                         "    if (thisLayer && thisLayer.getAnimationLayer) return "
-                         "thisLayer.getAnimationLayer(name || 0);\n"
-                         "    return null;\n"
-                         "  }\n"
-                         "};\n");
+    // Final getLayer wrapper: outermost link in the chain (kSoundLayerGetLayerPatchJs
+    // is the inner one, when installed).  getLayer's contract is null-on-miss —
+    // authors guard every call with `if (!layer) return;` — so this only needs to
+    // catch the case where no earlier patch handled the miss (no sound layers in
+    // the scene) and log+return null itself.
+    m_jsEngine->evaluate(wek::qml_helper::kFinalGetLayerSafetyJs);
+    m_jsEngine->evaluate(
+        // getLayerCount — returns total number of discoverable layers
+        "thisScene.getLayerCount = function() {\n"
+        "  return Object.keys(_layerInitStates).length;\n"
+        "};\n"
+        // thisObject global — context-dependent object (defaults to thisLayer)
+        "var thisObject = {\n"
+        "  getAnimation: function(name) {\n"
+        "    if (thisLayer && thisLayer.getAnimationLayer) return "
+        "thisLayer.getAnimationLayer(name || 0);\n"
+        "    return null;\n"
+        "  }\n"
+        "};\n");
 
     installScriptApiGlobals();
 
@@ -2225,11 +2254,12 @@ void SceneObject::setupTextScripts() {
         // Life 3453251764 buttons et al.) call thisLayer.getTextureAnimation()
         // / thisLayer.getEffect() in init.  Without this `thisLayer` stayed
         // pinned to whichever layer the prior property-script loop landed
-        // on, and init threw on the first method lookup.
+        // on, and init threw on the first method lookup.  Falls back to
+        // _nullProxy directly (not getLayer('')) since getLayer() now returns
+        // null on a miss — thisLayer must stay a safe stand-in either way.
         m_globalObj.setProperty(
             "thisLayer",
-            m_jsEngine->evaluate(
-                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(csi.id)));
+            m_jsEngine->evaluate(QString("thisScene.getLayerByID(%1) || _nullProxy").arg(csi.id)));
 
         // Inject scriptProperties with per-IIFE createScriptProperties for user overrides
         QString propsInit;
@@ -2365,10 +2395,13 @@ void SceneObject::setupTextScripts() {
                 break;
             }
         }
+        // Falls back to _nullProxy directly (not getLayer('')) since getLayer()
+        // now returns null on a miss — thisLayer must stay a safe stand-in
+        // either way (Game of Life 3453251764 shader-value scripts call
+        // thisLayer.getTextureAnimation() / thisLayer.getEffect()).
         m_globalObj.setProperty(
             "thisLayer",
-            m_jsEngine->evaluate(
-                QString("thisScene.getLayerByID(%1) || thisScene.getLayer('')").arg(svi.id)));
+            m_jsEngine->evaluate(QString("thisScene.getLayerByID(%1) || _nullProxy").arg(svi.id)));
 
         QString propsInit;
         if (! svi.scriptProperties.empty()) {
@@ -2814,19 +2847,7 @@ void SceneObject::setupTextScripts() {
     // stub.  Scripts read these inside applyUserProperties / init handlers.
     setScriptIdentity();
 
-    // Flush console.log buffer from script init
-    {
-        QJSValue consoleBuf = m_jsEngine->globalObject().property("console").property("_buf");
-        if (consoleBuf.isArray()) {
-            int len = consoleBuf.property("length").toInt();
-            for (int i = 0; i < len; i++) {
-                LOG_INFO("JS init console.log: %s", qPrintable(consoleBuf.property(i).toString()));
-            }
-            if (len > 0) {
-                m_jsEngine->evaluate("console._buf = [];");
-            }
-        }
-    }
+    flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "init");
 
     // Partition the script vector by Kind so a single-pass iteration in
     // `evaluatePropertyScripts` yields (visible, vec3, alpha) order without the
@@ -3765,7 +3786,7 @@ void SceneObject::installTimerBridge() {
             if (error) {
                 LOG_INFO("Timer callback error (id=%d): %s", id, qPrintable(msg));
             }
-            flushJsConsole(m_jsEngine, "timer");
+            flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "timer");
         },
         /* guardedCall */
         [this](const std::function<QJSValue()>& call, bool* outInterrupted) {
@@ -4222,21 +4243,9 @@ void SceneObject::buildSoundStates() {
                 "  return p;\n"
                 "}\n");
 
-            // Patch thisScene.getLayer to check sound layers too
-            m_jsEngine->evaluate("var _origGetLayer = thisScene.getLayer;\n"
-                                 "thisScene.getLayer = function(name) {\n"
-                                 "  // Check image layers first\n"
-                                 "  var r = _origGetLayer(name);\n"
-                                 "  if (r) return r;\n"
-                                 "  // Then check sound layers\n"
-                                 "  if (_soundLayerCache[name]) return _soundLayerCache[name];\n"
-                                 "  if (_soundLayerStates[name]) {\n"
-                                 "    _soundLayerCache[name] = _makeSoundLayerProxy(name);\n"
-                                 "    return _soundLayerCache[name];\n"
-                                 "  }\n"
-                                 "  console.log('getLayer: unknown layer: ' + name);\n"
-                                 "  return _nullProxy;\n"
-                                 "};\n");
+            // Patch thisScene.getLayer to check sound layers too.  Shared
+            // verbatim with scenescript_tests via kSoundLayerGetLayerPatchJs.
+            m_jsEngine->evaluate(wek::qml_helper::kSoundLayerGetLayerPatchJs);
 
             // thisScene.enumerateLayers — returns array of proxies for all layers
             m_jsEngine->evaluate("thisScene.enumerateLayers = function() {\n"
@@ -5531,19 +5540,10 @@ void SceneObject::evaluatePropertyScripts() {
         }
     }
 
-    // Flush console.log buffer from scripts
-    {
-        QJSValue consoleBuf = m_consoleObj.property("_buf"); // cached handle — one lookup
-        if (consoleBuf.isArray()) {
-            int len = consoleBuf.property("length").toInt();
-            for (int i = 0; i < len; i++) {
-                LOG_INFO("JS console.log: %s", qPrintable(consoleBuf.property(i).toString()));
-            }
-            if (len > 0) {
-                m_jsEngine->evaluate("console._buf = [];");
-            }
-        }
-    }
+    // Flush console.log buffer from scripts -- "tick" ctx since this is the
+    // per-property-tick site (script init and the click/hover/timer handlers
+    // flush through the same helper with their own ctx word).
+    flushJsConsole(m_jsEngine, m_consoleObj, m_propFrameCount, "tick");
 
     probeMark(s_t_scene);
     s_t_total +=
