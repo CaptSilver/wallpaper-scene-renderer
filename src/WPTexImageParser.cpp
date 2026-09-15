@@ -61,7 +61,7 @@ using namespace wallpaper::teximage_helpers;
 constexpr usize kMaxImageCount   = 16;
 constexpr usize kMaxMipmapCount  = 24;
 constexpr i32   kMaxMipmapDim    = 16384;
-constexpr i64   kMaxTotalBytes   = 1024ll * 1024 * 1024;
+constexpr i64   kMaxTotalBytes   = 4096ll * 1024 * 1024;
 constexpr i32   kMaxEmbeddedDim  = 16384;
 
 std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size) {
