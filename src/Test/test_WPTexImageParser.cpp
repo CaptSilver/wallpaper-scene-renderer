@@ -4,7 +4,9 @@
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 #include "Type.hpp"
+#include "Utils/Logging.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <lz4.h>
 #include <memory>
@@ -143,6 +145,12 @@ void mountTex(VFS& vfs, const std::string& name, std::vector<uint8_t> data) {
     mockFs->AddFile("/materials/" + name + ".tex", std::move(data));
     vfs.Mount("/assets", std::move(mockFs));
 }
+
+// Captures the last message the sink saw, so a test can assert Parse()
+// logged the rejection reason it expects rather than just checking the
+// nullptr return (which every rejection branch produces alike).
+std::string g_lastLogMessage;
+void        captureLastLogMessage(int /*level*/, const char* msg) { g_lastLogMessage = msg; }
 
 } // namespace
 
@@ -1567,25 +1575,139 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(img->slots[0].height == 1);
     }
 
-    TEST_CASE("Cumulative-byte cap rejects N mips × per-mip cap") {
-        // 8 mips × 200 MB lz4 decompressed_size each = 1.6 GB cumulative — the
-        // per-allocation cap (256 MB) lets each mip past on its own, but the
-        // total exceeds the 1 GiB cumulative cap.  Verifies the cumulative
-        // budget gate.
-        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
-        appendInt32(buf, /*mipmap_count=*/8);
-        for (int i = 0; i < 8; i++) {
-            appendInt32(buf, 4);                              // mip width
-            appendInt32(buf, 4);                              // mip height
-            appendInt32(buf, 1);                              // LZ4 compressed
-            appendInt32(buf, 200 * 1024 * 1024);              // decompressed_size = 200MB
-            appendInt32(buf, 16);                             // src_size
-            for (int j = 0; j < 16; j++) buf.push_back(0);
+    TEST_CASE("Cumulative-byte cap rejects real LZ4 mips exceeding the decompressed budget") {
+        // 4 mips of 40000 genuinely-compressed bytes each (160000 decompressed
+        // total) against a constructor-injected 100000-byte budget. Unlike a
+        // garbage LZ4 payload (which fails decompression before the cumulative
+        // gate is ever reached), a real payload lets Parse() actually get to
+        // the gate this test is pinning -- and the rejection is logged.
+        constexpr int kMipCount           = 4;
+        constexpr int kDecompressedPerMip = 40000;
+        auto          buf                 = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, kMipCount);
+        for (int i = 0; i < kMipCount; i++) {
+            std::vector<uint8_t> pixels(kDecompressedPerMip, 0x11);
+            appendMipmapV2(buf, 4, 4, pixels, /*compress=*/true);
         }
         VFS vfs;
-        mountTex(vfs, "cumulative", std::move(buf));
-        WPTexImageParser parser(&vfs);
-        CHECK(parser.Parse("cumulative") == nullptr);
+        mountTex(vfs, "cumulative_real", std::move(buf));
+
+        g_lastLogMessage.clear();
+        wallpaper_log_test::setSink(&captureLastLogMessage);
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/100000);
+        auto             img = parser.Parse("cumulative_real");
+        wallpaper_log_test::setSink(nullptr);
+
+        CHECK(img == nullptr);
+        CHECK(g_lastLogMessage.find("cumulative retained bytes") != std::string::npos);
+    }
+
+    TEST_CASE("Cumulative budget charges only retained (decompressed) bytes for an LZ4 mip") {
+        // A single genuinely-compressed mip whose compressed src_size plus
+        // decompressed_size together exceed a tight budget, but whose
+        // decompressed_size alone fits under it. The compressed buffer is
+        // transient -- Lz4Decompress's result replaces it and the original is
+        // freed -- so only the decompressed bytes should count against the
+        // budget. Before the accounting fix Parse() charged src_size +
+        // decompressed_size and rejected this; after the fix it charges only
+        // what slot.mipmaps[].data actually keeps and accepts it.
+        std::vector<uint8_t> pixels(20000, 0x5A); // highly compressible payload
+        int                  maxDst = LZ4_compressBound(static_cast<int>(pixels.size()));
+        std::vector<char>    compressed(static_cast<size_t>(maxDst));
+        int compressedSize = LZ4_compress_default(reinterpret_cast<const char*>(pixels.data()),
+                                                  compressed.data(),
+                                                  static_cast<int>(pixels.size()),
+                                                  maxDst);
+        REQUIRE(compressedSize > 0);
+
+        i64 decompressedSize = static_cast<i64>(pixels.size());
+        // Strictly between "decompressed alone" and "decompressed +
+        // compressed" -- the boundary the two charging schemes disagree on.
+        i64 budget = decompressedSize + compressedSize / 2;
+
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1); // mipmap_count
+        appendInt32(buf, 4); // width
+        appendInt32(buf, 4); // height
+        appendInt32(buf, 1); // LZ4_compressed = true
+        appendInt32(buf, static_cast<int32_t>(pixels.size())); // decompressed_size
+        appendInt32(buf, compressedSize);                      // src_size
+        append(buf, compressed.data(), static_cast<size_t>(compressedSize));
+
+        VFS vfs;
+        mountTex(vfs, "retained_only", std::move(buf));
+
+        WPTexImageParser parser(&vfs, budget);
+        CHECK(parser.Parse("retained_only") != nullptr);
+    }
+
+    TEST_CASE("Cumulative budget charges src_size for raw (non-LZ4) mips") {
+        // Uncompressed mips carry no decompressed_size field at all
+        // (texb==1), so the only retained-byte charge possible is src_size
+        // itself. 3 mips whose combined src_size crosses a tight budget must
+        // reject even though nothing here is LZ4-compressed.
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*mipmap_count=*/3);
+        for (int i = 0; i < 3; i++) {
+            std::vector<uint8_t> pixels(4000, 0x22);
+            appendMipmapV1(buf, 4, 4, pixels);
+        }
+        VFS vfs;
+        mountTex(vfs, "raw_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/10000); // < 3 * 4000
+        CHECK(parser.Parse("raw_budget") == nullptr);
+    }
+
+    TEST_CASE("Cumulative budget rejects an MP4-placeholder mip exceeding the budget") {
+        // The MP4 branch retains a black Rgba8ByteSize(w, h) placeholder
+        // buffer instead of the decoded frame -- that buffer is exactly as
+        // resident as any other mip's, so it has to be charged against
+        // m_maxTotalBytes the same way. A 4x4 placeholder is 4*4*4 = 64
+        // bytes; a 10-byte budget must reject it.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1); // mipmap_count
+        appendInt32(buf, 4); // mip width
+        appendInt32(buf, 4); // mip height
+        appendInt32(buf, 0); // LZ4_compressed = false
+        appendInt32(buf, 0); // decompressed_size
+        appendInt32(buf, 12); // src_size = 12 (>8, triggers MP4 detection)
+        const uint8_t fake[12] = {
+            0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'
+        };
+        for (uint8_t b : fake) buf.push_back(b);
+
+        VFS vfs;
+        mountTex(vfs, "mp4_over_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/10); // < 64-byte placeholder
+        CHECK(parser.Parse("mp4_over_budget") == nullptr);
+    }
+
+    TEST_CASE("Cumulative budget accepts an MP4-placeholder mip within the budget") {
+        // Same shape as above with a budget above the 64-byte placeholder --
+        // must still parse and produce the black placeholder frame.
+        auto buf = makeTexHeader(1, 1, 2, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 4);
+        appendInt32(buf, 4);
+        appendInt32(buf, 0);
+        appendInt32(buf, 0);
+        appendInt32(buf, 12);
+        const uint8_t fake[12] = {
+            0x00, 0x00, 0x00, 0x20, 'f', 't', 'y', 'p', 'i', 's', 'o', 'm'
+        };
+        for (uint8_t b : fake) buf.push_back(b);
+
+        VFS vfs;
+        mountTex(vfs, "mp4_under_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/1000); // > 64-byte placeholder
+        auto             img = parser.Parse("mp4_under_budget");
+        REQUIRE(img != nullptr);
+        CHECK(img->header.isVideoTexture);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        CHECK(img->slots[0].mipmaps[0].size == 64);
     }
 
     TEST_CASE("stbi pre-validation rejects embedded TGA with huge declared dims") {
@@ -1641,6 +1763,37 @@ TEST_SUITE("WPTexImageParser") {
         mountTex(vfs, "stbi_garbage", std::move(buf));
         WPTexImageParser parser(&vfs);
         CHECK(parser.Parse("stbi_garbage") == nullptr);
+    }
+
+    TEST_CASE("Cumulative budget charges only the decoded size for an embedded image mip") {
+        // A real, decodable 4x4 TGA padded with trailing filler bytes so the
+        // mip container (src_size) is far bigger than what stbi actually
+        // decodes (stbi_out = 4*4*4 = 64 bytes). Before the fix, Parse()
+        // charged the container bytes for this mip AND stbi_out on top for
+        // the same mip; after the fix, only stbi_out counts, since the
+        // container bytes are freed once stbi has decoded its own buffer.
+        std::vector<uint8_t> tga(18, 0);
+        tga[2]  = 2; // uncompressed true-color
+        tga[12] = 4; tga[13] = 0; // width = 4
+        tga[14] = 4; tga[15] = 0; // height = 4
+        tga[16] = 24;             // bpp
+        for (int i = 0; i < 4 * 4 * 3; i++) tga.push_back(0x40); // pixel data
+        tga.resize(tga.size() + 5000, 0);                       // container padding
+
+        auto buf = makeTexHeader(1, 1, 3, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*imageType=*/17); // TARGA
+        appendInt32(buf, /*mipmap_count=*/1);
+        appendMipmapV2(buf, /*mip_w=*/4, /*mip_h=*/4, tga);
+
+        VFS vfs;
+        mountTex(vfs, "stbi_padded_container", std::move(buf));
+
+        // Budget sits above stbi_out (64) but far below container size (~5090
+        // bytes) + stbi_out -- exactly what the two charging schemes disagree on.
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/100);
+        auto             img = parser.Parse("stbi_padded_container");
+        REQUIRE(img != nullptr);
+        CHECK(img->slots[0].mipmaps[0].size == 4 * 4 * 4);
     }
 
 } // TEST_SUITE
@@ -1895,5 +2048,104 @@ TEST_SUITE("WPTexImageParser hostile input") {
         auto             header = parser.ParseHeader("sprite_zero_mip");
 
         CHECK(header.isSprite == false);
+    }
+}
+
+// ===========================================================================
+// Cumulative texture budget: injectable via the constructor, defaulted via
+// DefaultMaxTexBytes() (WEKDE_MAX_TEX_BYTES env override, falling back to
+// the WEK_MAX_TEX_BYTES compile-time default).
+// ===========================================================================
+namespace
+{
+// Puts WEKDE_MAX_TEX_BYTES back the way it was found once the test scope
+// ends -- DefaultMaxTexBytes() reads the env fresh on every call, so there's
+// no cached state to worry about beyond the variable itself.
+struct MaxTexBytesEnvGuard {
+    bool        hadValue;
+    std::string oldValue;
+    MaxTexBytesEnvGuard() {
+        const char* v = std::getenv("WEKDE_MAX_TEX_BYTES");
+        hadValue      = v != nullptr;
+        if (hadValue) oldValue = v;
+    }
+    ~MaxTexBytesEnvGuard() {
+        if (hadValue) setenv("WEKDE_MAX_TEX_BYTES", oldValue.c_str(), 1);
+        else unsetenv("WEKDE_MAX_TEX_BYTES");
+    }
+};
+} // namespace
+
+TEST_SUITE("WPTexImageParser texture budget") {
+
+    TEST_CASE("small budget passed to the constructor is honoured") {
+        // 3 raw mips of 4 bytes each (12 bytes retained) fit comfortably
+        // under the 2 GiB compile-time default but must be rejected once the
+        // constructor is given an 8-byte budget instead.
+        auto buf = makeTexHeader(1, 1, 1, 0, 0, 4, 4, 4, 4, 1);
+        appendInt32(buf, /*mipmap_count=*/3);
+        for (int i = 0; i < 3; i++) {
+            std::vector<uint8_t> pixels(4, 0xAB);
+            appendMipmapV1(buf, 4, 4, pixels);
+        }
+        VFS vfs;
+        mountTex(vfs, "small_budget", std::move(buf));
+
+        WPTexImageParser parser(&vfs, /*maxTotalBytes=*/8);
+        CHECK(parser.Parse("small_budget") == nullptr);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes returns the compile-time default when unset") {
+        MaxTexBytesEnvGuard guard;
+        unsetenv("WEKDE_MAX_TEX_BYTES");
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes returns a valid env override") {
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "12345", 1);
+        CHECK(DefaultMaxTexBytes() == 12345);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes falls back to the compile default on an invalid value") {
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "not-a-number", 1);
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes falls back to the compile default on zero") {
+        // A budget of 0 would make every mip an instant reject -- the parser
+        // would just blank every wallpaper.  Treat it as unset instead.
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "0", 1);
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes falls back to the compile default on a negative value") {
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "-5", 1);
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes falls back to the compile default on int64 overflow") {
+        // strtoll sets errno=ERANGE and clamps to LLONG_MAX for a value this
+        // far past int64 range -- must not silently accept the clamped value.
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "99999999999999999999", 1);
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes falls back to the compile default on trailing junk") {
+        // strtoll happily parses the leading "123" and leaves `end` pointing
+        // at "abc" -- the *end != '\0' check is what catches this.
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "123abc", 1);
+        CHECK(DefaultMaxTexBytes() == 2ll * 1024 * 1024 * 1024);
+    }
+
+    TEST_CASE("DefaultMaxTexBytes accepts a plain valid value") {
+        MaxTexBytesEnvGuard guard;
+        setenv("WEKDE_MAX_TEX_BYTES", "4096", 1);
+        CHECK(DefaultMaxTexBytes() == 4096);
     }
 }

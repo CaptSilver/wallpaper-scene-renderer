@@ -28,11 +28,18 @@ if(ENABLE_RENDERDOC)
   add_compile_definitions(ENABLE_RENDERDOC_API=1)
 endif()
 
-# Cumulative texture budget in bytes (WPTexImageParser). Low-VRAM machines can
-# set a smaller cap with -DWEK_MAX_TEX_BYTES=...; a high-VRAM card can raise it.
-# The source uses #ifndef WEK_MAX_TEX_BYTES with a 2 GiB default, so leaving this
-# unset is fine. Exposed here so packagers can override without touching the cpp.
-if(DEFINED WEK_MAX_TEX_BYTES)
+# Cumulative texture budget WPTexImageParser::Parse() enforces per .tex, in
+# bytes -- see the comment on kMaxTotalBytes in WPTexImageParser.cpp for what
+# it bounds and why the default is 2 GiB. This is the compile-time override
+# for packagers who want a different shipped default; WEKDE_MAX_TEX_BYTES
+# (read by DefaultMaxTexBytes() in the same file) is the runtime equivalent
+# for changing it without a rebuild. A CACHE STRING rather than a bare
+# if(DEFINED ...) so it shows up in `cmake -L` next to the other WEK_* knobs;
+# empty (the default) leaves the .cpp's own #ifndef default untouched.
+set(WEK_MAX_TEX_BYTES "" CACHE STRING
+    "Compile-time default for WPTexImageParser's cumulative per-.tex byte \
+budget. Empty keeps the source file's own 2 GiB default.")
+if(NOT WEK_MAX_TEX_BYTES STREQUAL "")
   add_compile_definitions(WEK_MAX_TEX_BYTES=${WEK_MAX_TEX_BYTES})
 endif()
 
