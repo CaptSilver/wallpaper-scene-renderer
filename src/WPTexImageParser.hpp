@@ -6,9 +6,17 @@
 namespace wallpaper
 {
 
+// Cumulative texture budget Parse() enforces when no explicit budget is
+// passed to the constructor.  Reads WEKDE_MAX_TEX_BYTES per call (no
+// caching -- same pattern as WEKDE_MSAA/WEKDE_DEBUG_FRAMETIME, so a test or
+// a live operator can change it without restarting the process); falls back
+// to the WEK_MAX_TEX_BYTES compile-time default when unset or unparsable.
+i64 DefaultMaxTexBytes();
+
 class WPTexImageParser : public IImageParser {
 public:
-    WPTexImageParser(fs::VFS* vfs): m_vfs(vfs) {}
+    explicit WPTexImageParser(fs::VFS* vfs, i64 maxTotalBytes = DefaultMaxTexBytes())
+        : m_vfs(vfs), m_maxTotalBytes(maxTotalBytes) {}
     virtual ~WPTexImageParser() = default;
 
     std::shared_ptr<Image> Parse(const std::string&) override;
@@ -25,6 +33,7 @@ public:
 
 private:
     fs::VFS*                                                m_vfs;
+    i64                                                     m_maxTotalBytes;
     std::string                                             m_cachePath;
     std::unordered_map<std::string, std::shared_ptr<Image>> m_registered;
     // Header-only cache: avoids re-opening + re-parsing the .tex file when

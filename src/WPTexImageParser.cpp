@@ -3,7 +3,9 @@
 #include "Type.hpp"
 #include "WPTexImageHelpers.h"
 #include "WPCommon.hpp"
+#include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -45,9 +47,13 @@ namespace
 using namespace wallpaper::teximage_helpers;
 
 // Hostile-input bounds for Parse().  Wallpaper Engine ships textures up to 4K
-// per side with ≤13 mips and ≤6 slots (cube faces) in practice; these caps sit
-// well above any real .tex while keeping fuzz inputs from declaring 80GB
-// image_count, INT32_MAX dimensions, or thousands of mip levels.
+// per side with ≤13 mips and ≤6 slots (cube faces) in practice; the three
+// plausibility caps right below (image count, mipmap count, per-axis mip
+// dimension) sit well above any real .tex while keeping fuzz inputs from
+// declaring 80GB image_count, INT32_MAX dimensions, or thousands of mip
+// levels. The cumulative byte budget further down is a different kind of
+// cap -- see the comment above it -- since a real texture can get close to
+// that one.
 //
 // Surfaced by fuzz_WPTexImageParser pathologies — a 105-byte hostile .tex
 // embedding a TGA with declared dims 10000×10000 routes through
@@ -61,7 +67,30 @@ using namespace wallpaper::teximage_helpers;
 constexpr usize kMaxImageCount   = 16;
 constexpr usize kMaxMipmapCount  = 24;
 constexpr i32   kMaxMipmapDim    = 16384;
-constexpr i64   kMaxTotalBytes   = 1024ll * 1024 * 1024;
+// Cumulative texture budget: the host-heap bytes one .tex may keep resident
+// in slot.mipmaps[].data while Parse() decodes it from untrusted workshop
+// content. Unlike the plausibility caps above, this bounds accumulation
+// across many mips rather than rejecting one bad field outright -- it's a
+// fuzz-derived DoS margin, not an estimate of how big a real texture gets.
+//
+// Default is 2 GiB: large multi-frame sprites exist (e.g. Hackercore's
+// 7680x8000 sheet), and the old hard 1 GiB cap dropped them to a 1x1
+// fallback (a blank wallpaper) instead of just costing more memory. The
+// 256 MB per-allocation cap below still bounds any single mip, but a
+// texture built from many mips near that cap can still run the cumulative
+// total up to this budget -- accepted, since rejecting it would mean
+// blanking a real wallpaper.
+//
+// Two independent ways to change it, matching how every other WEKDE_*/WEK_*
+// knob in this codebase splits runtime vs. build time: WEKDE_MAX_TEX_BYTES
+// overrides it per run (DefaultMaxTexBytes(), read fresh whenever a
+// WPTexImageParser is constructed without an explicit budget);
+// WEK_MAX_TEX_BYTES overrides the compiled-in default for packagers who want
+// to ship a different one.
+#ifndef WEK_MAX_TEX_BYTES
+#  define WEK_MAX_TEX_BYTES (2ll * 1024 * 1024 * 1024)
+#endif
+constexpr i64 kMaxTotalBytes = WEK_MAX_TEX_BYTES;
 constexpr i32   kMaxEmbeddedDim  = 16384;
 
 std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size) {
@@ -154,6 +183,25 @@ inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
 }
 
 } // namespace
+
+i64 wallpaper::DefaultMaxTexBytes() {
+    // Per-call getenv(), no caching -- matches WEKDE_MSAA / WEKDE_DEBUG_FRAMETIME:
+    // Parse() isn't hot enough for a getenv() to matter, and this way a test
+    // (or an operator re-running with the var set) sees the new value without
+    // a process restart.
+    const char* env = std::getenv("WEKDE_MAX_TEX_BYTES");
+    if (! env) return kMaxTotalBytes;
+    char* end = nullptr;
+    errno     = 0;
+    long long v = std::strtoll(env, &end, 10);
+    if (end == env || *end != '\0' || errno == ERANGE || v <= 0) {
+        LOG_ERROR("WEKDE_MAX_TEX_BYTES=\"%s\" is not a positive byte count, "
+                  "keeping the %lld-byte compile-time default",
+                  env, (long long)kMaxTotalBytes);
+        return kMaxTotalBytes;
+    }
+    return (i64)v;
+}
 
 void WPTexImageParser::RegisterImage(const std::string& key, std::shared_ptr<Image> img) {
     m_registered[key] = std::move(img);
@@ -275,21 +323,6 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 return nullptr;
             }
 
-            // Cumulative-budget gate before the std::vector<char> for src_size
-            // and the Lz4Decompress allocation.  src_size is bounded by
-            // CountFitsStream, decompressed_size by the per-allocation cap
-            // above; this check stops the parser running through many mips and
-            // accumulating slot.mipmaps[].data without bound.
-            i64 mip_budget = (i64)src_size + (i64)decompressed_size;
-            if (total_bytes + mip_budget > kMaxTotalBytes) {
-                LOG_INFO("tex '%s' mip[%zu]: cumulative allocation %lld + %lld exceeds %lld-byte cap",
-                         name.c_str(), i_mipmap,
-                         (long long)total_bytes, (long long)mip_budget,
-                         (long long)kMaxTotalBytes);
-                return nullptr;
-            }
-            total_bytes += mip_budget;
-
             if (! CountFitsStream(file, (usize)src_size)) {
                 LOG_ERROR("tex '%s': src_size %d exceeds stream", name.c_str(), src_size);
                 return nullptr;
@@ -308,6 +341,19 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                     return nullptr;
                 }
             }
+
+            // `result` now holds exactly what this mip keeps if it takes the
+            // raw-copy branch below: unchanged src_size if it wasn't
+            // LZ4-compressed, or the reassigned src_size (== decompressed_size)
+            // if it was -- the compressed buffer itself is gone, freed by the
+            // std::move above. The embedded-image branch further down retains
+            // stbi's own output buffer instead, so it gates on a different
+            // value; the cumulative-budget check happens per-branch below
+            // rather than once here, so a mip that's about to be re-decoded
+            // into a smaller buffer doesn't get rejected for the container
+            // bytes it's about to discard.
+            i64 mip_bytes = (i64)src_size;
+
             // Detect MP4 video data misidentified as raw texture (isVideoMp4 flag not set).
             // MP4 containers start with a size field + "ftyp" signature.
             if (src_size > 8 && result.size() >= 8 &&
@@ -355,6 +401,19 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                               (long long)kMaxTexAllocBytes);
                     return nullptr;
                 }
+                // The placeholder buffer is retained in mipmap.data exactly
+                // like any other mip's, so it counts against the cumulative
+                // budget the same way the raw-copy and stbi branches do below.
+                if (total_bytes + raw_size > m_maxTotalBytes) {
+                    LOG_INFO("tex '%s' mip[%zu]: cumulative retained bytes %lld + %lld "
+                             "exceeds %lld-byte cap",
+                             name.c_str(), i_mipmap,
+                             (long long)total_bytes, (long long)raw_size,
+                             (long long)m_maxTotalBytes);
+                    return nullptr;
+                }
+                total_bytes += raw_size;
+
                 auto buf = std::make_unique<uint8_t[]>((usize)raw_size);
                 std::memset(buf.get(), 0, (usize)raw_size);
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
@@ -392,15 +451,18 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                              kMaxEmbeddedDim);
                     return nullptr;
                 }
-                // Fold the about-to-be-allocated stbi output into the
-                // cumulative budget.
+                // This mip keeps stbi's own decoded buffer below, not
+                // `result` (the container bytes get freed once stbi has its
+                // own copy) -- gate on stbi's output size, not the container
+                // size in mip_bytes, so a small image inside a padded/oversized
+                // container isn't charged for bytes it doesn't keep.
                 i64 stbi_out = (i64)info_w * info_h * 4;
-                if (total_bytes + stbi_out > kMaxTotalBytes) {
+                if (total_bytes + stbi_out > m_maxTotalBytes) {
                     LOG_INFO("tex '%s' mip[%zu]: stbi output %lld for %dx%d "
                              "exceeds cumulative cap %lld",
                              name.c_str(), i_mipmap,
                              (long long)stbi_out, info_w, info_h,
-                             (long long)kMaxTotalBytes);
+                             (long long)m_maxTotalBytes);
                     return nullptr;
                 }
                 total_bytes += stbi_out;
@@ -427,6 +489,19 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 });
                 src_size    = w * h * 4;
             } else {
+                // Plain raw-copy path: `result` (mip_bytes) is exactly what
+                // gets retained in mipmap.data, so gate on it directly here,
+                // before the allocation below.
+                if (total_bytes + mip_bytes > m_maxTotalBytes) {
+                    LOG_INFO("tex '%s' mip[%zu]: cumulative retained bytes %lld + %lld "
+                             "exceeds %lld-byte cap",
+                             name.c_str(), i_mipmap,
+                             (long long)total_bytes, (long long)mip_bytes,
+                             (long long)m_maxTotalBytes);
+                    return nullptr;
+                }
+                total_bytes += mip_bytes;
+
                 auto buf = std::make_unique<uint8_t[]>((usize)src_size);
                 std::copy(result.data(), result.data() + src_size, buf.get());
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
