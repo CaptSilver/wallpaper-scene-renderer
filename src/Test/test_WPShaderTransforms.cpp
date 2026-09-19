@@ -3864,3 +3864,40 @@ TEST_SUITE("regression: minimised fuzz crashes") {
         }
     }
 }
+
+// The preamble maps HLSL's log10 onto GLSL with a function-like macro.  A
+// shader that carries its own `float log10(float x)` helper (the tone-mapping
+// effect from workshop 2812601803 does) must keep it: expanding the macro
+// inside the definition turns the line into `float(log(float x) / ...)` and
+// glslang rejects the whole shader.
+TEST_SUITE("PreambleLog10") {
+    TEST_CASE("a shader defining its own log10 is not clobbered by the preamble macro") {
+        const std::string body = "float log10(float x) { return log(x) / 2.302585; }\n"
+                                 "void main() { gl_FragColor = vec4(log10(10.0)); }\n";
+        std::string       out  = wallpaper::WPShaderParser::PreShaderHeader(
+            body, wallpaper::Combos {}, wallpaper::ShaderType::FRAGMENT);
+        auto def   = out.find("#define log10(");
+        auto undef = out.find("#undef log10");
+        auto fn    = out.find("float log10(float x)");
+        REQUIRE(def != std::string::npos);
+        REQUIRE(undef != std::string::npos);
+        REQUIRE(fn != std::string::npos);
+        CHECK(def < undef);
+        CHECK(undef < fn);
+    }
+
+    TEST_CASE("a shader that only calls log10 keeps the preamble macro") {
+        const std::string body = "void main() { gl_FragColor = vec4(log10(10.0)); }\n";
+        std::string       out  = wallpaper::WPShaderParser::PreShaderHeader(
+            body, wallpaper::Combos {}, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#define log10(") != std::string::npos);
+        CHECK(out.find("#undef log10") == std::string::npos);
+    }
+
+    TEST_CASE("a vec3 log10 helper is recognised too") {
+        const std::string body = "vec3 log10(vec3 x) { return log(x) / 2.302585; }\n";
+        std::string       out  = wallpaper::WPShaderParser::PreShaderHeader(
+            body, wallpaper::Combos {}, wallpaper::ShaderType::FRAGMENT);
+        CHECK(out.find("#undef log10") != std::string::npos);
+    }
+}

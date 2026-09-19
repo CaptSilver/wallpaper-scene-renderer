@@ -996,6 +996,16 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
         }
         pre.append("#define " + cup + " " + c.second + "\n");
     }
+    // The preamble maps HLSL's log10 onto GLSL with a function-like macro.  A
+    // shader that carries its own log10 helper would have the macro expanded
+    // inside the definition (`float(log(float x) / ...)`), which glslang
+    // rejects — the tone-mapping effect from workshop 2812601803 does exactly
+    // that.  Drop the macro again so the shader's function wins.
+    static const std::regex defines_log10(
+        R"(\b(?:float|half|double|vec[234]|half[234])\s+log10\s*\()");
+    if (std::regex_search(src, defines_log10)) {
+        pre.append("#undef log10\n");
+    }
     return pre + src;
 }
 
