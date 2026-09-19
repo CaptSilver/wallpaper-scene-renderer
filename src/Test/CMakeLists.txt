@@ -50,6 +50,8 @@ add_executable(backend_scene_tests
     test_AudioRateMultiplier.cpp
     test_WPPuppet.cpp
     test_WPSceneAttachmentCompose.cpp
+    # Layer alpha / colour fan-out into image- and flat-shader uniforms.
+    test_SceneMaterialLayerWrite.cpp
     test_WPTexImageHelpers.cpp
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
@@ -138,7 +140,6 @@ add_executable(backend_scene_tests
     test_SceneImageEffectLayer.cpp
     test_WPCreateLayerScan.cpp
     ${SRC_DIR}/Scene/SceneImageEffectLayer.cpp
-    # Layer-alpha fan-out over a node's materials (SceneAlphaWrite.hpp).
     test_WPPropertyScriptExtract.cpp
     test_WPParticleInstanceoverride.cpp
     test_WPSceneFileResolver.cpp

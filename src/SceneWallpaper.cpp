@@ -1,4 +1,5 @@
 #include "SceneWallpaper.hpp"
+#include "SceneMaterialLayerWrite.hpp"
 #include "SceneWallpaperSurface.hpp"
 
 #include "Utils/Logging.h"
@@ -993,22 +994,13 @@ private:
                 for (auto& [id, rgb] : m_pending_color_updates) {
                     for (auto& cs : scene->colorScripts) {
                         if (cs.id == id && cs.material) {
-                            // Preserve existing alpha from g_Color4
-                            float alpha = 1.0f;
-                            auto  it    = cs.material->customShader.constValues.find("g_Color4");
-                            if (it != cs.material->customShader.constValues.end() &&
-                                it->second.size() >= 4) {
-                                alpha = it->second[3];
-                            }
-                            cs.material->customShader.constValues["g_Color4"] =
-                                std::vector<float> { rgb[0], rgb[1], rgb[2], alpha };
-                            cs.material->customShader.constValuesDirty = true;
-                            LOG_INFO("color update id=%d: rgb=(%.3f,%.3f,%.3f) alpha=%.3f",
+                            writeLayerColor(*cs.material, rgb[0], rgb[1], rgb[2]);
+                            writeFlatColor(*cs.material, rgb[0], rgb[1], rgb[2]);
+                            LOG_INFO("color update id=%d: rgb=(%.3f,%.3f,%.3f)",
                                      id,
                                      rgb[0],
                                      rgb[1],
-                                     rgb[2],
-                                     alpha);
+                                     rgb[2]);
                             break;
                         }
                     }
@@ -1187,9 +1179,9 @@ private:
                     if (nit == scene->nodeById.end()) continue;
                     SceneNode* node = nit->second;
                     if (node->HasMaterial()) {
-                        auto* mat                                    = node->Mesh()->Material();
-                        mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { alpha };
-                        mat->customShader.constValuesDirty           = true;
+                        auto* mat = node->Mesh()->Material();
+                        writeLayerAlpha(*mat, alpha);
+                        writeFlatAlpha(*mat, alpha);
                     }
                 }
                 // Scripted particle instance-override rate — write through
@@ -2030,18 +2022,15 @@ public:
     void writeAlphaToAllMaterials(SceneNode* sourceNode, i32 nodeId, float value) {
         auto pushAlpha = [value](SceneMaterial* mat) {
             if (! mat) return;
-            mat->customShader.constValues["g_UserAlpha"] = std::vector<float> { value };
-            // Also update g_Color4.a so shaders that sample color alpha
-            // (rather than the explicit g_UserAlpha uniform) pick this up.
-            auto it = mat->customShader.constValues.find("g_Color4");
-            if (it != mat->customShader.constValues.end() && it->second.size() >= 4) {
-                it->second[3] = value;
-            }
-            mat->customShader.constValuesDirty = true;
+            writeLayerAlpha(*mat, value);
         };
 
         if (sourceNode && sourceNode->HasMaterial()) {
-            pushAlpha(sourceNode->Mesh()->Material());
+            auto* base = sourceNode->Mesh()->Material();
+            pushAlpha(base);
+            // The base pass of a solid layer is the flat shader; it reads
+            // g_Alpha, not g_UserAlpha.
+            writeFlatAlpha(*base, value);
         }
         auto scene = m_scene.load();
         if (! scene) return;
