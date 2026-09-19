@@ -367,6 +367,46 @@ TEST_SUITE("WPPuppet_Prepared") {
         CHECK(info.t == doctest::Approx(0.0));
     }
 
+    // A puppet whose art is packed into an atlas stores two poses per bone:
+    // `transform` is where the piece sits in the atlas (bind), `rest_transform`
+    // where the assembled character wants it.  prepared() must invert the
+    // bind chain for skinning and compose the rest chain for everything that
+    // asks where a bone *is* (attachments, diagnostics).
+    TEST_CASE("rest pose separate from bind: world follows rest, offset inverts bind") {
+        auto puppet = makePuppet(2, 1, 10.0, 2);
+        puppet->bones[0].transform.pretranslate(Eigen::Vector3f(100.0f, 0.0f, 0.0f));
+        puppet->bones[1].transform.pretranslate(Eigen::Vector3f(0.0f, 50.0f, 0.0f));
+        Eigen::Affine3f rest0 = Eigen::Affine3f::Identity();
+        rest0.pretranslate(Eigen::Vector3f(-7.0f, 3.0f, 0.0f));
+        Eigen::Affine3f rest1 = Eigen::Affine3f::Identity();
+        rest1.pretranslate(Eigen::Vector3f(2.0f, -4.0f, 0.0f));
+        puppet->bones[0].rest_transform = rest0;
+        puppet->bones[1].rest_transform = rest1;
+        puppet->prepared();
+
+        auto w1 = puppet->bones[1].world_transform.translation();
+        CHECK(w1.x() == doctest::Approx(-5.0f));
+        CHECK(w1.y() == doctest::Approx(-1.0f));
+
+        auto bind1   = puppet->bones[0].transform * puppet->bones[1].transform;
+        auto product = bind1 * puppet->bones[1].offset_trans;
+        CHECK(product.matrix().isApprox(Eigen::Affine3f::Identity().matrix(), 1e-5f));
+        CHECK(puppet->bones[1].offset_trans.translation().x() == doctest::Approx(-100.0f));
+        CHECK(puppet->bones[1].offset_trans.translation().y() == doctest::Approx(-50.0f));
+    }
+
+    TEST_CASE("without a stored rest pose the bind pose doubles as rest") {
+        auto puppet = makePuppet(2, 1, 10.0, 2);
+        puppet->bones[0].transform.pretranslate(Eigen::Vector3f(2.0f, 0.0f, 0.0f));
+        puppet->bones[1].transform.pretranslate(Eigen::Vector3f(0.0f, 3.0f, 0.0f));
+        CHECK_FALSE(puppet->bones[1].rest_transform.has_value());
+        CHECK(puppet->bones[1].restLocal().matrix().isApprox(puppet->bones[1].transform.matrix()));
+        puppet->prepared();
+        auto t = puppet->bones[1].world_transform.translation();
+        CHECK(t.x() == doctest::Approx(2.0f));
+        CHECK(t.y() == doctest::Approx(3.0f));
+    }
+
 } // TEST_SUITE("WPPuppet_Prepared")
 
 // ===========================================================================
@@ -931,6 +971,94 @@ TEST_SUITE("WPPuppet_GenFrame") {
         CHECK(rest[0].translation().x() == doctest::Approx(50.0f));
         auto frames = layer.genFrame(0.1); // advance to frame 1 (cur_time=0.1)
         CHECK(frames[0].translation().x() == doctest::Approx(80.0f));
+    }
+
+    // ------------------------------------------------------------------
+    // Atlas-packed puppets: bind pose (where the mesh piece is stored) and
+    // rest pose (where it belongs on the character) differ per bone.  The
+    // uploaded skin matrix must carry a vertex from its bind position to
+    // its rest position, and animation frames — authored in rest space —
+    // play on top of that.
+    // ------------------------------------------------------------------
+    namespace
+    {
+    constexpr float kAtlasX = 1000.0f; // where the piece is parked in the atlas
+    constexpr float kRestX  = 20.0f;   // where the character wants it
+    constexpr float kRestY  = -30.0f;
+
+    // One root bone whose bind pose is far off in the atlas and whose rest
+    // pose is near the origin.  Every frame of the single animation sits at
+    // the rest pose, except frame 1 which is shifted by +10 in x.
+    std::shared_ptr<WPPuppet> makeAtlasPuppet() {
+        auto           puppet = std::make_shared<WPPuppet>();
+        WPPuppet::Bone bone;
+        bone.transform = Eigen::Affine3f::Identity();
+        bone.transform.pretranslate(Eigen::Vector3f(kAtlasX, 0.0f, 0.0f));
+        Eigen::Affine3f rest = Eigen::Affine3f::Identity();
+        rest.pretranslate(Eigen::Vector3f(kRestX, kRestY, 0.0f));
+        bone.rest_transform = rest;
+        bone.parent         = 0xFFFFFFFFu;
+        puppet->bones.push_back(bone);
+
+        WPPuppet::Animation anim;
+        anim.id     = 7;
+        anim.fps    = 10.0;
+        anim.length = 2;
+        anim.mode   = WPPuppet::PlayMode::Loop;
+        anim.name   = "sway";
+        WPPuppet::Animation::BoneFrames bf;
+        for (int f = 0; f < 2; f++) {
+            WPPuppet::BoneFrame frame;
+            frame.position = Eigen::Vector3f(kRestX + (f == 1 ? 10.0f : 0.0f), kRestY, 0.0f);
+            frame.angle    = Eigen::Vector3f::Zero();
+            frame.scale    = Eigen::Vector3f::Ones();
+            bf.frames.push_back(frame);
+        }
+        anim.bframes_array.push_back(bf);
+        puppet->anims.push_back(anim);
+        puppet->prepared();
+        return puppet;
+    }
+
+    // A vertex stored at the bone's bind origin, pushed through the skin matrix.
+    Eigen::Vector3f skinAtlasOrigin(std::span<const Eigen::Affine3f> frames) {
+        return frames[0] * Eigen::Vector3f(kAtlasX, 0.0f, 0.0f);
+    }
+    } // namespace
+
+    TEST_CASE("a bone parked elsewhere in the atlas skins its vertices onto the rest pose") {
+        auto                                       puppet = makeAtlasPuppet();
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> none;
+        layer.prepared(none);
+        auto p = skinAtlasOrigin(layer.genFrame(0.0));
+        CHECK(p.x() == doctest::Approx(kRestX));
+        CHECK(p.y() == doctest::Approx(kRestY));
+    }
+
+    TEST_CASE("an additive layer at frame 0 leaves the bone at the rest pose") {
+        auto                                       puppet = makeAtlasPuppet();
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+        alayers[0]          = { 7, 1.0, 1.0, true, 0.0 };
+        alayers[0].additive = true;
+        layer.prepared(alayers);
+        auto p = skinAtlasOrigin(layer.genFrame(0.0));
+        CHECK(p.x() == doctest::Approx(kRestX));
+        CHECK(p.y() == doctest::Approx(kRestY));
+    }
+
+    TEST_CASE("animation frames play on top of the rest pose, not the bind pose") {
+        auto                                       puppet = makeAtlasPuppet();
+        WPPuppetLayer                              layer(puppet);
+        std::vector<WPPuppetLayer::AnimationLayer> alayers(1);
+        alayers[0] = { 7, 1.0, 1.0, true, 0.0 };
+        layer.prepared(alayers);
+        auto p0 = skinAtlasOrigin(layer.genFrame(0.0));
+        CHECK(p0.x() == doctest::Approx(kRestX));
+        auto p1 = skinAtlasOrigin(layer.genFrame(0.1)); // frame 1: rest + 10 in x
+        CHECK(p1.x() == doctest::Approx(kRestX + 10.0f));
+        CHECK(p1.y() == doctest::Approx(kRestY));
     }
 
 } // TEST_SUITE("WPPuppet_GenFrame")

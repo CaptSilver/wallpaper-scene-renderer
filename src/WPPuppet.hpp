@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <optional>
 #include <span>
 #include <Eigen/Geometry>
 
@@ -22,17 +23,32 @@ public:
         Single
     };
     struct Bone {
+        // Bind-pose local transform: where the bone sits relative to its
+        // parent in the space the mesh vertices are stored in.
         Eigen::Affine3f transform { Eigen::Affine3f::Identity() };
-        uint32_t        parent { 0xFFFFFFFFu };
+        // Rest-pose local transform, when the file stores one separately from
+        // the bind pose.  A puppet whose art is packed into an atlas keeps
+        // each piece's bind pose where the atlas stored it and its rest pose
+        // where the assembled character wants it; animation frames are
+        // authored relative to the rest pose.  Absent when the two coincide.
+        std::optional<Eigen::Affine3f> rest_transform;
+        uint32_t                       parent { 0xFFFFFFFFu };
 
         bool noParent() const { return parent == 0xFFFFFFFFu; }
-        // prepared
+        // The pose animation starts from: the stored rest pose, else bind.
+        const Eigen::Affine3f& restLocal() const {
+            return rest_transform ? *rest_transform : transform;
+        }
+        // prepared(): inverse of the accumulated bind-pose transform
+        // (parent bind world * this.transform).  Skinning uploads
+        // animated_world * offset_trans, which carries a vertex from where
+        // it is stored to where the bone now is.
         Eigen::Affine3f offset_trans { Eigen::Affine3f::Identity() };
-        // Accumulated bind-pose transform through the bone hierarchy
-        // (parent.world_transform * this.transform).  Used to compute each
-        // attachment point's position relative to bone[0] — the puppet's
-        // SceneNode origin is interpreted as "where bone[0] lives", so a
-        // child anchored to bone i picks up an extra
+        // prepared(): accumulated rest-pose transform through the hierarchy
+        // (parent.world_transform * this.restLocal()) — where the bone sits
+        // on the assembled character.  Attachments compose against it: the
+        // puppet's SceneNode origin is interpreted as "where bone[0] lives",
+        // so a child anchored to bone i picks up an extra
         //   (bones[i].world_transform * bones[0].world_transform.inverse())
         // factor in its attachment chain.
         Eigen::Affine3f world_transform { Eigen::Affine3f::Identity() };

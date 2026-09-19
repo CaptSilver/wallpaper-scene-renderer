@@ -1109,6 +1109,7 @@ TEST_SUITE("WPMdlParser.Puppet") {
         CHECK(mdl.vertexs.size() == 1);
         CHECK(mdl.indices.size() == 1);
         CHECK(mdl.mdls == 2);
+        CHECK(mdl.puppet->bones.empty());
         CHECK(mdl.vertexs[0].position[0] == doctest::Approx(0.5f));
         CHECK(mdl.vertexs[0].texcoord[1] == doctest::Approx(0.9f));
     }
@@ -1171,6 +1172,106 @@ TEST_SUITE("WPMdlParser.Puppet") {
         REQUIRE(mdl.puppet->attachments.size() == 1);
         CHECK(mdl.puppet->attachments[0].name == "bone_tip");
         CHECK(mdl.puppet->attachments[0].transform.translation().x() == doctest::Approx(7.0f));
+    }
+
+    // The `has_trans` table that follows the bone list in an MDLS2 skeleton
+    // is the per-bone rest pose.  An atlas-packed puppet stores each piece's
+    // bind pose where the atlas keeps it and its rest pose where the
+    // assembled character wants it; the two differ by hundreds of pixels.
+    TEST_CASE("MDLS2 has_trans table is stored as each bone's rest pose") {
+        Bytes b;
+        b.append_mdlv(19);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        for (int i = 0; i < 6; i++) b.f32(0.0f); // v17+ bbox
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 2);
+        b.u32(0);
+        b.u16(2);
+        b.u16(0);
+
+        b.str("root");
+        b.i32(0);
+        b.u32(0xFFFFFFFFu);
+        b.u32(64);
+        b.translated_mat4(1000.0f, 0.0f, 0.0f); // bind: parked in the atlas
+        b.str("");
+        b.str("piece");
+        b.i32(0);
+        b.u32(0);
+        b.u32(64);
+        b.translated_mat4(0.0f, 500.0f, 0.0f);
+        b.str("");
+
+        b.i16(0);
+        b.u8(1);                              // has_trans
+        b.translated_mat4(-7.0f, 3.0f, 0.0f); // rest: on the character
+        b.translated_mat4(2.0f, -4.0f, 0.0f);
+        b.u32(0); // size_unk
+        b.u32(0); // unk
+        b.u8(0);  // has_offset_trans
+        b.u8(0);  // has_index
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "rest.mdl", mdl));
+        REQUIRE(mdl.puppet->bones.size() == 2);
+        const auto& bones = mdl.puppet->bones;
+        CHECK(bones[0].transform.translation().x() == doctest::Approx(1000.0f));
+        CHECK(bones[1].transform.translation().y() == doctest::Approx(500.0f));
+        REQUIRE(bones[0].rest_transform.has_value());
+        REQUIRE(bones[1].rest_transform.has_value());
+        CHECK(bones[0].rest_transform->translation().x() == doctest::Approx(-7.0f));
+        CHECK(bones[0].rest_transform->translation().y() == doctest::Approx(3.0f));
+        CHECK(bones[1].rest_transform->translation().x() == doctest::Approx(2.0f));
+        CHECK(bones[1].rest_transform->translation().y() == doctest::Approx(-4.0f));
+        // prepared() ran inside the parser: attachments and diagnostics see
+        // the rest chain, skinning inverts the bind chain.
+        CHECK(bones[1].world_transform.translation().x() == doctest::Approx(-5.0f));
+        CHECK(bones[1].world_transform.translation().y() == doctest::Approx(-1.0f));
+        CHECK(bones[1].offset_trans.translation().x() == doctest::Approx(-1000.0f));
+        CHECK(bones[1].offset_trans.translation().y() == doctest::Approx(-500.0f));
+    }
+
+    TEST_CASE("MDLS2 without a has_trans table leaves rest_transform empty") {
+        Bytes b;
+        b.append_mdlv(13);
+        b.i32(0);
+        b.i32(1);
+        b.i32(1);
+        b.str("");
+        b.i32(0);
+        b.u32(kStdHerald);
+        b.u32(0);
+        b.u32(0);
+        appendMdls(b, 2);
+        b.u32(0);
+        b.u16(1);
+        b.u16(0);
+        b.str("root");
+        b.i32(0);
+        b.u32(0xFFFFFFFFu);
+        b.u32(64);
+        b.translated_mat4(3.0f, 4.0f, 0.0f);
+        b.str("");
+        b.i16(0);
+        b.u8(0); // has_trans
+        b.u32(0);
+        b.u32(0);
+        b.u8(0);
+        b.u8(0);
+
+        fs::MemBinaryStream f(takeBuffer(std::move(b)));
+        WPMdl               mdl;
+        REQUIRE(WPMdlParser::ParseStream(f, "norest.mdl", mdl));
+        REQUIRE(mdl.puppet->bones.size() == 1);
+        CHECK_FALSE(mdl.puppet->bones[0].rest_transform.has_value());
+        CHECK(mdl.puppet->bones[0].world_transform.translation().x() == doctest::Approx(3.0f));
     }
 
     TEST_CASE("puppet alt-format with vertices (vert stride = alt_singile_vertex=80)") {

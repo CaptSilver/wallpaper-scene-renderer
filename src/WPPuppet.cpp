@@ -15,14 +15,21 @@ static Quaterniond ToQuaternion(Vector3f euler) {
 };
 
 void WPPuppet::prepared() {
-    std::vector<Affine3f> combined_tran(bones.size());
+    // Two chains through the hierarchy.  The bind chain is what the vertex
+    // data is stored against, so its inverse is the skinning offset.  The
+    // rest chain is where each bone actually sits on the assembled character;
+    // attachments and diagnostics ask for that one.  They coincide unless the
+    // file stores a separate rest pose (see Bone::rest_transform).
+    std::vector<Affine3f> bind_world(bones.size());
+    std::vector<Affine3f> rest_world(bones.size());
     for (uint i = 0; i < bones.size(); i++) {
         auto& b = bones[i];
-        combined_tran[i] =
-            (b.noParent() ? Affine3f::Identity() : combined_tran[b.parent]) * b.transform;
+        bind_world[i] = (b.noParent() ? Affine3f::Identity() : bind_world[b.parent]) * b.transform;
+        rest_world[i] =
+            (b.noParent() ? Affine3f::Identity() : rest_world[b.parent]) * b.restLocal();
 
-        b.world_transform = combined_tran[i];
-        b.offset_trans    = combined_tran[i].inverse();
+        b.world_transform = rest_world[i];
+        b.offset_trans    = bind_world[i].inverse();
         /*
         b.world_axis_x = (b.offset_trans.linear() *
         Vector3f::UnitX()).normalized(); b.world_axis_y =
@@ -69,8 +76,8 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         const Affine3f parent =
             bone.noParent() ? Affine3f::Identity() : m_final_affines[bone.parent];
 
-        // Wallpaper Engine stacks animation layers bottom-to-top onto the bind
-        // (rest) pose, honouring each layer's `additive` flag:
+        // Wallpaper Engine stacks animation layers bottom-to-top onto the rest
+        // pose, honouring each layer's `additive` flag:
         //   - non-additive: blend OVER the running pose toward the layer's
         //     absolute pose by the layer weight, so a full-weight layer fully
         //     replaces what is below it (the topmost full-weight layer wins).
@@ -80,13 +87,20 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         // *averaged* the layers' frame-0 poses.  That detached the hair on
         // Weathering With You (2558523891) — two full-weight non-additive
         // layers whose second layer starts with the hair swung out should let
-        // that layer win, not blend halfway into it.  Starting from the bind
+        // that layer win, not blend halfway into it.  Starting from the rest
         // pose and blending over / adding per the flag matches WE.
-        Matrix3f bindR, bindS;
-        bone.transform.computeRotationScaling(&bindR, &bindS);
-        Vector3f    trans { bone.transform.translation() };
-        Vector3f    scale { bindS.diagonal() };
-        Quaterniond quat { Quaterniond(bindR.cast<double>()) };
+        //
+        // The seed is the rest pose, not the bind pose.  Frames are authored
+        // in rest space, and with only additive layers the frame-0 deltas are
+        // zero — seeding from bind would then upload an identity skin and
+        // leave an atlas-packed puppet scattered wherever its pieces are
+        // stored.
+        const Affine3f& rest = bone.restLocal();
+        Matrix3f        restR, restS;
+        rest.computeRotationScaling(&restR, &restS);
+        Vector3f    trans { rest.translation() };
+        Vector3f    scale { restS.diagonal() };
+        Quaterniond quat { Quaterniond(restR.cast<double>()) };
 
         for (auto& layer : puppet_layer.m_layers) {
             auto& alayer = layer.anim_layer;
@@ -140,10 +154,10 @@ std::span<const Eigen::Affine3f> WPPuppet::genFrame(WPPuppetLayer& puppet_layer,
         // One-shot per-puppet frame-0 diagnostic.  Reports bone count,
         // blend state, matched animations, and whether the animated bone
         // world (m_final_affines[i], pre-offset_trans) diverges from the
-        // bind pose bones[i].world_transform.  At frame 0 a correctly
-        // anchored puppet sits at bind pose, so both max_dX and max_dY are
+        // rest pose bones[i].world_transform.  At frame 0 a correctly
+        // anchored puppet sits at rest pose, so both max_dX and max_dY are
         // ≈ 0; a large divergence means an active animation's frame-0 differs
-        // from bind and is pulling bones off the rest pose.  Measure BOTH
+        // from rest and is pulling bones off it.  Measure BOTH
         // axes — a hair-sway animation displaces bones horizontally, which a
         // Y-only check silently misses.
         double max_dY = 0.0, max_dX = 0.0;

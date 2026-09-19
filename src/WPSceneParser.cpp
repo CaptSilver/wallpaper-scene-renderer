@@ -1385,10 +1385,10 @@ void logPuppetDiagnostics(ParseContext& context, const wpscene::WPImageObject& w
                          m(2, 3),
                          puppet->puppet->bones.empty()
                              ? 0.0f
-                             : puppet->puppet->bones[0].transform.matrix()(0, 3),
+                             : puppet->puppet->bones[0].restLocal().matrix()(0, 3),
                          puppet->puppet->bones.empty()
                              ? 0.0f
-                             : puppet->puppet->bones[0].transform.matrix()(1, 3),
+                             : puppet->puppet->bones[0].restLocal().matrix()(1, 3),
                          nx * 100.0f,
                          ny * 100.0f);
             }
@@ -2187,7 +2187,7 @@ void computeWorldTransformAndAttachments(ParseContext&                 context,
     // "attachment" field.
     Eigen::Matrix4d attach = context.original_world_transforms[wpimgobj.id];
     if (puppet && puppet->puppet && ! puppet->puppet->bones.empty()) {
-        attach = attach * puppet->puppet->bones[0].transform.matrix().cast<double>();
+        attach = attach * puppet->puppet->bones[0].restLocal().matrix().cast<double>();
     }
     context.child_attachment_transforms[wpimgobj.id] = attach;
 }

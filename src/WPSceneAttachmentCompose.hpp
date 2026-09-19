@@ -15,12 +15,12 @@
 //               * bones[bone_index].world_transform
 //               * attachment.transform
 //               * local
-//     The bone's `world_transform` is the cumulative bind-pose world
+//     The bone's `world_transform` is the cumulative rest-pose world
 //     populated by `WPPuppet::prepared()`.  For attachments rigged to
 //     bone[0] of a flat skeleton it reduces to identity and the rule
 //     collapses to `parent * att * local`; for attachments rigged to
 //     non-root bones (head/hand/etc.) it lifts the child to the bone's
-//     bind-pose position.
+//     rest-pose position.
 //   - Otherwise the standard scene-graph chain applies:
 //         world = parent_world * local
 //
@@ -83,7 +83,7 @@ inline AttachComposeResult composeAttachedChildWorld(
                 Eigen::Matrix4d att_mat =
                     att->transform.matrix().cast<double>();
                 // Uniform composition at every depth — keep child.local intact,
-                // include the bone's cumulative bind-pose world.
+                // include the bone's cumulative rest-pose world.
                 result.world =
                     parent_world * bone_world * att_mat * local;
                 return result;

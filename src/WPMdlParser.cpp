@@ -484,26 +484,49 @@ bool WPMdlParser::ParseStream(fs::IBinaryStream& f, std::string_view path, WPMdl
         (void)unk;
 #endif
 
-        // mdls>1 extras: opaque per-bone tables we don't consume.  Replacing the
-        // byte-skip loops with explicit SeekCur calls both clarifies intent and
-        // removes pointless iteration-counter mutants that have no observable
-        // effect on downstream parse state (mutations here would be caught now
-        // only by downstream MDAT/MDLA alignment assertions in tests).
+        // Per-bone rest pose: a second local transform for every bone, in the
+        // same layout as the bind matrix above.  The bind pose says where a
+        // bone sits in the space the vertices are stored in; the rest pose
+        // says where the assembled character wants it, and animation frames
+        // are authored relative to it.  For a puppet warped in place the two
+        // coincide.  For a puppet whose pieces are packed into an atlas
+        // (Rei Ayanami, 3061226599) they differ by hundreds of pixels per
+        // piece, and skinning from the bind pose alone leaves every piece
+        // where the atlas stored it.
         uint8_t has_trans = f.ReadUint8();
         if (has_trans) {
-            f.SeekCur((isize)bones_num * 64); // bones_num × 16 floats
+            for (auto& bone : bones) {
+                Eigen::Affine3f rest;
+                for (auto row : rest.matrix().colwise()) {
+                    for (auto& x : row) x = f.ReadFloat();
+                }
+                bone.rest_transform = rest;
+            }
         }
+        // The remaining mdls>1 tables are derived data the renderer does not
+        // need, so they are skipped.  Explicit SeekCur calls make the stride
+        // visible and avoid iteration-counter mutants with no observable
+        // effect (misalignment surfaces only through the downstream
+        // MDAT/MDLA assertions in tests).
         uint32_t size_unk = f.ReadUint32();
         f.SeekCur((isize)size_unk * 12); // size_unk × 3 u32
 
         f.ReadUint32(); // unk
 
+        // Per bone: an oriented bounding box of the vertices the bone owns,
+        // in the bone's bind-local space — 3 half-extents (x, y, and y again
+        // in the z slot) followed by the box frame as a 4x4 (rotation and
+        // centre).  Bones that own no vertices carry 0.5 everywhere.
+        // Recomputable from the mesh; nothing here reads it.
         uint8_t has_offset_trans = f.ReadUint8();
         if (has_offset_trans) {
-            // per bone: 3f (pos) + 16f (mat) = 19 floats = 76 bytes
-            f.SeekCur((isize)bones_num * 76);
+            f.SeekCur((isize)bones_num * 76); // 19 floats
         }
 
+        // Per bone: one u32 forming a permutation of the bone indices.  It
+        // does not order the triangles, the hierarchy, or the animation
+        // tracks (those are in file order), so it is most likely the
+        // editor's own bone order kept for round-tripping.
         uint8_t has_index = f.ReadUint8();
         if (has_index) {
             f.SeekCur((isize)bones_num * 4);
