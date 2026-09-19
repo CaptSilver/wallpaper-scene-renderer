@@ -104,7 +104,18 @@ public:
 
 public:
     MainHandler();
-    virtual ~MainHandler() {};
+    // Declaration order (m_main_loop, m_render_loop, m_render_handler) makes
+    // ordinary member destruction tear down m_render_handler — and the
+    // VulkanRender/Vulkan device it owns — before m_render_loop is stopped.
+    // A CMD_DRAW already in flight on the render thread at that instant runs
+    // against a handler mid-teardown.  Stop both loops here, before any
+    // member destructor runs: Looper::stop() joins the worker thread (or
+    // detaches if called from that thread itself), so by the time this body
+    // returns neither loop can still be delivering messages.
+    virtual ~MainHandler() {
+        if (m_render_loop) m_render_loop->stop();
+        if (m_main_loop) m_main_loop->stop();
+    };
 
     void setHidePattern(const std::string& pat) { m_scene_parser.SetHidePattern(pat); }
 
@@ -2258,16 +2269,10 @@ private:
 SceneWallpaper::SceneWallpaper(): m_main_handler(std::make_shared<MainHandler>()) {}
 
 SceneWallpaper::~SceneWallpaper() {
-    /*
-    if(m_offscreen) {
-        // no wait
-        auto msg = looper::Message::create(0, m_main_handler);
-        msg->setObject("self_clean", m_main_handler);
-        msg->setCleanAfterDeliver(true);
-        m_main_handler = nullptr;
-        msg->post();
-    }
-    */
+    // m_main_handler's own destructor stops the render and main loops
+    // (synchronously, joining both worker threads) before tearing down the
+    // handlers they deliver to — see ~MainHandler.  Nothing else to do here;
+    // dropping the shared_ptr below is what triggers that shutdown.
 #ifdef WEK_PROFILING
     // Flush accumulated scope samples on shutdown so CI / sceneviewer runs
     // always leave a trace of where time went, without requiring a key press.

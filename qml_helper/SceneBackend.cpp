@@ -13,6 +13,7 @@
 #include "LocalStorageQuota.hpp"
 #include "PropertyScriptDispatchJs.hpp"
 #include "EngineResolution.hpp"
+#include "RenderCallbackGuard.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneScriptBridge.h"
@@ -145,6 +146,14 @@ public:
     }
 
     ~TextureNode() override {
+        // The render thread reaches this object only through m_guard (see
+        // initVulkan): invalidate() blocks until any call already past the
+        // guard's null-check has finished, so nothing below this line can
+        // race a callback still touching a partially-destroyed TextureNode.
+        // Must run before any other member teardown, which is why it's the
+        // first statement in the body rather than left to member order.
+        m_guard->invalidate();
+
         for (auto& item : texs_map) {
             auto& exh = item.second;
             // close(exh.fd);
@@ -169,13 +178,24 @@ public:
         info.uuid               = m_glex.uuid();
         info.width              = w;
         info.height             = h;
-        info.redraw_callback    = [this]() {
-            Q_EMIT this->redraw();
+        // Every callback below captures m_guard, not `this`: the wallpaper
+        // render thread can keep calling these for as long as m_scene is
+        // alive, which outlives this TextureNode whenever Qt Quick's
+        // scenegraph node cleanup and the owning QML item's own deferred C++
+        // destruction land at different times (the ordinary case on a
+        // scene-to-scene wallpaper reload).  See RenderCallbackGuard.hpp.
+        auto guard           = m_guard;
+        info.redraw_callback = [guard]() {
+            guard->invoke([](TextureNode* self) {
+                Q_EMIT self->redraw();
+            });
         };
 
-        auto cb = std::make_shared<wallpaper::FirstFrameCallback>([this]() {
-            m_first_frame = true;
-            Q_EMIT this->redraw();
+        auto cb = std::make_shared<wallpaper::FirstFrameCallback>([guard]() {
+            guard->invoke([](TextureNode* self) {
+                self->m_first_frame = true;
+                Q_EMIT self->redraw();
+            });
         });
         m_scene->setPropertyObject(wallpaper::PROPERTY_FIRST_FRAME_CALLBACK, cb);
 
@@ -183,15 +203,24 @@ public:
         // GUI thread before emit (the callback fires on the render thread).
         // TextureNode forwards to SceneObject via the sceneVideoDecodeFailed
         // → videoDecodeFailed connection wired up in SceneObject::updatePaintNode.
+        // The scheduling call and the queued lambda it posts are each guarded
+        // independently: QMetaObject::invokeMethod(this, ...) itself touches
+        // `this` before anything is posted, and re-checking inside the queued
+        // lambda doesn't depend on Qt's posted-event cleanup being the only
+        // thing standing between this and a freed TextureNode.
         auto videoFailCb = std::make_shared<wallpaper::VideoDecodeFailedCallback>(
-            [this](const std::string& summary) {
+            [guard](const std::string& summary) {
                 QString qs = QString::fromStdString(summary);
-                QMetaObject::invokeMethod(
-                    this,
-                    [this, qs]() {
-                        Q_EMIT this->sceneVideoDecodeFailed(qs);
-                    },
-                    Qt::QueuedConnection);
+                guard->invoke([guard, qs](TextureNode* self) {
+                    QMetaObject::invokeMethod(
+                        self,
+                        [guard, qs]() {
+                            guard->invoke([qs](TextureNode* node) {
+                                Q_EMIT node->sceneVideoDecodeFailed(qs);
+                            });
+                        },
+                        Qt::QueuedConnection);
+                });
             });
         m_scene->setPropertyObject(wallpaper::PROPERTY_VIDEO_DECODE_FAILED_CALLBACK, videoFailCb);
 
@@ -199,15 +228,19 @@ public:
         // GUI thread before emitting.  Without this the only surface for a
         // failed load is the watchdog's generic timeout, which cannot tell a
         // broken package from a slow cold start.
-        auto loadFailCb =
-            std::make_shared<wallpaper::SceneLoadFailedCallback>([this](const std::string& reason) {
+        auto loadFailCb = std::make_shared<wallpaper::SceneLoadFailedCallback>(
+            [guard](const std::string& reason) {
                 QString qs = QString::fromStdString(reason);
-                QMetaObject::invokeMethod(
-                    this,
-                    [this, qs]() {
-                        Q_EMIT this->nodeSceneLoadFailed(qs);
-                    },
-                    Qt::QueuedConnection);
+                guard->invoke([guard, qs](TextureNode* self) {
+                    QMetaObject::invokeMethod(
+                        self,
+                        [guard, qs]() {
+                            guard->invoke([qs](TextureNode* node) {
+                                Q_EMIT node->nodeSceneLoadFailed(qs);
+                            });
+                        },
+                        Qt::QueuedConnection);
+                });
             });
         m_scene->setPropertyObject(wallpaper::PROPERTY_SCENE_LOAD_FAILED_CALLBACK, loadFailCb);
 
@@ -286,6 +319,14 @@ private:
         QSGTexture* qsg;
     };
     std::unordered_map<int, ExTex> texs_map;
+
+    // Render-thread callbacks (initVulkan) capture this instead of `this` —
+    // see RenderCallbackGuard.hpp for why a raw capture isn't safe here.
+    // Default member initializer rather than the ctor's init list so it
+    // doesn't disturb the declaration-order-only initialization above.
+    std::shared_ptr<wek::qml_helper::CallbackGuard<TextureNode>> m_guard {
+        std::make_shared<wek::qml_helper::CallbackGuard<TextureNode>>(this)
+    };
 };
 
 } // namespace scenebackend
