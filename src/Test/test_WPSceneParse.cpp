@@ -304,6 +304,16 @@ const char* kFixtureSceneJson = R"JSON(
 }
 )JSON";
 
+// Fragment shader that declares the two uniforms WE's `flat` shader reads, so
+// the parser's g_Color / g_Alpha base values are kept on the material.
+constexpr const char* kFlatLikeFrag = R"GLSL(
+uniform float g_Alpha;
+uniform vec3 g_Color;
+void main() {
+    gl_FragColor = vec4(g_Color, g_Alpha);
+}
+)GLSL";
+
 } // namespace
 
 TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
@@ -1506,6 +1516,52 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(eff->commands.at(0).src == effLayer->FirstTarget());
         CHECK(eff->commands.at(0).dst.find("FullCompoBuffer1") != std::string::npos);
         CHECK(scene->renderTargets.count(eff->commands.at(0).dst) == 1);
+    }
+
+    // A solid layer is a coloured quad: WE draws it with the object's own
+    // `color` and `alpha`.  Authors who want an invisible pivot set alpha 0
+    // themselves (Rei Ayanami 3061226599 does exactly that on its "Solid"
+    // group anchors, and paints its whole background with a blue one).
+    // Forcing every solidlayer transparent erased that background.
+    TEST_CASE("E2E: a solid layer keeps its authored colour and alpha") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/shaders/_flat.frag", kFlatLikeFrag },
+            { "/shaders/_flat.vert", kTrivialVert },
+            { "/materials/_flat.json",
+              R"({ "passes": [{ "shader": "_flat", "blending": "translucent", "textures": [] }] })" },
+            { "/models/_solid.json",
+              R"({ "material": "materials/_flat.json", "solidlayer": true })" },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 310, "name": "background", "image": "models/_solid.json",
+      "origin": "640 360 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "100 100", "color": "0.1 0.4 0.6", "alpha": 0.75,
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_solid_layer", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto it = scene->nodeById.find(310);
+        REQUIRE(it != scene->nodeById.end());
+        REQUIRE(it->second->Mesh() != nullptr);
+        REQUIRE(it->second->Mesh()->Material() != nullptr);
+        const auto& cv = it->second->Mesh()->Material()->customShader.constValues;
+        REQUIRE(cv.count("g_Alpha") == 1);
+        CHECK(cv.at("g_Alpha")[0] == doctest::Approx(0.75f));
+        REQUIRE(cv.count("g_Color") == 1);
+        CHECK(cv.at("g_Color")[0] == doctest::Approx(0.1f));
+        CHECK(cv.at("g_Color")[1] == doctest::Approx(0.4f));
+        CHECK(cv.at("g_Color")[2] == doctest::Approx(0.6f));
     }
 
 } // TEST_SUITE

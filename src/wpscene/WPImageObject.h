@@ -79,12 +79,10 @@ public:
     // ParseImageObj by reading the first texture's sprite-frame dimensions
     // (or mapWidth × mapHeight for non-sprite textures).
     bool autosize { false };
-    // Model JSON "solidlayer": true — placeholder layer with no visible base.
-    // WE's flat shader convention is that solidlayers render fully transparent
-    // (g_Alpha = 0) so the effect chain reads (0,0,0,0) for the first pass and
-    // builds visible content via effects only.  Without this override, our
-    // base pass would render an opaque white quad if g_Color/g_Alpha were
-    // populated, polluting any per-image effect chain.
+    // Model JSON "solidlayer": true — a coloured quad with no texture, drawn
+    // by WE's flat shader from the object's own color and alpha.  Authors use
+    // them both as painted backgrounds and, with alpha 0, as invisible group
+    // anchors; the renderer draws exactly what is authored either way.
     bool solidlayer { false };
     // Scene-level "copybackground": true (default) means a passthrough compose
     // layer captures _rt_default into its pingpong before running its effect

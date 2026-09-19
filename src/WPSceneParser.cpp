@@ -1740,15 +1740,14 @@ std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&            
         baseConstSvs["g_Brightness"] = wpimgobj.brightness;
         // WE flat.frag reads g_Color (vec3) and g_Alpha (float) as separate
         // uniforms — distinct from the g_Color4 vec4 used by image shaders.
-        // Without explicit values, GLSL leaves them zero-initialized which
-        // happens to match WE's solidlayer convention (transparent placeholder)
-        // but breaks every other use of `flat` (e.g. shape-quads with authored
-        // color).  Populate both unconditionally; for solidlayer placeholders
-        // override g_Alpha=0 so the per-image effect chain reads a clean
-        // (0,0,0,0) base instead of an opaque colored quad.
+        // A solid layer is just a coloured quad drawn with these two; an
+        // author who wants an invisible group anchor sets alpha 0 on it
+        // (Rei Ayanami 3061226599 does, and paints its whole background with
+        // a blue solid layer at full alpha).  Forcing solid layers to alpha 0
+        // here used to erase such backgrounds.
         baseConstSvs["g_Color"] =
             std::array<float, 3> { wpimgobj.color[0], wpimgobj.color[1], wpimgobj.color[2] };
-        baseConstSvs["g_Alpha"] = wpimgobj.solidlayer ? 0.0f : wpimgobj.alpha;
+        baseConstSvs["g_Alpha"] = wpimgobj.alpha;
 
         shaderInfo.baseConstSvs = baseConstSvs;
 

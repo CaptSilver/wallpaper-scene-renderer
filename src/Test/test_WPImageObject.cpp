@@ -151,10 +151,10 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(obj.copybackground == true);
     }
 
-    // ---- gap 1+3 are independent: solidlayer flag is parsed even when ------
-    //       the scene has alpha=1 explicitly.  WPSceneParser then consults
-    //       solidlayer to override g_Alpha=0 — that override is verified in
-    //       a separate end-to-end render test on Nightingale 3470764447.
+    // ---- the solidlayer flag and the authored alpha are independent ---------
+    //       fields; the scene parser keeps the alpha as authored (see
+    //       test_WPSceneParse.cpp "a solid layer keeps its authored colour
+    //       and alpha").
     TEST_CASE("solidlayer flag survives alongside explicit alpha=1") {
         auto vfs       = makeAssetsVfs({
             { "models/util/solidlayer.json",
