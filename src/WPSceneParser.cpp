@@ -2703,6 +2703,55 @@ void ensureBareDependencyOffscreenRT(ParseContext& context,
     }
 }
 
+// Anchor a plain (effect-less) child that already chains through its real
+// parent node.  That chain is correct unless the parent was identity-reset
+// for its own effect (parentReset) OR the child rigs into a parent bone whose
+// rest-pose offset must be applied (boneOffset).  Either way the child gets a
+// transform proxy carrying parentWorld * boneOffset, refreshed per frame via
+// attachmentProxyLinks.  The boneOffset arm matters when a user property
+// disables the effects across a puppet chain: that used to strand
+// bone-attached children at parentWorld*local, dropping the bone offset and
+// floating the puppet off (SAO 3463520581 with "Animations" off — Asuna's
+// face detached up-and-left).  Anchoring must not depend on effect
+// visibility.  Image and model children share this rule.
+void anchorPlainChild(ParseContext& context, i32 id, i32 parent_id, const std::string& attachment,
+                      const std::shared_ptr<SceneNode>& node) {
+    auto pw               = attachmentProxyWorld(context, parent_id, attachment);
+    bool boneOffset       = ! pw.offset.isApprox(Eigen::Matrix4d::Identity());
+    auto eit              = context.scene->nodeEffectLayerMap.find(parent_id);
+    bool parentReset      = (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
+                             ! eit->second->IsComposeLayer());
+    bool parentWorldKnown = context.original_world_transforms.contains(parent_id);
+    if (plainChildNeedsAnchorProxy(parentWorldKnown, parentReset, boneOffset)) {
+        auto proxy = std::make_shared<SceneNode>();
+        proxy->SetWorldTransform(pw.world);
+        node->SetParent(proxy.get());
+        context.scene->attachmentProxyLinks.push_back({ proxy.get(), parent_id, id, pw.offset, 0 });
+        context.scene->attachmentProxyKeepAlive.push_back(std::move(proxy));
+    }
+}
+
+// Record a child's composed world in original_world_transforms: the parent's
+// recorded world, the parent puppet's bone/attachment factor when the child
+// names one, then the child's local.  Descendants build their own proxies
+// from this entry, so it has to carry the attachment the way the live chain
+// does.
+Eigen::Matrix4d recordChildWorld(ParseContext& context, i32 id, i32 parent_id,
+                                 const std::string& attachment, const Eigen::Matrix4d& local) {
+    Eigen::Matrix4d parent_chain = Eigen::Matrix4d::Identity();
+    if (auto it = context.original_world_transforms.find(parent_id);
+        it != context.original_world_transforms.end()) {
+        parent_chain = it->second;
+    }
+    std::shared_ptr<WPPuppet> parent_puppet;
+    if (auto pit = context.node_puppet.find(parent_id); pit != context.node_puppet.end()) {
+        parent_puppet = pit->second;
+    }
+    auto composed = composeAttachedChildWorld(parent_chain, parent_puppet, attachment, local);
+    context.original_world_transforms[id] = composed.world;
+    return composed.world;
+}
+
 void attachNodeToScene(ParseContext& context,
                        const wpscene::WPImageObject& wpimgobj,
                        const std::shared_ptr<SceneNode>& spImgNode,
@@ -2730,32 +2779,8 @@ void attachNodeToScene(ParseContext& context,
         if (disconnect_parent) {
             spImgNode->InheritParent(SceneNode());
         } else {
-            // Plain (effect-less) child.  It chains through its real parent
-            // node, which is correct unless the parent was identity-reset for
-            // its own effect (parentReset) OR the child rigs into a parent
-            // bone whose bind-pose offset must be applied (boneOffset).  The
-            // boneOffset arm matters when a user property disables the effects
-            // across a puppet chain: that used to strand bone-attached children
-            // at parentWorld*local, dropping the bone offset and floating the
-            // puppet off (SAO 3463520581 with "Animations" off — Asuna's face
-            // detached up-and-left).  Anchoring must not depend on effect
-            // visibility.
-            auto pw = attachmentProxyWorld(context, wpimgobj.parent_id, wpimgobj.attachment);
-            bool boneOffset = ! pw.offset.isApprox(Eigen::Matrix4d::Identity());
-            auto eit        = context.scene->nodeEffectLayerMap.find(wpimgobj.parent_id);
-            bool parentReset =
-                (eit != context.scene->nodeEffectLayerMap.end() && eit->second &&
-                 ! eit->second->IsComposeLayer());
-            bool parentWorldKnown =
-                context.original_world_transforms.count(wpimgobj.parent_id) > 0;
-            if (plainChildNeedsAnchorProxy(parentWorldKnown, parentReset, boneOffset)) {
-                auto proxy = std::make_shared<SceneNode>();
-                proxy->SetWorldTransform(pw.world);
-                spImgNode->SetParent(proxy.get());
-                context.scene->attachmentProxyLinks.push_back(
-                    { proxy.get(), wpimgobj.parent_id, wpimgobj.id, pw.offset, 0 });
-                context.scene->attachmentProxyKeepAlive.push_back(std::move(proxy));
-            }
+            anchorPlainChild(
+                context, wpimgobj.id, wpimgobj.parent_id, wpimgobj.attachment, spImgNode);
         }
         LOG_INFO("  ParseImageObj id=%d completed, added as child of parent %d (parent_cleared=%d)",
                  wpimgobj.id,
@@ -3502,9 +3527,20 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
         spParent->AppendChild(tn);
     }
 
+    // Same parent rules as an image child: a parent that was identity-reset
+    // for its own effect chain, or a named attachment on the parent puppet,
+    // both need the proxy anchor — otherwise the model sits at its bare local
+    // offset.  Rei Ayanami 3061226599's "Stone 1" rock is rigged to the
+    // puppet's "Stone" attachment; chained live it landed at the scene corner
+    // and took its compose-layer child with it.
+    const Eigen::Matrix4d local = spParent->GetLocalTrans();
     if (model_obj.parent_id >= 0 && context.node_map.count(model_obj.parent_id)) {
+        recordChildWorld(context, model_obj.id, model_obj.parent_id, model_obj.attachment, local);
         context.node_map.at(model_obj.parent_id)->AppendChild(spParent);
+        anchorPlainChild(
+            context, model_obj.id, model_obj.parent_id, model_obj.attachment, spParent);
     } else {
+        context.original_world_transforms[model_obj.id] = local;
         context.scene->sceneGraph->AppendChild(spParent);
     }
     context.node_map[model_obj.id] = spParent;

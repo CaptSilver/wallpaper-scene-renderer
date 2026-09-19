@@ -21,6 +21,9 @@ public:
     int32_t              parent_id { -1 };
     std::string          name;
     std::string          model;
+    // Name of an MDAT attachment on the parent's puppet this model rigs to;
+    // empty when the model just chains through its parent's transform.
+    std::string          attachment;
     bool                 visible { true };
     std::array<float, 3> origin { 0.0f, 0.0f, 0.0f };
     std::array<float, 3> scale { 1.0f, 1.0f, 1.0f };

@@ -36,6 +36,7 @@
 #include "SpecTexs.hpp"
 #include "SystemFontFallback.hpp"
 #include "WPUserProperties.hpp"
+#include "wpscene/WPModelObject.h"
 
 #include "Audio/SoundManager.h"
 #include "Utils/Logging.h"
@@ -47,6 +48,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <initializer_list>
@@ -303,6 +305,118 @@ const char* kFixtureSceneJson = R"JSON(
   ]
 }
 )JSON";
+
+// Little-endian byte builder for the .mdl fixtures below.  Same shape as the
+// `Bytes` helper in test_WPMdlParserFormats.cpp, returned as a std::string so
+// it drops straight into MemFs::add.
+struct MdlBytes {
+    std::string data;
+    void        u8(uint8_t v) { data.push_back(static_cast<char>(v)); }
+    void        u16(uint16_t v) {
+        u8(v & 0xff);
+        u8((v >> 8) & 0xff);
+    }
+    void u32(uint32_t v) {
+        for (int i = 0; i < 4; i++) u8((v >> (i * 8)) & 0xff);
+    }
+    void i16(int16_t v) { u16(static_cast<uint16_t>(v)); }
+    void i32(int32_t v) { u32(static_cast<uint32_t>(v)); }
+    void f32(float v) {
+        uint32_t bits;
+        std::memcpy(&bits, &v, 4);
+        u32(bits);
+    }
+    // NUL-terminated string; also how the MDLV/MDLS/MDAT/MDLA tags are stored.
+    void str(std::string_view s) {
+        for (char c : s) data.push_back(c);
+        u8(0);
+    }
+    // Column-major 4x4: identity rotation/scale, translation (tx,ty,tz).
+    void translated_mat4(float tx, float ty, float tz) {
+        const float m[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, tx, ty, tz, 1 };
+        for (float v : m) f32(v);
+    }
+};
+
+// A flag-9 (pos + uv) model with one submesh, three vertices and one
+// triangle, referencing the shared trivial material.
+std::string makeTriangleModelMdl() {
+    MdlBytes b;
+    b.str("MDLV0013");
+    b.i32(9); // mdl_flag: pos(3) + texcoord(2)
+    b.i32(1);
+    b.u32(1); // submesh_count
+    b.str("materials/_plain.json");
+    b.i32(0);
+    b.u32(3 * 5 * 4); // vertex bytes
+    for (int i = 0; i < 3; i++) {
+        b.f32((float)i);
+        b.f32(0.0f);
+        b.f32(0.0f);
+        b.f32(0.0f);
+        b.f32(0.0f);
+    }
+    b.u32(6); // one u16 triangle
+    b.u16(0);
+    b.u16(1);
+    b.u16(2);
+    return b.data;
+}
+
+// A puppet with one root bone at (3,4,5) and one MDAT attachment "tip" on
+// that bone at (7,8,9); three skinned vertices and one triangle.
+std::string makeOneBonePuppetMdl() {
+    MdlBytes b;
+    b.str("MDLV0013");
+    b.i32(0); // not a model flag → puppet branch
+    b.i32(1);
+    b.i32(1);
+    b.str("materials/_plain.json");
+    b.i32(0);
+    b.u32(0x01800009u); // standard vertex-size herald
+    b.u32(3 * 52);
+    for (int i = 0; i < 3; i++) {
+        b.f32((float)i);
+        b.f32(0.0f);
+        b.f32(0.0f);                          // pos
+        for (int k = 0; k < 4; k++) b.u32(0); // blend indices
+        b.f32(1.0f);
+        b.f32(0.0f);
+        b.f32(0.0f);
+        b.f32(0.0f); // weights
+        b.f32(0.0f);
+        b.f32(0.0f); // uv
+    }
+    b.u32(6);
+    b.u16(0);
+    b.u16(1);
+    b.u16(2);
+    b.str("MDLS0002");
+    b.u32(0); // bones_file_end
+    b.u16(1); // bones_num
+    b.u16(0);
+    b.str("root");
+    b.i32(0);
+    b.u32(0xFFFFFFFFu);
+    b.u32(64);
+    b.translated_mat4(3.0f, 4.0f, 5.0f);
+    b.str("");
+    // MDLS2 extras, all absent.
+    b.i16(0);
+    b.u8(0);
+    b.u32(0);
+    b.u32(0);
+    b.u8(0);
+    b.u8(0);
+    b.str("MDAT0001");
+    b.u32(0);
+    b.u16(1); // one attachment
+    b.u16(0); // bone_index
+    b.str("tip");
+    b.translated_mat4(7.0f, 8.0f, 9.0f);
+    b.str("MDLA0000");
+    return b.data;
+}
 
 // Fragment shader that declares the two uniforms WE's `flat` shader reads, so
 // the parser's g_Color / g_Alpha base values are kept on the material.
@@ -1562,6 +1676,106 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(cv.at("g_Color")[0] == doctest::Approx(0.1f));
         CHECK(cv.at("g_Color")[1] == doctest::Approx(0.4f));
         CHECK(cv.at("g_Color")[2] == doctest::Approx(0.6f));
+    }
+
+    // Model objects take the same parent-chain rules as image children.  A
+    // parent with its own effect has its world node reset to identity for the
+    // base capture, so a model chained through it lands at its bare local
+    // offset — Rei Ayanami 3061226599's "Stone 1" rock, parented to the
+    // effect-bearing puppet, fell to the scene corner and dragged its
+    // compose-layer child with it.
+    TEST_CASE("E2E: model child of an effect parent inherits the parent world") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+            { "/models/_tri.mdl", makeTriangleModelMdl() },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 401, "name": "parent_fx", "image": "models/_plain.json",
+      "origin": "100 50 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] },
+    { "id": 501, "name": "rock", "parent": 401,
+      "model": "models/_tri.mdl",
+      "origin": "10 20 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_model_child_fx_parent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+
+        auto cit = scene->nodeById.find(501);
+        REQUIRE(cit != scene->nodeById.end());
+        SceneNode* rock = cit->second;
+        REQUIRE(rock != nullptr);
+        rock->UpdateTrans();
+        const auto& m = rock->ModelTrans();
+        CHECK(m(0, 3) == doctest::Approx(110.0));
+        CHECK(m(1, 3) == doctest::Approx(70.0));
+    }
+
+    // A model can rig to a named attachment on the parent puppet, like an
+    // image child.  Its world then includes the bone's rest world and the
+    // attachment matrix: parent(100,50) * bone(3,4) * tip(7,8) * local(10,20).
+    TEST_CASE("E2E: model rigged to a parent puppet attachment lands on the bone") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/models/_pup.json",
+              R"({ "material": "materials/_plain.json", "puppet": "models/_pup.mdl" })" },
+            { "/models/_pup.mdl", makeOneBonePuppetMdl() },
+            { "/models/_tri.mdl", makeTriangleModelMdl() },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 601, "name": "puppet", "image": "models/_pup.json",
+      "origin": "100 50 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 256", "visible": true },
+    { "id": 602, "name": "rock", "parent": 601, "attachment": "tip",
+      "model": "models/_tri.mdl",
+      "origin": "10 20 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_model_on_bone", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->nodePuppetMap.count(601) == 1);
+
+        auto cit = scene->nodeById.find(602);
+        REQUIRE(cit != scene->nodeById.end());
+        SceneNode* rock = cit->second;
+        REQUIRE(rock != nullptr);
+        rock->UpdateTrans();
+        const auto& m = rock->ModelTrans();
+        CHECK(m(0, 3) == doctest::Approx(120.0));
+        CHECK(m(1, 3) == doctest::Approx(82.0));
+    }
+
+    TEST_CASE("WPModelObject reads the attachment name") {
+        auto                   vfs = makeEmptyAssetsVfs();
+        auto                   j   = nlohmann::json::parse(R"({
+            "id": 7, "name": "rock", "model": "models/x.mdl", "parent": 3,
+            "attachment": "Stone", "origin": "1 2 3" })");
+        wpscene::WPModelObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        CHECK(obj.attachment == "Stone");
+        CHECK(obj.parent_id == 3);
     }
 
 } // TEST_SUITE

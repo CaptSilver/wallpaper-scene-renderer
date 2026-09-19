@@ -10,6 +10,7 @@ bool WPModelObject::FromJson(const nlohmann::json& json, fs::VFS&) {
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
+    GET_JSON_NAME_VALUE_NOWARN(json, "attachment", attachment);
     GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
     GET_JSON_NAME_VALUE_NOWARN(json, "scale", scale);
     GET_JSON_NAME_VALUE_NOWARN(json, "angles", angles);
