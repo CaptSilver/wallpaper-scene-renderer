@@ -218,8 +218,17 @@ WPParticleParser::genParticleInitOp(const nlohmann::json&                 wpj,
             TurbulentRandom::ReadFromJson(wpj, r);
             Vector3f forward(r.forward.data());
             Vector3f right(r.right.data());
-            Vector3f pos = GenRandomVec3({ 0, 0, 0 }, { 10.0f, 10.0f, 10.0f }).cast<float>();
+            // pos's random starting point is drawn lazily on first invocation, not here:
+            // this factory runs on the scene-parse thread, while WEK_DETERMINISTIC only
+            // seeds the render thread's Random engine that later calls the returned
+            // closure — drawing eagerly here would silently ignore that seed.
+            Vector3f pos { 0.0f, 0.0f, 0.0f };
+            bool     posInited = false;
             return [=](Particle& p, double duration) mutable {
+                if (! posInited) {
+                    pos       = GenRandomVec3({ 0, 0, 0 }, { 10.0f, 10.0f, 10.0f }).cast<float>();
+                    posInited = true;
+                }
                 float speed = Random::get(r.speedmin, r.speedmax);
                 if (duration > 10.0f) {
                     pos[0] += speed;
@@ -1092,12 +1101,22 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
                 }
             };
         } else if (name == "turbulence") {
-            Turbulence tur   = Turbulence::ReadFromJson(wpj);
-            double     phase = Random::get(tur.phasemin, tur.phasemax);
-            double     speed = Random::get(tur.speedmin, tur.speedmax);
-            BlendWindow bw   = BlendWindow::FromJson(wpj);
+            Turbulence  tur = Turbulence::ReadFromJson(wpj);
+            BlendWindow bw  = BlendWindow::FromJson(wpj);
+            // phase/speed are drawn lazily on first invocation, not here: this factory
+            // runs on the scene-parse thread, while WEK_DETERMINISTIC only seeds the
+            // render thread's Random engine (SceneWallpaper.cpp) that later calls the
+            // returned closure — drawing eagerly here would silently ignore that seed.
+            bool   inited = false;
+            double phase  = 0.0;
+            double speed  = 0.0;
 
-            return [=](const ParticleInfo& info) {
+            return [=](const ParticleInfo& info) mutable {
+                if (! inited) {
+                    phase  = Random::get(tur.phasemin, tur.phasemax);
+                    speed  = Random::get(tur.speedmin, tur.speedmax);
+                    inited = true;
+                }
                 double noiseRate  = std::abs(tur.timescale * tur.scale * 2.0) * info.time_pass;
                 bool   incoherent = noiseRate > 1.0;
 
@@ -2145,17 +2164,27 @@ ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe
         u32   maxPer   = wpe.maxtoemitperperiod;
         float rate     = wpe.rate;
 
-        double phaseDur = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
-        // Random initial phase offset so different instances don't fire simultaneously
-        double totalCycle   = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
-        double timer        = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
-        bool   active       = true;
-        u32    emittedCount = 0;
+        // phaseDur/timer's initial values are drawn lazily on first invocation (below),
+        // not here: this wrapper is built on the scene-parse thread, while
+        // WEK_DETERMINISTIC only seeds the render thread's Random engine that later
+        // calls the returned closure.
+        double phaseDur            = 0.1;
+        double totalCycle          = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;
+        double timer               = 0.0;
+        bool   active              = true;
+        u32    emittedCount        = 0;
+        bool   periodicPhaseInited = false;
 
         baseOp = [=, baseOp = std::move(baseOp)](std::vector<Particle>&       ps,
                                                  std::vector<ParticleInitOp>& inis,
                                                  u32                          maxcount,
                                                  double                       timepass) mutable {
+            if (! periodicPhaseInited) {
+                // Random initial phase offset so different instances don't fire simultaneously
+                phaseDur = maxDur > 0 ? Random::get((double)minDur, (double)maxDur) : 0.1;
+                timer    = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;
+                periodicPhaseInited = true;
+            }
             bool justActivated = false;
             timer += timepass;
             while (timer >= phaseDur) {

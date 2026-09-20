@@ -3,6 +3,7 @@
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 #include "Particle/Particle.h"
+#include "Core/Random.hpp"
 
 #include <vector>
 
@@ -219,6 +220,36 @@ TEST_SUITE("ParticleBoxEmitter") {
         CHECK(ps.size() == args.batchSize);
     }
 
+    TEST_CASE("burst mode construction must not consume Random (thread-affinity bug)") {
+        // WEK_DETERMINISTIC seeds Random on the render thread; this factory runs on the
+        // scene-parse thread — drawing burstTimer's initial phase at construction would
+        // silently ignore that seed.
+        auto args      = MakeBox();
+        args.burstRate = 5.0f;
+
+        Random::seed(1234);
+        double baseline = Random::get(0.0, 1.0);
+
+        Random::seed(1234);
+        auto op = ParticleBoxEmitterArgs::MakeEmittOp(args);
+        (void)op;
+        double afterConstruction = Random::get(0.0, 1.0);
+
+        CHECK(afterConstruction == baseline);
+
+        // The phase must still be drawn, just later — deferring it must not become
+        // dropping it.  The burst window has not elapsed and the batch starts exhausted,
+        // so the closure emits nothing and the phase is the only thing that can move the
+        // engine on this first call.
+        Random::seed(1234);
+        auto                        phased = ParticleBoxEmitterArgs::MakeEmittOp(args);
+        std::vector<Particle>       ps;
+        std::vector<ParticleInitOp> inis;
+        phased(ps, inis, 100u, 0.0);
+        REQUIRE(ps.empty());
+        CHECK(Random::get(0.0, 1.0) != baseline);
+    }
+
     TEST_CASE("sort=true — dead particle slots get reused before pushing new") {
         auto args = MakeBox();
         args.sort = true;
@@ -359,6 +390,30 @@ TEST_SUITE("ParticleSphereEmitter") {
             op(ps, inis, 100u, 0.25);
         }
         CHECK(ps.size() == args.batchSize);
+    }
+
+    TEST_CASE("burst mode construction must not consume Random (thread-affinity bug)") {
+        auto args      = MakeSphere();
+        args.burstRate = 5.0f;
+
+        Random::seed(1234);
+        double baseline = Random::get(0.0, 1.0);
+
+        Random::seed(1234);
+        auto op = ParticleSphereEmitterArgs::MakeEmittOp(args);
+        (void)op;
+        double afterConstruction = Random::get(0.0, 1.0);
+
+        CHECK(afterConstruction == baseline);
+
+        // As with the box emitter: deferring the phase draw must not become dropping it.
+        Random::seed(1234);
+        auto                        phased = ParticleSphereEmitterArgs::MakeEmittOp(args);
+        std::vector<Particle>       ps;
+        std::vector<ParticleInitOp> inis;
+        phased(ps, inis, 100u, 0.0);
+        REQUIRE(ps.empty());
+        CHECK(Random::get(0.0, 1.0) != baseline);
     }
 
     TEST_CASE("ApplySign — non-zero sign forces axis sign") {

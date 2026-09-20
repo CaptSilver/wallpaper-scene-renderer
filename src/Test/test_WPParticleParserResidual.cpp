@@ -2658,6 +2658,140 @@ TEST_SUITE("genParticleEmittOp phaseDur boundary") {
         for (int i = 0; i < 5; i++) op(ps, inis, 1000, 0.01);
         CHECK(true);
     }
+
+    TEST_CASE("periodic wrapper construction must not consume Random (thread-affinity bug)") {
+        // WEK_DETERMINISTIC seeds Random on the render thread; genParticleEmittOp builds
+        // the periodic wrapper on the scene-parse thread — drawing phaseDur/timer's
+        // initial values at construction would silently ignore that seed.
+        wpscene::Emitter e;
+        e.name                = "boxrandom";
+        e.rate                = 100.0f;
+        e.directions          = { 1, 1, 1 };
+        e.distancemin         = { 0, 0, 0 };
+        e.distancemax         = { 10, 10, 10 };
+        e.origin              = { 0, 0, 0 };
+        e.minperiodicdelay    = 0.5f;
+        e.maxperiodicdelay    = 1.5f;
+        e.minperiodicduration = 0.2f;
+        e.maxperiodicduration = 0.8f;
+
+        Random::seed(9876);
+        double baseline = Random::get(0.0, 1.0);
+
+        Random::seed(9876);
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        (void)op;
+        double afterConstruction = Random::get(0.0, 1.0);
+
+        CHECK(afterConstruction == baseline);
+
+        // The phase offset must still be drawn, just later — deferring it must not become
+        // dropping it.  A zero timepass keeps the emitter underneath from emitting, so
+        // the phase draw is the only thing that can move the engine on this first call.
+        Random::seed(9876);
+        auto                  phased = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        std::vector<Particle> ps;
+        std::vector<ParticleInitOp> inis;
+        phased(ps, inis, 1000, 0.0);
+        REQUIRE(ps.empty());
+        CHECK(Random::get(0.0, 1.0) != baseline);
+    }
+}
+
+// ============================================================================
+// genParticleEmittOp totalCycle arithmetic + its `> 0` gates
+//
+// `double totalCycle = (minDur + maxDur) * 0.5 + (minDelay + maxDelay) * 0.5;`
+// `phaseDur = maxDur > 0 ? Random::get(minDur, maxDur) : 0.1;`
+// `timer    = totalCycle > 0 ? Random::get(0.0, totalCycle) : 0.0;`
+//
+// totalCycle only ever feeds a Random::get() call, so its exact numeric
+// value can't be read back — but WHETHER that call happens at all is
+// observable: reseed Random to a fixed value, run the lazy first-tick
+// init once, then draw one more "canary" value.  Replaying the identical
+// seed and call sequence by hand (matching exactly what the untouched
+// source draws) predicts what the canary must be if the init consumed no
+// more and no fewer Random draws than expected; any arithmetic slip that
+// pushes totalCycle to the wrong side of its `> 0` gate adds or removes a
+// draw and the canary stops matching.  Each case below pins minDur/maxDur/
+// minDelay/maxDelay so the untouched code's totalCycle lands exactly at 0
+// (no draw) while a specific mutation pushes it positive (an extra draw),
+// isolating one or more of the line's five arithmetic operators.
+// ============================================================================
+
+TEST_SUITE("genParticleEmittOp totalCycle canary") {
+    auto make_periodic = [](float minDur, float maxDur, float minDelay, float maxDelay) {
+        wpscene::Emitter e;
+        e.name                = "boxrandom";
+        e.rate                = 100.0f;
+        e.directions          = { 1, 1, 1 };
+        e.distancemin         = { 0, 0, 0 };
+        e.distancemax         = { 10, 10, 10 };
+        e.origin              = { 0, 0, 0 };
+        e.minperiodicduration = minDur;
+        e.maxperiodicduration = maxDur;
+        e.minperiodicdelay    = minDelay;
+        e.maxperiodicdelay    = maxDelay;
+        e.duration            = 0.0f;
+        return e;
+    };
+
+    // One more Random::get(0.0, 1.0) draw than `expectedDraws` were made by
+    // `op`'s first (0-timepass) tick, judged by comparing the next draw
+    // against replaying `expectedDraws` throwaway draws from the same seed.
+    auto nextDrawMatchesReplay = [](ParticleEmittOp& op, uint32_t seed, int expectedDraws) {
+        std::vector<Particle>       ps;
+        std::vector<ParticleInitOp> inis;
+        Random::seed(seed);
+        op(ps, inis, 1000, 0.0);
+        double actual = Random::get(0.0, 1.0);
+
+        Random::seed(seed);
+        for (int i = 0; i < expectedDraws; ++i) Random::get(0.0, 1.0);
+        double expected = Random::get(0.0, 1.0);
+
+        return actual == expected;
+    };
+
+    TEST_CASE("minDur=maxDur=4 (phaseDur draws), minDelay=maxDelay=-4: totalCycle=0, no "
+              "second draw") {
+        // Correct: (4+4)*0.5 + (-4+-4)*0.5 = 4 + (-4) = 0 -> timer's `:0.0` fallback,
+        // so exactly one draw (phaseDur) happens before the canary.  Kills the outer
+        // `+`->`-`, the (minDelay+maxDelay) `+`->`-`, and the left `*0.5`->`/0.5`
+        // mutants -- each pushes totalCycle positive, adding a second draw.
+        auto e  = make_periodic(4.0f, 4.0f, -4.0f, -4.0f);
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        CHECK(nextDrawMatchesReplay(op, 0x7061u, 1));
+    }
+
+    TEST_CASE("minDur=maxDur=-4 (phaseDur skipped), minDelay=maxDelay=4: totalCycle=0, no "
+              "draw at all") {
+        // Correct: maxDur<=0 so phaseDur draws nothing; (-4+-4)*0.5 + (4+4)*0.5 =
+        // -4 + 4 = 0 so timer draws nothing either -- the canary is the very first
+        // draw after the seed.  Kills the (minDur+maxDur) `+`->`-` and the right
+        // `*0.5`->`/0.5` mutants, and doubles as the `totalCycle > 0` gate's own
+        // boundary case: a `>`->`>=` or `>`->`<=` flip at this exact zero adds a
+        // draw the untouched gate never takes.
+        auto e  = make_periodic(-4.0f, -4.0f, 4.0f, 4.0f);
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        CHECK(nextDrawMatchesReplay(op, 0x7062u, 0));
+    }
+
+    TEST_CASE("maxDur=0 boundary: phaseDur's `> 0` gate takes the 0.1 fallback, not "
+              "Random::get(0,0)") {
+        // maxDur sits exactly at the gate's boundary; minDelay/maxDelay=0.001 keeps
+        // hasPeriodic true while holding totalCycle (and so the timer draw it
+        // produces) well under the untouched 0.1 fallback phaseDur -- otherwise
+        // a timer draw large enough to reach phaseDur would flip `active` on
+        // this same first tick and consume further draws neither branch of the
+        // gate under test controls, confounding the count.  With that margin,
+        // the only thing this case's draw count depends on is whether
+        // `maxDur > 0` took its true branch at maxDur==0; a `>`->`>=` flip does,
+        // adding a draw ahead of totalCycle's own.
+        auto e  = make_periodic(0.0f, 0.0f, 0.001f, 0.001f);
+        auto op = WPParticleParser::genParticleEmittOp(e, false, 1, 0.0f);
+        CHECK(nextDrawMatchesReplay(op, 0x7063u, 1));
+    }
 }
 
 // ============================================================================

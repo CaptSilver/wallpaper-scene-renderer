@@ -5,6 +5,7 @@
 #include "Particle/ParticleEmitter.h"
 #include "Particle/ParticleModify.h"
 #include "wpscene/WPParticleObject.h"
+#include "Core/Random.hpp"
 
 #include <Eigen/Core>
 #include <array>
@@ -124,6 +125,28 @@ TEST_SUITE("turbulence operator") {
         op(fx.info());
         CHECK(p.velocity.y() == doctest::Approx(0.0f));
         CHECK(p.velocity.z() == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("construction must not consume Random (thread-affinity bug)") {
+        // phasemin != phasemax / speedmin != speedmax force real draws if construction
+        // touches Random at all.  In production, WEK_DETERMINISTIC's Random::seed() runs
+        // on the render thread while this factory runs on the scene-parse thread — a
+        // draw at construction time silently ignores that seed.
+        json j = { { "name", "turbulence" },
+                   { "phasemin", 0.0 },
+                   { "phasemax", 6.283 },
+                   { "speedmin", 1.0 },
+                   { "speedmax", 50.0 } };
+
+        Random::seed(1234);
+        double baseline = Random::get(0.0, 1.0); // first draw off a fresh seed
+
+        Random::seed(1234);
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        (void)op;
+        double afterConstruction = Random::get(0.0, 1.0); // first draw AFTER construction
+
+        CHECK(afterConstruction == baseline);
     }
 }
 
@@ -615,6 +638,42 @@ TEST_SUITE("turbulentvelocityrandom initializer") {
         Particle p;
         init(p, 0.0);
         CHECK(std::isfinite(p.velocity.norm()));
+    }
+
+    TEST_CASE("construction must not consume Random (thread-affinity bug)") {
+        json j = { { "name", "turbulentvelocityrandom" },
+                   { "speedmin", 1.0 },
+                   { "speedmax", 50.0 } };
+        Random::seed(4321);
+        double baseline = Random::get(0.0, 1.0);
+
+        Random::seed(4321);
+        auto init = WPParticleParser::genParticleInitOp(j);
+        (void)init;
+        double afterConstruction = Random::get(0.0, 1.0);
+
+        CHECK(afterConstruction == baseline);
+
+        // The starting noise position must still be drawn, just later — deferring it must
+        // not become dropping it.  Every call draws a speed as well, so engine movement
+        // alone proves nothing; pinning speedmin == speedmax removes that variable and
+        // leaves the noise position as the only thing two differently-seeded ops can
+        // disagree about.  Drop the draw and both start at the origin and agree exactly.
+        json fixed_speed = { { "name", "turbulentvelocityrandom" },
+                             { "speedmin", 10.0 },
+                             { "speedmax", 10.0 } };
+
+        Random::seed(11);
+        auto     init_a = WPParticleParser::genParticleInitOp(fixed_speed);
+        Particle pa;
+        init_a(pa, 0.0);
+
+        Random::seed(22);
+        auto     init_b = WPParticleParser::genParticleInitOp(fixed_speed);
+        Particle pb;
+        init_b(pb, 0.0);
+
+        CHECK((pa.velocity - pb.velocity).norm() > 0.0f);
     }
 }
 

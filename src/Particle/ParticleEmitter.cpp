@@ -109,14 +109,17 @@ inline void ApplySign(Eigen::Vector3d& p, int32_t x, int32_t y, int32_t z) noexc
 
 ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
     double timer { 0.0f };
-    // Random initial phase so multiple emitters don't fire in sync
-    double burstTimer { a.burstRate > 0 ? Random::get(0.0, (double)a.burstRate) : 0.0 };
+    // Initial burst phase is drawn lazily on first invocation (below), not here: this
+    // factory runs on the scene-parse thread, while WEK_DETERMINISTIC only seeds the
+    // render thread's Random engine that later calls the returned closure.
+    double burstTimer { 0.0 };
+    bool   burstTimerInited { false };
     // Start exhausted — no emission until first burst fires
     u32 batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
-    return [a, timer, burstTimer, batchEmitted](std::vector<Particle>&       ps,
-                                                std::vector<ParticleInitOp>& inis,
-                                                u32                          maxcount,
-                                                double                       timepass) mutable {
+    return [a, timer, burstTimer, burstTimerInited, batchEmitted](std::vector<Particle>&       ps,
+                                                                  std::vector<ParticleInitOp>& inis,
+                                                                  u32    maxcount,
+                                                                  double timepass) mutable {
         auto GenBox = [&]() {
             Eigen::Vector3d pos;
             for (int32_t i = 0; i < 3; i++)
@@ -133,6 +136,11 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
 
         u32 emit_num = 0;
         if (a.burstRate > 0) {
+            if (! burstTimerInited) {
+                // Random initial phase so multiple emitters don't fire in sync
+                burstTimer       = Random::get(0.0, (double)a.burstRate);
+                burstTimerInited = true;
+            }
             // Burst mode: bolt grows at base rate, pauses between bursts
             burstTimer += timepass;
             if (burstTimer >= a.burstRate) {
@@ -169,14 +177,17 @@ ParticleEmittOp ParticleBoxEmitterArgs::MakeEmittOp(ParticleBoxEmitterArgs a) {
 ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs a) {
     using namespace Eigen;
     double timer { 0.0f };
-    // Random initial phase so multiple emitters don't fire in sync
-    double burstTimer { a.burstRate > 0 ? Random::get(0.0, (double)a.burstRate) : 0.0 };
+    // Initial burst phase is drawn lazily on first invocation (below), not here: this
+    // factory runs on the scene-parse thread, while WEK_DETERMINISTIC only seeds the
+    // render thread's Random engine that later calls the returned closure.
+    double burstTimer { 0.0 };
+    bool   burstTimerInited { false };
     // Start exhausted — no emission until first burst fires
     u32 batchEmitted { a.burstRate > 0 ? a.batchSize : 0u };
-    return [a, timer, burstTimer, batchEmitted](std::vector<Particle>&       ps,
-                                                std::vector<ParticleInitOp>& inis,
-                                                u32                          maxcount,
-                                                double                       timepass) mutable {
+    return [a, timer, burstTimer, burstTimerInited, batchEmitted](std::vector<Particle>&       ps,
+                                                                  std::vector<ParticleInitOp>& inis,
+                                                                  u32    maxcount,
+                                                                  double timepass) mutable {
         auto GenSphere = [&]() {
             auto   p = Particle();
             double r = algorism::lerp(
@@ -199,6 +210,11 @@ ParticleEmittOp ParticleSphereEmitterArgs::MakeEmittOp(ParticleSphereEmitterArgs
 
         u32 emit_num = 0;
         if (a.burstRate > 0) {
+            if (! burstTimerInited) {
+                // Random initial phase so multiple emitters don't fire in sync
+                burstTimer       = Random::get(0.0, (double)a.burstRate);
+                burstTimerInited = true;
+            }
             // Burst mode: bolt grows at base rate, pauses between bursts
             burstTimer += timepass;
             if (burstTimer >= a.burstRate) {
