@@ -1349,6 +1349,176 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
     }
 
+    TEST_CASE("E2E: a project layer's effect-chain pingpong binds to the render output, "
+              "not a fixed size") {
+        ensureGlslangInit();
+        // models/util/projectlayer.json, mirrored verbatim from the shipped asset
+        // (~/.local/share/Steam/steamapps/common/wallpaper_engine/assets/models/util/
+        // projectlayer.json): passthrough + autosize + projectlayer, no "fullscreen"
+        // key.  No width/height either, so the scene-object's own "size" wins
+        // (WPImageObject.cpp:474-482) instead of autosize's texture-probe path.
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/projectlayer.json",
+              R"({"material":"materials/_plain.json","passthrough":true,)"
+              R"("autosize":true,"projectlayer":true})" },
+            { "/effects/tint.json", kEffectFileJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 3840, "height": 2160 } },
+  "objects": [
+    { "id": 501, "name": "full_composition",
+      "image": "models/util/projectlayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "3840 2160",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_project_layer", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(501) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(501);
+        REQUIRE(effLayer != nullptr);
+
+        REQUIRE(scene->renderTargets.count(effLayer->FirstTarget()) == 1);
+        const auto& rt = scene->renderTargets.at(effLayer->FirstTarget());
+        // A project layer recaptures the whole composited frame every tick, so
+        // its pingpong must track the render output extent exactly like a
+        // fullscreen layer -- otherwise RenderScale shrinks _rt_default while
+        // this pingpong stays pinned at its authored size, wasting the whole
+        // chain on an upsampled capture.
+        CHECK(rt.bind.enable == true);
+        CHECK(rt.bind.screen == true);
+    }
+
+    TEST_CASE("E2E: a canvas-sized non-project image layer's effect-chain pingpong "
+              "keeps its authored size") {
+        // Regression guard: a plain, texture-native layer whose authored size
+        // happens to equal the ortho canvas (3705485676's "MAIN", a real
+        // painted 3840x2160 background) must NOT be swept into the
+        // project-layer fix just because its size matches the canvas -- WE
+        // sizes those at texture-native resolution on purpose, and shrinking
+        // them blurs the artist's background.  Pins the fix at the
+        // `projectlayer` flag, not at "size == canvas".
+        ensureGlslangInit();
+        // No width/height in the model JSON (same reasoning as above): the
+        // scene-object's "size" must be what drives this object's dimensions,
+        // so a widened condition keyed off size would (wrongly) catch it too.
+        auto vfs = makeAssetsVfsWith({
+            { "/models/plain_canvas_sized.json", R"({"material":"materials/_plain.json"})" },
+            { "/effects/tint.json", kEffectFileJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 3840, "height": 2160 } },
+  "objects": [
+    { "id": 502, "name": "background",
+      "image": "models/plain_canvas_sized.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "3840 2160",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_canvas_sized_plain_layer", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(502) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(502);
+        REQUIRE(effLayer != nullptr);
+
+        REQUIRE(scene->renderTargets.count(effLayer->FirstTarget()) == 1);
+        const auto& rt = scene->renderTargets.at(effLayer->FirstTarget());
+        CHECK(rt.bind.enable == false);
+        CHECK(rt.bind.screen == false);
+    }
+
+    TEST_CASE("E2E: a project layer's per-effect scratch FBO binds to the render output too") {
+        ensureGlslangInit();
+        // Same shipped models/util/projectlayer.json as the case above, but the
+        // effect declares its own scratch FBO -- the shape every real project
+        // layer has (3705485676's blurprecise/godrays chains, 2992803622's
+        // bokeh_blur/bloom).  Those per-effect FBOs are sized on their own gate
+        // (WPSceneParser.cpp:2284-2298), separate from the pingpong, so a layer
+        // whose chain declares "fbos" needs the flag to reach both.
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/projectlayer.json",
+              R"({"material":"materials/_plain.json","passthrough":true,)"
+              R"("autosize":true,"projectlayer":true})" },
+            { "/effects/trail.json", kEffectWithCopyCommandJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 3840, "height": 2160 } },
+  "objects": [
+    { "id": 503, "name": "full_composition",
+      "image": "models/util/projectlayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "3840 2160",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "trail", "visible": true,
+                     "file": "effects/trail.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_project_layer_effect_fbo", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(503) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(503);
+        REQUIRE(effLayer != nullptr);
+
+        // Find the authored effect by name: a compose layer can carry a
+        // synthesized passthrough ahead of it, so index 0 is not guaranteed.
+        std::shared_ptr<SceneImageEffect> trail;
+        for (std::size_t i = 0; i < effLayer->EffectCount(); i++) {
+            const auto& e = effLayer->GetEffect(i);
+            if (e && e->name == "trail") trail = e;
+        }
+        REQUIRE(trail != nullptr);
+
+        // The effect's copy command targets its scratch FBO, so the command's
+        // destination names the render target the "fbos" entry produced.
+        REQUIRE(trail->commands.size() == 1);
+        const std::string& fboName = trail->commands.at(0).dst;
+        REQUIRE(fboName.find("FullCompoBuffer1") != std::string::npos);
+        REQUIRE(scene->renderTargets.count(fboName) == 1);
+
+        const auto& fbo = scene->renderTargets.at(fboName);
+        CHECK(fbo.bind.enable == true);
+        CHECK(fbo.bind.screen == true);
+        // Screen-bound FBOs are scaled by the reciprocal of the "fbos" entry's
+        // own scale; this one asks for full resolution.
+        CHECK(fbo.bind.scale == doctest::Approx(1.0));
+        // A screen-bound RT carries a placeholder extent the renderer rewrites
+        // from the swapchain each resize (VulkanRender.cpp:1592-1594).  Unbound
+        // it stays frozen at the object's authored 3840x2160 no matter what the
+        // render output is doing.
+        CHECK(fbo.width != 3840);
+        CHECK(fbo.height != 2160);
+    }
+
     TEST_CASE("E2E: no-effect compose layer with no dependent stays visible, not offscreen "
               "(b-3)") {
         ensureGlslangInit();

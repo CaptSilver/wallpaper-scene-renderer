@@ -74,7 +74,16 @@ public:
     float                alpha { 1.0f };
     float                brightness { 1.0f };
     bool                 fullscreen { false };
-    bool                 nopadding { false };
+    // Model JSON "projectlayer": true — WE's "entire project as a layer"
+    // primitive (models/util/projectlayer.json).  Its content is a
+    // recapture of _rt_default every tick, so its effect-chain RT must
+    // track the render output like a fullscreen layer, not its authored
+    // scene.json size.  Kept separate from `fullscreen`: that flag is also
+    // read by the no-effect script-host placeholder branch in
+    // ParseImageObj, and a zero-effect project layer sharing it would be
+    // wrongly routed into the "never rendered" path.
+    bool projectlayer { false };
+    bool nopadding { false };
     // Set when the image-model JSON declares "autosize": true.  Resolved in
     // ParseImageObj by reading the first texture's sprite-frame dimensions
     // (or mapWidth × mapHeight for non-sprite textures).

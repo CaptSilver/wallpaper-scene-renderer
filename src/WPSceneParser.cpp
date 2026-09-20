@@ -2617,7 +2617,10 @@ void assembleEffectChain(ParseContext&                     context,
             // future RT path ever enables multi-mip — but the per-pingpong
             // opt-in here is off.
         };
-        if (wpimgobj.fullscreen) {
+        // Project layers recapture _rt_default, so bind their pingpong to the
+        // render output too — left at the authored size it runs the whole post
+        // chain on an upsampled capture whenever RenderScale is below 100%.
+        if (wpimgobj.fullscreen || wpimgobj.projectlayer) {
             scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
         }
         scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
@@ -2640,7 +2643,7 @@ void assembleEffectChain(ParseContext&                     context,
                     { .layer_id      = wpimgobj.id,
                       .base_width    = (i32)wpimgobj.size[0],
                       .base_height   = (i32)wpimgobj.size[1],
-                      .fullscreen    = wpimgobj.fullscreen,
+                      .fullscreen    = wpimgobj.fullscreen || wpimgobj.projectlayer,
                       .parallaxDepth = { wpimgobj.parallaxDepth[0], wpimgobj.parallaxDepth[1] },
                       .mdl           = puppet,
                       .puppet_layers = &wpimgobj.puppet_layers });

@@ -437,6 +437,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         return false;
     }
     GET_JSON_NAME_VALUE_NOWARN(jImage, "fullscreen", fullscreen);
+    GET_JSON_NAME_VALUE_NOWARN(jImage, "projectlayer", projectlayer);
     GET_JSON_NAME_VALUE_NOWARN(jImage, "autosize", autosize);
     GET_JSON_NAME_VALUE_NOWARN(jImage, "solidlayer", solidlayer);
     // 360° skybox flag — both the model JSON and the scene-level object can
