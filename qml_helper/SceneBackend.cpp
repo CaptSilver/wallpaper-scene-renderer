@@ -2,6 +2,7 @@
 #include "Scene/RenderExtent.h"
 #include "Timer/FramePacing.hpp"
 #include "SceneAspect.h"
+#include "Utils/DiagDumpEnv.h"
 #include "ScriptLoopGate.h"
 #include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
@@ -5646,49 +5647,41 @@ void SceneObject::evaluatePropertyScripts() {
                    sv.currentVolume,
                    (int)sv.updateFn.isCallable());
         }
-        // Dump key shared variables to verify simulation output
+        // Dump shared vars: WEKDE_DIAG_SHARED selects exact names; unset,
+        // report whichever vars moved since the last time this block fired
+        // instead of guessing at a fixed per-wallpaper list.
         QJSValue sharedObj = m_jsEngine->globalObject().property("shared");
         if (! sharedObj.isUndefined()) {
-            QString dump;
-            for (const char* key : { "p1x",
-                                     "p1y",
-                                     "p1z",
-                                     "sunsize",
-                                     "rotX",
-                                     "rotY",
-                                     "p3x",
-                                     "p3y",
-                                     "p3z",
-                                     "p6x",
-                                     "p6y",
-                                     "musicse",
-                                     "musicvolume",
-                                     "volume",
-                                     "songplays",
-                                     "uiopacity",
-                                     "playOnStart",
-                                     "progress",
-                                     // 2866203962 player UI visibility drivers
-                                     "playerproximity",
-                                     "enablePlayer",
-                                     // 3509243656 3body state machine drivers
-                                     "tj",
-                                     "rst",
-                                     "num",
-                                     "auto",
-                                     "dd",
-                                     "cfw",
-                                     "kt",
-                                     "ylll",
-                                     "universeCount",
-                                     // MAIN update entry markers — set every
-                                     // tick if MAIN is running
-                                     "kg",
-                                     "ktime",
-                                     "rxz" }) {
-                QJSValue v = sharedObj.property(key);
-                if (! v.isUndefined()) {
-                    dump += QString("%1=%2 ").arg(key).arg(v.toNumber(), 0, 'f', 4);
+            static const std::vector<std::string> s_diagSharedNames =
+                utils::parseDiagNameListEnv(std::getenv("WEKDE_DIAG_SHARED"));
+            QString     dump;
+            const char* noneMessage = "Shared vars: (none of the WEKDE_DIAG_SHARED names found)";
+            if (! s_diagSharedNames.empty()) {
+                for (const std::string& key : s_diagSharedNames) {
+                    QJSValue v = sharedObj.property(QString::fromStdString(key));
+                    if (! v.isUndefined()) {
+                        dump += QString("%1=%2 ")
+                                    .arg(QString::fromStdString(key))
+                                    .arg(v.toNumber(), 0, 'f', 4);
+                    }
+                }
+            } else {
+                noneMessage = "Shared vars: (no changes since last sample)";
+                // Cap: bound the worst case (e.g. right after a wallpaper
+                // switch, when every var counts as "changed" against an
+                // empty snapshot) to one reasonably short log line.
+                static constexpr std::size_t                kDiagSharedVarCap = 8;
+                std::vector<std::pair<std::string, double>> current;
+                QJSValueIterator                            it(sharedObj);
+                while (it.hasNext()) {
+                    it.next();
+                    QJSValue v = it.value();
+                    if (v.isNumber()) current.emplace_back(it.name().toStdString(), v.toNumber());
+                }
+                for (const auto& [name, value] : utils::selectChangedSharedVars(
+                         m_scriptDiag.prevSharedVars, current, kDiagSharedVarCap)) {
+                    dump +=
+                        QString("%1=%2 ").arg(QString::fromStdString(name)).arg(value, 0, 'f', 4);
                 }
             }
             if (! dump.isEmpty()) {
@@ -5704,7 +5697,7 @@ void SceneObject::evaluatePropertyScripts() {
                     LOG_INFO("Math.random probe: %s", qPrintable(r.toString()));
                 }
             } else {
-                LOG_INFO("Shared vars: (none of the expected keys found)");
+                LOG_INFO("%s", noneMessage);
             }
         }
     }

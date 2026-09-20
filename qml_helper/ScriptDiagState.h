@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace scenebackend
@@ -39,6 +40,12 @@ struct ScriptDiagState {
     // the reported names (per-load, cleared below).
     bool dirtyMissesScanned { false };
 
+    // Snapshot of shared.* values from the last PROPEVAL dump (keyed by
+    // name), used to report which vars actually moved since then when
+    // WEKDE_DIAG_SHARED is unset -- see SceneObject::evaluatePropertyScripts()
+    // and Utils/DiagDumpEnv.h's selectChangedSharedVars.
+    std::unordered_map<std::string, double> prevSharedVars;
+
     void clear() {
         textErroredIds.clear();
         svErrored.clear();
@@ -47,6 +54,7 @@ struct ScriptDiagState {
         soundVolErrored.clear();
         mathRandomProbed   = false;
         dirtyMissesScanned = false;
+        prevSharedVars.clear();
     }
 };
 

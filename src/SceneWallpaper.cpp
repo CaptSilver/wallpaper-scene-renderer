@@ -4,6 +4,7 @@
 
 #include "Utils/Logging.h"
 #include "Utils/SceneProfiler.h"
+#include "Utils/DiagDumpEnv.h"
 #include "Looper/Looper.hpp"
 
 #include "Timer/FrameTimer.hpp"
@@ -52,6 +53,7 @@
 #include "WPUserProperties.hpp"
 #include "WPSceneFileResolver.hpp"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <sstream>
 #include <atomic>
 #include <mutex>
@@ -1048,6 +1050,12 @@ private:
                     m_drawDiagReset = false;
                 }
                 bool logDiag = (++drawDiagCount % 180 == 1); // every ~6 sec at 30fps
+                // WEKDE_DIAG_NODES selects which node ids the two dumps below
+                // (the planet-range check just under this, and the NODE dump
+                // further down) report; unset -> empty -> neither fires for
+                // any id.
+                static const std::vector<int> s_diagNodeIds =
+                    utils::parseDiagNodeIdListEnv(std::getenv("WEKDE_DIAG_NODES"));
                 if (logDiag) {
                     LOG_INFO("DRAW: pending transforms=%zu visible=%zu alpha=%zu nodeById=%zu",
                              m_pending_transform_updates.size(),
@@ -1079,7 +1087,9 @@ private:
                                  vec[1],
                                  vec[2]);
                     }
-                    if (logDiag && id >= 1360 && id <= 1400 && planetSampleCount < 10) {
+                    if (logDiag && planetSampleCount < 10 &&
+                        std::find(s_diagNodeIds.begin(), s_diagNodeIds.end(), id) !=
+                            s_diagNodeIds.end()) {
                         planetSampleCount++;
                         LOG_INFO("DRAW planet: id=%d prop=%s val=(%.4f, %.4f, %.4f) visible=%d",
                                  id,
@@ -1279,8 +1289,9 @@ private:
                              visHit,
                              visMiss,
                              m_pending_alpha_updates.size());
-                    // Dump world transforms for key planet nodes after applying updates
-                    for (int checkId : { 1360, 1365, 1373, 1374, 1375, 1376 }) {
+                    // Dump world transforms for the node ids in WEKDE_DIAG_NODES; unset ->
+                    // s_diagNodeIds is empty -> no dump.
+                    for (int checkId : s_diagNodeIds) {
                         auto nit = scene->nodeById.find(checkId);
                         if (nit != scene->nodeById.end()) {
                             auto* n = nit->second;

@@ -89,6 +89,7 @@ add_executable(backend_scene_tests
     test_MsaaPolicy.cpp
     test_Logging.cpp
     test_ConsoleFlushDedup.cpp
+    test_DiagDumpEnv.cpp
     test_RenderCallbackGuard.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
