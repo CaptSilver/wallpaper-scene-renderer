@@ -12,8 +12,10 @@
 #include <lz4.h>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace wallpaper;
@@ -33,6 +35,19 @@ public:
     // serial ones (wall time near N * delay).
     void SetOpenDelay(std::chrono::milliseconds d) { m_openDelay = d; }
 
+    // Make Open() throw for one path, standing in for the throws a
+    // malformed .tex provokes deeper inside Parse() (sized resize, .at()
+    // on a sprite-frame index).  Open() is simply the cheapest place in
+    // this mock to put one.
+    void SetThrowOn(std::string path) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_throwOn.insert(std::move(path));
+    }
+    void ClearThrows() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_throwOn.clear();
+    }
+
     bool Contains(std::string_view path) const override {
         return m_files.count(std::string(path)) > 0;
     }
@@ -41,6 +56,9 @@ public:
         if (m_openDelay.count() > 0) std::this_thread::sleep_for(m_openDelay);
         std::lock_guard<std::mutex> lock(m_mutex);
         m_openCount[std::string(path)]++;
+        if (m_throwOn.count(std::string(path)) > 0) {
+            throw std::runtime_error("mock open failure: " + std::string(path));
+        }
         auto it = m_files.find(std::string(path));
         if (it == m_files.end()) return nullptr;
         auto copy = it->second; // copy so stream owns its data
@@ -60,6 +78,7 @@ private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
     mutable std::mutex                                    m_mutex;
     std::unordered_map<std::string, int>                  m_openCount;
+    std::unordered_set<std::string>                       m_throwOn;
     std::chrono::milliseconds                             m_openDelay { 0 };
 };
 
@@ -2139,6 +2158,47 @@ TEST_SUITE("WPTexImageParser.PrefetchConcurrency") {
         // PrefetchTextures (no helper threads spawned at all).
         parser.Parse(names[0]);
         CHECK(mock->openCount("/materials/" + names[0] + ".tex") == 1);
+    }
+
+    TEST_CASE("one texture throwing does not take the batch (or the process) down") {
+        // Parse() throws on hostile .tex content -- slots.resize / mipmaps.resize
+        // are sized from untrusted header counts and the sprite-frame lookups use
+        // .at().  Escaping the worker lambda means std::terminate on a detached
+        // decode thread, i.e. plasmashell dies with the wallpaper; escaping on the
+        // calling thread's own share leaves the helper threads joinable, which
+        // terminates just the same.  Neither is acceptable for one bad file in a
+        // scene's texture set.
+        VFS                      vfs;
+        auto                     fsOwned = std::make_unique<MockFs>();
+        auto*                    mock    = fsOwned.get();
+        std::vector<std::string> names { "prefetch_ok_a", "prefetch_throws", "prefetch_ok_b" };
+        for (const auto& name : names) {
+            mock->AddFile("/materials/" + name + ".tex", makeSimpleRGBA8Tex(4, 4));
+        }
+        mock->SetThrowOn("/materials/prefetch_throws.tex");
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+        // The thrower sits in the middle so the names after it prove the claim
+        // loop kept handing out work.
+        PrefetchTextures(parser, names, /*worker_count=*/(unsigned)names.size());
+
+        CHECK(mock->openCount("/materials/prefetch_ok_a.tex") == 1);
+        CHECK(mock->openCount("/materials/prefetch_ok_b.tex") == 1);
+        // Decoded, not merely opened: a follow-up Parse() is served from the
+        // cache the prefetch filled, so it costs no second Open().
+        CHECK(parser.Parse("prefetch_ok_a") != nullptr);
+        CHECK(parser.Parse("prefetch_ok_b") != nullptr);
+        CHECK(mock->openCount("/materials/prefetch_ok_a.tex") == 1);
+        CHECK(mock->openCount("/materials/prefetch_ok_b.tex") == 1);
+
+        // The failed texture must be absent from the cache -- a half-built
+        // Image cached under its name would be handed to every later reader.
+        // Observable as a second Open(): a cached entry would short-circuit
+        // before the file is touched.
+        mock->ClearThrows();
+        CHECK(parser.Parse("prefetch_throws") != nullptr);
+        CHECK(mock->openCount("/materials/prefetch_throws.tex") == 2);
     }
 }
 

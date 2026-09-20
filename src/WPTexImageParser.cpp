@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <string_view>
 #include <thread>
@@ -692,7 +693,21 @@ void wallpaper::PrefetchTextures(WPTexImageParser& parser, std::span<const std::
         for (;;) {
             usize i = next.fetch_add(1, std::memory_order_relaxed);
             if (i >= names.size()) break;
-            parser.Parse(names[i]);
+            // Parse() throws on hostile .tex content (resizes and .at() lookups
+            // sized from untrusted header counts).  Escaping this lambda is
+            // std::terminate -- directly on a worker thread, and via the still
+            // joinable workers when it happens on the calling thread's own
+            // share -- which takes plasmashell down over one bad file.  Isolate
+            // each texture and keep decoding the rest of the batch; the failed
+            // name stays out of the cache because Parse's error path returns
+            // before the registry write.  Same catch idiom as Looper::loop().
+            try {
+                parser.Parse(names[i]);
+            } catch (const std::exception& e) {
+                LOG_ERROR("prefetch of texture '%s' failed: %s", names[i].c_str(), e.what());
+            } catch (...) {
+                LOG_ERROR("prefetch of texture '%s' failed (non-std exception)", names[i].c_str());
+            }
         }
     };
 
