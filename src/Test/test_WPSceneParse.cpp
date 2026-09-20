@@ -1063,7 +1063,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     // Partials: image+effect-chain and compose-dependency end-to-end
     //
     // Every prior case in this suite stops at the group/light/script
-    // boundary — none reaches ParseImageObj.  These four close the two
+    // boundary — none reaches ParseImageObj.  These close the two
     // gaps the umbrella spec deferred:
     //
     //  - (a-1) image layer with NO effects — base ParseImageObj path,
@@ -1080,10 +1080,14 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
     //          dropped by CollectComposeDependencyIds' two filters,
     //          dependent NOT offscreen (1210462523 Eclipse black-screen
     //          regression).
+    //  - (b-3) no-effect compose layer nothing depends on — drawn onto
+    //          _rt_default, no offscreen RT (3662790108 dock plate).
+    //  - (b-4) no-effect compose layer that is both a dependency and
+    //          script-referenced — still routed offscreen with its RT.
     //
     // The fixture VFS chain is exactly what runtime sees:
     //   scene.json -> image descriptor -> material -> shader pair.
-    // All four cases share the makeAssetsVfsWith(...) scaffolding plus
+    // All of them share the makeAssetsVfsWith(...) scaffolding plus
     // the trivial GLSL pair (which glslang-compiles in <20ms after the
     // call_once init).
     // ────────────────────────────────────────────────────────────────────
@@ -1343,6 +1347,121 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // registers a /_rt_offscreen_<id>/ render target so the compose
         // blend's link-tex resolves to a real RT (WPSceneParser.cpp:2583).
         CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+    }
+
+    TEST_CASE("E2E: no-effect compose layer with no dependent stays visible, not offscreen "
+              "(b-3)") {
+        ensureGlslangInit();
+        // Same compose-layer marker + synthesized-passthrough material as
+        // b-1, but this scene has exactly one object: nothing can name id
+        // 501 in a `dependencies` array, so context.compose_dependency_ids
+        // stays empty and the synthesized passthrough must NOT be forced
+        // offscreen (Live Solar System 3662790108 id=1359: the dock's
+        // background plate, with no dependent, silently never drew).
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/composelayer.json", kPlainImageJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 501, "name": "lone_compose_layer",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_compose_no_dependent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        // synthesizePassthroughForCompose still fires (no authored effects,
+        // image == composelayer.json) -- the layer gets an effect chain
+        // either way.  The bug forced that chain's output offscreen even
+        // though nothing reads it.
+        REQUIRE(scene->nodeEffectLayerMap.count(501) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(501);
+        REQUIRE(effLayer != nullptr);
+        CHECK(effLayer->IsOffscreen() == false);
+        CHECK(scene->renderTargets.count(GenOffscreenRT(501)) == 0);
+    }
+
+    TEST_CASE("E2E: a script-referenced no-effect compose layer with a dependent still "
+              "routes offscreen (b-4)") {
+        ensureGlslangInit();
+        // The counterpart to b-3: id 601 IS named in another compose layer's
+        // `dependencies`, so its synthesized passthrough has to write the
+        // isolated sprite RT that dependent samples through
+        // _rt_imageLayerComposite_601_a.
+        //
+        // Being script-referenced (a getLayer('compose_source') anywhere in the
+        // scene's scripts) is what makes this case worth its own test:
+        // computeOffscreenRouting deliberately leaves scripted layers in the
+        // main render graph, so the generic "referenced as compose dependency"
+        // rule there does NOT fire and the node itself stays on-screen.  The
+        // offscreen route for the effect chain can only come from the
+        // compose-dependency check in ParseImageObj.
+        auto vfs = makeAssetsVfsWith({
+            { "/models/util/composelayer.json", kPlainImageJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 600, "name": "script_host",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": {
+        "script": "function update(v){ return thisScene.getLayer('compose_source').visible; }",
+        "scriptproperties": {},
+        "value": true
+      } },
+    { "id": 601, "name": "compose_source",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true },
+    { "id": 602, "name": "compose_consumer",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "dependencies": [601] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_compose_scripted_dep", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* source = findById(scene->sceneGraph.get(), 601);
+        REQUIRE(source != nullptr);
+        // The script reference kept the node itself in the main graph...
+        CHECK(source->IsOffscreen() == false);
+
+        // ...while its synthesized passthrough writes the sprite RT its
+        // dependent reads, rather than blending onto _rt_default.
+        REQUIRE(scene->nodeEffectLayerMap.count(601) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(601);
+        REQUIRE(effLayer != nullptr);
+        CHECK(effLayer->IsOffscreen() == true);
+        CHECK(scene->renderTargets.count(GenOffscreenRT(601)) == 1);
     }
 
     TEST_CASE("E2E: a 3D scene's compose layer camera mirrors the ortho overlay, not "

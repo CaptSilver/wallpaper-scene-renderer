@@ -1589,24 +1589,25 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
     // applying its effects to a blank quad — the captured scene was never blurred.
     bool isCompose = (wpimgobj.image == "models/util/composelayer.json" ||
                       wpimgobj.image == "models/util/projectlayer.json");
-    // A no-effect compose layer still needs an output RT so dependent nodes can
-    // reference `_rt_imageLayerComposite_<id>_a` via their `dependencies` list
-    // and `textures` slots.  Synthesize an effectpassthrough so the compose
-    // layer runs its normal offscreen path and produces the expected RT.
+    // A no-effect compose layer still needs an effect chain: the chain is what
+    // produces `_rt_imageLayerComposite_<id>_a`, the RT dependent nodes
+    // reference via their `dependencies` list and `textures` slots.  Synthesize
+    // an effectpassthrough so that chain exists.
     //
-    // The synthesized passthrough must NOT blend onto _rt_default — its only
-    // purpose is to expose the captured pingpong as `_rt_imageLayerComposite_<id>_a`
-    // for dependents.  If it writes to _rt_default it (a) paints a gray quad
-    // (whatever the pingpong captured at the layer's world position) at the
-    // layer's screen position, and (b) the link RT becomes a full-FB snapshot
-    // instead of the layer-sized capture, so dependents that sample the link
-    // see FB content at their own world position rather than at the source
-    // layer's world position — typically producing saturated/double-exposed
-    // output (e.g. Clair Obscur Expedition 33 3498984739 character-shine
-    // compose layers showed solid white quads over the central characters).
-    // Route the synthesized passthrough through the offscreen path: writes
-    // into `_rt_offscreen_<id>` (sized to the layer's pingpong, e.g. 560x632),
-    // and the link RT becomes a 1:1 sprite-sized copy of the captured region.
+    // Where the chain writes is decided in ParseImageObj and turns on whether
+    // any other layer lists this one in `dependencies`
+    // (context.compose_dependency_ids).  With a dependent it takes the
+    // offscreen route — writing `_rt_offscreen_<id>` (sized to the layer's
+    // pingpong, e.g. 560x632) so the link RT is a 1:1 copy of the captured
+    // region.  Blending onto _rt_default with a dependent present instead (a)
+    // paints a quad of whatever the pingpong captured at the layer's world
+    // position, and (b) makes the link RT a full-FB snapshot, so dependents
+    // sample FB content at their own world position rather than the source
+    // layer's — typically saturated/double-exposed output (e.g. Clair Obscur
+    // Expedition 33 3498984739 character-shine compose layers showed solid
+    // white quads over the central characters).  With nothing depending on it
+    // there is no sprite RT to isolate, so the passthrough blends onto
+    // _rt_default and the layer draws where the author placed it.
     bool synthesizedPassthroughOnly = false;
     if (! hasEffect && isCompose) {
         wpscene::WPImageEffect passEffect;
@@ -1624,7 +1625,7 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
             hasEffect                  = true;
             synthesizedPassthroughOnly = true;
             LOG_INFO("  compose layer id=%d has no effect — synthesized effectpassthrough "
-                     "for dependent link RT (routed offscreen)",
+                     "to give it an output RT",
                      wpimgobj.id);
         } else {
             LOG_ERROR("compose layer id=%d: failed to load effectpassthrough.json", wpimgobj.id);
@@ -2534,8 +2535,9 @@ void assembleEffectChain(ParseContext&                     context,
         // transform.  Offscreen dependency nodes render into their own
         // fixed-size RTs and must stay centered — applying the parent
         // group's position would displace their content out of frame.
-        // Synthesized-passthrough-only compose layers also use offscreen
-        // routing, so they shouldn't inherit parent transforms either.
+        // A synthesized-passthrough compose layer inherits like any other
+        // on-screen layer; it only skips inheritance when a dependent sent
+        // it down the offscreen route.
         imgEffectLayer->SetInheritParent(! effectOffscreen && wpimgobj.parent_id >= 0 &&
                                          context.node_map.count(wpimgobj.parent_id) > 0);
         // Create proxy node with parent's baked world transform.
@@ -2621,9 +2623,9 @@ void assembleEffectChain(ParseContext&                     context,
         scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
         if (effectOffscreen) {
             // Dedicated RT for the final output of invisible dependency nodes
-            // (and synthesized-passthrough-only compose layers).  Sized to
-            // match the layer's pingpong so the link RT is a 1:1 copy of
-            // the captured region.
+            // (and of a synthesized-passthrough compose layer that some other
+            // layer depends on).  Sized to match the layer's pingpong so the
+            // link RT is a 1:1 copy of the captured region.
             scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
                 scene.renderTargets.at(effect_ppong_a);
         }
@@ -2847,11 +2849,26 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     bool isCompose                  = composeResult->isCompose;
     bool synthesizedPassthroughOnly = composeResult->synthesizedPassthroughOnly;
 
-    // Synthesized-passthrough-only layers behave as offscreen for routing
-    // purposes (so the final write lands in `_rt_offscreen_<id>` instead of
-    // `_rt_default`), but the worldNode itself must stay non-offscreen so the
-    // composelayer base-pass still runs and captures the FB into pingpong.
-    const bool effectOffscreen = isOffscreen || synthesizedPassthroughOnly;
+    // A synthesized-passthrough compose layer only needs to run offscreen
+    // when some other compose layer actually depends on it
+    // (context.compose_dependency_ids, populated by prescanDependencies
+    // before this call runs) -- that is the case the offscreen route exists
+    // for: the compose blend samples an isolated sprite RT instead of a
+    // full-FB snapshot.  With no dependent, forcing it offscreen anyway
+    // writes into an RT nobody reads and the layer draws nothing (Live
+    // Solar System 3662790108 id=1359: the dock's background plate never
+    // appeared).  The worldNode itself must stay non-offscreen either way
+    // so the composelayer base-pass still runs and captures the FB into
+    // pingpong.
+    const bool composeHasDependent =
+        synthesizedPassthroughOnly && context.compose_dependency_ids.count(wpimgobj.id) > 0;
+    const bool effectOffscreen = isOffscreen || composeHasDependent;
+    if (synthesizedPassthroughOnly) {
+        LOG_INFO("  compose layer id=%d: synthesized passthrough %s",
+                 wpimgobj.id,
+                 composeHasDependent ? "routed offscreen for its dependents"
+                                     : "blends onto _rt_default (nothing depends on it)");
+    }
 
     std::unique_ptr<WPMdl> puppet = loadPuppetModel(context, wpimgobj);
 
