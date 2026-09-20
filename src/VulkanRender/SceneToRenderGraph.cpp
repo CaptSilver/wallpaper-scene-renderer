@@ -489,25 +489,33 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
         LOG_INFO(
             "  id_link_map[%zu] = '%.*s'", id, (int)texnode->key().size(), texnode->key().data());
     }
+    // One snapshot copy per link source, shared by every consumer of it.  Copying
+    // per consumer instead would version-bump the same immutable snapshot once per
+    // reader, and the ordering constraints between those versions can close into a
+    // cycle (Game of Life links one source from two separate effect stages).
+    Map<size_t, rg::TexNode*> resolved_link_tex;
     for (auto& info : extra.link_info) {
         if (! exists(extra.id_link_map, info.link_id)) {
-            LOG_ERROR("link tex %d not found", info.link_id);
+            LOG_ERROR("link tex %zu not found", info.link_id);
             continue;
         }
-        rgraph->afterBuild(
-            info.id, [&rgraph, &extra, &info](rg::RenderGraphBuilder& builder, rg::Pass& rgpass) {
-                auto& pass = static_cast<vulkan::CustomShaderPass&>(rgpass);
+        if (! exists(resolved_link_tex, info.link_id)) {
+            auto* link_tex_node = extra.id_link_map.at(info.link_id);
+            auto  copy_desc     = link_tex_node->genDesc();
+            copy_desc.key       = GenLinkTex((idx)info.link_id);
+            copy_desc.name      = copy_desc.key;
 
-                auto* link_tex_node = extra.id_link_map.at(info.link_id);
-                auto  copy_desc     = link_tex_node->genDesc();
-                copy_desc.key       = GenLinkTex((idx)info.link_id);
-                copy_desc.name      = copy_desc.key;
-
-                auto new_in = rg::addCopyPass(*rgraph, link_tex_node, &copy_desc);
-                builder.read(new_in);
-                pass.setDescTex((u32)info.tex_index, new_in->key());
-                return true;
-            });
+            resolved_link_tex[info.link_id] = rg::addCopyPass(*rgraph, link_tex_node, &copy_desc);
+        }
+        auto* new_in = resolved_link_tex.at(info.link_id);
+        rgraph->afterBuild(info.id,
+                           [new_in, tex_index = info.tex_index](rg::RenderGraphBuilder& builder,
+                                                                rg::Pass&               rgpass) {
+                               auto& pass = static_cast<vulkan::CustomShaderPass&>(rgpass);
+                               builder.read(new_in);
+                               pass.setDescTex((u32)tex_index, new_in->key());
+                               return true;
+                           });
     }
 
     // Volumetric fog chain — runs between the main scene + link resolution

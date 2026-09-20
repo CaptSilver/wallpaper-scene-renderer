@@ -46,6 +46,10 @@ public:
 
     void ToGraphviz(std::string_view path) const { m_dg.ToGraphviz(path); };
 
+    // Forward of DependencyGraph::HasCycle() — lets a CPU-only doctest assert a
+    // built graph is acyclic without reaching into the private m_dg directly.
+    bool HasCycle() const { return m_dg.HasCycle(); }
+
     template<typename CB>
     bool afterBuild(NodeID pass_node_id, CB&& callback) {
         auto* pass_node = getPassNode(pass_node_id);

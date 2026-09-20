@@ -73,6 +73,7 @@ add_executable(backend_scene_tests
     test_Scene_VolumetricsTick.cpp
     test_SceneToRenderGraph_Volumetrics.cpp
     test_SkyboxRenderGraph.cpp
+    test_SceneToRenderGraph_LinkResolution.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp
