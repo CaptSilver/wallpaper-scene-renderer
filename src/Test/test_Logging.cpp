@@ -6,8 +6,14 @@
 // sink contract reports the clamped level (the "what was actually logged"
 // value), per the documented invariant.
 #include <doctest.h>
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <stdexcept>
+#include <string>
+#include <unistd.h>
 #include "Utils/Logging.h"
 
 namespace
@@ -28,6 +34,52 @@ struct SinkGuard {
         wallpaper_log_test::setSink(&capturingSink);
     }
     ~SinkGuard() { wallpaper_log_test::setSink(nullptr); }
+};
+
+// wallpaper_log_test's sink hands back a separately-truncated copy of the
+// message (see Logging.h) -- it never sees the bytes WallpaperLog actually
+// hands to fwrite(stderr). To check the real framing (does every call end
+// its own line?) this redirects fd 2 to an unlinked temp file for the
+// scope and reads back exactly what stderr received.
+class StderrCapture {
+public:
+    StderrCapture() {
+        std::fflush(stderr);
+        char tmpl[] = "/tmp/wek_logtest_XXXXXX";
+        m_fd        = mkstemp(tmpl);
+        if (m_fd < 0) throw std::runtime_error("StderrCapture: mkstemp failed");
+        unlink(tmpl); // fd keeps the file alive; no path needed to read it back
+        m_savedStderr = dup(STDERR_FILENO);
+        dup2(m_fd, STDERR_FILENO);
+    }
+
+    ~StderrCapture() {
+        std::fflush(stderr);
+        dup2(m_savedStderr, STDERR_FILENO);
+        close(m_savedStderr);
+        close(m_fd);
+    }
+
+    // Everything written to stderr since construction.
+    std::string contents() const {
+        std::fflush(stderr);
+        off_t end = lseek(m_fd, 0, SEEK_CUR);
+        lseek(m_fd, 0, SEEK_SET);
+        std::string out(static_cast<std::size_t>(end), '\0');
+        std::size_t total = 0;
+        while (total < out.size()) {
+            ssize_t n = read(m_fd, out.data() + total, out.size() - total);
+            if (n <= 0) break;
+            total += static_cast<std::size_t>(n);
+        }
+        out.resize(total);
+        lseek(m_fd, 0, SEEK_END);
+        return out;
+    }
+
+private:
+    int m_fd;
+    int m_savedStderr;
 };
 } // namespace
 
@@ -95,5 +147,54 @@ TEST_SUITE("LOG_DEBUG gating") {
         CHECK(wallpaper::LogDebugEnabled());
         wallpaper::SetLogDebugEnabled(false);
         CHECK_FALSE(wallpaper::LogDebugEnabled());
+    }
+}
+
+// WallpaperLog renders prefix + body + newline into one buffer and writes it
+// with a single fwrite so concurrent callers (WPTexImageParser::Parse()
+// during a multi-threaded texture prefetch) can't interleave mid-line. Two
+// properties have to survive a body that outgrows the stack buffer: the line
+// is still newline-terminated, and none of it is dropped -- glslang's
+// multi-error parse log is the main shader-translation debugging surface and
+// runs past the buffer routinely.
+TEST_SUITE("WallpaperLog line framing") {
+    TEST_CASE("a body wider than the internal buffer is emitted in full") {
+        const std::string body(10000, 'x');
+        std::string       short_out;
+        std::string       long_out;
+        {
+            StderrCapture capture;
+            WallpaperLog(LOGLEVEL_INFO, "", 0, "%s", "m");
+            short_out = capture.contents();
+        }
+        {
+            StderrCapture capture;
+            WallpaperLog(LOGLEVEL_INFO, "", 0, "%s", body.c_str());
+            long_out = capture.contents();
+        }
+
+        // The level prefix is whatever level_fmt renders to; measure it off a
+        // one-character body instead of restating it (or the buffer size) here.
+        REQUIRE(short_out.size() >= 2);
+        const std::size_t prefix_len = short_out.size() - 2; // minus "m" and '\n'
+
+        CHECK(long_out.size() == prefix_len + body.size() + 1);
+        CHECK(long_out.back() == '\n');
+        CHECK(long_out.find(body) == prefix_len);
+    }
+
+    TEST_CASE("an oversized line doesn't swallow the line logged after it") {
+        std::string   body(10000, 'x');
+        StderrCapture capture;
+        WallpaperLog(LOGLEVEL_INFO, "", 0, "%s", body.c_str());
+        WallpaperLog(LOGLEVEL_INFO, "", 0, "%s", "marker");
+        std::string out = capture.contents();
+
+        // Two WallpaperLog calls must produce two lines. If the first call
+        // loses its trailing newline, "marker" lands appended to the tail of
+        // that line instead of starting a fresh one, and this count drops to 1.
+        CHECK(std::count(out.begin(), out.end(), '\n') == 2);
+        REQUIRE(out.size() >= 12);
+        CHECK(out.substr(out.size() - 12) == "INFO marker\n");
     }
 }
