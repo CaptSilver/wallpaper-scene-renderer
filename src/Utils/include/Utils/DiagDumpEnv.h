@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -57,9 +59,18 @@ inline std::vector<int> parseDiagNodeIdListEnv(const char* env) {
     for (const std::string& piece : SpliteString(env, ',')) {
         const std::string trimmed = diag_dump_detail::trimToken(piece);
         if (trimmed.empty()) continue;
-        char*      endp = nullptr;
-        const long val  = std::strtol(trimmed.c_str(), &endp, 10);
+        char* endp     = nullptr;
+        errno          = 0;
+        const long val = std::strtol(trimmed.c_str(), &endp, 10);
         if (endp == trimmed.c_str() || *endp != '\0') continue;
+        // Two ways a digits-only token still isn't a node id: strtol saturates
+        // at LONG_MIN/LONG_MAX and says ERANGE, or the value fits a long but
+        // not the int a node id is, where the narrowing would hand back an
+        // unrelated id (99999999999999 narrows to 276447231). Drop both the
+        // same way a non-number is dropped.
+        if (errno == ERANGE) continue;
+        if (val < std::numeric_limits<int>::min() || val > std::numeric_limits<int>::max())
+            continue;
         ids.push_back(static_cast<int>(val));
     }
     return ids;
@@ -72,8 +83,9 @@ inline std::vector<int> parseDiagNodeIdListEnv(const char* env) {
 // wallpaper switch -- makes every current var count as "changed", which is
 // the right first sample); `current` is this firing's full read of
 // shared.*, in enumeration order. Returns at most `maxCount` (name, value)
-// pairs, in `current`'s order, and updates `previous` in place to this
-// firing's values so the next call diffs against this one, not an older one.
+// pairs, in `current`'s order, and marks exactly those in `previous` so the
+// next call diffs against what it was told about -- a var the cap crowded out
+// stays pending and lands in a later dump.
 inline std::vector<std::pair<std::string, double>>
 selectChangedSharedVars(std::unordered_map<std::string, double>&           previous,
                         const std::vector<std::pair<std::string, double>>& current,
@@ -81,11 +93,16 @@ selectChangedSharedVars(std::unordered_map<std::string, double>&           previ
     std::vector<std::pair<std::string, double>> changed;
     for (const auto& [name, value] : current) {
         auto it = previous.find(name);
-        if ((it == previous.end() || it->second != value) && changed.size() < maxCount) {
-            changed.emplace_back(name, value);
-        }
+        if (it != previous.end() && it->second == value) continue;
+        // Only a var this call actually reports is marked seen.  Recording one
+        // the cap pushed past the end of the list would make its new value the
+        // baseline it was never printed against, so the next diff calls it
+        // unchanged and the move is lost for good; left unrecorded it simply
+        // shows up in the next dump.
+        if (changed.size() >= maxCount) continue;
+        changed.emplace_back(name, value);
+        previous[name] = value;
     }
-    for (const auto& [name, value] : current) previous[name] = value;
     return changed;
 }
 
