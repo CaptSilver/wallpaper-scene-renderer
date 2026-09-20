@@ -6,6 +6,7 @@
 #include "Type.hpp"
 #include "Utils/Logging.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -53,8 +54,18 @@ public:
     }
 
     std::shared_ptr<IBinaryStream> Open(std::string_view path) override {
+        // Held across the delay (not just the bookkeeping below) so a test can
+        // read back how many Open() calls PrefetchTextures actually had in
+        // flight at once — the one place worker_count's helper-thread count
+        // becomes externally observable, rather than just "faster than serial".
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_activeOpens++;
+            m_peakConcurrentOpens = std::max(m_peakConcurrentOpens, m_activeOpens);
+        }
         if (m_openDelay.count() > 0) std::this_thread::sleep_for(m_openDelay);
         std::lock_guard<std::mutex> lock(m_mutex);
+        m_activeOpens--;
         m_openCount[std::string(path)]++;
         if (m_throwOn.count(std::string(path)) > 0) {
             throw std::runtime_error("mock open failure: " + std::string(path));
@@ -74,12 +85,21 @@ public:
         return it == m_openCount.end() ? 0 : it->second;
     }
 
+    // Highest number of Open() calls that were simultaneously in flight
+    // (inside the delay above) over this mock's lifetime.
+    int peakConcurrentOpens() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_peakConcurrentOpens;
+    }
+
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
     mutable std::mutex                                    m_mutex;
     std::unordered_map<std::string, int>                  m_openCount;
     std::unordered_set<std::string>                       m_throwOn;
     std::chrono::milliseconds                             m_openDelay { 0 };
+    int                                                   m_activeOpens { 0 };
+    int                                                   m_peakConcurrentOpens { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -2199,6 +2219,67 @@ TEST_SUITE("WPTexImageParser.PrefetchConcurrency") {
         mock->ClearThrows();
         CHECK(parser.Parse("prefetch_throws") != nullptr);
         CHECK(mock->openCount("/materials/prefetch_throws.tex") == 2);
+    }
+
+    TEST_CASE("worker_count=3 over 6 names peaks at exactly 3 concurrent Open calls") {
+        // The wall-time checks above prove "faster than serial"; they don't
+        // pin the actual thread count PrefetchTextures spawns (worker_count-1
+        // helper threads plus the caller's own share).  An off-by-one on
+        // either the reserve() or the spawn loop's bound over- or
+        // under-subscribes the pool without moving wall time enough to
+        // notice at these small counts, so read the pool size back directly
+        // through the mock's peak-concurrency counter instead.
+        constexpr int                       kTexCount    = 6;
+        constexpr unsigned                  kWorkerCount = 3;
+        constexpr std::chrono::milliseconds kDelay { 30 };
+
+        VFS                      vfs;
+        auto                     fsOwned = std::make_unique<MockFs>();
+        auto*                    mock    = fsOwned.get();
+        std::vector<std::string> names;
+        for (int i = 0; i < kTexCount; i++) {
+            std::string name = "prefetch_peak_" + std::to_string(i);
+            mock->AddFile("/materials/" + name + ".tex", makeSimpleRGBA8Tex(4, 4));
+            names.push_back(name);
+        }
+        mock->SetOpenDelay(kDelay);
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+        PrefetchTextures(parser, names, kWorkerCount);
+
+        CHECK(mock->peakConcurrentOpens() == (int)kWorkerCount);
+        for (auto& name : names) {
+            CHECK(mock->openCount("/materials/" + name + ".tex") == 1);
+        }
+    }
+
+    TEST_CASE("worker_count larger than the name list still decodes every name exactly "
+              "once") {
+        // worker_count is clamped to names.size() internally; this pins the
+        // clamp from the caller's side -- a batch smaller than the pool must
+        // not spawn idle threads that double-claim or skip a name.
+        constexpr int      kTexCount    = 2;
+        constexpr unsigned kWorkerCount = 8;
+
+        VFS                      vfs;
+        auto                     fsOwned = std::make_unique<MockFs>();
+        auto*                    mock    = fsOwned.get();
+        std::vector<std::string> names;
+        for (int i = 0; i < kTexCount; i++) {
+            std::string name = "prefetch_small_batch_" + std::to_string(i);
+            mock->AddFile("/materials/" + name + ".tex", makeSimpleRGBA8Tex(4, 4));
+            names.push_back(name);
+        }
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+        PrefetchTextures(parser, names, kWorkerCount);
+
+        CHECK(mock->peakConcurrentOpens() <= kTexCount);
+        for (auto& name : names) {
+            CHECK(mock->openCount("/materials/" + name + ".tex") == 1);
+        }
     }
 }
 
