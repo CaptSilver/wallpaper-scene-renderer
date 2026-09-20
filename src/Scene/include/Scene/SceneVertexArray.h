@@ -39,11 +39,14 @@ public:
     bool GetOption(std::string_view) const;
     void SetOption(std::string_view, bool);
 
-    // Dynamic render vertex count (for GS particles where vertex count changes each frame)
-    usize RenderVertexCount() const noexcept {
-        return m_render_vertex_count > 0 ? m_render_vertex_count : VertexCount();
-    }
-    void SetRenderVertexCount(usize count) noexcept { m_render_vertex_count = count; }
+    // Dynamic render vertex count (for GS particles where vertex count changes each frame).
+    // 0 means "draw nothing this frame". There is no separate "never set" sentinel: the
+    // buffer only ever grows, so falling back to VertexCount() would replay stale vertices
+    // from an earlier peak. A caller that writes vertex data via SetVertexs() must pair it
+    // with a SetRenderVertexCount() call every tick (WPParticleRawGener::GenGLData does, for
+    // all three GS branches).
+    usize RenderVertexCount() const noexcept { return m_render_vertex_count; }
+    void  SetRenderVertexCount(usize count) noexcept { m_render_vertex_count = count; }
 
     const float* Data() const { return m_pData.get(); }
     usize        DataSize() const { return m_size; }

@@ -282,13 +282,13 @@ TEST_SUITE("SceneVertexArray.Options") {
 } // Options
 
 TEST_SUITE("SceneVertexArray.Render") {
-    TEST_CASE("RenderVertexCount falls back to VertexCount when unset") {
+    TEST_CASE("RenderVertexCount is 0 when never set, even though vertex data was written") {
         std::vector<Attr>    attrs { Attr {
                .name = "pos", .type = VertexType::FLOAT3, .padding = false } };
         SceneVertexArray     arr(attrs, 2);
         std::array<float, 6> data { 1, 2, 3, 4, 5, 6 };
         arr.SetVertexs(0, std::span<const float>(data.data(), data.size()));
-        CHECK(arr.RenderVertexCount() == 2);
+        CHECK(arr.RenderVertexCount() == 0);
     }
 
     TEST_CASE("SetRenderVertexCount overrides when > 0") {
@@ -301,7 +301,7 @@ TEST_SUITE("SceneVertexArray.Render") {
         CHECK(arr.RenderVertexCount() == 1);
     }
 
-    TEST_CASE("SetRenderVertexCount(0) returns to VertexCount fallback") {
+    TEST_CASE("SetRenderVertexCount(0) draws nothing, not the historical high-water mark") {
         std::vector<Attr>    attrs { Attr {
                .name = "pos", .type = VertexType::FLOAT3, .padding = false } };
         SceneVertexArray     arr(attrs, 2);
@@ -309,7 +309,7 @@ TEST_SUITE("SceneVertexArray.Render") {
         arr.SetVertexs(0, std::span<const float>(data.data(), data.size()));
         arr.SetRenderVertexCount(1);
         arr.SetRenderVertexCount(0);
-        CHECK(arr.RenderVertexCount() == 2);
+        CHECK(arr.RenderVertexCount() == 0);
     }
 
 } // Render
