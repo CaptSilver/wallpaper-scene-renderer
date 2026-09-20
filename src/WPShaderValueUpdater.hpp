@@ -187,7 +187,6 @@ public:
                         const std::string& camera_override) override;
     void FrameEnd() override;
     void MouseInput(double, double) override;
-    void SetTexelSize(float x, float y) override;
 
     void                    SetNodeData(void*, const WPShaderValueData&);
     void                    SetCameraParallax(const WPCameraParallax& value) { m_parallax = value; }
@@ -224,7 +223,22 @@ public:
     // with render-thread pushes.
     std::vector<PendingAnimationEvent> DrainAnimationEvents();
 
-    void SetScreenSize(i32 w, i32 h) override { m_screen_size = { (float)w, (float)h }; }
+    // g_TexelSize is one texel of the actual render output, same as
+    // g_Screen — both come from this single call
+    // (VulkanRender::Impl::setRenderTargetSize passes the swapchain/render
+    // extent, not any one pass's own render target).
+    //
+    // A degenerate extent is dropped whole rather than half-applied: 1/0 is
+    // +inf for the texels and 0/0 is NaN for g_Screen's aspect, and nothing
+    // downstream would catch either — setRenderTargetSize only logs a
+    // too-small swapchain and carries on, and the upload path writes whatever
+    // it is handed.  Keeping the last good extent (or the built-in 1920x1080
+    // on the very first call) renders a stale frame instead of a broken one.
+    void SetScreenSize(i32 w, i32 h) override {
+        if (w <= 0 || h <= 0) return;
+        m_screen_size = { (float)w, (float)h };
+        m_texelSize   = { 1.0f / (float)w, 1.0f / (float)h };
+    }
 
     // Volumetric per-light uniform upload.  Iterates Scene::lights, calls op()
     // 5 times per volumetric light (slots 0..4 = g_RenderVar0..4).  v1 cuts at

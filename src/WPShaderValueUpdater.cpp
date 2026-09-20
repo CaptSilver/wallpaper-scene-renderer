@@ -796,8 +796,6 @@ std::vector<PendingAnimationEvent> WPShaderValueUpdater::DrainAnimationEvents() 
     return out;
 }
 
-void WPShaderValueUpdater::SetTexelSize(float x, float y) { m_texelSize = { x, y }; }
-
 void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarOp& op) {
     WEK_PROFILE_SCOPE("WPShaderValueUpdater::UpdateVolumetricLightUniforms");
     if (! m_scene) return;

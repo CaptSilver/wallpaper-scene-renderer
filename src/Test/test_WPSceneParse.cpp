@@ -31,6 +31,7 @@
 #include "Scene/SceneCamera.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneLight.hpp"
+#include "Scene/SceneMaterial.h"
 #include "Scene/SceneMesh.h"
 #include "Scene/SceneNode.h"
 #include "SpecTexs.hpp"
@@ -1776,6 +1777,62 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         REQUIRE(obj.FromJson(j, *vfs));
         CHECK(obj.attachment == "Stone");
         CHECK(obj.parent_id == 3);
+    }
+
+    TEST_CASE("E2E: HDR bloom builds the fixed four-mip, eight-pass chain") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/hdr_downsample.vert", kTrivialVert },
+            { "/shaders/hdr_downsample.frag", kTrivialFrag },
+            { "/shaders/combine_hdr.vert", kTrivialVert },
+            { "/shaders/combine_hdr.frag", kTrivialFrag },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080,
+                                         "postprocessing": "ultra" },
+               "hdr": true, "bloom": true },
+  "objects": []
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_bloom_fixed_chain", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->bloomConfig.enabled);
+
+        // 1 extract + 3 down + 3 up + 1 compose = 8, at 4 mip levels.
+        REQUIRE(scene->bloomConfig.nodes.size() == 8);
+        REQUIRE(scene->bloomConfig.outputs.size() == 8);
+        CHECK(scene->bloomConfig.outputs[0] == "_rt_Bloom_Mip1");
+        CHECK(scene->bloomConfig.outputs.back() == std::string(SpecTex_Default));
+        CHECK(scene->renderTargets.count("_rt_Bloom_Mip4") == 1);
+        CHECK(scene->renderTargets.count("_rt_Bloom_Mip5") == 0);
+
+        // The knee and the scatter are hard-coded shaping constants — no
+        // scene.json field reaches either, so a nudge to one silently
+        // restyles the bloom of every HDR wallpaper with nothing else to
+        // catch it.  Pin the two values.
+        const auto& extract = scene->bloomConfig.nodes[0]->Mesh()->Material()->customShader;
+        auto        knee    = extract.constValues.find("g_BloomBlendParams");
+        REQUIRE(knee != extract.constValues.end());
+        REQUIRE(knee->second.size() == 4);
+        // .z is 2*knee, which pins knee at 0.30 without depending on the
+        // threshold that .x and .y are offset from.
+        CHECK(knee->second[2] == doctest::Approx(0.60f));
+
+        // nodes[4] is the first UPSAMPLE=1 pass — 1 extract + 3 downsamples
+        // precede it.  It runs the hdr_downsample shader too, so g_BloomScatter
+        // rides on the same material as the downsample chain.
+        const auto& upsample = scene->bloomConfig.nodes[4]->Mesh()->Material()->customShader;
+        auto        scatter  = upsample.constValues.find("g_BloomScatter");
+        REQUIRE(scatter != upsample.constValues.end());
+        REQUIRE(scatter->second.size() == 1);
+        CHECK(scatter->second[0] == doctest::Approx(1.0f));
     }
 
 } // TEST_SUITE

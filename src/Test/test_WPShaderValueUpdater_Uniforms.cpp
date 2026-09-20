@@ -229,7 +229,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::time_and_screen") {
         CHECK(w->values[1] == doctest::Approx(0.75f));
     }
 
-    TEST_CASE("g_TexelSize routes SetTexelSize(x,y) verbatim") {
+    TEST_CASE("g_TexelSize follows the screen size SetScreenSize was given") {
         Scene scene;
         installActiveCamera(scene);
 
@@ -237,9 +237,13 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::time_and_screen") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        updater.SetTexelSize(1.0f / 800.0f, 1.0f / 600.0f);
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ G_TEXELSIZE, G_TEXELSIZEHALF }));
+        // SetScreenSize is the only call that ever feeds g_TexelSize — it is
+        // also what feeds g_Screen, from the same render-extent source
+        // (VulkanRender::Impl::setRenderTargetSize), so every pass sees one
+        // texel of the actual output regardless of any render target of its
+        // own.
+        updater.SetScreenSize(3840, 2160);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_TEXELSIZE, G_TEXELSIZEHALF }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -248,15 +252,97 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::time_and_screen") {
         const auto* w = cap.find(G_TEXELSIZE);
         REQUIRE(w != nullptr);
         REQUIRE(w->values.size() == 2);
-        CHECK(w->values[0] == doctest::Approx(1.0f / 800.0f));
-        CHECK(w->values[1] == doctest::Approx(1.0f / 600.0f));
+        CHECK(w->values[0] == doctest::Approx(1.0f / 3840.0f));
+        CHECK(w->values[1] == doctest::Approx(1.0f / 2160.0f));
 
-        // g_TexelSizeHalf is the same pair / 2.
         const auto* h = cap.find(G_TEXELSIZEHALF);
         REQUIRE(h != nullptr);
         REQUIRE(h->values.size() == 2);
-        CHECK(h->values[0] == doctest::Approx(0.5f / 800.0f));
-        CHECK(h->values[1] == doctest::Approx(0.5f / 600.0f));
+        CHECK(h->values[0] == doctest::Approx(0.5f / 3840.0f));
+        CHECK(h->values[1] == doctest::Approx(0.5f / 2160.0f));
+    }
+
+    TEST_CASE("g_TexelSize at 1920x1080 matches the built-in 1920x1080 default") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.SetScreenSize(1920, 1080);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_TEXELSIZE, G_TEXELSIZEHALF }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* w = cap.find(G_TEXELSIZE);
+        REQUIRE(w != nullptr);
+        REQUIRE(w->values.size() == 2);
+        CHECK(w->values[0] == doctest::Approx(1.0f / 1920.0f));
+        CHECK(w->values[1] == doctest::Approx(1.0f / 1080.0f));
+
+        const auto* h = cap.find(G_TEXELSIZEHALF);
+        REQUIRE(h != nullptr);
+        REQUIRE(h->values.size() == 2);
+        CHECK(h->values[0] == doctest::Approx(0.5f / 1920.0f));
+        CHECK(h->values[1] == doctest::Approx(0.5f / 1080.0f));
+    }
+
+    TEST_CASE("a degenerate render extent leaves g_TexelSize and g_Screen alone") {
+        // A 0-wide or 0-high extent would divide by zero and upload +inf (or
+        // 0/0 = NaN for g_Screen's aspect) to every shader that reads them.
+        // Nothing downstream filters that: VulkanRender only logs a too-small
+        // swapchain and carries on, and the uniform upload path writes whatever
+        // it is handed.  Rejecting the whole write keeps the last good extent.
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+
+        float expect_w = 1920.0f, expect_h = 1080.0f;
+        SUBCASE("after a valid extent, the valid one survives") {
+            updater.SetScreenSize(3840, 2160);
+            expect_w = 3840.0f;
+            expect_h = 2160.0f;
+        }
+        SUBCASE("on a fresh updater, the built-in default survives") {}
+
+        updater.SetScreenSize(0, 0);
+        updater.InitUniforms(f.node.get(),
+                             makeExistsOp({ G_TEXELSIZE, G_TEXELSIZEHALF, G_SCREEN }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* w = cap.find(G_TEXELSIZE);
+        REQUIRE(w != nullptr);
+        REQUIRE(w->values.size() == 2);
+        CHECK(std::isfinite(w->values[0]));
+        CHECK(std::isfinite(w->values[1]));
+        CHECK(w->values[0] == doctest::Approx(1.0f / expect_w));
+        CHECK(w->values[1] == doctest::Approx(1.0f / expect_h));
+
+        const auto* h = cap.find(G_TEXELSIZEHALF);
+        REQUIRE(h != nullptr);
+        REQUIRE(h->values.size() == 2);
+        CHECK(std::isfinite(h->values[0]));
+        CHECK(std::isfinite(h->values[1]));
+        CHECK(h->values[0] == doctest::Approx(0.5f / expect_w));
+        CHECK(h->values[1] == doctest::Approx(0.5f / expect_h));
+
+        const auto* sc = cap.find(G_SCREEN);
+        REQUIRE(sc != nullptr);
+        REQUIRE(sc->values.size() == 3);
+        CHECK(std::isfinite(sc->values[2]));
+        CHECK(sc->values[0] == doctest::Approx(expect_w));
+        CHECK(sc->values[1] == doctest::Approx(expect_h));
+        CHECK(sc->values[2] == doctest::Approx(expect_w / expect_h));
     }
 
     TEST_CASE("g_Screen packs (w, h, w/h aspect)") {

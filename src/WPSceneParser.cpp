@@ -5320,12 +5320,6 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, 
                     // activate; 0 for SDR).
                     material.customShader.constValues["g_RenderVar0"] =
                         std::vector<float> { 1.0f, 0.0f, 0.0f, 0.0f };
-                    // combine_hdr g_TexelSize: 1 texel of g_Texture1 (the bloom
-                    // mip we sample).  g_Texture1 = WE_BLOOM_MIP1 at 1/2 scale.
-                    material.customShader.constValues["g_TexelSize"] = std::vector<float> {
-                        1.0f / (fullW * 0.5f),
-                        1.0f / (fullH * 0.5f),
-                    };
                 } else {
                     // hdr_downsample g_RenderVar0: 4-corner offsets in source RT
                     // UV space (-dx, -dy, +dx, +dy) where d = 0.5 / src_resolution.
