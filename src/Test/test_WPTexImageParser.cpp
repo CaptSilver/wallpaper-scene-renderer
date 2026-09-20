@@ -6,10 +6,13 @@
 #include "Type.hpp"
 #include "Utils/Logging.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <lz4.h>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -25,11 +28,18 @@ public:
         m_files[std::move(path)] = std::move(data);
     }
 
+    // Every Open() sleeps this long before returning.  Lets a test tell
+    // concurrent Parse() calls (wall time near one delay) apart from
+    // serial ones (wall time near N * delay).
+    void SetOpenDelay(std::chrono::milliseconds d) { m_openDelay = d; }
+
     bool Contains(std::string_view path) const override {
         return m_files.count(std::string(path)) > 0;
     }
 
     std::shared_ptr<IBinaryStream> Open(std::string_view path) override {
+        if (m_openDelay.count() > 0) std::this_thread::sleep_for(m_openDelay);
+        std::lock_guard<std::mutex> lock(m_mutex);
         m_openCount[std::string(path)]++;
         auto it = m_files.find(std::string(path));
         if (it == m_files.end()) return nullptr;
@@ -41,13 +51,16 @@ public:
 
     // How many times was a given VFS-internal path opened?
     int openCount(const std::string& path) const {
-        auto it = m_openCount.find(path);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto                        it = m_openCount.find(path);
         return it == m_openCount.end() ? 0 : it->second;
     }
 
 private:
     std::unordered_map<std::string, std::vector<uint8_t>> m_files;
+    mutable std::mutex                                    m_mutex;
     std::unordered_map<std::string, int>                  m_openCount;
+    std::chrono::milliseconds                             m_openDelay { 0 };
 };
 
 // ---------------------------------------------------------------------------
@@ -2034,6 +2047,100 @@ TEST_SUITE("WPTexImageParser.ParseHeaderCache") {
     }
 
 } // WPTexImageParser.ParseHeaderCache
+
+// ===========================================================================
+// Prefetch: Parse() calls issued through PrefetchTextures must actually run
+// concurrently, not queue up behind each other on one thread.  A cache alone
+// ("second call for the same name is free") doesn't touch this -- a scene's
+// texture set going into compileRenderGraph is almost entirely distinct
+// names, so the render-thread stall this covers is a scheduling problem,
+// not a memoization one.
+// ===========================================================================
+
+TEST_SUITE("WPTexImageParser.PrefetchConcurrency") {
+    TEST_CASE("Distinct textures decode in wall time close to one delay, not N of them") {
+        constexpr int                       kTexCount = 4;
+        constexpr std::chrono::milliseconds kDelay { 30 };
+
+        VFS                      vfs;
+        auto                     fsOwned = std::make_unique<MockFs>();
+        auto*                    mock    = fsOwned.get();
+        std::vector<std::string> names;
+        for (int i = 0; i < kTexCount; i++) {
+            std::string name = "prefetch_" + std::to_string(i);
+            mock->AddFile("/materials/" + name + ".tex", makeSimpleRGBA8Tex(4, 4));
+            names.push_back(name);
+        }
+        mock->SetOpenDelay(kDelay);
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+
+        const auto start = std::chrono::steady_clock::now();
+        PrefetchTextures(parser, names, /*worker_count=*/(unsigned)kTexCount);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+
+        // Serial would cost kTexCount * kDelay (120ms). Four workers for
+        // four names should land close to one kDelay (30ms); give it
+        // headroom for thread start-up jitter but stay well under "two
+        // textures' worth" -- a patch that dispatches Parse() one at a
+        // time on the calling thread blows straight through this.
+        CHECK(elapsed < kDelay * 2);
+
+        for (auto& name : names) {
+            CHECK(mock->openCount("/materials/" + name + ".tex") == 1);
+        }
+
+        // The actual production payoff: prepare()'s later serial Parse()
+        // calls must hit the cache PrefetchTextures already filled, not
+        // reopen the file. A call to Parse() that still costs an Open()
+        // here means the prefetch and the follow-up read from different
+        // state, and the render thread would decode every texture a
+        // second time regardless of how fast the prefetch ran.
+        parser.Parse(names[0]);
+        CHECK(mock->openCount("/materials/" + names[0] + ".tex") == 1);
+    }
+
+    TEST_CASE("worker_count of 1 decodes serially, not spread across threads") {
+        constexpr int                       kTexCount = 3;
+        constexpr std::chrono::milliseconds kDelay { 30 };
+
+        VFS                      vfs;
+        auto                     fsOwned = std::make_unique<MockFs>();
+        auto*                    mock    = fsOwned.get();
+        std::vector<std::string> names;
+        for (int i = 0; i < kTexCount; i++) {
+            std::string name = "prefetch_solo_" + std::to_string(i);
+            mock->AddFile("/materials/" + name + ".tex", makeSimpleRGBA8Tex(4, 4));
+            names.push_back(name);
+        }
+        mock->SetOpenDelay(kDelay);
+        vfs.Mount("/assets", std::move(fsOwned));
+
+        WPTexImageParser parser(&vfs);
+
+        const auto start = std::chrono::steady_clock::now();
+        PrefetchTextures(parser, names, /*worker_count=*/1);
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+
+        // Proves the concurrency above is actually controlled by
+        // worker_count, not a scheduling accident: worker_count=1 must
+        // fall back to the calling thread doing all the work itself, so
+        // 3 names at 30ms each costs close to 90ms -- well past the
+        // "under two delays" bar the concurrent case clears above.
+        CHECK(elapsed >= kDelay * (kTexCount - 1));
+
+        for (auto& name : names) {
+            CHECK(mock->openCount("/materials/" + name + ".tex") == 1);
+        }
+
+        // Same handoff guarantee as the concurrent case above, checked here
+        // too since worker_count=1 takes a different code path inside
+        // PrefetchTextures (no helper threads spawned at all).
+        parser.Parse(names[0]);
+        CHECK(mock->openCount("/materials/" + names[0] + ".tex") == 1);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Fuzz crash regression replay.

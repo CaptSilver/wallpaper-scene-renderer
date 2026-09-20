@@ -25,6 +25,10 @@ PRIVATE
     # target's include path even though VolumetricChain itself never invokes
     # FromJson directly.
     nlohmann_json
+    # VulkanRender.cpp includes WPTexImageParser.hpp (PrefetchTextures), which
+    # in turn includes Fs/VFS.h; wpScene only links wpFs PRIVATE so its
+    # include path doesn't propagate here.
+    wpFs
 )
 target_include_directories(${LIB_NAME} PUBLIC include PRIVATE include/VulkanRender)
 target_compile_options(${LIB_NAME} PRIVATE ${warn_opts} -Wno-missing-field-initializers)

@@ -12,8 +12,11 @@
 
 #include <glslang/Public/ShaderLang.h>
 #include "WPShaderParser.hpp"
+#include "WPTexImageParser.hpp"
+#include "SpecTexs.hpp"
 #include <unordered_set>
 #include <chrono>
+#include <thread>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -30,6 +33,7 @@
 #include "FinPass.hpp"
 #include "SwapchainRecreate.hpp"
 #include "CustomShaderPass.hpp"
+#include "SkyboxPass.hpp"
 #include "CopyPass.hpp"
 #include "Resource.hpp"
 #include "VulkanRender/PassCacheAlias.hpp"
@@ -1814,6 +1818,43 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 
     scene.depthBufferCleared = false;
     scene.clearedRTs.clear();
+
+    // Every pass's own prepare() call below blocks synchronously on
+    // WPTexImageParser::Parse() for each texture it samples. For a scene
+    // with many distinct large textures that is multiple seconds of
+    // stbi_load_from_memory run serially on this thread -- which is also
+    // the only thread that ever produces a frame for this wallpaper
+    // (Looper serializes CMD_DRAW behind this CMD_SET_SCENE handler, see
+    // SceneWallpaper.cpp). Warm WPTexImageParser's own cache across a
+    // small thread pool first, so the prepare() loop below mostly hits
+    // already-decoded results instead of decoding one texture at a time.
+    if (auto* tex_parser = dynamic_cast<WPTexImageParser*>(scene.imageParser.get())) {
+        std::unordered_set<std::string> wanted;
+        for (auto* p : m_passes) {
+            if (auto* csp = dynamic_cast<CustomShaderPass*>(p)) {
+                for (auto& tex : csp->desc().textures) {
+                    // Mirror CustomShaderPass::prepare()'s own skip rules
+                    // (empty slot, `_rt_`-prefixed render-target alias):
+                    // neither name ever reaches Parse() from prepare(), so
+                    // prefetching them is pure waste -- a guaranteed VFS
+                    // miss and a "not found in vfs" log line for nothing.
+                    if (tex.empty() || IsSpecTex(tex)) continue;
+                    wanted.insert(tex);
+                }
+            } else if (auto* sky = dynamic_cast<SkyboxPass*>(p)) {
+                if (! sky->desc().pano_tex_key.empty()) wanted.insert(sky->desc().pano_tex_key);
+            }
+        }
+        std::vector<std::string> names(wanted.begin(), wanted.end());
+        // Decode is CPU-bound, so this doesn't need to chase every hardware
+        // thread: capping at 8 (floor of 4 in case hardware_concurrency()
+        // is unreliable or returns 0) keeps nearly all of the parallel win
+        // without letting a wide box multiply WPTexImageParser::Parse()'s
+        // per-call memory budget (WPTexImageParser.cpp's total_bytes cap is
+        // local to one Parse(), not shared) by an unbounded worker count.
+        const unsigned worker_count = std::clamp(std::thread::hardware_concurrency(), 4u, 8u);
+        PrefetchTextures(*tex_parser, names, worker_count);
+    }
 
     // Prepare-time writes to dyn_buf (UBO defaults, fillBuf zero-init)
     // must land in every slot so that after the first slot switch we

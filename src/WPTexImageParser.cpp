@@ -20,9 +20,12 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <iostream>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace wallpaper;
@@ -204,13 +207,17 @@ i64 wallpaper::DefaultMaxTexBytes() {
 }
 
 void WPTexImageParser::RegisterImage(const std::string& key, std::shared_ptr<Image> img) {
+    std::lock_guard<std::mutex> lock(m_registered_mutex);
     m_registered[key] = std::move(img);
 }
 
 std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     WEK_PROFILE_SCOPE("WPTexImageParser::Parse");
-    if (auto it = m_registered.find(name); it != m_registered.end()) {
-        return it->second;
+    {
+        std::lock_guard<std::mutex> lock(m_registered_mutex);
+        if (auto it = m_registered.find(name); it != m_registered.end()) {
+            return it->second;
+        }
     }
     std::string path = "/assets/materials/" + name + ".tex";
     if (IsAliasTexture(name) && ! m_vfs->Contains(path)) {
@@ -517,13 +524,19 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     // On Nightingale 3276911872 the same 19MB MP4 was being dumped 9+ times
     // during init, blocking the render thread long enough that the compositor
     // gave up and showed a black desktop.
-    m_registered[name] = img_ptr;
+    {
+        std::lock_guard<std::mutex> lock(m_registered_mutex);
+        m_registered[name] = img_ptr;
+    }
     return img_ptr;
 }
 
 ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
-    if (auto it = m_registered.find(name); it != m_registered.end()) {
-        return it->second->header;
+    {
+        std::lock_guard<std::mutex> lock(m_registered_mutex);
+        if (auto it = m_registered.find(name); it != m_registered.end()) {
+            return it->second->header;
+        }
     }
     // Header-only cache: serves repeated ParseHeader calls on the same instance
     // without re-opening the .tex file (e.g. multiple WPSceneParser sites
@@ -667,4 +680,28 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     // the same name on this instance skip the file open + parse.
     m_headerCache[name] = header;
     return header;
+}
+
+void wallpaper::PrefetchTextures(WPTexImageParser& parser, std::span<const std::string> names,
+                                 unsigned worker_count) {
+    if (names.empty()) return;
+    worker_count = std::max(1u, std::min(worker_count, static_cast<unsigned>(names.size())));
+
+    std::atomic<usize> next { 0 };
+    auto               claim_and_parse = [&]() {
+        for (;;) {
+            usize i = next.fetch_add(1, std::memory_order_relaxed);
+            if (i >= names.size()) break;
+            parser.Parse(names[i]);
+        }
+    };
+
+    // worker_count - 1 helper threads plus this thread's own share -- the
+    // calling thread (the render thread, in production) does real work
+    // too instead of just waiting on the pool.
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count - 1);
+    for (unsigned w = 1; w < worker_count; w++) workers.emplace_back(claim_and_parse);
+    claim_and_parse();
+    for (auto& t : workers) t.join();
 }

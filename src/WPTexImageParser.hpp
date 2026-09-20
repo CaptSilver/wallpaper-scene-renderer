@@ -1,6 +1,8 @@
 #pragma once
 #include "Interface/IImageParser.h"
 #include "Fs/VFS.h"
+#include <mutex>
+#include <span>
 #include <unordered_map>
 
 namespace wallpaper
@@ -32,14 +34,34 @@ public:
     std::size_t headerCacheSize() const { return m_headerCache.size(); }
 
 private:
-    fs::VFS*                                                m_vfs;
-    i64                                                     m_maxTotalBytes;
-    std::string                                             m_cachePath;
+    fs::VFS*    m_vfs;
+    i64         m_maxTotalBytes;
+    std::string m_cachePath;
+    // Guards m_registered only.  PrefetchTextures() (below) calls Parse()
+    // for many names at once from a worker pool, and Parse() both reads
+    // and writes m_registered on every call.  m_headerCache stays
+    // unguarded -- ParseHeader() is never called concurrently with a
+    // prefetch in production (every ParseHeader() call happens earlier,
+    // on the load thread, before SET_SCENE is dispatched).
+    std::mutex                                              m_registered_mutex;
     std::unordered_map<std::string, std::shared_ptr<Image>> m_registered;
     // Header-only cache: avoids re-opening + re-parsing the .tex file when
     // ParseHeader is called multiple times for the same unregistered texture
     // during a single WPSceneParser::Parse run (e.g. autosize ortho pre-pass,
     // ParseImageObj, and LoadMaterial all query the same tex).
-    std::unordered_map<std::string, ImageHeader>            m_headerCache;
+    std::unordered_map<std::string, ImageHeader> m_headerCache;
 };
+
+// Decode every name in `names` across up to `worker_count` threads, each
+// calling parser.Parse(name).  Parse() self-caches a successful decode
+// into its own m_registered map, so a caller that walks the same names
+// afterward with a plain serial Parse() loop gets cache hits for
+// everything this call already finished -- that's the point: it moves
+// the actual stbi_load_from_memory cost off whichever thread calls
+// Parse() second, onto this bounded pool instead.  worker_count is
+// clamped to [1, names.size()]; pass 1 for a deterministic,
+// single-threaded decode.
+void PrefetchTextures(WPTexImageParser& parser, std::span<const std::string> names,
+                      unsigned worker_count);
+
 } // namespace wallpaper
