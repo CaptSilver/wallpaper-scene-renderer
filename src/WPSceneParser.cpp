@@ -5169,7 +5169,8 @@ bool setHdrIntent(ParseContext& context, const wpscene::WPScene& sc, const nlohm
     return effective_hdr;
 }
 
-void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc, bool effective_hdr) {
+void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
+                             bool effective_hdr) {
     // Pick the bloom parameter variant matching scene's effective HDR mode.  WE
     // scenes carry both SDR (bloomstrength/bloomthreshold) and HDR
     // (bloomhdrstrength/bloomhdrthreshold) values; the SDR threshold is tuned
