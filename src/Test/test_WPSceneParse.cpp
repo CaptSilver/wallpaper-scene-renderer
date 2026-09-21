@@ -1723,6 +1723,15 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // Pre-fix this stayed at the Eigen default -- Identity -- because
         // AttatchNode(nullptr) bailed out before ever calling Update().
         CHECK_FALSE(composeCam->GetViewProjectionMatrix().isApprox(Eigen::Matrix4d::Identity()));
+
+        // This scene's JSON never sets "orthogonalprojection", so
+        // general's struct default (1920x1080, WPScene.h) flows straight
+        // through to the compose camera's own projection size -- confirms
+        // the `context.ortho_w > 0` branch of the size fallback actually
+        // ran, not the `scene.activeCamera->Width()` fallback (which would
+        // read back 1.0, the perspective camera's untouched default).
+        CHECK(composeCam->Width() == doctest::Approx(1920));
+        CHECK(composeCam->Height() == doctest::Approx(1080));
     }
 
     TEST_CASE("E2E: a flat layer with an effect in a 3D scene composites through the ortho "
@@ -2122,6 +2131,360 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         REQUIRE(scatter != upsample.constValues.end());
         REQUIRE(scatter->second.size() == 1);
         CHECK(scatter->second[0] == doctest::Approx(1.0f));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mutation-coverage gaps in assembleEffects()/assembleEffectChain()
+    // (WPSceneParser.cpp's shared effect-chain assembler for image and text
+    // layers).  The file had no mutation baseline before that share landed, so
+    // this arithmetic -- correct today -- had no fixture able to tell if it
+    // stopped being correct.  Each test below is paired with a hand-applied,
+    // hand-reverted mutation on the production line it targets to prove the
+    // assertion actually depends on that line.
+    // -----------------------------------------------------------------------
+
+    TEST_CASE("kills the FBO div_to_mul at both width and height (non-fullscreen effect "
+              "scratch buffer)") {
+        // The only existing "fbos" fixture (kEffectWithCopyCommandJson) declares
+        // scale:1, where size/scale and size*scale land on the same uint16_t --
+        // division and multiplication are indistinguishable there, and that
+        // fixture also runs the *fullscreen* branch (a different line) besides.
+        // scale:2 on a plain, non-fullscreen layer forces the
+        // `.width = base_width / scale` branch and gives division and
+        // multiplication genuinely different, non-truncated answers.
+        ensureGlslangInit();
+        // The model's own "width"/"height" wins over the scene object's "size"
+        // field (wpscene/WPImageObject.cpp: `if (jImage.contains("width"))` is
+        // checked before `json.contains("size")`), so an 800x400 layer needs a
+        // model file authored at that size -- kPlainImageJson is a shared
+        // 256x256 and would silently override it.
+        constexpr const char* kEffectWithHalfScaleFboJson = R"({
+            "name": "halfscale",
+            "fbos": [{ "name": "HalfBuffer", "scale": 2 }],
+            "passes": [
+                { "command": "copy", "target": "HalfBuffer", "source": "previous" },
+                { "material": "materials/_plain.json" }
+            ]
+        })";
+        constexpr const char* kHalfScaleSourceImageJson   = R"({
+            "material": "materials/_plain.json",
+            "width": 800,
+            "height": 400
+        })";
+        auto                  vfs                         = makeAssetsVfsWith({
+            { "/effects/halfscale.json", kEffectWithHalfScaleFboJson },
+            { "/models/halfscale_source.json", kHalfScaleSourceImageJson },
+        });
+        const char*           kSceneJson                  = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 504, "name": "halfscale_layer",
+      "image": "models/halfscale_source.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "halfscale", "visible": true,
+                     "file": "effects/halfscale.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager   sm;
+        WPUserProperties      props {};
+        WPSceneParser         parser;
+        auto scene = parser.Parse("scene_halfscale_fbo", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(504) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(504);
+        REQUIRE(effLayer != nullptr);
+
+        std::shared_ptr<SceneImageEffect> halfscale;
+        for (std::size_t i = 0; i < effLayer->EffectCount(); i++) {
+            const auto& e = effLayer->GetEffect(i);
+            if (e && e->name == "halfscale") halfscale = e;
+        }
+        REQUIRE(halfscale != nullptr);
+        REQUIRE(halfscale->commands.size() == 1);
+        const std::string& fboName = halfscale->commands.at(0).dst;
+        REQUIRE(fboName.find("HalfBuffer") != std::string::npos);
+        REQUIRE(scene->renderTargets.count(fboName) == 1);
+
+        const auto& fbo = scene->renderTargets.at(fboName);
+        // 800/2 x 400/2 = 400x200.  The div_to_mul mutant produces
+        // 800*2 x 400*2 = 1600x800 instead -- both fit uint16_t, so nothing
+        // truncates the two apart.
+        CHECK(fbo.width == 400);
+        CHECK(fbo.height == 200);
+        // Non-fullscreen chain: not bound to the screen/swapchain.
+        CHECK(fbo.bind.enable == false);
+    }
+
+    TEST_CASE("lists every effect on a layer, not just the first, in layerEffectNames") {
+        // Every existing effects fixture in this file declares exactly one visible
+        // effect.  At count==1, `i++` and its mutant `i--` (size_t underflows to
+        // SIZE_MAX on the first decrement, and `SIZE_MAX < 1` is false) both run
+        // the loop body exactly once -- the mutant is equivalent there.  Two
+        // effects is the minimum fixture that can tell the two loop directions
+        // apart: `i--` stops after one iteration, `i++` continues to the second.
+        ensureGlslangInit();
+        constexpr const char* kBloomEffectFileJson = R"({
+            "name": "bloom",
+            "passes": [{
+                "material": "materials/_plain.json"
+            }]
+        })";
+        auto                  vfs                  = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+            { "/effects/bloom.json", kBloomEffectFileJson },
+        });
+        const char*           kSceneJson           = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 505, "name": "two_effect_layer",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "tint", "visible": true, "file": "effects/tint.json" },
+        { "id": 11, "name": "bloom", "visible": true, "file": "effects/bloom.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager   sm;
+        WPUserProperties      props {};
+        WPSceneParser         parser;
+        auto scene = parser.Parse("scene_two_effects", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->layerEffectNames.count("two_effect_layer") == 1);
+        CHECK(scene->layerEffectNames.at("two_effect_layer") ==
+              std::vector<std::string> { "tint", "bloom" });
+    }
+
+    // The sibling case for the OTHER survivor on this line (`cxx_gt_to_ge`,
+    // diverging from `context.ortho_w > 0` only at ortho_w exactly 0) is not
+    // implemented: forcing `context.ortho_w == 0` requires an explicit
+    // `orthogonalprojection` JSON object (Orthogonalprojection::FromJson only
+    // ever runs when that key is present and non-null), and providing that key
+    // -- for any value -- also sets `general.isOrtho = true`, switching the
+    // scene off the perspective branch that builds this test's whole premise
+    // (an activeCamera whose Width() stays at the untouched 1.0 default).
+    // Verified by hand: in the resulting 2D scene, `scene.activeCamera` is
+    // built by `ComputeOrthoCameraSize(ortho_w, ortho_h, zoom)`, which reuses
+    // `ortho_w` itself as its own fallback when the quotient is non-positive --
+    // so activeCamera->Width() reads back exactly 0, not 1.0, and the ternary's
+    // two branches produce the identical value (0) whether or not the `>`
+    // survives as `>=`.  The mutant is unreachable through any JSON this
+    // parser's schema can produce; see the task report for the reproduction.
+
+    TEST_CASE("a rotated shape-quad's final scale grows enough to cover the dominant "
+              "viewport corner, by the hand-derived factor") {
+        // The file's first-ever "shape" fixture -- a quad with no "image" key is the
+        // only way to make wpimgobj.image.empty() true, which the rotation-coverage
+        // gate requires.  Shape-quads exist to host procedural effects, so hasEffect
+        // must be true (via a visible "effects" entry) for assembleEffectChain to run
+        // at all.
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1000, "height": 800 } },
+  "objects": [
+    { "id": 506, "name": "rotated_quad_90deg", "shape": "quad",
+      "origin": "500 400 0", "scale": "1 1 1", "angles": "0 0 1.5707963",
+      "size": "900 900", "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_shape_quad_90deg", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(506) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(506);
+        REQUIRE(effLayer != nullptr);
+
+        // max_hx = max(500, 1000-500) = 500, max_hy = max(400, 800-400) = 400.
+        // hw = hh = (900/2)*1 = 450.  At 90deg (ct=0, st=1):
+        //   term1 = (500*0 + 400*1)/450 = 0.8889
+        //   term2 = (500*1 + 400*0)/450 = 1.1111
+        //   s = max(term1, term2) = 1.1111 = 10/9.
+        const auto& scale = effLayer->FinalNode().Scale();
+        CHECK(scale.x() == doctest::Approx(10.0 / 9.0).epsilon(1e-4));
+        CHECK(scale.y() == doctest::Approx(10.0 / 9.0).epsilon(1e-4));
+        CHECK(scale.z() == doctest::Approx(10.0 / 9.0).epsilon(1e-4));
+    }
+
+    TEST_CASE("a narrow scaled shape-quad kills the hw div_to_mul and the scale "
+              "mul_to_div pair the 90-degree fixture cannot reach") {
+        // The 90-degree fixture above picks the max_hy/hh term every time (its
+        // symmetric canvas half-extents make hh's term dominate), so mutating hw's
+        // own division, or either scale factor's multiplication (scale==1 makes
+        // *1 and /1 numerically identical), never moves that fixture's `s`.  A
+        // narrow-in-x quad at a shallow angle makes the hw-dependent term dominate
+        // instead, and a non-1 scale (1.5) makes the multiply/divide swap visible.
+        // Expected values were computed by running the real formula in float32
+        // (not by hand) -- see the task report for the script and its output.
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1000, "height": 800 } },
+  "objects": [
+    { "id": 507, "name": "rotated_quad_narrow", "shape": "quad",
+      "origin": "500 400 0", "scale": "1.5 1.5 1", "angles": "0 0 0.0174533",
+      "size": "280 400", "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_shape_quad_narrow", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(507) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(507);
+        REQUIRE(effLayer != nullptr);
+
+        // max_hx=500, max_hy=400.  hw=(280/2)*1.5=210, hh=(400/2)*1.5=300.
+        // ct=cos(0.0174533)=0.9998477, st=sin(0.0174533)=0.0174524.
+        //   term1 = (500*ct + 400*st)/210 = 2.41383  <- dominant (hw-dependent)
+        //   term2 = (500*st + 400*ct)/300 = 1.36222
+        //   s = 2.41383.  FinalNode().Scale() = wpimgobj.scale * s (sc=(1.5,1.5,1)
+        //   already carries the authored scale, so x/y = 1.5*s, z = 1.0*s).
+        const auto& scale = effLayer->FinalNode().Scale();
+        CHECK(scale.x() == doctest::Approx(3.620749).epsilon(1e-4));
+        CHECK(scale.y() == doctest::Approx(3.620749).epsilon(1e-4));
+        CHECK(scale.z() == doctest::Approx(2.413832).epsilon(1e-4));
+    }
+
+    TEST_CASE("a shape-quad at exactly the 0.01 radian rotation gate stays unscaled") {
+        // The gate is `> 0.01f`, not `>=`.  At exactly 0.01 the block must not
+        // run at all, so FinalNode().Scale() stays at the authored (1,1,1) --
+        // this is the boundary the `cxx_gt_to_ge` mutant flips.
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1000, "height": 800 } },
+  "objects": [
+    { "id": 508, "name": "rotated_quad_boundary", "shape": "quad",
+      "origin": "500 400 0", "scale": "1 1 1", "angles": "0 0 0.01",
+      "size": "900 900", "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_shape_quad_boundary", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(508) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(508);
+        REQUIRE(effLayer != nullptr);
+
+        const auto& scale = effLayer->FinalNode().Scale();
+        CHECK(scale.x() == doctest::Approx(1.0));
+        CHECK(scale.y() == doctest::Approx(1.0));
+        CHECK(scale.z() == doctest::Approx(1.0));
+    }
+
+    // -----------------------------------------------------------------------
+    // A materially different concern from the sizing arithmetic above: the two
+    // `parent_id >= 0` gates guarding SetInheritParent (WPSceneParser.cpp,
+    // assembleEffectChain) are unbaselined survivors from the same commit.  No
+    // fixture in the suite used a parent id of exactly zero -- the only value
+    // where `>= 0` diverges from `> 0` -- or a parent id that names no real node
+    // -- the only case where `node_map.count(...) > 0` diverges from `>= 0`
+    // (always true for an unsigned count).
+    // -----------------------------------------------------------------------
+
+    TEST_CASE("kills the parent_id >= 0 gate on SetInheritParent when the parent id is "
+              "exactly zero") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 0, "name": "root_group" },
+    { "id": 700, "name": "effect_child_of_zero_parent", "parent": 0,
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_effect_child_of_zero_parent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(700) == 1);
+        CHECK(scene->nodeEffectLayerMap.at(700)->InheritParent() == true);
+    }
+
+    TEST_CASE("kills the node_map.count(...) > 0 gate on SetInheritParent when the "
+              "parent id names no real node") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 701, "name": "effect_child_dangling_parent", "parent": 999,
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_effect_child_dangling_parent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(701) == 1);
+        CHECK(scene->nodeEffectLayerMap.at(701)->InheritParent() == false);
     }
 
 } // TEST_SUITE
