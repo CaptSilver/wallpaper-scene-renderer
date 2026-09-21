@@ -296,6 +296,7 @@ TEST_SUITE("SceneScript bridge surface") {
         REQUIRE(obj->debugEvalJs("typeof __sceneBridge").toStdString() == "object");
 
         for (const char* m : { "requestScreenshot",
+                               "requestScreenshotAtFrame",
                                "requestPassDump",
                                "setHidePattern",
                                "debugEvalJs",
@@ -503,6 +504,25 @@ TEST_SUITE("SceneScript bridge surface") {
             CHECK(allowed.count(m.name().toStdString()) == 1);
         }
         CHECK(invokables == static_cast<int>(allowed.size()));
+    }
+}
+
+// sceneviewer-script (qmlviewer.cpp) reads --deterministic and
+// --screenshot-at-frame but had nothing on SceneObject to set: the CLI flags
+// parsed and printed in --help, then did nothing.  These two accessors are
+// the seam the viewer's CLI wiring calls into.
+TEST_SUITE("SceneObject debug flags") {
+    TEST_CASE("enableDeterministic flips the deterministic accessor") {
+        scenebackend::SceneObject obj;
+        CHECK_FALSE(obj.deterministic());
+        obj.enableDeterministic();
+        CHECK(obj.deterministic());
+    }
+
+    TEST_CASE("requestScreenshotAtFrame no-ops without a scene") {
+        scenebackend::SceneObject obj; // m_scene stays null under WEKDE_TEST_NO_SCENE
+        obj.requestScreenshotAtFrame("/dev/null", 5); // must not crash
+        CHECK_FALSE(obj.screenshotDone());
     }
 }
 

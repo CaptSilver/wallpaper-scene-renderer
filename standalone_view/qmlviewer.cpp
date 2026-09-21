@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
     scenebackend::SceneObject* sv  = obj->findChild<scenebackend::SceneObject*>();
     if (program.get<bool>(OPT_VALID_LAYER)) sv->enableVulkanValid();
     if (program.get<bool>(OPT_GRAPHVIZ)) sv->enableGenGraphviz();
+    if (program.get<bool>(OPT_DETERMINISTIC)) sv->enableDeterministic();
     sv->setProperty("assets", QUrl::fromLocalFile(program.get<std::string>(ARG_ASSETS).c_str()));
     {
         // Set BEFORE source so the first scene load sees the override.  The
@@ -330,18 +331,15 @@ int main(int argc, char** argv) {
                 QMetaObject::invokeMethod(shot_timer, "timeout");
             });
         } else if (! screenshot_path.empty()) {
-            int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
-            int32_t fps_val        = program.get<int32_t>(OPT_FPS);
-            if (fps_val < 5) fps_val = 60;
-            if (frames_to_wait < 1) frames_to_wait = 30;
-            int delay_ms = (int)(frames_to_wait * 1000.0 / fps_val) + 300;
-            std::cout << "screenshot: will request in " << delay_ms << "ms to " << screenshot_path
-                      << std::endl;
-            QTimer::singleShot(delay_ms, sv, [sv, screenshot_path, &app]() {
-                std::cout << "screenshot: firing requestScreenshot now" << std::endl;
-                QMetaObject::invokeMethod(sv,
-                                          "requestScreenshot",
-                                          Q_ARG(QString, QString::fromStdString(screenshot_path)));
+            // Polls screenshotDone() every 20ms and force-quits after 30s
+            // regardless — shared by both capture modes below.  Bumped to
+            // 30s so heavy scenes (~80 effects, ~200 shaders — SAO,
+            // Cyberpunk Lucy, NieR 2B) have time to finish parsing before
+            // main unwinds. Otherwise the parser thread is still mid-Parse
+            // when atexit handlers fire and tear down glslang's static
+            // keyword unordered_set, producing a teardown UAF in
+            // tokenizeIdentifier.  See glslang-thread-safety.md.
+            auto arm_poll = [sv, &app]() {
                 auto* poll = new QTimer(&app);
                 QObject::connect(poll, &QTimer::timeout, [sv, poll, &app]() {
                     bool done = false;
@@ -353,17 +351,42 @@ int main(int argc, char** argv) {
                     }
                 });
                 poll->start(20);
-                // Hard cap: exit even if the backend never flips the flag.
-                // Bumped to 30s so heavy scenes (~80 effects, ~200 shaders —
-                // SAO, Cyberpunk Lucy, NieR 2B) have time to finish parsing
-                // before main unwinds.  Otherwise the parser thread is still
-                // mid-Parse when atexit handlers fire and tear down glslang's
-                // static keyword unordered_set, producing a teardown UAF in
-                // tokenizeIdentifier.  See glslang-thread-safety.md.
                 QTimer::singleShot(30000, &app, [&app]() {
                     app.quit();
                 });
-            });
+            };
+
+            int32_t at_frame = program.get<int32_t>(OPT_SCREENSHOT_AT_FRAME);
+            if (at_frame > 0) {
+                // Frame-exact capture: arm it now, no wall-clock sleep — the
+                // render thread's own monotonic frame counter fires the
+                // readback when it reaches at_frame, so a slow cold run and
+                // a fast warm run capture the same scene-frame regardless of
+                // shader-compile time.  Mirrors glfwviewer.cpp.
+                std::cout << "screenshot: arming frame-exact capture at frame " << at_frame
+                          << " to " << screenshot_path << std::endl;
+                QMetaObject::invokeMethod(sv,
+                                          "requestScreenshotAtFrame",
+                                          Q_ARG(QString, QString::fromStdString(screenshot_path)),
+                                          Q_ARG(qint64, (qint64)at_frame));
+                arm_poll();
+            } else {
+                int32_t frames_to_wait = program.get<int32_t>(OPT_SCREENSHOT_FRAMES);
+                int32_t fps_val        = program.get<int32_t>(OPT_FPS);
+                if (fps_val < 5) fps_val = 60;
+                if (frames_to_wait < 1) frames_to_wait = 30;
+                int delay_ms = (int)(frames_to_wait * 1000.0 / fps_val) + 300;
+                std::cout << "screenshot: will request in " << delay_ms << "ms to "
+                          << screenshot_path << std::endl;
+                QTimer::singleShot(delay_ms, sv, [sv, screenshot_path, arm_poll]() {
+                    std::cout << "screenshot: firing requestScreenshot now" << std::endl;
+                    QMetaObject::invokeMethod(
+                        sv,
+                        "requestScreenshot",
+                        Q_ARG(QString, QString::fromStdString(screenshot_path)));
+                    arm_poll();
+                });
+            }
         }
     }
 

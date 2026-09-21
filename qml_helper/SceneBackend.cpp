@@ -170,11 +170,12 @@ public:
     bool initGl() { return m_glex.init(get_proc_address); }
 
     // after gl, can run at any thread
-    void initVulkan(uint16_t w, uint16_t h, bool hdr_output = false) {
+    void initVulkan(uint16_t w, uint16_t h, bool hdr_output = false, bool deterministic = false) {
         wallpaper::RenderInitInfo info;
         info.enable_valid_layer = m_enable_valid;
         info.offscreen          = true;
         info.hdr_output         = hdr_output;
+        info.deterministic      = deterministic;
         info.offscreen_tiling   = m_glex.tiling();
         info.uuid               = m_glex.uuid();
         info.width              = w;
@@ -425,7 +426,7 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
                                     m_renderScale,
                                     (uint32_t)std::max(0, m_renderPixelWidth),
                                     (uint32_t)std::max(0, m_renderPixelHeight));
-            node->initVulkan((int)extent.width, (int)extent.height, m_hdrOutput);
+            node->initVulkan((int)extent.width, (int)extent.height, m_hdrOutput, m_deterministic);
 
             connect(
                 node, &TextureNode::redraw, window(), &QQuickWindow::update, Qt::QueuedConnection);
@@ -972,6 +973,8 @@ void SceneObject::pause() {
 bool SceneObject::vulkanValid() const { return m_enable_valid; }
 void SceneObject::enableVulkanValid() { m_enable_valid = true; }
 void SceneObject::enableGenGraphviz() { SET_PROPERTY(Bool, wallpaper::PROPERTY_GRAPHIVZ, true); }
+bool SceneObject::deterministic() const { return m_deterministic; }
+void SceneObject::enableDeterministic() { m_deterministic = true; }
 
 // Build the CursorParallax arg for hitTestLayerProxy from the cached
 // scene-level config + the last-known widget-normalised cursor position.
@@ -1087,6 +1090,12 @@ QString SceneObject::debugEvalJs(const QString& src) {
 
 void SceneObject::requestScreenshot(const QString& path) {
     if (m_scene) m_scene->requestScreenshot(path.toStdString());
+}
+
+void SceneObject::requestScreenshotAtFrame(const QString& path, qint64 frame) {
+    if (m_scene)
+        m_scene->requestScreenshotAtFrame(path.toStdString(),
+                                          static_cast<uint64_t>(std::max<qint64>(0, frame)));
 }
 
 bool SceneObject::screenshotDone() const { return m_scene ? m_scene->screenshotDone() : false; }

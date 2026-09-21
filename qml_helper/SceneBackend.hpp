@@ -138,6 +138,8 @@ public:
     bool vulkanValid() const;
     void enableVulkanValid();
     void enableGenGraphviz();
+    bool deterministic() const;
+    void enableDeterministic();
 
     Q_INVOKABLE void setAcceptMouse(bool);
     Q_INVOKABLE void setAcceptHover(bool);
@@ -152,6 +154,7 @@ public:
     // handlers (cursorDown/cursorMove/cursorUp) fire end-to-end.
     Q_INVOKABLE void simulateDragAt(double x1, double y1, double x2, double y2);
     Q_INVOKABLE void requestScreenshot(const QString& path);
+    Q_INVOKABLE void requestScreenshotAtFrame(const QString& path, qint64 frame);
     Q_INVOKABLE bool screenshotDone() const;
     Q_INVOKABLE void requestPassDump(const QString& dir);
     Q_INVOKABLE bool passDumpDone() const;
@@ -365,6 +368,7 @@ private:
     float   m_volume { 1.0f };
     bool    m_muted { false };
     bool    m_hdrOutput { false };
+    bool    m_deterministic { false };
     bool    m_systemAudioCapture { false };
     QString m_postprocessingOverride;
     int     m_msaaMode { 0 };
