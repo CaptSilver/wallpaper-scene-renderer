@@ -311,35 +311,68 @@ TEST_SUITE("ParticleSubSystem") {
         CHECK(sub->Controlpoints()[0].resolved.z() == doctest::Approx(9.0));
     }
 
-    TEST_CASE("AddEmitter/AddInitializer/AddOperator accept std::function callables") {
+    TEST_CASE("AddEmitter/AddInitializer/AddOperator store callables that Emitt dispatches") {
         ParticleFixture fx;
         auto            sub = fx.makeSub();
-        // These return void; coverage check is that they don't throw.
-        sub->AddEmitter([](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, double) {
+
+        // Nothing calls the initializer directly: Emitt hands the registered list
+        // to each emitter, which applies it to the particle it spawns.  So a
+        // marker lifetime on the spawned particle proves both registrations
+        // landed and that Emitt wired them together.
+        sub->AddInitializer([](Particle& p, double) {
+            p.lifetime = 7.0f;
         });
-        sub->AddInitializer([](Particle&, double) {
+        size_t inits_seen = 0;
+        sub->AddEmitter([&inits_seen](std::vector<Particle>&       particles,
+                                      std::vector<ParticleInitOp>& inits,
+                                      uint32_t                     maxcount,
+                                      double) {
+            inits_seen = inits.size();
+            if (particles.size() >= maxcount) return;
+            Particle p;
+            for (auto& init : inits) init(p, 0.0);
+            particles.push_back(p);
         });
-        sub->AddOperator([](const ParticleInfo&) {
+        // Operators run after the per-particle update, so this alpha outlives the
+        // ParticleModify::Reset that restores init.alpha (1.0) every tick.
+        sub->AddOperator([](const ParticleInfo& info) {
+            for (auto& p : info.particles) p.alpha = 0.25f;
         });
-        CHECK(true);
+
+        fx.scene.PassFrameTime(0.016);
+        sub->Emitt();
+
+        REQUIRE(sub->Instances().size() == 1);
+        const auto& particles = sub->Instances().front()->ParticlesVec();
+        REQUIRE(particles.size() == 1);
+        CHECK(inits_seen == 1);
+        // 7.0 from the initializer, minus the one tick the update loop aged it.
+        CHECK(particles[0].lifetime == doctest::Approx(7.0f - 0.016f));
+        CHECK(particles[0].alpha == doctest::Approx(0.25f));
     }
 
-    TEST_CASE("AddChild and children are reset together") {
+    TEST_CASE("AddChild links the parent, and Reset cascades into the child") {
         ParticleFixture fx;
-        auto            sub   = fx.makeSub();
-        auto            child = fx.makeSub();
+        auto            sub       = fx.makeSub();
+        auto            child     = fx.makeSub();
+        auto*           child_raw = child.get();
         sub->AddChild(std::move(child));
-        // Reset cascades; no observable but covers the recursion.
-        sub->Reset();
-        CHECK(true);
-    }
+        CHECK(child_raw->ParentSubsystem() == sub.get());
 
-    TEST_CASE("SetSpriteTrail stores capacity for later InitTrails") {
-        ParticleFixture fx;
-        auto            sub = fx.makeSub();
-        sub->SetSpriteTrail(32, 1.5f);
-        // No direct getter, but QueryNewInstance will propagate capacity — no crash.
-        CHECK(true);
+        // Dirty the child so the cascade has something to undo: a spent instance
+        // holding particles with both death flags latched.
+        auto* inst = child_raw->QueryNewInstance();
+        REQUIRE(inst != nullptr);
+        inst->ParticlesVec().resize(2);
+        inst->SetDeath(true);
+        inst->SetNoLiveParticle(true);
+
+        sub->Reset();
+
+        // Reset -> child->Reset() -> instance Refresh(): re-armed, ready to emit.
+        CHECK(inst->ParticlesVec().empty());
+        CHECK_FALSE(inst->IsDeath());
+        CHECK_FALSE(inst->IsNoLiveParticle());
     }
 
     TEST_CASE("QueryNewInstance grows the pool up to max, then returns nullptr") {
@@ -474,18 +507,20 @@ TEST_SUITE("ParticleSystem") {
                                                        ParticleSubSystem::SpawnType::STATIC,
                                                        nullptr,
                                                        /*starttime=*/100);
+        auto*          sub_raw = sub.get();
         ps.subsystems.push_back(std::move(sub));
 
         // elapsingTime < starttime → subsystem's Emitt returns early,
         // no instances are created for STATIC.
         ps.Emitt();
+        CHECK(sub_raw->Instances().size() == 0);
         // After starttime passes, Emitt enters the STATIC body and auto-creates
         // the single instance.  Since we have no emitters and no vertex array,
         // this is a safe code path with no rendering.
         scene.PassFrameTime(1.0);
         scene.elapsingTime = 200.0; // jump past starttime directly
         ps.Emitt();
-        CHECK(true);
+        CHECK(sub_raw->Instances().size() == 1);
     }
 
 } // ParticleSystem
@@ -522,12 +557,16 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
 
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
+        REQUIRE(sub->Instances().size() == 1);
+        auto* inst = sub->Instances().front().get();
+        CHECK(inst->ParticlesVec().size() == 1);
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
+        CHECK(inst->ParticlesVec().size() == 2);
         // Emitter keeps pushing until maxcount reached
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
-        CHECK(true); // success = no crash; coverage is the primary goal here
+        CHECK(inst->ParticlesVec().size() == 3);
     }
 
     TEST_CASE("spritetrail STATIC: trail history grows alongside particles") {
@@ -538,9 +577,14 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
 
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
+        REQUIRE(sub->Instances().size() == 1);
+        auto* inst = sub->Instances().front().get();
+        CHECK(inst->ParticlesVec().size() == 1);
+        CHECK(inst->TrailHistories().size() == 1);
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
-        CHECK(true);
+        CHECK(inst->ParticlesVec().size() == 2);
+        CHECK(inst->TrailHistories().size() == 2);
     }
 
     TEST_CASE("Child EVENT_SPAWN subsystem is nudged to spawn from parent's new particles") {
@@ -552,13 +596,12 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
         auto* child_raw = child.get();
         parent->AddChild(std::move(child));
 
+        CHECK(child_raw->Instances().size() == 0);
         fx.scene.PassFrameTime(0.016);
         parent->Emitt();
-        // After one frame, parent has ≥1 particle; spawn_inst lambda should have
-        // run and pushed the child into the pool.  We can't easily inspect the
-        // child's internal state, but having executed is coverage.
-        (void)child_raw;
-        CHECK(true);
+        // After one frame, parent has pushed exactly one particle; spawn_inst
+        // should have queried the child pool once for it.
+        CHECK(child_raw->Instances().size() == 1);
     }
 
     TEST_CASE("Child EVENT_DEATH fires when parent particles die") {
@@ -573,14 +616,22 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
                 ps.push_back(p);
             });
 
-        auto child = fx.makeSub(3, 1.0, 2, 1.0, ParticleSubSystem::SpawnType::EVENT_DEATH);
+        auto  child     = fx.makeSub(3, 1.0, 2, 1.0, ParticleSubSystem::SpawnType::EVENT_DEATH);
+        auto* child_raw = child.get();
         parent->AddChild(std::move(child));
 
+        CHECK(child_raw->Instances().size() == 0);
         fx.scene.PassFrameTime(0.032);
         parent->Emitt();
+        // The particle pushed this tick has lifetime 0.001, far under the 0.032
+        // tick, so it dies within the same Emitt() call that spawns it — the
+        // EVENT_DEATH dispatch fires on tick 1 already, not tick 2.
+        CHECK(child_raw->Instances().size() == 1);
         fx.scene.PassFrameTime(0.032);
-        parent->Emitt(); // second tick pushes particles over lifetime → event_death path
-        CHECK(true);
+        parent->Emitt();
+        // Tick 2's own freshly-pushed particle dies the same way, firing a
+        // second, independent EVENT_DEATH dispatch that grows the pool again.
+        CHECK(child_raw->Instances().size() == 2);
     }
 
     TEST_CASE("Controlpoints const-overload") {
