@@ -1599,6 +1599,8 @@ private:
             // is unset), so the disabled path is just a handful of atomic
             // exchanges on zero values — negligible.  Single-thread-safe via
             // the static-local (RegisterFrame is render-thread-only here).
+            // Buckets are non-uniform ms edges, not i*2 — see kBucketEdgesMs
+            // in FpsCounter.cpp to read the bucket vector below.
             {
                 using namespace std::chrono;
                 static auto sLastHistLog = steady_clock::now();
@@ -1658,6 +1660,16 @@ private:
         }
     }
     MHANDLER_CMD(SET_SCENE) {
+        // compileRenderGraph below can block this looper thread for multiple
+        // seconds (its own comment says so), and CMD_SET_SCENE fires on every
+        // ordinary wallpaper switch or playlist advance, not just startup —
+        // so exclude the coming interval from the frame-time histogram/max
+        // here rather than logging a scene switch as a rendering hitch.
+        // recoverFromDeviceLost()'s only path back to a running state
+        // re-enters loadScene() -> CMD_SET_SCENE, so this one call site
+        // already covers that recovery path too.
+        fps_counter.DiscardNextInterval();
+
         // findObject assigns through a plain shared_ptr<Scene>* and can't bind
         // to the atomic member, so read into a temp then publish via .store().
         // The rest of the body uses the `scene` local (== the just-stored

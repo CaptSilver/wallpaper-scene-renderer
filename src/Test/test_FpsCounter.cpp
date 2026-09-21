@@ -22,7 +22,7 @@ TEST_SUITE("FpsCounter") {
         CHECK(snap.sampleCount == 0u);
     }
 
-    TEST_CASE("histogram bins frame intervals into 2ms-wide buckets") {
+    TEST_CASE("histogram bins sub-2ms frame intervals into bucket 0") {
         ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
         FpsCounter c;
         // Drive 50 RegisterFrame() calls with ~1ms spacing.  Most intervals
@@ -33,7 +33,7 @@ TEST_SUITE("FpsCounter") {
             c.RegisterFrame();
         }
         auto snap = c.CollectHistogram();
-        CHECK(snap.sampleCount == 50u);
+        CHECK(snap.sampleCount == 49u);
         CHECK(snap.buckets[0] >= 35u);
         ::unsetenv("WEKDE_DEBUG_FRAMETIME");
     }
@@ -55,10 +55,75 @@ TEST_SUITE("FpsCounter") {
             c.RegisterFrame();
         }
         auto snap = c.CollectHistogram();
-        CHECK(snap.sampleCount == 100u);
+        CHECK(snap.sampleCount == 99u);
         CHECK(snap.p95_ms >= 18u);
         CHECK(snap.p99_ms >= 18u);
         CHECK(snap.max_ms >= 18u);
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+    }
+
+    TEST_CASE("widened buckets report p95/p99 above the old 30 ms cap for 54 ms frames") {
+        // Old scheme: bucket = min(ms/2, 15), reported as bucket*2 -> max 30ms.
+        // A 54ms frame and a 2000ms frame were indistinguishable under that
+        // cap. The widened edge table must report at or above the real
+        // duration for both p95 and p99 here.
+        ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
+        FpsCounter c;
+        c.RegisterFrame(); // consumes the construction-time discard (m_discardNext defaults true)
+        for (int i = 0; i < 30; ++i) {
+            std::this_thread::sleep_for(54ms);
+            c.RegisterFrame();
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 30u);
+        CHECK(snap.p95_ms >= 54u);
+        CHECK(snap.p99_ms >= 54u);
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+    }
+
+    TEST_CASE("an unbounded-tail outlier reports p99 near its real duration, not the last edge") {
+        // 98 fast frames + 2 ~700ms outliers. The catch-all bucket (15) must
+        // report the tracked exact max, not a synthetic upper edge, or a
+        // multi-second stall would still read back as ~500ms.
+        ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
+        FpsCounter c;
+        c.RegisterFrame();
+        for (int i = 0; i < 98; ++i) {
+            std::this_thread::sleep_for(1ms);
+            c.RegisterFrame();
+        }
+        for (int i = 0; i < 2; ++i) {
+            std::this_thread::sleep_for(700ms);
+            c.RegisterFrame();
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 100u);
+        CHECK(snap.p95_ms < 50u);
+        CHECK(snap.p99_ms >= 650u);
+        ::unsetenv("WEKDE_DEBUG_FRAMETIME");
+    }
+
+    TEST_CASE("DiscardNextInterval excludes the following stall from the histogram and max") {
+        // A caller (e.g. SET_SCENE) marks the NEXT interval as a known-long
+        // gap (compileRenderGraph, asset load) so it never pollutes the
+        // frame-time histogram or the tracked max.
+        ::setenv("WEKDE_DEBUG_FRAMETIME", "1", 1);
+        FpsCounter c;
+        c.RegisterFrame();
+        for (int i = 0; i < 5; ++i) {
+            std::this_thread::sleep_for(1ms);
+            c.RegisterFrame();
+        }
+        c.DiscardNextInterval();
+        std::this_thread::sleep_for(300ms);
+        c.RegisterFrame(); // must not become a sample
+        for (int i = 0; i < 5; ++i) {
+            std::this_thread::sleep_for(1ms);
+            c.RegisterFrame();
+        }
+        auto snap = c.CollectHistogram();
+        CHECK(snap.sampleCount == 10u);
+        CHECK(snap.max_ms < 50u);
         ::unsetenv("WEKDE_DEBUG_FRAMETIME");
     }
 

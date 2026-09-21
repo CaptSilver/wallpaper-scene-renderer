@@ -18,6 +18,14 @@ FpsCounter::FpsCounter()
 // or off, while still averaging across enough frames to smooth out hitches.
 constexpr milliseconds kPublishWindow { 500 };
 
+// Upper edge (ms, exclusive) of buckets 0-14. Bucket 15 is the unbounded
+// catch-all, reported via the tracked exact max instead of a synthetic
+// edge. Geometric growth (~1.48x/bucket) from 2ms to 500ms in 14 steps.
+// Defined once here; both RegisterFrame() (binning) and CollectHistogram()
+// (percentile reporting) reference this same table so they can't drift apart.
+constexpr std::array<u32, 15> kBucketEdgesMs { 2,  3,  5,   7,   11,  16,  24, 35,
+                                               52, 77, 114, 169, 251, 372, 500 };
+
 bool FpsCounter::histogramEnabled() const noexcept {
     // Per-call getenv() rather than a cached static-local.  Cost is one
     // libc getenv() (a tiny linear scan of environ) per frame, which is
@@ -44,18 +52,31 @@ void FpsCounter::RegisterFrame() {
     }
 
     if (histogramEnabled()) {
-        auto frameDur = duration_cast<milliseconds>(now - m_lastFrameTime).count();
-        u32  ms       = (u32)std::max<int64_t>(0, frameDur);
-        u32  bucket   = std::min<u32>(ms / 2, 15);
-        m_buckets[bucket].fetch_add(1, std::memory_order_relaxed);
-        m_sampleCount.fetch_add(1, std::memory_order_relaxed);
+        // Consume any pending discard first — a caller marked this interval
+        // (the one ending "now") as a known-long gap, e.g. scene load. Skip
+        // binning it into the histogram/max, but still fall through to the
+        // m_lastFrameTime update below so the NEXT interval measures from
+        // this point rather than from before the gap.
+        if (! m_discardNext.exchange(false, std::memory_order_relaxed)) {
+            auto frameDur = duration_cast<milliseconds>(now - m_lastFrameTime).count();
+            u32  ms       = (u32)std::max<int64_t>(0, frameDur);
 
-        // CAS-loop max — keeps m_maxMs at the running peak across the
-        // current collection window.  Failure path reloads `prev` so the
-        // exit condition stays correct.
-        u32 prev = m_maxMs.load(std::memory_order_relaxed);
-        while (ms > prev && ! m_maxMs.compare_exchange_weak(
-                                prev, ms, std::memory_order_relaxed)) {
+            u32 bucket = 15;
+            for (u32 i = 0; i < kBucketEdgesMs.size(); ++i) {
+                if (ms < kBucketEdgesMs[i]) {
+                    bucket = i;
+                    break;
+                }
+            }
+            m_buckets[bucket].fetch_add(1, std::memory_order_relaxed);
+
+            // CAS-loop max — keeps m_maxMs at the running peak across the
+            // current collection window.  Failure path reloads `prev` so the
+            // exit condition stays correct.
+            u32 prev = m_maxMs.load(std::memory_order_relaxed);
+            while (ms > prev &&
+                   ! m_maxMs.compare_exchange_weak(prev, ms, std::memory_order_relaxed)) {
+            }
         }
     }
     m_lastFrameTime = now;
@@ -70,21 +91,23 @@ FpsCounter::HistogramSnapshot FpsCounter::CollectHistogram() {
     }
     snap.sampleCount = total;
     snap.max_ms      = m_maxMs.exchange(0, std::memory_order_relaxed);
-    m_sampleCount.store(0, std::memory_order_relaxed);
 
     if (total == 0) return snap;
 
     // p95/p99 walk: accumulate bucket counts in ascending order; the bucket
-    // where the running total crosses the quantile target gives that
-    // quantile's lower-edge in ms.  Granularity: 2 ms per bucket.
+    // where the running total crosses the quantile target reports that
+    // bucket's upper edge (kBucketEdgesMs), i.e. "no more than N ms for this
+    // fraction of frames" — the catch-all bucket 15 has no edge, so it
+    // reports the tracked exact max instead.
     u32 p95Target = (u32)((double)total * 0.95);
     u32 p99Target = (u32)((double)total * 0.99);
     u32 acc       = 0;
     for (u32 i = 0; i < 16; ++i) {
         acc += snap.buckets[i];
-        if (snap.p95_ms == 0 && acc >= p95Target) snap.p95_ms = i * 2;
+        u32 edge_ms = (i < kBucketEdgesMs.size()) ? kBucketEdgesMs[i] : snap.max_ms;
+        if (snap.p95_ms == 0 && acc >= p95Target) snap.p95_ms = edge_ms;
         if (snap.p99_ms == 0 && acc >= p99Target) {
-            snap.p99_ms = i * 2;
+            snap.p99_ms = edge_ms;
             break;
         }
     }

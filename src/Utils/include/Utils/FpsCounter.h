@@ -25,13 +25,23 @@ public:
     // is set to a non-empty, non-"0" value at the moment of each frame.
     // The env probe runs per call so operators can toggle telemetry on a
     // running plasmashell by setting the var and restarting; tests can flip
-    // it mid-process without sub-process isolation.  16 buckets, 2 ms each
-    // — bucket i covers [i*2 .. (i+1)*2) ms, bucket 15 is the 30 ms+
-    // catch-all.  CollectHistogram returns a snapshot and resets the
-    // counters in place so callers (e.g. a 30 s log cadence on the render
-    // thread) get rolling windows rather than cumulative totals.
+    // it mid-process without sub-process isolation.  16 buckets with
+    // non-uniform, geometrically-growing edges (see kBucketEdgesMs in
+    // FpsCounter.cpp) so a 54ms hitch and a 2000ms stall no longer land on
+    // the same reported percentile; bucket 15 is an unbounded catch-all
+    // reported via the tracked exact max instead of a synthetic edge.
+    // CollectHistogram returns a snapshot and resets the counters in place
+    // so callers (e.g. a 30 s log cadence on the render thread) get rolling
+    // windows rather than cumulative totals.
     //
-    // Threading: m_buckets / m_maxMs / m_sampleCount are atomic so a
+    // DiscardNextInterval() marks the NEXT RegisterFrame() call's interval
+    // as known-long (scene load, compileRenderGraph) so it is timestamped
+    // but excluded from both the histogram and the tracked max — otherwise
+    // a multi-second scene switch reports as the frame-time max forever
+    // until the next 30s log window. m_discardNext defaults true so the
+    // construction-to-first-frame gap is excluded without a separate caller.
+    //
+    // Threading: m_buckets / m_maxMs / m_discardNext are atomic so a
     // collector thread can safely read while the render thread keeps
     // writing.  Today's only caller runs on the render thread itself
     // (single-writer + same-thread reader), but the atomics future-proof
@@ -44,6 +54,11 @@ public:
         u32                 sampleCount;
     };
     HistogramSnapshot CollectHistogram();
+
+    // Excludes the NEXT RegisterFrame() interval from the histogram and the
+    // tracked max — call before a known-long gap (e.g. scene load) so it
+    // doesn't get reported as a frame-time hitch.
+    void DiscardNextInterval() { m_discardNext.store(true, std::memory_order_relaxed); }
 
 private:
     bool histogramEnabled() const noexcept;
@@ -64,7 +79,10 @@ private:
     // Histogram state — only mutated when histogramEnabled() returns true.
     std::array<std::atomic<u32>, 16> m_buckets {};
     std::atomic<u32>                 m_maxMs { 0 };
-    std::atomic<u32>                 m_sampleCount { 0 };
+    // Set by DiscardNextInterval(), consumed (exchanged back to false) by the
+    // next RegisterFrame().  Defaults true so the construction-to-first-frame
+    // gap is excluded without a dedicated first-call flag.
+    std::atomic<bool> m_discardNext { true };
 };
 
 } // namespace wallpaper
