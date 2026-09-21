@@ -2487,6 +2487,181 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->nodeEffectLayerMap.at(701)->InheritParent() == false);
     }
 
+    TEST_CASE("E2E: hide-pattern hides a matching particle object, "
+              "leaves a non-matching image untouched") {
+        ensureGlslangInit();
+        LogCapture          log;
+        auto                vfs        = makeAssetsVfsWith({
+            { "/particle/dust.json",
+              R"JSON({ "emitter": [{}], "renderer": [],
+                        "material": "materials/_plain.json",
+                        "children": [ { "name": "particle/dust_child.json" } ] })JSON" },
+            { "/particle/dust_child.json",
+              R"JSON({ "emitter": [{}], "renderer": [],
+                        "material": "materials/_plain.json" })JSON" },
+        });
+        const char*         kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 300, "name": "keep_visible_layer", "image": "models/_plain.json",
+              "origin": "0 0 0", "visible": true },
+            { "id": 400, "name": "hideme_dust", "particle": "particle/dust.json",
+              "origin": "0 0 0" }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("dust");
+        auto scene = parser.Parse("scene_hide_particle", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren())
+                if (auto* hit = findById(c.get(), id)) return hit;
+            return nullptr;
+        };
+        SceneNode* image = findById(scene->sceneGraph.get(), 300);
+        SceneNode* dust  = findById(scene->sceneGraph.get(), 400);
+        REQUIRE(image != nullptr);
+        REQUIRE(dust != nullptr);
+        CHECK(image->IsVisible());
+        CHECK_FALSE(dust->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=") != std::string::npos) hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
+    // ParseModelObj's own ApplyHidePattern call site — separate from the
+    // particle case above, and the one place the hide has to reach a node
+    // purely through inheritance: submesh children never get their own
+    // SetVisible call, so IsVisible() has to walk the
+    // m_visibility_parent chain up to the hidden parent to see it.
+    TEST_CASE("E2E: hide-pattern hides a matching model object, cascading to its submesh child") {
+        ensureGlslangInit();
+        LogCapture          log;
+        auto                vfs        = makeAssetsVfsWith({
+            { "/models/_tri.mdl", makeTriangleModelMdl() },
+        });
+        const char*         kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 900, "name": "hideme_rock", "model": "models/_tri.mdl",
+              "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("rock");
+        auto scene = parser.Parse("scene_hide_model", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto cit = scene->nodeById.find(900);
+        REQUIRE(cit != scene->nodeById.end());
+        SceneNode* parent = cit->second;
+        REQUIRE(parent != nullptr);
+        CHECK_FALSE(parent->IsVisible());
+        REQUIRE_FALSE(parent->GetChildren().empty());
+        CHECK_FALSE(parent->GetChildren().front()->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=900") != std::string::npos) hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
+    // ParseTextObj's placeholder-path ApplyHidePattern call: an empty font
+    // takes the createPlaceholderNode() branch before rasterization is ever
+    // attempted, so this is a genuinely different call site from the
+    // rasterized-text case below, not just a different fixture on the same
+    // line.
+    TEST_CASE("E2E: hide-pattern hides a matching text object built via the placeholder path") {
+        ensureGlslangInit();
+        LogCapture          log;
+        auto                vfs        = makeEmptyAssetsVfs();
+        const char*         kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 901, "name": "hideme_caption",
+              "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+              "text": { "value": "" }, "visible": true }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("caption");
+        auto scene = parser.Parse("scene_hide_text_placeholder", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto cit = scene->nodeById.find(901);
+        REQUIRE(cit != scene->nodeById.end());
+        CHECK_FALSE(cit->second->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=901") != std::string::npos) hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
+    // ParseTextObj's rasterized main-path ApplyHidePattern call: a resolvable
+    // font skips the placeholder branch and builds the mesh/material through
+    // createTextSceneNode() instead — the fourth and last of the new call
+    // sites, distinct from the placeholder path above.
+    TEST_CASE("E2E: hide-pattern hides a matching text object built via the rasterized main "
+              "path") {
+        ensureGlslangInit();
+        // FreeType needs a real face; the box supplies one via the
+        // systemfont_* fallback resolver (same guard as the existing text
+        // effect-chain E2E case above).
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
+        LogCapture          log;
+        auto                vfs        = makeAssetsVfsWith({});
+        const char*         kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 902, "name": "hideme_clock",
+              "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+              "size": "256 64",
+              "font": "systemfont_sans", "pointsize": 24,
+              "text": { "value": "12:00" },
+              "visible": true }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("clock");
+        auto scene = parser.Parse("scene_hide_text_main", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto cit = scene->nodeById.find(902);
+        REQUIRE(cit != scene->nodeById.end());
+        CHECK_FALSE(cit->second->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=902") != std::string::npos) hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
 } // TEST_SUITE
 
 // ---------------------------------------------------------------------------

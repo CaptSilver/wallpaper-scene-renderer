@@ -36,6 +36,7 @@
 
 #include "WPShaderValueUpdater.hpp"
 #include "WPLightKindParse.hpp"
+#include "WPSceneHidePattern.hpp"
 #include "wpscene/WPImageObject.h"
 #include "wpscene/WPParticleObject.h"
 #include "wpscene/WPSoundObject.h"
@@ -1709,6 +1710,18 @@ std::shared_ptr<SceneNode> createImageNode(ParseContext& context,
     return spImgNode;
 }
 
+// Debug hide-pattern filter for object kinds other than the image path above
+// (which has its own inline block, kept separate so its "(match '%s')" log
+// detail doesn't need to round-trip through this shared helper's bool-only
+// predicate). Same contract: hides `node` when `name` matches, and records
+// it for the end-of-parse summary.
+void ApplyHidePattern(ParseContext& context, const std::string& name, i32 id, SceneNode& node) {
+    if (! HidePatternMatches(context.hide_pattern, name)) return;
+    node.SetVisible(false);
+    context.hidden_names.push_back(name + " (id=" + std::to_string(id) + ")");
+    LOG_INFO("HidePattern: id=%d name='%s'", id, name.c_str());
+}
+
 struct ImageBaseMaterial {
     SceneMaterial     material;
     WPShaderValueData svData;
@@ -2985,6 +2998,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
             spNode->SetVisible(wppartobj.visible);
         }
         // Ambient particles: leave m_visible at the ctor default (true).
+        ApplyHidePattern(context, wppartobj.name, wppartobj.id, *spNode);
     }
 
     wpscene::ParticleInstanceoverride override = wppartobj.instanceoverride;
@@ -3381,6 +3395,13 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
                                             Vector3f(light_obj.scale.data()),
                                             Vector3f(light_obj.angles.data()));
     node->ID() = light_obj.id;
+    // --hide-pattern deliberately doesn't reach lights: WPShaderValueUpdater's
+    // two per-frame light-upload loops never call IsVisible() on a light's
+    // node, so SetVisible(false) here would flag the node "hidden" in the
+    // debug summary while the light kept lighting the scene exactly as
+    // before — the same silent-no-op bug this filter exists to fix, just
+    // one layer down. Fixing that needs an IsVisible() gate added to both
+    // upload loops, a separate, real-code-path change.
 
     context.scene->lights.emplace_back(std::make_unique<SceneLight>(
         Vector3f(light_obj.color.data()),
@@ -3455,6 +3476,9 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
                                                 Vector3f(model_obj.scale.data()),
                                                 Vector3f(model_obj.angles.data()));
     spParent->ID() = model_obj.id;
+    // Cascades to every submesh child via SceneNode::AppendChild's
+    // m_visibility_parent chain — no per-submesh call needed.
+    ApplyHidePattern(context, model_obj.name, model_obj.id, *spParent);
 
     std::vector<std::shared_ptr<SceneNode>> translucentNodes;
     for (size_t si = 0; si < mdl.submeshes.size(); si++) {
@@ -4009,6 +4033,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
                                                   Vector3f(textObj.angles.data()));
         spNode->ID() = textObj.id;
         spNode->SetVisible(textObj.visible);
+        ApplyHidePattern(context, textObj.name, textObj.id, *spNode);
         context.scene->sceneGraph->AppendChild(spNode);
         context.node_map[textObj.id] = spNode;
         LOG_INFO("  registered placeholder node id=%d for SceneScript", textObj.id);
@@ -4044,6 +4069,7 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto wpMat     = buildTextWpMaterial(texKey);
     auto adjOrigin = computeAnchorAdjustedOrigin(textObj, autosize_canvas);
     auto spNode    = createTextSceneNode(textObj, adjOrigin);
+    ApplyHidePattern(context, textObj.name, textObj.id, *spNode);
 
     auto baseMat = loadTextBaseMaterial(context, textObj, wpMat, spNode.get());
     if (! baseMat) {

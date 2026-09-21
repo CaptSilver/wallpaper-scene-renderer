@@ -172,6 +172,7 @@ add_executable(backend_scene_tests
     test_WPParticleParser_SS8.cpp
     test_WPParticleParserRemapInitial.cpp
     test_WPSceneParse.cpp
+    test_WPSceneHidePattern.cpp
     test_WPLightObject.cpp
     test_WPLightKindParse.cpp
     test_WPShaderValueUpdater_Volumetric.cpp
