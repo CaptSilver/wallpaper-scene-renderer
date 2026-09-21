@@ -46,7 +46,8 @@ public:
     // True iff this device advertises VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT on
     // VK_FORMAT_D32_SFLOAT for optimal tiling.  Probed once at Device::Create.
     // Consumers (volumetric chain, future SSAO/DOF) gate the depth-as-sampled
-    // path on this; when false, they emit a depth-to-color resolve fallback.
+    // path on this; when false, the scene-depth texture slot is left on the
+    // 1x1 fallback texture.
     bool                  d32_sampleable() const { return m_d32_sampleable; }
     const auto&           limits() const { return m_limits; }
     float                 maxAnisotropy() const { return m_limits.maxSamplerAnisotropy; }

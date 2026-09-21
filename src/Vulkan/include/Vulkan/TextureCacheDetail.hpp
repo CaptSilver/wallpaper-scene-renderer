@@ -57,7 +57,7 @@ inline std::size_t packedTotalBytes(std::span<const std::size_t> mip_sizes,
 // Bytes per texel block for the formats this engine actually loads (see
 // src/Vulkan/include/Vulkan/TexFormatVk.hpp).  For uncompressed formats
 // the engine fills mip sizes as width*height*bytes_per_pixel, all of
-// which are already 4-aligned for the worst-case (RGBA8 / R32F) — return
+// which are already 4-aligned for the worst-case (RGBA8) — return
 // 1 so the offset table tracks the raw cumulative sum.  For block-
 // compressed formats return the actual block byte count so the per-mip
 // VkBufferImageCopy::bufferOffset honours

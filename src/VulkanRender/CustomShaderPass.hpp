@@ -11,6 +11,7 @@
 #include "Vulkan/GraphicsPipeline.hpp"
 #include "SpriteAnimation.hpp"
 #include "Interface/IShaderValueUpdater.h"
+#include "SpecTexs.hpp"
 
 namespace wallpaper
 {
@@ -71,6 +72,41 @@ inline VkAttachmentLoadOp SelectOutputLoadOp(bool force_clear, bool rt_already_c
 // alone is exactly what a draw-less LOAD would have done.
 inline bool IsHiddenPassSkippable(bool node_hidden, bool clears_output) {
     return node_hidden && ! clears_output;
+}
+
+// Path-A depth-image usage flags: SAMPLED_BIT is appended iff the device
+// advertises sampled-image support for D32_SFLOAT on optimal tiling
+// (Device::d32_sampleable()); the attachment/transfer-dst bits are
+// unconditional.  A free function so the bit list has one definition rather
+// than being spelled out at each place that needs to know it.
+inline VkImageUsageFlags DepthImageUsageFlags(bool d32_sampleable) {
+    return VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+           (d32_sampleable ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u);
+}
+
+// Is a _rt_sceneDepth/_rt_volumetricsSingle texture request eligible for the
+// path-A binding (sampling the live depth attachment directly) rather than
+// being skipped this frame?  Mirrors CustomShaderPass::prepare()'s IsSpecTex
+// branch condition: the alias key, a sampleable D32 device, no MSAA, and not
+// inside a reflection pass (which owns a separate depth buffer).
+inline bool DepthAliasPathAEligible(bool is_depth_alias, bool d32_sampleable, uint32_t msaaSamples,
+                                    bool useReflectionDepth) {
+    return is_depth_alias && d32_sampleable && msaaSamples <= 1 && ! useReflectionDepth;
+}
+
+// A pass declaring needsSceneDepth wires WE_SCENE_DEPTH into its texture
+// list even when the material JSON never named it (volumetric-front and
+// other passes that build their descriptor set programmatically).  Returns
+// whether it appended the key — false means the list already named it, or
+// the pass never asked for scene depth.
+inline bool EnsureSceneDepthTextureIfNeeded(std::vector<std::string>& textures,
+                                            bool                      needsSceneDepth) {
+    if (! needsSceneDepth) return false;
+    for (auto& t : textures) {
+        if (t == WE_SCENE_DEPTH) return false;
+    }
+    textures.emplace_back(WE_SCENE_DEPTH);
+    return true;
 }
 
 class CustomShaderPass : public VulkanPass {

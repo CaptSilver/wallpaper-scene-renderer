@@ -843,9 +843,10 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             } else if (name == WE_VOLUMETRICS_SINGLE || name == WE_SCENE_DEPTH) {
                 // Scene-depth aliases — not registered as ordinary render
                 // targets.  CustomShaderPass::prepare() binds the main depth
-                // attachment directly under the d32-sampleable path (or the
-                // path-D resolve output via WE_SCENE_DEPTH_LINEAR).  Skipping
-                // the renderTargets lookup avoids a spurious LOG_ERROR.
+                // attachment directly on a device that can sample it, and
+                // leaves the slot on the 1x1 fallback texture where it
+                // cannot.  Skipping the renderTargets lookup here avoids a
+                // spurious LOG_ERROR.
             } else if (pScene->renderTargets.count(name) == 0) {
                 LOG_ERROR("%s not found in render targets", name.c_str());
             } else {

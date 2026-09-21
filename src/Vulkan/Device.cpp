@@ -187,8 +187,8 @@ bool Device::Create(Instance& inst, std::span<const Extension> exts, VkExtent2D 
     // optimal tiling.  This invariant gates the depth-sample path used by
     // the volumetric chain (and any future SSAO/DOF).  On modern desktop
     // GPUs (RADV, NVIDIA, Intel) the bit is set; on lavapipe and some
-    // mobile/headless drivers it is not, in which case downstream code
-    // emits a depth-to-color resolve fallback.
+    // mobile/headless drivers it is not, and a pass asking for scene depth
+    // gets the 1x1 fallback texture in place of a sampleable depth image.
     {
         const VkFormatProperties fmt_props = inst.gpu().GetFormatProperties(VK_FORMAT_D32_SFLOAT);
         device.m_d32_sampleable =

@@ -91,14 +91,14 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         .arrayLayers = 1,
         .samples     = samples,
         .tiling      = VK_IMAGE_TILING_OPTIMAL,
-        // VK_IMAGE_USAGE_SAMPLED_BIT is appended iff the device advertises
-        // sampled-image support for D32_SFLOAT on optimal tiling (probed in
-        // Device::Create).  When the bit is absent we still allocate the
-        // attachment exactly as before; the path-D depth-to-color resolve
-        // pass produces the sampled view via a separate RT.
-        .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                 (device.d32_sampleable() ? VK_IMAGE_USAGE_SAMPLED_BIT : 0u),
+        // Usage flags composed by DepthImageUsageFlags (CustomShaderPass.hpp):
+        // SAMPLED_BIT is appended iff the device advertises sampled-image
+        // support for D32_SFLOAT on optimal tiling (probed in Device::Create).
+        // When the bit is absent the attachment still allocates the same way;
+        // it just never gets sampled, and nothing resolves a substitute — a
+        // pass requesting it degrades to CustomShaderPass::prepare()'s 1x1
+        // vk_fallback_tex dummy instead.
+        .usage         = DepthImageUsageFlags(device.d32_sampleable()),
         .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
@@ -367,18 +367,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     // from there).  Used by volumetric-front and future depth-aware passes
     // that construct their descriptor set programmatically rather than via
     // material JSON.
-    if (m_desc.needsSceneDepth) {
-        bool already = false;
-        for (auto& t : m_desc.textures) {
-            if (t == WE_SCENE_DEPTH) {
-                already = true;
-                break;
-            }
-        }
-        if (! already) {
-            m_desc.textures.emplace_back(WE_SCENE_DEPTH);
-        }
-    }
+    EnsureSceneDepthTextureIfNeeded(m_desc.textures, m_desc.needsSceneDepth);
     m_desc.vk_textures.resize(m_desc.textures.size());
     // Pre-reserve per-pass scratch capacity to the prepare-time texture count
     // + 1 for the UBO writeset.  std::vector::reserve allocates once and never
@@ -405,14 +394,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
         ImageSlotsRef img_slots;
         if (IsSpecTex(tex_name)) {
-            // Special-case _rt_sceneDepth (path A): under d32_sampleable
-            // we sample the existing depth attachment directly.  The image
-            // is owned by Scene::depthBuffer (a shared_ptr<void> carrying
-            // VmaImageParameters), not registered in scene.renderTargets,
-            // so the generic tex_cache().Query path below would fail.
-            // Under path D the resolve pass registers _rt_sceneDepthLinear
-            // in renderTargets and aliases _rt_sceneDepth to it, so the
-            // generic path handles path D unchanged.
+            // _rt_sceneDepth is sampled directly off the live depth
+            // attachment.  The image is owned by Scene::depthBuffer (a
+            // shared_ptr<void> carrying VmaImageParameters), not registered
+            // in scene.renderTargets, so the generic tex_cache().Query path
+            // below would fail — hence the dedicated branch here instead.
+            // A device that fails Device::d32_sampleable(), or a pass
+            // running under MSAA or with useReflectionDepth set (reflections
+            // own a separate depth buffer), is ineligible: prepare() skips
+            // wiring the binding and the slot falls back to the 1x1
+            // vk_fallback_tex dummy. No resolve pass substitutes a real
+            // depth value on those devices.
             //
             // _rt_volumetricsSingle is the WE shader's hidden-default key for
             // the same scene-occluder closest-z buffer (used by the volumetric
@@ -421,8 +413,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             // branches below.
             const bool is_depth_alias =
                 (tex_name == WE_SCENE_DEPTH) || (tex_name == WE_VOLUMETRICS_SINGLE);
-            if (is_depth_alias && device.d32_sampleable() &&
-                scene.msaaSamples <= 1 && ! m_desc.useReflectionDepth) {
+            if (DepthAliasPathAEligible(is_depth_alias,
+                                        device.d32_sampleable(),
+                                        scene.msaaSamples,
+                                        m_desc.useReflectionDepth)) {
                 auto depth = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
                 if (depth && *depth->view != VK_NULL_HANDLE) {
                     ImageParameters img;
@@ -441,14 +435,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                          "scene.depthBuffer not initialised (skipping)",
                          tex_name.c_str());
                 continue;
-            }
-            else if (is_depth_alias && m_desc.useReflectionDepth) {
+            } else if (is_depth_alias && m_desc.useReflectionDepth) {
                 LOG_INFO("CSP_PREPARE: %s requested in reflection "
                          "pass — sampled-depth path disabled",
                          tex_name.c_str());
                 continue;
-            }
-            else if (is_depth_alias && scene.msaaSamples > 1) {
+            } else if (is_depth_alias && scene.msaaSamples > 1) {
                 LOG_INFO("CSP_PREPARE: %s requested but MSAA=%u "
                          "active — sampled-depth path disabled in v1",
                          tex_name.c_str(),

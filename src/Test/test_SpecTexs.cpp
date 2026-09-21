@@ -55,11 +55,6 @@ TEST_SUITE("SpecTexs") {
         CHECK(IsSpecTex(WE_SCENE_DEPTH) == true);
     }
 
-    TEST_CASE("WE_SCENE_DEPTH_LINEAR constant is _rt_sceneDepthLinear and IsSpecTex-true") {
-        CHECK(WE_SCENE_DEPTH_LINEAR == "_rt_sceneDepthLinear");
-        CHECK(IsSpecTex(WE_SCENE_DEPTH_LINEAR) == true);
-    }
-
 } // TEST_SUITE
 
 TEST_SUITE("SpecTexs_Volumetrics") {

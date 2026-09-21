@@ -539,17 +539,6 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
         }
     }
 
-    // Path-D fallback for sampled-depth-incapable devices.  Schedule the
-    // depth-to-color resolve before the volumetric chain consumes
-    // _rt_sceneDepth.  The activation predicate is the volumetric-chain
-    // enabled flag.
-    {
-        const bool hasVolumetricLight = scene.volumetricsConfig.enabled;
-        // Note: device-capability check would need a Device& accessor here
-        // before this can do real work; the gate is documentation today.
-        (void) hasVolumetricLight;
-    }
-
     if (extra.use_mipmap_framebuffer) {
         rg::addCopyPass(*rgraph,
                         rg::TexNode::Desc { .name = SpecTex_Default.data(),

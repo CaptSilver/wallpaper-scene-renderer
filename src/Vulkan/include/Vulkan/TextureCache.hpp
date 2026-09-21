@@ -95,9 +95,9 @@ public:
 
     void RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const;
 
-    // Lazily creates and caches a NEAREST/CLAMP/no-compare sampler used for
-    // sampling depth-attachment images (path A) and the depth-resolve color
-    // RT (path D).  Process-lifetime handle owned by this TextureCache.
+    // Lazily creates and caches the NEAREST/CLAMP/no-compare sampler that
+    // CustomShaderPass binds when a pass samples the main depth attachment as
+    // a texture.  Process-lifetime handle owned by this TextureCache.
     VkSampler GetOrCreateDepthSampler();
 
     // Hash-keyed VkSampler dedup.  TextureCache::CreateTex used to mint a

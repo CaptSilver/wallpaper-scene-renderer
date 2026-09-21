@@ -7,12 +7,15 @@
 #include <string>
 
 using wallpaper::vulkan::CustomShaderPass;
+using wallpaper::vulkan::DepthAliasPathAEligible;
+using wallpaper::vulkan::EnsureSceneDepthTextureIfNeeded;
 
-// Pin that the WE_SCENE_DEPTH key, when present in a Desc's textures list,
-// participates in the IsSpecTex branch of prepare().  We can't drive a real
-// prepare() without a live device, but we can verify the Desc construction
-// flow accepts the key.  Functional verification happens in preflight via
-// scenescript_tests + the live volumetric front pass (legs 03/04).
+// Binding the depth attachment needs a live device, so these cases take the
+// part of the path that does not: the WE_SCENE_DEPTH key itself (its spelling,
+// and that IsSpecTex routes it into prepare()'s depth branch at all), the
+// append-once rule of EnsureSceneDepthTextureIfNeeded, and the predicate
+// prepare() asks before it samples the live depth attachment.  Whether the
+// descriptor then lands on the GPU is a question for a run on real hardware.
 TEST_SUITE("CustomShaderPass::depth-binding") {
     TEST_CASE("WE_SCENE_DEPTH key can be added to Desc::textures") {
         CustomShaderPass::Desc desc;
@@ -21,39 +24,67 @@ TEST_SUITE("CustomShaderPass::depth-binding") {
         CHECK(desc.textures[0] == "_rt_sceneDepth");
         CHECK(wallpaper::IsSpecTex(desc.textures[0]) == true);
     }
-    TEST_CASE("needsSceneDepth alone causes prepare to wire the depth binding") {
-        // Structural pin: a Desc with needsSceneDepth=true and no
-        // _rt_sceneDepth in textures still requires prepare() to wire the
-        // depth.  We can't drive prepare() here; this is a docs-as-test.
+    TEST_CASE("needsSceneDepth appends WE_SCENE_DEPTH exactly once, and never when unset") {
         CustomShaderPass::Desc desc;
         desc.needsSceneDepth = true;
-        CHECK(desc.textures.empty());
-        CHECK(desc.needsSceneDepth);
-    }
-}
+        CHECK(EnsureSceneDepthTextureIfNeeded(desc.textures, desc.needsSceneDepth));
+        REQUIRE(desc.textures.size() == 1);
+        CHECK(desc.textures[0] == wallpaper::WE_SCENE_DEPTH);
+        // Calling it again with the key already present is a no-op — the
+        // second call must not duplicate the entry.
+        CHECK_FALSE(EnsureSceneDepthTextureIfNeeded(desc.textures, desc.needsSceneDepth));
+        CHECK(desc.textures.size() == 1);
 
-TEST_SUITE("CustomShaderPass::depth-binding") {
+        CustomShaderPass::Desc off;
+        CHECK_FALSE(EnsureSceneDepthTextureIfNeeded(off.textures, off.needsSceneDepth));
+        CHECK(off.textures.empty());
+    }
     TEST_CASE("MSAA gate: msaaSamples > 1 should skip the path-A binding") {
-        auto path_a_eligible = [](unsigned msaaSamples, bool d32_sampleable) {
-            return d32_sampleable && msaaSamples <= 1;
-        };
-        CHECK(path_a_eligible(1, true) == true);
-        CHECK(path_a_eligible(2, true) == false);
-        CHECK(path_a_eligible(4, true) == false);
-        CHECK(path_a_eligible(8, true) == false);
-        CHECK(path_a_eligible(1, false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == true);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/2,
+                                      /*useReflectionDepth=*/false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/4,
+                                      /*useReflectionDepth=*/false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/8,
+                                      /*useReflectionDepth=*/false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/false,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/false,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == false);
     }
-}
-
-TEST_SUITE("CustomShaderPass::depth-binding") {
-    TEST_CASE("reflection gate: reflect_y0 should skip the path-A binding") {
-        auto path_a_eligible = [](bool reflect_y0, bool d32_sampleable,
-                                  unsigned msaaSamples) {
-            return d32_sampleable && msaaSamples <= 1 && !reflect_y0;
-        };
-        CHECK(path_a_eligible(false, true, 1) == true);
-        CHECK(path_a_eligible(true,  true, 1) == false);
-        CHECK(path_a_eligible(true,  true, 4) == false);
-        CHECK(path_a_eligible(false, false, 1) == false);
+    TEST_CASE("reflection gate: useReflectionDepth should skip the path-A binding") {
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == true);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/true) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/4,
+                                      /*useReflectionDepth=*/true) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/true,
+                                      /*d32_sampleable=*/false,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == false);
+        CHECK(DepthAliasPathAEligible(/*is_depth_alias=*/false,
+                                      /*d32_sampleable=*/true,
+                                      /*msaaSamples=*/1,
+                                      /*useReflectionDepth=*/false) == false);
     }
 }

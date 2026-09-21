@@ -28,17 +28,12 @@ constexpr std::string_view WE_FULL_COMPO_BUFFER_PREFIX { "_rt_FullCompoBuffer" }
 constexpr std::string_view WE_MIP_MAPPED_FRAME_BUFFER { "_rt_MipMappedFrameBuffer" };
 
 constexpr std::string_view WE_SHADOW_ATLAS { "_rt_shadowAtlas" };
-// Scene depth as a sampled texture.  Resolved by CustomShaderPass::prepare()
-// to (path A) the main depth attachment bound through a NEAREST/CLAMP
-// no-compare sampler, or (path D) the output of a depth-to-color resolve
-// pass when the device lacks sampled-image support on VK_FORMAT_D32_SFLOAT.
-// Consumers: volumetric ray-march (legs 03/04), future SSAO/DOF.
+// Scene depth as a sampled texture.  CustomShaderPass::prepare() binds the
+// main depth attachment behind a NEAREST/CLAMP no-compare sampler on a device
+// that advertises sampled-image support for VK_FORMAT_D32_SFLOAT; where it
+// does not, the slot gets the 1x1 fallback texture and the shader reads no
+// real depth.  Consumers: volumetric ray-march, future SSAO/DOF.
 constexpr std::string_view WE_SCENE_DEPTH { "_rt_sceneDepth" };
-// Path-D fallback: the producer side of the depth-to-color resolve writes
-// gl_FragCoord.z into this single-channel float RT; the consumer side reads
-// it transparently aliased as WE_SCENE_DEPTH.  Only used when
-// Device::d32_sampleable() is false.
-constexpr std::string_view WE_SCENE_DEPTH_LINEAR { "_rt_sceneDepthLinear" };
 constexpr std::string_view WE_REFLECTION { "_rt_Reflection" };
 constexpr std::string_view WE_REFLECTION_BLUR { "_rt_Reflection_blur" };
 // Volumetric scattering render-target identifiers.  WE_VOLUMETRICS_BACK is the

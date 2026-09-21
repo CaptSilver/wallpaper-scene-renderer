@@ -4,7 +4,6 @@ add_library(${LIB_NAME}
 STATIC
 CopyPass.cpp
 CustomShaderPass.cpp
-DepthToColorResolvePass.cpp
 FenceWaitRetry.cpp
 FinPass.cpp
 FrameFenceCycle.cpp
