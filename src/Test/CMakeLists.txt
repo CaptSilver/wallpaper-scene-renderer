@@ -358,13 +358,12 @@ target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
 # Opt-in sanitizers (WEK_SANITIZE=address,undefined | thread). No-op when empty.
 wek_apply_sanitizers(backend_scene_tests)
 
-if(MUTATION_TESTING)
-    target_compile_options(backend_scene_tests PRIVATE
-        -fpass-plugin=${MULL_PLUGIN_PATH}
-        -g -grecord-command-line
-        -DWP_SUPPRESS_DEBUG_LOGGING
-    )
-endif()
+# Same option block every first-party library gets via
+# wek_apply_mull_instrumentation() (cmake/WekMullInstrument.cmake) -- kept as
+# one shared function so the test executable and the libraries it links can't
+# drift apart the way they used to, when only this target's own
+# target_compile_options carried the flag and the libraries it links did not.
+wek_apply_mull_instrumentation(backend_scene_tests)
 
 add_test(NAME backend_scene_tests COMMAND backend_scene_tests)
 # Backstop against a wedged run (e.g. a device-enumeration block that slips

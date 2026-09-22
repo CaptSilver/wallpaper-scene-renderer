@@ -30,4 +30,5 @@ target_include_directories(${LIB_NAME} PUBLIC include PRIVATE include/Vulkan inc
 target_include_directories(${LIB_NAME} SYSTEM PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party")
 target_compile_options(${LIB_NAME} PRIVATE ${warn_opts} -Wno-missing-field-initializers)
+wek_apply_mull_instrumentation(${LIB_NAME})
 set_property(TARGET ${LIB_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)

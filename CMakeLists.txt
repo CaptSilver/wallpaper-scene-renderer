@@ -38,6 +38,13 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekWarnings.cmake)
 # configures too.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekHardening.cmake)
 
+# Mull mutation-instrumentation plumbing (resolves MULL_PLUGIN_PATH, provides
+# wek_apply_mull_instrumentation).  Included here, before add_subdirectory(src)
+# below, because that call defines the library targets the function gets
+# called on (Utils, Looper, Particle, Audio, RenderGraph, Scene, Timer,
+# Vulkan) — MULL_PLUGIN_PATH must already be resolved by the time they run.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekMullInstrument.cmake)
+
 if(PROFILING)
     # Applied before add_subdirectory so every backend target compiles the
     # WEK_PROFILE_SCOPE macros to real timers instead of ((void)0).
@@ -69,46 +76,15 @@ if(BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
-if(MUTATION_TESTING AND NOT BUILD_TESTS)
-    message(FATAL_ERROR "MUTATION_TESTING requires BUILD_TESTS=ON")
-endif()
-
 if(BUILD_FUZZERS AND NOT BUILD_TESTS)
     message(FATAL_ERROR "BUILD_FUZZERS requires BUILD_TESTS=ON")
 endif()
 
-if(MUTATION_TESTING)
-    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(FATAL_ERROR "MUTATION_TESTING requires Clang (found ${CMAKE_CXX_COMPILER_ID})")
-    endif()
-
-    if(NOT MULL_PLUGIN_PATH)
-        # Try system-installed Mull first
-        execute_process(
-            COMMAND ${CMAKE_CXX_COMPILER} --version
-            OUTPUT_VARIABLE _clang_ver_out OUTPUT_STRIP_TRAILING_WHITESPACE)
-        string(REGEX MATCH "clang version ([0-9]+)" _ "${_clang_ver_out}")
-        set(_clang_maj "${CMAKE_MATCH_1}")
-        file(GLOB _mull_candidates
-            /usr/lib/mull-ir-frontend-${_clang_maj}
-            /usr/lib64/mull-ir-frontend-${_clang_maj})
-        if(_mull_candidates)
-            list(GET _mull_candidates 0 MULL_PLUGIN_PATH)
-            # Find matching runner
-            find_program(MULL_RUNNER mull-runner-${_clang_maj})
-        endif()
-    endif()
-
-    if(NOT MULL_PLUGIN_PATH)
-        # Auto-download from GitHub releases
-        include(cmake/FetchMull.cmake)
-    endif()
-
-    message(STATUS "Mull plugin: ${MULL_PLUGIN_PATH}")
-    if(MULL_RUNNER)
-        message(STATUS "Mull runner: ${MULL_RUNNER}")
-    endif()
-endif()
+# MUTATION_TESTING's own BUILD_TESTS check and MULL_PLUGIN_PATH resolution now
+# live in cmake/WekMullInstrument.cmake, included above — before
+# add_subdirectory(src), not after, so the libraries it defines can be
+# instrumented too (see that file's header comment for why the old ordering
+# left them out).
 
 if(BUILD_TESTS)
     enable_testing()
