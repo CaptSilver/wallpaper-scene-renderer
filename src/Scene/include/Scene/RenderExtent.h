@@ -29,18 +29,22 @@ inline constexpr double kMinRenderScale = 0.25;
 //                 GPU cost on a heavy wallpaper, since almost everything the
 //                 renderer does is per-pixel and per-pass.
 // pin_w/pin_h   : an exact size pinned by the caller (the standalone viewer's
-//                 -R), 0 for none.  A pin wins over the scale outright: it
-//                 exists because Wayland fractional scaling makes dpr unstable
-//                 around window-show time, so the caller has already decided
-//                 the exact physical size it wants.
+//                 -R), 0 for none.  A pin wins over the scale, though not
+//                 below the floor -- it exists because Wayland fractional
+//                 scaling makes dpr unstable around window-show time, so the
+//                 caller has already decided the exact physical size it
+//                 wants, but a size that small is still a broken render
+//                 target, not a smaller one.
 //
 // Never returns zero — a zero-sized target is not a smaller render, it is a
 // broken swapchain.
 inline RenderExtent ResolveRenderExtent(uint32_t item_w, uint32_t item_h, double scale,
                                         uint32_t pin_w = 0, uint32_t pin_h = 0) {
-    if (pin_w > 0 && pin_h > 0) return { pin_w, pin_h };
+    if (pin_w > 0 && pin_h > 0) {
+        return { std::max(pin_w, kMinRenderExtent), std::max(pin_h, kMinRenderExtent) };
+    }
 
-    const double s = std::clamp(scale, kMinRenderScale, 1.0);
+    const double s     = std::clamp(scale, kMinRenderScale, 1.0);
     const auto   apply = [s](uint32_t v) {
         const auto scaled = (uint32_t)std::lround((double)v * s);
         return std::max(scaled, kMinRenderExtent);

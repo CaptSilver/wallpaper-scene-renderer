@@ -47,4 +47,30 @@ TEST_SUITE("RenderExtent") {
         CHECK(e.width == 1280u);
         CHECK(e.height == 720u);
     }
+
+    TEST_CASE("a pin below the floor is still floored") {
+        // The standalone viewer's -R pins an exact size (SceneObject's
+        // renderPixelWidth/Height); the pin used to bypass the floor
+        // outright, so a small -R handed the renderer a target too small
+        // for the fixed HDR bloom chain's deepest mip to round to a
+        // nonzero size, and the pass silently bailed.
+        auto e = wallpaper::ResolveRenderExtent(1920, 1080, 1.0, 8, 8);
+        CHECK(e.width >= wallpaper::kMinRenderExtent);
+        CHECK(e.height >= wallpaper::kMinRenderExtent);
+    }
+
+    TEST_CASE("the floor survives the deepest HDR bloom mip on either path") {
+        // buildBloomAndReflection's fixed mip chain (WPSceneParser.cpp)
+        // bottoms out at WE_BLOOM_MIP4, scale 1/16. If kMinRenderExtent
+        // ever drops below 16, or a future bloom-knob rewire deepens the
+        // chain past what the floor covers, this is the tripwire -- on
+        // both the render-scale path and the standalone-viewer pin path.
+        constexpr float kDeepestBloomMipScale = 0.0625f; // WE_BLOOM_MIP4
+        auto            scaled = wallpaper::ResolveRenderExtent(1, 1, wallpaper::kMinRenderScale);
+        auto            pinned = wallpaper::ResolveRenderExtent(1920, 1080, 1.0, 8, 8);
+        CHECK((uint32_t)((float)scaled.width * kDeepestBloomMipScale) >= 1u);
+        CHECK((uint32_t)((float)scaled.height * kDeepestBloomMipScale) >= 1u);
+        CHECK((uint32_t)((float)pinned.width * kDeepestBloomMipScale) >= 1u);
+        CHECK((uint32_t)((float)pinned.height * kDeepestBloomMipScale) >= 1u);
+    }
 }
