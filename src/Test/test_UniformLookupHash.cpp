@@ -72,7 +72,6 @@ TEST_SUITE("CustomShaderPass uniform lookup hash") {
             wallpaper::vulkan::ShaderReflected::BlockedUniform u {};
             u.offset = static_cast<unsigned int>(i * 16);
             u.size   = 16;
-            u.num    = 1;
             block.member_map.emplace("k" + std::to_string(i), u);
         }
         REQUIRE(block.member_map.size() == static_cast<std::size_t>(N));

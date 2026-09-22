@@ -11,6 +11,7 @@
 #include "PassCommon.hpp"
 #include "Interface/IImageParser.h"
 #include "VulkanRender/PassCacheAlias.hpp"
+#include "VulkanRender/UniformWriteSize.hpp"
 
 #include "Core/ArrayHelper.hpp"
 
@@ -337,14 +338,27 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
         return;
     }
 
-    size_t offset = uni->second.offset;
-    // Use SPIR-V member size when available, fall back to num-based calculation
-    size_t type_size = uni->second.size > 0 ? uni->second.size : sizeof(float) * uni->second.num;
+    size_t offset    = uni->second.offset;
+    auto   type_size = ResolveUniformMemberWriteSize(uni->second.size);
+    if (! type_size) {
+        // Reflection never places a real UBO member at size 0; if this ever
+        // fires something upstream is broken, but logging every frame for
+        // as long as the wallpaper runs would flood the log over one bad
+        // uniform. Log once per (pass, uniform), same idiom as
+        // CustomShaderPass::prepare()'s _csp_logged guard below.
+        thread_local std::unordered_set<const void*> loggedZeroSizeUniforms;
+        if (loggedZeroSizeUniforms.insert(&uni->second).second) {
+            LOG_ERROR("uniform '%.*s' has no reflected size, skipping write",
+                      (int)name.size(),
+                      name.data());
+        }
+        return;
+    }
 
     // Clamp write to member size to prevent overflow into adjacent UBO members
     // (e.g., mat4 ShaderValue written to mat3 uniform)
-    if (value_u8.size() > type_size) {
-        value_u8 = value_u8.subspan(0, type_size);
+    if (value_u8.size() > *type_size) {
+        value_u8 = value_u8.subspan(0, *type_size);
     }
     buf->writeToBuf(bufref, value_u8, offset);
 }

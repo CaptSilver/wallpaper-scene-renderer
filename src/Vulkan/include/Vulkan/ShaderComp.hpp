@@ -30,10 +30,6 @@ struct ShaderCompOpt {
     bool relaxed_rules_vulkan { false };
     // for global unifom block
     uint global_uniform_binding { 0 };
-
-    // relfect:
-    bool reflect_all_io_var { true };
-    bool reflect_all_block_var { false };
 };
 
 bool CompileAndLinkShaderUnits(std::span<const ShaderCompUnit> compUnits, const ShaderCompOpt& opt,

@@ -1,7 +1,6 @@
 #pragma once
 #include "Instance.hpp"
 #include "ShaderComp.hpp"
-#include <glslang/Include/BaseTypes.h>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -29,17 +28,12 @@ struct TransparentStringHash {
     }
 };
 
-VkFormat ToVkType(glslang::TBasicType, size_t);
-
 struct ShaderReflected {
     struct BlockedUniform {
-        int    block_index;
         uint   offset;
         size_t size { 0 };
-        size_t num { 1 }; // for array,vector,matrix
     };
     struct Block {
-        int         index;
         uint        size;
         std::string name;
 
