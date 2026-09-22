@@ -80,14 +80,10 @@ defaultCps(std::vector<ParticleControlpoint>& storage) {
 // Where determinism matters, tests use min == max so the random pick
 // collapses, or assert in-range (not exact equality) so jitter is tolerated.
 //
-// `seededInit` is provided for the few cases that need explicit re-seeding
-// before re-invoking a captured Random-using initializer; most tests pass
-// `min == max` and don't need it.
-inline void seedDeterministic() {
-    Random::seed(0xC0FFEE42u);
-}
-
-inline void seededInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) {
+// `runInit` is a bare pass-through to the init op -- it never touches
+// Random:: state. Determinism here comes entirely from min == max
+// collapsing the random pick, or from asserting a tolerant in-range check.
+inline void runInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) {
     init(p, dt);
 }
 
@@ -147,7 +143,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         json j = { { "name", "alpharandom" }, { "min", 0.5 }, { "max", 0.5 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.alpha == doctest::Approx(0.5f).epsilon(0.001));
     }
 
@@ -158,7 +154,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         json j = { { "name", "sizerandom" }, { "min", 7.0 }, { "max", 7.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.size == doctest::Approx(7.0f).epsilon(0.001));
     }
 
@@ -169,7 +165,7 @@ TEST_SUITE("SingleRandom exponent dispatch") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 20; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(p.size >= 4.0f);
             CHECK(p.size <= 8.0f);
         }
@@ -194,7 +190,7 @@ TEST_SUITE("lifetimerandom jitter boundary") {
         Particle p = makeParticle();
         p.init.lifetime = 0.0f;
         p.lifetime      = 0.0f;
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // Must be EXACTLY 0 — any jitter (`>=` mutation) would multiply 0
         // by a [0.95, 1.05] factor (still 0 — but differs at IEEE level if
         // we ever pull in a NaN).  Both should yield 0; check finite.
@@ -212,7 +208,7 @@ TEST_SUITE("lifetimerandom jitter boundary") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 50; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(p.init.lifetime >= 0.5f);   // not collapsed to ~0
             CHECK(p.init.lifetime <= 1.5f);   // not blown up
         }
@@ -238,7 +234,7 @@ TEST_SUITE("velocityrandom inherit CP boundary") {
                    { "controlpoint", 0 } };
         auto init = WPParticleParser::genParticleInitOp(j, {});
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.velocity.norm() == doctest::Approx(0.0f));
     }
 
@@ -252,7 +248,7 @@ TEST_SUITE("velocityrandom inherit CP boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.velocity.x() == doctest::Approx(10.0f));
         CHECK(p.velocity.y() == doctest::Approx(20.0f));
         CHECK(p.velocity.z() == doctest::Approx(30.0f));
@@ -283,7 +279,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.5);
+            runInit(init, p, 0.5);
             CHECK(p.velocity.norm() == doctest::Approx(100.0f).epsilon(0.05));
         }
     }
@@ -297,7 +293,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
                    { "offset", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.05);
+        runInit(init, p, 0.05);
         CHECK(p.velocity.norm() == doctest::Approx(50.0f).epsilon(0.1));
     }
 
@@ -314,7 +310,7 @@ TEST_SUITE("turbulentvelocityrandom boundaries") {
                    { "offset", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 11.0);
+        runInit(init, p, 11.0);
         CHECK(std::isfinite(p.velocity.norm()));
         CHECK(p.velocity.norm() == doctest::Approx(30.0f).epsilon(0.1));
     }
@@ -334,7 +330,7 @@ TEST_SUITE("positionoffsetrandom boundaries") {
         json j = { { "name", "positionoffsetrandom" }, { "distance", 0.0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.position.norm() == doctest::Approx(0.0f));
     }
 
@@ -348,7 +344,7 @@ TEST_SUITE("positionoffsetrandom boundaries") {
         // With len2=0, projection is skipped — full offset applied.
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(std::isfinite(p.position.norm()));
             // distance * 0.02 * cbrt(rand) max = 100*0.02*1 = 2.
             CHECK(p.position.norm() <= 2.5f);
@@ -379,7 +375,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
         Particle p = makeParticle();
         p.size = 0.0f;
         p.position = Eigen::Vector3f(0, 0, 0);   // dist to cp 50 = 50
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // val = 50, t = (50-0)/(100-0) = 0.5, outVal = 0 + 0.5*200 = 100.
         CHECK(p.size == doctest::Approx(100.0f).epsilon(0.01));
     }
@@ -398,7 +394,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.size = 0.0f;
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.size == doctest::Approx(33.0f).epsilon(0.01));
     }
 
@@ -419,7 +415,7 @@ TEST_SUITE("remapinitialvalue inMax<=inMin variants") {
         Particle p = makeParticle();
         p.size     = 0.0f;
         p.position = Eigen::Vector3f(0, 0, 0);
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // val = 0 (skipped), t=0, size = outMin = 0.
         CHECK(p.size == doctest::Approx(0.0f).epsilon(0.01));
     }
@@ -451,7 +447,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.position = Eigen::Vector3f(50, 50, 50);  // arbitrary pre-init
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // Short-circuit just bumps seq; p.position stays where it was.
         CHECK(p.position == Eigen::Vector3f(50, 50, 50));
     }
@@ -468,13 +464,13 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
 
         // First spawn: seq=0 → idx=0 → t=0 → cp0 (10,20,30).
         Particle a = makeParticle();
-        seededInit(init, a, 0.0);
+        runInit(init, a, 0.0);
         CHECK(a.position.x() == doctest::Approx(10.0f).epsilon(0.5));
         CHECK(a.position.y() == doctest::Approx(20.0f).epsilon(0.5));
 
         // Second spawn: seq=1 → idx=1 → t=1 → cp1 (70,80,90).
         Particle b = makeParticle();
-        seededInit(init, b, 0.0);
+        runInit(init, b, 0.0);
         CHECK(b.position.x() == doctest::Approx(70.0f).epsilon(0.5));
         CHECK(b.position.y() == doctest::Approx(80.0f).epsilon(0.5));
     }
@@ -495,7 +491,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
         std::array<Particle, 3> ps;
         for (int i = 0; i < 3; i++) {
             ps[i] = makeParticle();
-            seededInit(init, ps[i], 0.0);
+            runInit(init, ps[i], 0.0);
         }
         // idx 0 → t=0 → x=0 (taper=0 zeros noise; arc_amount=0 default).
         // idx 1 → t=0.5 → midpoint x=50 (plus zero arc, plus noise).
@@ -519,7 +515,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
         std::array<Particle, 3> ps;
         for (int i = 0; i < 3; i++) {
             ps[i] = makeParticle();
-            seededInit(init, ps[i], 0.0);
+            runInit(init, ps[i], 0.0);
         }
         CHECK(ps[0].position.x() == doctest::Approx(0.0f).epsilon(0.5));
         CHECK(ps[2].position.x() == doctest::Approx(100.0f).epsilon(0.5));
@@ -537,7 +533,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints residual") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.position = Eigen::Vector3f(5, 5, 5);
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // Position untouched.
         CHECK(p.position.x() == doctest::Approx(5.0f));
         CHECK(p.position.y() == doctest::Approx(5.0f));
@@ -571,7 +567,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();  // first idx=0 → t=0 → no arc, no noise (taper=0).
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // Without arc and at endpoints (taper=sin(0)=0 / sin(pi)=0), pos == cp0.
         CHECK(p.position.x() == doctest::Approx(0.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -588,9 +584,9 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         // Skip first (t=0), grab second (t=0.5, midpoint).
         Particle p0 = makeParticle();
-        seededInit(init, p0, 0.0);
+        runInit(init, p0, 0.0);
         Particle p1 = makeParticle();
-        seededInit(init, p1, 0.0);
+        runInit(init, p1, 0.0);
         // arc: pathpos += 0.5*4*0.5*0.5 * arc_dir(0,1,0) * 100 = 50*arc_dir.
         // arc_dir is screen-perp of line(100,0,0) = (0,100,0) normalised = (0,1,0).
         // So midpoint y ≈ 50.
@@ -610,13 +606,13 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
         Particle p0 = makeParticle();
         p0.size     = 10.0f;
         p0.init.size = 10.0f;
-        seededInit(init, p0, 0.0);    // t=0 → scale=1.0 → 10.
+        runInit(init, p0, 0.0);    // t=0 → scale=1.0 → 10.
         CHECK(p0.size == doctest::Approx(10.0f).epsilon(0.05));
 
         Particle p1 = makeParticle();
         p1.size     = 10.0f;
         p1.init.size = 10.0f;
-        seededInit(init, p1, 0.0);    // t=1 → scale=1-1*1=0 (or clamped to 0).
+        runInit(init, p1, 0.0);    // t=1 → scale=1-1*1=0 (or clamped to 0).
         CHECK(p1.size == doctest::Approx(0.0f).epsilon(0.05));
     }
 
@@ -631,10 +627,10 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p0 = makeParticle();
         p0.size = 10.0f;
-        seededInit(init, p0, 0.0);
+        runInit(init, p0, 0.0);
         Particle p1 = makeParticle();
         p1.size = 10.0f;
-        seededInit(init, p1, 0.0);
+        runInit(init, p1, 0.0);
         // p1 t=1 → scale = 1 - 2 = -1, clamped to 0.
         CHECK(p1.size == doctest::Approx(0.0f).epsilon(0.05));
     }
@@ -650,10 +646,10 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc/size") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p1 = makeParticle();
         p1.size = 10.0f;
-        seededInit(init, p1, 0.0); // seq=0 → t=0 → scale=1 (would be no-op anyway)
+        runInit(init, p1, 0.0); // seq=0 → t=0 → scale=1 (would be no-op anyway)
         Particle p2 = makeParticle();
         p2.size = 10.0f;
-        seededInit(init, p2, 0.0); // seq=1 → t=1 → scale=1 (size_reduction=0 keeps it 1)
+        runInit(init, p2, 0.0); // seq=1 → t=1 → scale=1 (size_reduction=0 keeps it 1)
         CHECK(p2.size == doctest::Approx(10.0f).epsilon(0.05));
     }
 }
@@ -678,7 +674,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 10; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(p.color.x() >= 0.0f); CHECK(p.color.x() <= 1.0f);
             CHECK(p.color.y() >= 0.0f); CHECK(p.color.y() <= 1.0f);
             CHECK(p.color.z() >= 0.0f); CHECK(p.color.z() <= 1.0f);
@@ -696,7 +692,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             // h=0 → red → r=1, g=0, b=0 (HsvToRgb(0, 1, 1)).
             CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.05));
             CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -713,7 +709,7 @@ TEST_SUITE("hsvcolorrandom residual") {
                    { "huesteps", 0 } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // Hue=0 sat=1 val=0.5 → red half-lit.
         CHECK(p.color.x() == doctest::Approx(0.5f).epsilon(0.05));
         CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.05));
@@ -731,7 +727,7 @@ TEST_SUITE("hsvcolorrandom residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             // Hue=0, sat=0.6, val=1 → HsvToRgb returns (1, 0.4, 0.4).
             CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.05));
             CHECK(p.color.y() == doctest::Approx(0.4f).epsilon(0.05));
@@ -755,7 +751,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "1.5 0.0 0.0" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.5f).epsilon(0.01));
     }
 
@@ -764,7 +760,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "255 0 0" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.0f).epsilon(0.01));
         CHECK(p.color.y() == doctest::Approx(0.0f).epsilon(0.01));
     }
@@ -774,7 +770,7 @@ TEST_SUITE("colorlist normalization residual") {
                    { "colors", { "0.5 0.5 0.5" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         CHECK(p.color.x() == doctest::Approx(0.5f).epsilon(0.01));
     }
 
@@ -786,7 +782,7 @@ TEST_SUITE("colorlist normalization residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 10; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(p.color.x() >= 0.0f); CHECK(p.color.x() <= 1.05f);
             CHECK(p.color.y() >= 0.0f); CHECK(p.color.y() <= 1.05f);
             CHECK(p.color.z() >= 0.0f); CHECK(p.color.z() <= 1.05f);
@@ -799,7 +795,7 @@ TEST_SUITE("colorlist normalization residual") {
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 5; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             // No jitter → exact pass-through.
             CHECK(p.color.x() == doctest::Approx(0.4f).epsilon(0.001));
             CHECK(p.color.y() == doctest::Approx(0.6f).epsilon(0.001));
@@ -824,7 +820,7 @@ TEST_SUITE("mapsequencearoundcontrolpoint cp boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // First (idx=0): pos = cp0(50,50,50) + (10*cos(0), 10*sin(0), 0) = (60, 50, 50).
         CHECK(p.position.x() == doctest::Approx(60.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(50.0f).epsilon(0.05));
@@ -842,7 +838,7 @@ TEST_SUITE("mapsequencearoundcontrolpoint cp boundary") {
         auto init = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // cp_offset = (0,0,0); pos = (10, 0, 0) at idx=0.
         CHECK(p.position.x() == doctest::Approx(10.0f).epsilon(0.05));
         CHECK(p.position.y() == doctest::Approx(0.0f).epsilon(0.05));

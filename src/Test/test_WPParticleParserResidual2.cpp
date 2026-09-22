@@ -81,21 +81,12 @@ inline void seedDeterministic() {
     Random::seed(0xC0FFEE42u);
 }
 
-// seededInit: deterministically seed Random:: state before invoking init.
-// All Random-driven tests in this file should use this so test ordering
-// doesn't affect mutation kill detection.  Mull may reorder mutants and
-// re-run tests in different orders; per-test seeding pins the outcome.
-inline void seededInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) {
-    init(p, dt);
-}
-
-// seedAndInit: convenience wrapper that seeds before each call.  Use this
-// in tests where the assertion depends on Random:: output (rather than just
-// ensuring init runs to completion).
-inline void seedAndInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) {
-    seedDeterministic();
-    init(p, dt);
-}
+// runInit: bare pass-through to the init op, no Random:: reseed of its own.
+// Tests that need reproducible draws call seedDeterministic() once at the
+// test case's head, then call runInit in a loop to sample the resulting
+// sequence -- reseeding inside runInit itself would collapse every draw
+// in that loop to the first sample (see the regression test below).
+inline void runInit(const ParticleInitOp& init, Particle& p, double dt = 0.0) { init(p, dt); }
 
 inline Particle runOpSingle(ParticleOperatorOp op, const Particle& base,
                             double time_pass = 0.016, double time = 0.0) {
@@ -167,7 +158,7 @@ TEST_SUITE("turbulentvelocityrandom direction limiter") {
                    { "forward", "1 0 0" }, { "right", "0 1 0" }, { "up", "0 0 1" } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.05);
+        runInit(init, p, 0.05);
         // result post-rotation should align with +x (forward).
         // Magnitude is speed=100, x ≈ 100, |y|+|z| << 100.
         CHECK(std::isfinite(p.velocity.norm()));
@@ -186,7 +177,7 @@ TEST_SUITE("turbulentvelocityrandom direction limiter") {
                    { "forward", "1 0 0" }, { "right", "0 1 0" }, { "up", "0 0 1" } };
         auto init = WPParticleParser::genParticleInitOp(j);
         Particle p = makeParticle();
-        seededInit(init, p, 0.05);
+        runInit(init, p, 0.05);
         // Magnitude pinned, direction free.
         CHECK(p.velocity.norm() == doctest::Approx(100.0f).epsilon(0.05));
     }
@@ -218,7 +209,7 @@ TEST_SUITE("positionoffsetrandom perpendicular projection") {
         // Project out x-component.  Offset is in y-z plane only.
         for (int i = 0; i < 50; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             // |x| should be small relative to the radius (2.0).
             CHECK(std::abs(p.position.x()) < 0.5f);
         }
@@ -253,7 +244,7 @@ TEST_SUITE("remapinitialvalue divide arithmetic kills") {
         Particle p = makeParticle();
         p.size = 0.0f;
         p.position = Eigen::Vector3f(0, 0, 0); // dist to (15,0,0) = 15.
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // t = (15-10)/(20-10) = 0.5; outVal = 0+0.5*100 = 50.
         CHECK(p.size == doctest::Approx(50.0f).epsilon(0.5));
     }
@@ -272,7 +263,7 @@ TEST_SUITE("remapinitialvalue divide arithmetic kills") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p = makeParticle();
         p.size = 0.0f;
-        seededInit(init, p, 0.0);
+        runInit(init, p, 0.0);
         // t=0.2 → mapped 20.
         CHECK(p.size == doctest::Approx(20.0f).epsilon(0.5));
     }
@@ -312,7 +303,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints mirror reflection") {
         std::array<Particle, 7> ps;
         for (int i = 0; i < 7; i++) {
             ps[i] = makeParticle();
-            seededInit(init, ps[i], 0.0);
+            runInit(init, ps[i], 0.0);
         }
         // Mirror reflection over period=2*(count-1)=6 should give:
         // seq=0 → idx=0 → t=0 → x=0
@@ -359,7 +350,7 @@ TEST_SUITE("SingleRandom exponent != 1.0 path") {
         const int N = 200;
         for (int i = 0; i < N; i++) {
             Particle p = makeParticle();
-            seededInit(init_no, p, 0.0);
+            runInit(init_no, p, 0.0);
             sum_no += p.alpha;
         }
         double mean_no = sum_no / N;
@@ -371,7 +362,7 @@ TEST_SUITE("SingleRandom exponent != 1.0 path") {
         double sum_pw = 0.0;
         for (int i = 0; i < N; i++) {
             Particle p = makeParticle();
-            seededInit(init_pw, p, 0.0);
+            runInit(init_pw, p, 0.0);
             sum_pw += p.alpha;
         }
         double mean_pw = sum_pw / N;
@@ -718,7 +709,7 @@ TEST_SUITE("hsvcolorrandom h_quant arithmetic kill") {
         bool saw_red = false, saw_other = false;
         for (int i = 0; i < 50; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             CHECK(p.color.x() >= 0.0f); CHECK(p.color.x() <= 1.0f);
             if (p.color.x() > 0.95f && p.color.y() < 0.1f) saw_red = true;
             if (p.color.y() > 0.5f) saw_other = true;
@@ -754,7 +745,7 @@ TEST_SUITE("colorlist HSV jitter scaling kill") {
         int red_count = 0;
         for (int i = 0; i < 30; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             if (p.color.x() > 0.95f && p.color.y() < 0.05f && p.color.z() < 0.05f) {
                 red_count++;
             }
@@ -1324,12 +1315,12 @@ TEST_SUITE("mapsequencebetweencontrolpoints arc_dir sign kill") {
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         // First (idx=0, t=0): cp0=(0,0,0).
         Particle p0 = makeParticle();
-        seededInit(init, p0, 0.0);
+        runInit(init, p0, 0.0);
         // Second (idx=1, t=0.5): pathpos = (30,40,0) + arc_dir*50.
         // Original: arc_dir=(-0.8, 0.6, 0) → pathpos = (30-40, 40+30, 0) = (-10, 70, 0).
         // Mutated arcdir=(0.8, 0.6, 0) → pathpos = (30+40, 40+30, 0) = (70, 70, 0).
         Particle p1 = makeParticle();
-        seededInit(init, p1, 0.0);
+        runInit(init, p1, 0.0);
         // Original midpoint x ≈ -10; mutated x ≈ 70.  Note noise has small contribution
         // (taper=sin(0.5π)=1 and noise amp=0.15*100=15), so x can have ±15 jitter.
         CHECK(p1.position.x() < 30.0f);   // disambiguates vs +70 mutated
@@ -1825,7 +1816,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints idx=period-pos kill") {
         std::array<Particle, 3> ps;
         for (int i = 0; i < 3; i++) {
             ps[i] = makeParticle();
-            seededInit(init, ps[i], 0.0);
+            runInit(init, ps[i], 0.0);
         }
         // ps[2]: seq=2, pos=2 (<4) → idx=2 → t=2/3 → x=200.
         CHECK(ps[2].position.x() == doctest::Approx(200.0f).epsilon(0.5));
@@ -2155,7 +2146,7 @@ TEST_SUITE("mapsequencebetweencontrolpoints amplitude scaling") {
             // Run 3 spawns: idx 0,1,2.
             for (int i = 0; i < 3; i++) {
                 Particle p = makeParticle();
-                seededInit(init, p, 0.0);
+                runInit(init, p, 0.0);
                 // y always bounded.
                 CHECK(std::abs(p.position.y()) < 20.0f);
             }
@@ -2657,7 +2648,7 @@ TEST_SUITE("hsvcolorrandom h_range subtraction kill") {
         int low_r_count = 0;
         for (int i = 0; i < 30; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             if (p.color.x() < 0.4f) low_r_count++;
         }
         // Original: nearly all 30 have low r.  Mutated: ~half have high r.
@@ -2690,7 +2681,7 @@ TEST_SUITE("hsvcolorrandom h_quant>0 boundary kill") {
         int red_only = 0, other = 0;
         for (int i = 0; i < 30; i++) {
             Particle p = makeParticle();
-            seededInit(init, p, 0.0);
+            runInit(init, p, 0.0);
             if (p.color.x() > 0.95f && p.color.y() < 0.1f && p.color.z() < 0.1f) {
                 red_only++;
             } else {
@@ -3091,3 +3082,22 @@ TEST_SUITE("vortex_v2 dis_mid +0.1 epsilon kill") {
 // ============================================================================
 // More test cases above push kill rate further; stopping here for review.
 // ============================================================================
+
+TEST_SUITE("runInit does not reseed between calls") {
+    TEST_CASE("two runInit draws off one seed differ (regression guard: no per-call reseed)") {
+        // runInit must be a bare pass-through: no Random:: reseed of its own.
+        // hsvcolorrandom h_quant arithmetic kill (50-draw loop) and
+        // alpharandom exp=4 produces lower mean than exp=1 (200-draw loop)
+        // both seed once and draw a *sequence* through runInit -- reseeding
+        // inside runInit collapses every draw in those loops to the first
+        // sample, which this test exists to catch before it reaches them.
+        seedDeterministic();
+        json     j    = { { "name", "alpharandom" }, { "min", 0.0 }, { "max", 1.0 } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
+        Particle p1   = makeParticle();
+        runInit(init, p1, 0.0);
+        Particle p2 = makeParticle();
+        runInit(init, p2, 0.0);
+        CHECK(p1.alpha != doctest::Approx(p2.alpha).epsilon(0.0001));
+    }
+}
