@@ -247,6 +247,24 @@ TEST_SUITE("WPMaterial::MergePass") {
         CHECK(m.combos.at("Y") == 7);
         CHECK(m.constantshadervalues.at("g_New")[0] == doctest::Approx(0.25f));
     }
+
+    TEST_CASE("MergePass leaves an empty override texture slot untouched") {
+        auto           m = Parse(R"({
+            "passes": [{
+                "shader":   "flat",
+                "textures": ["base.tex", "keep.tex"]
+            }]
+        })");
+        WPMaterialPass overlay;
+        overlay.textures = { "", "newKeep.tex", "extra.tex" }; // empty → don't overwrite slot 0
+
+        m.MergePass(overlay);
+
+        REQUIRE(m.textures.size() == 3u);
+        CHECK(m.textures[0] == "base.tex"); // empty did not overwrite
+        CHECK(m.textures[1] == "newKeep.tex");
+        CHECK(m.textures[2] == "extra.tex");
+    }
 }
 
 // =====================================================================

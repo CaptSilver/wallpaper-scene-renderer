@@ -21,6 +21,30 @@ std::string UserPropertyNameOf(const nlohmann::json& value) {
     return {};
 }
 
+// The pass-overlay rule shared by WPMaterialPass::Update and WPMaterial::MergePass: layer a
+// per-instance pass override onto a base pass or material. An empty texture string means "no
+// override for this slot", not "clear it", so it's skipped rather than written; combos and
+// constantshadervalues are plain last-write-wins maps.
+void MergeOverlayFields(std::vector<std::string>&                            textures,
+                        std::unordered_map<std::string, int32_t>&            combos,
+                        std::unordered_map<std::string, std::vector<float>>& constantshadervalues,
+                        const WPMaterialPass&                                p) {
+    int32_t i = -1;
+    for (const auto& el : p.textures) {
+        i++;
+        if (p.textures.size() > textures.size()) textures.resize(p.textures.size());
+        if (! el.empty()) {
+            textures[i] = el;
+        }
+    }
+    for (const auto& el : p.constantshadervalues) {
+        constantshadervalues[el.first] = el.second;
+    }
+    for (const auto& el : p.combos) {
+        combos[el.first] = el.second;
+    }
+}
+
 } // namespace
 
 bool WPMaterialPassBindItem::FromJson(const nlohmann::json& json) {
@@ -30,37 +54,11 @@ bool WPMaterialPassBindItem::FromJson(const nlohmann::json& json) {
 }
 
 void WPMaterialPass::Update(const WPMaterialPass& p) {
-    int32_t i = -1;
-    for (const auto& el : p.textures) {
-        i++;
-        if (p.textures.size() > textures.size()) textures.resize(p.textures.size());
-        if (! el.empty()) {
-            textures[i] = el;
-        }
-    }
-    for (const auto& el : p.constantshadervalues) {
-        constantshadervalues[el.first] = el.second;
-    }
-    for (const auto& el : p.combos) {
-        combos[el.first] = el.second;
-    }
+    MergeOverlayFields(textures, combos, constantshadervalues, p);
 }
 
 void WPMaterial::MergePass(const WPMaterialPass& p) {
-    int32_t i = -1;
-    for (const auto& el : p.textures) {
-        i++;
-        if (p.textures.size() > textures.size()) textures.resize(p.textures.size());
-        if (! el.empty()) {
-            textures[i] = el;
-        }
-    }
-    for (const auto& el : p.constantshadervalues) {
-        constantshadervalues[el.first] = el.second;
-    }
-    for (const auto& el : p.combos) {
-        combos[el.first] = el.second;
-    }
+    MergeOverlayFields(textures, combos, constantshadervalues, p);
 }
 
 bool WPMaterialPass::FromJson(const nlohmann::json& json) {
