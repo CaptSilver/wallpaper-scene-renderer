@@ -45,14 +45,6 @@ TEST_SUITE("ParticleInstance") {
         CHECK(inst.GetBoundedData().particle_idx == -1);
     }
 
-    TEST_CASE("InitTrails stores capacity and ensures histories exist after refresh") {
-        ParticleInstance inst;
-        inst.InitTrails(16, 0.5f);
-        CHECK(inst.TrailCapacity() == 16u);
-        // Histories vector starts empty; Emitt grows it to match particle count.
-        CHECK(inst.TrailHistories().size() == 0);
-    }
-
     TEST_CASE("ParticlesVec is a mutable reference") {
         ParticleInstance inst;
         inst.ParticlesVec().emplace_back();
@@ -412,15 +404,6 @@ TEST_SUITE("ParticleSubSystem") {
         for (int i = 0; i < 5; i++) CHECK(sub->QueryNewInstance() == nullptr);
     }
 
-    TEST_CASE("SetSpriteTrail then QueryNewInstance initialises trail capacity") {
-        ParticleFixture fx;
-        auto            sub = fx.makeSub();
-        sub->SetSpriteTrail(64, 2.0f);
-        auto* inst = sub->QueryNewInstance();
-        REQUIRE(inst != nullptr);
-        CHECK(inst->TrailCapacity() == 64u);
-    }
-
     TEST_CASE("UpdateMouseControlPoints only writes to link_mouse CPs and recurses") {
         ParticleFixture fx;
         auto            sub   = fx.makeSub();
@@ -581,6 +564,8 @@ TEST_SUITE("ParticleSubSystem.Emitt") {
         auto* inst = sub->Instances().front().get();
         CHECK(inst->ParticlesVec().size() == 1);
         CHECK(inst->TrailHistories().size() == 1);
+        CHECK(inst->TrailHistories()[0].Capacity() == 8u);
+        CHECK(inst->TrailHistories()[0].MaxAge() == doctest::Approx(1.0f));
         fx.scene.PassFrameTime(0.016);
         sub->Emitt();
         CHECK(inst->ParticlesVec().size() == 2);

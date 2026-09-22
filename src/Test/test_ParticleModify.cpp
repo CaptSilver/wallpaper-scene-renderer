@@ -953,7 +953,6 @@ TEST_SUITE("ParticleInstance_Refresh") {
 
     TEST_CASE("Refresh clears trail histories") {
         ParticleInstance inst;
-        inst.InitTrails(4, 1.0f);
         // Seed a few trail points so Refresh has something to clear
         auto& trails = inst.TrailHistories();
         if (trails.empty()) {

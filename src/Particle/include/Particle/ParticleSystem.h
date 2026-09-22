@@ -58,9 +58,7 @@ public:
     BoundedData&       GetBoundedData();
     const BoundedData& GetBoundedData() const { return m_bounded_data; }
 
-    void                               InitTrails(u32 trail_capacity, float trail_max_age = 0.0f);
     std::vector<ParticleTrailHistory>& TrailHistories();
-    u32                                TrailCapacity() const;
 
     // Resolves the parent-event particle for this instance, or nullptr when the link is
     // missing/stale/dead.  EVENT_FOLLOW, EVENT_SPAWN, and EVENT_DEATH children carry a
@@ -77,8 +75,6 @@ private:
     std::vector<Particle>             m_particles;
     BoundedData                       m_bounded_data;
     std::vector<ParticleTrailHistory> m_trail_histories;
-    u32                               m_trail_capacity { 0 };
-    float                             m_trail_max_age { 0.0f };
 };
 
 class ParticleSubSystem : NoCopy, NoMove {

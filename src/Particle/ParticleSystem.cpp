@@ -32,14 +32,7 @@ void ParticleInstance::Refresh() {
     for (auto& trail : m_trail_histories) trail.Clear();
 }
 
-void ParticleInstance::InitTrails(u32 trail_capacity, float trail_max_age) {
-    m_trail_capacity = trail_capacity;
-    m_trail_max_age  = trail_max_age;
-}
-
 std::vector<ParticleTrailHistory>& ParticleInstance::TrailHistories() { return m_trail_histories; }
-
-u32 ParticleInstance::TrailCapacity() const { return m_trail_capacity; }
 
 bool ParticleInstance::IsDeath() const { return m_is_death; }
 void ParticleInstance::SetDeath(bool v) { m_is_death = v; };
@@ -221,9 +214,6 @@ ParticleInstance* ParticleSubSystem::QueryNewInstance() {
         }
         if (m_instances.size() < m_maxcount_instance) {
             auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
-            if (m_is_spritetrail) {
-                inst->InitTrails(m_trail_capacity, m_trail_length);
-            }
             return inst.get();
         }
     }
@@ -291,10 +281,7 @@ void ParticleSubSystem::EmittImpl(bool skip_spawn) {
          m_parent_subsystem->Type() == SpawnType::EVENT_FOLLOW);
     if (m_spawn_type == SpawnType::STATIC && ! parent_is_event_follow) {
         if (m_instances.empty()) {
-            auto& inst = m_instances.emplace_back(std::make_unique<ParticleInstance>());
-            if (m_is_spritetrail) {
-                inst->InitTrails(m_trail_capacity, m_trail_length);
-            }
+            m_instances.emplace_back(std::make_unique<ParticleInstance>());
         }
     }
 
