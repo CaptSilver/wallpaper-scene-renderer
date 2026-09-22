@@ -398,11 +398,6 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
         // underlying VkSampler (owned by m_sampler_cache).  See MEM5.
         return image;
     } while (false);
-    /*
-    if (result != vk::Result::eSuccess) {
-        device.DestroyImageParameters(image);
-    }
-    */
     return std::nullopt;
 }
 
@@ -1189,12 +1184,6 @@ void TextureCache::RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParame
                 .layerCount     = 1,
             },
     };
-    /*
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                        VK_DEPENDENCY_BY_REGION_BIT,
-                        out_bar);
-        */
 
     i32 mipWidth  = (i32)image.extent.width;
     i32 mipHeight = (i32)image.extent.height;

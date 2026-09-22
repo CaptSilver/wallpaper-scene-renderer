@@ -133,8 +133,7 @@ struct VulkanRender::Impl {
     std::unique_ptr<PrePass> m_prepass { nullptr };
     std::unique_ptr<FinPass> m_finpass { nullptr };
 
-    std::unique_ptr<FinPass> m_testpass { nullptr };
-    ReDrawCB                 m_redraw_cb;
+    ReDrawCB m_redraw_cb;
 
     std::unique_ptr<StagingBuffer> m_vertex_buf { nullptr };
     std::unique_ptr<StagingBuffer> m_dyn_buf { nullptr };
@@ -1085,12 +1084,6 @@ bool VulkanRender::Impl::initRes() {
         LOG_ERROR("no present target: offscreen swapchain missing");
         return false;
     }
-    /*
-    m_testpass = std::make_unique<FinPass>(FinPass::Desc{});
-    m_testpass->setPresentFormat(m_ex_swapchain->format());
-    m_testpass->setPresentQueueIndex(m_device->graphics_queue().family_index);
-    m_testpass->setPresentLayout(vk::ImageLayout::ePresentSrcKHR);
-    */
 
     m_vertex_buf = std::make_unique<StagingBuffer>(*m_device,
                                                    2 * 1024 * 1024,

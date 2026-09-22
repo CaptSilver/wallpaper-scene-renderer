@@ -211,11 +211,6 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
 
         if (! pipeline.create(device, pass, m_desc.pipeline)) return;
     }
-    /*
-    if(m_desc.present_layout == vk::ImageLayout::ePresentSrcKHR || m_desc.present_layout ==
-    vk::ImageLayout::eSharedPresentKHR) m_desc.render_layout = m_desc.present_layout; else
-    m_desc.render_layout = vk::ImageLayout::eColorAttachmentOptimal;
-    */
 
     m_desc.render_layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
