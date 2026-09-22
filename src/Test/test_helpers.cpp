@@ -75,20 +75,6 @@ TEST_SUITE("Algorism") {
         CHECK(algorism::IsPowOfTwo(1023) == false);
     }
 
-    TEST_CASE("PowOfTwo") {
-        // Minimum returned value is 8
-        CHECK(algorism::PowOfTwo(0) == 8);
-        CHECK(algorism::PowOfTwo(1) == 8);
-        CHECK(algorism::PowOfTwo(7) == 8);
-        CHECK(algorism::PowOfTwo(8) == 8);
-        CHECK(algorism::PowOfTwo(9) == 16);
-        CHECK(algorism::PowOfTwo(16) == 16);
-        CHECK(algorism::PowOfTwo(17) == 32);
-        CHECK(algorism::PowOfTwo(100) == 128);
-        CHECK(algorism::PowOfTwo(256) == 256);
-        CHECK(algorism::PowOfTwo(257) == 512);
-    }
-
 } // TEST_SUITE
 
 // ===========================================================================

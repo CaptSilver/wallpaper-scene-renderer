@@ -2265,15 +2265,6 @@ public:
         }
         return nullptr;
     }
-    std::vector<int32_t> getVideoNodeIds() const {
-        std::lock_guard<std::mutex> lock(m_video_decoders_mutex);
-        std::vector<int32_t>        ids;
-        ids.reserve(m_video_decoders.size());
-        for (auto& vd : m_video_decoders) {
-            if (vd.ownerNode) ids.push_back(vd.ownerNode->ID());
-        }
-        return ids;
-    }
 
 private:
     // Queue of script-driven play/stop/pause commands for property animations
@@ -2308,7 +2299,6 @@ bool SceneWallpaper::inited() const { return m_main_handler->inited(); }
 bool SceneWallpaper::init() { return m_main_handler->init(); }
 
 void SceneWallpaper::initVulkan(const RenderInitInfo& info) {
-    m_offscreen                             = info.offscreen;
     std::shared_ptr<RenderInitInfo> sp_info = std::make_shared<RenderInitInfo>(info);
     auto                            msg =
         CreateMsgWithCmd(m_main_handler->renderHandler(), RenderHandler::CMD::CMD_INIT_VULKAN);
@@ -2490,10 +2480,6 @@ uint64_t SceneWallpaper::getFrameIdx() const {
     return rh ? rh->getFrameIdx() : 0ULL;
 }
 
-std::vector<int32_t> SceneWallpaper::getVideoTextureNodeIds() const {
-    auto rh = m_main_handler->renderHandler();
-    return rh ? rh->getVideoNodeIds() : std::vector<int32_t> {};
-}
 double SceneWallpaper::videoGetCurrentTime(int32_t nodeId) const {
     auto rh = m_main_handler->renderHandler();
     if (! rh) return 0.0;
