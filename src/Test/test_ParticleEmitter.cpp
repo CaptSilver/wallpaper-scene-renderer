@@ -531,3 +531,70 @@ TEST_SUITE("ParticleEmitter hostile emit rates") {
         CHECK(spawned == 1u);
     }
 }
+
+TEST_SUITE("EmitScheduler") {
+    TEST_CASE("continuous mode — single emission per emitDur") {
+        EmitScheduleParams p {
+            .emitSpeed = 2.0f, .one_per_frame = false, .batchSize = 1u, .burstRate = 0.0f
+        };
+        EmitScheduler sched(p);
+        CHECK(sched.Next(p, 0.5) == 1u);
+    }
+
+    TEST_CASE("continuous mode with batchSize > 1 clamps to 1 per call") {
+        EmitScheduleParams p {
+            .emitSpeed = 100.0f, .one_per_frame = false, .batchSize = 5u, .burstRate = 0.0f
+        };
+        EmitScheduler sched(p);
+        CHECK(sched.Next(p, 1.0) == 1u);
+    }
+
+    TEST_CASE("burst mode — resets batchEmitted and timer after window, caps to batchSize") {
+        EmitScheduleParams p {
+            .emitSpeed = 4.0f, .one_per_frame = false, .batchSize = 3u, .burstRate = 10.0f
+        };
+        EmitScheduler sched(p);
+
+        u32 total = 0;
+        // Drive past the initial exhausted phase -- initial burstTimer is drawn from
+        // [0, burstRate), so a single tick of `burstRate` always pushes it past
+        // burstRate and guarantees the wrap branch fires exactly once here (this call
+        // may itself already emit -- the wrap and the first batch tick share one call,
+        // same as in the production MakeEmittOp path this mirrors).
+        total += sched.Next(p, p.burstRate);
+
+        // Ticks of emitDur=0.25 fire at most one particle per call inside burst mode.
+        // Stop as soon as the target is hit, mirroring the equivalent MakeEmittOp-level
+        // test (test_ParticleEmitter.cpp:184): an unbounded loop would legitimately
+        // start a second batch once cumulative elapsed time crosses burstRate again,
+        // which is not what this test is pinning.
+        for (int i = 0; i < 50 && total < p.batchSize; ++i) {
+            total += sched.Next(p, 0.25);
+        }
+        CHECK(total == p.batchSize);
+    }
+
+    TEST_CASE("burst mode construction must not consume Random") {
+        EmitScheduleParams p {
+            .emitSpeed = 2.0f, .one_per_frame = false, .batchSize = 1u, .burstRate = 5.0f
+        };
+
+        Random::seed(1234);
+        double baseline = Random::get(0.0, 1.0);
+
+        Random::seed(1234);
+        EmitScheduler sched(p);
+        double        afterConstruction = Random::get(0.0, 1.0);
+        CHECK(afterConstruction == baseline);
+
+        // The phase must still be drawn, just later -- deferring it must not become
+        // dropping it. The burst window hasn't elapsed and the batch starts exhausted,
+        // so Next() emits nothing and the phase draw is the only thing that can move
+        // the engine on this first call.
+        Random::seed(1234);
+        EmitScheduler phased(p);
+        u32           n = phased.Next(p, 0.0);
+        REQUIRE(n == 0u);
+        CHECK(Random::get(0.0, 1.0) != baseline);
+    }
+}

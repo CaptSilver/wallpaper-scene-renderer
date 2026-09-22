@@ -155,4 +155,32 @@ struct ParticleSphereEmitterArgs {
     static ParticleEmittOp MakeEmittOp(ParticleSphereEmitterArgs);
 };
 
+// Fields both emitters need to decide "how many particles this tick" -- deliberately not
+// the full ParticleBoxEmitterArgs/ParticleSphereEmitterArgs, which also carry shape-specific
+// position/velocity fields (minDistance, sign, ...) that Next() never reads.
+struct EmitScheduleParams {
+    float emitSpeed;
+    bool  one_per_frame;
+    u32   batchSize;
+    float burstRate;
+};
+
+// Owns the mutable per-emitter timing state and decides how many particles a tick emits.
+// timer/burstTimer/batchEmitted used to be duplicated field-for-field between the box and
+// sphere emitters; burstTimerInited exists so the burst phase is drawn on first invocation
+// (the render thread), not at construction (the scene-parse thread) -- see Next()'s
+// Random::get call, and the thread-affinity bug that made this matter in the first place.
+struct EmitScheduler {
+    double timer { 0.0 };
+    double burstTimer { 0.0 };
+    bool   burstTimerInited { false };
+    u32    batchEmitted;
+
+    // Start exhausted — no emission until first burst fires
+    explicit EmitScheduler(const EmitScheduleParams& p)
+        : batchEmitted(p.burstRate > 0 ? p.batchSize : 0u) {}
+
+    u32 Next(const EmitScheduleParams& p, double timepass);
+};
+
 } // namespace wallpaper
