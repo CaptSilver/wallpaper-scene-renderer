@@ -206,8 +206,7 @@ bool WPImageEffect::IsEffectBlacklisted(const std::string& filePath) {
     if (path.has_parent_path()) {
         path = path.parent_path();
         if (path.has_parent_path()) {
-            std::string effectId   = path.parent_path().filename().string();
-            std::string parentPath = path.parent_path().string();
+            std::string effectId = path.parent_path().filename().string();
             return WPImageEffect::BLACKLISTED_WORKSHOP_EFFECTS.find(effectId) !=
                    WPImageEffect::BLACKLISTED_WORKSHOP_EFFECTS.end();
         }
@@ -223,7 +222,6 @@ bool WPImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         // hide blacklisted effects
         visible = false;
     }
-    GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
     nlohmann::json jEffect;
     if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + filePath, kMaxJsonBytes),
                      jEffect))
@@ -247,7 +245,6 @@ bool WPImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 }
 
 bool WPImageEffect::FromFileJson(const nlohmann::json& json, fs::VFS& vfs) {
-    GET_JSON_NAME_VALUE_NOWARN(json, "version", version);
     GET_JSON_NAME_VALUE(json, "name", name);
     if (json.contains("fbos")) {
         for (auto& jF : json.at("fbos")) {

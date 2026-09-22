@@ -45,10 +45,8 @@ private:
 public:
     bool                         FromJson(const nlohmann::json&, fs::VFS& vfs);
     bool                         FromFileJson(const nlohmann::json&, fs::VFS& vfs);
-    int32_t                      id;
     std::string                  name;
     bool                         visible { true };
-    int32_t                      version;
     std::vector<WPMaterial>      materials;
     std::vector<WPMaterialPass>  passes;
     std::vector<WPEffectCommand> commands;

@@ -107,11 +107,10 @@ TEST_SUITE("WPImageEffect::FromJson") {
             })" },
             { "materials/util/effA.json", kFlatMat },
         });
-        auto j = nlohmann::json::parse(R"({"file":"effects/myFx/effect.json", "id": 11})");
+        auto j   = nlohmann::json::parse(R"({"file":"effects/myFx/effect.json"})");
 
         WPImageEffect e;
         REQUIRE(e.FromJson(j, *vfs));
-        CHECK(e.id == 11);
         REQUIRE(e.fbos.size() == 1u);
         CHECK(e.fbos[0].name == "_rt_a");
         REQUIRE(e.passes.size() == 1u);
