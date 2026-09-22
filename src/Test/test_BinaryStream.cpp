@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include "Fs/IBinaryStream.h"
+#include "Fs/LimitedBinaryStream.h"
 #include "Fs/MemBinaryStream.h"
 
 #include <cstdint>
@@ -158,6 +159,7 @@ TEST_SUITE("IBinaryStream.Seek") {
         CHECK(f.SeekEnd(-3));
         CHECK(f.Tell() == 7);
         CHECK_FALSE(f.SeekEnd(-100));
+        CHECK_FALSE(f.SeekEnd(1)); // positive offset (10 + 1 = 11) is out of range too
     }
 
     TEST_CASE("Rewind returns to offset 0") {
@@ -174,6 +176,27 @@ TEST_SUITE("IBinaryStream.Seek") {
     }
 
 } // Seek
+
+TEST_SUITE("LimitedBinaryStream.Seek") {
+    TEST_CASE("SeekEnd matches the C fseek(SEEK_END) convention") {
+        auto backing = std::make_shared<MemBinaryStream>(std::vector<uint8_t>(10, 0));
+        LimitedBinaryStream f(backing, 0, 10);
+        CHECK(f.SeekEnd(0));
+        CHECK(f.Tell() == 10);
+        CHECK(f.SeekEnd(-3));
+        CHECK(f.Tell() == 7);
+        CHECK_FALSE(f.SeekEnd(-100));
+    }
+
+    TEST_CASE("SeekEnd is anchored to the slice window, not the backing stream") {
+        // PKG entries are always a sub-window of a larger backing file -- SeekEnd
+        // must use the slice's own Size(), not the backing stream's.
+        auto backing = std::make_shared<MemBinaryStream>(std::vector<uint8_t>(100, 0));
+        LimitedBinaryStream f(backing, 20, 10); // window [20, 30) of a 100-byte backing stream
+        CHECK(f.SeekEnd(0));
+        CHECK(f.Tell() == 10); // slice-relative, i.e. Size() of the slice
+    }
+} // LimitedBinaryStream.Seek
 
 TEST_SUITE("IBinaryStream.ByteOrder") {
     TEST_CASE("SetByteOrder BigEndian swaps subsequent reads") {

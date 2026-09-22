@@ -102,7 +102,10 @@ public:
     virtual idx   Tell() const                         = 0;
     virtual bool  SeekSet(idx offset)                  = 0;
     virtual bool  SeekCur(idx offset)                  = 0;
-    virtual bool  SeekEnd(idx offset)                  = 0;
+    // C fseek(SEEK_END) convention: resulting position is Size() + offset. offset is
+    // typically <= 0 to seek backward from the end; offset == 0 seeks to Size() (one
+    // past the last valid Read index).
+    virtual bool SeekEnd(idx offset) = 0;
 
     virtual isize Size() const = 0;
 

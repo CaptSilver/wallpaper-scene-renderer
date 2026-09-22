@@ -60,13 +60,13 @@ public:
         return SeekInPos(pos);
     }
     virtual bool SeekEnd(idx offset) {
-        idx pos = Size() - 1 - offset;
+        idx pos = Size() + offset;
         return SeekInPos(pos);
     }
     virtual isize Size() const { return m_end - m_start; }
 
 private:
-    idx                            m_pos; // 0 < m_pos <= m_end - m_start
+    idx                            m_pos; // 0 <= m_pos <= m_end - m_start
     const idx                      m_start;
     const idx                      m_end; // end if m_pos == m_end - m_start
     std::shared_ptr<IBinaryStream> m_infs;
