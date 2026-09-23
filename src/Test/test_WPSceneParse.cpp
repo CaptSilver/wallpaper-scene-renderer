@@ -2485,6 +2485,48 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
         REQUIRE(scene->nodeEffectLayerMap.count(701) == 1);
         CHECK(scene->nodeEffectLayerMap.at(701)->InheritParent() == false);
+        CHECK(scene->attachmentProxyLinks.empty());
+    }
+
+    TEST_CASE("builds a parent-world proxy when an effect-child's parent was itself reset to "
+              "identity by its own effect chain") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 800, "name": "parent_with_effects", "image": "models/_plain.json",
+      "origin": "300 150 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true,
+      "effects": [ { "id": 10, "name": "tint", "visible": true,
+                     "file": "effects/tint.json" } ] },
+    { "id": 801, "name": "child_with_effects", "parent": 800,
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true,
+      "effects": [ { "id": 11, "name": "tint2", "visible": true,
+                     "file": "effects/tint.json" } ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_effect_child_of_effect_parent", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(801) == 1);
+        auto it = std::find_if(
+            scene->attachmentProxyLinks.begin(), scene->attachmentProxyLinks.end(), [](auto& l) {
+                return l.child_id == 801;
+            });
+        REQUIRE(it != scene->attachmentProxyLinks.end());
+        CHECK(it->parent_id == 800);
+        CHECK(it->proxy->ModelTrans()(0, 3) == doctest::Approx(300.0));
+        CHECK(it->proxy->ModelTrans()(1, 3) == doctest::Approx(150.0));
     }
 
     TEST_CASE("E2E: hide-pattern hides a matching particle object, "
