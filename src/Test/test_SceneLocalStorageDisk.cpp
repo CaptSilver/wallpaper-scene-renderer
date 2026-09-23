@@ -289,4 +289,12 @@ TEST_SUITE("SceneScript localStorage disk store") {
                                       std::string(wallpaper::platform::kLocalStorageSceneFile);
         CHECK(readJsonObject(scenePath).contains("icons"));
     }
+
+    TEST_CASE("the global scope path follows a cache-path override") {
+        CacheSandbox      sb("cache_override");
+        auto              obj          = std::make_unique<scenebackend::SceneObject>();
+        const std::string override_dir = sb.root + "/explicit-override";
+        obj->setCachePath(override_dir);
+        CHECK(obj->localStoragePathForTesting(true).toStdString().rfind(override_dir, 0) == 0);
+    }
 }

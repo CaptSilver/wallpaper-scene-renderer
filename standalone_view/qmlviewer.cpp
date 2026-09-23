@@ -98,6 +98,15 @@ int main(int argc, char** argv) {
                                       Q_ARG(QString, QString::fromStdString(hide_pattern)));
         }
     }
+    // --cache-path must be set BEFORE source so the shader-cache VFS mount
+    // point is already correct when the first scene loads.
+    {
+        std::string cache_path = program.get<std::string>(OPT_CACHE_PATH);
+        if (! cache_path.empty()) {
+            std::cout << "cache path override: " << cache_path << std::endl;
+            sv->setCachePath(cache_path);
+        }
+    }
     sv->setProperty("source", QUrl::fromLocalFile(program.get<std::string>(ARG_SCENE).c_str()));
     // Match the GLFW viewer's clamp: SceneWallpaper drops an fps < 5 message
     // outright, so an unclamped value silently leaves the timer at main.qml's

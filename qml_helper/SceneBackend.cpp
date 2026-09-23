@@ -976,6 +976,16 @@ void SceneObject::enableGenGraphviz() { SET_PROPERTY(Bool, wallpaper::PROPERTY_G
 bool SceneObject::deterministic() const { return m_deterministic; }
 void SceneObject::enableDeterministic() { m_deterministic = true; }
 
+std::string SceneObject::cachePath() const {
+    return m_cache_path_override.empty() ? GetDefaultCachePath() : m_cache_path_override;
+}
+
+void SceneObject::setCachePath(const std::string& path) {
+    if (path.empty()) return;
+    m_cache_path_override = path;
+    if (m_scene) m_scene->setPropertyString(wallpaper::PROPERTY_CACHE_PATH, path);
+}
+
 // Build the CursorParallax arg for hitTestLayerProxy from the cached
 // scene-level config + the last-known widget-normalised cursor position.
 static CursorParallax buildCursorParallax(const SceneObject* obj, float mouseNx, float mouseNy,
@@ -1316,7 +1326,7 @@ QString SceneObject::localStoragePath(bool global) const {
     const auto name = [](std::string_view v) {
         return QString::fromUtf8(v.data(), static_cast<qsizetype>(v.size()));
     };
-    QString base = QString::fromStdString(GetDefaultCachePath());
+    QString base = QString::fromStdString(cachePath());
     if (global) return base + "/" + name(wallpaper::platform::kLocalStorageGlobalFile);
     if (m_lsSceneId.isEmpty()) return {};
     return base + "/" + m_lsSceneId + "/" + name(wallpaper::platform::kLocalStorageSceneFile);

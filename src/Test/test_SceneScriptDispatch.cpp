@@ -524,6 +524,19 @@ TEST_SUITE("SceneObject debug flags") {
         obj.requestScreenshotAtFrame("/dev/null", 5); // must not crash
         CHECK_FALSE(obj.screenshotDone());
     }
+
+    TEST_CASE("cachePath overrides the default and reads back") {
+        scenebackend::SceneObject obj; // m_scene stays null under WEKDE_TEST_NO_SCENE
+        CHECK(obj.cachePath() == scenebackend::SceneObject::GetDefaultCachePath());
+        obj.setCachePath("/does/not/exist/cache-override");
+        CHECK(obj.cachePath() == "/does/not/exist/cache-override");
+    }
+
+    TEST_CASE("setCachePath ignores an empty path") {
+        scenebackend::SceneObject obj;
+        obj.setCachePath("");
+        CHECK(obj.cachePath() == scenebackend::SceneObject::GetDefaultCachePath());
+    }
 }
 
 // The media dispatchers and the debounced cursorLeave are author-JS entry

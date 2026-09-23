@@ -141,6 +141,13 @@ public:
     bool deterministic() const;
     void enableDeterministic();
 
+    // CLI-viewer-only override for the SPIR-V shader cache / localStorage
+    // directory.  Never wire this into Scene.qml or the production plugin
+    // path — nothing there should redirect a live wallpaper's persisted
+    // state away from the real cache dir.
+    std::string cachePath() const;
+    void        setCachePath(const std::string& path);
+
     Q_INVOKABLE void setAcceptMouse(bool);
     Q_INVOKABLE void setAcceptHover(bool);
 
@@ -363,19 +370,20 @@ private:
     // Recompute m_outputRefreshMillihertz from detected + override and push
     // it down if it moved.
     void applyResolvedRefresh();
-    int     m_fillMode { FillMode::ASPECTCROP };
-    float   m_speed { 1.0f };
-    float   m_volume { 1.0f };
-    bool    m_muted { false };
-    bool    m_hdrOutput { false };
-    bool    m_deterministic { false };
-    bool    m_systemAudioCapture { false };
-    QString m_postprocessingOverride;
-    int     m_msaaMode { 0 };
-    qreal   m_renderScale { 1.0 };
-    QString m_userProperties;
-    int     m_renderPixelWidth { 0 };
-    int     m_renderPixelHeight { 0 };
+    int         m_fillMode { FillMode::ASPECTCROP };
+    float       m_speed { 1.0f };
+    float       m_volume { 1.0f };
+    bool        m_muted { false };
+    bool        m_hdrOutput { false };
+    bool        m_deterministic { false };
+    std::string m_cache_path_override; // empty = use GetDefaultCachePath()
+    bool        m_systemAudioCapture { false };
+    QString     m_postprocessingOverride;
+    int         m_msaaMode { 0 };
+    qreal       m_renderScale { 1.0 };
+    QString     m_userProperties;
+    int         m_renderPixelWidth { 0 };
+    int         m_renderPixelHeight { 0 };
     // Latches the GL-interop failure so a rebuilt scene graph node cannot
     // stack a second recovery pane on top of the first.
     bool    m_glInitFailed { false };
@@ -446,6 +454,7 @@ public:
     // whether a scope is still waiting to be written.
     void flushLocalStorageForTesting();
     bool localStorageDirtyForTesting(bool global) const;
+    QString localStoragePathForTesting(bool global) const { return localStoragePath(global); }
 
 private:
     // Build the minimal JS engine (Vec shims + property-dispatch loop) used by
