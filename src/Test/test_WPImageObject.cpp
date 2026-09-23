@@ -3,6 +3,8 @@
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 #include "wpscene/WPImageObject.h"
+#include "wpscene/WPTextObject.h"
+#include "wpscene/WPParticleObject.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneNode.h"
 
@@ -412,6 +414,121 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         auto ids             = wpscene::CollectComposeDependencyIds({ nullptr, &compose, nullptr });
         CHECK(ids.size() == 1);
         CHECK(ids.count(99) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: projectlayer requester's dependencies are collected") {
+        wpscene::WPImageObject proj;
+        proj.id           = 501;
+        proj.image        = "models/util/projectlayer.json";
+        proj.dependencies = { 601 };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &proj });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(601) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: a base-material texture string naming the composite RT "
+              "is collected with no dependencies entry") {
+        wpscene::WPImageObject reader;
+        reader.id                = 700;
+        reader.material.textures = { "_rt_imageLayerComposite_777_a" };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(777) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: an effect material's texture string is collected") {
+        wpscene::WPImageObject reader;
+        reader.id = 701;
+        wpscene::WPImageEffect effect;
+        wpscene::WPMaterial    mat;
+        mat.textures = { "_rt_imageLayerComposite_888_b" };
+        effect.materials.push_back(mat);
+        reader.effects.push_back(effect);
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(888) == 1);
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: an invisible effect's texture string is not "
+              "collected") {
+        wpscene::WPImageObject reader;
+        reader.id = 702;
+        wpscene::WPImageEffect effect;
+        effect.visible = false;
+        wpscene::WPMaterial mat;
+        mat.textures = { "_rt_imageLayerComposite_889_b" };
+        effect.materials.push_back(mat);
+        reader.effects.push_back(effect);
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        CHECK(ids.empty());
+    }
+
+    TEST_CASE("CollectComposeDependencyIds: a texture-string self-reference is dropped") {
+        wpscene::WPImageObject reader;
+        reader.id                = 424;
+        reader.material.textures = { "_rt_imageLayerComposite_424_a" };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        CHECK(ids.empty());
+    }
+
+    TEST_CASE("CollectTextComposeLinkIds: a text layer's effect material texture string is "
+              "collected") {
+        wpscene::WPTextObject txt;
+        txt.id = 601;
+        wpscene::WPImageEffect effect;
+        wpscene::WPMaterial    mat;
+        mat.textures = { "_rt_imageLayerComposite_333_a" };
+        effect.materials.push_back(mat);
+        txt.effects.push_back(effect);
+
+        auto ids = wpscene::CollectTextComposeLinkIds({ &txt });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(333) == 1);
+    }
+
+    TEST_CASE("CollectTextComposeLinkIds: an invisible effect's texture string is not "
+              "collected") {
+        wpscene::WPTextObject txt;
+        txt.id = 602;
+        wpscene::WPImageEffect effect;
+        effect.visible = false;
+        wpscene::WPMaterial mat;
+        mat.textures = { "_rt_imageLayerComposite_334_a" };
+        effect.materials.push_back(mat);
+        txt.effects.push_back(effect);
+
+        auto ids = wpscene::CollectTextComposeLinkIds({ &txt });
+        CHECK(ids.empty());
+    }
+
+    TEST_CASE("CollectParticleComposeLinkIds: a particle system's own material texture string is "
+              "collected") {
+        wpscene::WPParticleObject partobj;
+        partobj.id                            = 702;
+        partobj.particleObj.material.textures = { "_rt_imageLayerComposite_555_a" };
+
+        auto ids = wpscene::CollectParticleComposeLinkIds({ &partobj });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(555) == 1);
+    }
+
+    TEST_CASE("CollectParticleComposeLinkIds: a nested child particle system's material texture "
+              "string is collected") {
+        wpscene::ParticleChild child;
+        child.obj.material.textures = { "_rt_imageLayerComposite_999_a" };
+
+        wpscene::WPParticleObject partobj;
+        partobj.id = 703;
+        partobj.particleObj.children.push_back(child);
+
+        auto ids = wpscene::CollectParticleComposeLinkIds({ &partobj });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(999) == 1);
     }
 
     TEST_CASE("dependencies tolerates non-integer entries (skipped, not crash)") {

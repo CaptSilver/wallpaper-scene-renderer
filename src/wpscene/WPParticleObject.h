@@ -1,9 +1,11 @@
 #pragma once
 #include "WPJson.hpp"
 #include "WPMaterial.h"
+#include "WPImageObject.h"
 #include <nlohmann/json.hpp>
 #include <vector>
 #include <array>
+#include <unordered_set>
 #include "Utils/BitFlags.hpp"
 #include "Core/Literals.hpp"
 
@@ -165,6 +167,19 @@ public:
     Particle obj;
 };
 
+// Collect every image id a particle system's own material reads via a raw
+// `_rt_imageLayerComposite_<id>` texture string.  Particle materials go
+// through the identical LoadMaterial/ParseSpecTexName path as image and
+// text effect materials (ParseParticleObj calls LoadMaterial directly on
+// particle_obj.material), so a particle can be a reader of a sibling's
+// composite RT the same way an effect chain can.
+inline void collectParticleComposeLinkIds(const Particle& particle, int32_t self_id,
+                                          std::unordered_set<int32_t>& out) {
+    collectComposeLinkIdsFromTextures(particle.material.textures, self_id, out);
+    for (const auto& child : particle.children)
+        collectParticleComposeLinkIds(child.obj, self_id, out);
+}
+
 class ParticleInstanceoverride {
 public:
     bool FromJosn(const nlohmann::json&);
@@ -234,6 +249,16 @@ public:
     Particle                 particleObj;
     ParticleInstanceoverride instanceoverride;
 };
+
+inline std::unordered_set<int32_t>
+CollectParticleComposeLinkIds(const std::vector<const WPParticleObject*>& particle_objs) {
+    std::unordered_set<int32_t> out;
+    for (const WPParticleObject* p : particle_objs) {
+        if (p == nullptr) continue;
+        collectParticleComposeLinkIds(p->particleObj, p->id, out);
+    }
+    return out;
+}
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Initializer, name, max, min);
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Emitter, name, distancemax, distancemin, rate, directions);

@@ -1931,6 +1931,79 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->renderTargets.count(eff->commands.at(0).dst) == 1);
     }
 
+    TEST_CASE("E2E: text layer reading a composite RT by raw texture string forces its source "
+              "offscreen") {
+        ensureGlslangInit();
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
+
+        // No "dependencies" entry anywhere in this scene -- 401 is only ever
+        // referenced by name, inside 501's effect material's texture list.
+        const char* kCompositeReaderMaterialJson = R"({
+            "passes": [{
+                "shader": "_t",
+                "blending": "translucent",
+                "textures": ["_rt_imageLayerComposite_401_a"]
+            }]
+        })";
+        const char* kCompositeReaderEffectJson   = R"({
+            "name": "compositeReader",
+            "passes": [{
+                "material": "materials/_compositeReader.json"
+            }]
+        })";
+
+        auto vfs = makeAssetsVfsWith({
+            { "/effects/compositeReader.json", kCompositeReaderEffectJson },
+            { "/materials/_compositeReader.json", kCompositeReaderMaterialJson },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 401, "name": "dep_image",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true },
+    { "id": 501, "name": "clock_text",
+      "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 64",
+      "font": "systemfont_sans", "pointsize": 24,
+      "text": { "value": "12:00" },
+      "visible": true,
+      "effects": [
+        { "id": 11, "name": "compositeReader", "visible": true,
+          "file": "effects/compositeReader.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_text_composite_reader", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        std::function<SceneNode*(SceneNode*, i32)> findById = [&](SceneNode* n,
+                                                                  i32        id) -> SceneNode* {
+            if (n->ID() == id) return n;
+            for (auto& c : n->GetChildren()) {
+                if (auto* hit = findById(c.get(), id)) return hit;
+            }
+            return nullptr;
+        };
+        SceneNode* dep = findById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+
+        // Before this fix: prescanDependencies never looked at any text object's
+        // effect materials, so 401 stayed onscreen and 501's compositeReader
+        // effect sampled a full-FB snapshot at 401's own draw position instead
+        // of an isolated sprite.
+        CHECK(dep->IsOffscreen() == true);
+        CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+    }
+
     // A solid layer is a coloured quad: WE draws it with the object's own
     // `color` and `alpha`.  Authors who want an invisible pivot set alpha 0
     // themselves (Rei Ayanami 3061226599 does exactly that on its "Solid"

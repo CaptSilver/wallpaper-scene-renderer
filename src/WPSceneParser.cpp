@@ -1589,8 +1589,7 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
     // Layer" runs the blur/bokeh/bloom/CA post chain over the scene below it).
     // Matching only "composelayer.json" left projectlayer as a plain effect layer
     // applying its effects to a blank quad — the captured scene was never blurred.
-    bool isCompose = (wpimgobj.image == "models/util/composelayer.json" ||
-                      wpimgobj.image == "models/util/projectlayer.json");
+    bool isCompose = wpscene::IsComposeLayerImage(wpimgobj.image);
     // A no-effect compose layer still needs an effect chain: the chain is what
     // produces `_rt_imageLayerComposite_<id>_a`, the RT dependent nodes
     // reference via their `dependencies` list and `textures` slots.  Synthesize
@@ -4361,22 +4360,42 @@ void computeAutoOrthoSize(wpscene::WPScene& sc, const std::vector<WPObjectVar>& 
     }
 }
 
-// Pre-pass: collect every image id that appears in some COMPOSE layer's
-// `dependencies` list.  Stored on context so ParseImageObj can force
-// referenced images offscreen (so the compose layer's blend samples an
-// isolated sprite RT, not a full-FB snapshot via _rt_link_<id>).
-// The compose-layer-only + self-reference filters live in
-// CollectComposeDependencyIds (WPImageObject.h) so the test suite can
-// pin them in isolation.
+// Pre-pass: collect every image id that (a) appears in some compose
+// layer's (composelayer.json/projectlayer.json) `dependencies` list, or
+// (b) is read directly by a raw `_rt_imageLayerComposite_<id>` texture
+// string in any object's material -- image, text, or particle alike.
+// Stored on context so ParseImageObj can force the referenced image
+// offscreen (so the reader's blend/sample gets an isolated sprite RT,
+// not a full-FB snapshot via _rt_link_<id>).  The per-object-type
+// collection logic lives in CollectComposeDependencyIds /
+// CollectTextComposeLinkIds / CollectParticleComposeLinkIds
+// (WPImageObject.h / WPTextObject.h / WPParticleObject.h) so the test
+// suite can pin each in isolation.
 void prescanDependencies(ParseContext& context, const std::vector<WPObjectVar>& wp_objs) {
     std::vector<const wpscene::WPImageObject*> image_objs;
     image_objs.reserve(wp_objs.size());
+    std::vector<const wpscene::WPTextObject*>     text_objs;
+    std::vector<const wpscene::WPParticleObject*> particle_objs;
     for (const auto& obj : wp_objs) {
         if (auto* img = std::get_if<wpscene::WPImageObject>(&obj)) {
             image_objs.push_back(img);
+        } else if (auto* txt = std::get_if<wpscene::WPTextObject>(&obj)) {
+            text_objs.push_back(txt);
+        } else if (auto* part = std::get_if<wpscene::WPParticleObject>(&obj)) {
+            particle_objs.push_back(part);
         }
     }
     context.compose_dependency_ids = wpscene::CollectComposeDependencyIds(image_objs);
+    // Text effect materials go through the same LoadMaterial/ParseSpecTexName
+    // path as image effect materials, so a text layer can be a reader of a
+    // sibling's composite RT the same way an image effect chain can, even
+    // with no `dependencies` entry naming it anywhere.
+    for (int32_t id : wpscene::CollectTextComposeLinkIds(text_objs))
+        context.compose_dependency_ids.insert(id);
+    // Particle materials hit the identical LoadMaterial path (ParseParticleObj
+    // calls it directly on particle_obj.material) -- same reasoning as text.
+    for (int32_t id : wpscene::CollectParticleComposeLinkIds(particle_objs))
+        context.compose_dependency_ids.insert(id);
     if (! context.compose_dependency_ids.empty()) {
         LOG_INFO("compose dependency ids collected: %zu", context.compose_dependency_ids.size());
     }

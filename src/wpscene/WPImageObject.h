@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include <string>
 #include <filesystem>
+#include <cctype>
+#include "SpecTexs.hpp"
 
 namespace wallpaper
 {
@@ -150,16 +152,50 @@ public:
     std::vector<int32_t> dependencies;
 };
 
-// Marker used to recognise compose layers ("models/util/composelayer.json"
-// stored in WPImageObject::image).  Only compose layers actually sample
-// sibling layer RTs via _rt_imageLayerComposite_<id>_a, so they're the
-// only layers whose `dependencies` list should force dependents offscreen.
+// Markers recognising the two model paths WE treats as a full compose blend
+// ("models/util/composelayer.json" and "models/util/projectlayer.json"
+// stored in WPImageObject::image) — see synthesizePassthroughForCompose in
+// WPSceneParser.cpp for why projectlayer counts too: it's WE's "entire
+// project as a layer" primitive and uses the same compose material.  Only
+// these two model kinds sample sibling layer RTs via
+// _rt_imageLayerComposite_<id>_a through their `dependencies` list, so
+// they're the only layers whose `dependencies` should force dependents
+// offscreen on that basis alone.
 constexpr std::string_view kComposeLayerImage = "models/util/composelayer.json";
+constexpr std::string_view kProjectLayerImage = "models/util/projectlayer.json";
+
+inline bool IsComposeLayerImage(std::string_view image) {
+    return image == kComposeLayerImage || image == kProjectLayerImage;
+}
+
+// Scan a material's texture list for a raw `_rt_imageLayerComposite_<id>`
+// reference and record <id> in `out`.  This is the OTHER way a layer can
+// end up depending on a sibling's composite RT: ParseSpecTexName resolves
+// this texture name at render time regardless of whether <id> ever appears
+// in anyone's scene.json `dependencies` array, so a hand-authored or
+// malformed material that spells out the name directly still needs its
+// source forced offscreen.
+inline void collectComposeLinkIdsFromTextures(const std::vector<std::string>& textures,
+                                              int32_t self_id, std::unordered_set<int32_t>& out) {
+    for (const auto& tex : textures) {
+        if (! sstart_with(tex, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) continue;
+        std::string_view rest =
+            std::string_view(tex).substr(WE_IMAGE_LAYER_COMPOSITE_PREFIX.size());
+        size_t ndigits = 0;
+        while (ndigits < rest.size() && std::isdigit(static_cast<unsigned char>(rest[ndigits])))
+            ++ndigits;
+        if (ndigits == 0) continue;
+        int32_t dep_id = -1;
+        STRTONUM(std::string(rest.substr(0, ndigits)), dep_id);
+        if (dep_id < 0 || dep_id == self_id) continue;
+        out.insert(dep_id);
+    }
+}
 
 // Collect the image ids that any *compose* layer references in its
 // `dependencies` list.  Two filters apply:
 //
-//   1) Only image objects whose `image` is the compose-layer model
+//   1) Only image objects whose `image` is a compose-layer model
 //      contribute — non-compose layers that happen to declare
 //      `dependencies` (e.g. authoring quirks) must NOT force their
 //      "dependents" offscreen, because no compose-blend will ever read
@@ -180,10 +216,22 @@ CollectComposeDependencyIds(const std::vector<const WPImageObject*>& image_objs)
     std::unordered_set<int32_t> out;
     for (const WPImageObject* img : image_objs) {
         if (img == nullptr) continue;
-        if (img->image != kComposeLayerImage) continue;
-        for (int32_t dep_id : img->dependencies) {
-            if (dep_id == img->id) continue;
-            out.insert(dep_id);
+        if (IsComposeLayerImage(img->image)) {
+            for (int32_t dep_id : img->dependencies) {
+                if (dep_id == img->id) continue;
+                out.insert(dep_id);
+            }
+        }
+        collectComposeLinkIdsFromTextures(img->material.textures, img->id, out);
+        for (const auto& effect : img->effects) {
+            // assembleEffects (WPSceneParser.cpp) skips invisible effects
+            // outright — they never reach LoadMaterial, so their texture
+            // strings are never resolved at render time. Scanning them here
+            // would force a referenced sibling offscreen for a consumer that
+            // will never exist.
+            if (! effect.visible) continue;
+            for (const auto& mat : effect.materials)
+                collectComposeLinkIdsFromTextures(mat.textures, img->id, out);
         }
     }
     return out;
