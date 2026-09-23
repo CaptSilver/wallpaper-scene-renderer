@@ -59,38 +59,6 @@ TEST_SUITE("sph2cart") {
 } // TEST_SUITE
 
 // ===========================================================================
-// DragForce
-// ===========================================================================
-
-TEST_SUITE("DragForce") {
-    TEST_CASE("scalar basic") {
-        double f = algorism::DragForce(10.0, 0.5, 1.0);
-        CHECK(f == doctest::Approx(-10.0));
-    }
-
-    TEST_CASE("zero speed → zero force") {
-        double f = algorism::DragForce(0.0, 1.0, 1.0);
-        CHECK(f == doctest::Approx(0.0));
-    }
-
-    TEST_CASE("scalar formula: -2 * speed * strength * density") {
-        double speed = 5.0, strength = 0.3, density = 2.0;
-        double expected = -2.0 * speed * strength * density;
-        CHECK(algorism::DragForce(speed, strength, density) == doctest::Approx(expected));
-    }
-
-    TEST_CASE("vector DragForce direction") {
-        Eigen::Vector3d v(1.0, 0.0, 0.0);
-        auto            f = algorism::DragForce(v, 0.5, 1.0);
-        // Force should oppose velocity direction
-        CHECK(f.x() < 0.0);
-        CHECK(f.y() == doctest::Approx(0.0));
-        CHECK(f.z() == doctest::Approx(0.0));
-    }
-
-} // TEST_SUITE
-
-// ===========================================================================
 // lerp
 // ===========================================================================
 

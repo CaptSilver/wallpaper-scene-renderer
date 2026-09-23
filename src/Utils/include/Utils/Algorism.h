@@ -54,15 +54,6 @@ Eigen::Vector3d GenSphereIn(TFUNC&& random) noexcept {
     return std::pow(random(), 1.0 / 3.0) * GenSphereSurface(random);
 }
 
-constexpr double DragForce(double speed, double strength, double density) {
-    // return -0.5 * speed*speed * strength * density;
-    return -2.0 * speed * strength * density;
-}
-inline Eigen::Vector3d DragForce(Eigen::Vector3d v, double strength,
-                                 double density = 1.0) noexcept {
-    return v.normalized() * DragForce(v.norm(), strength, density);
-}
-
 constexpr double lerp(double t, double a, double b) noexcept { return a + t * (b - a); }
 
 constexpr double PerlinEase(double t) noexcept { return t * t * t * (t * (t * 6 - 15) + 10); };
