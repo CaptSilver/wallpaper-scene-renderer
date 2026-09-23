@@ -287,7 +287,6 @@ target_include_directories(backend_scene_tests PRIVATE
     # FramePacing.hpp is compiled as a direct TU (no wpTimer link needed for
     # the pure-math suite), so expose its include dir here.
     ${SRC_DIR}/Timer/include
-    ${DOCTEST_INCLUDE_DIR}
     # libmpv headers (mpv/client.h, mpv/render.h) — VideoTextureDecoder.cpp.
     ${MPV_INCLUDE_DIRS}
     # ConsoleFlushDedup.hpp (test_ConsoleFlushDedup.cpp) and RenderCallbackGuard.hpp
@@ -295,8 +294,14 @@ target_include_directories(backend_scene_tests PRIVATE
     # here rather than only through the Qt-gated scenescript_tests.
     ${CMAKE_SOURCE_DIR}/qml_helper
 )
+# third_party is vendored; DOCTEST_INCLUDE_DIR is a subdirectory of it but
+# CMake tracks system-ness per include-directory entry, not by filesystem
+# ancestry, so it needs SYSTEM here too or doctest.h's own diagnostics (the
+# clang-only <ciso646> include, the __COUNTER__ extension) get reported
+# against this target at first-party severity.
 target_include_directories(backend_scene_tests SYSTEM PRIVATE
-    "${CMAKE_SOURCE_DIR}/third_party")
+    "${CMAKE_SOURCE_DIR}/third_party"
+    ${DOCTEST_INCLUDE_DIR})
 
 target_link_libraries(backend_scene_tests PRIVATE
     wpUtils
@@ -408,9 +413,15 @@ if(Qt6_FOUND)
     set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
     target_include_directories(scenescript_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/qml_helper
-        ${CMAKE_SOURCE_DIR}/third_party
         ${CMAKE_SOURCE_DIR}/src/Audio/include
         ${CMAKE_SOURCE_DIR}/src/Scene/include
+    )
+    # Same vendored-header treatment as backend_scene_tests above. This target
+    # carries no -Werror today (nothing in the tree gives it warning flags at
+    # all), so the split has no compiler-visible effect yet — it just stops the
+    # gap from reopening silently the day something gives it real warning flags.
+    target_include_directories(scenescript_tests SYSTEM PRIVATE
+        ${CMAKE_SOURCE_DIR}/third_party
         ${DOCTEST_INCLUDE_DIR}
     )
     target_link_libraries(scenescript_tests PRIVATE
