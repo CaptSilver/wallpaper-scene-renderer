@@ -37,7 +37,7 @@ inline u32 GetEmitNum(double& timer, float speed) {
     double emitDur = 1.0f / speed;
     if (emitDur > timer) return 0;
     u32 num = timer / emitDur;
-    while (emitDur < timer) timer -= emitDur;
+    while (emitDur <= timer) timer -= emitDur;
     if (timer < 0) timer = 0;
     return num;
 }

@@ -541,6 +541,21 @@ TEST_SUITE("EmitScheduler") {
         CHECK(sched.Next(p, 0.5) == 1u);
     }
 
+    TEST_CASE("continuous mode — an exact-multiple tick doesn't leave a phantom "
+              "emission for the next call") {
+        EmitScheduleParams p {
+            .emitSpeed = 2.0f, .one_per_frame = false, .batchSize = 1u, .burstRate = 0.0f
+        };
+        EmitScheduler sched(p);
+        // timepass lands exactly on emitDur (0.5) -- the boundary GetEmitNum's
+        // strict '<' leaves undrained.
+        CHECK(sched.Next(p, 0.5) == 1u);
+        // No further time passes.  If the boundary case correctly reset the
+        // internal timer to zero, a second call with zero elapsed time must
+        // emit nothing.
+        CHECK(sched.Next(p, 0.0) == 0u);
+    }
+
     TEST_CASE("continuous mode with batchSize > 1 clamps to 1 per call") {
         EmitScheduleParams p {
             .emitSpeed = 100.0f, .one_per_frame = false, .batchSize = 5u, .burstRate = 0.0f
