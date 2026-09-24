@@ -2115,40 +2115,44 @@ WPParticleParser::genParticleOperatorOp(const nlohmann::json&                   
     };
 }
 
+namespace
+{
+// Box and sphere emitter args share every field except shape (minDistance/
+// maxDistance differ in rank -- array vs. scalar) and sphere's extra `sign`.
+// Pulled out so genParticleEmittOp's two branches don't duplicate the other
+// ten assignments.
+template<class Args>
+void setSharedEmitterFields(Args& args, const wpscene::Emitter& wpe, bool sort, u32 batch_size,
+                            float burst_rate) {
+    args.emitSpeed     = wpe.rate;
+    args.directions    = wpe.directions;
+    args.orgin         = wpe.origin;
+    args.one_per_frame = wpe.flags[wpscene::Emitter::FlagEnum::one_per_frame];
+    args.instantaneous = wpe.instantaneous;
+    args.minSpeed      = wpe.speedmin;
+    args.maxSpeed      = wpe.speedmax;
+    args.sort          = sort;
+    args.batchSize     = batch_size;
+    args.burstRate     = burst_rate;
+}
+} // namespace
+
 ParticleEmittOp WPParticleParser::genParticleEmittOp(const wpscene::Emitter& wpe, bool sort,
                                                      u32 batch_size, float burst_rate) {
     ParticleEmittOp baseOp;
     if (wpe.name == "boxrandom") {
         ParticleBoxEmitterArgs box;
-        box.emitSpeed     = wpe.rate;
-        box.minDistance   = wpe.distancemin;
-        box.maxDistance   = wpe.distancemax;
-        box.directions    = wpe.directions;
-        box.orgin         = wpe.origin;
-        box.one_per_frame = wpe.flags[wpscene::Emitter::FlagEnum::one_per_frame];
-        box.instantaneous = wpe.instantaneous;
-        box.minSpeed      = wpe.speedmin;
-        box.maxSpeed      = wpe.speedmax;
-        box.sort          = sort;
-        box.batchSize     = batch_size;
-        box.burstRate     = burst_rate;
-        baseOp            = ParticleBoxEmitterArgs::MakeEmittOp(box);
+        setSharedEmitterFields(box, wpe, sort, batch_size, burst_rate);
+        box.minDistance = wpe.distancemin;
+        box.maxDistance = wpe.distancemax;
+        baseOp          = ParticleBoxEmitterArgs::MakeEmittOp(box);
     } else if (wpe.name == "sphererandom") {
         ParticleSphereEmitterArgs sphere;
-        sphere.emitSpeed     = wpe.rate;
-        sphere.minDistance   = wpe.distancemin[0];
-        sphere.maxDistance   = wpe.distancemax[0];
-        sphere.directions    = wpe.directions;
-        sphere.orgin         = wpe.origin;
-        sphere.sign          = wpe.sign;
-        sphere.one_per_frame = wpe.flags[wpscene::Emitter::FlagEnum::one_per_frame];
-        sphere.instantaneous = wpe.instantaneous;
-        sphere.minSpeed      = wpe.speedmin;
-        sphere.maxSpeed      = wpe.speedmax;
-        sphere.sort          = sort;
-        sphere.batchSize     = batch_size;
-        sphere.burstRate     = burst_rate;
-        baseOp               = ParticleSphereEmitterArgs::MakeEmittOp(sphere);
+        setSharedEmitterFields(sphere, wpe, sort, batch_size, burst_rate);
+        sphere.minDistance = wpe.distancemin[0];
+        sphere.maxDistance = wpe.distancemax[0];
+        sphere.sign        = wpe.sign;
+        baseOp             = ParticleSphereEmitterArgs::MakeEmittOp(sphere);
     } else {
         return [](std::vector<Particle>&, std::vector<ParticleInitOp>&, uint32_t, float) {
         };
