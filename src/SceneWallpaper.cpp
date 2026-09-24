@@ -1342,7 +1342,8 @@ private:
                     scene->bloomConfig.strength = *m_pending_bloom_strength;
                     if (! scene->bloomConfig.nodes.empty()) {
                         auto* mat = scene->bloomConfig.nodes[0]->Mesh()->Material();
-                        mat->customShader.constValues["bloomstrength"] =
+                        mat->customShader.constValues[ResolveShaderConstantName(mat->customShader,
+                                                                                "bloomstrength")] =
                             std::vector<float> { *m_pending_bloom_strength };
                         mat->customShader.constValuesDirty = true;
                     }
@@ -1352,7 +1353,8 @@ private:
                     scene->bloomConfig.threshold = *m_pending_bloom_threshold;
                     if (! scene->bloomConfig.nodes.empty()) {
                         auto* mat = scene->bloomConfig.nodes[0]->Mesh()->Material();
-                        mat->customShader.constValues["bloomthreshold"] =
+                        mat->customShader.constValues[ResolveShaderConstantName(mat->customShader,
+                                                                                "bloomthreshold")] =
                             std::vector<float> { *m_pending_bloom_threshold };
                         mat->customShader.constValuesDirty = true;
                     }

@@ -25,6 +25,21 @@ struct SceneMaterialCustomShader {
     Map<std::string, std::string> alias;
 };
 
+// Resolve an author-facing constant name -- what a WE material's JSON or a
+// SceneScript write calls it, e.g. "bloomstrength" -- through this shader's
+// alias map to the GLSL uniform it actually declared (e.g. "g_BloomStrength").
+// A name with no entry passes through unchanged: CustomShaderPass only
+// re-uploads a constValues key that matches something in the compiled
+// uniform block, so an unresolved name is a silent no-op there, not a crash
+// here.  Shared by the runtime SceneScript-write drains in SceneWallpaper.cpp
+// (m_pending_material_values / m_pending_effect_material_values already did
+// this lookup inline; this gives the pattern a name instead of a third copy).
+inline std::string ResolveShaderConstantName(const SceneMaterialCustomShader& shader,
+                                             const std::string&               name) {
+    auto it = shader.alias.find(name);
+    return it != shader.alias.end() ? it->second : name;
+}
+
 struct SceneMaterial {
 public:
     SceneMaterial()                                = default;

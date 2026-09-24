@@ -89,3 +89,17 @@ TEST_SUITE("SceneMaterialLayerWrite") {
         CHECK_FALSE(m.customShader.constValuesDirty);
     }
 }
+
+TEST_SUITE("SceneMaterial: ResolveShaderConstantName") {
+    TEST_CASE("a name the shader aliases resolves to its declared GLSL uniform") {
+        SceneMaterial m;
+        m.customShader.alias["bloomstrength"] = "g_BloomStrength";
+        CHECK(ResolveShaderConstantName(m.customShader, "bloomstrength") == "g_BloomStrength");
+    }
+
+    TEST_CASE("a name with no alias entry passes through unchanged") {
+        SceneMaterial m;
+        m.customShader.alias["bloomstrength"] = "g_BloomStrength"; // unrelated entry present
+        CHECK(ResolveShaderConstantName(m.customShader, "bloomthreshold") == "bloomthreshold");
+    }
+}
