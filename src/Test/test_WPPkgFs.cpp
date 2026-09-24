@@ -10,6 +10,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace wallpaper;
@@ -67,7 +68,7 @@ struct PkgEntrySpec {
 // Build a well-formed pkg header.  Returns the byte buffer; caller may
 // append payload bytes afterward (those bytes are never read by
 // CreateFromStream, but Open() on a real on-disk pkg would honor them).
-std::vector<uint8_t> buildPkgHeader(const std::string&                ver,
+std::vector<uint8_t> buildPkgHeader(const std::string&               ver,
                                     const std::vector<PkgEntrySpec>& entries) {
     std::vector<uint8_t> buf;
     appendSizedString(buf, ver);
@@ -115,7 +116,6 @@ std::filesystem::path writeTempPkg(const std::vector<std::pair<std::string, std:
 // Well-formed input
 // ---------------------------------------------------------------------------
 TEST_SUITE("WPPkgFs - well-formed") {
-
     TEST_CASE("empty entry table parses; no paths are Contained") {
         auto buf = buildPkgHeader("PKGV0001", {});
         auto fs  = parse(std::move(buf));
@@ -128,10 +128,11 @@ TEST_SUITE("WPPkgFs - well-formed") {
     }
 
     TEST_CASE("single entry → Contains finds the leading-slash path") {
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "scene.json", /*offset*/ 0, /*length*/ 64 },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "scene.json", /*offset*/ 0, /*length*/ 64 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Contains("/scene.json"));
         CHECK_FALSE(fs->Contains("scene.json"));   // missing leading slash
@@ -139,12 +140,13 @@ TEST_SUITE("WPPkgFs - well-formed") {
     }
 
     TEST_CASE("multi-entry pkg: every declared path is Contained") {
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "scene.json",                /*off*/ 0,    /*len*/ 100 },
-            { "shaders/genericimage2.frag",/*off*/ 100,  /*len*/ 250 },
-            { "materials/foo.json",        /*off*/ 350,  /*len*/ 50  },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "scene.json", /*off*/ 0, /*len*/ 100 },
+                                      { "shaders/genericimage2.frag", /*off*/ 100, /*len*/ 250 },
+                                      { "materials/foo.json", /*off*/ 350, /*len*/ 50 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Contains("/scene.json"));
         CHECK(fs->Contains("/shaders/genericimage2.frag"));
@@ -153,11 +155,12 @@ TEST_SUITE("WPPkgFs - well-formed") {
     }
 
     TEST_CASE("Contains is case-insensitive (paths are lowercased on store)") {
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "Scene.JSON", 0, 10 },
-            { "SHADERS/Foo.Frag", 10, 20 },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "Scene.JSON", 0, 10 },
+                                      { "SHADERS/Foo.Frag", 10, 20 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         // Query in any case — all lookups go through ToLower
         CHECK(fs->Contains("/scene.json"));
@@ -176,10 +179,11 @@ TEST_SUITE("WPPkgFs - well-formed") {
     }
 
     TEST_CASE("entry with zero-length payload still registered in file table") {
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "empty.dat", 0, 0 },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "empty.dat", 0, 0 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Contains("/empty.dat"));
     }
@@ -187,10 +191,11 @@ TEST_SUITE("WPPkgFs - well-formed") {
     TEST_CASE("entry with empty name produces a '/' path") {
         // Pathological but legal: name_len == 0 → path is "/" after the
         // "/" + name prepend.
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "", 0, 0 },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "", 0, 0 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Contains("/"));
     }
@@ -201,10 +206,11 @@ TEST_SUITE("WPPkgFs - well-formed") {
         // at "test.pkg".  Verify that contract — we still get a non-null
         // WPPkgFs, but Open() yields nullptr for both present and absent
         // paths.
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "scene.json", 0, 16 },
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "scene.json", 0, 16 },
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Open("/scene.json") == nullptr);
         CHECK(fs->Open("/missing.json") == nullptr);
@@ -263,13 +269,55 @@ TEST_SUITE("WPPkgFs - Open on-disk") {
 
         std::filesystem::remove(path);
     }
+
+    TEST_CASE("two threads racing Open()/Read()/release on the same entry never see "
+              "garbled bytes") {
+        // The single-thread interleave tests above prove seek isolation
+        // between two streams, but both Open() calls happen on one thread --
+        // nothing here exercises the mutex the pool actually needs it for
+        // (the audio-mixing thread and the asset-loading thread both open
+        // against the same WPPkgFs). Two real threads hammering the same
+        // entry is the only way to put the pool's pop-on-Open/push-on-release
+        // pair under an actual race.
+        auto path = writeTempPkg({ { "a.txt", "HELLOWORLD" } });
+        auto pfs  = WPPkgFs::CreatePkgFs(path.string());
+        REQUIRE(pfs);
+
+        constexpr int     kIterationsPerThread = 500;
+        std::atomic<bool> sawMismatch { false };
+
+        auto worker = [&]() {
+            for (int i = 0; i < kIterationsPerThread; ++i) {
+                auto s = pfs->Open("/a.txt");
+                if (! s) {
+                    sawMismatch = true;
+                    return;
+                }
+                std::string buf(10, '\0');
+                auto        n = s->Read(buf.data(), buf.size());
+                if (n != 10 || buf != "HELLOWORLD") {
+                    sawMismatch = true;
+                    return;
+                }
+                // `s` drops here, returning its backing stream to the pool
+                // for the other thread (or this one's next iteration).
+            }
+        };
+
+        std::thread t1(worker);
+        std::thread t2(worker);
+        t1.join();
+        t2.join();
+
+        CHECK_FALSE(sawMismatch.load());
+        std::filesystem::remove(path);
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Malformed input — every branch must return nullptr without crashing.
 // ---------------------------------------------------------------------------
 TEST_SUITE("WPPkgFs - malformed") {
-
     TEST_CASE("completely empty stream parses as empty pkg (short-read i32 = 0)") {
         // IBinaryStream::_ReadInt returns 0 on short read.  An empty stream
         // therefore produces: ver_len=0, ver="" (ReadSizedString accepts
@@ -343,8 +391,8 @@ TEST_SUITE("WPPkgFs - malformed") {
     TEST_CASE("entry name length negative → parse fails") {
         std::vector<uint8_t> bytes;
         appendSizedString(bytes, "PKGV0001");
-        appendI32(bytes, 1);   // entryCount = 1
-        appendI32(bytes, -7);  // bad name_len
+        appendI32(bytes, 1);  // entryCount = 1
+        appendI32(bytes, -7); // bad name_len
         // even if we appended offset/length, the name read fails first
         appendI32(bytes, 0);
         appendI32(bytes, 0);
@@ -418,7 +466,6 @@ TEST_SUITE("WPPkgFs - malformed") {
 // before CountFitsStream was inserted.
 // ---------------------------------------------------------------------------
 TEST_SUITE("WPPkgFs - fuzz regressions") {
-
     TEST_CASE("0xFFFFFFFF ver-len does not allocate 4 GiB") {
         // Pre-guard, ReadSizedString would resize a string to 4 GiB and
         // OOM.  CountFitsStream now rejects against bytes-remaining
@@ -461,11 +508,12 @@ TEST_SUITE("WPPkgFs - fuzz regressions") {
         // unordered_map insert keeps the FIRST inserted value (insert
         // is a no-op on existing key).  Verify both names match
         // Contains, but only the first survives in m_files semantics.
-        auto buf = buildPkgHeader("PKGV0001", {
-            { "FOO.txt", 0, 10 },
-            { "foo.txt", 50, 20 }, // same lowercase key
-        });
-        auto fs = parse(std::move(buf));
+        auto buf = buildPkgHeader("PKGV0001",
+                                  {
+                                      { "FOO.txt", 0, 10 },
+                                      { "foo.txt", 50, 20 }, // same lowercase key
+                                  });
+        auto fs  = parse(std::move(buf));
         REQUIRE(fs != nullptr);
         CHECK(fs->Contains("/foo.txt"));
         CHECK(fs->Contains("/FOO.txt"));
@@ -491,18 +539,16 @@ TEST_SUITE("WPPkgFs - fuzz regressions") {
 
 TEST_SUITE("regression: minimised fuzz crashes") {
     TEST_CASE("regression: minimised fuzz crashes round-trip cleanly") {
-        namespace fs2 = std::filesystem;
-        const fs2::path dir = wallpaper::test::test_data_root()
-                              / "fuzz_regressions" / "WPPkgFs";
+        namespace fs2       = std::filesystem;
+        const fs2::path dir = wallpaper::test::test_data_root() / "fuzz_regressions" / "WPPkgFs";
         if (! fs2::exists(dir)) return;
         for (auto& entry : fs2::directory_iterator(dir)) {
             if (entry.path().extension() != ".bin") continue;
             SUBCASE(entry.path().filename().string().c_str()) {
-                std::ifstream in(entry.path(), std::ios::binary);
+                std::ifstream        in(entry.path(), std::ios::binary);
                 std::vector<uint8_t> buf(std::istreambuf_iterator<char>(in), {});
-                MemBinaryStream stream(std::move(buf));
-                CHECK_NOTHROW(
-                    (void)WPPkgFs::CreateFromStream(stream, "fuzz.pkg"));
+                MemBinaryStream      stream(std::move(buf));
+                CHECK_NOTHROW((void)WPPkgFs::CreateFromStream(stream, "fuzz.pkg"));
             }
         }
     }

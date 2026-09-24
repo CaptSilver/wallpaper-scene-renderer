@@ -68,6 +68,7 @@ TEST_SUITE("Looper lifecycle") {
         // instead of hoped for.
         std::atomic<bool> workerHoldingRef { false };
         std::atomic<bool> mayProceed { false };
+        std::atomic<bool> workerExited { false };
 
         Looper::testHook_workerLockedRef = [&]() {
             workerHoldingRef.store(true, std::memory_order_release);
@@ -75,8 +76,21 @@ TEST_SUITE("Looper lifecycle") {
                 std::this_thread::sleep_for(std::chrono::microseconds(50));
             }
         };
+        // Fires as the worker's OS thread function returns. On this test's
+        // self-stop path nothing else can join that thread (stop() detaches
+        // it, see Looper.cpp), so a fixed sleep here would only ever be a
+        // guess at how long ~Looper()/stop()/the final LOG_INFO take under
+        // whatever load the box is under -- TSan flagged exactly that gap
+        // once, "as if synchronized via sleep", racing this test's stack
+        // against a later, unrelated test's.  Wait on this instead.
+        Looper::testHook_workerAboutToExit = [&]() {
+            workerExited.store(true, std::memory_order_release);
+        };
         struct HookGuard {
-            ~HookGuard() { Looper::testHook_workerLockedRef = nullptr; }
+            ~HookGuard() {
+                Looper::testHook_workerLockedRef   = nullptr;
+                Looper::testHook_workerAboutToExit = nullptr;
+            }
         } hookGuard;
 
         auto looper = std::make_shared<Looper>();
@@ -94,12 +108,15 @@ TEST_SUITE("Looper lifecycle") {
         looper.reset();
 
         // Let the worker continue. Its locked reference goes out of scope
-        // next, taking the refcount to zero on the worker thread itself.
+        // next, taking the refcount to zero on the worker thread itself,
+        // which runs ~Looper() -> stop() -> detach() right there (self-stop).
         mayProceed.store(true, std::memory_order_release);
 
-        // We no longer own the thread (looper is gone), so there is nothing
-        // to join; give the worker a moment to run past the point the old
-        // code dereferenced a freed Looper*.
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        // We no longer own the thread (looper is gone) and it detached
+        // itself, so there is no join that would tell us it's done -- wait
+        // for its own exit signal instead of guessing at a sleep duration.
+        while (! workerExited.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
     }
 }

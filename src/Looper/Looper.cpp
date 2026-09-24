@@ -19,6 +19,7 @@ Looper::Looper() {}
 Looper::~Looper() { stop(); }
 
 std::function<void()> Looper::testHook_workerLockedRef;
+std::function<void()> Looper::testHook_workerAboutToExit;
 
 bool Looper::loop() {
     MessageWrapper msg;
@@ -108,6 +109,11 @@ status_t Looper::start() {
                 LOG_ERROR("%s looper thread threw (non-std exception)", name.c_str());
             }
             LOG_INFO("%s looper stopped", name.c_str());
+            // Last statement before the OS thread function returns. On the
+            // self-stop path (stop() detaches this same thread, above) this
+            // is the only way anything else finds out the thread is truly
+            // done -- a detached thread can't be joined.
+            if (testHook_workerAboutToExit) testHook_workerAboutToExit();
         },
         wlooper);
     return status_t::OK;

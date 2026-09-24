@@ -55,6 +55,15 @@ public:
     // by chance into one that reproduces on demand.
     static std::function<void()> testHook_workerLockedRef;
 
+    // Test-only synchronization seam, called as the very last thing the
+    // worker thread does before its function returns. When the worker itself
+    // drops the last reference (self-stop -> detach(), see stop()), nothing
+    // else can join it -- there is no thread left to wait on. A test that
+    // needs to know the OS thread has actually finished (not just that it
+    // will "probably" be done after some sleep) waits on this instead. Null
+    // in production.
+    static std::function<void()> testHook_workerAboutToExit;
+
 private:
     struct MessageWrapper {
         std::shared_ptr<Message> msg;
