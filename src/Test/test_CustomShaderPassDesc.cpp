@@ -71,7 +71,7 @@ TEST_SUITE("CustomShaderPass msaa init handle-reuse") {
         CustomShaderPass::Desc desc;
         CHECK(desc.msaaColorOwner == nullptr);
 
-        auto owner = std::make_shared<VmaImageParameters>();
+        auto owner          = std::make_shared<VmaImageParameters>();
         desc.msaaColorOwner = owner;
         REQUIRE(desc.msaaColorOwner);
         CHECK_FALSE(desc.msaaColorOwner->initial_layout_transitioned);
@@ -87,8 +87,8 @@ TEST_SUITE("CustomShaderPass msaa init handle-reuse") {
         // owning VmaImageParameters (instead of a global handle set) makes
         // the contract a class invariant: the bool dies with the owner, so
         // a recycled handle on a fresh owner always reports false.
-        auto first = std::make_shared<VmaImageParameters>();
-        first->initial_layout_transitioned = true;  // simulate a first-use barrier emitted
+        auto first                         = std::make_shared<VmaImageParameters>();
+        first->initial_layout_transitioned = true; // simulate a first-use barrier emitted
 
         // first is destroyed (its VkImage handle is freed and may be recycled).
         first.reset();
@@ -191,5 +191,13 @@ TEST_SUITE("CustomShaderPass fallback texture") {
         std::vector<ImageSlotsRef> textures(1);
         textures[0].slots.emplace_back();
         CHECK_FALSE(NeedsFallbackTexture(bindings, textures));
+    }
+    TEST_CASE("a later index in a multi-texture list is still scanned") {
+        // Index 0 is already satisfied; only index 1 needs the fallback. A
+        // scan that stops after one entry would miss it.
+        std::vector<i32>           bindings { 0, 1 };
+        std::vector<ImageSlotsRef> textures(2);
+        textures[0].slots.emplace_back();
+        CHECK(NeedsFallbackTexture(bindings, textures));
     }
 }

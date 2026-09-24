@@ -198,6 +198,39 @@ TEST_SUITE("LimitedBinaryStream.Seek") {
     }
 } // LimitedBinaryStream.Seek
 
+TEST_SUITE("LimitedBinaryStream.Read") {
+    TEST_CASE("Read at the exact end of the slice returns nothing further") {
+        std::vector<uint8_t> bytes { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+        auto                 backing = std::make_shared<MemBinaryStream>(std::move(bytes));
+        LimitedBinaryStream  f(backing, 0, 10);
+
+        uint8_t buf[10] {};
+        CHECK(f.Read(buf, 10) == 10u); // consumes the whole slice, landing exactly on Size()
+        CHECK(f.Tell() == 10);
+
+        // Right at the boundary, End() must already read true -- one call late
+        // and a caller that trusts Read()'s return value to know when to stop
+        // would try to pull bytes past the slice.
+        uint8_t extra[1] {};
+        CHECK(f.Read(extra, 1) == 0u);
+    }
+
+    TEST_CASE("Read one short of the end still returns real bytes") {
+        std::vector<uint8_t> bytes { 1, 2, 3, 4, 5 };
+        auto                 backing = std::make_shared<MemBinaryStream>(std::move(bytes));
+        LimitedBinaryStream  f(backing, 0, 5);
+
+        uint8_t buf[4] {};
+        CHECK(f.Read(buf, 4) == 4u);
+        CHECK(f.Tell() == 4); // short of Size() -- End() must still read false here
+        CHECK(buf[3] == 4);
+
+        uint8_t last[1] {};
+        CHECK(f.Read(last, 1) == 1u);
+        CHECK(last[0] == 5);
+    }
+} // LimitedBinaryStream.Read
+
 TEST_SUITE("IBinaryStream.ByteOrder") {
     TEST_CASE("SetByteOrder BigEndian swaps subsequent reads") {
         // Raw bytes 0x12 0x34 little-endian = 0x3412; with BigEndian mode → 0x1234

@@ -1728,7 +1728,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // With "camera" present and no "orthogonalprojection" key,
         // general.isOrtho ends up false -> the parser builds a perspective
         // "global" + ortho-overlay "global_ortho".
-        const char* kSceneJson = R"JSON(
+        const char*         kSceneJson = R"JSON(
 {
   "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
   "general": { "clearcolor": "0 0 0" },
@@ -1745,7 +1745,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         WPSceneParser       parser;
 
         LogCapture log;
-        auto scene = parser.Parse("scene_compose_3d", kSceneJson, *vfs, sm, props);
+        auto       scene = parser.Parse("scene_compose_3d", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
         CHECK_FALSE(LogCapture::saw("Attach a null node to camera"));
 
@@ -2495,6 +2495,53 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         auto        v       = extract.constValues.find("g_RenderVar0");
         REQUIRE(v != extract.constValues.end());
         for (std::size_t i = 0; i < v->second.size(); ++i) CHECK(std::isfinite(v->second[i]));
+    }
+
+    TEST_CASE("E2E: a downsample pass's UV offset scales with its source mip, not just its "
+              "resolution") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/hdr_downsample.vert", kTrivialVert },
+            { "/shaders/hdr_downsample.frag", kTrivialFrag },
+            { "/shaders/combine_hdr.vert", kTrivialVert },
+            { "/shaders/combine_hdr.frag", kTrivialFrag },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080,
+                                         "postprocessing": "ultra" },
+               "hdr": true, "bloom": true },
+  "objects": []
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_bloom_downsample_offset", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->bloomConfig.enabled);
+        REQUIRE(scene->bloomConfig.nodes.size() == 8);
+
+        // nodes[1] is the first cascade downsample (WE_BLOOM_MIP1 -> MIP2,
+        // src_scale 0.5) -- its source is half res, so dx/dy must come out
+        // double the full-res value, not the same as the Extract stage.
+        // Picking a scale other than 1.0 is load-bearing: at scale 1.0 the
+        // multiply and divide that compute dx/dy are indistinguishable
+        // (x*1.0 == x/1.0), so this is the only stage that actually proves
+        // which operator is in use.
+        const auto& down = scene->bloomConfig.nodes[1]->Mesh()->Material()->customShader;
+        auto        v    = down.constValues.find("g_RenderVar0");
+        REQUIRE(v != down.constValues.end());
+        REQUIRE(v->second.size() == 4);
+        const float expectedDx = 0.5f / (1920.0f * 0.5f); // 0.5 / 960
+        const float expectedDy = 0.5f / (1080.0f * 0.5f); // 0.5 / 540
+        CHECK(v->second[0] == doctest::Approx(-expectedDx));
+        CHECK(v->second[1] == doctest::Approx(-expectedDy));
+        CHECK(v->second[2] == doctest::Approx(expectedDx));
+        CHECK(v->second[3] == doctest::Approx(expectedDy));
     }
 
     // -----------------------------------------------------------------------

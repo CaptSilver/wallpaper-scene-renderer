@@ -136,7 +136,7 @@ TEST_SUITE("ParticleBoxEmitter") {
         args.instantaneous = 5u;
         auto op            = ParticleBoxEmitterArgs::MakeEmittOp(args);
 
-        std::vector<Particle>       ps;
+        std::vector<Particle> ps;
         ps.emplace_back();
         std::vector<ParticleInitOp> inis;
         op(ps, inis, /*maxcount*/ 100u, /*timepass*/ 0.0);
@@ -587,6 +587,65 @@ TEST_SUITE("EmitScheduler") {
             total += sched.Next(p, 0.25);
         }
         CHECK(total == p.batchSize);
+    }
+
+    TEST_CASE("burst mode — a fresh scheduler starts exhausted even with time to spare") {
+        // Construction must leave batchEmitted at batchSize (not 0) whenever
+        // burstRate is positive, or the very first tick would emit before
+        // any burst window has elapsed at all.  A big burstRate keeps this
+        // call from also crossing the wrap boundary, isolating the check to
+        // construction's own starting state.
+        EmitScheduleParams p {
+            .emitSpeed = 1000.0f, .one_per_frame = false, .batchSize = 5u, .burstRate = 1e6f
+        };
+        EmitScheduler sched(p);
+        CHECK(sched.Next(p, 1.0) == 0u);
+    }
+
+    TEST_CASE("burst mode — a tick within the batch cap emits only what it earned, not the "
+              "whole remaining room") {
+        // remaining exists to cap emit_num when it would overrun the batch;
+        // it must not itself become the emitted count on ticks that have
+        // plenty of room left.
+        EmitScheduleParams p {
+            .emitSpeed = 100.0f, .one_per_frame = false, .batchSize = 5u, .burstRate = 1000.0f
+        };
+        EmitScheduler sched(p);
+        // Wrap and take the first emission in the same call: burstTimer
+        // starts below 1000, so += 1000 guarantees the wrap fires regardless
+        // of the random initial phase, landing well past (not needing to hit
+        // exactly) burstRate.
+        CHECK(sched.Next(p, 1000.0) == 1u); // capped to one per frame, four slots still open
+    }
+
+    TEST_CASE("burst mode — landing exactly on burstRate still wraps") {
+        // The wrap gate is burstTimer >= burstRate; the two only disagree at
+        // exact equality, which real per-frame elapsed time never lands on
+        // by chance.  Construct it deliberately: draw the random initial
+        // phase with a known seed (same technique as the Random-consumption
+        // test below), then hand the scheduler exactly (burstRate - phase)
+        // as the next tick's elapsed time so burstTimer lands bit-exact on
+        // burstRate.  The round-trip is checked at runtime, not assumed --
+        // if a future RNG change ever makes it inexact, the REQUIRE below
+        // fails loudly instead of the test silently proving nothing.
+        EmitScheduleParams p {
+            .emitSpeed = 1000.0f, .one_per_frame = false, .batchSize = 3u, .burstRate = 4.0f
+        };
+
+        Random::seed(1);
+        double phase = Random::get(0.0, (double)p.burstRate);
+        double delta = (double)p.burstRate - phase;
+        REQUIRE(phase + delta == (double)p.burstRate);
+
+        Random::seed(1);
+        EmitScheduler sched(p);
+        // First call draws the same phase and adds no time -- still short of
+        // burstRate, batch starts exhausted, nothing emits yet.
+        CHECK(sched.Next(p, 0.0) == 0u);
+        // Second call's elapsed time lands burstTimer exactly on burstRate.
+        // The wrap must fire on this call (batchEmitted resets to 0), so the
+        // now-available batch emits one particle (capped per frame).
+        CHECK(sched.Next(p, delta) == 1u);
     }
 
     TEST_CASE("burst mode construction must not consume Random") {

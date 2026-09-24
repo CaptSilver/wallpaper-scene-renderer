@@ -390,6 +390,14 @@ TEST_SUITE("ParseVec3AnimProperty") {
     TEST_CASE("a property too short to carry a suffix yields nothing to apply") {
         CHECK_FALSE(ParseVec3AnimProperty("a").has_value());
     }
+    TEST_CASE("the shortest base name that still carries a suffix still parses") {
+        // "a.x" is 3 chars -- the minimum a 1-char base plus ".x" can produce.
+        // The length check must admit this, not just everything past it.
+        auto t = ParseVec3AnimProperty("a.x");
+        REQUIRE(t.has_value());
+        CHECK(t->axis == 0);
+        CHECK(t->base == "a");
+    }
 }
 
 TEST_SUITE("ApplyPropertyAnimCommand") {

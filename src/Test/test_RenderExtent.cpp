@@ -48,6 +48,19 @@ TEST_SUITE("RenderExtent") {
         CHECK(e.height == 720u);
     }
 
+    TEST_CASE("a pin with only one axis set falls through to the scale path") {
+        // Both pin_w and pin_h must be positive to win -- a caller that only
+        // half-pins (or leaves the other axis at its 0 default) gets the
+        // scaled size on that call, not a pin clamped against a zero.
+        auto zeroPinW = wallpaper::ResolveRenderExtent(3840, 2160, 1.0, 0, 720);
+        CHECK(zeroPinW.width == 3840u);
+        CHECK(zeroPinW.height == 2160u);
+
+        auto zeroPinH = wallpaper::ResolveRenderExtent(3840, 2160, 1.0, 1280, 0);
+        CHECK(zeroPinH.width == 3840u);
+        CHECK(zeroPinH.height == 2160u);
+    }
+
     TEST_CASE("a pin below the floor is still floored") {
         // The standalone viewer's -R pins an exact size (SceneObject's
         // renderPixelWidth/Height); the pin used to bypass the floor

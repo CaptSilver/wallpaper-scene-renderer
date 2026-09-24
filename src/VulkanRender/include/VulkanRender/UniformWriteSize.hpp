@@ -18,5 +18,15 @@ inline std::optional<std::size_t> ResolveUniformMemberWriteSize(std::size_t refl
     if (reflectedSize == 0) return std::nullopt;
     return reflectedSize;
 }
+
+// How many bytes of a ShaderValue actually go into a UBO member: the value's
+// own size, capped at the member's reflected size so a wider ShaderValue
+// (e.g. a mat4 written into a mat3 slot) can't overflow into whatever
+// follows it in the buffer. Same reasoning as ResolveUniformMemberWriteSize
+// for living in its own header -- UpdateUniform's staging-buffer write needs
+// a live Device, so this is the part of it a unit test can actually reach.
+inline std::size_t ClampUniformWriteSize(std::size_t valueSize, std::size_t memberSize) {
+    return valueSize > memberSize ? memberSize : valueSize;
+}
 } // namespace vulkan
 } // namespace wallpaper

@@ -380,9 +380,7 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
 
     // Clamp write to member size to prevent overflow into adjacent UBO members
     // (e.g., mat4 ShaderValue written to mat3 uniform)
-    if (value_u8.size() > *type_size) {
-        value_u8 = value_u8.subspan(0, *type_size);
-    }
+    value_u8 = value_u8.subspan(0, ClampUniformWriteSize(value_u8.size(), *type_size));
     buf->writeToBuf(bufref, value_u8, offset);
 }
 

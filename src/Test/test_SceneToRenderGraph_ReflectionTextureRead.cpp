@@ -64,6 +64,22 @@ TEST_SUITE("SceneToRenderGraph_ReflectionTextureRead") {
         CHECK(pass->desc().textures[0].empty());
     }
 
+    TEST_CASE("every texture in a multi-texture material gets its own read, not just the "
+              "first") {
+        // Not reflection-specific -- reuses this file's pass-inspection helpers to pin
+        // addTextureReads()'s shared loop, the same one the reflection tests above exercise
+        // through a single-texture material.
+        Scene scene;
+        addNode(scene, 44, "two_tex_reader", { "effects/one.tex", "effects/two.tex" });
+
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* pass   = findReflPass(*rgraph, "two_tex_reader");
+        REQUIRE(pass != nullptr);
+        REQUIRE(pass->desc().textures.size() == 2u);
+        CHECK(pass->desc().textures[0] == "effects/one.tex");
+        CHECK(pass->desc().textures[1] == "effects/two.tex");
+    }
+
     TEST_CASE("a reflection-pass node reading _rt_Reflection is skipped before the shared "
               "texture-read loop even runs") {
         Scene scene;

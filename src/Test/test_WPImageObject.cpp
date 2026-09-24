@@ -74,7 +74,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("model JSON solidlayer:true populates WPImageObject.solidlayer") {
         auto vfs       = makeAssetsVfs({
             { "models/util/solidlayer.json",
-                    R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
+              R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
             { "materials/util/solidlayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -106,7 +106,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("scene.json copybackground:false populates WPImageObject.copybackground") {
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
+              R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -123,7 +123,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("scene.json copybackground:true populates WPImageObject.copybackground") {
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
+              R"({ "material": "materials/util/composelayer.json", "passthrough": true })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -140,7 +140,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("scene.json without copybackground defaults to true") {
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json" })" },
+              R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -160,7 +160,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("solidlayer flag survives alongside explicit alpha=1") {
         auto vfs       = makeAssetsVfs({
             { "models/util/solidlayer.json",
-                    R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
+              R"({ "material": "materials/util/solidlayer.json", "solidlayer": true })" },
             { "materials/util/solidlayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -185,7 +185,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("compose layer dependencies array parses into WPImageObject.dependencies") {
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json" })" },
+              R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -205,7 +205,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
     TEST_CASE("scene.json without dependencies leaves WPImageObject.dependencies empty") {
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json" })" },
+              R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -438,6 +438,19 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(ids.count(777) == 1);
     }
 
+    TEST_CASE("CollectComposeDependencyIds: a composite id of 0 is a real id, not a parse "
+              "failure") {
+        // The parser's failure sentinel is -1 -- 0 is the first layer's id in
+        // plenty of real scene.json files and must not be treated the same way.
+        wpscene::WPImageObject reader;
+        reader.id                = 700;
+        reader.material.textures = { "_rt_imageLayerComposite_0_a" };
+
+        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(0) == 1);
+    }
+
     TEST_CASE("CollectComposeDependencyIds: an effect material's texture string is collected") {
         wpscene::WPImageObject reader;
         reader.id = 701;
@@ -537,7 +550,7 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         // throwing inside the JSON visitor.
         auto vfs       = makeAssetsVfs({
             { "models/util/composelayer.json",
-                    R"({ "material": "materials/util/composelayer.json" })" },
+              R"({ "material": "materials/util/composelayer.json" })" },
             { "materials/util/composelayer.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -629,7 +642,7 @@ TEST_SUITE("WPImageObject parsing - skybox tag") {
     TEST_CASE("model JSON is_skybox true populates WPImageObject.is_skybox") {
         auto vfs       = makeAssetsVfs({
             { "models/util/skybox.json",
-                    R"({ "material": "materials/util/skybox.json", "is_skybox": true })" },
+              R"({ "material": "materials/util/skybox.json", "is_skybox": true })" },
             { "materials/util/skybox.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -644,8 +657,7 @@ TEST_SUITE("WPImageObject parsing - skybox tag") {
 
     TEST_CASE("scene.json is_skybox override wins when model leaves flag false") {
         auto vfs       = makeAssetsVfs({
-            { "models/regular.json",
-                    R"({ "material": "materials/util/skybox.json" })" },
+            { "models/regular.json", R"({ "material": "materials/util/skybox.json" })" },
             { "materials/util/skybox.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
@@ -661,8 +673,7 @@ TEST_SUITE("WPImageObject parsing - skybox tag") {
 
     TEST_CASE("absent flag leaves WPImageObject.is_skybox at default false") {
         auto vfs       = makeAssetsVfs({
-            { "models/regular.json",
-                    R"({ "material": "materials/util/skybox.json" })" },
+            { "models/regular.json", R"({ "material": "materials/util/skybox.json" })" },
             { "materials/util/skybox.json", kFlatMaterial },
         });
         auto sceneJson = nlohmann::json::parse(R"({
