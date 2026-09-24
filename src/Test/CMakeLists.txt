@@ -22,9 +22,17 @@ pkg_check_modules(EGL egl)
 pkg_check_modules(GBM gbm)
 pkg_check_modules(GL gl)
 
+# PROJECT_SOURCE_DIR, not CMAKE_SOURCE_DIR: this file is only ever configured
+# as a descendant of the submodule's own project(wescene-renderer) (declared
+# once, at the submodule root), so PROJECT_SOURCE_DIR tracks the submodule
+# root correctly whether the submodule is configured standalone
+# (-S src/backend_scene, where the two happen to be equal) or pulled in from
+# the parent's root configure (-S ., -DBUILD_TESTS=ON) -- where
+# CMAKE_SOURCE_DIR is the PARENT repo root instead, and every path below
+# resolves to a nonexistent file.
 set(DOCTEST_INCLUDE_DIR
-    "${CMAKE_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
-set(SRC_DIR "${CMAKE_SOURCE_DIR}/src")
+    "${PROJECT_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
+set(SRC_DIR "${PROJECT_SOURCE_DIR}/src")
 
 add_executable(backend_scene_tests
     test_main.cpp
@@ -296,7 +304,7 @@ target_include_directories(backend_scene_tests PRIVATE
     # ConsoleFlushDedup.hpp (test_ConsoleFlushDedup.cpp) and RenderCallbackGuard.hpp
     # (test_RenderCallbackGuard.cpp) are both QJSEngine-free, so they're exercised
     # here rather than only through the Qt-gated scenescript_tests.
-    ${CMAKE_SOURCE_DIR}/qml_helper
+    ${PROJECT_SOURCE_DIR}/qml_helper
 )
 # third_party is vendored; DOCTEST_INCLUDE_DIR is a subdirectory of it but
 # CMake tracks system-ness per include-directory entry, not by filesystem
@@ -304,7 +312,7 @@ target_include_directories(backend_scene_tests PRIVATE
 # clang-only <ciso646> include, the __COUNTER__ extension) get reported
 # against this target at first-party severity.
 target_include_directories(backend_scene_tests SYSTEM PRIVATE
-    "${CMAKE_SOURCE_DIR}/third_party"
+    "${PROJECT_SOURCE_DIR}/third_party"
     ${DOCTEST_INCLUDE_DIR})
 
 target_link_libraries(backend_scene_tests PRIVATE
@@ -364,7 +372,7 @@ if(EGL_FOUND AND GBM_FOUND AND GL_FOUND)
     target_compile_definitions(backend_scene_tests PRIVATE HAVE_EGL_HWDEC=1)
 endif()
 
-target_compile_options(backend_scene_tests PRIVATE ${warn_opts})
+target_compile_options(backend_scene_tests PRIVATE ${warn_opts} ${WEK_DOCTEST_WERROR_EXEMPT_FLAGS})
 
 # Opt-in sanitizers (WEK_SANITIZE=address,undefined | thread). No-op when empty.
 wek_apply_sanitizers(backend_scene_tests)
@@ -409,25 +417,30 @@ if(Qt6_FOUND)
         test_SceneScriptDispatch.cpp
         test_PropertyScriptDispatchGate.cpp
         test_SceneLocalStorageDisk.cpp
-        ${CMAKE_SOURCE_DIR}/qml_helper/SceneBackend.cpp
-        ${CMAKE_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
-        ${CMAKE_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
-        ${CMAKE_SOURCE_DIR}/qml_helper/glExtra.cpp
+        ${PROJECT_SOURCE_DIR}/qml_helper/SceneBackend.cpp
+        ${PROJECT_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
+        ${PROJECT_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
+        ${PROJECT_SOURCE_DIR}/qml_helper/glExtra.cpp
     )
     set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
     target_include_directories(scenescript_tests PRIVATE
-        ${CMAKE_SOURCE_DIR}/qml_helper
-        ${CMAKE_SOURCE_DIR}/src/Audio/include
-        ${CMAKE_SOURCE_DIR}/src/Scene/include
+        ${PROJECT_SOURCE_DIR}/qml_helper
+        ${PROJECT_SOURCE_DIR}/src/Audio/include
+        ${PROJECT_SOURCE_DIR}/src/Scene/include
     )
-    # Same vendored-header treatment as backend_scene_tests above. This target
-    # carries no -Werror today (nothing in the tree gives it warning flags at
-    # all), so the split has no compiler-visible effect yet — it just stops the
-    # gap from reopening silently the day something gives it real warning flags.
+    # Same vendored-header treatment as backend_scene_tests above.
     target_include_directories(scenescript_tests SYSTEM PRIVATE
-        ${CMAKE_SOURCE_DIR}/third_party
+        ${PROJECT_SOURCE_DIR}/third_party
         ${DOCTEST_INCLUDE_DIR}
     )
+    # wek_warn_opts (Wall/Wextra, not the richer submodule warn_opts): this
+    # target compiles qml_helper/SceneBackend.cpp directly, and
+    # ${PROJECT_NAME}-qml already builds that same source under wek_warn_opts
+    # for the Qt/QJSEngine noise reason documented on wek_warn_opts above —
+    # holding the test target to a stricter set than the production target
+    # that builds the identical file would fail it on warnings production was
+    # deliberately spared from.
+    target_compile_options(scenescript_tests PRIVATE ${wek_warn_opts} ${WEK_DOCTEST_WERROR_EXEMPT_FLAGS})
     target_link_libraries(scenescript_tests PRIVATE
         Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer)
     wek_apply_sanitizers(scenescript_tests)
@@ -506,7 +519,7 @@ target_include_directories(backend_scene_benches PRIVATE
     ${SRC_DIR}/Particle/include
 )
 target_include_directories(backend_scene_benches SYSTEM PRIVATE
-    "${CMAKE_SOURCE_DIR}/third_party")
+    "${PROJECT_SOURCE_DIR}/third_party")
 target_link_libraries(backend_scene_benches PRIVATE
     wpRGraph
     wpUtils
@@ -632,7 +645,7 @@ if(BUILD_FUZZERS)
     # removed in 3c55dea (target-scoped refactor); restore the path on this
     # specific target. Mirrors the pattern backend_scene_tests uses.
     target_include_directories(fuzz_WPTexImageParser SYSTEM PRIVATE
-        "${CMAKE_SOURCE_DIR}/third_party")
+        "${PROJECT_SOURCE_DIR}/third_party")
     target_link_libraries(fuzz_WPTexImageParser PRIVATE
         wpUtils wpFs ${LZ4_LIBRARIES} nlohmann_json
     )
@@ -729,7 +742,7 @@ if(BUILD_FUZZERS)
     # SYSTEM PRIVATE so the path does not propagate to consumers; restore it on
     # this target. Same pattern as fuzz_WPTexImageParser above.
     target_include_directories(fuzz_WPParticleParser SYSTEM PRIVATE
-        "${CMAKE_SOURCE_DIR}/third_party")
+        "${PROJECT_SOURCE_DIR}/third_party")
     target_link_libraries(fuzz_WPParticleParser PRIVATE
         wpUtils wpFs wpParticle nlohmann_json
     )

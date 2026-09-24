@@ -772,7 +772,11 @@ TEST_SUITE("WPTextRenderer FT_Load_Glyph failure logging") {
         if (fontBytes.size() < 12 + size_t(numTables) * 16) return {};
         uint32_t headOffset = 0, headLen = 0;
         uint32_t locaOffset = 0, locaLen = 0;
-        uint32_t glyfOffset = 0, glyfLen = 0;
+        uint32_t glyfOffset = 0;
+        // Parsed to keep the table-directory walk symmetric with head/loca
+        // (whose lengths gate validation below); glyf's own length isn't
+        // otherwise needed here.
+        [[maybe_unused]] uint32_t glyfLen = 0;
         for (uint32_t i = 0; i < numTables; ++i) {
             const char* entry = fontBytes.data() + 12 + i * 16;
             uint32_t    off   = rd32(entry + 8);

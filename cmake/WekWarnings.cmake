@@ -4,9 +4,13 @@
 # the WEK_WERROR option + the `wek_warn_opts` list behave identically whether the
 # build is configured from the parent project (-S .) or the submodule standalone
 # (-S src/backend_scene):
-#   * root        CMakeLists.txt                   — include(src/backend_scene/cmake/WekWarnings.cmake)
-#   * submodule   src/backend_scene/CMakeLists.txt — include(cmake/WekWarnings.cmake)
+#   * root            CMakeLists.txt                     — include(src/backend_scene/cmake/WekWarnings.cmake)
+#   * submodule       src/backend_scene/CMakeLists.txt   — include(cmake/WekWarnings.cmake)
+#   * standalone_view standalone_view/CMakeLists.txt     — include(../cmake/WekWarnings.cmake)
 # (mirrors how WekSanitize.cmake / FetchMull.cmake are referenced cross-tree.)
+# Re-including from a third site is safe: the derived CACHE INTERNAL values
+# below recompute identically every time, by design (see the no-DEFINED-guard
+# note further down).
 #
 # It declares:
 #   * option(WEK_WERROR ...) — OFF by default. ON appends -Werror to the
@@ -26,6 +30,10 @@
 #     diagnostic family stays WARNING-ONLY (-Wno-error=conversion /
 #     -Wno-error=sign-conversion / -Wno-error=sign-compare) because that family
 #     is noisy and the project tracks it as informational.
+#   * WEK_DOCTEST_WERROR_EXEMPT_FLAGS (CACHE INTERNAL) — a second -Wno-error=
+#     tail, scoped to backend_scene_tests / scenescript_tests only (the two
+#     binaries that link vendored doctest.h). See the comment above its
+#     definition below for why -isystem can't reach these two diagnostics.
 #
 # No DEFINED-guard around the derived values: `option()` is idempotent, and the
 # derived CACHE INTERNAL vars are *recomputed every configure* (INTERNAL forces
@@ -63,6 +71,28 @@ if(WEK_WERROR)
 endif()
 set(WEK_WERROR_FLAGS "${_wek_werror_flags}"
     CACHE INTERNAL "-Werror tail appended to first-party warn lists when WEK_WERROR=ON")
+
+# doctest.h (vendored, third_party/nlohmann/tests/thirdparty/doctest/) uses
+# __COUNTER__ and <ciso646> to build its TEST_CASE/TEST_SUITE registration
+# machinery. clang reports both at the outermost macro-expansion site, not at
+# the line inside doctest.h that defines the macro — so a TEST_CASE(...) call
+# in one of our own .cpp files is what gets the -Wc2y-extensions /
+# -W#warnings diagnostic, not doctest.h itself. -isystem on the header's
+# include directory only suppresses diagnostics whose primary (caret)
+# location is inside the marked header, so it cannot reach this: the caret is
+# always in first-party code. Carving these two classes out here is scoped to
+# exactly the two binaries that link doctest (backend_scene_tests,
+# scenescript_tests) — never global — because production code never includes
+# doctest.h, and a real __COUNTER__ or <ciso646> use showing up in first-party
+# code outside a test binary should still fail the gate.
+set(_wek_doctest_werror_exempt_flags "")
+if(WEK_WERROR)
+    set(_wek_doctest_werror_exempt_flags
+        -Wno-error=c2y-extensions
+        "-Wno-error=#warnings")
+endif()
+set(WEK_DOCTEST_WERROR_EXEMPT_FLAGS "${_wek_doctest_werror_exempt_flags}"
+    CACHE INTERNAL "-Wno-error= tail for the two doctest-linked test binaries; empty unless WEK_WERROR=ON")
 
 # Conservative warning set for the previously-unwarned shippable targets.
 # -Wall -Wextra plus the -Werror tail (empty unless WEK_WERROR=ON).

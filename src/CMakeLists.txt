@@ -127,3 +127,8 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC . Swapchain PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
 set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
+# Every sibling library under this directory (Vulkan, VulkanRender, Scene, ...)
+# already builds under warn_opts; this target didn't, so SceneWallpaper.cpp
+# and the wpscene/*.cpp sources it compiles directly had never been checked
+# under any warning flag at all.
+target_compile_options(${PROJECT_NAME} PRIVATE ${warn_opts})

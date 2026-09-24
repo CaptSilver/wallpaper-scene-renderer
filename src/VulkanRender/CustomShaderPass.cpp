@@ -85,6 +85,7 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
     VkImageCreateInfo info {
         .sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
         .pNext       = nullptr,
+        .flags       = 0,
         .imageType   = VK_IMAGE_TYPE_2D,
         .format      = DEPTH_FORMAT,
         .extent      = extent,
@@ -99,9 +100,11 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
         // it just never gets sampled, and nothing resolves a substitute — a
         // pass requesting it degrades to CustomShaderPass::prepare()'s 1x1
         // vk_fallback_tex dummy instead.
-        .usage         = DepthImageUsageFlags(device.d32_sampleable()),
-        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .usage                 = DepthImageUsageFlags(device.d32_sampleable()),
+        .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices   = nullptr,
+        .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VmaAllocationCreateInfo vma_info {};
     vma_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -113,9 +116,11 @@ GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkEx
     VkImageViewCreateInfo view_info {
         .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .pNext            = nullptr,
+        .flags            = 0,
         .image            = *depth->handle,
         .viewType         = VK_IMAGE_VIEW_TYPE_2D,
         .format           = DEPTH_FORMAT,
+        .components       = {},
         .subresourceRange = { .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
                               .baseMipLevel   = 0,
                               .levelCount     = 1,
@@ -143,18 +148,21 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device, 
 
     auto              msaa = std::make_shared<VmaImageParameters>();
     VkImageCreateInfo info {
-        .sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .pNext         = nullptr,
-        .imageType     = VK_IMAGE_TYPE_2D,
-        .format        = format,
-        .extent        = extent,
-        .mipLevels     = 1,
-        .arrayLayers   = 1,
-        .samples       = samples,
-        .tiling        = VK_IMAGE_TILING_OPTIMAL,
-        .usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-        .sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .sType                 = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext                 = nullptr,
+        .flags                 = 0,
+        .imageType             = VK_IMAGE_TYPE_2D,
+        .format                = format,
+        .extent                = extent,
+        .mipLevels             = 1,
+        .arrayLayers           = 1,
+        .samples               = samples,
+        .tiling                = VK_IMAGE_TILING_OPTIMAL,
+        .usage                 = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices   = nullptr,
+        .initialLayout         = VK_IMAGE_LAYOUT_UNDEFINED,
     };
     VmaAllocationCreateInfo vma_info {};
     vma_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
@@ -166,9 +174,11 @@ GetOrCreateMSAAColorImage(std::shared_ptr<void>& storage, const Device& device, 
     VkImageViewCreateInfo view_info {
         .sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .pNext            = nullptr,
+        .flags            = 0,
         .image            = *msaa->handle,
         .viewType         = VK_IMAGE_VIEW_TYPE_2D,
         .format           = format,
+        .components       = {},
         .subresourceRange = { .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
                               .baseMipLevel   = 0,
                               .levelCount     = 1,
@@ -202,6 +212,7 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
         // An explicit barrier in execute() transitions new MSAA images from
         // UNDEFINED to COLOR_ATTACHMENT_OPTIMAL before first use.
         attachments[0] = VkAttachmentDescription {
+            .flags          = 0,
             .format         = format,
             .samples        = msaaSamples,
             .loadOp         = loadOp,
@@ -214,6 +225,7 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
 
         // Attachment 1: resolve target (single-sample, the original RT)
         attachments[1] = VkAttachmentDescription {
+            .flags          = 0,
             .format         = format,
             .samples        = VK_SAMPLE_COUNT_1_BIT,
             .loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -227,6 +239,7 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
 
         if (hasDepth) {
             attachments[2] = VkAttachmentDescription {
+                .flags          = 0,
                 .format         = DEPTH_FORMAT,
                 .samples        = msaaSamples,
                 .loadOp         = depthLoadOp,
@@ -241,6 +254,7 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
     } else {
         // No MSAA: original layout
         attachments[0] = VkAttachmentDescription {
+            .flags          = 0,
             .format         = format,
             .samples        = VK_SAMPLE_COUNT_1_BIT,
             .loadOp         = loadOp,
@@ -257,6 +271,7 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
 
         if (hasDepth) {
             attachments[1] = VkAttachmentDescription {
+                .flags          = 0,
                 .format         = DEPTH_FORMAT,
                 .samples        = VK_SAMPLE_COUNT_1_BIT,
                 .loadOp         = depthLoadOp,
@@ -284,11 +299,16 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
     };
 
     VkSubpassDescription subpass {
+        .flags                   = 0,
         .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .inputAttachmentCount    = 0,
+        .pInputAttachments       = nullptr,
         .colorAttachmentCount    = 1,
         .pColorAttachments       = &color_ref,
         .pResolveAttachments     = useMSAA ? &resolve_ref : nullptr,
         .pDepthStencilAttachment = hasDepth ? &depth_ref : nullptr,
+        .preserveAttachmentCount = 0,
+        .pPreserveAttachments    = nullptr,
     };
 
     VkPipelineStageFlags dstStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -301,16 +321,19 @@ CreateRenderPass(const vvk::Device& device, VkFormat format, VkAttachmentLoadOp 
     }
 
     VkSubpassDependency dependency {
-        .srcSubpass    = VK_SUBPASS_EXTERNAL,
-        .dstSubpass    = 0,
-        .srcStageMask  = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-        .dstStageMask  = dstStage,
-        .srcAccessMask = {},
-        .dstAccessMask = dstAccess,
+        .srcSubpass      = VK_SUBPASS_EXTERNAL,
+        .dstSubpass      = 0,
+        .srcStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        .dstStageMask    = dstStage,
+        .srcAccessMask   = {},
+        .dstAccessMask   = dstAccess,
+        .dependencyFlags = 0,
     };
 
     VkRenderPassCreateInfo creatinfo {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext           = nullptr,
+        .flags           = 0,
         .attachmentCount = attachmentCount,
         .pAttachments    = attachments,
         .subpassCount    = 1,
@@ -952,6 +975,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VkFramebufferCreateInfo info {
             .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .pNext           = nullptr,
+            .flags           = 0,
             .renderPass      = *m_desc.pipeline.pass,
             .attachmentCount = fb_count,
             .pAttachments    = fb_attachments,
@@ -1373,14 +1397,16 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             // merged when it samples none of the group's attachments.
             if (opens)
                 m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
-                    .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .pNext            = nullptr,
-                    .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-                    .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
-                    .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .image            = img.handle,
-                    .subresourceRange = base_srang,
+                    .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                    .pNext               = nullptr,
+                    .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+                    .dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
+                    .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image               = img.handle,
+                    .subresourceRange    = base_srang,
                 });
         }
 
@@ -1390,13 +1416,16 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         m_image_infos_scratch.push_back(
             VkDescriptorImageInfo { sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
         m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
-            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext           = nullptr,
-            .dstSet          = {},
-            .dstBinding      = (uint32_t)binding,
-            .descriptorCount = 1,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo      = &m_image_infos_scratch.back(),
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = {},
+            .dstBinding       = (uint32_t)binding,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .pImageInfo       = &m_image_infos_scratch.back(),
+            .pBufferInfo      = nullptr,
+            .pTexelBufferView = nullptr,
         });
     }
 
@@ -1420,13 +1449,16 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             m_desc.ubo_buf.size,
         };
         m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
-            .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext           = nullptr,
-            .dstSet          = {},
-            .dstBinding      = 0,
-            .descriptorCount = 1,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pBufferInfo     = &desc_buf,
+            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext            = nullptr,
+            .dstSet           = {},
+            .dstBinding       = 0,
+            .dstArrayElement  = 0,
+            .descriptorCount  = 1,
+            .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .pImageInfo       = nullptr,
+            .pBufferInfo      = &desc_buf,
+            .pTexelBufferView = nullptr,
         });
     }
 

@@ -24,7 +24,10 @@
 namespace wallpaper
 {
 
-namespace audio { class AudioAnalyzer; }
+namespace audio
+{
+class AudioAnalyzer;
+}
 
 class Scene;
 
@@ -263,7 +266,6 @@ private:
     std::array<float, 2> m_mousePos { 0.5f, 0.5f };
     std::array<float, 2> m_mousePosInput { 0.5f, 0.5f };
     double               m_mouseDelayedTime { 0.0f };
-    uint                 m_mouseInputCount { 0 };
 
     std::chrono::time_point<std::chrono::steady_clock> m_last_mouse_input_time;
 

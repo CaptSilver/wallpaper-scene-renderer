@@ -11,7 +11,7 @@
 namespace wallpaper
 {
 
-class WPShaderInfo;
+struct WPShaderInfo;
 
 namespace wpscene
 {

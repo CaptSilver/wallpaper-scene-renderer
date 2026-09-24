@@ -10,7 +10,8 @@ bool ShouldValidateSpv();
 namespace
 {
 
-void clearShaderDebugEnv() { ::unsetenv("WEK_DEBUG_SHADERS"); }
+// Only called from the NDEBUG branch below; a Debug build never calls it.
+[[maybe_unused]] void clearShaderDebugEnv() { ::unsetenv("WEK_DEBUG_SHADERS"); }
 
 } // namespace
 

@@ -48,7 +48,7 @@ public:
     float                cameraparallaxdelay { 0.5f };
     float                cameraparallaxmouseinfluence { 1.0f };
     bool                 isOrtho { true };
-    Orthogonalprojection orthogonalprojection { 1920, 1080 };
+    Orthogonalprojection orthogonalprojection { 1920, 1080, false, "" };
     float                zoom { 1.0f };
     float                fov { 50.0f };
     float                nearz { 0.01f };

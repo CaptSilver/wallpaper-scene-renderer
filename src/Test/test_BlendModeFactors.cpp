@@ -11,7 +11,8 @@ using wallpaper::BlendMode;
 using wallpaper::vulkan::SetAttachmentLoadOp;
 using wallpaper::vulkan::SetBlend;
 
-namespace {
+namespace
+{
 VkPipelineColorBlendAttachmentState makeState() {
     VkPipelineColorBlendAttachmentState s {};
     return s;
@@ -20,7 +21,7 @@ VkPipelineColorBlendAttachmentState makeState() {
 // Resolve a Vulkan blend factor to its scalar coefficient given (src, dst)
 // RGBA in [0,1].  Covers the subset of factors used by our BlendMode mapping.
 float factorRGB(VkBlendFactor f, const std::array<float, 4>& src,
-                const std::array<float, 4>& dst, int channel) {
+                [[maybe_unused]] const std::array<float, 4>& dst, int channel) {
     switch (f) {
     case VK_BLEND_FACTOR_ZERO: return 0.0f;
     case VK_BLEND_FACTOR_ONE: return 1.0f;
@@ -34,8 +35,7 @@ float factorRGB(VkBlendFactor f, const std::array<float, 4>& src,
 // Simulate one Vulkan blend op against the configured state.  Returns the
 // resulting (r,g,b,a) in [0,1].  Asserts on unsupported blend ops.
 std::array<float, 4> applyBlend(const VkPipelineColorBlendAttachmentState& s,
-                                 const std::array<float, 4>&               src,
-                                 const std::array<float, 4>&               dst) {
+                                const std::array<float, 4>& src, const std::array<float, 4>& dst) {
     REQUIRE(s.colorBlendOp == VK_BLEND_OP_ADD);
     REQUIRE(s.alphaBlendOp == VK_BLEND_OP_ADD);
     std::array<float, 4> out {};
@@ -195,7 +195,7 @@ TEST_SUITE("Blend math — pingpong initialization") {
         std::array<float, 4> src { 1.0f, 0.18f, 0.0f, 0.0f };
         std::array<float, 4> dst { 0.0f, 0.0f, 0.0f, 0.0f };
         auto                 out = applyBlend(s, src, dst);
-        CHECK(out[0] == doctest::Approx(1.0f));   // <-- bug: orange survives
+        CHECK(out[0] == doctest::Approx(1.0f)); // <-- bug: orange survives
         CHECK(out[3] == doctest::Approx(0.0f));
     }
 }

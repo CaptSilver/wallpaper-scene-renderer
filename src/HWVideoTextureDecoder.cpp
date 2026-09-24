@@ -301,9 +301,10 @@ void HWVideoTextureDecoder::renderFrame() {
 
     // Render into our FBO
     mpv_opengl_fbo mpv_fbo {
-        .fbo = (int)m_fbo,
-        .w   = m_width,
-        .h   = m_height,
+        .fbo             = (int)m_fbo,
+        .w               = m_width,
+        .h               = m_height,
+        .internal_format = 0, // let mpv pick, matching prior implicit zero-init
     };
     int              flip_y          = 0;
     mpv_render_param render_params[] = {

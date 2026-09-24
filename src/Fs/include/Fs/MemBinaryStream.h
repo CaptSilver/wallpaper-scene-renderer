@@ -60,7 +60,10 @@ public:
     virtual isize Size() const { return std::ssize(m_data); }
 
 protected:
-    virtual usize Write_impl(const void* buffer, usize sizeInByte) { return 0; }
+    virtual usize Write_impl([[maybe_unused]] const void* buffer,
+                             [[maybe_unused]] usize       sizeInByte) {
+        return 0;
+    }
 
 private:
     bool InArea(idx pos) const noexcept { return pos >= 0 && pos <= Size(); }

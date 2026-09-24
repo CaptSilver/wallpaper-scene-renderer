@@ -121,24 +121,28 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
 
     {
         VkImageMemoryBarrier in_bar {
-            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-            .dstAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .image            = src.handle,
-            .subresourceRange = srang,
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = src.handle,
+            .subresourceRange    = srang,
         };
         VkImageMemoryBarrier out_bar {
-            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-            .dstAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .image            = dst.handle,
-            .subresourceRange = srang,
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+            .dstAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = dst.handle,
+            .subresourceRange    = srang,
         };
 
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -152,7 +156,9 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
     if (size_match) {
         VkImageCopy copy {
             .srcSubresource = subresource,
+            .srcOffset      = { 0, 0, 0 },
             .dstSubresource = subresource,
+            .dstOffset      = { 0, 0, 0 },
             .extent         = { src.extent.width, src.extent.height, 1 },
         };
         cmd.CopyImage(src.handle,
@@ -172,7 +178,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
             .dstSubresource = subresource,
             .dstOffsets     = { VkOffset3D { 0, 0, 0 },
                                 VkOffset3D {
-                                (int32_t)dst.extent.width, (int32_t)dst.extent.height, 1 } },
+                                    (int32_t)dst.extent.width, (int32_t)dst.extent.height, 1 } },
         };
         cmd.BlitImage(src.handle,
                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -183,24 +189,28 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
     }
     {
         VkImageMemoryBarrier in_bar {
-            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_TRANSFER_READ_BIT,
-            .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .image            = src.handle,
-            .subresourceRange = srang,
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
+            .dstAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = src.handle,
+            .subresourceRange    = srang,
         };
         VkImageMemoryBarrier out_bar {
-            .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext            = nullptr,
-            .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask    = VK_ACCESS_SHADER_READ_BIT,
-            .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            .newLayout        = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .image            = dst.handle,
-            .subresourceRange = srang,
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = dst.handle,
+            .subresourceRange    = srang,
         };
 
         cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,

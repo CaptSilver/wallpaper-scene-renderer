@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
             QObject::connect(
                 shot_timer,
                 &QTimer::timeout,
-                [sv, base, ext, interval_s, max_time_s, start, shot_timer, &app]() {
+                [sv, base, ext, max_time_s, start, shot_timer, &app]() {
                     qint64 now = QDateTime::currentMSecsSinceEpoch();
                     if (*start == 0) *start = now;
                     double elapsed_ms = (double)(now - *start);

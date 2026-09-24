@@ -100,6 +100,7 @@ namespace
 // contract CustomShaderPass uses for a scene render-target output.
 std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFormat format) {
     VkAttachmentDescription attachment {
+        .flags          = 0,
         .format         = format,
         .samples        = VK_SAMPLE_COUNT_1_BIT,
         .loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD,
@@ -114,9 +115,16 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
         .layout     = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
     VkSubpassDescription subpass {
-        .pipelineBindPoint    = VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .colorAttachmentCount = 1,
-        .pColorAttachments    = &attachment_ref,
+        .flags                   = 0,
+        .pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .inputAttachmentCount    = 0,
+        .pInputAttachments       = nullptr,
+        .colorAttachmentCount    = 1,
+        .pColorAttachments       = &attachment_ref,
+        .pResolveAttachments     = nullptr,
+        .pDepthStencilAttachment = nullptr,
+        .preserveAttachmentCount = 0,
+        .pPreserveAttachments    = nullptr,
     };
     // Explicit ingoing dependency — the FinPass template omits one because the
     // swapchain is semaphore-synchronized, but this pass LOADs an intermediate
@@ -133,9 +141,12 @@ std::optional<vvk::RenderPass> CreateRenderPass(const vvk::Device& device, VkFor
         .dstStageMask  = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = 0,
     };
     VkRenderPassCreateInfo creatinfo {
         .sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .pNext           = nullptr,
+        .flags           = 0,
         .attachmentCount = 1,
         .pAttachments    = &attachment,
         .subpassCount    = 1,
@@ -315,6 +326,7 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
             VkFramebufferCreateInfo info {
                 .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 .pNext           = nullptr,
+                .flags           = 0,
                 .renderPass      = *m_desc.pipeline.pass,
                 .attachmentCount = 1,
                 .pAttachments    = &m_desc.vk_output.mip0_view,
@@ -356,22 +368,28 @@ void SkyboxPass::execute(const Device& device, RenderingResources& rr) {
         };
         std::array<VkWriteDescriptorSet, 2> wsets {
             VkWriteDescriptorSet {
-                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext           = nullptr,
-                .dstSet          = {},
-                .dstBinding      = 1,
-                .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo      = &pano_img,
+                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext            = nullptr,
+                .dstSet           = {},
+                .dstBinding       = 1,
+                .dstArrayElement  = 0,
+                .descriptorCount  = 1,
+                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo       = &pano_img,
+                .pBufferInfo      = nullptr,
+                .pTexelBufferView = nullptr,
             },
             VkWriteDescriptorSet {
-                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .pNext           = nullptr,
-                .dstSet          = {},
-                .dstBinding      = 0,
-                .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .pBufferInfo     = &ubo_info,
+                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext            = nullptr,
+                .dstSet           = {},
+                .dstBinding       = 0,
+                .dstArrayElement  = 0,
+                .descriptorCount  = 1,
+                .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pImageInfo       = nullptr,
+                .pBufferInfo      = &ubo_info,
+                .pTexelBufferView = nullptr,
             },
         };
         cmd.PushDescriptorSetKHR(

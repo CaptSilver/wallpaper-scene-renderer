@@ -68,9 +68,13 @@ using namespace wallpaper;
 
 #define CASE_CMD(cmd) \
     case CMD::CMD_##cmd: handle_##cmd(msg); break;
-#define MHANDLER_CMD(cmd) void handle_##cmd(const std::shared_ptr<looper::Message>& msg)
+// [[maybe_unused]] on msg: most handlers read the message payload, but a few
+// (DRAW, FIRST_FRAME, ...) only care that the command fired, and the macro
+// gives every handler the same signature regardless.
+#define MHANDLER_CMD(cmd) \
+    void handle_##cmd([[maybe_unused]] const std::shared_ptr<looper::Message>& msg)
 #define MHANDLER_CMD_IMPL(cl, cmd) \
-    void impl_##cl::handle_##cmd(const std::shared_ptr<looper::Message>& msg)
+    void impl_##cl::handle_##cmd([[maybe_unused]] const std::shared_ptr<looper::Message>& msg)
 #define CALL_MHANDLER_CMD(cmd, msg) handle_##cmd(msg)
 
 namespace

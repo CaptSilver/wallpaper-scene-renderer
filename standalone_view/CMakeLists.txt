@@ -36,6 +36,11 @@ if(SCENE_VIEWER_ASAN)
 endif()
 
 include_directories(SYSTEM ../third_party)
+# Included before add_subdirectory so wek_warn_opts / WEK_WERROR_FLAGS are
+# defined before the target_compile_options calls below run (matching how the
+# root and submodule CMakeLists.txt each include this before their own
+# add_subdirectory that builds the targets it applies to).
+include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/WekWarnings.cmake)
 add_subdirectory(.. scenebackend)
 
 pkg_check_modules(GLFW REQUIRED glfw3)
@@ -43,7 +48,7 @@ add_executable(${PROJECT_NAME}
     glfwviewer.cpp
 )
 target_link_libraries(${PROJECT_NAME}
-    PUBLIC 
+    PUBLIC
         ${GLFW_LIBRARIES}
         wescene-renderer
         # glfwviewer resolves the refresh rate and validates the present-mode
@@ -52,6 +57,7 @@ target_link_libraries(${PROJECT_NAME}
         wpTimer
         wpVulkan
 )
+target_compile_options(${PROJECT_NAME} PRIVATE ${wek_warn_opts})
 
 if(BUILD_QML)
     if(NOT QT_MAJOR_VERSION)
@@ -78,6 +84,7 @@ if(BUILD_QML)
         # qmlviewer validates --present-mode against the production enum.
         wpVulkan
     )
+    target_compile_options(${PROJECT_NAME}-script PRIVATE ${wek_warn_opts})
 
     # Back-compat alias target: old docs referred to sceneviewer-qml.
     add_custom_target(${PROJECT_NAME}-qml DEPENDS ${PROJECT_NAME}-script)

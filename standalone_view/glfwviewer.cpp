@@ -40,7 +40,8 @@ struct UserData {
 void updateCallback();
 
 extern "C" {
-void framebuffer_size_callback(GLFWwindow*, int width, int height) {}
+void framebuffer_size_callback(GLFWwindow*, [[maybe_unused]] int width,
+                               [[maybe_unused]] int height) {}
 
 // Track scene file + assets path so R can reload the current scene.
 static std::string g_scene;
@@ -59,7 +60,7 @@ static void print_help_overlay() {
     std::cout << "  Q / Esc Quit" << std::endl << std::endl;
 }
 
-void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) {
+void key_callback(GLFWwindow* win, int key, [[maybe_unused]] int scancode, int action, int mods) {
     if (action != GLFW_PRESS) return;
     UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
     // Number keys 1-9 → switch lucyrebecca to that value at runtime
@@ -109,9 +110,9 @@ void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) 
     }
 }
 
-void mouse_button_callback(GLFWwindow* win, int button, int action, int mods) {
+void mouse_button_callback(GLFWwindow* win, int button, int action, [[maybe_unused]] int mods) {
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
-        UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
+        [[maybe_unused]] UserData* data = static_cast<UserData*>(glfwGetWindowUserPointer(win));
         // data->psw->setPropertyString(wallpaper::PROPERTY_SOURCE,
     }
 }

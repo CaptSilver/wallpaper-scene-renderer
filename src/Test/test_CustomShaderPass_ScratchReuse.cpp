@@ -29,8 +29,16 @@ TEST_SUITE("CustomShaderPass record-path scratch") {
             v.clear();
             CHECK(v.capacity() == cap0); // clear() must not shrink
             for (int i = 0; i < 16; ++i) {
-                v.push_back(
-                    VkImageMemoryBarrier { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER });
+                v.push_back(VkImageMemoryBarrier { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                                   .pNext = nullptr,
+                                                   .srcAccessMask       = 0,
+                                                   .dstAccessMask       = 0,
+                                                   .oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+                                                   .newLayout           = VK_IMAGE_LAYOUT_UNDEFINED,
+                                                   .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                   .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                   .image               = VK_NULL_HANDLE,
+                                                   .subresourceRange    = {} });
             }
             CHECK(v.capacity() == cap0); // push_back inside reserve must not realloc
         }
@@ -65,7 +73,16 @@ TEST_SUITE("CustomShaderPass record-path scratch") {
             CHECK(v.capacity() == cap0);
             for (int i = 0; i < 17; ++i) {
                 v.push_back(
-                    VkWriteDescriptorSet { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET });
+                    VkWriteDescriptorSet { .sType      = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                                           .pNext      = nullptr,
+                                           .dstSet     = {},
+                                           .dstBinding = 0,
+                                           .dstArrayElement  = 0,
+                                           .descriptorCount  = 0,
+                                           .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                           .pImageInfo       = nullptr,
+                                           .pBufferInfo      = nullptr,
+                                           .pTexelBufferView = nullptr });
             }
             CHECK(v.capacity() == cap0);
         }
@@ -76,8 +93,26 @@ TEST_SUITE("CustomShaderPass record-path scratch") {
         // assignment" — at minimum, capacity must equal pre-clear capacity.
         std::vector<VkImageMemoryBarrier> v;
         v.reserve(32);
-        v.push_back(VkImageMemoryBarrier { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER });
-        v.push_back(VkImageMemoryBarrier { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER });
+        v.push_back(VkImageMemoryBarrier { .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                           .pNext         = nullptr,
+                                           .srcAccessMask = 0,
+                                           .dstAccessMask = 0,
+                                           .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+                                           .newLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .image               = VK_NULL_HANDLE,
+                                           .subresourceRange    = {} });
+        v.push_back(VkImageMemoryBarrier { .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                           .pNext         = nullptr,
+                                           .srcAccessMask = 0,
+                                           .dstAccessMask = 0,
+                                           .oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+                                           .newLayout     = VK_IMAGE_LAYOUT_UNDEFINED,
+                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .image               = VK_NULL_HANDLE,
+                                           .subresourceRange    = {} });
         const auto cap_before = v.capacity();
         v.clear();
         CHECK(v.size() == 0u);
