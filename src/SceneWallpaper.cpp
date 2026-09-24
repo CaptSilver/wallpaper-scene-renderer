@@ -592,10 +592,10 @@ public:
             bool jumped = prev == s_last_logged_visible.end() || prev->second != visible;
             if (++s_visible_log <= 5 || jumped) {
                 LOG_DEBUG("setNodeVisible[%d]: id=%d visible=%d%s",
-                         s_visible_log,
-                         id,
-                         (int)visible,
-                         jumped ? " [jump]" : "");
+                          s_visible_log,
+                          id,
+                          (int)visible,
+                          jumped ? " [jump]" : "");
                 s_last_logged_visible[id] = visible;
             }
         });
@@ -644,10 +644,10 @@ public:
                 prev == s_last_logged_alpha.end() || std::abs(prev->second - alpha) > 0.3f;
             if (++s_alpha_log <= 5 || jumped) {
                 LOG_DEBUG("setNodeAlpha[%d]: id=%d alpha=%.4f%s",
-                         s_alpha_log,
-                         id,
-                         alpha,
-                         jumped ? " [jump]" : "");
+                          s_alpha_log,
+                          id,
+                          alpha,
+                          jumped ? " [jump]" : "");
                 s_last_logged_alpha[id] = alpha;
             }
         });
@@ -665,10 +665,10 @@ public:
             bool jumped = prev == s_last_logged_rate.end() || std::abs(prev->second - rate) > 0.3f;
             if (++s_rate_log <= 5 || jumped) {
                 LOG_DEBUG("setParticleRate[%d]: id=%d rate=%.4f%s",
-                         s_rate_log,
-                         id,
-                         rate,
-                         jumped ? " [jump]" : "");
+                          s_rate_log,
+                          id,
+                          rate,
+                          jumped ? " [jump]" : "");
                 s_last_logged_rate[id] = rate;
             }
         });

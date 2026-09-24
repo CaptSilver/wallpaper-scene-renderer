@@ -93,9 +93,8 @@ int main(int argc, char** argv) {
         std::string hide_pattern = program.get<std::string>("--hide-pattern");
         if (! hide_pattern.empty()) {
             std::cout << "--hide-pattern: " << hide_pattern << std::endl;
-            QMetaObject::invokeMethod(sv,
-                                      "setHidePattern",
-                                      Q_ARG(QString, QString::fromStdString(hide_pattern)));
+            QMetaObject::invokeMethod(
+                sv, "setHidePattern", Q_ARG(QString, QString::fromStdString(hide_pattern)));
         }
     }
     // --cache-path must be set BEFORE source so the shader-cache VFS mount
@@ -194,8 +193,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (erased > 0) {
-                    std::cout << "dump-passes: erased " << erased
-                              << " stale file(s) from " << dump_dir << std::endl;
+                    std::cout << "dump-passes: erased " << erased << " stale file(s) from "
+                              << dump_dir << std::endl;
                 }
             }
 

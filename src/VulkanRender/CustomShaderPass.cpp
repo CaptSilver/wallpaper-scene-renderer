@@ -441,13 +441,13 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 auto depth = std::static_pointer_cast<VmaImageParameters>(scene.depthBuffer);
                 if (depth && *depth->view != VK_NULL_HANDLE) {
                     ImageParameters img;
-                    img.handle       = *depth->handle;
-                    img.view         = *depth->view;
-                    img.mip0_view    = *depth->view;
-                    img.sampler      = device.tex_cache().GetOrCreateDepthSampler();
-                    img.extent       = depth->extent;
-                    img.mipmap_level = 1;
-                    img_slots.slots  = { img };
+                    img.handle            = *depth->handle;
+                    img.view              = *depth->view;
+                    img.mip0_view         = *depth->view;
+                    img.sampler           = device.tex_cache().GetOrCreateDepthSampler();
+                    img.extent            = depth->extent;
+                    img.mipmap_level      = 1;
+                    img_slots.slots       = { img };
                     m_desc.vk_textures[i] = img_slots;
                     continue; // bypass the renderTargets lookup
                 }
@@ -529,8 +529,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 // errors (Summer Vibes 3293999899 ships a `gradient/
                 // blend_gradient_copy1` reference but doesn't include the
                 // .tex file) shouldn't fail-classify the whole wallpaper.
-                LOG_INFO("parse tex \"%s\" failed (using 1x1 fallback)",
-                         tex_name.c_str());
+                LOG_INFO("parse tex \"%s\" failed (using 1x1 fallback)", tex_name.c_str());
             }
         }
         m_desc.vk_textures[i] = img_slots;
@@ -636,12 +635,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         if (need_fallback) {
             static const std::string dummy_key = "_rt_dummy_1x1";
             TextureKey               tk {
-                              .width        = 1,
-                              .height       = 1,
-                              .usage        = {},
-                              .format       = TextureFormat::RGBA8,
-                              .sample       = {},
-                              .mipmap_level = 1,
+                .width        = 1,
+                .height       = 1,
+                .usage        = {},
+                .format       = TextureFormat::RGBA8,
+                .sample       = {},
+                .mipmap_level = 1,
             };
             if (auto opt = device.tex_cache().Query(dummy_key, tk, true); opt.has_value()) {
                 m_desc.vk_fallback_tex = opt.value();
@@ -722,9 +721,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
 
         if (mesh.IndexCount() > 0) {
-            auto& indice      = mesh.GetIndexArray(0);
-            m_desc.draw_count = (u32)indice.DrawIndexCount();
-            m_desc.index_type = ToVkIndexType(indice.Width());
+            auto& indice                   = mesh.GetIndexArray(0);
+            m_desc.draw_count              = (u32)indice.DrawIndexCount();
+            m_desc.index_type              = ToVkIndexType(indice.Width());
             const VkDeviceSize index_align = IndexAlignmentFor(m_desc.index_type);
             auto&              buf         = m_desc.index_buf;
             if (! m_desc.dyn_vertex) {
@@ -753,7 +752,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         {
             VkColorComponentFlags colorMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-            color_blend.colorWriteMask = colorMask;
+            color_blend.colorWriteMask      = colorMask;
 
             auto blendmode = mesh.Material()->blenmode;
             SetBlend(blendmode, color_blend);
@@ -843,12 +842,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         VkAttachmentLoadOp depthLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         scene.depthBufferCleared       = true;
         auto opt                       = CreateRenderPass(device.handle(),
-                                    output_vk_format,
-                                    loadOp,
-                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                    useDepth,
-                                    depthLoadOp,
-                                    m_desc.msaaSamples);
+                                                          output_vk_format,
+                                                          loadOp,
+                                                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                                          useDepth,
+                                                          depthLoadOp,
+                                                          m_desc.msaaSamples);
         if (! opt.has_value()) {
             LOG_ERROR("CreateRenderPass failed for shader '%s'",
                       mesh.Material()->customShader.shader->name.c_str());
@@ -1164,11 +1163,11 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
 
         // Transition TRANSFER_DST → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
         VkImageMemoryBarrier to_attach {
-            .sType         = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-            .pNext         = nullptr,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                             VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+            .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext               = nullptr,
+            .srcAccessMask       = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
             .oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             .newLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1518,8 +1517,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // image into a pre-allocated staging buffer BEFORE any later pass
     // rewrites the same ping-pong slot.  VulkanRender maps the staging
     // buffers after the frame's submit+wait and writes PPMs.
-    extern std::vector<PassDumpEntry>*        g_pass_dump_entries;
-    extern class Device const*                g_pass_dump_device;
+    extern std::vector<PassDumpEntry>* g_pass_dump_entries;
+    extern class Device const*         g_pass_dump_device;
     if (g_pass_dump_active && g_pass_dump_entries && g_pass_dump_device &&
         m_desc.vk_output.handle != VK_NULL_HANDLE) {
         // Forward-declare the structure for header-less access (defined in

@@ -95,8 +95,7 @@ void key_callback(GLFWwindow* win, int key, int scancode, int action, int mods) 
             std::cout << "[RELOAD] " << g_scene << std::endl;
             data->psw->setPropertyString(wallpaper::PROPERTY_SOURCE, g_scene);
         } else {
-            std::cout << "[RELOAD] no scene/assets recorded — skipping"
-                      << std::endl;
+            std::cout << "[RELOAD] no scene/assets recorded — skipping" << std::endl;
         }
     }
     // H / ? → help overlay (printed to stdout). Easier to discover than
@@ -183,8 +182,7 @@ int main(int argc, char** argv) {
     psw->setPropertyString(wallpaper::PROPERTY_SOURCE, g_scene);
     // Print a one-line discoverability hint so new users find the help
     // overlay without spelunking the source.
-    std::cout << "sceneviewer running — press H for keyboard shortcuts."
-              << std::endl;
+    std::cout << "sceneviewer running — press H for keyboard shortcuts." << std::endl;
     psw->setPropertyBool(wallpaper::PROPERTY_GRAPHIVZ, program.get<bool>(OPT_GRAPHVIZ));
     auto fps_val = program.get<int32_t>(OPT_FPS);
     if (fps_val < 5) fps_val = 60; // default to 60fps
@@ -201,12 +199,10 @@ int main(int argc, char** argv) {
                 detected = static_cast<unsigned>(mode->refreshRate) * 1000u;
             }
         }
-        const auto mhz = wallpaper::pacing::ResolveRefreshMhz(
-            detected, program.get<int32_t>(OPT_REFRESH_MHZ));
-        std::cout << "output refresh: " << mhz << " mHz (detected " << detected << ")"
-                  << std::endl;
-        psw->setPropertyInt32(wallpaper::PROPERTY_OUTPUT_REFRESH_MHZ,
-                              static_cast<int32_t>(mhz));
+        const auto mhz =
+            wallpaper::pacing::ResolveRefreshMhz(detected, program.get<int32_t>(OPT_REFRESH_MHZ));
+        std::cout << "output refresh: " << mhz << " mHz (detected " << detected << ")" << std::endl;
+        psw->setPropertyInt32(wallpaper::PROPERTY_OUTPUT_REFRESH_MHZ, static_cast<int32_t>(mhz));
     }
     {
         const auto pm = program.get<int32_t>(OPT_PRESENT_MODE);
@@ -280,7 +276,7 @@ int main(int argc, char** argv) {
                 double elapsed_ms = std::chrono::duration<double, std::milli>(
                                         std::chrono::steady_clock::now() - start)
                                         .count();
-                char name_buf[32];
+                char   name_buf[32];
                 std::snprintf(name_buf, sizeof(name_buf), "_%06d", (int)elapsed_ms);
                 std::string path = base + name_buf + ext;
                 std::cout << "interval screenshot @ " << (elapsed_ms / 1000.0) << "s -> " << path
