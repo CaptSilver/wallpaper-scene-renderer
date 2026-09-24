@@ -259,10 +259,5 @@ inline std::string resolveSkyboxTexKey(const WPImageObject& obj) {
     return base;
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPEffectFbo, name, scale);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageEffect, name, visible, passes, fbos, materials);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPImageObject, name, origin, angles, scale, size, visible,
-                                   material, effects);
-
 } // namespace wpscene
 } // namespace wallpaper

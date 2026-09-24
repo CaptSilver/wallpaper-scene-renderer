@@ -5,60 +5,6 @@
 using namespace wallpaper;
 
 // ===========================================================================
-// sph2cart
-// ===========================================================================
-
-TEST_SUITE("sph2cart") {
-    TEST_CASE("zero angles, unit radius → (1, 0, 0)") {
-        auto v = algorism::sph2cart({ 0.0, 0.0, 1.0 });
-        CHECK(v.x() == doctest::Approx(1.0));
-        CHECK(v.y() == doctest::Approx(0.0));
-        CHECK(v.z() == doctest::Approx(0.0));
-    }
-
-    TEST_CASE("azimuth 90deg → (0, 1, 0)") {
-        auto v = algorism::sph2cart({ M_PI / 2.0, 0.0, 1.0 });
-        CHECK(v.x() == doctest::Approx(0.0).epsilon(1e-10));
-        CHECK(v.y() == doctest::Approx(1.0));
-        CHECK(v.z() == doctest::Approx(0.0));
-    }
-
-    TEST_CASE("elevation 90deg → (0, 0, 1)") {
-        auto v = algorism::sph2cart({ 0.0, M_PI / 2.0, 1.0 });
-        CHECK(v.x() == doctest::Approx(0.0).epsilon(1e-10));
-        CHECK(v.y() == doctest::Approx(0.0).epsilon(1e-10));
-        CHECK(v.z() == doctest::Approx(1.0));
-    }
-
-    TEST_CASE("zero radius → origin") {
-        auto v = algorism::sph2cart({ 1.23, 0.45, 0.0 });
-        CHECK(v.x() == doctest::Approx(0.0));
-        CHECK(v.y() == doctest::Approx(0.0));
-        CHECK(v.z() == doctest::Approx(0.0));
-    }
-
-    TEST_CASE("specific angles verify trig products") {
-        // azimuth=pi/4, elevation=pi/6, radius=1
-        // x = cos(pi/4)*cos(pi/6) = 0.7071*0.8660 = 0.6124
-        // y = sin(pi/4)*cos(pi/6) = 0.7071*0.8660 = 0.6124
-        // z = sin(pi/6) = 0.5
-        auto v = algorism::sph2cart({ M_PI / 4.0, M_PI / 6.0, 1.0 });
-        CHECK(v.x() == doctest::Approx(std::cos(M_PI / 4.0) * std::cos(M_PI / 6.0)).epsilon(1e-10));
-        CHECK(v.y() == doctest::Approx(std::sin(M_PI / 4.0) * std::cos(M_PI / 6.0)).epsilon(1e-10));
-        CHECK(v.z() == doctest::Approx(std::sin(M_PI / 6.0)).epsilon(1e-10));
-    }
-
-    TEST_CASE("radius 2 scales correctly") {
-        auto v1 = algorism::sph2cart({ 0.5, 0.3, 1.0 });
-        auto v2 = algorism::sph2cart({ 0.5, 0.3, 2.0 });
-        CHECK(v2.x() == doctest::Approx(v1.x() * 2.0));
-        CHECK(v2.y() == doctest::Approx(v1.y() * 2.0));
-        CHECK(v2.z() == doctest::Approx(v1.z() * 2.0));
-    }
-
-} // TEST_SUITE
-
-// ===========================================================================
 // lerp
 // ===========================================================================
 

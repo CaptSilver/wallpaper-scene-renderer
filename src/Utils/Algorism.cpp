@@ -4,11 +4,6 @@
 using namespace wallpaper;
 using namespace Eigen;
 
-double algorism::CalculatePersperctiveDistance(double fov, double height) noexcept {
-    double k = std::tan(Radians(fov / 2.0f)) * 2.0f;
-    return height / k;
-}
-
 double algorism::CalculatePersperctiveFov(double distence, double height) noexcept {
     double k     = height / distence / 2.0f;
     double angle = std::atan(k) * 2;

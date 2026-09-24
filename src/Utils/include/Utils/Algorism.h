@@ -10,33 +10,9 @@ namespace wallpaper
 {
 namespace algorism
 {
-double CalculatePersperctiveDistance(double fov, double height) noexcept;
 double CalculatePersperctiveFov(double distence, double height) noexcept;
 
 constexpr bool IsPowOfTwo(u32 x) { return (x > 1) && ((x & (x - 1)) == 0); }
-
-inline Eigen::Vector3d sph2cart(const Eigen::Vector3d& sph) noexcept {
-    double azimuth   = sph.x();
-    double elevation = sph.y();
-    double radius    = sph.z();
-    return radius * Eigen::Vector3d {
-        std::cos(azimuth) * std::cos(elevation),
-        std::sin(azimuth) * std::cos(elevation),
-        std::sin(elevation),
-    };
-}
-
-template<typename TFUNC>
-Eigen::Vector3d GenSphereSurface(TFUNC&& random) noexcept {
-    double azimuth = 2.0 * EIGEN_PI * random();
-    // not uniform distribution
-    double elevation = std::asin(2.0 * random() - 1.0);
-    return sph2cart({
-        azimuth,
-        elevation,
-        1.0,
-    });
-}
 
 template<typename TFUNC>
 Eigen::Vector3d GenSphereSurfaceNormal(TFUNC&&                normal_random,
@@ -46,12 +22,6 @@ Eigen::Vector3d GenSphereSurfaceNormal(TFUNC&&                normal_random,
     double w    = direct.z() > 0.0 ? normal_random(0.0, direct.z()) : 0.0;
     double norm = std::sqrt((u * u + v * v + w * w));
     return Eigen::Vector3d(u, v, w) / norm;
-}
-
-template<typename TFUNC>
-Eigen::Vector3d GenSphereIn(TFUNC&& random) noexcept {
-    // not uniform distribution
-    return std::pow(random(), 1.0 / 3.0) * GenSphereSurface(random);
 }
 
 constexpr double lerp(double t, double a, double b) noexcept { return a + t * (b - a); }

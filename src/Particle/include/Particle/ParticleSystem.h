@@ -244,7 +244,7 @@ public:
         return m_instances;
     }
 
-    void SetSpriteTrail(u32 trail_capacity, float trail_length = 0.0f);
+    void SetSpriteTrail(u32 trail_capacity, float trail_max_age = 0.0f);
 
     // Debug label (particle preset basename, e.g. "thunderbolt_glow") plumbed from the
     // parser.  Used only for rate-limited LOG_INFO diagnostics when investigating
@@ -311,7 +311,7 @@ private:
 
     bool  m_is_spritetrail { false };
     u32   m_trail_capacity { 0 };
-    float m_trail_length { 0.0f };
+    float m_trail_max_age { 0.0f };
 
     // Tracks burst-FX completion for the dynamic-asset pool.  Set true by
     // Emitt() when the subsystem has had at least one live particle since

@@ -96,10 +96,10 @@ ParticleSubSystem::SpawnType ParticleSubSystem::Type() const { return m_spawn_ty
 
 u32 ParticleSubSystem::MaxInstanceCount() const { return m_maxcount_instance; };
 
-void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity, float trail_length) {
+void ParticleSubSystem::SetSpriteTrail(u32 trail_capacity, float trail_max_age) {
     m_is_spritetrail = true;
     m_trail_capacity = trail_capacity;
-    m_trail_length   = trail_length;
+    m_trail_max_age  = trail_max_age;
 }
 
 void ParticleSubSystem::AddChild(std::unique_ptr<ParticleSubSystem>&& child) {
@@ -505,7 +505,7 @@ void ParticleSubSystem::EmittImpl(bool skip_spawn) {
             // Grow trail history vector to match particle count
             while (trails.size() < particles.size()) {
                 trails.emplace_back();
-                trails.back().Init(m_trail_capacity, m_trail_length);
+                trails.back().Init(m_trail_capacity, m_trail_max_age);
             }
             usize alive_count = 0;
             usize trail_count = 0;

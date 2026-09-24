@@ -260,10 +260,5 @@ CollectParticleComposeLinkIds(const std::vector<const WPParticleObject*>& partic
     return out;
 }
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Initializer, name, max, min);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Emitter, name, distancemax, distancemin, rate, directions);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Particle, initializers, operators, emitters);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPParticleObject, name, origin, angles, scale, visible, particle,
-                                   particleObj);
 } // namespace wpscene
 } // namespace wallpaper

@@ -688,11 +688,6 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
         if (name == "_rt_FullFrameBuffer") {
             name = SpecTex_Default;
             if (wpmat.shader == "genericimage2" && ! exists(sinfo.combos, "BLENDMODE")) name = "";
-            /*
-            if(wpmat.shader == "genericparticle") {
-                name = "_rt_ParticleRefract";
-            }
-            */
         } else if (sstart_with(name, WE_IMAGE_LAYER_COMPOSITE_PREFIX)) {
             LOG_INFO("link tex \"%s\"", name.c_str());
             int         wpid { -1 };
@@ -3605,8 +3600,12 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
                                                 Vector3f(model_obj.scale.data()),
                                                 Vector3f(model_obj.angles.data()));
     spParent->ID() = model_obj.id;
+    // Authored visibility first, --hide-pattern's debug override second -- same
+    // order ParseLightObj/ParseParticleObj/ParseTextObj use, so a model matching
+    // the pattern stays hidden even if it also authors "visible": true.
     // Cascades to every submesh child via SceneNode::AppendChild's
     // m_visibility_parent chain — no per-submesh call needed.
+    spParent->SetVisible(model_obj.visible);
     ApplyHidePattern(context, model_obj.name, model_obj.id, *spParent);
 
     std::vector<std::shared_ptr<SceneNode>> translucentNodes;
@@ -5512,8 +5511,15 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
                 } else {
                     // hdr_downsample g_RenderVar0: 4-corner offsets in source RT
                     // UV space (-dx, -dy, +dx, +dy) where d = 0.5 / src_resolution.
-                    const float dx = 0.5f / (fullW * def.src_scale);
-                    const float dy = 0.5f / (fullH * def.src_scale);
+                    // fullW/fullH come from the scene's own authored
+                    // orthogonalprojection with no validation -- floor them the
+                    // same way the knee term a few lines below floors
+                    // bloomhdrfeather, so an authored (or test-only) zero
+                    // width/height can't turn this into a live divide-by-zero.
+                    const float safeFullW = std::max(fullW, 1.0f);
+                    const float safeFullH = std::max(fullH, 1.0f);
+                    const float dx        = 0.5f / (safeFullW * def.src_scale);
+                    const float dy        = 0.5f / (safeFullH * def.src_scale);
                     material.customShader.constValues["g_RenderVar0"] =
                         std::vector<float> { -dx, -dy, dx, dy };
 

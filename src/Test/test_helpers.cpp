@@ -384,29 +384,23 @@ TEST_SUITE("Bswap") {
 // Perspective camera math
 // ===========================================================================
 
+namespace
+{
+// CalculatePersperctiveFov's inverse, kept here only to generate round-trip
+// fixtures for the two tests below -- the production algorism::
+// CalculatePersperctiveDistance had no caller anywhere in the renderer and
+// was deleted; this is its formula, not a re-export of it.
+double distanceFromFov(double fov, double height) {
+    double k = std::tan(fov * (M_PI / 360.0)) * 2.0;
+    return height / k;
+}
+} // namespace
+
 TEST_SUITE("PerspectiveCamera") {
-    TEST_CASE("CalculatePersperctiveDistance fov=90 deg") {
-        // tan(45deg) = 1, so distance = height / (2 * 1) = height / 2
-        double dist = algorism::CalculatePersperctiveDistance(90.0, 100.0);
-        CHECK(dist == doctest::Approx(50.0));
-    }
-
-    TEST_CASE("CalculatePersperctiveDistance larger fov means shorter distance") {
-        double d1 = algorism::CalculatePersperctiveDistance(60.0, 100.0);
-        double d2 = algorism::CalculatePersperctiveDistance(90.0, 100.0);
-        CHECK(d1 > d2);
-    }
-
-    TEST_CASE("CalculatePersperctiveDistance taller height means greater distance") {
-        double d1 = algorism::CalculatePersperctiveDistance(60.0, 100.0);
-        double d2 = algorism::CalculatePersperctiveDistance(60.0, 200.0);
-        CHECK(d2 == doctest::Approx(d1 * 2.0));
-    }
-
     TEST_CASE("CalculatePersperctiveFov inverse of Distance") {
         double fov           = 60.0;
         double height        = 100.0;
-        double dist          = algorism::CalculatePersperctiveDistance(fov, height);
+        double dist          = distanceFromFov(fov, height);
         double recovered_fov = algorism::CalculatePersperctiveFov(dist, height);
         CHECK(recovered_fov == doctest::Approx(fov).epsilon(1e-6));
     }
@@ -420,7 +414,7 @@ TEST_SUITE("PerspectiveCamera") {
     TEST_CASE("roundtrip Fov to Distance to Fov") {
         double fov    = 75.0;
         double height = 200.0;
-        double dist   = algorism::CalculatePersperctiveDistance(fov, height);
+        double dist   = distanceFromFov(fov, height);
         double fov2   = algorism::CalculatePersperctiveFov(dist, height);
         CHECK(fov2 == doctest::Approx(fov).epsilon(1e-6));
     }

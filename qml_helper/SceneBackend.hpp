@@ -509,7 +509,6 @@ private:
     bool applyInterruptBackoff(bool tickInterrupted, int& consecutive, bool& disabledFlag,
                                QTimer* timer, const char* what);
 
-    bool m_inited { false };
     bool m_enable_valid { false };
     // Set by pause()/play().  Gates the property + color script loops (F19) via
     // scenebackend::scriptLoopShouldRun so a paused wallpaper (TTY-switch /

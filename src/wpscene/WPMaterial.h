@@ -47,10 +47,5 @@ public:
     bool use_puppet { false };
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPassBindItem, name, index);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterialPass, bind, target, textures, combos,
-                                   constantshadervalues);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPMaterial, blending, shader, textures, combos,
-                                   constantshadervalues);
 } // namespace wpscene
 } // namespace wallpaper

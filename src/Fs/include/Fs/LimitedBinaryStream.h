@@ -27,7 +27,7 @@ private:
         }
         return false;
     }
-    bool End() const { return m_pos < 0 || m_pos == Size(); };
+    bool End() const { return m_pos == Size(); };
 
 protected:
     virtual usize Write_impl(const void*, usize) { return 0; }

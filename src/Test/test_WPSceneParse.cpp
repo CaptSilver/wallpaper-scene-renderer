@@ -2368,6 +2368,42 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         for (std::size_t i = 0; i < knee->second.size(); ++i) CHECK(std::isfinite(knee->second[i]));
     }
 
+    TEST_CASE("E2E: HDR bloom's per-pass UV offset stays finite when the scene authors a "
+              "zero-width orthographic projection") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/hdr_downsample.vert", kTrivialVert },
+            { "/shaders/hdr_downsample.frag", kTrivialFrag },
+            { "/shaders/combine_hdr.vert", kTrivialVert },
+            { "/shaders/combine_hdr.frag", kTrivialFrag },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 0, "height": 720,
+                                         "postprocessing": "ultra" },
+               "hdr": true, "bloom": true },
+  "objects": []
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_zero_width_bloom", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->bloomConfig.enabled);
+
+        // nodes[0] is the Extract stage (src_scale 1.0), whose g_RenderVar0
+        // holds (-dx, -dy, dx, dy).  A zero-width scene makes dx = 0.5/(0*1.0)
+        // -- +inf today, before this step's floor.
+        const auto& extract = scene->bloomConfig.nodes[0]->Mesh()->Material()->customShader;
+        auto        v       = extract.constValues.find("g_RenderVar0");
+        REQUIRE(v != extract.constValues.end());
+        for (std::size_t i = 0; i < v->second.size(); ++i) CHECK(std::isfinite(v->second[i]));
+    }
+
     // -----------------------------------------------------------------------
     // Mutation-coverage gaps in assembleEffects()/assembleEffectChain()
     // (WPSceneParser.cpp's shared effect-chain assembler for image and text
@@ -3198,6 +3234,39 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         for (auto& l : LogCapture::lines())
             if (l.find("HidePattern: id=900") != std::string::npos) hide_log_count++;
         CHECK(hide_log_count == 1);
+    }
+
+    TEST_CASE("E2E: ParseModelObj honors JSON `visible:false`") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/models/_tri.mdl", makeTriangleModelMdl() },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 950, "name": "hidden_rock", "model": "models/_tri.mdl",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": false }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_invisible_model", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto cit = scene->nodeById.find(950);
+        REQUIRE(cit != scene->nodeById.end());
+        SceneNode* parent = cit->second;
+        REQUIRE(parent != nullptr);
+        CHECK_FALSE(parent->IsVisible());
+        // Submesh children have no SetVisible of their own -- IsVisible() has
+        // to walk the m_visibility_parent chain to the hidden parent, same as
+        // the existing --hide-pattern case for this object type.
+        REQUIRE_FALSE(parent->GetChildren().empty());
+        CHECK_FALSE(parent->GetChildren().front()->IsVisible());
     }
 
     // ParseTextObj's placeholder-path ApplyHidePattern call: an empty font

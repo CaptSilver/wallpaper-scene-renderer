@@ -98,9 +98,5 @@ public:
     WPSceneGeneral general;
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(Orthogonalprojection, width, height);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPSceneCamera, center, eye, up);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPSceneGeneral, clearcolor, orthogonalprojection, zoom);
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(WPScene, camera, general);
 } // namespace wpscene
 } // namespace wallpaper
