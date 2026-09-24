@@ -86,6 +86,37 @@ TEST_SUITE("PendingUpdateQueues") {
         });
     }
 
+    TEST_CASE("scene optional: setBloomStrength/setBloomThreshold set once, drain resets") {
+        PendingUpdateQueues q;
+        q.setBloomStrength(1.5f);
+        q.setBloomThreshold(0.8f);
+
+        q.withPropertyLocked([&](PendingUpdateQueues& p) {
+            REQUIRE(p.m_pending_bloom_strength.has_value());
+            REQUIRE(p.m_pending_bloom_threshold.has_value());
+            CHECK(*p.m_pending_bloom_strength == 1.5f);
+            CHECK(*p.m_pending_bloom_threshold == 0.8f);
+            p.m_pending_bloom_strength.reset(); // mirror the drain's reset()
+            p.m_pending_bloom_threshold.reset();
+        });
+        q.withPropertyLocked([&](PendingUpdateQueues& p) {
+            CHECK_FALSE(p.m_pending_bloom_strength.has_value());
+            CHECK_FALSE(p.m_pending_bloom_threshold.has_value());
+        });
+    }
+
+    TEST_CASE(
+        "scene optional: a second setBloomStrength before drain overwrites (last-write-wins)") {
+        PendingUpdateQueues q;
+        q.setBloomStrength(1.0f);
+        q.setBloomStrength(2.0f);
+
+        q.withPropertyLocked([&](PendingUpdateQueues& p) {
+            REQUIRE(p.m_pending_bloom_strength.has_value());
+            CHECK(*p.m_pending_bloom_strength == 2.0f);
+        });
+    }
+
     TEST_CASE("light vectors: two setLightColor append in call order") {
         PendingUpdateQueues q;
         q.setLightColor(0, 1.f, 0.f, 0.f);
