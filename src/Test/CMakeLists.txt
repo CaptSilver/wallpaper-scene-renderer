@@ -75,6 +75,7 @@ add_executable(backend_scene_tests
     test_SkyboxRenderGraph.cpp
     test_SceneToRenderGraph_LinkResolution.cpp
     test_SceneToRenderGraph_SelfWrite.cpp
+    test_SceneToRenderGraph_SelfWriteHazardScale.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp

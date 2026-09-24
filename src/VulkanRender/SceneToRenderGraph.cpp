@@ -1,5 +1,7 @@
 #include "SceneToRenderGraph.hpp"
 
+#include <cassert>
+
 #include "Scene/Scene.h"
 #include "RenderGraph/RenderGraph.hpp"
 #include "SpecTexs.hpp"
@@ -100,6 +102,43 @@ struct ExtraInfo {
     bool                       use_mipmap_framebuffer { false };
 };
 
+// Register a self-write-hazard copy's destination as a name-bound render
+// target scaled relative to its source, instead of leaving it for
+// CopyPass::prepare()'s frame-time fallback (full clone of the source,
+// including its full-resolution bind).
+//
+// `output` must already be screen-bound or static (never touched by either
+// pass) when this runs. VulkanRender.cpp's setRenderTargetSize() resolves
+// sizes in two passes over an unordered_map: pass one sizes screen-bound
+// targets from the device extent, pass two sizes name-bound targets by
+// looking up their bind target's *already-resolved* size. There's no
+// ordering guarantee across two name-bound entries chained together, so
+// binding our copy's name to a source that is itself only resolved in pass
+// two could read a stale or zero size depending on map iteration order.
+static void registerScaledHazardCopyTarget(Scene& scene, std::string_view output,
+                                           std::string_view copy_key, double scale) {
+    auto* src_rt = scene.tryGetRenderTarget(std::string(output));
+    if (src_rt == nullptr) {
+        LOG_ERROR("self-write hazard source '%.*s' has no registered render target; "
+                  "leaving its copy at CopyPass::prepare's full-size clone fallback",
+                  (int)output.size(),
+                  output.data());
+        return;
+    }
+    if (! (src_rt->bind.screen || ! src_rt->bind.enable)) {
+        LOG_ERROR("self-write hazard source '%.*s' is itself name-bound; leaving its "
+                  "copy at CopyPass::prepare's full-size clone fallback",
+                  (int)output.size(),
+                  output.data());
+        assert(false && "hazard-copy source must be screen-bound or static");
+        return;
+    }
+    SceneRenderTarget copy_rt = *src_rt;
+    copy_rt.allowReuse        = true;
+    copy_rt.bind = { .enable = true, .name = std::string(output), .screen = false, .scale = scale };
+    scene.renderTargets[std::string(copy_key)] = copy_rt;
+}
+
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
 
 static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraInfo& extra) {
@@ -142,6 +181,14 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
         }
     }
 }
+
+// Self-write-hazard copies still happen once per reader, at that reader's own
+// z-order instant -- see the mechanism note on the hazard branch below for why
+// that count can't shrink safely.  This only shrinks each copy's resolution.
+// 0.5 was chosen and confirmed by a windowed render comparison against the
+// unmodified renderer (no visible softening of hard-edged REFRACT distortion
+// at native or 2-4x zoom); not exposed as a user-facing setting.
+static constexpr double kSelfWriteHazardCopyScale = 0.5;
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
@@ -264,6 +311,8 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                 if (url == output) {
                     builder.markSelfWrite(input);
                     input = rg::addCopyPass(rgraph, input);
+                    registerScaledHazardCopyTarget(
+                        *extra.scene, output, input->key(), kSelfWriteHazardCopyScale);
                 }
                 builder.read(input);
                 pdesc.textures.emplace_back(input->key());
