@@ -40,6 +40,7 @@ inline std::vector<std::string> changedUserProps(const WPUserProperties& current
 
 inline bool userPropHasRuntimeBinding(const Scene& scene, const std::string& name) {
     if (scene.userPropVisBindings.count(name) != 0) return true;
+    if (scene.userPropEffectVisBindings.count(name) != 0) return true;
     if (scene.userPropUniformBindings.count(name) != 0) return true;
     for (const auto& tl : scene.textLayers) {
         if (tl.pointsizeUserProp == name) return true;

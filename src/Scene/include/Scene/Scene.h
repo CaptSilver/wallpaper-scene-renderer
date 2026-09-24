@@ -449,6 +449,19 @@ public:
     };
     std::unordered_map<std::string, std::vector<UserPropVisibility>> userPropVisBindings;
     std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;
+    // Effect-level counterpart of UserPropVisibility -- a user-bound
+    // `visible` field on one of an object's effects (rather than the object
+    // itself).  Indices are resolved by wek::resolvePendingUserPropEffectVis
+    // against the layer's final, post-compaction m_effects, so effectIndex
+    // here is always safe to hand straight to SceneImageEffectLayer::GetEffect.
+    struct UserPropEffectVisibility {
+        i32         nodeId;         // object id -- same key space as nodeEffectLayerMap
+        i32         effectIndex;    // index into the LIVE (post-compaction) m_effects
+        bool        defaultVisible; // value resolved at parse time
+        std::string rawVisibleJson; // raw JSON of the effect's "visible" field, for re-resolution
+    };
+    std::unordered_map<std::string, std::vector<UserPropEffectVisibility>>
+        userPropEffectVisBindings;
     // Node lookup by ID for visibility updates and SceneScript getLayer
     // resolution.
     //

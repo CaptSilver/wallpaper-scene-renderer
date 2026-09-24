@@ -2862,7 +2862,8 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
     auto& scene = *scene_sp;
 
     // If no bindings were recorded during parsing, fall back to reload
-    if (scene.userPropVisBindings.empty() && scene.userPropUniformBindings.empty()) {
+    if (scene.userPropVisBindings.empty() && scene.userPropEffectVisBindings.empty() &&
+        scene.userPropUniformBindings.empty()) {
         LOG_INFO("No runtime user property bindings, falling back to reload");
         return false;
     }
@@ -2923,6 +2924,45 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
                 } catch (const std::exception& e) {
                     LOG_INFO(
                         "Runtime user prop resolve error: '%s': %s", propName.c_str(), e.what());
+                }
+            }
+        }
+
+        // Apply effect-level visibility changes the same way -- re-resolve the
+        // raw JSON, dispatch through the existing setEffectVisible queue
+        // (m_property_mutex-protected, the same path SceneScript's
+        // thisLayer.getEffect(idx).visible = bool already uses) rather than a
+        // direct SceneNode write.  See the object-level loop just above: it
+        // writes b.node->SetVisible() directly from this thread while the
+        // render thread reads IsVisible() every frame with no shared mutex --
+        // a real, pre-existing race this task deliberately doesn't reproduce.
+        for (auto& [propName, bindings] : scene.userPropEffectVisBindings) {
+            if (! props.contains(propName)) continue;
+            for (auto& b : bindings) {
+                try {
+                    auto visJson  = nlohmann::json::parse(b.rawVisibleJson);
+                    auto resolved = m_user_props_resolved.ResolveValue(visJson);
+                    bool visible;
+                    if (resolved.is_boolean()) {
+                        visible = resolved.get<bool>();
+                    } else if (resolved.is_number()) {
+                        visible = resolved.get<double>() != 0.0;
+                    } else if (resolved.is_string()) {
+                        auto s  = resolved.get<std::string>();
+                        visible = ! s.empty() && s != "0" && s != "false";
+                    } else {
+                        visible = b.defaultVisible;
+                    }
+                    LOG_INFO("Runtime user prop: '%s' -> effect idx=%d on node id=%d visible=%d",
+                             propName.c_str(),
+                             b.effectIndex,
+                             b.nodeId,
+                             (int)visible);
+                    m_render_handler->setEffectVisible(b.nodeId, b.effectIndex, visible);
+                } catch (const std::exception& e) {
+                    LOG_INFO("Runtime effect visibility resolve error: '%s': %s",
+                             propName.c_str(),
+                             e.what());
                 }
             }
         }

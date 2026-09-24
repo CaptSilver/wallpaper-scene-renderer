@@ -56,4 +56,14 @@ TEST_SUITE("UserPropRuntimeUpdate") {
 
         CHECK(needReload == std::vector<std::string> { "hudspeed" });
     }
+
+    TEST_CASE("an effect-level user-bound visibility switch has a runtime binding too") {
+        Scene scene;
+        scene.userPropEffectVisBindings["godraysswordtree_placeholder"].push_back(
+            { 163, 0, true, "{}" });
+
+        auto needReload = wek::userPropsNeedingReload(scene, { "godraysswordtree_placeholder" });
+
+        CHECK(needReload.empty());
+    }
 }

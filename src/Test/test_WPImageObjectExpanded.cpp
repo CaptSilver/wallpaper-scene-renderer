@@ -299,6 +299,42 @@ TEST_SUITE("WPImageEffect::FromJson") {
         REQUIRE(e.FromJson(j, *vfs));
         CHECK(e.visible); // not blacklisted -> declared visibility is honored
     }
+
+    TEST_CASE("user-bound visible field is preserved as raw JSON alongside the resolved bool") {
+        auto vfs = Vfs({
+            { "effects/bound/effect.json", R"({
+                "name": "fx", "version": 1,
+                "passes": [{"material": "materials/util/effA.json"}]
+            })" },
+            { "materials/util/effA.json", kFlatMat },
+        });
+        auto j   = nlohmann::json::parse(
+            R"({"file":"effects/bound/effect.json",
+                "visible": {"user": "godrays_enable", "value": true}})");
+
+        WPImageEffect e;
+        REQUIRE(e.FromJson(j, *vfs));
+        CHECK(e.visible); // parse-time-resolved default: no UserPropertiesScope active here ->
+                          // falls back to the embedded "value"
+        CHECK(e.userVisibleRawJson ==
+              nlohmann::json::parse(R"({"user":"godrays_enable","value":true})").dump());
+    }
+
+    TEST_CASE("a plain boolean visible field leaves userVisibleRawJson empty") {
+        auto vfs = Vfs({
+            { "effects/plain/effect.json", R"({
+                "name": "fx", "version": 1,
+                "passes": [{"material": "materials/util/effA.json"}]
+            })" },
+            { "materials/util/effA.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({"file":"effects/plain/effect.json", "visible": false})");
+
+        WPImageEffect e;
+        REQUIRE(e.FromJson(j, *vfs));
+        CHECK_FALSE(e.visible);
+        CHECK(e.userVisibleRawJson.empty());
+    }
 }
 
 // =============================================================================

@@ -49,6 +49,12 @@ public:
     bool                         FromFileJson(const nlohmann::json&, fs::VFS& vfs);
     std::string                  name;
     bool                         visible { true };
+    // Raw JSON of a `{"user": ...}`-bound `visible` field; empty when `visible`
+    // was a plain literal (or the effect is blacklisted -- see FromJson).
+    // `visible` above still holds the value resolved at parse time; this lets
+    // assembleEffects re-resolve the binding at runtime without re-parsing
+    // the scene.
+    std::string                  userVisibleRawJson;
     std::vector<WPMaterial>      materials;
     std::vector<WPMaterialPass>  passes;
     std::vector<WPEffectCommand> commands;

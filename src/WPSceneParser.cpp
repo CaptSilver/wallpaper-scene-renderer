@@ -8,6 +8,7 @@
 #include "WPJson.hpp"
 #include "WPCommon.hpp"
 #include "WPPropertyScriptExtract.hpp"
+#include "UserPropEffectVisResolve.hpp"
 #include "WPRopeCombos.hpp"
 #include "WPSceneGroupParse.hpp"
 #include "WPUserProperties.hpp"
@@ -70,6 +71,87 @@ using namespace wallpaper;
 using namespace Eigen;
 
 std::string getAddr(void* p) { return std::to_string(reinterpret_cast<intptr_t>(p)); }
+
+// Extract the user-property name from a `{"user": "name"}` or
+// `{"user": {"name": "name", ...}}` binding.  Shared by registerObjectBindings
+// (object-level `visible`) and assembleEffects (effect-level `visible`) so
+// both shapes are recognized identically.  Empty string if `visibleField`
+// isn't a `{"user": ...}` binding.
+std::string extractUserPropName(const nlohmann::json& visibleField) {
+    if (! visibleField.is_object() || ! visibleField.contains("user")) return {};
+    const auto& userField = visibleField.at("user");
+    if (userField.is_string()) return userField.get<std::string>();
+    if (userField.is_object() && userField.contains("name")) {
+        return userField.at("name").get<std::string>();
+    }
+    return {};
+}
+
+// Which effects in `effects` will actually be added to a layer, and which
+// ones the terminal exclusion covers.  An effect builds if it's literally
+// visible, or if it carries a user-property binding and survives the
+// terminal exclusion below.  Shared by countVisibleEffects/
+// adjustBlendForTextEffects (deciding whether to build an effect layer at
+// all) and assembleEffects's own build loop, so all three agree on which
+// effects survive.
+//
+// The terminal exclusion: SceneImageEffectLayer::ResolveEffect picks
+// whichever effect ends up LAST in the built layer as the chain's write
+// target, regardless of visibility, and CustomShaderPass keeps that pass's
+// render-target clear even when the node is hidden -- so a hidden node
+// landing in that position blanks the whole composite instead of just
+// hiding its own contribution (see UserPropEffectVisResolve.hpp). Excluding
+// only the raw JSON's last visible-or-bound index isn't enough by itself:
+// if that index is itself bound and currently resolved false, dropping it
+// makes whichever candidate comes before it the layer's new actual last
+// built effect -- which has the identical hazard if it's also resolved
+// false. So the exclusion walks backward from the end of the candidate
+// list, dropping the whole trailing run of resolved-false candidates, and
+// stops at the first one that's genuinely visible: that one anchors the
+// layer's actual last built effect, so it still builds, but -- like every
+// dropped candidate before it -- it's excluded from ever getting a runtime
+// binding, matching today's "the terminal position always reloads"
+// contract regardless of its current value.
+struct EffectBuildPlan {
+    std::vector<bool> wouldBuild;         // per-index: does this effect get added to the layer
+    std::vector<bool> excludedAsTerminal; // per-index: never eligible for a runtime binding --
+                                          // either dropped outright, or the one visible
+                                          // candidate that anchors the actual terminal position
+};
+
+EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffect>& effects) {
+    EffectBuildPlan plan;
+    plan.wouldBuild.assign(effects.size(), false);
+    plan.excludedAsTerminal.assign(effects.size(), false);
+
+    // Have we, scanning backward, anchored the chain's actual last built
+    // effect yet?
+    bool foundSafeTail = false;
+    for (i32 i = (i32)effects.size() - 1; i >= 0; i--) {
+        usize idx         = (usize)i;
+        bool  isCandidate = effects[idx].visible || ! effects[idx].userVisibleRawJson.empty();
+        if (! isCandidate) continue;
+        if (! foundSafeTail) {
+            if (! effects[idx].visible) {
+                // Bound, currently resolved false, still inside the
+                // trailing run of hidden candidates -- drop it and keep
+                // scanning leftward for the real tail.
+                plan.excludedAsTerminal[idx] = true;
+                continue;
+            }
+            // First genuinely-visible candidate found: it anchors the
+            // layer's actual last built effect, builds normally, and stays
+            // excluded from ever getting a binding.
+            foundSafeTail                = true;
+            plan.wouldBuild[idx]         = true;
+            plan.excludedAsTerminal[idx] = true;
+            continue;
+        }
+        // Already past the terminal position -- normal force-build rule.
+        plan.wouldBuild[idx] = true;
+    }
+    return plan;
+}
 
 struct ParseContext {
     std::shared_ptr<Scene> scene;
@@ -192,6 +274,12 @@ struct ParseContext {
     // screen-removal).  Pointer is owned by MainHandler; address is stable
     // for the duration of any Parse() call.
     std::atomic_bool* abort_flag { nullptr };
+
+    // Effect-level user-property visibility bindings, captured by identity
+    // (not yet a fixed index) while assembleEffects builds each object's
+    // effect chain -- resolved to live indices once, after finalizeParse's
+    // RemoveFailedEffects compaction, by resolvePendingUserPropEffectVis.
+    std::vector<wek::PendingUserPropEffectVis> pending_user_prop_effect_vis;
 };
 
 using WPObjectVar =
@@ -1530,10 +1618,10 @@ struct ImageEffectCounts {
 };
 
 ImageEffectCounts countVisibleEffects(const wpscene::WPImageObject& wpimgobj) {
+    auto    plan      = computeWouldBuildEffects(wpimgobj.effects);
     int32_t count_eff = 0;
-    for (const auto& wpeffobj : wpimgobj.effects) {
-        if (wpeffobj.visible) count_eff++;
-    }
+    for (bool b : plan.wouldBuild)
+        if (b) count_eff++;
     return { count_eff, count_eff > 0 };
 }
 
@@ -2277,10 +2365,20 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     auto& vfs   = *context.vfs;
     auto& scene = *context.scene;
 
-    int32_t i_eff = -1;
+    // A user-bound effect that resolved false at parse time still gets
+    // built (and hidden) so applyUserPropsRuntime can flip it on later
+    // without a reload -- except at the terminal position, which keeps
+    // today's structural skip.  See computeWouldBuildEffects.
+    auto plan = computeWouldBuildEffects(effects);
+
+    int32_t i_eff   = -1;
+    usize   raw_idx = 0;
     for (const auto& wpeffobj : effects) {
         i_eff++;
-        if (! wpeffobj.visible) {
+        bool is_terminal_candidate = plan.excludedAsTerminal[raw_idx];
+        bool build                 = plan.wouldBuild[raw_idx];
+        raw_idx++;
+        if (! build) {
             i_eff--;
             continue;
         }
@@ -2442,6 +2540,28 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
         if (eff_mat_ok) {
             imgEffect->name = wpeffobj.name;
             layer.AddEffect(imgEffect);
+            if (! wpeffobj.userVisibleRawJson.empty() && ! is_terminal_candidate) {
+                if (! wpeffobj.visible) {
+                    imgEffect->visible = false;
+                    for (auto& n : imgEffect->nodes) {
+                        if (n.sceneNode) n.sceneNode->SetVisible(false);
+                    }
+                }
+                std::string propName;
+                try {
+                    propName =
+                        extractUserPropName(nlohmann::json::parse(wpeffobj.userVisibleRawJson));
+                } catch (const std::exception& e) {
+                    LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
+                }
+                if (! propName.empty()) {
+                    context.pending_user_prop_effect_vis.push_back({ imgEffect.get(),
+                                                                     opts.layer_id,
+                                                                     wpeffobj.visible,
+                                                                     wpeffobj.userVisibleRawJson,
+                                                                     propName });
+                }
+            }
             LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
                      i_eff,
                      wpeffobj.name.c_str(),
@@ -4924,13 +5044,10 @@ void registerObjectBindings(ParseContext& context, const nlohmann::json& json,
         // Check if "visible" references a user property
         if (obj.contains("visible") && obj.at("visible").is_object() &&
             obj.at("visible").contains("user")) {
-            const auto& userField = obj.at("visible").at("user");
-            std::string propName;
-            if (userField.is_string()) {
-                propName = userField.get<std::string>();
-            } else if (userField.is_object() && userField.contains("name")) {
-                propName = userField.at("name").get<std::string>();
-            }
+            const auto& userField =
+                obj.at("visible").at("user"); // still needed below for the
+                                              // "Alternative format" conditionValue lookup
+            std::string propName = extractUserPropName(obj.at("visible"));
             if (! propName.empty()) {
                 // conditionValue is the scene.json comparison target (used
                 // for combo bindings that do string equality against the
@@ -5626,6 +5743,10 @@ void finalizeParse(ParseContext& context) {
                      total_removed);
         }
     }
+
+    wek::resolvePendingUserPropEffectVis(context.pending_user_prop_effect_vis,
+                                         context.scene->nodeEffectLayerMap,
+                                         context.scene->userPropEffectVisBindings);
 
     releaseParseSubsystems();
 
