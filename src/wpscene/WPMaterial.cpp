@@ -1,6 +1,8 @@
 #include "WPMaterial.h"
 #include "WPUserProperties.hpp"
+#include <functional>
 #include <sstream>
+#include <unordered_map>
 
 using namespace wallpaper::wpscene;
 
@@ -19,6 +21,45 @@ std::string UserPropertyNameOf(const nlohmann::json& value) {
     if (user.is_object() && user.contains("name") && user.at("name").is_string())
         return user.at("name").get<std::string>();
     return {};
+}
+
+// The textures/constantshadervalues/combos parse is identical between
+// WPMaterialPass::FromJson and WPMaterial::FromJson's own passes[0] block --
+// this shares it.  `onConstantValue`, when given, runs once per
+// constantshadervalues entry with its name and raw (pre-resolution) JSON --
+// WPMaterial::FromJson uses it to record userShaderBindings; WPMaterialPass
+// has no equivalent use, so it's left unset there.
+void ParsePassFields(
+    const nlohmann::json& json, std::vector<std::string>& textures,
+    std::unordered_map<std::string, int32_t>&                             combos,
+    std::unordered_map<std::string, std::vector<float>>&                  constantshadervalues,
+    const std::function<void(const std::string&, const nlohmann::json&)>& onConstantValue = {}) {
+    if (json.contains("textures")) {
+        for (const auto& jT : json.at("textures")) {
+            std::string tex;
+            if (! jT.is_null()) GET_JSON_VALUE(jT, tex);
+            textures.push_back(tex);
+        }
+    }
+    if (json.contains("constantshadervalues")) {
+        for (const auto& jC : json.at("constantshadervalues").items()) {
+            std::string        name;
+            std::vector<float> value;
+            GET_JSON_VALUE(jC.key(), name);
+            GET_JSON_VALUE(jC.value(), value);
+            constantshadervalues[name] = value;
+            if (onConstantValue) onConstantValue(name, jC.value());
+        }
+    }
+    if (json.contains("combos")) {
+        for (const auto& jC : json.at("combos").items()) {
+            std::string name;
+            int32_t     value;
+            GET_JSON_VALUE(jC.key(), name);
+            GET_JSON_VALUE(jC.value(), value);
+            combos[name] = value;
+        }
+    }
 }
 
 // The pass-overlay rule shared by WPMaterialPass::Update and WPMaterial::MergePass: layer a
@@ -62,31 +103,7 @@ void WPMaterial::MergePass(const WPMaterialPass& p) {
 }
 
 bool WPMaterialPass::FromJson(const nlohmann::json& json) {
-    if (json.contains("textures")) {
-        for (const auto& jT : json.at("textures")) {
-            std::string tex;
-            if (! jT.is_null()) GET_JSON_VALUE(jT, tex);
-            textures.push_back(tex);
-        }
-    }
-    if (json.contains("constantshadervalues")) {
-        for (const auto& jC : json.at("constantshadervalues").items()) {
-            std::string        name;
-            std::vector<float> value;
-            GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            constantshadervalues[name] = value;
-        }
-    }
-    if (json.contains("combos")) {
-        for (const auto& jC : json.at("combos").items()) {
-            std::string name;
-            int32_t     value;
-            GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            combos[name] = value;
-        }
-    }
+    ParsePassFields(json, textures, combos, constantshadervalues);
     GET_JSON_NAME_VALUE_NOWARN(json, "target", target);
     if (json.contains("bind")) {
         for (const auto& jB : json.at("bind")) {
@@ -118,38 +135,18 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
     if (jContent.contains("depthwriting") && ! jContent.contains("depthwrite"))
         GET_JSON_NAME_VALUE(jContent, "depthwriting", depthwrite);
     GET_JSON_NAME_VALUE(jContent, "shader", shader);
-    if (jContent.contains("textures")) {
-        for (const auto& jT : jContent.at("textures")) {
-            std::string tex;
-            if (! jT.is_null()) GET_JSON_VALUE(jT, tex);
-            textures.push_back(tex);
-        }
-    }
-    if (jContent.contains("constantshadervalues")) {
-        for (const auto& jC : jContent.at("constantshadervalues").items()) {
-            std::string        name;
-            std::vector<float> value;
-            GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            constantshadervalues[name] = value;
-            // GET_JSON_VALUE already resolved an inline {"user": ...} to the
-            // property's current value, but the link back to the property is
-            // lost with it.  Record it so a settings change can reach the
-            // uniform without reparsing the scene.
-            if (auto prop = UserPropertyNameOf(jC.value()); ! prop.empty()) {
-                userShaderBindings[prop] = name;
-            }
-        }
-    }
-    if (jContent.contains("combos")) {
-        for (const auto& jC : jContent.at("combos").items()) {
-            std::string name;
-            int32_t     value;
-            GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
-            combos[name] = value;
-        }
-    }
+    // GET_JSON_VALUE already resolved an inline {"user": ...} to the
+    // property's current value, but the link back to the property is lost
+    // with it. Record it so a settings change can reach the uniform without
+    // reparsing the scene.
+    ParsePassFields(jContent,
+                    textures,
+                    combos,
+                    constantshadervalues,
+                    [this](const std::string& name, const nlohmann::json& rawValue) {
+                        if (auto prop = UserPropertyNameOf(rawValue); ! prop.empty())
+                            userShaderBindings[prop] = name;
+                    });
     // Resolve usershadervalues: maps user property names to shader constant names
     if (jContent.contains("usershadervalues")) {
         for (const auto& entry : jContent.at("usershadervalues").items()) {
