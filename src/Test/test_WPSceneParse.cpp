@@ -1972,6 +1972,69 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->renderTargets.count(eff->commands.at(0).dst) == 1);
     }
 
+    // adjustBlendForTextEffects's own hasEffect gate turns out to already agree
+    // with assembleEffects's independent computeWouldBuildEffects call for
+    // every effects-array shape (both reduce to "does some effect resolve
+    // visible==true"; see the comment above computeWouldBuildEffects). What
+    // this pins down is the piece that previously wasn't shared: a text
+    // layer's bound-but-currently-hidden effect ahead of a visible one still
+    // gets built (not dropped) so a later toggle can show it without a
+    // reparse -- same as an image layer already does.
+    TEST_CASE("E2E: a text layer's bound-and-hidden effect still builds "
+              "alongside its visible one, same as an image layer") {
+        ensureGlslangInit();
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
+
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/glow.json", kEffectFileJson },
+            { "/effects/trail.json", kEffectWithCopyCommandJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 502, "name": "toggle_text",
+      "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 64",
+      "font": "systemfont_sans", "pointsize": 24,
+      "text": { "value": "12:00" },
+      "visible": true,
+      "effects": [
+        { "id": 12, "name": "glow",
+          "visible": {"user": "glow_enable", "value": true},
+          "file": "effects/glow.json" },
+        { "id": 13, "name": "trail", "visible": true, "file": "effects/trail.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"glow_enable":{"value":false,"type":"bool"}}}})"));
+        WPSceneParser parser;
+        auto          scene = parser.Parse("scene_text_mixed_effects", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(502) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(502);
+        // Both effects built: "trail" as the visible terminal, "glow" ahead
+        // of it hidden rather than dropped.
+        REQUIRE(effLayer->EffectCount() == 2u);
+
+        // Find by visibility rather than name: the effect's built name comes
+        // from its effect-file content (kEffectFileJson's own "name": "tint"),
+        // not the scene JSON's per-effect "name" key.
+        std::shared_ptr<SceneImageEffect> hidden;
+        for (std::size_t i = 0; i < effLayer->EffectCount(); i++) {
+            if (! effLayer->GetEffect(i)->visible) hidden = effLayer->GetEffect(i);
+        }
+        REQUIRE(hidden != nullptr);
+
+        REQUIRE(scene->userPropEffectVisBindings.count("glow_enable") == 1u);
+    }
+
     TEST_CASE("E2E: text layer reading a composite RT by raw texture string forces its source "
               "offscreen") {
         ensureGlslangInit();

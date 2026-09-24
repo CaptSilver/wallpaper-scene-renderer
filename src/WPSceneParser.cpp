@@ -1622,8 +1622,8 @@ struct ImageEffectCounts {
     bool    hasEffect;
 };
 
-ImageEffectCounts countVisibleEffects(const wpscene::WPImageObject& wpimgobj) {
-    auto    plan      = computeWouldBuildEffects(wpimgobj.effects);
+ImageEffectCounts countVisibleEffects(const std::vector<wpscene::WPImageEffect>& effects) {
+    auto    plan      = computeWouldBuildEffects(effects);
     int32_t count_eff = 0;
     for (bool b : plan.wouldBuild)
         if (b) count_eff++;
@@ -2979,7 +2979,7 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     BlendMode colorBlendOverride = *colorBlendOverrideOpt;
 
     // Count effects after colorBlendMode may have added one
-    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj);
+    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj.effects);
     if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
 
     bool hasPuppet = ! wpimgobj.puppet.empty();
@@ -3828,12 +3828,8 @@ struct TextEffectBlend {
 
 // Count effects + disable base material blend if it will be the first effect node
 TextEffectBlend adjustBlendForTextEffects(const wpscene::WPTextObject& textObj, SceneMaterial& material) {
-    // Count effects
-    int32_t count_eff = 0;
-    for (const auto& eff : textObj.effects) {
-        if (eff.visible) count_eff++;
-    }
-    bool hasEffect = count_eff > 0;
+    auto [count_eff, hasEffect] = countVisibleEffects(textObj.effects);
+    (void)count_eff;
 
     // Disable base material blend if it will be the first effect node
     auto imgBlendMode = material.blenmode;
