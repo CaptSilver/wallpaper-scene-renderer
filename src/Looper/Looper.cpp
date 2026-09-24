@@ -18,6 +18,8 @@ const std::string_view Looper::name() const { return m_name; }
 Looper::Looper() {}
 Looper::~Looper() { stop(); }
 
+std::function<void()> Looper::testHook_workerLockedRef;
+
 bool Looper::loop() {
     MessageWrapper msg;
     {
@@ -59,11 +61,12 @@ status_t Looper::start() {
     // plasmashell's GUI thread.  Setting it before the thread is constructed also
     // keeps the worker's own loop condition from reading false and exiting at once.
     m_running = true;
-    // using weak_ptr to allow looper deleted at looper->loop() end
+    // The worker holds only a weak_ptr so the owner can drop its last reference
+    // while the thread runs; each iteration below re-locks it and exits when that fails.
     std::weak_ptr<Looper> wlooper = shared_from_this();
     m_thread                      = std::thread(
         [](std::weak_ptr<Looper> wlooper) {
-            Looper* looper = nullptr;
+            std::string name;
             {
                 // lock() returns null when the owner dropped its last reference
                 // before this thread was first scheduled — the ordinary shape when
@@ -72,18 +75,32 @@ status_t Looper::start() {
                 // dereferencing the null was a segfault on the worker thread.
                 auto self = wlooper.lock();
                 if (! self) return;
-                looper = self.get();
-                LOG_INFO("%s looper started", looper->name().data());
+                name = self->name();
+                LOG_INFO("%s looper started", name.c_str());
+                if (testHook_workerLockedRef) testHook_workerLockedRef();
             }
-            std::string name { looper->name() };
-            // expired is safe here
-            // 1. looper deleted at another thread, will join this, expired() allways true
-            // 2. looper deleted at this thread, only in loop(), expired() reliable
+            // Re-lock into a fresh strong reference every iteration instead of
+            // keeping a raw pointer from one lock() call: the old code let the
+            // shared_ptr above go out of scope and then kept dereferencing a
+            // raw pointer copied out of it. If the owner had dropped its own
+            // last reference while this thread was the only other one holding
+            // it, that shared_ptr's destructor was the one taking the refcount
+            // to zero, so it ran ~Looper() right there and freed the object
+            // the raw pointer still pointed to — a heap-use-after-free on this
+            // same thread. Locking fresh every iteration means the object can
+            // only go away between iterations, once nothing here still holds
+            // it, and the next lock() then simply comes back null.
+            //
             // Top-level guard: loop() already catches per-message throws, but keep
             // a final net so the worker thread can never escape into std::terminate
             // (which would crash plasmashell).  Let the thread exit cleanly instead.
             try {
-                while (! wlooper.expired() && looper->m_running && looper->loop()) {
+                while (true) {
+                    auto self = wlooper.lock();
+                    if (! self) break;
+                    if (testHook_workerLockedRef) testHook_workerLockedRef();
+                    if (! self->m_running) break;
+                    if (! self->loop()) break;
                 }
             } catch (const std::exception& e) {
                 LOG_ERROR("%s looper thread threw: %s", name.c_str(), e.what());

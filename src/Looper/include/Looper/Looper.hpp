@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <mutex>
 #include <condition_variable>
+#include <functional>
 #include <string>
 #include <thread>
 #include <list>
@@ -44,6 +45,15 @@ public:
     void                   post(const std::shared_ptr<Message>&);
     const std::string_view name() const;
     void                   setName(std::string_view);
+
+    // Test-only synchronization seam. The worker thread calls this (if set)
+    // right after it has locked its own strong reference to `this`, before
+    // doing anything else with it. Null in production, so it costs one
+    // predictable branch. Tests use it to pause the worker while it is the
+    // only thing keeping the Looper alive, drop the owner's reference from
+    // outside, and resume -- turning a lifetime race that used to reproduce
+    // by chance into one that reproduces on demand.
+    static std::function<void()> testHook_workerLockedRef;
 
 private:
     struct MessageWrapper {
