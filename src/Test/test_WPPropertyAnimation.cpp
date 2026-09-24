@@ -363,3 +363,67 @@ TEST_SUITE("WPPropertyAnimation_Evaluate") {
     }
 
 } // TEST_SUITE
+
+TEST_SUITE("ParseVec3AnimProperty") {
+    TEST_CASE("every base times every axis suffix parses") {
+        struct Case {
+            const char* prop;
+            const char* base;
+            int         axis;
+        };
+        const Case cases[] = {
+            { "origin.x", "origin", 0 }, { "origin.y", "origin", 1 }, { "origin.z", "origin", 2 },
+            { "scale.x", "scale", 0 },   { "scale.y", "scale", 1 },   { "scale.z", "scale", 2 },
+            { "angles.x", "angles", 0 }, { "angles.y", "angles", 1 }, { "angles.z", "angles", 2 },
+        };
+        for (auto& c : cases) {
+            auto t = ParseVec3AnimProperty(c.prop);
+            REQUIRE(t.has_value());
+            CHECK(t->axis == c.axis);
+            CHECK(t->base == c.base);
+        }
+    }
+    TEST_CASE("an unrecognised suffix yields nothing to apply") {
+        CHECK_FALSE(ParseVec3AnimProperty("origin.w").has_value());
+        CHECK_FALSE(ParseVec3AnimProperty("foo").has_value());
+    }
+    TEST_CASE("a property too short to carry a suffix yields nothing to apply") {
+        CHECK_FALSE(ParseVec3AnimProperty("a").has_value());
+    }
+}
+
+TEST_SUITE("ApplyPropertyAnimCommand") {
+    TEST_CASE("play starts it, pause stops it without resetting time") {
+        PropertyAnimation a;
+        a.playing = false;
+        a.time    = 5.0;
+        ApplyPropertyAnimCommand(a, "play");
+        CHECK(a.playing);
+        CHECK(a.time == doctest::Approx(5.0));
+
+        ApplyPropertyAnimCommand(a, "pause");
+        CHECK_FALSE(a.playing);
+        CHECK(a.time == doctest::Approx(5.0));
+    }
+    TEST_CASE("stop pauses and resets time to zero") {
+        PropertyAnimation a;
+        a.playing = true;
+        a.time    = 5.0;
+        ApplyPropertyAnimCommand(a, "stop");
+        CHECK_FALSE(a.playing);
+        CHECK(a.time == doctest::Approx(0.0));
+    }
+    // No call site in the codebase generates anything but play/pause/stop
+    // (SceneWallpaper.cpp's three propertyAnimCommand() callers all pass a
+    // fixed literal) -- pinning this as a no-op documents the existing
+    // behavior rather than leaving an unrecognised command as an unstated
+    // assumption a future edit could silently break.
+    TEST_CASE("an unrecognised command leaves the animation state untouched") {
+        PropertyAnimation a;
+        a.playing = true;
+        a.time    = 5.0;
+        ApplyPropertyAnimCommand(a, "rewind");
+        CHECK(a.playing);
+        CHECK(a.time == doctest::Approx(5.0));
+    }
+}

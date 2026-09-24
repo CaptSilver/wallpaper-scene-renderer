@@ -145,3 +145,51 @@ TEST_SUITE("CustomShaderPass index alignment") {
         CHECK(IndexAlignmentFor(VK_INDEX_TYPE_UINT32) == 4u);
     }
 }
+
+TEST_SUITE("CustomShaderPass time-uniform detection") {
+    using wallpaper::vulkan::UsesTimeUniforms;
+    using Block = wallpaper::vulkan::ShaderReflected::Block;
+
+    TEST_CASE("a block naming only g_Time counts as time-based") {
+        Block block;
+        block.member_map[std::string(wallpaper::G_TIME)] = {};
+        CHECK(UsesTimeUniforms(block));
+    }
+    TEST_CASE("a block naming only the 64-band right audio spectrum counts as time-based") {
+        Block block;
+        block.member_map[std::string(wallpaper::G_AUDIOSPECTRUM64RIGHT)] = {};
+        CHECK(UsesTimeUniforms(block));
+    }
+    TEST_CASE("a block naming none of the nine globals is not time-based") {
+        Block block;
+        block.member_map["g_SomeOtherUniform"] = {};
+        CHECK_FALSE(UsesTimeUniforms(block));
+    }
+    TEST_CASE("an empty block is not time-based") {
+        Block block;
+        CHECK_FALSE(UsesTimeUniforms(block));
+    }
+}
+
+TEST_SUITE("CustomShaderPass fallback texture") {
+    using wallpaper::i32;
+    using wallpaper::vulkan::ImageSlotsRef;
+    using wallpaper::vulkan::NeedsFallbackTexture;
+
+    TEST_CASE("a binding the shader never declared (-1) needs no fallback") {
+        std::vector<i32>           bindings { -1 };
+        std::vector<ImageSlotsRef> textures(1);
+        CHECK_FALSE(NeedsFallbackTexture(bindings, textures));
+    }
+    TEST_CASE("a shader-declared binding with no slots wired needs the fallback") {
+        std::vector<i32>           bindings { 0 };
+        std::vector<ImageSlotsRef> textures(1);
+        CHECK(NeedsFallbackTexture(bindings, textures));
+    }
+    TEST_CASE("a bound slot that already has an image needs no fallback") {
+        std::vector<i32>           bindings { 0 };
+        std::vector<ImageSlotsRef> textures(1);
+        textures[0].slots.emplace_back();
+        CHECK_FALSE(NeedsFallbackTexture(bindings, textures));
+    }
+}

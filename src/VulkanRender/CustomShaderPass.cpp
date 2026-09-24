@@ -363,6 +363,13 @@ static void UpdateUniform(StagingBuffer* buf, const StagingBufferRef& bufref,
     buf->writeToBuf(bufref, value_u8, offset);
 }
 
+// prepare()/execute() record real Vulkan command buffers against a live
+// Device -- there is no host-only path through either function, so this
+// file's own coverage stays low regardless of extraction.  The decisions
+// that don't need a Device are already pulled into CustomShaderPass.hpp and
+// tested there (index/cull/load-op/depth-usage/depth-alias/scene-depth
+// selection, time-uniform detection, fallback-texture need).  UpdateUniform's
+// UBO size resolution is a separate extraction, scoped and landed elsewhere.
 void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::prepare");
     {
@@ -604,16 +611,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
         // Check if shader uses time-based uniforms (for caching optimization)
         if (! ref.blocks.empty()) {
-            auto& block          = ref.blocks.front();
-            m_uses_time_uniforms = exists(block.member_map, G_TIME) ||
-                                   exists(block.member_map, G_DAYTIME) ||
-                                   exists(block.member_map, G_POINTERPOSITION) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM16LEFT) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM16RIGHT) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM32LEFT) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM32RIGHT) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM64LEFT) ||
-                                   exists(block.member_map, G_AUDIOSPECTRUM64RIGHT);
+            m_uses_time_uniforms = UsesTimeUniforms(ref.blocks.front());
         }
 
         auto& bindings = descriptor_info.bindings;
@@ -645,13 +643,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
 
     // Create a 1x1 dummy texture for any shader-declared bindings with no texture loaded.
     {
-        bool need_fallback = false;
-        for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-            if (m_desc.vk_tex_binding[i] >= 0 && m_desc.vk_textures[i].slots.empty()) {
-                need_fallback = true;
-                break;
-            }
-        }
+        bool need_fallback = NeedsFallbackTexture(m_desc.vk_tex_binding, m_desc.vk_textures);
         if (need_fallback) {
             static const std::string dummy_key = "_rt_dummy_1x1";
             TextureKey               tk {

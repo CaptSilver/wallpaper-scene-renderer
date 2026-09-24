@@ -12,6 +12,7 @@
 #include "SpriteAnimation.hpp"
 #include "Interface/IShaderValueUpdater.h"
 #include "SpecTexs.hpp"
+#include "Vulkan/Shader.hpp"
 
 namespace wallpaper
 {
@@ -107,6 +108,33 @@ inline bool EnsureSceneDepthTextureIfNeeded(std::vector<std::string>& textures,
     }
     textures.emplace_back(WE_SCENE_DEPTH);
     return true;
+}
+
+// Whether a UBO block declares any of the nine globals that change every
+// frame (clock time, day/night cycle, mouse position, the three
+// audio-spectrum band pairs).  A pass whose block needs none of these can
+// cache its uniform state instead of re-uploading it every frame.
+inline bool UsesTimeUniforms(const ShaderReflected::Block& block) {
+    return exists(block.member_map, G_TIME) || exists(block.member_map, G_DAYTIME) ||
+           exists(block.member_map, G_POINTERPOSITION) ||
+           exists(block.member_map, G_AUDIOSPECTRUM16LEFT) ||
+           exists(block.member_map, G_AUDIOSPECTRUM16RIGHT) ||
+           exists(block.member_map, G_AUDIOSPECTRUM32LEFT) ||
+           exists(block.member_map, G_AUDIOSPECTRUM32RIGHT) ||
+           exists(block.member_map, G_AUDIOSPECTRUM64LEFT) ||
+           exists(block.member_map, G_AUDIOSPECTRUM64RIGHT);
+}
+
+// Any shader-declared texture binding (bindings[i] >= 0) with no image slots
+// wired needs the 1x1 dummy fallback so the descriptor set has something
+// bound for every sampler the shader compiled against.  bindings[i] == -1
+// means the shader never declared that texture at all -- not a gap.
+inline bool NeedsFallbackTexture(const std::vector<i32>&           bindings,
+                                 const std::vector<ImageSlotsRef>& textures) {
+    for (usize i = 0; i < textures.size(); i++) {
+        if (bindings[i] >= 0 && textures[i].slots.empty()) return true;
+    }
+    return false;
 }
 
 class CustomShaderPass : public VulkanPass {

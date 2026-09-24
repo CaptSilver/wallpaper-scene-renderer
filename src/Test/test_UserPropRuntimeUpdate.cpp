@@ -67,3 +67,43 @@ TEST_SUITE("UserPropRuntimeUpdate") {
         CHECK(needReload.empty());
     }
 }
+
+TEST_SUITE("ResolveVisibilityFromJson") {
+    TEST_CASE("a JSON bool passes through") {
+        CHECK(wek::ResolveVisibilityFromJson(nlohmann::json(true), false));
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json(false), true));
+    }
+    TEST_CASE("a JSON number is visible unless exactly zero") {
+        CHECK(wek::ResolveVisibilityFromJson(nlohmann::json(1.0), false));
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json(0.0), true));
+    }
+    TEST_CASE("string special cases: empty, \"0\", and \"false\" are all not-visible") {
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json(""), true));
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json("0"), true));
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json("false"), true));
+        CHECK(wek::ResolveVisibilityFromJson(nlohmann::json("yes"), false));
+    }
+    TEST_CASE("an unsupported JSON type falls back to the caller's default") {
+        CHECK(wek::ResolveVisibilityFromJson(nlohmann::json::object(), true));
+        CHECK_FALSE(wek::ResolveVisibilityFromJson(nlohmann::json::object(), false));
+    }
+}
+
+TEST_SUITE("ParseFloatVectorFromJson") {
+    TEST_CASE("a bare number becomes a one-element vector") {
+        auto v = wek::ParseFloatVectorFromJson(nlohmann::json(3.5));
+        CHECK(v == std::vector<float> { 3.5f });
+    }
+    TEST_CASE("a whitespace-separated string parses each float") {
+        auto v = wek::ParseFloatVectorFromJson(nlohmann::json("1.0 2.0 3.0"));
+        CHECK(v == std::vector<float> { 1.0f, 2.0f, 3.0f });
+    }
+    TEST_CASE("an array skips its non-numeric elements") {
+        auto v = wek::ParseFloatVectorFromJson(nlohmann::json::parse(R"([1, "x", 2])"));
+        CHECK(v == std::vector<float> { 1.0f, 2.0f });
+    }
+    TEST_CASE("an unsupported type produces an empty vector") {
+        auto v = wek::ParseFloatVectorFromJson(nlohmann::json::object());
+        CHECK(v.empty());
+    }
+}

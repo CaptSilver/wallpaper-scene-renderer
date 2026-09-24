@@ -1,7 +1,9 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "Core/Literals.hpp"
@@ -148,6 +150,41 @@ inline float ComposePropertyAnimation(const PropertyAnimation& anim, double time
     if (anim.keyframes.empty()) return anim.initialValue;
     const float value = EvaluatePropertyAnimation(anim, time);
     return anim.relative ? anim.initialValue + value : value;
+}
+
+// The axis (0/1/2 = x/y/z) and base property name ("origin"/"scale"/"angles")
+// a vec3-component animation targets, parsed from WE's flat "<base>.<axis>"
+// property naming (e.g. "origin.x").  Separated from the SceneNode lookup and
+// mutation that follow it so the string parsing has its own test.
+struct Vec3AnimTarget {
+    int              axis;
+    std::string_view base;
+};
+
+inline std::optional<Vec3AnimTarget> ParseVec3AnimProperty(std::string_view property) {
+    if (property.size() < 3) return std::nullopt;
+    int axis = -1;
+    if (property.ends_with(".x"))
+        axis = 0;
+    else if (property.ends_with(".y"))
+        axis = 1;
+    else if (property.ends_with(".z"))
+        axis = 2;
+    if (axis < 0) return std::nullopt;
+    return Vec3AnimTarget { axis, property.substr(0, property.size() - 2) };
+}
+
+// "play"/"pause"/"stop" mutate playback state; every other command is a
+// deliberate no-op (see the call site for why that's safe today).
+inline void ApplyPropertyAnimCommand(PropertyAnimation& anim, std::string_view cmd) {
+    if (cmd == "play") {
+        anim.playing = true;
+    } else if (cmd == "pause") {
+        anim.playing = false;
+    } else if (cmd == "stop") {
+        anim.playing = false;
+        anim.time    = 0.0;
+    }
 }
 
 } // namespace wallpaper

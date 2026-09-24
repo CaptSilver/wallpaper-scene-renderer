@@ -92,6 +92,17 @@ namespace wallpaper
 {
 class RenderHandler;
 
+// MainHandler owns the live Scene*, the VFS mount, and the sound/property
+// runtime state -- none of it constructible without a real parsed scene, so
+// nothing in this class runs under backend_scene_tests and its own coverage
+// stays near zero regardless of how much of its logic is pure.  Every
+// decision that *could* be isolated has been: sound-stream bookkeeping lives
+// in SoundStreamTable.hpp, property-animation math in WPPropertyAnimation.h,
+// user-property diffing in UserPropRuntimeUpdate.hpp, attachment ordering in
+// AttachmentLinkOrder.hpp, alpha writes in SceneMaterialLayerWrite.hpp.  A
+// future coverage refresh measuring this file at ~0% is not a regression to
+// chase -- extracting more of it moves coverage into whichever header the
+// decision lands in, never into this file's own percentage.
 class MainHandler : public looper::Handler {
 public:
     enum class CMD
@@ -374,6 +385,8 @@ private:
 // for macro
 using impl_MainHandler = MainHandler;
 
+// Same story as MainHandler above: RenderHandler drives per-frame render
+// state against a live Scene, so it can't be constructed from a test either.
 class RenderHandler : public looper::Handler {
 public:
     enum class CMD
@@ -2000,17 +2013,10 @@ public:
     void applyVec3ComponentAnim(SceneNode* node, i32 nodeId, const PropertyAnimation& anim,
                                 float value) {
         if (! node) return;
-        const std::string& prop = anim.property;
-        if (prop.size() < 3) return;
-        int axis = -1;
-        if (prop.ends_with(".x"))
-            axis = 0;
-        else if (prop.ends_with(".y"))
-            axis = 1;
-        else if (prop.ends_with(".z"))
-            axis = 2;
-        if (axis < 0) return;
-        std::string_view base { prop.data(), prop.size() - 2 };
+        auto target = ParseVec3AnimProperty(anim.property);
+        if (! target) return;
+        int              axis = target->axis;
+        std::string_view base = target->base;
 
         // For layers with an effect chain, the image node's transform must
         // stay at IDENTITY — the base pass renders into a pingpong RT using a
@@ -2115,14 +2121,7 @@ public:
             if (it == scene->nodePropertyAnimations.end()) continue;
             for (auto& a : it->second) {
                 if (a.name != c.name) continue;
-                if (c.cmd == "play") {
-                    a.playing = true;
-                } else if (c.cmd == "pause") {
-                    a.playing = false;
-                } else if (c.cmd == "stop") {
-                    a.playing = false;
-                    a.time    = 0.0;
-                }
+                ApplyPropertyAnimCommand(a, c.cmd);
                 break;
             }
         }
@@ -2898,17 +2897,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
                 try {
                     auto visJson  = nlohmann::json::parse(b.rawVisibleJson);
                     auto resolved = m_user_props_resolved.ResolveValue(visJson);
-                    bool visible;
-                    if (resolved.is_boolean()) {
-                        visible = resolved.get<bool>();
-                    } else if (resolved.is_number()) {
-                        visible = resolved.get<double>() != 0.0;
-                    } else if (resolved.is_string()) {
-                        auto s  = resolved.get<std::string>();
-                        visible = ! s.empty() && s != "0" && s != "false";
-                    } else {
-                        visible = b.defaultVisible;
-                    }
+                    bool visible  = wek::ResolveVisibilityFromJson(resolved, b.defaultVisible);
                     LOG_INFO("Runtime resolve: '%s' raw=%s resolved=%s visible=%d was=%d",
                              propName.c_str(),
                              b.rawVisibleJson.c_str(),
@@ -2942,17 +2931,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
                 try {
                     auto visJson  = nlohmann::json::parse(b.rawVisibleJson);
                     auto resolved = m_user_props_resolved.ResolveValue(visJson);
-                    bool visible;
-                    if (resolved.is_boolean()) {
-                        visible = resolved.get<bool>();
-                    } else if (resolved.is_number()) {
-                        visible = resolved.get<double>() != 0.0;
-                    } else if (resolved.is_string()) {
-                        auto s  = resolved.get<std::string>();
-                        visible = ! s.empty() && s != "0" && s != "false";
-                    } else {
-                        visible = b.defaultVisible;
-                    }
+                    bool visible  = wek::ResolveVisibilityFromJson(resolved, b.defaultVisible);
                     LOG_INFO("Runtime user prop: '%s' -> effect idx=%d on node id=%d visible=%d",
                              propName.c_str(),
                              b.effectIndex,
@@ -2974,18 +2953,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         auto& val = props[propName];
 
         // Convert JSON value to float vector
-        std::vector<float> floatVec;
-        if (val.is_number()) {
-            floatVec.push_back(val.get<float>());
-        } else if (val.is_string()) {
-            std::istringstream iss(val.get<std::string>());
-            float              f;
-            while (iss >> f) floatVec.push_back(f);
-        } else if (val.is_array()) {
-            for (const auto& elem : val) {
-                if (elem.is_number()) floatVec.push_back(elem.get<float>());
-            }
-        }
+        std::vector<float> floatVec = wek::ParseFloatVectorFromJson(val);
         if (floatVec.empty()) continue;
 
         for (auto& b : bindings) {

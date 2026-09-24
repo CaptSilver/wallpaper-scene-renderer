@@ -16,6 +16,7 @@
 #include "WPUserProperties.hpp"
 
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,40 @@ inline std::vector<std::string> changedUserProps(const WPUserProperties& current
         if (! known.has_value() || *known != it.value()) changed.push_back(it.key());
     }
     return changed;
+}
+
+// A resolved user-property JSON value, coerced to a layer's visible flag.
+// bool passes through; a number is visible unless exactly 0; a string is
+// visible unless empty, "0", or "false" (WE's own truthy-string convention);
+// anything else (null, array, object) falls back to the layer's authored
+// default.
+inline bool ResolveVisibilityFromJson(const nlohmann::json& resolved, bool defaultVisible) {
+    if (resolved.is_boolean()) return resolved.get<bool>();
+    if (resolved.is_number()) return resolved.get<double>() != 0.0;
+    if (resolved.is_string()) {
+        auto s = resolved.get<std::string>();
+        return ! s.empty() && s != "0" && s != "false";
+    }
+    return defaultVisible;
+}
+
+// A resolved user-property JSON value, coerced to the float vector a shader
+// uniform binding wants: a bare number becomes one element, a string is
+// whitespace-split into floats, an array keeps only its numeric elements.
+inline std::vector<float> ParseFloatVectorFromJson(const nlohmann::json& val) {
+    std::vector<float> floatVec;
+    if (val.is_number()) {
+        floatVec.push_back(val.get<float>());
+    } else if (val.is_string()) {
+        std::istringstream iss(val.get<std::string>());
+        float              f;
+        while (iss >> f) floatVec.push_back(f);
+    } else if (val.is_array()) {
+        for (const auto& elem : val) {
+            if (elem.is_number()) floatVec.push_back(elem.get<float>());
+        }
+    }
+    return floatVec;
 }
 
 inline bool userPropHasRuntimeBinding(const Scene& scene, const std::string& name) {
