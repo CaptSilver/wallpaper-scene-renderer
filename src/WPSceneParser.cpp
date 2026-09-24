@@ -719,8 +719,8 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
                 name = pScene->imgIdToSourceTexture.at((i32)wpid);
             } else {
                 if (suffix == "b") {
-                    LOG_INFO("cross-layer _b reference to id=%d with no "
-                             "imgIdToSourceTexture entry — falling back to _a route",
+                    LOG_INFO("_b reference to id=%d with no imgIdToSourceTexture entry — "
+                             "falling back to _a route",
                              wpid);
                 }
                 name = GenLinkTex((u32)wpid);

@@ -92,10 +92,12 @@ struct DelayLinkInfo {
     rg::NodeID id;
     rg::NodeID link_id;
     i32        tex_index;
+    rg::NodeID owner_img_id;
 };
 
 struct ExtraInfo {
     Map<size_t, rg::TexNode*>  id_link_map {};
+    Map<size_t, rg::TexNode*>  id_preeffect_map {};
     std::vector<DelayLinkInfo> link_info {};
     rg::RenderGraph*           rgraph { nullptr };
     Scene*                     scene { nullptr };
@@ -278,7 +280,7 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, &output, &imgId, &rgraph, &scene, &extra](
+        [material, node, imgeff, &output, &imgId, &rgraph, &scene, &extra](
             rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
             const auto& pass = builder.workPassNode();
             pdesc.node       = node;
@@ -292,8 +294,10 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                     continue;
                 } else if (IsSpecLinkTex(url)) {
                     auto id = ParseLinkTex(url);
-                    extra.link_info.push_back(
-                        DelayLinkInfo { .id = pass.ID(), .link_id = id, .tex_index = (i32)i });
+                    extra.link_info.push_back(DelayLinkInfo { .id           = pass.ID(),
+                                                              .link_id      = id,
+                                                              .tex_index    = (i32)i,
+                                                              .owner_img_id = (rg::NodeID)imgId });
                     pdesc.textures.emplace_back("");
                     continue;
                 } else {
@@ -327,6 +331,17 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
             builder.write(output_node);
             if (output == SpecTex_Default || output == GenOffscreenRT(imgId)) {
                 extra.id_link_map[(usize)imgId] = output_node;
+            }
+            // A layer's own composite read (WPSceneParser's _a/_b routing) can only
+            // ever mean "this layer's content before its own effects ran" -- the
+            // post-effect result hasn't been produced yet when the effect chain
+            // itself is what's reading it.  Record this write (the pre-effect
+            // pingpong capture, present whenever the layer has an imgeff) so the
+            // self-reference branch in the resolution loop below has somewhere
+            // topologically-upstream to bind instead of a copy of its own
+            // not-yet-finished output.
+            if (imgeff != nullptr) {
+                extra.id_preeffect_map[(usize)imgId] = output_node;
             }
         });
 
@@ -483,6 +498,31 @@ void emitSkyboxPass(rg::RenderGraph& rgraph, Scene& scene) {
 
 } // namespace wallpaper::vulkan
 
+// A self-referencing link entry's "source" and "consumer" are the same layer, so there
+// is no ordering of copy-then-read that isn't also an ordering against the producer --
+// that's the cycle this exists to avoid.  Bind the layer's own pre-effect capture
+// instead; log and leave the texture unset if none exists (no imgeff, or
+// copybackground=false skipped the base pass -- see ToGraphPass).
+static void bindSelfReferencingLink(rg::RenderGraph& rgraph, ExtraInfo& extra,
+                                    const DelayLinkInfo& info) {
+    if (! exists(extra.id_preeffect_map, info.link_id)) {
+        LOG_ERROR("self-referencing link id=%zu has no pre-effect capture to bind "
+                  "(layer has no imgeff, or copybackground=false skipped the base pass); "
+                  "leaving the texture unset instead of closing a cycle",
+                  info.link_id);
+        return;
+    }
+    auto* pre = extra.id_preeffect_map.at(info.link_id);
+    rgraph.afterBuild(
+        info.id,
+        [pre, tex_index = info.tex_index](rg::RenderGraphBuilder& builder, rg::Pass& rgpass) {
+            auto& pass = static_cast<vulkan::CustomShaderPass&>(rgpass);
+            builder.read(pre);
+            pass.setDescTex((u32)tex_index, pre->key());
+            return true;
+        });
+}
+
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
@@ -544,6 +584,10 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     // cycle (Game of Life links one source from two separate effect stages).
     Map<size_t, rg::TexNode*> resolved_link_tex;
     for (auto& info : extra.link_info) {
+        if (info.owner_img_id == info.link_id) {
+            bindSelfReferencingLink(*rgraph, extra, info);
+            continue;
+        }
         if (! exists(extra.id_link_map, info.link_id)) {
             LOG_ERROR("link tex %zu not found", info.link_id);
             continue;
