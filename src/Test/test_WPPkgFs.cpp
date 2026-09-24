@@ -3,8 +3,11 @@
 #include "WPPkgFs.hpp"
 #include "Fs/MemBinaryStream.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -80,6 +83,30 @@ std::vector<uint8_t> buildPkgHeader(const std::string&                ver,
 std::unique_ptr<WPPkgFs> parse(std::vector<uint8_t> bytes) {
     MemBinaryStream stream(std::move(bytes));
     return WPPkgFs::CreateFromStream(stream, "test.pkg");
+}
+
+// Writes a real pkg to a temp file so WPPkgFs::CreatePkgFs (not
+// CreateFromStream) has an actual backing FILE* to open -- needed to
+// exercise Open()'s pooling, which CreateFromStream's in-memory builders
+// above can't reach (see "Open() on in-memory pkg returns null").
+std::filesystem::path writeTempPkg(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::vector<PkgEntrySpec> specs;
+    std::vector<uint8_t>      payload;
+    for (const auto& [name, content] : files) {
+        specs.push_back(
+            { name, static_cast<int32_t>(payload.size()), static_cast<int32_t>(content.size()) });
+        appendBytes(payload, content.data(), content.size());
+    }
+    auto header = buildPkgHeader("PKGV0023", specs);
+    header.insert(header.end(), payload.begin(), payload.end());
+
+    static std::atomic<int> counter { 0 };
+    auto                    path = std::filesystem::temp_directory_path() /
+                                   ("wek-pkgfs-open-test-" + std::to_string(counter++) + ".pkg");
+    std::ofstream           f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(header.data()), (std::streamsize)header.size());
+    f.close();
+    return path;
 }
 
 } // namespace
@@ -181,6 +208,60 @@ TEST_SUITE("WPPkgFs - well-formed") {
         REQUIRE(fs != nullptr);
         CHECK(fs->Open("/scene.json") == nullptr);
         CHECK(fs->Open("/missing.json") == nullptr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Open() against a real on-disk pkg -- proves the backing FILE* pool reuses
+// a released stream instead of reopening, and that two streams held open at
+// once don't share a seek cursor.
+// ---------------------------------------------------------------------------
+TEST_SUITE("WPPkgFs - Open on-disk") {
+    TEST_CASE("Open() reuses a released backing stream instead of reopening") {
+        auto path = writeTempPkg({ { "a.txt", "AAAA" }, { "b.txt", "BBBBB" } });
+        auto pfs  = WPPkgFs::CreatePkgFs(path.string());
+        REQUIRE(pfs);
+        CHECK(pfs->DebugBackingOpenCount() == 0);
+
+        {
+            auto s = pfs->Open("/a.txt");
+            REQUIRE(s);
+            CHECK(pfs->DebugBackingOpenCount() == 1); // pool miss -- first ever open
+            std::string buf(4, '\0');
+            REQUIRE(s->Read(buf.data(), 4) == 4);
+            CHECK(buf == "AAAA");
+        } // s destroyed -- backing stream returns to the pool
+
+        auto s2 = pfs->Open("/b.txt");
+        REQUIRE(s2);
+        CHECK(pfs->DebugBackingOpenCount() == 1); // reused -- no second fopen
+        std::string buf2(5, '\0');
+        REQUIRE(s2->Read(buf2.data(), 5) == 5);
+        CHECK(buf2 == "BBBBB");
+
+        std::filesystem::remove(path);
+    }
+
+    TEST_CASE("two concurrently-open streams over the same pkg don't cross-read") {
+        auto path = writeTempPkg({ { "a.txt", "AAAA" }, { "b.txt", "BBBBB" } });
+        auto pfs  = WPPkgFs::CreatePkgFs(path.string());
+        REQUIRE(pfs);
+
+        auto sa = pfs->Open("/a.txt"); // both held open at once -- neither pooled yet
+        auto sb = pfs->Open("/b.txt");
+        REQUIRE(pfs->DebugBackingOpenCount() == 2); // pool was empty for both
+
+        // Interleave: read 2 bytes of A, 2 of B, 2 of A, 3 of B -- would
+        // cross-contaminate if the two streams shared one seek cursor.
+        std::string a(4, '\0'), b(5, '\0');
+        REQUIRE(sa->Read(a.data(), 2) == 2);
+        REQUIRE(sb->Read(b.data(), 2) == 2);
+        REQUIRE(sa->Read(a.data() + 2, 2) == 2);
+        REQUIRE(sb->Read(b.data() + 2, 3) == 3);
+        CHECK(a == "AAAA");
+        CHECK(b == "BBBBB");
+
+        std::filesystem::remove(path);
     }
 }
 

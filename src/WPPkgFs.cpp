@@ -69,9 +69,10 @@ std::unique_ptr<WPPkgFs> WPPkgFs::CreateFromStream(IBinaryStream&  pkg,
         }
         pkgfiles.push_back({ path, offset, length });
     }
-    auto pkgfs       = std::unique_ptr<WPPkgFs>(new WPPkgFs());
-    pkgfs->m_pkgPath = pkgpath;
-    idx headerSize   = pkg.Tell();
+    auto pkgfs             = std::unique_ptr<WPPkgFs>(new WPPkgFs());
+    pkgfs->m_pool          = std::make_shared<StreamPool>();
+    pkgfs->m_pool->pkgPath = std::string(pkgpath);
+    idx headerSize         = pkg.Tell();
     for (auto& el : pkgfiles) {
         el.offset += headerSize;
         pkgfs->m_files.insert({ ToLower(el.path), el });
@@ -84,15 +85,38 @@ bool WPPkgFs::Contains(std::string_view path) const {
 }
 
 std::shared_ptr<IBinaryStream> WPPkgFs::Open(std::string_view path) {
-    auto pkg = fs::CreateCBinaryStream(m_pkgPath);
-    if (! pkg) return nullptr;
     auto key = ToLower(std::string(path));
     auto it  = m_files.find(key);
-    if (it != m_files.end()) {
-        const auto& file = it->second;
-        return std::make_shared<LimitedBinaryStream>(pkg, file.offset, file.length);
+    if (it == m_files.end()) return nullptr;
+    const auto& file = it->second;
+
+    std::shared_ptr<IBinaryStream> backing;
+    {
+        std::lock_guard<std::mutex> lock(m_pool->mtx);
+        if (! m_pool->idle.empty()) {
+            backing = std::move(m_pool->idle.back());
+            m_pool->idle.pop_back();
+        }
     }
-    return nullptr;
+    if (! backing) {
+        backing = fs::CreateCBinaryStream(m_pool->pkgPath);
+        if (! backing) return nullptr;
+        m_pool->openCount.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // The deleter captures the pool (keeping it, and the FILE* handles it
+    // holds, alive independent of this WPPkgFs's own lifetime) and a copy of
+    // `backing`. Pushing that copy onto `idle` here just makes the handle
+    // available for reuse -- it doesn't close it early. Two concurrently
+    // alive Open() results never share one of these: each pool-miss path
+    // opens its own backing stream, so overlapping callers just cost two
+    // real opens, same as before, and pay nothing extra for correctness.
+    auto                           pool = m_pool;
+    std::shared_ptr<IBinaryStream> pooled(backing.get(), [pool, backing](IBinaryStream*) mutable {
+        std::lock_guard<std::mutex> lock(pool->mtx);
+        pool->idle.push_back(std::move(backing));
+    });
+    return std::make_shared<LimitedBinaryStream>(pooled, file.offset, file.length);
 }
 
 std::shared_ptr<IBinaryStreamW> WPPkgFs::OpenW(std::string_view) { return nullptr; }
