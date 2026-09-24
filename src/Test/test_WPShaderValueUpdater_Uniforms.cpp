@@ -733,6 +733,102 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         // (lights 4/5 not present in the 16 floats; just confirming no
         // overflow occurred.)
     }
+
+    TEST_CASE("skips a light whose node is not visible") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 2.0f, 0.5f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f(10, 20, 30), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
+        light_node->SetVisible(false);
+        light->setNode(light_node);
+        scene.sceneGraph->AppendChild(light_node);
+        scene.lights.push_back(std::move(light));
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_LP, G_LCR }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* lp = cap.find(G_LP);
+        REQUIRE(lp != nullptr);
+        REQUIRE(lp->values.size() == 16);
+        for (size_t i = 0; i < 16; ++i) CHECK(lp->values[i] == doctest::Approx(0.0f));
+    }
+
+    TEST_CASE("skipping a hidden light does not shift the next visible light's slot") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto hidden_light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+        auto hidden_node  = std::make_shared<SceneNode>(
+            Eigen::Vector3f(999, 999, 999), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
+        hidden_node->SetVisible(false);
+        hidden_light->setNode(hidden_node);
+        scene.sceneGraph->AppendChild(hidden_node);
+        scene.lights.push_back(std::move(hidden_light));
+
+        auto visible_light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+        auto visible_node  = std::make_shared<SceneNode>(
+            Eigen::Vector3f(5, 6, 7), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
+        visible_light->setNode(visible_node);
+        scene.sceneGraph->AppendChild(visible_node);
+        scene.lights.push_back(std::move(visible_light));
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_LP, G_LCR }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* lp = cap.find(G_LP);
+        REQUIRE(lp != nullptr);
+        CHECK(lp->values[0] == doctest::Approx(5.0f));
+        CHECK(lp->values[1] == doctest::Approx(6.0f));
+        CHECK(lp->values[2] == doctest::Approx(7.0f));
+        CHECK(lp->values[4] == doctest::Approx(0.0f)); // slot 1 stays unused, not the visible light
+    }
+
+    TEST_CASE("a light hidden via an already-hidden parent group is skipped too") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto group = std::make_shared<SceneNode>(
+            Eigen::Vector3f(0, 0, 0), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
+        group->SetVisible(false); // hidden via the PARENT, not the light's own flag.
+        scene.sceneGraph->AppendChild(group);
+
+        auto light      = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f(42, 42, 42), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
+        light->setNode(light_node);
+        group->AppendChild(light_node); // wires m_visibility_parent = group.
+        scene.lights.push_back(std::move(light));
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_LP, G_LCR }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* lp = cap.find(G_LP);
+        REQUIRE(lp != nullptr);
+        for (size_t i = 0; i < 4; ++i) CHECK(lp->values[i] == doctest::Approx(0.0f));
+    }
 }
 
 // =============================================================================

@@ -130,6 +130,57 @@ TEST_SUITE("WPShaderValueUpdater::UpdateVolumetricLightUniforms") {
         CHECK(v4[3] == doctest::Approx(1.5f));
     }
 
+    TEST_CASE("a hidden volumetric candidate still advances candidate_idx "
+              "but zeroes intensity, density, and color") {
+        Scene scene;
+        auto  ln0 = makeLight(SceneLight::LightKind::LPoint,
+                              0.31f,
+                              1.5f,
+                              500.0f,
+                              2.0f,
+                              Eigen::Vector3f(1.0f, 0.5f, 0.25f),
+                              Eigen::Vector3f(10.0f, 20.0f, 30.0f));
+        ln0.node->SetVisible(false); // hidden candidate 0.
+        scene.sceneGraph->AppendChild(ln0.node);
+        scene.lights.push_back(std::move(ln0.light));
+
+        auto ln1 = makeLight(SceneLight::LightKind::LPoint,
+                             0.6f,
+                             1.2f,
+                             300.0f,
+                             3.0f,
+                             Eigen::Vector3f(0.2f, 0.4f, 0.8f),
+                             Eigen::Vector3f(1.0f, 2.0f, 3.0f));
+        scene.sceneGraph->AppendChild(ln1.node);
+        SceneLight* visible_ptr = ln1.light.get();
+        scene.lights.push_back(std::move(ln1.light));
+
+        WPShaderValueUpdater updater(&scene);
+        Capture              cap;
+        updater.UpdateVolumetricLightUniforms(cap.op());
+
+        REQUIRE(cap.writes.size() == 10); // 2 candidates * 5 vars -- op() fires for both.
+
+        for (auto& w : cap.writes) {
+            int   candidate = std::get<1>(w);
+            int   slot      = std::get<2>(w);
+            auto& v         = std::get<3>(w);
+            if (candidate == 0) {
+                if (slot == 1) CHECK(v[3] == doctest::Approx(0.0f)); // intensity zeroed
+                if (slot == 2) CHECK(v[3] == doctest::Approx(0.0f)); // density zeroed
+                if (slot == 4) {
+                    CHECK(v[0] == doctest::Approx(0.0f));
+                    CHECK(v[1] == doctest::Approx(0.0f));
+                    CHECK(v[2] == doctest::Approx(0.0f));
+                }
+            }
+            if (candidate == 1) {
+                CHECK(std::get<0>(w) == visible_ptr);                // no index shift
+                if (slot == 2) CHECK(v[3] == doctest::Approx(0.6f)); // density preserved
+            }
+        }
+    }
+
     TEST_CASE("skips lights that do not cast volumetrics") {
         Scene scene;
         // Light 0: density=0 - does not cast.

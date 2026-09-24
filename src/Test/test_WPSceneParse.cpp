@@ -635,6 +635,32 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(m(2, 3) == doctest::Approx(30.0f));
     }
 
+    TEST_CASE("ParseLightObj honors JSON `visible:false`") {
+        const char*         kJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 640, "height": 480 } },
+  "objects": [
+    { "id": 501, "name": "sun_light",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "light": "point", "color": "1 1 1",
+      "radius": 1000.0, "intensity": 1.0,
+      "visible": false }
+  ]
+}
+)JSON";
+        auto                vfs   = makeEmptyAssetsVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_invisible_light", kJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 1);
+        auto* lnode = scene->lights.front()->node();
+        REQUIRE(lnode != nullptr);
+        CHECK_FALSE(lnode->IsVisible());
+    }
+
     TEST_CASE("multi-object scene: root child render order follows JSON order") {
         const char*         kSceneJson = R"JSON(
 {
@@ -3083,6 +3109,48 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         REQUIRE(dust != nullptr);
         CHECK(image->IsVisible());
         CHECK_FALSE(dust->IsVisible());
+
+        int hide_log_count = 0;
+        for (auto& l : LogCapture::lines())
+            if (l.find("HidePattern: id=") != std::string::npos) hide_log_count++;
+        CHECK(hide_log_count == 1);
+    }
+
+    TEST_CASE("E2E: hide-pattern hides a matching light object, "
+              "leaves a non-matching light untouched") {
+        LogCapture          log;
+        auto                vfs        = makeEmptyAssetsVfs();
+        const char*         kSceneJson = R"JSON(
+        {
+          "general": { "clearcolor": "0 0 0",
+                       "orthogonalprojection": { "width": 1280, "height": 720 } },
+          "objects": [
+            { "id": 300, "name": "keep_visible_sun", "light": "point",
+              "origin": "0 0 0", "color": "1 1 1", "radius": 1000.0, "intensity": 1.0 },
+            { "id": 501, "name": "hideme_sun", "light": "point",
+              "origin": "0 0 0", "color": "1 1 1", "radius": 1000.0, "intensity": 1.0 }
+          ]
+        }
+        )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        parser.SetHidePattern("hideme");
+        auto scene = parser.Parse("scene_hide_light", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->lights.size() == 2);
+
+        SceneLight* kept   = nullptr;
+        SceneLight* hidden = nullptr;
+        for (auto& l : scene->lights) {
+            REQUIRE(l->node() != nullptr);
+            if (l->node()->ID() == 300) kept = l.get();
+            if (l->node()->ID() == 501) hidden = l.get();
+        }
+        REQUIRE(kept != nullptr);
+        REQUIRE(hidden != nullptr);
+        CHECK(kept->node()->IsVisible());
+        CHECK_FALSE(hidden->node()->IsVisible());
 
         int hide_log_count = 0;
         for (auto& l : LogCapture::lines())

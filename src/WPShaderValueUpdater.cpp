@@ -680,7 +680,12 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         bool                  reflect_lights = (cam_name == "reflected_perspective");
         for (auto& l : m_scene->lights) {
             if (i == 4) break;
-            assert(l->node() != nullptr);
+            // assert() compiles out under NDEBUG (the default Release build),
+            // so a null light node would otherwise fall straight through to
+            // the unconditional dereference below with zero diagnostic in a
+            // shipped binary.
+            if (! l->node()) continue;
+            if (! l->node()->IsVisible()) continue;
             // Walk the parent chain so parented lights upload their WORLD
             // translation, not the always-zero local Translate().  Real-Time
             // Earth (3557068717) drives this: 2 point lights parented to the
@@ -816,19 +821,32 @@ void WPShaderValueUpdater::UpdateVolumetricLightUniforms(const WritePerLightVarO
 
         // g_RenderVar0: shadowmap transforms - no shadow path in v1.
         std::array<float, 4> r0 { 0.0f, 0.0f, 0.0f, 0.0f };
+        // Visibility gate lives here, not as an early `continue` -- candidate_idx
+        // must advance for every emitter regardless of visibility (it indexes
+        // scene.volumetricsConfig.per_light, built unconditionally at parse
+        // time; skipping the index here would desync PumpVolumetricFrame's
+        // `assert(pl.light == l)`). Re-zero every frame rather than skip the
+        // write so a hidden light can't keep its last-visible-frame values
+        // once visibility toggling stops being parse-time-only.
+        const bool visible = l->node()->IsVisible();
         // g_RenderVar1: (radius, spot_inner, spot_outer, intensity).
         // v1 only emits Point/LPoint; spot inner/outer stay at 0.
-        std::array<float, 4> r1 { l->radius(), 0.0f, 0.0f, l->intensity() };
+        std::array<float, 4> r1 { l->radius(), 0.0f, 0.0f, visible ? l->intensity() : 0.0f };
         // g_RenderVar2: (world_origin.xyz, density).
-        std::array<float, 4> r2 { (float)world(0, 3), (float)world(1, 3),
-                                  (float)world(2, 3), l->volumetric().density };
+        std::array<float, 4> r2 { (float)world(0, 3),
+                                  (float)world(1, 3),
+                                  (float)world(2, 3),
+                                  visible ? l->volumetric().density : 0.0f };
         // g_RenderVar3: (forward.xyz, point_proj_info).
         // Point/LPoint have no orientation; pack (0, 0, 1, 0) for shader-side
         // determinism.
         std::array<float, 4> r3 { 0.0f, 0.0f, 1.0f, 0.0f };
         // g_RenderVar4: (color * intensity, volumetricsexponent).
-        const auto& ci = l->colorIntensity();
-        std::array<float, 4> r4 { ci[0], ci[1], ci[2], l->volumetric().exponent };
+        const auto&          ci = l->colorIntensity();
+        std::array<float, 4> r4 { visible ? ci[0] : 0.0f,
+                                  visible ? ci[1] : 0.0f,
+                                  visible ? ci[2] : 0.0f,
+                                  l->volumetric().exponent };
 
         op(l.get(), candidate_idx, 0, r0);
         op(l.get(), candidate_idx, 1, r1);

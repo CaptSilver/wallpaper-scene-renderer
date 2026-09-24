@@ -3524,13 +3524,13 @@ void ParseLightObj(ParseContext& context, wpscene::WPLightObject& light_obj) {
                                             Vector3f(light_obj.scale.data()),
                                             Vector3f(light_obj.angles.data()));
     node->ID() = light_obj.id;
-    // --hide-pattern deliberately doesn't reach lights: WPShaderValueUpdater's
-    // two per-frame light-upload loops never call IsVisible() on a light's
-    // node, so SetVisible(false) here would flag the node "hidden" in the
-    // debug summary while the light kept lighting the scene exactly as
-    // before — the same silent-no-op bug this filter exists to fix, just
-    // one layer down. Fixing that needs an IsVisible() gate added to both
-    // upload loops, a separate, real-code-path change.
+    // Authored visibility first, --hide-pattern's debug override second --
+    // ApplyHidePattern only ever forces visibility off, so this order means
+    // a light that both matches the pattern and authors "visible": true
+    // stays hidden. Reversing these two calls would silently un-hide it.
+    // Mirrors ParseParticleObj/ParseTextObj's own ordering.
+    node->SetVisible(light_obj.visible);
+    ApplyHidePattern(context, light_obj.name, light_obj.id, *node);
 
     context.scene->lights.emplace_back(std::make_unique<SceneLight>(
         Vector3f(light_obj.color.data()),
