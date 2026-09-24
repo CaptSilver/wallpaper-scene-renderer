@@ -62,6 +62,15 @@ public:
     float bloomthreshold { 0.65f };
     float bloomhdrstrength { 2.0f };
     float bloomhdrthreshold { 1.0f };
+    // WE authors these alongside the pair above; only bloomhdrfeather is
+    // currently consumed (see buildBloomAndReflection's knee constant).
+    // Iterations (chain depth) and scatter stay parsed-but-unread: wiring
+    // scatter 1:1 into the shader's per-level multiply compounds
+    // geometrically over the upsample chain and blew up a real wallpaper's
+    // bloom in a prior attempt (see the E2E bloom-chain test's comment).
+    int32_t bloomhdriterations { 8 };
+    float   bloomhdrscatter { 1.619f };
+    float   bloomhdrfeather { 0.1f };
 
     bool  camerashake { false };
     float camerashakeamplitude { 0.5f };

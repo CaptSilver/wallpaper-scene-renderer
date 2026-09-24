@@ -5520,8 +5520,19 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
                         //   .y = threshold - knee  (knee start)
                         //   .z = 2*knee            (knee width)
                         //   .w = 0.25 / knee       (quadratic shaping factor)
-                        // knee=0.30 gives a smooth roll-on around scene_threshold.
-                        const float knee = 0.30f;
+                        // bloomhdrfeather is author-controlled and real
+                        // content ships it at exactly 0.0 (see the E2E test
+                        // above).  0.25f/knee, a few lines below, is +inf at
+                        // knee==0, and the shipped shader's clamp(soft, 0,
+                        // 2*knee) forces soft to exactly 0 at the same
+                        // point, so the two together compute 0*0*inf = NaN,
+                        // not a graceful "no soft knee".  Floor instead of
+                        // branching: as the floor shrinks toward 0 this
+                        // formula converges to the same hard-cutoff limit a
+                        // special case would have to duplicate, so one
+                        // formula covers both without a second code path.
+                        constexpr float kMinBloomKnee = 1e-4f;
+                        const float     knee = std::max(sc.general.bloomhdrfeather, kMinBloomKnee);
                         material.customShader.constValues["g_BloomBlendParams"] =
                             std::vector<float> {
                                 scene_bloom_threshold,

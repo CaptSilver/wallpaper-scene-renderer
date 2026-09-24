@@ -106,6 +106,9 @@ TEST_SUITE("WPSceneGeneral::FromJson") {
         CHECK_FALSE(g.hdr);
         CHECK_FALSE(g.bloom);
         CHECK(g.bloomstrength == doctest::Approx(2.0f));
+        CHECK(g.bloomhdriterations == 8);
+        CHECK(g.bloomhdrscatter == doctest::Approx(1.619f));
+        CHECK(g.bloomhdrfeather == doctest::Approx(0.1f));
     }
 
     TEST_CASE("hdr/bloom fields parse when present") {
@@ -125,6 +128,21 @@ TEST_SUITE("WPSceneGeneral::FromJson") {
         CHECK(g.bloomthreshold == doctest::Approx(0.4f));
         CHECK(g.bloomhdrstrength == doctest::Approx(4.0f));
         CHECK(g.bloomhdrthreshold == doctest::Approx(1.5f));
+    }
+
+    TEST_CASE("bloomhdr iteration/scatter/feather fields parse when present") {
+        auto j = nlohmann::json::parse(R"({
+            "ambientcolor":"0 0 0","skylightcolor":"0 0 0","clearcolor":"0 0 0",
+            "cameraparallax": false, "cameraparallaxamount": 0,
+            "cameraparallaxdelay": 0, "cameraparallaxmouseinfluence": 0,
+            "hdr": true, "bloom": true,
+            "bloomhdriterations": 6, "bloomhdrscatter": 0.75, "bloomhdrfeather": 0.2
+        })");
+        WPSceneGeneral g;
+        REQUIRE(g.FromJson(j));
+        CHECK(g.bloomhdriterations == 6);
+        CHECK(g.bloomhdrscatter == doctest::Approx(0.75f));
+        CHECK(g.bloomhdrfeather == doctest::Approx(0.2f));
     }
 
     TEST_CASE("camerashake fields parse") {
