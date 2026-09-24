@@ -1390,6 +1390,36 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
     }
 
+    TEST_CASE("E2E: a compose layer is recorded as such, even though it never gets an "
+              "imgIdToSourceTexture entry") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/models/util/composelayer.json", kPlainImageJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 501, "name": "compose_layer",
+      "image": "models/util/composelayer.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_compose_marker", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        CHECK(scene->composeLayerIds.count(501) == 1u);
+        // Unchanged behavior: still no static-source entry for a compose layer.
+        CHECK(scene->imgIdToSourceTexture.count(501) == 0u);
+    }
+
     TEST_CASE("E2E: a project layer's effect-chain pingpong binds to the render output, "
               "not a fixed size") {
         ensureGlslangInit();

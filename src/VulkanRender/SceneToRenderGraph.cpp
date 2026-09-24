@@ -141,6 +141,75 @@ static void registerScaledHazardCopyTarget(Scene& scene, std::string_view output
     scene.renderTargets[std::string(copy_key)] = copy_rt;
 }
 
+// Self-write-hazard copies still happen once per reader, at that reader's own
+// z-order instant -- see the mechanism note on the hazard branch below for why
+// that count can't shrink safely.  This only shrinks each copy's resolution.
+// 0.5 was chosen and confirmed by a windowed render comparison against the
+// unmodified renderer (no visible softening of hard-edged REFRACT distortion
+// at native or 2-4x zoom); not exposed as a user-facing setting.
+static constexpr double kSelfWriteHazardCopyScale = 0.5;
+
+// Options the two texture-read call sites (ToGraphPass, addReflectionPass) disagree on.
+// Defaults match ToGraphPass's fuller behavior; addReflectionPass opts out of each --
+// see the call site comments for why this dedup doesn't change any of the three.
+struct TextureReadOptions {
+    bool checkSelfWriteHazard { true };
+    bool registerSpecLinkTex { true };
+    bool trackMipmapFramebuffer { true };
+};
+
+// Shared by ToGraphPass and addReflectionPass: bind every texture in `textures` as a
+// graph-node read, in order, appending the resolved (or empty, for a deferred/omitted
+// slot) key to pdesc.textures. `passId`/`ownerImgId` are only read when
+// opts.registerSpecLinkTex is true; pass 0 for either when the caller sets it false.
+static void addTextureReads(rg::RenderGraphBuilder& builder, ExtraInfo& extra,
+                            rg::RenderGraph& rgraph, const std::vector<std::string>& textures,
+                            vulkan::CustomShaderPass::Desc& pdesc, std::string_view output,
+                            rg::NodeID passId, i32 ownerImgId, const TextureReadOptions& opts) {
+    for (usize i = 0; i < textures.size(); i++) {
+        const auto&  url = textures[i];
+        rg::TexNode* input { nullptr };
+        if (url.empty()) {
+            pdesc.textures.emplace_back("");
+            continue;
+        } else if (opts.registerSpecLinkTex && IsSpecLinkTex(url)) {
+            auto id = ParseLinkTex(url);
+            extra.link_info.push_back(DelayLinkInfo { .id           = passId,
+                                                      .link_id      = id,
+                                                      .tex_index    = (i32)i,
+                                                      .owner_img_id = (rg::NodeID)ownerImgId });
+            pdesc.textures.emplace_back("");
+            continue;
+        } else if (IsSpecLinkTex(url)) {
+            // opts.registerSpecLinkTex == false: bind an unregistered link tex
+            // empty, same as an omitted texture, instead of deferring it into
+            // extra.link_info. addReflectionPass is the only caller that opts
+            // out today -- see its call site comment below for why.
+            pdesc.textures.emplace_back("");
+            continue;
+        } else {
+            rg::TexNode::Desc desc;
+            desc.key  = url;
+            desc.name = url;
+            desc.type =
+                ! IsSpecTex(url) ? rg::TexNode::TexType::Imported : rg::TexNode::TexType::Temp;
+            input = builder.createTexNode(desc);
+            if (IsSpecTex(url)) builder.markVirtualWrite(input);
+            if (opts.trackMipmapFramebuffer && sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
+                extra.use_mipmap_framebuffer = true;
+        }
+
+        if (opts.checkSelfWriteHazard && url == output) {
+            builder.markSelfWrite(input);
+            input = rg::addCopyPass(rgraph, input);
+            registerScaledHazardCopyTarget(
+                *extra.scene, output, input->key(), kSelfWriteHazardCopyScale);
+        }
+        builder.read(input);
+        pdesc.textures.emplace_back(input->key());
+    }
+}
+
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
 
 static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraInfo& extra) {
@@ -183,14 +252,6 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
         }
     }
 }
-
-// Self-write-hazard copies still happen once per reader, at that reader's own
-// z-order instant -- see the mechanism note on the hazard branch below for why
-// that count can't shrink safely.  This only shrinks each copy's resolution.
-// 0.5 was chosen and confirmed by a windowed render comparison against the
-// unmodified renderer (no visible softening of hard-edged REFRACT distortion
-// at native or 2-4x zoom); not exposed as a user-facing setting.
-static constexpr double kSelfWriteHazardCopyScale = 0.5;
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
@@ -286,41 +347,15 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
             pdesc.node       = node;
             pdesc.output     = output;
             CheckAndSetSprite(scene, pdesc, material->textures);
-            for (usize i = 0; i < material->textures.size(); i++) {
-                const auto&  url = material->textures[i];
-                rg::TexNode* input { nullptr };
-                if (url.empty()) {
-                    pdesc.textures.emplace_back("");
-                    continue;
-                } else if (IsSpecLinkTex(url)) {
-                    auto id = ParseLinkTex(url);
-                    extra.link_info.push_back(DelayLinkInfo { .id           = pass.ID(),
-                                                              .link_id      = id,
-                                                              .tex_index    = (i32)i,
-                                                              .owner_img_id = (rg::NodeID)imgId });
-                    pdesc.textures.emplace_back("");
-                    continue;
-                } else {
-                    rg::TexNode::Desc desc;
-                    desc.key  = url;
-                    desc.name = url;
-                    desc.type = ! IsSpecTex(url) ? rg::TexNode::TexType::Imported
-                                                 : rg::TexNode::TexType::Temp;
-                    input     = builder.createTexNode(desc);
-                    if (IsSpecTex(url)) builder.markVirtualWrite(input);
-                    if (sstart_with(url, WE_MIP_MAPPED_FRAME_BUFFER))
-                        extra.use_mipmap_framebuffer = true;
-                }
-
-                if (url == output) {
-                    builder.markSelfWrite(input);
-                    input = rg::addCopyPass(rgraph, input);
-                    registerScaledHazardCopyTarget(
-                        *extra.scene, output, input->key(), kSelfWriteHazardCopyScale);
-                }
-                builder.read(input);
-                pdesc.textures.emplace_back(input->key());
-            }
+            addTextureReads(builder,
+                            extra,
+                            rgraph,
+                            material->textures,
+                            pdesc,
+                            output,
+                            pass.ID(),
+                            imgId,
+                            TextureReadOptions {});
 
             rg::TexNode* output_node { nullptr };
             output_node =
@@ -388,8 +423,8 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, &scene](rg::RenderGraphBuilder&         builder,
-                                 vulkan::CustomShaderPass::Desc& pdesc) {
+        [material, node, &scene, &rgraph, &extra](rg::RenderGraphBuilder&         builder,
+                                                  vulkan::CustomShaderPass::Desc& pdesc) {
             pdesc.node               = node;
             pdesc.output             = std::string(WE_REFLECTION);
             pdesc.camera_override    = "reflected_perspective";
@@ -398,27 +433,36 @@ static void addReflectionPass(SceneNode* node, ExtraInfo& extra) {
             pdesc.useReflectionDepth = true;
             CheckAndSetSprite(scene, pdesc, material->textures);
 
-            for (usize i = 0; i < material->textures.size(); i++) {
-                const auto& url = material->textures[i];
-                if (url.empty()) {
-                    pdesc.textures.emplace_back("");
-                    continue;
-                }
-                if (IsSpecLinkTex(url)) {
-                    pdesc.textures.emplace_back("");
-                    continue;
-                }
-
-                rg::TexNode::Desc desc;
-                desc.key  = url;
-                desc.name = url;
-                desc.type =
-                    ! IsSpecTex(url) ? rg::TexNode::TexType::Imported : rg::TexNode::TexType::Temp;
-                auto* input = builder.createTexNode(desc);
-                if (IsSpecTex(url)) builder.markVirtualWrite(input);
-                builder.read(input);
-                pdesc.textures.emplace_back(input->key());
-            }
+            // All three knobs off, unchanged from this function's behavior before
+            // the addTextureReads extraction -- this is a pure dedup, so every
+            // option here reproduces what this loop already did, not a decision
+            // that any of the three should now behave differently.
+            //  - checkSelfWriteHazard: moot regardless -- the early return above
+            //    already skips any node whose material reads WE_REFLECTION, so
+            //    url == output (pdesc.output is WE_REFLECTION here) can never be
+            //    true by the time this loop runs.
+            //  - registerSpecLinkTex: this call has no real pass id or owner image
+            //    id to record (passId/ownerImgId are both 0 below, not looked up
+            //    from the graph the way ToGraphPass's pass.ID()/imgId are), so
+            //    deferring a link tex here would attach it to whichever unrelated
+            //    pass or image id happens to be 0 instead of failing loudly.
+            //  - trackMipmapFramebuffer: extra.use_mipmap_framebuffer is one flag
+            //    shared across every addTextureReads call in this graph build, and
+            //    this call has never set it. Whether a reflection material can
+            //    legitimately need the mip-mapped framebuffer copy is unverified --
+            //    no wallpaper on this box ever reaches addReflectionPass at all
+            //    (its camera gate needs a 3D scene with a 2+-keyframe camera path).
+            addTextureReads(builder,
+                            extra,
+                            rgraph,
+                            material->textures,
+                            pdesc,
+                            pdesc.output,
+                            /*passId=*/0,
+                            /*ownerImgId=*/0,
+                            TextureReadOptions { .checkSelfWriteHazard   = false,
+                                                 .registerSpecLinkTex    = false,
+                                                 .trackMipmapFramebuffer = false });
 
             auto* output_node =
                 builder.createTexNode(rg::TexNode::Desc { .name = std::string(WE_REFLECTION),

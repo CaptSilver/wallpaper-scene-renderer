@@ -499,6 +499,15 @@ public:
     // Earth (3557068717) id 424's `____________` UV-scroll effect samples
     // `_rt_imageLayerComposite_424_b` to phase-shift its source by UTC time.
     std::unordered_map<i32, std::string> imgIdToSourceTexture;
+    // Ids of every image object whose `image` names a compose/passthrough model
+    // (composelayer.json, projectlayer.json) -- populated alongside the
+    // imgIdToSourceTexture registration attempt in applyImagePreRoutingDefaults,
+    // for exactly the layers where that registration can never structurally
+    // succeed (their base texture is always a spec tex -- see that function's
+    // comment). Lets ParseSpecTexName's `_b` fallback log say why there's no
+    // entry instead of a generic "missing" message indistinguishable from an
+    // authored typo. Not consulted for anything beyond that log line yet.
+    std::unordered_set<i32> composeLayerIds;
     // JSON-authored parent for each object ID — populated at parse time
     // straight from scene.json's `parent` field.  Used by
     // SerializeLayerInitialStates to emit `pn` (parent name) when the

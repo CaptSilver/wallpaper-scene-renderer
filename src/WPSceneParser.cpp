@@ -714,9 +714,15 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
                 name = pScene->imgIdToSourceTexture.at((i32)wpid);
             } else {
                 if (suffix == "b") {
-                    LOG_INFO("_b reference to id=%d with no imgIdToSourceTexture entry — "
-                             "falling back to _a route",
-                             wpid);
+                    if (pScene && pScene->composeLayerIds.count((i32)wpid)) {
+                        LOG_INFO("_b reference to id=%d, a compose/passthrough layer with no "
+                                 "static source texture by design — falling back to _a route",
+                                 wpid);
+                    } else {
+                        LOG_INFO("_b reference to id=%d with no imgIdToSourceTexture entry — "
+                                 "falling back to _a route",
+                                 wpid);
+                    }
                 }
                 name = GenLinkTex((u32)wpid);
             }
@@ -1492,6 +1498,9 @@ void logPuppetDiagnostics(ParseContext& context, const wpscene::WPImageObject& w
 }
 
 void applyImagePreRoutingDefaults(ParseContext& context, wpscene::WPImageObject& wpimgobj) {
+    if (context.scene && wpscene::IsComposeLayerImage(wpimgobj.image)) {
+        context.scene->composeLayerIds.insert(wpimgobj.id);
+    }
     // Register this layer's primary source texture so ParseSpecTexName can
     // route `_rt_imageLayerComposite_<id>_b` references — an author-side
     // convention some custom effects use — to the static base instead of the

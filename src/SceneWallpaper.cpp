@@ -2911,7 +2911,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
                              (int)visible,
                              (int)b.node->IsVisible());
                     if (b.node->IsVisible() != visible) {
-                        b.node->SetVisible(visible);
+                        m_render_handler->setNodeVisible(b.node->ID(), visible);
                         LOG_INFO("Runtime user prop: '%s' -> node visible=%d",
                                  propName.c_str(),
                                  (int)visible);
@@ -2927,10 +2927,10 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         // raw JSON, dispatch through the existing setEffectVisible queue
         // (m_property_mutex-protected, the same path SceneScript's
         // thisLayer.getEffect(idx).visible = bool already uses) rather than a
-        // direct SceneNode write.  See the object-level loop just above: it
-        // writes b.node->SetVisible() directly from this thread while the
-        // render thread reads IsVisible() every frame with no shared mutex --
-        // a real, pre-existing race this task deliberately doesn't reproduce.
+        // direct SceneNode write.  The object-level loop just above routes
+        // through the equivalent setNodeVisible queue for the same reason:
+        // the render thread reads IsVisible() every frame with no shared
+        // mutex, so a direct SceneNode write from this thread would race it.
         for (auto& [propName, bindings] : scene.userPropEffectVisBindings) {
             if (! props.contains(propName)) continue;
             for (auto& b : bindings) {
