@@ -150,6 +150,25 @@ int main(int argc, char** argv) {
         sv->setProperty("userProperties", QString::fromStdString(user_props));
     }
 
+    // --set-runtime key=value (repeatable): change a user property AFTER
+    // load, through the exact SceneObject::userProperties path Scene.qml
+    // binds for the live plugin (backend/Scene.qml:105) -- lets a CLI run
+    // exercise applyUserPropsRuntime's instant-toggle path instead of
+    // reinstalling the plugin and clicking the settings panel.
+    {
+        std::vector<std::string> runtime_sets =
+            program.get<std::vector<std::string>>(OPT_SET_RUNTIME);
+        if (! runtime_sets.empty()) {
+            std::string json    = BuildRuntimeUserPropsJson(runtime_sets);
+            double      delay_s = program.get<double>(OPT_SET_RUNTIME_DELAY);
+            if (delay_s < 0.0) delay_s = 2.0;
+            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, json]() {
+                std::cout << "set-runtime: " << json << std::endl;
+                sv->setProperty("userProperties", QString::fromStdString(json));
+            });
+        }
+    }
+
     sv->setAcceptMouse(true);
     sv->setAcceptHover(true);
 

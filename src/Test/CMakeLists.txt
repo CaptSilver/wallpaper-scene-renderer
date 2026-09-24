@@ -282,6 +282,8 @@ add_executable(backend_scene_tests
     test_WPSceneParse_Properties.cpp
     # Golden-snapshot diff tests for WPShaderTransforms.h string rewrites.
     test_WPShaderTransforms_Golden.cpp
+    # standalone_view/arg.hpp's user-properties JSON builder -- pure, no Qt.
+    test_ArgUserProps.cpp
 )
 
 target_include_directories(backend_scene_tests PRIVATE

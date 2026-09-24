@@ -7,21 +7,23 @@
 #include <argparse/argparse.hpp>
 #include <string_view>
 
-constexpr std::string_view ARG_ASSETS            = "<assets>";
-constexpr std::string_view ARG_SCENE             = "<scene>";
-constexpr std::string_view OPT_VALID_LAYER       = "--valid-layer";
-constexpr std::string_view OPT_GRAPHVIZ          = "--graphviz";
-constexpr std::string_view OPT_FPS               = "--fps";
-constexpr std::string_view OPT_REFRESH_MHZ       = "--refresh-mhz";
-constexpr std::string_view OPT_PRESENT_MODE      = "--present-mode";
-constexpr std::string_view OPT_RESOLUTION        = "--resolution";
-constexpr std::string_view OPT_CACHE_PATH        = "--cache-path";
-constexpr std::string_view OPT_HDR               = "--hdr";
-constexpr std::string_view OPT_POSTPROCESSING    = "--postprocessing";
-constexpr std::string_view OPT_USER_PROPS        = "--user-props";
-constexpr std::string_view OPT_SET_PROP          = "--set";
-constexpr std::string_view OPT_SCREENSHOT        = "--screenshot";
-constexpr std::string_view OPT_SCREENSHOT_FRAMES = "--screenshot-frames";
+constexpr std::string_view ARG_ASSETS              = "<assets>";
+constexpr std::string_view ARG_SCENE               = "<scene>";
+constexpr std::string_view OPT_VALID_LAYER         = "--valid-layer";
+constexpr std::string_view OPT_GRAPHVIZ            = "--graphviz";
+constexpr std::string_view OPT_FPS                 = "--fps";
+constexpr std::string_view OPT_REFRESH_MHZ         = "--refresh-mhz";
+constexpr std::string_view OPT_PRESENT_MODE        = "--present-mode";
+constexpr std::string_view OPT_RESOLUTION          = "--resolution";
+constexpr std::string_view OPT_CACHE_PATH          = "--cache-path";
+constexpr std::string_view OPT_HDR                 = "--hdr";
+constexpr std::string_view OPT_POSTPROCESSING      = "--postprocessing";
+constexpr std::string_view OPT_USER_PROPS          = "--user-props";
+constexpr std::string_view OPT_SET_PROP            = "--set";
+constexpr std::string_view OPT_SET_RUNTIME         = "--set-runtime";
+constexpr std::string_view OPT_SET_RUNTIME_DELAY   = "--set-runtime-delay";
+constexpr std::string_view OPT_SCREENSHOT          = "--screenshot";
+constexpr std::string_view OPT_SCREENSHOT_FRAMES   = "--screenshot-frames";
 constexpr std::string_view OPT_SCREENSHOT_AT_FRAME = "--screenshot-at-frame";
 constexpr std::string_view OPT_DETERMINISTIC       = "--deterministic";
 // Interval capture: write a screenshot every N seconds for a bounded total
@@ -140,6 +142,23 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .default_value<std::vector<std::string>>({})
         .append();
 
+    // Repeatable --set-runtime key=value: same typing as --set, but applied
+    // AFTER the scene has loaded (via a QTimer in qmlviewer.cpp), so it
+    // exercises MainHandler::applyUserPropsRuntime's instant-toggle path
+    // instead of the parse-time defaults --set/--user-props feed.
+    arg.add_argument(OPT_SET_RUNTIME)
+        .help("(sceneviewer-script only) change a user property AFTER load "
+              "(repeatable): --set-runtime key=value")
+        .default_value<std::vector<std::string>>({})
+        .append();
+
+    arg.add_argument(OPT_SET_RUNTIME_DELAY)
+        .help("(sceneviewer-script only) seconds to wait before applying "
+              "--set-runtime (default 2.0)")
+        .default_value<double>(2.0)
+        .nargs(1)
+        .scan<'g', double>();
+
     arg.add_argument("--cursor")
         .help("simulate hover at widget-space x,y (repeats every 0.5s to keep hover UI visible)")
         .nargs(1);
@@ -254,20 +273,19 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
             << "  WEKDE_TEXT_DUMP_DIR=<dir>        dump rasterized text glyph atlas to <dir>\n"
             << "  WEKDE_PASS_DUMP_MEM_MB=<n>       cap --dump-passes-dir memory at <n> MB\n"
             << "  WEKDE_SKIP_PARTICLE_CHILD_SUBSTR=<s>  skip particles whose name contains <s>\n"
-            << "  WEKDE_DISABLE_OVERBRIGHT_HDR=1   disable overbright clamp in HDR post-processing\n";
+            << "  WEKDE_DISABLE_OVERBRIGHT_HDR=1   disable overbright clamp in HDR "
+               "post-processing\n";
         std::exit(0);
     }
 }
 
-// Assemble the final user-properties JSON from --user-props <json>
-// (verbatim if present) plus each repeated --set key=value.
-// Returns {} when neither flag is provided. No external JSON dep — hand-built,
-// since the values we emit are tiny and already well-formed by construction.
-inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
-    std::string              base = arg.get<std::string>(OPT_USER_PROPS);
-    std::vector<std::string> sets = arg.get<std::vector<std::string>>(OPT_SET_PROP);
-    if (base.empty() && sets.empty()) return {};
-
+// Merge `base` (raw JSON object body, braces optional) with `sets` (repeatable
+// "key=value", auto-typed as bool/number/string) into one JSON object string.
+// Pure -- no argparse dependency, so it's directly unit-testable. No external
+// JSON dep either — hand-built, since the values we emit are tiny and already
+// well-formed by construction.
+inline std::string MergeUserPropsJson(const std::string&              base,
+                                      const std::vector<std::string>& sets) {
     // Start from --user-props object content (strip outer braces if present
     // and reuse its body), so flags compose.
     std::ostringstream out;
@@ -336,4 +354,22 @@ inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
     }
     out << "}";
     return out.str();
+}
+
+// Assemble the final user-properties JSON from --user-props <json>
+// (verbatim if present) plus each repeated --set key=value.
+// Returns {} when neither flag is provided.
+inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
+    std::string              base = arg.get<std::string>(OPT_USER_PROPS);
+    std::vector<std::string> sets = arg.get<std::vector<std::string>>(OPT_SET_PROP);
+    if (base.empty() && sets.empty()) return {};
+    return MergeUserPropsJson(base, sets);
+}
+
+// Delta-only JSON for a post-load property change: applyUserPropsRuntime only
+// checks props.contains(propName) for each binding, so the changed key(s) alone
+// are sufficient -- no need to re-merge the full initial --user-props/--set state.
+inline std::string BuildRuntimeUserPropsJson(const std::vector<std::string>& sets) {
+    if (sets.empty()) return {};
+    return MergeUserPropsJson({}, sets);
 }
