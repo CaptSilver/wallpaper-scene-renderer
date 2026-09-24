@@ -175,6 +175,21 @@ constexpr const char* kPlainMaterialJson = R"({
     }]
 })";
 
+// A translucent material that explicitly asks for depthwrite:enabled -- the
+// exact shape hud1.json (Live Solar System, workshop 3662790108) uses. Every
+// other material fixture in this file omits depthwrite and gets WPMaterial's
+// class default ("disabled"), so only this one can tell LoadMaterial's own
+// override apart from a value that was already off.
+constexpr const char* kTranslucentDepthwriteMaterialJson = R"({
+    "passes": [{
+        "shader": "_t",
+        "blending": "translucent",
+        "depthtest": "enabled",
+        "depthwrite": "enabled",
+        "textures": []
+    }]
+})";
+
 // Plain image descriptor: 256x256 quad, references _plain material above.
 // WPImageObject::FromJson reads `material` (mandatory), `width`/`height`
 // (optional but used here to skip the autosize path) — see
@@ -340,14 +355,14 @@ struct MdlBytes {
 };
 
 // A flag-9 (pos + uv) model with one submesh, three vertices and one
-// triangle, referencing the shared trivial material.
-std::string makeTriangleModelMdl() {
+// triangle, referencing matPath (defaults to the shared trivial material).
+std::string makeTriangleModelMdl(std::string_view matPath = "materials/_plain.json") {
     MdlBytes b;
     b.str("MDLV0013");
     b.i32(9); // mdl_flag: pos(3) + texcoord(2)
     b.i32(1);
     b.u32(1); // submesh_count
-    b.str("materials/_plain.json");
+    b.str(matPath);
     b.i32(0);
     b.u32(3 * 5 * 4); // vertex bytes
     for (int i = 0; i < 3; i++) {
@@ -2050,6 +2065,44 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(cv.at("g_Color")[2] == doctest::Approx(0.6f));
     }
 
+    TEST_CASE("E2E: a translucent 2D image layer forces depthWrite off even when its material "
+              "JSON asks for depthwrite:enabled") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/models/_hud.json", R"({ "material": "materials/_hud_dw.json" })" },
+            { "/materials/_hud_dw.json", kTranslucentDepthwriteMaterialJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 701, "name": "hud", "image": "models/_hud.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 256", "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_translucent_depthwrite_image", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto it = scene->nodeById.find(701);
+        REQUIRE(it != scene->nodeById.end());
+        REQUIRE(it->second->Mesh() != nullptr);
+        REQUIRE(it->second->Mesh()->Material() != nullptr);
+        // A translucent 2D layer whose near-transparent pixels still write
+        // real depth blocks every later draw from painting that screen
+        // rectangle for the rest of the frame -- the "hud1" overlay on
+        // workshop 3662790108 does exactly this. depthTest may stay on;
+        // depthWrite must not.
+        CHECK(it->second->Mesh()->Material()->depthTest);
+        CHECK_FALSE(it->second->Mesh()->Material()->depthWrite);
+    }
+
     // Model objects take the same parent-chain rules as image children.  A
     // parent with its own effect has its world node reset to identity for the
     // base capture, so a model chained through it lands at its bare local
@@ -2094,6 +2147,43 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         const auto& m = rock->ModelTrans();
         CHECK(m(0, 3) == doctest::Approx(110.0));
         CHECK(m(1, 3) == doctest::Approx(70.0));
+    }
+
+    TEST_CASE("E2E: a translucent 3D model submesh still forces depthWrite off when its material "
+              "JSON asks for depthwrite:enabled") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/materials/_tri_dw.json", kTranslucentDepthwriteMaterialJson },
+            { "/models/_tri_dw.mdl", makeTriangleModelMdl("materials/_tri_dw.json") },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 801, "name": "rock_dw", "model": "models/_tri_dw.mdl",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_model_translucent_depthwrite", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto it = scene->nodeById.find(801);
+        REQUIRE(it != scene->nodeById.end());
+        // ParseModelObj's node holds the transform; the submesh (and its
+        // Mesh/Material) live on a child node, not the parent registered in
+        // nodeById -- a single-submesh model has exactly one child.
+        REQUIRE(! it->second->GetChildren().empty());
+        SceneNode* submesh = it->second->GetChildren().front().get();
+        REQUIRE(submesh->Mesh() != nullptr);
+        REQUIRE(submesh->Mesh()->Material() != nullptr);
+        CHECK(submesh->Mesh()->Material()->depthTest);
+        CHECK_FALSE(submesh->Mesh()->Material()->depthWrite);
     }
 
     // A model can rig to a named attachment on the parent puppet, like an

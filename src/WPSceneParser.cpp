@@ -1006,7 +1006,17 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
     material.blenmode   = ParseBlendMode(wpmat.blending);
     material.depthTest  = (wpmat.depthtest == "enabled");
     material.depthWrite = (wpmat.depthwrite == "enabled");
-    material.cullmode   = wpmat.cullmode;
+    // A translucent/additive fragment can pass the depth test at close to
+    // zero alpha and still write real depth, which then blocks every later
+    // draw in that screen rectangle for the rest of the frame -- whatever
+    // the JSON author asked for. Live Solar System's HUD gauge overlay
+    // (materials/hud1.json) authors "depthwrite":"enabled" on a translucent 2D
+    // layer and means it literally; that's exactly this failure. Depth test
+    // stays on -- only the write is forced off.
+    if (material.blenmode == BlendMode::Translucent || material.blenmode == BlendMode::Additive) {
+        material.depthWrite = false;
+    }
+    material.cullmode = wpmat.cullmode;
 
     for (uint i = 0; i < material.textures.size(); i++) {
         if (! exists(sd_units.back().preprocess_info.active_tex_slots, i))
@@ -3630,11 +3640,6 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
         // Without it, default to opaque for 3D models (WPMaterial default is translucent for 2D).
         if (! jContent.contains("blending")) {
             wpmat.blending = "normal";
-        }
-        // Translucent/additive materials: keep depth test but disable depth write so
-        // objects behind transparent/additive surfaces remain visible.
-        if (wpmat.blending == "translucent" || wpmat.blending == "additive") {
-            wpmat.depthwrite = "disabled";
         }
         // Default 3D models to backface culling when not specified.
         // Translucent flat quads (grid, shadow) may face either way,
