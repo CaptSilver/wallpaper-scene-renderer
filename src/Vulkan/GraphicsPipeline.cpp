@@ -41,6 +41,12 @@ inline std::optional<vvk::ShaderModule> CreateShaderModule(const vvk::Device& de
 GraphicsPipeline::GraphicsPipeline() { toDefault(); }
 GraphicsPipeline::~GraphicsPipeline() {}
 
+void wallpaper::vulkan::ResetPipelineParameters(PipelineParameters& pipeline) {
+    pipeline.descriptor_layouts.clear();
+    pipeline.layout.reset();
+    pipeline.handle.reset();
+}
+
 void GraphicsPipeline::toDefault() {
     m_view = VkPipelineViewportStateCreateInfo {
         .sType         = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -160,6 +166,10 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
         .dynamicStateCount = (uint32_t)m_dynamic_states.size(),
         .pDynamicStates    = m_dynamic_states.data()
     };
+    // A PipelineParameters describes exactly one pipeline. Start from empty so a
+    // caller that reuses the same instance across create() calls (FinPass does,
+    // by design, across every scene switch) can't accumulate stale layouts.
+    ResetPipelineParameters(pipeline);
     for (auto& info : m_descriptor_set_infos) {
         VkDescriptorSetLayoutCreateInfo create_info {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .pNext = nullptr
@@ -184,6 +194,7 @@ bool GraphicsPipeline::create(const Device& device, vvk::RenderPass& pass,
             .setLayoutCount = (uint32_t)layouts.size(),
             .pSetLayouts    = layouts.data(),
         };
+        LOG_DEBUG("GraphicsPipeline::create: setLayoutCount=%zu", layouts.size());
         VVK_CHECK(device.handle().CreatePipelineLayout(ci, pipeline.layout));
     }
 

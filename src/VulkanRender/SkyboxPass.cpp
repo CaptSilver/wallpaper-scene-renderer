@@ -436,4 +436,8 @@ void SkyboxPass::destory(const Device&, RenderingResources& rr) {
     m_fb_cache.clear();
     if (m_desc.vertex_buf) rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
     if (m_desc.ubo_buf) rr.dyn_buf->unallocateSubRef(m_desc.ubo_buf);
+    // SkyboxPass is rebuilt fresh every scene today, so this never actually
+    // accumulates — but it has the identical create()-appends-forever shape
+    // as FinPass, so reset here too rather than depend on that staying true.
+    ResetPipelineParameters(m_desc.pipeline);
 }

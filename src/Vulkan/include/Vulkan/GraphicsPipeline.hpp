@@ -16,6 +16,13 @@ struct PipelineParameters {
     std::vector<vvk::DescriptorSetLayout> descriptor_layouts;
 };
 
+// Drops every layout/handle a PipelineParameters has accumulated. A pass that
+// keeps one PipelineParameters across scene switches (FinPass is the current
+// example) must call this before its next GraphicsPipeline::create(), or
+// create()'s append loop piles descriptor-set layouts on top of the previous
+// scene's forever until the driver's own set-count limit is exceeded.
+void ResetPipelineParameters(PipelineParameters&);
+
 struct DescriptorSetInfo {
     bool push_descriptor { false };
 

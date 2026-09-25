@@ -369,4 +369,8 @@ void FinPass::destory(const Device&, RenderingResources& rr) {
     clearReleaseTexs();
     m_fb_cache.clear();
     if (m_desc.vertex_buf) rr.vertex_buf->unallocateSubRef(m_desc.vertex_buf);
+    // FinPass outlives a single scene (m_finpass is a process-lifetime member
+    // of VulkanRender::Impl), so the next prepare() must start from a clean
+    // PipelineParameters rather than growing descriptor_layouts forever.
+    ResetPipelineParameters(m_desc.pipeline);
 }

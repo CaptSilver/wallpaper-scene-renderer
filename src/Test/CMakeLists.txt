@@ -140,6 +140,7 @@ add_executable(backend_scene_tests
     test_ExSwapchainFormat.cpp
     test_present_mode.cpp
     test_PipelineCacheIO.cpp
+    test_GraphicsPipelineReset.cpp
     test_Shader.cpp
     test_FenceWaitRetry.cpp
     ${SRC_DIR}/VulkanRender/FenceWaitRetry.cpp
