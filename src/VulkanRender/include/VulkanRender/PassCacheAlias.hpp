@@ -125,4 +125,18 @@ bool IsDepthSafeToSkip(bool has_depth, DepthHandle depth_image,
     return already_inited_this_frame.count(depth_image) > 0;
 }
 
+// recordDepthInit()'s own guard: should THIS call issue the depth image's
+// clear-and-transition, or has an earlier pass this frame already covered
+// it?  The mirror of IsDepthSafeToSkip, plus the precondition that the
+// tracker is actually wired -- a null tracker means compileRenderGraph
+// never called setDepthInitedFrameSet on this pass (a construction-order
+// bug the caller asserts on in debug builds); a release build just
+// declines to record rather than dereferencing null.
+template<typename DepthHandle, typename InitedSet>
+bool ShouldRecordDepthInit(bool has_depth, DepthHandle depth_image,
+                           const InitedSet* already_inited_this_frame) {
+    if (already_inited_this_frame == nullptr) return false;
+    return ! IsDepthSafeToSkip(has_depth, depth_image, *already_inited_this_frame);
+}
+
 } // namespace wallpaper::vulkan

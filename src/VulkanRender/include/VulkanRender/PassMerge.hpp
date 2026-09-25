@@ -44,6 +44,15 @@ inline bool HiddenPassDropsRecording(PassMergeRole r) {
     return r == PassMergeRole::Standalone || r == PassMergeRole::GroupMiddle;
 }
 
+// May the invisible-node fast path in CustomShaderPass::execute hand a
+// pending depth-init clear over to a hidden pass it's about to skip? Only
+// a Standalone pass can: a GroupBegin/Middle/End pass shares its depth
+// image with the rest of the run, and a hidden pass has no render-pass
+// boundary of its own to record the handover into.
+inline bool CanHandOffDepthInitOnHiddenSkip(PassMergeRole r) {
+    return r == PassMergeRole::Standalone;
+}
+
 // What ComputePassMergeRoles needs to know about one pass, in frame
 // execution order.  Handles are opaque — the tests instantiate with an
 // integer type, the renderer with VkImageView / VkImage.

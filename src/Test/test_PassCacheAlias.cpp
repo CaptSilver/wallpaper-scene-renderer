@@ -410,3 +410,42 @@ TEST_SUITE("PassCacheAlias::IsDepthSafeToSkip") {
     }
 
 } // TEST_SUITE
+
+// recordDepthInit() decides whether to issue THIS call's clear-and-transition
+// from the same has_depth/depth_image/tracker inputs as IsDepthSafeToSkip,
+// negated, plus the tracker-wired precondition (recordDepthInit needs a
+// live pointer to insert into, and a null one means compileRenderGraph never
+// wired setDepthInitedFrameSet on this pass -- a construction-order bug the
+// caller already asserts on in debug builds).
+TEST_SUITE("PassCacheAlias::ShouldRecordDepthInit") {
+    TEST_CASE("no depth → never records") {
+        std::unordered_set<H> inited;
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/false, A, &inited) == false);
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/false, NULLH, &inited) == false);
+    }
+
+    TEST_CASE("has depth but null image → never records") {
+        std::unordered_set<H> inited;
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/true, NULLH, &inited) == false);
+    }
+
+    TEST_CASE("has depth and image but tracker not wired → never records") {
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/true, A, (const std::unordered_set<H>*)nullptr) ==
+              false);
+    }
+
+    TEST_CASE("has depth + image + tracker, image already inited this frame → does not re-record") {
+        std::unordered_set<H> inited { A };
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/true, A, &inited) == false);
+    }
+
+    TEST_CASE("has depth + image + tracker, image NOT yet inited → records") {
+        std::unordered_set<H> inited;
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/true, A, &inited) == true);
+    }
+
+    TEST_CASE("a different image already inited doesn't stop this one recording") {
+        std::unordered_set<H> inited { B };
+        CHECK(ShouldRecordDepthInit(/*has_depth=*/true, A, &inited) == true);
+    }
+}

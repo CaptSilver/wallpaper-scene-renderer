@@ -1155,9 +1155,7 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
     // a release build from dereferencing null.
     assert((! m_desc.hasDepth || m_depth_inited_frame_tracker) &&
            "CustomShaderPass::m_depth_inited_frame_tracker not wired by compileRenderGraph");
-    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE && m_depth_inited_frame_tracker &&
-        m_depth_inited_frame_tracker->find(m_desc.depthImage) ==
-            m_depth_inited_frame_tracker->end()) {
+    if (ShouldRecordDepthInit(m_desc.hasDepth, m_desc.depthImage, m_depth_inited_frame_tracker)) {
         m_depth_inited_frame_tracker->insert(m_desc.depthImage);
         VkImageSubresourceRange depth_range {
             .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -1282,7 +1280,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         // leaving the image UNDEFINED for a later visible pass that shares it.
         // Inside a group there is nothing to hand over: merging requires the
         // same depth image, and the pass that opened the group cleared it.
-        if (role == PassMergeRole::Standalone) {
+        if (CanHandOffDepthInitOnHiddenSkip(role)) {
             const bool depth_safe_to_skip =
                 m_depth_inited_frame_tracker && IsDepthSafeToSkip(m_desc.hasDepth,
                                                                   m_desc.depthImage,

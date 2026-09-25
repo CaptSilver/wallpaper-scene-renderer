@@ -214,4 +214,15 @@ TEST_SUITE("PassMerge role predicates") {
         CHECK_FALSE(HiddenPassDropsRecording(PassMergeRole::GroupBegin));
         CHECK_FALSE(HiddenPassDropsRecording(PassMergeRole::GroupEnd));
     }
+
+    TEST_CASE("only a standalone hidden pass hands its depth-init clear over") {
+        // A GroupBegin/Middle/End pass shares its depth image with the rest
+        // of the run and has no render-pass boundary of its own to record
+        // the clear into -- only Standalone owns both its depth image and
+        // a full begin/end it can record the handover inside.
+        CHECK(CanHandOffDepthInitOnHiddenSkip(PassMergeRole::Standalone));
+        CHECK_FALSE(CanHandOffDepthInitOnHiddenSkip(PassMergeRole::GroupBegin));
+        CHECK_FALSE(CanHandOffDepthInitOnHiddenSkip(PassMergeRole::GroupMiddle));
+        CHECK_FALSE(CanHandOffDepthInitOnHiddenSkip(PassMergeRole::GroupEnd));
+    }
 }
