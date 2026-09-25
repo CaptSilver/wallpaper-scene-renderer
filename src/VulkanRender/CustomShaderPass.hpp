@@ -2,6 +2,7 @@
 #include "VulkanPass.hpp"
 #include "VulkanRender/PassMerge.hpp"
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "Vulkan/Device.hpp"
@@ -262,6 +263,31 @@ public:
     // prepared and its attachment handles are known.
     void setMergeRole(PassMergeRole r) { m_desc.merge_role = r; }
 
+    // Frame-scoped record of which depth images this frame's passes have
+    // already cleared+transitioned (recordDepthInit's per-handle latch).
+    // Owned by the VulkanRender::Impl that built this pass
+    // (m_depth_inited_frame in VulkanRender.cpp) and wired in here by
+    // compileRenderGraph every time it rebuilds m_passes -- not at
+    // construction, since a single Impl rebuilds its passes many times over
+    // a process's life while the tracker itself stays put.
+    //
+    // This used to be a namespace-scope global (g_depth_inited_frame) in
+    // CustomShaderPass.cpp.  That let its destructor run via ordinary
+    // process-exit static destruction on libc's own clock, with no relation
+    // to whether the render thread was still mid-frame and reading it --
+    // ASAN caught the resulting heap-use-after-free in drawFrameOffscreen,
+    // twice, independently.  A member of the Impl, which ~MainHandler
+    // already guarantees only dies after the render Looper is joined (see
+    // SceneWallpaper.cpp), can't be torn down out from under a thread still
+    // using it.
+    void setDepthInitedFrameSet(std::unordered_set<VkImage>* tracker) {
+        m_depth_inited_frame_tracker = tracker;
+    }
+    // Whether execute()/recordDepthInit() have anything wired to read/insert
+    // into.  Null until compileRenderGraph wires it (or on a Desc a test
+    // constructs directly and never runs through execute()).
+    bool hasDepthInitedFrameSet() const { return m_depth_inited_frame_tracker != nullptr; }
+
     // Accessors for per-pass debug dump (VulkanRender::Impl reads output image
     // info after a frame WaitIdle to produce PPMs of each pass's render target).
     const Desc& desc() const { return m_desc; }
@@ -274,11 +300,12 @@ private:
     // pass can hand the job over before it bails out, from the skip path.
     void recordDepthInit(const vvk::CommandBuffer& cmd);
 
-    Desc m_desc;
-    bool m_cached { false };
-    bool m_can_cache { false };
-    bool m_uses_time_uniforms { false };
-    bool m_samples_mutable_texture { false };
+    Desc                         m_desc;
+    std::unordered_set<VkImage>* m_depth_inited_frame_tracker { nullptr };
+    bool                         m_cached { false };
+    bool                         m_can_cache { false };
+    bool                         m_uses_time_uniforms { false };
+    bool                         m_samples_mutable_texture { false };
 
     // Per-pass scratch storage reused across execute() calls.
     //

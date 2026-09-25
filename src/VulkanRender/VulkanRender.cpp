@@ -165,6 +165,17 @@ struct VulkanRender::Impl {
 
     std::vector<VulkanPass*> m_passes;
 
+    // Frame-scoped record of which depth images this frame's passes have
+    // already cleared+transitioned (CustomShaderPass::recordDepthInit's
+    // per-handle latch); cleared at the top of each drawFrame*/drawFrameOffscreen
+    // and wired onto every CustomShaderPass in compileRenderGraph via
+    // setDepthInitedFrameSet.  Lives here, not as a namespace-scope global in
+    // CustomShaderPass.cpp, so it only dies when this Impl does -- which
+    // ~MainHandler already guarantees happens after the render Looper is
+    // joined, instead of whenever exit() happens to run static destructors
+    // relative to a render thread that might still be mid-frame.
+    std::unordered_set<VkImage> m_depth_inited_frame;
+
     // Screenshot request.  Set from any thread via setScreenshotPath;
     // consumed on the render thread inside drawFrameSwapchain after WaitIdle.
     std::mutex        m_screenshot_mutex;
@@ -1356,12 +1367,11 @@ void VulkanRender::Impl::drawFrameSwapchain() {
             static int  _render_frame_count = 0;
             int         prepared_count = 0, skipped_count = 0;
             // Reset per-frame exec pass counter (extern from CustomShaderPass)
-            extern int                         g_exec_pass_counter;
-            extern int                         g_exec_frame_counter;
-            extern std::unordered_set<VkImage> g_depth_inited_frame;
+            extern int g_exec_pass_counter;
+            extern int g_exec_frame_counter;
             g_exec_pass_counter  = 0;
             g_exec_frame_counter = _render_frame_count;
-            g_depth_inited_frame.clear();
+            m_depth_inited_frame.clear();
             for (auto* p : m_passes) {
                 if (p->prepared()) {
                     p->execute(*m_device, rr);
@@ -1515,12 +1525,11 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         static int  _render_frame_count = 0;
         int         prepared_count = 0, skipped_count = 0;
         // Reset per-frame counters (extern from CustomShaderPass)
-        extern int                         g_exec_pass_counter;
-        extern int                         g_exec_frame_counter;
-        extern std::unordered_set<VkImage> g_depth_inited_frame;
+        extern int g_exec_pass_counter;
+        extern int g_exec_frame_counter;
         g_exec_pass_counter  = 0;
         g_exec_frame_counter = _render_frame_count;
-        g_depth_inited_frame.clear();
+        m_depth_inited_frame.clear();
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -1811,6 +1820,18 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 
     scene.depthBufferCleared = false;
     scene.clearedRTs.clear();
+
+    // m_passes was just rebuilt above (rg.getPass(id) constructs a fresh
+    // CustomShaderPass per node -- see SceneToRenderGraph.cpp /
+    // VolumetricChain.cpp), so every one of them needs pointing at this
+    // Impl's depth-init tracker again before anything calls execute().  Not
+    // part of CustomShaderPass's own constructor (see setDepthInitedFrameSet
+    // in the header) precisely because the pointer has to survive a graph
+    // rebuild while m_depth_inited_frame itself does not move.
+    for (auto* p : m_passes) {
+        if (auto* csp = dynamic_cast<CustomShaderPass*>(p))
+            csp->setDepthInitedFrameSet(&m_depth_inited_frame);
+    }
 
     // Every pass's own prepare() call below blocks synchronously on
     // WPTexImageParser::Parse() for each texture it samples. For a scene

@@ -29,19 +29,25 @@ namespace wallpaper::vulkan
 // file-scope method body resolves to a global-scope type instead, which
 // tripped -Wundefined-internal.
 struct PassDumpEntry;
-int  g_exec_pass_counter       = 0;
-int  g_exec_frame_counter      = 0;
-bool g_depth_transitioned      = false; // DEPRECATED: see g_depth_inited_frame
-bool g_refl_depth_transitioned = false; // DEPRECATED: see g_depth_inited_frame
-// Depth images are allocated per-output-RT-extent, so scenes with mixed
-// RT sizes (Three-Body 3509243656 has 4096x2048 skybox, 1280x720 main,
-// 256x256 effect pingpongs, ...) can have many live depth images in one
-// frame.  The original global bool transitioned only the FIRST depth
-// image seen each frame — the rest stayed UNDEFINED and subsequent draws
-// against them depth-failed or validated as
-// "expects DEPTH_STENCIL_ATTACHMENT_OPTIMAL, current UNDEFINED".  Track
-// per-image; cleared each frame in VulkanRender.cpp.
-std::unordered_set<VkImage> g_depth_inited_frame;
+int g_exec_pass_counter  = 0;
+int g_exec_frame_counter = 0;
+// NOTE: the per-image depth-init tracker used to live here as a namespace-
+// scope global (g_depth_inited_frame), alongside two now-deleted DEPRECATED
+// bools that predated it.  It moved to CustomShaderPass::m_depth_inited_frame_tracker
+// -- a pointer at VulkanRender::Impl::m_depth_inited_frame, wired onto every
+// pass by compileRenderGraph -- because a global with a non-trivial destructor dies
+// via ordinary static destruction whenever the process calls exit(), with no
+// regard for whether the render thread is still mid-frame and touching it.
+// That raced for real: ASAN caught a heap-use-after-free here, freed by
+// __run_exit_handlers while drawFrameOffscreen's render-thread read was
+// still live.  m_depth_inited_frame instead dies with the Impl, which
+// ~MainHandler already guarantees only happens after the render Looper is
+// joined (see MainHandler's destructor in SceneWallpaper.cpp).  See
+// recordDepthInit() below for the per-image-handle tracking rationale
+// (scenes with mixed RT sizes, e.g. Three-Body 3509243656's 4096x2048
+// skybox + 1280x720 main + 256x256 effect pingpongs, can have several live
+// depth images in one frame; a single global bool only ever tracked the
+// first one seen, leaving the rest UNDEFINED).
 // NOTE: the global MSAA-init tracker (g_msaa_color_inited) used to live here.
 // The latch now lives on the owning VmaImageParameters as
 // initial_layout_transitioned, so it dies with the VkImage handle and a
@@ -1135,15 +1141,24 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
     // to work around drivers where the render pass CLEAR doesn't execute
     // correctly with a newly-created depth image (RADV GFX1201).
     //
-    // Tracks per-image-handle in g_depth_inited_frame so scenes with
+    // Tracks per-image-handle in m_depth_inited_frame_tracker so scenes with
     // multiple depth images (one per RT extent) transition each one on
     // its own first use.  The previous global bool flagged the first
     // depth image transitioned and silently skipped all others — Three-
     // Body (3509243656) has 4+ depth-enabled passes with different RT
     // sizes, so 3+ stayed UNDEFINED and their draws depth-failed.
-    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE &&
-        g_depth_inited_frame.find(m_desc.depthImage) == g_depth_inited_frame.end()) {
-        g_depth_inited_frame.insert(m_desc.depthImage);
+    //
+    // A pass reaching here without the tracker wired is a construction-order
+    // bug (compileRenderGraph should have called setDepthInitedFrameSet on
+    // every pass it added to m_passes), not a condition to degrade from
+    // silently -- assert loudly in debug builds; the guard below still keeps
+    // a release build from dereferencing null.
+    assert((! m_desc.hasDepth || m_depth_inited_frame_tracker) &&
+           "CustomShaderPass::m_depth_inited_frame_tracker not wired by compileRenderGraph");
+    if (m_desc.hasDepth && m_desc.depthImage != VK_NULL_HANDLE && m_depth_inited_frame_tracker &&
+        m_depth_inited_frame_tracker->find(m_desc.depthImage) ==
+            m_depth_inited_frame_tracker->end()) {
+        m_depth_inited_frame_tracker->insert(m_desc.depthImage);
         VkImageSubresourceRange depth_range {
             .aspectMask     = VK_IMAGE_ASPECT_DEPTH_BIT,
             .baseMipLevel   = 0,
@@ -1267,9 +1282,13 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         // leaving the image UNDEFINED for a later visible pass that shares it.
         // Inside a group there is nothing to hand over: merging requires the
         // same depth image, and the pass that opened the group cleared it.
-        if (role == PassMergeRole::Standalone &&
-            ! IsDepthSafeToSkip(m_desc.hasDepth, m_desc.depthImage, g_depth_inited_frame))
-            recordDepthInit(rr.command);
+        if (role == PassMergeRole::Standalone) {
+            const bool depth_safe_to_skip =
+                m_depth_inited_frame_tracker && IsDepthSafeToSkip(m_desc.hasDepth,
+                                                                  m_desc.depthImage,
+                                                                  *m_depth_inited_frame_tracker);
+            if (! depth_safe_to_skip) recordDepthInit(rr.command);
+        }
         g_invisible_skips++;
         return;
     }
