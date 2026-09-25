@@ -2461,6 +2461,95 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         for (std::size_t i = 0; i < knee->second.size(); ++i) CHECK(std::isfinite(knee->second[i]));
     }
 
+    TEST_CASE("E2E: bloomhdrfeather is a fraction of the threshold, not an absolute knee") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/hdr_downsample.vert", kTrivialVert },
+            { "/shaders/hdr_downsample.frag", kTrivialFrag },
+            { "/shaders/combine_hdr.vert", kTrivialVert },
+            { "/shaders/combine_hdr.frag", kTrivialFrag },
+        });
+
+        // Real-Time Earth (3557068717) authors exactly this pair. Reading
+        // bloomhdrfeather as an absolute knee value put the knee past the
+        // threshold (0.77 > 0.27), drove g_BloomBlendParams.y negative, and
+        // widened the soft-knee transition zone until nearly the whole frame
+        // fed the bloom-extract pass -- the HDR mip chain then compounded
+        // that excess energy into blocky, quantised noise under ultra
+        // postprocessing. The knee is the threshold scaled by the feather
+        // fraction, matching the shipped hdr_downsample.frag's soft-knee
+        // form.
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080,
+                                         "postprocessing": "ultra" },
+               "hdr": true, "bloom": true, "bloomhdrthreshold": 0.27,
+               "bloomhdrfeather": 0.77 },
+  "objects": []
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_bloom_feather_fraction", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->bloomConfig.enabled);
+
+        const auto& extract = scene->bloomConfig.nodes[0]->Mesh()->Material()->customShader;
+        auto        knee    = extract.constValues.find("g_BloomBlendParams");
+        REQUIRE(knee != extract.constValues.end());
+        REQUIRE(knee->second.size() == 4);
+        // knee = threshold * feather = 0.27 * 0.77 = 0.2079. The old
+        // absolute-knee reading would have set .y to threshold - feather =
+        // 0.27 - 0.77 = -0.50 instead.
+        CHECK(knee->second[0] == doctest::Approx(0.27f));
+        CHECK(knee->second[1] == doctest::Approx(0.0621f));
+        CHECK(knee->second[2] == doctest::Approx(0.4158f));
+        CHECK(knee->second[3] == doctest::Approx(1.202501f));
+    }
+
+    TEST_CASE("E2E: a bloomhdrfeather above 1.0 clamps to the full threshold") {
+        ensureGlslangInit();
+        auto vfs = makeAssetsVfsWith({
+            { "/shaders/hdr_downsample.vert", kTrivialVert },
+            { "/shaders/hdr_downsample.frag", kTrivialFrag },
+            { "/shaders/combine_hdr.vert", kTrivialVert },
+            { "/shaders/combine_hdr.frag", kTrivialFrag },
+        });
+
+        const char*         kSceneJson = R"JSON(
+{
+  "camera": { "eye": "0 0 1000", "center": "0 0 0", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1920, "height": 1080,
+                                         "postprocessing": "ultra" },
+               "hdr": true, "bloom": true, "bloomhdrthreshold": 0.5,
+               "bloomhdrfeather": 1.5 },
+  "objects": []
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_bloom_feather_over_one", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->bloomConfig.enabled);
+
+        const auto& extract = scene->bloomConfig.nodes[0]->Mesh()->Material()->customShader;
+        auto        knee    = extract.constValues.find("g_BloomBlendParams");
+        REQUIRE(knee != extract.constValues.end());
+        REQUIRE(knee->second.size() == 4);
+        // feather 1.5 clamps to 1.0, so knee == threshold: a hard cutoff at
+        // the threshold, the same shape the zero-feather case has at the
+        // opposite end of the fraction's range.
+        CHECK(knee->second[0] == doctest::Approx(0.5f));
+        CHECK(knee->second[1] == doctest::Approx(0.0f));
+        CHECK(knee->second[2] == doctest::Approx(1.0f));
+        CHECK(knee->second[3] == doctest::Approx(0.5f));
+    }
+
     TEST_CASE("E2E: HDR bloom's per-pass UV offset stays finite when the scene authors a "
               "zero-width orthographic projection") {
         ensureGlslangInit();

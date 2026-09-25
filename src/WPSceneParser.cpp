@@ -5536,19 +5536,35 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
                         //   .y = threshold - knee  (knee start)
                         //   .z = 2*knee            (knee width)
                         //   .w = 0.25 / knee       (quadratic shaping factor)
-                        // bloomhdrfeather is author-controlled and real
-                        // content ships it at exactly 0.0 (see the E2E test
-                        // above).  0.25f/knee, a few lines below, is +inf at
-                        // knee==0, and the shipped shader's clamp(soft, 0,
-                        // 2*knee) forces soft to exactly 0 at the same
-                        // point, so the two together compute 0*0*inf = NaN,
-                        // not a graceful "no soft knee".  Floor instead of
-                        // branching: as the floor shrinks toward 0 this
-                        // formula converges to the same hard-cutoff limit a
-                        // special case would have to duplicate, so one
-                        // formula covers both without a second code path.
+                        // bloomhdrfeather is a threshold-relative fraction,
+                        // not an absolute knee value -- WE's own default
+                        // (feather 0.1 alongside threshold 1.0) only reads
+                        // as a hard-ish cutoff because threshold happens to
+                        // be 1.0 in that case.  Real-Time Earth (3557068717)
+                        // authors threshold 0.27 with feather 0.77: read as
+                        // an absolute knee that's larger than the threshold
+                        // itself, which drives .y negative and widens the
+                        // soft-knee zone across nearly the whole practical
+                        // brightness range instead of just the highlights
+                        // near the threshold -- the HDR mip chain then
+                        // compounds that excess energy into a blown-out,
+                        // blocky mess.  Clamp the fraction to [0, 1] so an
+                        // authored feather can never push the knee past its
+                        // own threshold, and floor the result: 0.25f/knee, a
+                        // few lines below, is +inf at knee==0, and the
+                        // shipped shader's clamp(soft, 0, 2*knee) forces
+                        // soft to exactly 0 at the same point, so the two
+                        // together compute 0*0*inf = NaN, not a graceful "no
+                        // soft knee".  Floor instead of branching: as the
+                        // floor shrinks toward 0 this formula converges to
+                        // the same hard-cutoff limit a special case would
+                        // have to duplicate, so one formula covers both
+                        // without a second code path.
                         constexpr float kMinBloomKnee = 1e-4f;
-                        const float     knee = std::max(sc.general.bloomhdrfeather, kMinBloomKnee);
+                        const float     knee =
+                            std::max(scene_bloom_threshold *
+                                         std::clamp(sc.general.bloomhdrfeather, 0.0f, 1.0f),
+                                     kMinBloomKnee);
                         material.customShader.constValues["g_BloomBlendParams"] =
                             std::vector<float> {
                                 scene_bloom_threshold,
