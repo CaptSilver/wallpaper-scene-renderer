@@ -14,6 +14,7 @@
 #include "Interface/IShaderValueUpdater.h"
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
+#include "WPMediaSystemTexture.hpp"
 
 namespace wallpaper
 {
@@ -134,6 +135,20 @@ inline bool NeedsFallbackTexture(const std::vector<i32>&           bindings,
                                  const std::vector<ImageSlotsRef>& textures) {
     for (usize i = 0; i < textures.size(); i++) {
         if (bindings[i] >= 0 && textures[i].slots.empty()) return true;
+    }
+    return false;
+}
+
+// Does this pass's texture list name a "Now Playing" system slot
+// ($mediaThumbnail / $mediaPreviousThumbnail)? Those get reuploaded
+// out-of-band by an MPRIS art event, the same way a rasterized text layer's
+// _text_<id> key does -- prepare() ORs this into m_samples_mutable_texture so
+// the pass never gets marked cacheable, which would freeze it on whatever it
+// first sampled. Pulled out of the per-texture loop so the decision doesn't
+// need a live Device to test.
+inline bool ReferencesMediaSystemTexture(const std::vector<std::string>& textures) {
+    for (auto& tex_name : textures) {
+        if (IsKnownMediaSystemTexture(tex_name)) return true;
     }
     return false;
 }

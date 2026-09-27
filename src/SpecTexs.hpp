@@ -128,6 +128,13 @@ constexpr std::string_view G_AUDIOSPECTRUM64RIGHT { "g_AudioSpectrum64Right" };
 constexpr std::string_view SpecTex_Default { "_rt_default" };
 constexpr std::string_view SpecTex_Link { "_rt_link_" };
 
+// WE's "Now Playing" texture slots: a material's usertextures entry names one
+// of these (type "system") to ask for the current/previous track's album art
+// instead of the pass's authored static texture. Plain '$'-prefixed keys, not
+// '_rt_' render targets, so IsSpecTex must not match them.
+constexpr std::string_view WE_MEDIA_THUMBNAIL { "$mediaThumbnail" };
+constexpr std::string_view WE_MEDIA_PREVIOUS_THUMBNAIL { "$mediaPreviousThumbnail" };
+
 inline bool IsSpecTex(const std::string_view name) { return sstart_with(name, WE_SPEC_PREFIX); }
 inline bool IsSpecLinkTex(const std::string_view name) { return sstart_with(name, SpecTex_Link); }
 inline uint32_t ParseLinkTex(const std::string_view name) {

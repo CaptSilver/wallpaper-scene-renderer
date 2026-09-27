@@ -103,6 +103,7 @@ if(BUILD_QML)
         qml_helper/SceneBackend.cpp
         qml_helper/SceneScriptBridge.h
         qml_helper/SceneTimerBridge.h
+        qml_helper/MediaThumbnailCrossfade.cpp
         qml_helper/glExtra.cpp
     )
     target_link_libraries(${PROJECT_NAME}-qml

@@ -45,6 +45,7 @@
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 #include "Fs/PhysicalFs.h"
+#include "Interface/IImageParser.h"
 
 #include <algorithm>
 #include <atomic>
@@ -3732,6 +3733,114 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         for (auto& l : LogCapture::lines())
             if (l.find("HidePattern: id=902") != std::string::npos) hide_log_count++;
         CHECK(hide_log_count == 1);
+    }
+
+    // LoadMaterial's texture loop resolving a "Now Playing" usertextures
+    // entry against a material's own authored fallback texture -- the
+    // "Album Cover" base-quad shape workshop 3616389236's materials/SS.json
+    // uses. Non-square fallback dimensions (96x48) catch a width/height swap
+    // a square fixture couldn't.
+    TEST_CASE("E2E: a usertextures system entry resolves to the media slot and records the "
+              "fallback's real dimensions") {
+        ensureGlslangInit();
+
+        // Minimal single-mip RGBA8 .tex (texb=1, no LZ4, no sprite) -- same
+        // shape as test_WPTexImageParser.cpp's makeSimpleRGBA8Tex, duplicated
+        // locally since that helper isn't header-exported.
+        auto appendInt32 = [](std::string& buf, int32_t v) {
+            char b[4];
+            std::memcpy(b, &v, 4);
+            buf.append(b, 4);
+        };
+        auto appendUint32 = [](std::string& buf, uint32_t v) {
+            char b[4];
+            std::memcpy(b, &v, 4);
+            buf.append(b, 4);
+        };
+        auto appendTexVersion = [](std::string& buf, int ver) {
+            char hdr[9] {};
+            std::snprintf(hdr, sizeof(hdr), "%.4s%.4d", "TEX", ver);
+            buf.append(hdr, 9);
+        };
+        auto makeTex = [&](int32_t w, int32_t h) {
+            std::string buf;
+            appendTexVersion(buf, 1); // TEXV
+            appendTexVersion(buf, 1); // TEXI
+            appendInt32(buf, 0);      // type = RGBA8
+            appendUint32(buf, 0);     // flags
+            appendInt32(buf, w);
+            appendInt32(buf, h);
+            appendInt32(buf, w);      // mapWidth
+            appendInt32(buf, h);      // mapHeight
+            appendInt32(buf, 0);      // unknown
+            appendTexVersion(buf, 1); // TEXB
+            appendInt32(buf, 1);      // image count
+            appendInt32(buf, 1);      // mipmap count
+            appendInt32(buf, w);
+            appendInt32(buf, h);
+            std::string pixels((size_t)(w * h * 4), '\xAB');
+            appendInt32(buf, (int32_t)pixels.size());
+            buf += pixels;
+            return buf;
+        };
+
+        // A frag unit that DECLARES g_Texture0 (without sampling it) so the
+        // shader preprocessor's active_tex_slots regex keeps slot 0 --
+        // WPSceneParser clears any material texture slot the shader doesn't
+        // declare, which would otherwise erase the resolved "$mediaThumbnail"
+        // name before this test ever sees it (see test_WarmCacheTexSlots.cpp
+        // for the same idiom).
+        const char* kCoverFrag = R"GLSL(
+uniform sampler2D g_Texture0;
+void main() {
+    gl_FragColor = vec4(1.0);
+}
+)GLSL";
+
+        auto                vfs        = makeAssetsVfsWith({
+            { "/materials/SS.tex", makeTex(96, 48) },
+            { "/shaders/_cover.vert", kTrivialVert },
+            { "/shaders/_cover.frag", kCoverFrag },
+            { "/models/_cover.json", R"({"material": "materials/_cover.json"})" },
+            { "/materials/_cover.json",
+              R"({"passes": [{"shader": "_cover", "blending": "translucent",
+                    "textures": ["SS"],
+                    "usertextures": [{"name": "$mediaThumbnail", "type": "system"}]}]})" },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 174, "name": "Album Cover", "image": "models/_cover.json",
+      "origin": "1100 1080 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "1410 1410", "visible": true }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_media_usertexture", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        auto it = scene->nodeById.find(174);
+        REQUIRE(it != scene->nodeById.end());
+        REQUIRE(it->second->Mesh() != nullptr);
+        REQUIRE(it->second->Mesh()->Material() != nullptr);
+        const auto& textures = it->second->Mesh()->Material()->textures;
+        REQUIRE(textures.size() == 1);
+        CHECK(textures[0] == "$mediaThumbnail");
+
+        REQUIRE(scene->mediaTextureSlots.size() == 1);
+        CHECK(scene->mediaTextureSlots[0].textureKey == "$mediaThumbnail");
+        CHECK(scene->mediaTextureSlots[0].width == 96);
+        CHECK(scene->mediaTextureSlots[0].height == 48);
+
+        // "SS" must still resolve to itself for any other, non-system reference.
+        auto ss = scene->imageParser->Parse("SS");
+        REQUIRE(ss);
+        CHECK(ss->key == "SS");
     }
 
 } // TEST_SUITE

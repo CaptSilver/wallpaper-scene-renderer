@@ -22,6 +22,7 @@
 #include "Scene/TextStyleMerge.hpp"
 #include "Scene/TextUploadCommit.hpp"
 #include "Scene/PendingUpdateQueues.hpp"
+#include "Scene/include/Scene/MediaTextureRegistry.hpp"
 #include "Particle/ParticleSystem.h"
 #include "Particle/AudioRateMultiplier.hpp"
 #include "Core/Random.hpp"
@@ -220,6 +221,10 @@ public:
         return m_node_name_to_id;
     }
 
+    std::optional<MediaTextureSlot> getMediaTextureSize(const std::string& textureKey) const {
+        return m_media_texture_registry.get(textureKey);
+    }
+
     std::string getLayerInitialStatesJson() const {
         std::lock_guard<std::mutex> lock(m_layer_init_mutex);
         return m_layer_init_json;
@@ -375,12 +380,16 @@ private:
     SoundStreamTable<SoundLayerControlInfo>  m_sound_layers;
     mutable std::mutex                       m_name_map_mutex;
     std::unordered_map<std::string, int32_t> m_node_name_to_id;
-    mutable std::mutex                       m_layer_init_mutex;
-    std::string                              m_layer_init_json;
-    mutable std::mutex                       m_scene_init_mutex;
-    std::string                              m_scene_init_json;
-    mutable std::mutex                       m_user_props_mutex;
-    WPUserProperties                         m_user_props_resolved; // for runtime re-resolution
+    // Populated once per scene load, right alongside m_node_name_to_id. Its
+    // own mutex (not m_name_map_mutex) since it's a different registry with
+    // different readers.
+    MediaTextureRegistry m_media_texture_registry;
+    mutable std::mutex   m_layer_init_mutex;
+    std::string          m_layer_init_json;
+    mutable std::mutex   m_scene_init_mutex;
+    std::string          m_scene_init_json;
+    mutable std::mutex   m_user_props_mutex;
+    WPUserProperties     m_user_props_resolved; // for runtime re-resolution
 
 private:
     std::shared_ptr<looper::Looper> m_main_loop;
@@ -470,6 +479,10 @@ public:
     void setMousePos(double x, double y) { m_mouse_pos.store(std::array { (float)x, (float)y }); }
 
     void setTextUpdate(i32 id, const std::string& text) { m_queues.setTextUpdate(id, text); }
+
+    void setSystemTextureUpdate(std::string key, std::shared_ptr<Image> image) {
+        m_queues.setSystemTextureUpdate(std::move(key), std::move(image));
+    }
 
     void setTextPointsize(i32 id, float pointsize) { m_queues.setTextPointsize(id, pointsize); }
 
@@ -1013,6 +1026,16 @@ private:
                 (void)m_render->reuploadTexture(vd.textureKey, img);
                 vd.decoder->releaseFrame();
             }
+
+            // Reupload "Now Playing" system textures the GUI thread already
+            // resized and crossfade-resolved -- no decision logic here, only
+            // the mechanical reupload (mirrors the video-texture drain above).
+            m_queues.withSystemTexturesLocked([&](auto& textures) {
+                for (auto& [key, image] : textures) {
+                    if (image) (void)m_render->reuploadTexture(key, *image);
+                }
+                textures.clear();
+            });
 
             // Process pending color updates before drawing.  Held under
             // m_color_mutex across the whole apply, as before.
@@ -2338,6 +2361,15 @@ void SceneWallpaper::updateText(int32_t id, const std::string& text) {
     m_main_handler->renderHandler()->setTextUpdate(id, text);
 }
 
+void SceneWallpaper::updateSystemTexture(const std::string& key, std::shared_ptr<Image> image) {
+    m_main_handler->renderHandler()->setSystemTextureUpdate(key, std::move(image));
+}
+
+std::optional<MediaTextureSlot>
+SceneWallpaper::getMediaTextureSize(const std::string& textureKey) const {
+    return m_main_handler->getMediaTextureSize(textureKey);
+}
+
 void SceneWallpaper::updateTextPointsize(int32_t id, float pointsize) {
     m_main_handler->renderHandler()->setTextPointsize(id, pointsize);
 }
@@ -3470,6 +3502,12 @@ void MainHandler::loadScene() {
                      m_node_name_to_id.size());
         }
     }
+
+    // Publish "Now Playing" system-texture slots (usually none) for the GUI
+    // thread's getMediaTextureSize -- a full replace, not a merge, so a slot
+    // from the PREVIOUS wallpaper stops resolving once this one loads even if
+    // it declared none of its own.
+    m_media_texture_registry.reset(scene->mediaTextureSlots);
 
     // Serialize layer initial states as JSON for JS proxy initialization.
     // Includes parent name (`pn`) and node id (`id`) for SceneScript

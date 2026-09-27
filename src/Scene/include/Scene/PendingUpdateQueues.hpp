@@ -3,13 +3,20 @@
 // out of RenderHandler (SceneWallpaper.cpp) so its enqueue/merge/drain semantics
 // are unit- and race-testable without a Vulkan link.
 //
-// It owns the three per-tick mutex groups exactly as the live queue did:
+// It owns the four per-tick mutex groups exactly as the live queue did:
 //   - m_text_mutex     : text / pointsize / text-style updates
 //   - m_color_mutex    : per-layer colour-script writes
 //   - m_property_mutex : transform / visible / alpha / particle-rate / effect
 //                        visibility / material writes / sprite frame, plus all
 //                        scene-level optionals (clear/bloom/camera/ambient/
 //                        skylight) and the light vectors.
+//   - m_system_texture_mutex : keyed image reuploads for the "Now Playing"
+//                        system textures ($mediaThumbnail /
+//                        $mediaPreviousThumbnail). Last-write-wins per key,
+//                        same as every other group here -- the GUI-thread
+//                        crossfade decides which image goes to which key
+//                        before this queue ever sees it, so there is nothing
+//                        left to merge, only to hand to the render thread.
 //
 // The setters merge per-tick the same way as before (last-write-wins per key,
 // per-field text-style merge, vectors append in order).  Draining stays on the
@@ -25,10 +32,12 @@
 // / LightScalarUpdate / LightPositionUpdate) live here since this struct owns
 // their vectors/optionals.
 #include "Core/Literals.hpp"
+#include "Image.hpp"
 #include "Scene/TextStyleMerge.hpp"
 
 #include <array>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -96,6 +105,12 @@ struct PendingUpdateQueues {
     void setColorUpdate(i32 id, float r, float g, float b) {
         std::lock_guard<std::mutex> lock(m_color_mutex);
         m_pending_color_updates[id] = { r, g, b };
+    }
+
+    // ── System texture group (m_system_texture_mutex) ─────────────────────────
+    void setSystemTextureUpdate(std::string key, std::shared_ptr<Image> image) {
+        std::lock_guard<std::mutex> lock(m_system_texture_mutex);
+        m_pending_system_textures[std::move(key)] = std::move(image);
     }
 
     // ── Property group (m_property_mutex) ─────────────────────────────────────
@@ -228,6 +243,11 @@ struct PendingUpdateQueues {
         std::lock_guard<std::mutex> lock(m_color_mutex);
         fn(m_pending_color_updates);
     }
+    template<class Fn>
+    void withSystemTexturesLocked(Fn&& fn) {
+        std::lock_guard<std::mutex> lock(m_system_texture_mutex);
+        fn(m_pending_system_textures);
+    }
     // The property group holds ~18 maps/vectors/optionals; passing the whole
     // queue by ref keeps the moved-in drain body verbatim (q.m_pending_*).
     template<class Fn>
@@ -245,6 +265,9 @@ struct PendingUpdateQueues {
 
     std::mutex                                    m_color_mutex;
     std::unordered_map<i32, std::array<float, 3>> m_pending_color_updates;
+
+    std::mutex                                              m_system_texture_mutex;
+    std::unordered_map<std::string, std::shared_ptr<Image>> m_pending_system_textures;
 
     std::mutex                                                    m_property_mutex;
     std::map<std::pair<i32, std::string>, std::array<float, 3>>   m_pending_transform_updates;

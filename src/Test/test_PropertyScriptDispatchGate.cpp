@@ -67,6 +67,7 @@ struct TransformSink : scenebackend::IPropertyDispatchSink {
     void updateLightRadius(int32_t, float) override {}
     void updateLightIntensity(int32_t, float) override {}
     void updateLightPosition(int32_t, float, float, float) override {}
+    void updateSystemTexture(std::string, std::shared_ptr<wallpaper::Image>) override {}
 
     int count(const std::string& method) const {
         int n = 0;

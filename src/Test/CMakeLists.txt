@@ -125,6 +125,7 @@ add_executable(backend_scene_tests
     test_CustomShaderPass_DepthBinding.cpp
     test_CustomShaderPass_ForceClearOutput.cpp
     test_CustomShaderPass_ScratchReuse.cpp
+    test_CustomShaderPass_MutableTexture.cpp
     test_DeviceCaps.cpp
     test_DeviceMemoryBudget.cpp
     test_DepthSamplerConfig.cpp
@@ -170,6 +171,10 @@ add_executable(backend_scene_tests
     test_WPSoundObject.cpp
     test_WPScene.cpp
     test_WPMaterial.cpp
+    test_WPMediaSystemTexture.cpp
+    test_MediaTextureRegistry.cpp
+    test_MediaThumbnailCrossfade.cpp
+    ${PROJECT_SOURCE_DIR}/qml_helper/MediaThumbnailCrossfade.cpp
     # Inline `{"user": ...}` shader-constant bindings (WPMaterial.cpp).
     test_WPMaterialUserBinding.cpp
     # Which user-property changes the live scene can absorb without a reload.
@@ -234,6 +239,7 @@ add_executable(backend_scene_tests
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
     ${SRC_DIR}/WPTexImageParser.cpp
+    ${SRC_DIR}/WPMediaSystemTexture.cpp
     ${SRC_DIR}/Type.cpp
     ${SRC_DIR}/WPPuppet.cpp
     ${SRC_DIR}/WPMdlParser.cpp
@@ -429,6 +435,7 @@ if(Qt6_FOUND)
         # function under test lives there.
         test_ActiveUserPropBindingNames.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneBackend.cpp
+        ${PROJECT_SOURCE_DIR}/qml_helper/MediaThumbnailCrossfade.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneTimerBridge.h
         ${PROJECT_SOURCE_DIR}/qml_helper/glExtra.cpp

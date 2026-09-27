@@ -5,6 +5,7 @@
 #include <QJSValue>
 #include <QVariantList>
 #include "SceneTimerBridge.h"
+#include "WPMediaSystemTexture.hpp"
 #include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
 #include "SceneScriptShimsJs.hpp"
@@ -7052,6 +7053,15 @@ struct MediaDispatchTestSink : scenebackend::IPropertyDispatchSink {
     void updateLightRadius(int32_t, float) override {}
     void updateLightIntensity(int32_t, float) override {}
     void updateLightPosition(int32_t, float, float, float) override {}
+    void updateSystemTexture(std::string key, std::shared_ptr<wallpaper::Image> image) override {
+        systemTextureCalls.push_back({ std::move(key), std::move(image) });
+    }
+
+    struct SystemTextureCall {
+        std::string                       key;
+        std::shared_ptr<wallpaper::Image> image;
+    };
+    std::vector<SystemTextureCall> systemTextureCalls;
 };
 
 // Real "Song Title" text-property script (objects[42].text.script).
@@ -7288,6 +7298,130 @@ TEST_SUITE("Media dispatch reaches text/color/shader-value scripts") {
         INFO("log: " << DispatchLogCapture::text);
         CHECK(DispatchLogCapture::mentions("mediaPropertiesChanged error id=177"));
         CHECK(DispatchLogCapture::mentions("boom"));
+    }
+
+    TEST_CASE("a scene with no registered media-texture slot never calls updateSystemTexture, "
+              "and the existing colour dispatch keeps firing unperturbed") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedColorScriptFromSourceForTesting(393, kAlbumOutlineColorScript);
+
+        QImage art(4, 4, QImage::Format_RGB32);
+        art.fill(Qt::magenta);
+        QVariantList colors = { 0.8, 0.2, 0.1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        obj.mediaThumbnailChanged(true, colors, art);
+        runFadeToCompletion(obj);
+
+        CHECK(sinkPtr->systemTextureCalls.empty());
+        REQUIRE_FALSE(sinkPtr->colorCalls.empty());
+        CHECK(sinkPtr->colorCalls.back().id == 393);
+    }
+
+    TEST_CASE("dispatchMediaTexture's own early return: with neither slot registered, "
+              "updateSystemTexture is never called -- the path every ordinary, "
+              "non-Now-Playing wallpaper hits on every track change") {
+        // The test above only reaches mediaThumbnailChanged's `if (m_scene)`
+        // guard (m_scene is null under WEKDE_TEST_NO_SCENE), never
+        // dispatchMediaTexture's own "neither slot" branch. Driving the
+        // testing entry point directly is the only way to exercise that
+        // line without a full asset-backed loadScene().
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+
+        QImage art(4, 4, QImage::Format_RGB32);
+        art.fill(Qt::magenta);
+        obj.dispatchMediaTextureForTesting(true, art, std::nullopt, std::nullopt);
+
+        CHECK(sinkPtr->systemTextureCalls.empty());
+    }
+
+    TEST_CASE("a scene with a registered $mediaThumbnail slot: no art restores the placeholder, "
+              "real art (larger and smaller than the registered size) arrives resized to it") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+
+        // Built via BuildImageFromRgba8888 rather than make_shared<Image>()
+        // directly: this translation unit links Qt, and wallpaper::Image has
+        // a member literally named `slots` -- Qt's headers #define that away
+        // wherever they've already been included in the same TU, so nothing
+        // here may construct or inspect an Image by touching its members
+        // (see memory/qt-slots-keyword-breaks-scene-headers.md). Shape/pixel
+        // checks below go through wallpaper::InspectImageForTesting instead.
+        auto placeholder =
+            wallpaper::BuildImageFromRgba8888(nullptr, 0, 64, 64, "$mediaThumbnail", {});
+        wallpaper::MediaTextureSlot currentSlot { "$mediaThumbnail", 64, 64, {}, placeholder };
+
+        // No art: the recorder must receive the registered placeholder, not a
+        // freshly-built image.
+        obj.dispatchMediaTextureForTesting(false, QImage(), currentSlot, std::nullopt);
+        REQUIRE(sinkPtr->systemTextureCalls.size() == 1);
+        CHECK(sinkPtr->systemTextureCalls[0].key == "$mediaThumbnail");
+        CHECK(sinkPtr->systemTextureCalls[0].image == placeholder);
+
+        // Real art larger than the registered size: resized down to it.
+        QImage bigArt(128, 128, QImage::Format_RGB32);
+        bigArt.fill(QColor(200, 40, 40));
+        obj.dispatchMediaTextureForTesting(true, bigArt, currentSlot, std::nullopt);
+        REQUIRE(sinkPtr->systemTextureCalls.size() == 2);
+        {
+            const auto& upload = sinkPtr->systemTextureCalls[1];
+            CHECK(upload.key == "$mediaThumbnail");
+            auto shape = wallpaper::InspectImageForTesting(upload.image);
+            REQUIRE(shape.ok);
+            CHECK(shape.width == 64);
+            CHECK(shape.height == 64);
+            // A solid-colour source stays that colour after the resize round
+            // trip -- avoids a flaky exact-byte comparison against lossy
+            // scaling near the image edges.
+            CHECK(shape.r == doctest::Approx(200).epsilon(4));
+            CHECK(shape.g == doctest::Approx(40).epsilon(4));
+            CHECK(shape.b == doctest::Approx(40).epsilon(4));
+        }
+
+        // Real art smaller than the registered size: upscaled to it, not left
+        // at its native size.
+        QImage smallArt(16, 16, QImage::Format_RGB32);
+        smallArt.fill(QColor(20, 20, 220));
+        obj.dispatchMediaTextureForTesting(true, smallArt, currentSlot, std::nullopt);
+        REQUIRE(sinkPtr->systemTextureCalls.size() == 3);
+        {
+            auto shape = wallpaper::InspectImageForTesting(sinkPtr->systemTextureCalls[2].image);
+            REQUIRE(shape.ok);
+            CHECK(shape.width == 64);
+            CHECK(shape.height == 64);
+        }
+    }
+
+    TEST_CASE("a scene with both $mediaThumbnail and $mediaPreviousThumbnail slots: a second "
+              "track's art promotes the first into Previous, in upload order") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+
+        wallpaper::MediaTextureSlot currentSlot { "$mediaThumbnail", 32, 32, {}, nullptr };
+        wallpaper::MediaTextureSlot previousSlot { "$mediaPreviousThumbnail", 32, 32, {}, nullptr };
+
+        QImage first(32, 32, QImage::Format_RGB32);
+        first.fill(Qt::red);
+        obj.dispatchMediaTextureForTesting(true, first, currentSlot, previousSlot);
+        REQUIRE(sinkPtr->systemTextureCalls.size() == 1);
+        CHECK(sinkPtr->systemTextureCalls[0].key == "$mediaThumbnail");
+
+        QImage second(32, 32, QImage::Format_RGB32);
+        second.fill(Qt::green);
+        obj.dispatchMediaTextureForTesting(true, second, currentSlot, previousSlot);
+        REQUIRE(sinkPtr->systemTextureCalls.size() == 3);
+        // Previous first, current second -- a test asserting only set
+        // membership would miss a swapped Current/Previous bug.
+        CHECK(sinkPtr->systemTextureCalls[1].key == "$mediaPreviousThumbnail");
+        CHECK(sinkPtr->systemTextureCalls[2].key == "$mediaThumbnail");
     }
 }
 

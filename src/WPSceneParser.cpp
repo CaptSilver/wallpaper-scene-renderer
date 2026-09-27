@@ -25,6 +25,7 @@
 
 #include "WPShaderParser.hpp"
 #include "WPTexImageParser.hpp"
+#include "WPMediaSystemTexture.hpp"
 #include "WPParticleParser.hpp"
 #include "WPMapSequenceParse.hpp"
 #include "WPSoundParser.hpp"
@@ -894,6 +895,15 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
 
     for (usize i = 0; i < textures.size(); i++) {
         std::string name = textures.at(i);
+        // A usertextures entry index-aligned with this slot and typed
+        // "system" asks for a live "Now Playing" texture ($mediaThumbnail /
+        // $mediaPreviousThumbnail) instead of the pass's authored static
+        // texture. Resolve before ParseSpecTexName (a no-op for these '$'-
+        // prefixed names anyway) so the registered image is already in place
+        // by the time the header/compo lookup below queries `name`.
+        if (i < wpmat.usertextures.size() && wpmat.usertextures[i].type == "system") {
+            name = ResolveMediaSystemTexture(wpmat.usertextures[i].name, name, pScene);
+        }
         ParseSpecTexName(name, wpmat, *pWPShaderInfo, pScene);
         material.textures.push_back(name);
         material.defines.push_back("g_Texture" + std::to_string(i));

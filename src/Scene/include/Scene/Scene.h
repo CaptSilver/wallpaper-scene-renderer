@@ -9,6 +9,7 @@
 #include "SceneNode.h"
 #include "SceneLight.hpp"
 #include "WPPropertyAnimation.h"
+#include "Type.hpp"
 
 #include "Core/NoCopyMove.hpp"
 
@@ -21,6 +22,14 @@ class ParticleSystem;
 class ParticleSubSystem;
 class IShaderValueUpdater;
 class IImageParser;
+// Forward-declared, not #include "Image.hpp": this header reaches qml_helper/
+// through SceneWallpaper.hpp, and Qt's <QtCore/qobjectdefs.h> #defines
+// `slots` away wherever it's already been included in the same translation
+// unit -- Image::slots would then silently stop parsing as a declaration
+// (see memory/qt-slots-keyword-breaks-scene-headers.md). A shared_ptr<Image>
+// member doesn't need Image complete here; only .cpp files that actually
+// touch its members need the real header.
+struct Image;
 class SceneImageEffectLayer;
 class WPPuppet; // forward — see WPPuppet.hpp; held by shared_ptr below.
 
@@ -88,7 +97,25 @@ struct SceneShaderValueScript {
     // shaped as scalar (1), Vec2 (2), Vec3 (3), or Vec4 (4).  Inferred from
     // initialValue size; lets the dispatch present `update` with the right
     // typed arg without authors having to manually coerce.
-    int                argShape { 1 };
+    int argShape { 1 };
+};
+
+// A material texture reference resolved to a "Now Playing" system slot
+// ($mediaThumbnail / $mediaPreviousThumbnail) during LoadMaterial. `sample`
+// and `placeholder` come from the wallpaper's own static fallback texture (or
+// a fixed-size transparent placeholder when that fallback is itself missing
+// or fails to decode -- never the renderer's degenerate 1x1 fallback image,
+// since this slot's own size becomes the resize target for every real
+// thumbnail that arrives afterward), captured once at parse time so the
+// runtime resize path knows the target size and sampler settings without
+// re-touching the parser, and can restore the authored "no art" appearance
+// without re-decoding anything.
+struct MediaTextureSlot {
+    std::string            textureKey;
+    i32                    width { 0 };
+    i32                    height { 0 };
+    TextureSample          sample;
+    std::shared_ptr<Image> placeholder;
 };
 
 struct VideoTextureInfo {
@@ -433,10 +460,14 @@ public:
     // holds them here (the AttachmentProxyLink above stores only a raw ptr).
     std::vector<std::shared_ptr<SceneNode>> attachmentProxyKeepAlive;
 
-    std::vector<SceneColorScript>      colorScripts;
-    std::vector<ScenePropertyScript>   propertyScripts;
+    std::vector<SceneColorScript>       colorScripts;
+    std::vector<ScenePropertyScript>    propertyScripts;
     std::vector<SceneShaderValueScript> shaderValueScripts;
-    std::vector<VideoTextureInfo>      videoTextures;
+    std::vector<VideoTextureInfo>       videoTextures;
+    // Populated by LoadMaterial when a pass's usertextures entry names a
+    // recognized system slot. Usually empty; at most 2 entries in practice
+    // (current + previous track art).
+    std::vector<MediaTextureSlot> mediaTextureSlots;
 
     // Runtime user property bindings for instant updates
     struct UserPropVisibility {

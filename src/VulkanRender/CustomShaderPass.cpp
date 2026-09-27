@@ -416,6 +416,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
     // that construct their descriptor set programmatically rather than via
     // material JSON.
     EnsureSceneDepthTextureIfNeeded(m_desc.textures, m_desc.needsSceneDepth);
+    // "Now Playing" system textures ($mediaThumbnail / $mediaPreviousThumbnail)
+    // reupload through the same out-of-band ReuploadTex path as text and
+    // video: a pass sampling one must not get cached, or a track change
+    // lands new bytes in a VkImage this pass never samples again. Decided
+    // once over the whole list (see ReferencesMediaSystemTexture) rather than
+    // inline in the per-texture loop below, so the decision is testable
+    // without a live Device.
+    if (ReferencesMediaSystemTexture(m_desc.textures)) {
+        m_samples_mutable_texture = true;
+    }
     m_desc.vk_textures.resize(m_desc.textures.size());
     // Pre-reserve per-pass scratch capacity to the prepare-time texture count
     // + 1 for the UBO writeset.  std::vector::reserve allocates once and never

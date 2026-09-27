@@ -55,6 +55,16 @@ TEST_SUITE("SpecTexs") {
         CHECK(IsSpecTex(WE_SCENE_DEPTH) == true);
     }
 
+    // The media system-texture names are plain '$'-prefixed keys, not
+    // '_rt_'-prefixed render targets -- LoadMaterial's ParseSpecTexName call
+    // must stay a no-op for them, so IsSpecTex has to read false here.
+    TEST_CASE("media system-texture names are IsSpecTex-false") {
+        CHECK(WE_MEDIA_THUMBNAIL == "$mediaThumbnail");
+        CHECK(WE_MEDIA_PREVIOUS_THUMBNAIL == "$mediaPreviousThumbnail");
+        CHECK(IsSpecTex(WE_MEDIA_THUMBNAIL) == false);
+        CHECK(IsSpecTex(WE_MEDIA_PREVIOUS_THUMBNAIL) == false);
+    }
+
 } // TEST_SUITE
 
 TEST_SUITE("SpecTexs_Volumetrics") {

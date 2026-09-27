@@ -19,7 +19,9 @@
 #include "SceneTickHelpers.h"
 #include "SceneScriptBridge.h"
 #include "SceneTimerBridge.h"
+#include "SpecTexs.hpp"
 #include "TextScriptResult.hpp"
+#include "WPMediaSystemTexture.hpp"
 
 #include <QJSValueIterator>
 #include <QtGlobal>
@@ -918,6 +920,35 @@ void SceneObject::mediaPlaybackChanged(int state) {
                        event);
 }
 
+namespace
+{
+// Resize/crop `image` to exactly the registered slot size and hand back an
+// opaque wallpaper::Image. All the QImage work happens here; the byte copy
+// into an Image lives in WPMediaSystemTexture.cpp, a translation unit Qt
+// never touches -- this file links Qt, and wallpaper::Image has a member
+// literally named `slots`, which Qt's headers #define away wherever they've
+// already been included in the same TU (see
+// memory/qt-slots-keyword-breaks-scene-headers.md). That's also why this
+// stays a free function instead of touching the Image it builds afterward.
+std::shared_ptr<wallpaper::Image> BuildResizedSystemImage(const QImage&                      image,
+                                                          const wallpaper::MediaTextureSlot& slot,
+                                                          const std::string& destinationKey) {
+    QImage scaled = image.scaled(
+        slot.width, slot.height, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    QRect  cropRect((scaled.width() - slot.width) / 2,
+                    (scaled.height() - slot.height) / 2,
+                    slot.width,
+                    slot.height);
+    QImage cropped = scaled.copy(cropRect).convertToFormat(QImage::Format_RGBA8888);
+    return wallpaper::BuildImageFromRgba8888(cropped.constBits(),
+                                             (wallpaper::isize)cropped.sizeInBytes(),
+                                             slot.width,
+                                             slot.height,
+                                             destinationKey,
+                                             slot.sample);
+}
+} // namespace
+
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
                                          const QString& albumTitle, const QString& albumArtist,
                                          const QString& genres, double duration) {
@@ -940,7 +971,44 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
                        event);
 }
 
-void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors) {
+void SceneObject::dispatchMediaTexture(bool hasThumbnail, const QImage& image,
+                                       std::optional<wallpaper::MediaTextureSlot> currentSlot,
+                                       std::optional<wallpaper::MediaTextureSlot> previousSlot) {
+    if (! m_dispatch) return;
+    // Neither key registered -- the overwhelming majority of wallpapers --
+    // means zero QImage work below: no scaled/copy/convertToFormat, no byte
+    // vector, no lock. (MediaThumbnailCrossfade::apply is itself null-safe
+    // for this case too, so this early return is a performance skip, not a
+    // correctness gate -- it just means most wallpapers never build a
+    // crossfade decision or touch the dispatch sink at all.)
+    if (! currentSlot && ! previousSlot) return;
+
+    std::shared_ptr<wallpaper::Image> newImg;
+    if (hasThumbnail && ! image.isNull() && currentSlot)
+        newImg = BuildResizedSystemImage(
+            image, *currentSlot, std::string(wallpaper::WE_MEDIA_THUMBNAIL));
+    auto uploads = m_media_crossfade.apply(newImg, currentSlot, previousSlot);
+    LOG_INFO("dispatchMediaTexture: hasThumbnail=%d newImg=%d uploads=%zu",
+             (int)hasThumbnail,
+             (int)(bool)newImg,
+             uploads.size());
+    for (auto& upload : uploads) m_dispatch->updateSystemTexture(upload.key, upload.image);
+}
+
+void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors,
+                                        const QImage& image) {
+    // Texture delivery runs and returns independently of the JS engine: a
+    // wallpaper can reference $mediaThumbnail on its always-visible base
+    // quad with zero scripts attached to it, so this must not sit behind
+    // the `!m_jsEngine` gate below (which guards the colour-script dispatch
+    // only).
+    if (m_scene) {
+        auto currentSlot = m_scene->getMediaTextureSize(std::string(wallpaper::WE_MEDIA_THUMBNAIL));
+        auto previousSlot =
+            m_scene->getMediaTextureSize(std::string(wallpaper::WE_MEDIA_PREVIOUS_THUMBNAIL));
+        dispatchMediaTexture(hasThumbnail, image, currentSlot, previousSlot);
+    }
+
     if (! m_jsEngine) return;
     QJSValue vec3Fn = m_jsEngine->globalObject().property("Vec3");
     auto     toVec3 = [&](int idx) -> QJSValue {
@@ -5933,6 +6001,10 @@ void SceneObject::cleanupTextScripts() {
     // Fire destroy event on all scripts before cleanup
     fireDestroyEvent();
 
+    // A cover art from the wallpaper being torn down must not get promoted
+    // into the next one's Previous slot.
+    m_media_crossfade.reset();
+
     // Flush any pending localStorage writes AND reset the loaded state so
     // a subsequent setSource (e.g. switching wallpapers without destroying
     // this QQuickItem) reloads the correct per-scene store instead of
@@ -6392,6 +6464,12 @@ void SceneObject::seedMediaHandlerForTesting(int32_t id, const std::string& prop
     else
         LOG_ERROR("seedMediaHandlerForTesting: unknown event '%s'", event.c_str());
     m_propertyScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::dispatchMediaTextureForTesting(
+    bool hasThumbnail, const QImage& image, std::optional<wallpaper::MediaTextureSlot> currentSlot,
+    std::optional<wallpaper::MediaTextureSlot> previousSlot) {
+    dispatchMediaTexture(hasThumbnail, image, currentSlot, previousSlot);
 }
 
 void SceneObject::seedExpiredCursorLeaveForTesting(const std::string& layerName,

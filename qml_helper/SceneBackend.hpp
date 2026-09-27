@@ -7,6 +7,7 @@
 #include <QtCore/QElapsedTimer>
 #include <QtCore/QJsonObject>
 #include <QtCore/QSet>
+#include <QtGui/QImage>
 #include <QtGui/QMouseEvent>
 #include <QtGui/QHoverEvent>
 #include <QtGui/QScreen>
@@ -19,6 +20,7 @@
 
 #include "HoverLeaveDebounce.h"
 #include "JsWatchdog.h"
+#include "MediaThumbnailCrossfade.hpp"
 #include "ScriptDiagState.h"
 #include "SceneWallpaper.hpp"
 #include "Utils/Platform.hpp"
@@ -182,9 +184,13 @@ public:
     Q_INVOKABLE void mediaPlaybackChanged(int state);
     Q_INVOKABLE void mediaPropertiesChanged(const QString& title, const QString& artist,
                                             const QString& albumTitle, const QString& albumArtist,
-                                            const QString& genres,
-                                            double         duration = 0.0);
-    Q_INVOKABLE void mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors);
+                                            const QString& genres, double duration = 0.0);
+    // `image` defaults to a null QImage so every existing plain-C++ call site
+    // (property/color/shader-value dispatch tests that only care about the
+    // colour payload) keeps compiling unchanged -- this is a normal function
+    // default, not a Qt signal, so there's no arity surprise on the QML side.
+    Q_INVOKABLE void mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors,
+                                           const QImage& image = QImage());
     Q_INVOKABLE void mediaTimelineChanged(double position, double duration, int state = 0);
     Q_INVOKABLE void mediaStatusChanged(bool enabled);
 
@@ -425,6 +431,13 @@ public:
     // without a scene.  `jsSource` must evaluate to a function.
     void seedMediaHandlerForTesting(int32_t id, const std::string& property,
                                     const std::string& event, const std::string& jsSource);
+    // Drives mediaThumbnailChanged's texture path directly against explicit
+    // slots, bypassing m_scene (null under WEKDE_TEST_NO_SCENE, and even a
+    // real SceneWallpaper only carries a media-texture registry after a full
+    // asset-backed loadScene() -- see extract-to-testable-header.md).
+    void dispatchMediaTextureForTesting(bool hasThumbnail, const QImage& image,
+                                        std::optional<wallpaper::MediaTextureSlot> currentSlot,
+                                        std::optional<wallpaper::MediaTextureSlot> previousSlot);
     // Seed a cursor target whose hover-leave grace has already elapsed, so
     // flushPendingCursorLeavesForTesting() fires its cursorLeave immediately.
     void seedExpiredCursorLeaveForTesting(const std::string& layerName,
@@ -576,6 +589,12 @@ private:
     // SceneWallpaperDispatchSink wrapping m_scene in production; a test can swap
     // it for a recording fake via setDispatchSinkForTesting() with m_scene null.
     std::unique_ptr<scenebackend::IPropertyDispatchSink> m_dispatch;
+
+    // Decides which image lands in $mediaThumbnail vs $mediaPreviousThumbnail
+    // on a track change. GUI-thread state, same lifetime as this SceneObject
+    // (survives a scene reload -- reset in cleanupTextScripts() so a cover
+    // from the previous wallpaper isn't promoted into the new one's slot).
+    scenebackend::MediaThumbnailCrossfade m_media_crossfade;
 
     // 500 ms debounce timer for QGuiApplication::screenRemoved.  Lazy-created
     // the first time a screen is removed on this backend's window; cancelled
@@ -899,6 +918,15 @@ private:
     template<typename StateT>
     void dispatchMediaEventToStates(std::vector<StateT>& states, const char* eventName,
                                     QJSValue StateT::* handler, const QJSValue& event);
+
+    // The texture half of mediaThumbnailChanged, split out so a test can
+    // drive it against explicit slots without a live m_scene (see
+    // dispatchMediaTextureForTesting). `currentSlot`/`previousSlot` are
+    // mediaThumbnailChanged's own getMediaTextureSize lookups, already
+    // resolved by the caller.
+    void dispatchMediaTexture(bool hasThumbnail, const QImage& image,
+                              std::optional<wallpaper::MediaTextureSlot> currentSlot,
+                              std::optional<wallpaper::MediaTextureSlot> previousSlot);
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {

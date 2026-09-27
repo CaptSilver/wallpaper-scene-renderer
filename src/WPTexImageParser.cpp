@@ -164,6 +164,13 @@ inline ImageHeader MakeFallbackHeader() {
     return header;
 }
 
+// The renderer's one "we have no real texture to show" image: a 1x1 opaque
+// white pixel. Parse() returns this for an "_alias_"-prefixed name with no
+// backing file. Not exported: the only other place that wanted a "nothing to
+// show" placeholder (the media system textures) needs its slot's registered
+// size to stay non-degenerate for later real thumbnails, so it builds its own
+// transparent placeholder instead of reusing this one -- see
+// WPMediaSystemTexture.cpp's ResolveMediaSystemTexture.
 inline std::shared_ptr<Image> MakeFallbackImage(const std::string& name) {
     auto  img_ptr = std::make_shared<Image>();
     auto& img     = *img_ptr;

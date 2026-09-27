@@ -90,6 +90,7 @@ add_library(
   SystemFontFallback.cpp
   WPShaderValueUpdater.cpp
   WPTexImageParser.cpp
+  WPMediaSystemTexture.cpp
   WPSoundParser.cpp
   WPMdlParser.cpp
   CameraLayer.cpp

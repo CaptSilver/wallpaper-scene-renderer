@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <string>
 #include <vector>
@@ -169,6 +170,10 @@ public:
 
     void mouseInput(double x, double y);
     void updateText(int32_t id, const std::string& text);
+    // GUI-thread-resolved "Now Playing" system-texture reupload (already
+    // resized/crossfade-decided by the caller) -- enqueues onto the render
+    // thread the same way updateColor/updateText do.
+    void updateSystemTexture(const std::string& key, std::shared_ptr<Image> image);
     // Dynamic pointsize override: scripts call `thisLayer.pointsize = 20`
     // when fitting long track titles.  Next text update will rasterize at
     // the new pointsize.  <=0 means "keep whatever was authored".
@@ -183,8 +188,13 @@ public:
     std::vector<ShaderValueScriptInfo>       getShaderValueScripts() const;
     std::vector<PropertyScriptInfo>          getPropertyScripts() const;
     std::unordered_map<std::string, int32_t> getNodeNameToIdMap() const;
-    std::string                              getLayerInitialStatesJson() const;
-    std::array<int32_t, 2>                   getOrthoSize() const;
+    // The registered size/sample/placeholder for a "Now Playing" system
+    // texture key ($mediaThumbnail / $mediaPreviousThumbnail), or nullopt
+    // when this scene never declared one. GUI-thread-safe read of the
+    // parse-thread-populated registry, same pattern as getNodeNameToIdMap.
+    std::optional<MediaTextureSlot> getMediaTextureSize(const std::string& textureKey) const;
+    std::string                     getLayerInitialStatesJson() const;
+    std::array<int32_t, 2>          getOrthoSize() const;
     // Camera-parallax config (enable / amount / mouse-influence) + camera
     // position in scene units.  Exposed so cursor hit-testing can mirror the
     // MVP parallax offset WPShaderValueUpdater applies to rendered quads.

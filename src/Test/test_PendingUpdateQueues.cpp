@@ -143,4 +143,44 @@ TEST_SUITE("PendingUpdateQueues") {
             CHECK(colorUpdates.empty());
         });
     }
+
+    TEST_CASE("setSystemTextureUpdate: withSystemTexturesLocked sees the same pointer under the "
+              "right key") {
+        PendingUpdateQueues q;
+        auto                img = std::make_shared<Image>();
+        img->key                = "$mediaThumbnail";
+        q.setSystemTextureUpdate("$mediaThumbnail", img);
+
+        q.withSystemTexturesLocked([&](auto& textures) {
+            REQUIRE(textures.count("$mediaThumbnail") == 1);
+            CHECK(textures.at("$mediaThumbnail") == img);
+        });
+    }
+
+    TEST_CASE("withSystemTexturesLocked drain (clearing inside the callback) leaves the next "
+              "call seeing an empty map") {
+        PendingUpdateQueues q;
+        q.setSystemTextureUpdate("$mediaThumbnail", std::make_shared<Image>());
+        q.withSystemTexturesLocked([&](auto& textures) {
+            REQUIRE(! textures.empty());
+            textures.clear();
+        });
+        q.withSystemTexturesLocked([&](auto& textures) {
+            CHECK(textures.empty());
+        });
+    }
+
+    TEST_CASE("a second setSystemTextureUpdate for the same key before a drain overwrites, not "
+              "accumulates") {
+        PendingUpdateQueues q;
+        auto                imgA = std::make_shared<Image>();
+        auto                imgB = std::make_shared<Image>();
+        q.setSystemTextureUpdate("$mediaThumbnail", imgA);
+        q.setSystemTextureUpdate("$mediaThumbnail", imgB);
+
+        q.withSystemTexturesLocked([&](auto& textures) {
+            CHECK(textures.size() == 1);
+            CHECK(textures.at("$mediaThumbnail") == imgB);
+        });
+    }
 }

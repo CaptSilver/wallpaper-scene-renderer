@@ -16,6 +16,7 @@
 // includes SceneWallpaper.hpp.  That's fine: the interface lives in
 // qml_helper/, already coupled to SceneWallpaper.
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,10 @@ struct IPropertyDispatchSink {
     virtual void updateLightRadius(int32_t index, float radius)                            = 0;
     virtual void updateLightIntensity(int32_t index, float intensity)                      = 0;
     virtual void updateLightPosition(int32_t index, float x, float y, float z)             = 0;
+    // GUI-thread-resolved "Now Playing" system-texture reupload -- the
+    // crossfade decision already happened in MediaThumbnailCrossfade::apply,
+    // this just hands off the {key, image} pair.
+    virtual void updateSystemTexture(std::string key, std::shared_ptr<wallpaper::Image> image) = 0;
 };
 
 // Production sink: a trivial 1:1 forward to the owned SceneWallpaper.  Does not
@@ -138,6 +143,9 @@ struct SceneWallpaperDispatchSink final : IPropertyDispatchSink {
     }
     void updateLightPosition(int32_t index, float x, float y, float z) override {
         m_scene->updateLightPosition(index, x, y, z);
+    }
+    void updateSystemTexture(std::string key, std::shared_ptr<wallpaper::Image> image) override {
+        m_scene->updateSystemTexture(key, std::move(image));
     }
 
 private:

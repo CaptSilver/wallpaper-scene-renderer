@@ -159,6 +159,7 @@ struct RecordingDispatchSink : scenebackend::IPropertyDispatchSink {
     void updateLightPosition(int32_t index, float x, float y, float z) override {
         calls.push_back({ "updateLightPosition", index, 0, {}, {}, {}, false, { x, y, z } });
     }
+    void updateSystemTexture(std::string, std::shared_ptr<wallpaper::Image>) override {}
 
     const Call* find(const std::string& method) const {
         for (const auto& c : calls)
