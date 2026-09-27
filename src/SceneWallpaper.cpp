@@ -12,6 +12,7 @@
 #include "WPJson.hpp"
 #include "AttachmentLinkOrder.hpp"
 #include "UserPropRuntimeUpdate.hpp"
+#include "UserPropScriptReference.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
@@ -3007,6 +3008,32 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
     return true;
 }
 
+namespace wallpaper
+{
+
+// Property names worth writing to the "<id>_bindings.json" sidecar the
+// settings panel reads to decide which rows to gray out. A name counts as
+// active when either something in THIS scene can apply it live
+// (wek::userPropHasRuntimeBinding — the same test applyUserPropsRuntime uses
+// to decide whether an edited property needs a full reload) or a script
+// somewhere in the scene reads it (wek::userPropReferencedInScript). A
+// property wired only inside a script body still does something — editing it
+// just happens to need a reload, same as any other script-baked value. What's
+// excluded is a name neither path reaches at all: a stale project.json entry,
+// or a toggle whose handler was dropped.
+std::set<std::string> activeUserPropBindingNames(const std::set<std::string>& allPropNames,
+                                                 const Scene&                 scene) {
+    std::set<std::string> active;
+    for (const auto& name : allPropNames) {
+        if (wek::userPropHasRuntimeBinding(scene, name) ||
+            wek::userPropReferencedInScript(scene, name))
+            active.insert(name);
+    }
+    return active;
+}
+
+} // namespace wallpaper
+
 void MainHandler::loadScene() {
     WEK_PROFILE_SCOPE("MainHandler::loadScene");
     if (m_source.empty() || m_assets.empty()) return;
@@ -3267,18 +3294,21 @@ void MainHandler::loadScene() {
         }
     }
 
-    // Write active user property bindings to disk for the config UI.
-    // Include ALL project.json properties — some are used only by property
-    // scripts (e.g. via applyUserProperties / shared vars) and have no
-    // direct visibility or uniform bindings in scene.json.
+    // Write active user property bindings to disk for the config UI: the
+    // settings panel grays a property row out when its name is missing from
+    // this file (WallpaperPage.qml's isBound check). That only works if the
+    // file actually excludes properties this scene never wires up — a control
+    // whose author-authored handler got dropped, or a leftover from an earlier
+    // revision of the wallpaper, changes nothing when the user edits it and
+    // should show as unbound instead of every declared property reading as
+    // bound unconditionally.
     {
-        std::set<std::string> activeProps;
+        std::set<std::string> allPropNames;
         {
             std::lock_guard<std::mutex> lock(m_user_props_mutex);
-            m_user_props_resolved.InsertAllNames(activeProps);
+            m_user_props_resolved.InsertAllNames(allPropNames);
         }
-        for (const auto& [name, _] : scene->userPropUniformBindings) activeProps.insert(name);
-        for (const auto& [name, _] : scene->userPropVisBindings) activeProps.insert(name);
+        std::set<std::string> activeProps = activeUserPropBindingNames(allPropNames, *scene);
 
         std::string configDir;
         if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && xdg[0]) {
