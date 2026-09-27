@@ -36,6 +36,46 @@ TEST_SUITE("WPMaterialPassBindItem::FromJson") {
     }
 }
 
+TEST_SUITE("WPMaterialPass::FromJson — usertextures") {
+    TEST_CASE("object entry (name+type) parses at its aligned index; null stays empty") {
+        // Real shape from the "Album Cover" pass that binds the current-track
+        // thumbnail: usertextures is index-aligned with textures, and a system
+        // reference is an object with name+type.
+        auto j = nlohmann::json::parse(R"({
+            "textures":     [null, "SS"],
+            "usertextures": [null, {"name": "$mediaThumbnail", "type": "system"}]
+        })");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        REQUIRE(p.usertextures.size() == 2u);
+        CHECK(p.usertextures[0].name.empty());
+        CHECK(p.usertextures[0].type.empty());
+        CHECK(p.usertextures[1].name == "$mediaThumbnail");
+        CHECK(p.usertextures[1].type == "system");
+    }
+
+    TEST_CASE("plain string entry is captured as a name with no type") {
+        // Real shape from app-launcher passes: usertextures[i] is a bare
+        // string reference rather than a {name,type} object.
+        auto j = nlohmann::json::parse(R"({
+            "usertextures": [null, "usertexture2"]
+        })");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        REQUIRE(p.usertextures.size() == 2u);
+        CHECK(p.usertextures[0].name.empty());
+        CHECK(p.usertextures[1].name == "usertexture2");
+        CHECK(p.usertextures[1].type.empty());
+    }
+
+    TEST_CASE("absent field leaves usertextures empty") {
+        auto j = nlohmann::json::parse(R"({"textures": ["a.tex"]})");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        CHECK(p.usertextures.empty());
+    }
+}
+
 TEST_SUITE("WPMaterialPass::FromJson") {
     TEST_CASE("textures list parses; null entries become empty strings") {
         auto j = nlohmann::json::parse(R"({
@@ -127,6 +167,24 @@ TEST_SUITE("WPMaterialPass::Update") {
         CHECK(base.constantshadervalues.at("g_D")[0] == doctest::Approx(2.0f));
         CHECK(base.constantshadervalues.at("g_C")[0] == doctest::Approx(1.0f));
     }
+
+    TEST_CASE("Update overlays usertextures; an empty-name override leaves the base slot untouched") {
+        WPMaterialPass base;
+        base.usertextures = { {}, { "$mediaThumbnail", "system" } };
+
+        WPMaterialPass overlay;
+        // Slot 0 stays empty (no override); slot 1 is also empty so it must not
+        // clobber the base's real reference; slot 2 grows the vector.
+        overlay.usertextures = { {}, {}, { "usertexture2", "" } };
+
+        base.Update(overlay);
+
+        REQUIRE(base.usertextures.size() == 3u);
+        CHECK(base.usertextures[0].name.empty());
+        CHECK(base.usertextures[1].name == "$mediaThumbnail");
+        CHECK(base.usertextures[1].type == "system");
+        CHECK(base.usertextures[2].name == "usertexture2");
+    }
 }
 
 TEST_SUITE("WPMaterial::FromJson — error paths") {
@@ -175,6 +233,20 @@ TEST_SUITE("WPMaterial::FromJson — happy paths") {
         CHECK(m.textures[0] == "t0.tex");
         CHECK(m.textures[1] == "");
         CHECK(m.textures[2] == "t2.tex");
+    }
+
+    TEST_CASE("usertextures on the first pass populate the material's own field") {
+        auto m = Parse(R"({
+            "passes": [{
+                "shader":       "flat",
+                "textures":     [null, "SS"],
+                "usertextures": [null, {"name": "$mediaThumbnail", "type": "system"}]
+            }]
+        })");
+        REQUIRE(m.usertextures.size() == 2u);
+        CHECK(m.usertextures[0].name.empty());
+        CHECK(m.usertextures[1].name == "$mediaThumbnail");
+        CHECK(m.usertextures[1].type == "system");
     }
 
     TEST_CASE("constantshadervalues + combos populate") {
@@ -264,6 +336,24 @@ TEST_SUITE("WPMaterial::MergePass") {
         CHECK(m.textures[0] == "base.tex"); // empty did not overwrite
         CHECK(m.textures[1] == "newKeep.tex");
         CHECK(m.textures[2] == "extra.tex");
+    }
+
+    TEST_CASE("MergePass overlays usertextures the same way it overlays textures") {
+        auto m = Parse(R"({
+            "passes": [{
+                "shader":       "flat",
+                "usertextures": [null, {"name": "$mediaThumbnail", "type": "system"}]
+            }]
+        })");
+        WPMaterialPass extra;
+        extra.usertextures = { {}, {}, { "usertexture2", "" } };
+
+        m.MergePass(extra);
+
+        REQUIRE(m.usertextures.size() == 3u);
+        CHECK(m.usertextures[0].name.empty());
+        CHECK(m.usertextures[1].name == "$mediaThumbnail"); // empty overlay slot didn't clobber it
+        CHECK(m.usertextures[2].name == "usertexture2");
     }
 }
 

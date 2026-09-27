@@ -23,14 +23,15 @@ std::string UserPropertyNameOf(const nlohmann::json& value) {
     return {};
 }
 
-// The textures/constantshadervalues/combos parse is identical between
-// WPMaterialPass::FromJson and WPMaterial::FromJson's own passes[0] block --
-// this shares it.  `onConstantValue`, when given, runs once per
+// The textures/usertextures/constantshadervalues/combos parse is identical
+// between WPMaterialPass::FromJson and WPMaterial::FromJson's own passes[0]
+// block -- this shares it.  `onConstantValue`, when given, runs once per
 // constantshadervalues entry with its name and raw (pre-resolution) JSON --
 // WPMaterial::FromJson uses it to record userShaderBindings; WPMaterialPass
 // has no equivalent use, so it's left unset there.
 void ParsePassFields(
     const nlohmann::json& json, std::vector<std::string>& textures,
+    std::vector<WPMaterialPassUserTexture>&                               usertextures,
     std::unordered_map<std::string, int32_t>&                             combos,
     std::unordered_map<std::string, std::vector<float>>&                  constantshadervalues,
     const std::function<void(const std::string&, const nlohmann::json&)>& onConstantValue = {}) {
@@ -39,6 +40,13 @@ void ParsePassFields(
             std::string tex;
             if (! jT.is_null()) GET_JSON_VALUE(jT, tex);
             textures.push_back(tex);
+        }
+    }
+    if (json.contains("usertextures")) {
+        for (const auto& jU : json.at("usertextures")) {
+            WPMaterialPassUserTexture ut;
+            if (! jU.is_null()) ut.FromJson(jU);
+            usertextures.push_back(ut);
         }
     }
     if (json.contains("constantshadervalues")) {
@@ -63,10 +71,11 @@ void ParsePassFields(
 }
 
 // The pass-overlay rule shared by WPMaterialPass::Update and WPMaterial::MergePass: layer a
-// per-instance pass override onto a base pass or material. An empty texture string means "no
-// override for this slot", not "clear it", so it's skipped rather than written; combos and
-// constantshadervalues are plain last-write-wins maps.
+// per-instance pass override onto a base pass or material. An empty texture string (or, for
+// usertextures, an empty name) means "no override for this slot", not "clear it", so it's
+// skipped rather than written; combos and constantshadervalues are plain last-write-wins maps.
 void MergeOverlayFields(std::vector<std::string>&                            textures,
+                        std::vector<WPMaterialPassUserTexture>&              usertextures,
                         std::unordered_map<std::string, int32_t>&            combos,
                         std::unordered_map<std::string, std::vector<float>>& constantshadervalues,
                         const WPMaterialPass&                                p) {
@@ -76,6 +85,14 @@ void MergeOverlayFields(std::vector<std::string>&                            tex
         if (p.textures.size() > textures.size()) textures.resize(p.textures.size());
         if (! el.empty()) {
             textures[i] = el;
+        }
+    }
+    int32_t j = -1;
+    for (const auto& el : p.usertextures) {
+        j++;
+        if (p.usertextures.size() > usertextures.size()) usertextures.resize(p.usertextures.size());
+        if (! el.name.empty()) {
+            usertextures[j] = el;
         }
     }
     for (const auto& el : p.constantshadervalues) {
@@ -94,16 +111,28 @@ bool WPMaterialPassBindItem::FromJson(const nlohmann::json& json) {
     return true;
 }
 
+bool WPMaterialPassUserTexture::FromJson(const nlohmann::json& json) {
+    // A bare string is a plain reference name (app-launcher custom-icon
+    // slots ship this shape) -- there's no "type" to read.
+    if (json.is_string()) {
+        GET_JSON_VALUE(json, name);
+        return true;
+    }
+    GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
+    GET_JSON_NAME_VALUE_NOWARN(json, "type", type);
+    return true;
+}
+
 void WPMaterialPass::Update(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, combos, constantshadervalues, p);
+    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, p);
 }
 
 void WPMaterial::MergePass(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, combos, constantshadervalues, p);
+    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, p);
 }
 
 bool WPMaterialPass::FromJson(const nlohmann::json& json) {
-    ParsePassFields(json, textures, combos, constantshadervalues);
+    ParsePassFields(json, textures, usertextures, combos, constantshadervalues);
     GET_JSON_NAME_VALUE_NOWARN(json, "target", target);
     if (json.contains("bind")) {
         for (const auto& jB : json.at("bind")) {
@@ -141,6 +170,7 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
     // reparsing the scene.
     ParsePassFields(jContent,
                     textures,
+                    usertextures,
                     combos,
                     constantshadervalues,
                     [this](const std::string& name, const nlohmann::json& rawValue) {
