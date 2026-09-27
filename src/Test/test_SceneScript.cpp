@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QJSEngine>
 #include <QJSValue>
+#include <QVariantList>
 #include "SceneTimerBridge.h"
 #include "SceneCursorEvent.h"
 #include "SceneCursorHitTest.h"
@@ -19,6 +20,9 @@
 #include "ScriptLoopGate.h"
 #include "TextScriptResult.hpp"
 #include "PropertyScriptDispatchJs.hpp"
+#include "SceneBackend.hpp"
+#include "IPropertyDispatchSink.hpp"
+#include "Utils/Logging.h"
 
 using scenebackend::CursorParallax;
 using scenebackend::drainExpiredLeaves;
@@ -6938,6 +6942,341 @@ TEST_SUITE("Script Compilation") {
     }
 
 } // TEST_SUITE Script Compilation
+
+// ------------------------------------------------------------------
+// Media dispatch reaching text/color/shader-value scripts
+//
+// The "Script Compilation" suite above only ever probes the property-script
+// wrapper (PROP_IIFE_POST) — that's exactly why a text/color/shader-value
+// script's media handler could get dropped at compile time without any test
+// noticing.  These drive the real production compile path instead: the
+// wrapper strings text-property, color, and shader-value scripts are
+// actually compiled through, via the seed*ScriptFromSourceForTesting hooks
+// SceneBackend shares between production and tests.  seedMediaHandlerForTesting
+// (used elsewhere) bypasses that wrapper entirely and hands the engine an
+// already-bare function, so it cannot see an export the wrapper fails to
+// extract.
+//
+// Script bodies below are copied verbatim (after the same export/import
+// strip production's stripESModuleSyntax() performs) from workshop wallpaper
+// 3616389236's real scene.json: the "Song Title" text object, the
+// "Album_Outline" color script, and the "Song Title" object's "Dynamic
+// Color" effect-pass shader-value script.
+// ------------------------------------------------------------------
+namespace
+{
+
+// Captures WallpaperLog output so a case can assert a throw was reported.
+// TextScriptState (unlike PropertyScriptState) has no `property` field, so
+// dispatchMediaEventToStates()'s error line for it takes a different,
+// previously-unexercised branch — this pins that branch still fires and
+// still names the id.
+struct DispatchLogCapture {
+    static inline std::string text;
+    DispatchLogCapture() {
+        text = {};
+        wallpaper_log_test::setSink([](int, const char* msg) {
+            text += msg;
+            text += '\n';
+        });
+    }
+    ~DispatchLogCapture() { wallpaper_log_test::setSink(nullptr); }
+    static bool mentions(const char* needle) { return text.find(needle) != std::string::npos; }
+};
+
+// Records the three dispatch calls this suite cares about; every other
+// IPropertyDispatchSink method is a no-op (nothing here exercises them).
+struct MediaDispatchTestSink : scenebackend::IPropertyDispatchSink {
+    struct TextCall {
+        int32_t     id;
+        std::string text;
+    };
+    struct ColorCall {
+        int32_t id;
+        float   r, g, b;
+    };
+    struct EffectMaterialCall {
+        int32_t            id;
+        int32_t            effectIdx;
+        std::string        name;
+        std::vector<float> floats;
+    };
+    std::vector<TextCall>           textCalls;
+    std::vector<ColorCall>          colorCalls;
+    std::vector<EffectMaterialCall> effectMaterialCalls;
+
+    void updateText(int32_t id, const std::string& text) override {
+        textCalls.push_back({ id, text });
+    }
+    void updateTextPointsize(int32_t, float) override {}
+    void updateColor(int32_t id, float r, float g, float b) override {
+        colorCalls.push_back({ id, r, g, b });
+    }
+    void updateNodeTransform(int32_t, const std::string&, float, float, float) override {}
+    void updateNodeVisible(int32_t, bool) override {}
+    void updateNodeAlpha(int32_t, float) override {}
+    void updateParticleRate(int32_t, float) override {}
+    void applyLayerBatch(const std::vector<wallpaper::SceneWallpaper::LayerBatchUpdate>&) override {
+    }
+    void updateEffectVisible(int32_t, int32_t, bool) override {}
+    void updateMaterialValue(int32_t, std::string, std::vector<float>) override {}
+    void updateEffectMaterialValue(int32_t id, int32_t effectIdx, std::string name,
+                                   std::vector<float> floats) override {
+        effectMaterialCalls.push_back({ id, effectIdx, std::move(name), std::move(floats) });
+    }
+    void setLayerSpriteFrame(int32_t, bool, int32_t) override {}
+    void updateTextStyle(int32_t, std::string, std::string, std::string) override {}
+    void updateSoundVolume(int32_t, float) override {}
+    void updateClearColor(float, float, float) override {}
+    void updateBloomStrength(float) override {}
+    void updateBloomThreshold(float) override {}
+    void updateCameraFov(float) override {}
+    void updateCameraLookAt(float, float, float, float, float, float, float, float,
+                            float) override {}
+    void updateAmbientColor(float, float, float) override {}
+    void updateSkylightColor(float, float, float) override {}
+    void updateLightColor(int32_t, float, float, float) override {}
+    void updateLightRadius(int32_t, float) override {}
+    void updateLightIntensity(int32_t, float) override {}
+    void updateLightPosition(int32_t, float, float, float) override {}
+};
+
+// Real "Song Title" text-property script (objects[42].text.script).
+const char* kSongTitleScript = R"JS(
+let __workshopId = '3308559193';
+
+var mediaData = "";
+
+function update(value) {
+	return mediaData;
+}
+
+function mediaPropertiesChanged(event) {
+	mediaData = event.title;
+}
+)JS";
+
+// Real "Album_Outline" color script (id 393, color.script).
+const char* kAlbumOutlineColorScript = R"JS(
+let __workshopId = '3616258436';
+
+const DURATION = 1;
+
+let newColor = new Vec3(0, 0, 0);
+let oldColor = new Vec3(0, 0, 0);
+let timer = DURATION;
+
+function update() {
+    var color = newColor;
+    if (timer < DURATION) {
+        color = newColor.subtract(oldColor).multiply(timer / DURATION).add(oldColor);
+        timer += engine.frametime;
+    }
+    return color;
+}
+
+function mediaThumbnailChanged(event) {
+    timer = 0;
+    oldColor = newColor;
+    newColor = event.primaryColor;
+}
+)JS";
+
+// Real "Song Title" object's "Dynamic Color" effect-pass shader-value script
+// (objects[42].effects[2].passes[0].constantshadervalues.color.script).
+const char* kSongTitleDynamicColorScript = R"JS(
+let __workshopId = '3611917459';
+
+const DURATION = 1;
+
+let oldColor = new Vec3(0,0,0);
+let newColor = new Vec3(0,0,0);
+let timer = DURATION;
+
+function update(value) {
+	let color = newColor;
+	if (timer < DURATION) {
+		color = newColor.subtract(oldColor).multiply(timer / DURATION).add(oldColor);
+		timer += engine.frametime;
+	}
+	return color;
+}
+
+function mediaThumbnailChanged(event) {
+	timer = 0;
+	oldColor = newColor;
+	newColor = event.secondaryColor;
+}
+)JS";
+
+// Real "Solid Color Dynamic" color script (objects[5], id 234). Same fade
+// shape as Album_Outline's above (both come from the same asset,
+// workshopId 3611917459) but a different object id and a different media
+// field (secondaryColor, not primaryColor) — this is one of the sibling
+// scripts on this wallpaper that the property/text-only dispatch missed
+// alongside Album_Outline, so it's worth its own case rather than trusting
+// the fix by inspection alone.
+const char* kSolidColorDynamicScript = R"JS(
+let __workshopId = '3611917459';
+
+const DURATION = 1;
+
+let oldColor = new Vec3(0, 0, 0);
+let newColor = new Vec3(0, 0, 0);
+let timer = DURATION;
+
+function update(value) {
+	let color = newColor;
+	if (timer < DURATION) {
+		color = newColor.subtract(oldColor).multiply(timer / DURATION).add(oldColor);
+		timer += engine.frametime;
+	}
+	return color;
+}
+
+function mediaThumbnailChanged(event) {
+	timer = 0;
+	oldColor = newColor;
+	newColor = event.secondaryColor;
+}
+)JS";
+
+// Runs enough ticks that a 1-second fade timer driven by engine.frametime is
+// guaranteed to complete, independent of real wall-clock speed:
+// ComputeTickFrametime floors every non-first tick at 1ms, so 1100 ticks
+// covers the full 1s DURATION with margin.
+void runFadeToCompletion(scenebackend::SceneObject& obj) {
+    for (int i = 0; i < 1100; ++i) obj.evaluateColorScriptsForTesting();
+}
+
+} // namespace
+
+TEST_SUITE("Media dispatch reaches text/color/shader-value scripts") {
+    TEST_CASE("text-property script: mediaPropertiesChanged updates the rendered text") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedTextScriptFromSourceForTesting(177, kSongTitleScript);
+
+        // Baseline: mediaData is still "", same as the seeded currentText, so
+        // there is nothing to dispatch yet.
+        obj.evaluateTextScriptsForTesting();
+        CHECK(sinkPtr->textCalls.empty());
+
+        obj.mediaPropertiesChanged(
+            "Bohemian Rhapsody", "Queen", "A Night at the Opera", "Queen", "", 354.0);
+        obj.evaluateTextScriptsForTesting();
+
+        REQUIRE(sinkPtr->textCalls.size() == 1);
+        CHECK(sinkPtr->textCalls[0].id == 177);
+        CHECK(sinkPtr->textCalls[0].text == "Bohemian Rhapsody");
+    }
+
+    TEST_CASE("color script: mediaThumbnailChanged's primaryColor reaches updateColor") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedColorScriptFromSourceForTesting(393, kAlbumOutlineColorScript);
+
+        // Baseline: script starts on black, matching the seeded currentColor.
+        obj.evaluateColorScriptsForTesting();
+        CHECK(sinkPtr->colorCalls.empty());
+
+        QVariantList colors = {
+            0.8, 0.2, 0.1, // primaryColor -- what Album_Outline's script reads
+            0.0, 0.0, 0.0, // secondaryColor
+            0.0, 0.0, 0.0, // tertiaryColor
+            0.0, 0.0, 0.0, // textColor
+            0.0, 0.0, 0.0  // highContrastColor
+        };
+        obj.mediaThumbnailChanged(true, colors);
+        runFadeToCompletion(obj);
+
+        REQUIRE_FALSE(sinkPtr->colorCalls.empty());
+        const auto& last = sinkPtr->colorCalls.back();
+        CHECK(last.id == 393);
+        CHECK(last.r == doctest::Approx(0.8).epsilon(0.01));
+        CHECK(last.g == doctest::Approx(0.2).epsilon(0.01));
+        CHECK(last.b == doctest::Approx(0.1).epsilon(0.01));
+    }
+
+    TEST_CASE("color script: a second instance (Solid Color Dynamic, id 234) reaches "
+              "updateColor via mediaThumbnailChanged") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedColorScriptFromSourceForTesting(234, kSolidColorDynamicScript);
+
+        obj.evaluateColorScriptsForTesting();
+        CHECK(sinkPtr->colorCalls.empty());
+
+        QVariantList colors = {
+            0.0, 0.0, 0.0, // primaryColor
+            0.3, 0.4, 0.9, // secondaryColor -- what this script reads
+            0.0, 0.0, 0.0, // tertiaryColor
+            0.0, 0.0, 0.0, // textColor
+            0.0, 0.0, 0.0  // highContrastColor
+        };
+        obj.mediaThumbnailChanged(true, colors);
+        runFadeToCompletion(obj);
+
+        REQUIRE_FALSE(sinkPtr->colorCalls.empty());
+        const auto& last = sinkPtr->colorCalls.back();
+        CHECK(last.id == 234);
+        CHECK(last.r == doctest::Approx(0.3).epsilon(0.01));
+        CHECK(last.g == doctest::Approx(0.4).epsilon(0.01));
+        CHECK(last.b == doctest::Approx(0.9).epsilon(0.01));
+    }
+
+    TEST_CASE("shader-value script: mediaThumbnailChanged's secondaryColor reaches "
+              "updateEffectMaterialValue") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedShaderValueScriptFromSourceForTesting(
+            177, 2, "color", 3, kSongTitleDynamicColorScript);
+
+        obj.evaluateColorScriptsForTesting();
+        CHECK(sinkPtr->effectMaterialCalls.empty());
+
+        QVariantList colors = { 0.0, 0.0, 0.0, //
+                                0.5, 0.6, 0.7, // secondaryColor -- what this pass's script reads
+                                0.0, 0.0, 0.0, //
+                                0.0, 0.0, 0.0, //
+                                0.0, 0.0, 0.0 };
+        obj.mediaThumbnailChanged(true, colors);
+        runFadeToCompletion(obj);
+
+        REQUIRE_FALSE(sinkPtr->effectMaterialCalls.empty());
+        const auto& last = sinkPtr->effectMaterialCalls.back();
+        CHECK(last.id == 177);
+        CHECK(last.effectIdx == 2);
+        CHECK(last.name == "color");
+        REQUIRE(last.floats.size() == 3);
+        CHECK(last.floats[0] == doctest::Approx(0.5).epsilon(0.01));
+        CHECK(last.floats[1] == doctest::Approx(0.6).epsilon(0.01));
+        CHECK(last.floats[2] == doctest::Approx(0.7).epsilon(0.01));
+    }
+
+    TEST_CASE("a throwing text-script media handler is reported with its id") {
+        DispatchLogCapture        log;
+        scenebackend::SceneObject obj;
+        obj.seedTextScriptFromSourceForTesting(
+            177,
+            "function update(v){ return v; }\n"
+            "function mediaPropertiesChanged(e){ throw new Error('boom'); }");
+
+        obj.mediaPropertiesChanged("t", "a", "al", "aa", "", 60.0);
+
+        INFO("log: " << DispatchLogCapture::text);
+        CHECK(DispatchLogCapture::mentions("mediaPropertiesChanged error id=177"));
+        CHECK(DispatchLogCapture::mentions("boom"));
+    }
+}
 
 // ===================================================================
 // Scene Property Control tests

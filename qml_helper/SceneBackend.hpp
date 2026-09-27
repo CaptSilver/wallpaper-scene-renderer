@@ -440,6 +440,18 @@ public:
     void seedShaderValueScriptForTesting(int32_t id, int32_t effectIdx,
                                          const std::string& uniformName, int argShape,
                                          const std::string& jsSource);
+    // Compile `jsSource` through the real text-script IIFE wrapper
+    // (setupTextScripts' own compile path, not a hand-copied stand-in), so a
+    // test catches an export dropped at compile time — the class of bug
+    // seedMediaHandlerForTesting can't see, since it hands the JS engine a
+    // bare function and skips the wrapper entirely.
+    void seedTextScriptFromSourceForTesting(int32_t id, const std::string& jsSource);
+    // Same, through the real color-script IIFE wrapper.
+    void seedColorScriptFromSourceForTesting(int32_t id, const std::string& jsSource);
+    // Same, through the real shader-value-script IIFE wrapper.
+    void seedShaderValueScriptFromSourceForTesting(int32_t id, int32_t effectIdx,
+                                                   const std::string& uniformName, int argShape,
+                                                   const std::string& jsSource);
     // Install the JS globals a wallpaper script sees, in production order:
     // the createScriptProperties builder, then the SceneScript API layer.
     void installScriptApiGlobalsForTesting();
@@ -537,6 +549,16 @@ private:
         QJSValue updateFn;
         QJSValue applyUserPropertiesFn;
         QString  currentText;
+        // Media-event handlers (see PropertyScriptState's siblings below).  A
+        // text-property script — the idiom Wallpaper Engine's own "Now
+        // Playing" templates use for title/artist/album text — exports these
+        // the same way a property script does; dispatchMediaEvent() walks
+        // this vector too so a track change actually reaches the text.
+        QJSValue mediaPlaybackChangedFn;
+        QJSValue mediaPropertiesChangedFn;
+        QJSValue mediaThumbnailChangedFn;
+        QJSValue mediaTimelineChangedFn;
+        QJSValue mediaStatusChangedFn;
     };
     // Color script evaluation
     // Shader-value script state — drives per-effect uniform updates from
@@ -544,19 +566,27 @@ private:
     // Game of Life (3453251764) Canvas: ~50 scripts per scene driving
     // mouseDown/mousePos/cmd/drawRadius/birthSurvive into the cell shader.
     struct ShaderValueScriptState {
-        int32_t            id { -1 };
-        int32_t            effectIdx { 0 };
-        std::string        uniformName;
-        std::string        layerName;
-        QJSValue           updateFn;
-        QJSValue           thisLayerProxy;
-        QJSValue           thisObjectProxy;
-        QJSValue           cursorEnterFn;
-        QJSValue           cursorLeaveFn;
-        QJSValue           cursorUpFn;
-        QJSValue           cursorDownFn;
-        QJSValue           cursorClickFn;
-        QJSValue           cursorMoveFn;
+        int32_t     id { -1 };
+        int32_t     effectIdx { 0 };
+        std::string uniformName;
+        std::string layerName;
+        QJSValue    updateFn;
+        QJSValue    thisLayerProxy;
+        QJSValue    thisObjectProxy;
+        QJSValue    cursorEnterFn;
+        QJSValue    cursorLeaveFn;
+        QJSValue    cursorUpFn;
+        QJSValue    cursorDownFn;
+        QJSValue    cursorClickFn;
+        QJSValue    cursorMoveFn;
+        // Media-event handlers — an effect-pass constantshadervalues script
+        // (e.g. a "Dynamic Color" tint keyed on the current track's album
+        // art) exports these the same way a property script does.
+        QJSValue           mediaPlaybackChangedFn;
+        QJSValue           mediaPropertiesChangedFn;
+        QJSValue           mediaThumbnailChangedFn;
+        QJSValue           mediaTimelineChangedFn;
+        QJSValue           mediaStatusChangedFn;
         int                argShape { 1 };
         std::vector<float> cachedValue;
     };
@@ -572,12 +602,20 @@ private:
         // layer's `color` property script (not a top-level property
         // script), so the cursor-target collection has to walk these
         // alongside m_propertyScriptStates or the buttons stay inert.
-        QJSValue             cursorEnterFn;
-        QJSValue             cursorLeaveFn;
-        QJSValue             cursorUpFn;
-        QJSValue             cursorDownFn;
-        QJSValue             cursorClickFn;
-        QJSValue             cursorMoveFn;
+        QJSValue cursorEnterFn;
+        QJSValue cursorLeaveFn;
+        QJSValue cursorUpFn;
+        QJSValue cursorDownFn;
+        QJSValue cursorClickFn;
+        QJSValue cursorMoveFn;
+        // Media-event handlers — a layer's color script (e.g. an accent tint
+        // keyed on the current track's album art) exports these the same way
+        // a property script does.
+        QJSValue             mediaPlaybackChangedFn;
+        QJSValue             mediaPropertiesChangedFn;
+        QJSValue             mediaThumbnailChangedFn;
+        QJSValue             mediaTimelineChangedFn;
+        QJSValue             mediaStatusChangedFn;
         std::array<float, 3> currentColor;
     };
     // Property script evaluation
@@ -793,11 +831,29 @@ private:
     QJSValue m_cspObj;      // m_inputObj.property("cursorScreenPosition")
     QJSValue m_consoleObj;  // globalObject().property("console"); stable after setupTextScripts
     void     fireSceneEventListeners(const QString& eventName, const QJSValueList& args = {});
-    // Fire one media event on every property script that exports a handler for
-    // it, then on the scene bus.  `handler` picks which export to call, so the
-    // five MPRIS entry points share one loop instead of five copies that drift.
-    void     dispatchMediaEvent(const char* eventName, QJSValue PropertyScriptState::*handler,
-                                const QJSValue& event);
+    // Fire one media event on every property/text/color/shader-value script
+    // that exports a handler for it, then on the scene bus.  Each `*Handler`
+    // picks which export to call on its own state vector, so the five MPRIS
+    // entry points share one loop per state type instead of twenty copies
+    // that drift.  All four script kinds can carry the "Now Playing" idiom
+    // WE wallpapers use (title/artist/album text, an accent-color tint, an
+    // effect-pass shader value) so all four need to hear the event.
+    void dispatchMediaEvent(const char* eventName, QJSValue PropertyScriptState::* propHandler,
+                            QJSValue TextScriptState::* textHandler,
+                            QJSValue ColorScriptState::* colorHandler,
+                            QJSValue ShaderValueScriptState::* shaderValueHandler,
+                            const QJSValue&                    event);
+    // Shared loop body for dispatchMediaEvent(): call `handler` on every
+    // state in `states` that exports it.  Property/color/shader-value states
+    // carry a layerName + thisLayer/thisObject proxy pair that has to be
+    // restored on the engine's globals before the call (their handler
+    // functions reference the global `thisObject`, not a closure-captured
+    // one — see dispatchMediaEvent's original property-only comment); text
+    // scripts capture `thisLayer` in their IIFE closure at compile time, so
+    // they have no such fields and the restore is skipped for them.
+    template<typename StateT>
+    void dispatchMediaEventToStates(std::vector<StateT>& states, const char* eventName,
+                                    QJSValue StateT::* handler, const QJSValue& event);
 
     // Sound layer control state for SceneScript play/stop/pause API
     struct SoundLayerState {

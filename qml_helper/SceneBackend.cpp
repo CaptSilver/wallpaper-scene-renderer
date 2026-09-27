@@ -851,30 +851,58 @@ void SceneObject::fireResizeScreen(int width, int height) {
 
 // Media integration event dispatch — called from QML MprisMonitor via Q_INVOKABLE
 
-void SceneObject::dispatchMediaEvent(const char* eventName, QJSValue PropertyScriptState::* handler,
-                                     const QJSValue& event) {
-    for (auto& s : m_propertyScriptStates) {
+template<typename StateT>
+void SceneObject::dispatchMediaEventToStates(std::vector<StateT>& states, const char* eventName,
+                                             QJSValue StateT::* handler, const QJSValue& event) {
+    for (auto& s : states) {
         QJSValue& fn = s.*handler;
         if (! fn.isCallable()) continue;
-        if (! s.layerName.empty()) m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
-        // Unconditional, unlike thisLayer: kPropWrap shadows thisLayer inside
-        // the script IIFE but not thisObject, so putting this under the
-        // layerName guard hands an unnamed state whatever layer was dispatched
-        // last (Hoshi-Tele 3042492564 saw a sibling's object that way).
-        m_globalObj.setProperty("thisObject", s.thisObjectProxy);
+        // Property/color/shader-value states carry a layerName + thisLayer/
+        // thisObject proxy pair that has to be restored before the call.
+        // Text scripts don't: their `thisLayer` is closure-bound inside the
+        // IIFE at compile time, so there's nothing to rebind here.
+        if constexpr (requires {
+                          s.layerName;
+                          s.thisLayerProxy;
+                          s.thisObjectProxy;
+                      }) {
+            if (! s.layerName.empty()) m_globalObj.setProperty("thisLayer", s.thisLayerProxy);
+            // Unconditional, unlike thisLayer: the wrapper shadows thisLayer
+            // inside the script IIFE but not thisObject, so putting this under
+            // the layerName guard hands an unnamed state whatever layer was
+            // dispatched last (Hoshi-Tele 3042492564 saw a sibling's object
+            // that way).
+            m_globalObj.setProperty("thisObject", s.thisObjectProxy);
+        }
         QJSValue r = callJsGuarded([&] {
             return fn.call({ event });
         });
         // The media exports get no JS-side try/catch the way animationEvent
         // does, so this error value is the only trace a throwing handler
         // leaves — and it throws once per track change or position poll.
-        if (r.isError())
+        if (! r.isError()) continue;
+        if constexpr (requires { s.property; }) {
             LOG_INFO("%s error id=%d prop=%s: %s",
                      eventName,
                      s.id,
                      s.property.c_str(),
                      qPrintable(r.toString()));
+        } else {
+            LOG_INFO("%s error id=%d: %s", eventName, s.id, qPrintable(r.toString()));
+        }
     }
+}
+
+void SceneObject::dispatchMediaEvent(const char* eventName,
+                                     QJSValue PropertyScriptState::* propHandler,
+                                     QJSValue TextScriptState::* textHandler,
+                                     QJSValue ColorScriptState::* colorHandler,
+                                     QJSValue ShaderValueScriptState::* shaderValueHandler,
+                                     const QJSValue&                    event) {
+    dispatchMediaEventToStates(m_propertyScriptStates, eventName, propHandler, event);
+    dispatchMediaEventToStates(m_textScriptStates, eventName, textHandler, event);
+    dispatchMediaEventToStates(m_colorScriptStates, eventName, colorHandler, event);
+    dispatchMediaEventToStates(m_shaderValueScriptStates, eventName, shaderValueHandler, event);
     fireSceneEventListeners(QString::fromLatin1(eventName), { event });
 }
 
@@ -882,7 +910,12 @@ void SceneObject::mediaPlaybackChanged(int state) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("state", state);
-    dispatchMediaEvent("mediaPlaybackChanged", &PropertyScriptState::mediaPlaybackChangedFn, event);
+    dispatchMediaEvent("mediaPlaybackChanged",
+                       &PropertyScriptState::mediaPlaybackChangedFn,
+                       &TextScriptState::mediaPlaybackChangedFn,
+                       &ColorScriptState::mediaPlaybackChangedFn,
+                       &ShaderValueScriptState::mediaPlaybackChangedFn,
+                       event);
 }
 
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
@@ -899,8 +932,12 @@ void SceneObject::mediaPropertiesChanged(const QString& title, const QString& ar
     // 8 corpus scripts (in 3155776049, 3662790108, others) read .duration from
     // this event — easier than waiting for the next timelineChanged tick.
     event.setProperty("duration", duration);
-    dispatchMediaEvent(
-        "mediaPropertiesChanged", &PropertyScriptState::mediaPropertiesChangedFn, event);
+    dispatchMediaEvent("mediaPropertiesChanged",
+                       &PropertyScriptState::mediaPropertiesChangedFn,
+                       &TextScriptState::mediaPropertiesChangedFn,
+                       &ColorScriptState::mediaPropertiesChangedFn,
+                       &ShaderValueScriptState::mediaPropertiesChangedFn,
+                       event);
 }
 
 void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors) {
@@ -920,8 +957,12 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
     event.setProperty("tertiaryColor", toVec3(2));
     event.setProperty("textColor", toVec3(3));
     event.setProperty("highContrastColor", toVec3(4));
-    dispatchMediaEvent(
-        "mediaThumbnailChanged", &PropertyScriptState::mediaThumbnailChangedFn, event);
+    dispatchMediaEvent("mediaThumbnailChanged",
+                       &PropertyScriptState::mediaThumbnailChangedFn,
+                       &TextScriptState::mediaThumbnailChangedFn,
+                       &ColorScriptState::mediaThumbnailChangedFn,
+                       &ShaderValueScriptState::mediaThumbnailChangedFn,
+                       event);
 }
 
 void SceneObject::mediaTimelineChanged(double position, double duration, int state) {
@@ -933,14 +974,24 @@ void SceneObject::mediaTimelineChanged(double position, double duration, int sta
     // 13 corpus scripts read event.state from this event so they can react to
     // play/pause transitions without a separate playbackStateChanged subscriber.
     event.setProperty("state", state);
-    dispatchMediaEvent("mediaTimelineChanged", &PropertyScriptState::mediaTimelineChangedFn, event);
+    dispatchMediaEvent("mediaTimelineChanged",
+                       &PropertyScriptState::mediaTimelineChangedFn,
+                       &TextScriptState::mediaTimelineChangedFn,
+                       &ColorScriptState::mediaTimelineChangedFn,
+                       &ShaderValueScriptState::mediaTimelineChangedFn,
+                       event);
 }
 
 void SceneObject::mediaStatusChanged(bool enabled) {
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("enabled", enabled);
-    dispatchMediaEvent("mediaStatusChanged", &PropertyScriptState::mediaStatusChangedFn, event);
+    dispatchMediaEvent("mediaStatusChanged",
+                       &PropertyScriptState::mediaStatusChangedFn,
+                       &TextScriptState::mediaStatusChangedFn,
+                       &ColorScriptState::mediaStatusChangedFn,
+                       &ShaderValueScriptState::mediaStatusChangedFn,
+                       event);
 }
 
 void SceneObject::play() {
@@ -2216,6 +2267,181 @@ std::string SceneObject::GetDefaultCachePath() {
     return wallpaper::platform::GetCachePath(CACHE_DIR);
 }
 
+// Every media-event export gets the same lookup shape: prefer exports.NAME,
+// fall back to a bare top-level NAME.  mediaPropertiesChanged additionally
+// tolerates the "propertiesChanged" typo two corpus scripts ship instead of
+// the full name (see kPropWrap's own comment on this — this is the same
+// author-typo accommodation, not a separate mechanism per wrapper).
+static const char kMediaHandlerExtractJs[] =
+    "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? "
+    "exports.mediaPlaybackChanged :\n"
+    "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged : "
+    "null);\n"
+    "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
+    "exports.mediaPropertiesChanged :\n"
+    "              (typeof mediaPropertiesChanged === 'function' ? mediaPropertiesChanged :\n"
+    "              (typeof exports.propertiesChanged === 'function' ? "
+    "exports.propertiesChanged :\n"
+    "              (typeof propertiesChanged === 'function' ? propertiesChanged : null)));\n"
+    "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
+    "exports.mediaThumbnailChanged :\n"
+    "              (typeof mediaThumbnailChanged === 'function' ? mediaThumbnailChanged : "
+    "null);\n"
+    "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? "
+    "exports.mediaTimelineChanged :\n"
+    "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged : "
+    "null);\n"
+    "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? "
+    "exports.mediaStatusChanged :\n"
+    "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : null);\n";
+// The five extracted locals, as object-literal fields, for a wrapper's
+// `return {...}` (shared verbatim so every wrapper exposes the same names).
+static const char kMediaHandlerReturnFieldsJs[] =
+    "mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
+    "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
+    "           mediaStatusChanged: _mstc";
+
+// Text-property script IIFE wrapper.  Used both by setupTextScripts()'s real
+// compile loop and by seedTextScriptFromSourceForTesting(), so a test and
+// production can never drift apart on what a text script's `exports` surface
+// looks like — the exact drift that let a media-dispatch gap ship unnoticed
+// (every existing test hand-copied its own wrapper string instead of
+// compiling through this one).
+static QString buildTextScriptWrapperJs(const QString& propsInit, const QString& body) {
+    return QString("(function(_tlo) {\n"
+                   "  'use strict';\n"
+                   "  var exports = {};\n"
+                   "  var thisLayer = _tlo;\n"
+                   "  %1\n"
+                   "  %2\n"
+                   "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+                   "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+                   "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+                   "             (typeof update === 'function' ? update : null);\n"
+                   "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+                   "              (typeof init === 'function' ? init : null);\n"
+                   "  var _aup  = typeof exports.applyUserProperties === 'function' ? "
+                   "exports.applyUserProperties :\n"
+                   "              (typeof applyUserProperties === 'function' ? applyUserProperties "
+                   ": null);\n"
+                   "%3"
+                   "  if (!_upd) return null;\n"
+                   "  return { update: _upd, init: _init, applyUserProperties: _aup,\n"
+                   "           %4 };\n"
+                   "})(thisLayer)\n")
+        .arg(propsInit,
+             body,
+             QString::fromLatin1(kMediaHandlerExtractJs),
+             QString::fromLatin1(kMediaHandlerReturnFieldsJs));
+}
+
+// Color-script IIFE wrapper.  See buildTextScriptWrapperJs's comment.
+//
+// Runs the body's init(value) at compile time (if present) so module-level
+// state populated only by init — Game of Life (3453251764) Color/Tool/Stamp
+// buttons cache `anim = thisLayer.getTextureAnimation()` in init and
+// dereference it from update — is available on the very first update tick.
+// Without this every color-script update threw TypeError on
+// `anim.setFrame(...)` and the per-frame
+// `material.color = scriptProperties['color']` assignment never ran, leaving
+// the 8 color-palette buttons stuck on their JSON default (red).
+//
+// Also captures cursor handlers so the cursor-target collector can wire them
+// up.  WE attaches hover/click logic to the layer's color script for tinted
+// buttons (Game of Life 3453251764 Pen/Stamp/Color etc.); without surfacing
+// them here the buttons render correctly but never respond to clicks.
+static QString buildColorScriptWrapperJs(const QString& propsInit, const QString& body) {
+    return QString(
+               "(function(_tlo) {\n"
+               "  'use strict';\n"
+               "  var exports = {};\n"
+               "  var thisLayer = _tlo;\n"
+               "  %1\n" // scriptProperties override
+               "  %2\n" // script body
+               "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+               "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+               "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+               "              (typeof init === 'function' ? init : null);\n"
+               "  if (_init) {\n"
+               "    try { _init(undefined); }\n"
+               "    catch(e) { console.log('color script init err: ' + (e && e.message ? "
+               "e.message : e)); }\n"
+               "  }\n"
+               "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+               "             (typeof update === 'function' ? update : null);\n"
+               "  var _ent  = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+               "              (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+               "  var _lv   = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+               "              (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+               "  var _up   = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+               "              (typeof cursorUp === 'function' ? cursorUp : null);\n"
+               "  var _dn   = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+               "              (typeof cursorDown === 'function' ? cursorDown : null);\n"
+               "  var _clk  = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+               "              (typeof cursorClick === 'function' ? cursorClick : null);\n"
+               "  var _mv   = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+               "              (typeof cursorMove === 'function' ? cursorMove : null);\n"
+               "%3"
+               "  if (!_upd) return null;\n"
+               "  return { update: _upd,\n"
+               "           cursorEnter: _ent, cursorLeave: _lv,\n"
+               "           cursorUp: _up, cursorDown: _dn,\n"
+               "           cursorClick: _clk, cursorMove: _mv,\n"
+               "           %4 };\n"
+               "})(thisLayer)\n")
+        .arg(propsInit,
+             body,
+             QString::fromLatin1(kMediaHandlerExtractJs),
+             QString::fromLatin1(kMediaHandlerReturnFieldsJs));
+}
+
+// Shader-value-script IIFE wrapper.  See buildTextScriptWrapperJs's comment.
+static QString buildShaderValueScriptWrapperJs(const QString& propsInit, const QString& body,
+                                               const QString& initArg) {
+    return QString(
+               "(function(_tlo) {\n"
+               "  'use strict';\n"
+               "  var exports = {};\n"
+               "  var thisLayer = _tlo;\n"
+               "  %1\n" // scriptProperties override
+               "  %2\n" // script body
+               "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+               "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+               "  var _init = typeof exports.init === 'function' ? exports.init :\n"
+               "              (typeof init === 'function' ? init : null);\n"
+               "  if (_init) {\n"
+               "    try { _init(%3); }\n"
+               "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : "
+               "e)); }\n"
+               "  }\n"
+               "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+               "             (typeof update === 'function' ? update : null);\n"
+               "  var _ent = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+               "             (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+               "  var _lv  = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+               "             (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+               "  var _up  = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+               "             (typeof cursorUp === 'function' ? cursorUp : null);\n"
+               "  var _dn  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+               "             (typeof cursorDown === 'function' ? cursorDown : null);\n"
+               "  var _clk = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+               "             (typeof cursorClick === 'function' ? cursorClick : null);\n"
+               "  var _mv  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+               "             (typeof cursorMove === 'function' ? cursorMove : null);\n"
+               "%4"
+               "  return { update: _upd,\n"
+               "           cursorEnter: _ent, cursorLeave: _lv,\n"
+               "           cursorUp: _up, cursorDown: _dn,\n"
+               "           cursorClick: _clk, cursorMove: _mv,\n"
+               "           %5 };\n"
+               "})(thisLayer)\n")
+        .arg(propsInit,
+             body,
+             initArg,
+             QString::fromLatin1(kMediaHandlerExtractJs),
+             QString::fromLatin1(kMediaHandlerReturnFieldsJs));
+}
+
 void SceneObject::setupTextScripts() {
     cleanupTextScripts();
 
@@ -2334,63 +2560,9 @@ void SceneObject::setupTextScripts() {
 
         // Wrap in IIFE.  `_tlo` carries the current global `thisLayer` into a
         // local shadow so the scriptProperties overlay below doesn't leak into
-        // the global binding that the next script compile will inherit.
-        //
-        // Run the body's init(value) at compile time (if present) so module-
-        // level state populated only by init — Game of Life (3453251764)
-        // Color/Tool/Stamp buttons cache `anim = thisLayer.getTextureAnimation()`
-        // in init and dereference it from update — is available on the very
-        // first update tick.  Without this every color-script update threw
-        // TypeError on `anim.setFrame(...)` and the per-frame
-        // `material.color = scriptProperties['color']` assignment never ran,
-        // leaving the 8 color-palette buttons stuck on their JSON default
-        // (red).
-        QString wrapped =
-            QString(
-                "(function(_tlo) {\n"
-                "  'use strict';\n"
-                "  var exports = {};\n"
-                "  var thisLayer = _tlo;\n"
-                "  %1\n" // scriptProperties override
-                "  %2\n" // script body
-                // Alias scriptProperties onto thisLayer (WE convention).
-                // Must run after the body so scriptProperties is populated.
-                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                "              (typeof init === 'function' ? init : null);\n"
-                "  if (_init) {\n"
-                "    try { _init(undefined); }\n"
-                "    catch(e) { console.log('color script init err: ' + (e && e.message ? "
-                "e.message : e)); }\n"
-                "  }\n"
-                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                "             (typeof update === 'function' ? update : null);\n"
-                // Capture cursor handlers so the cursor-target collector
-                // can wire them up.  WE attaches hover/click logic to
-                // the layer's color script for tinted buttons (Game of
-                // Life 3453251764 Pen/Stamp/Color etc.); without
-                // surfacing them here the buttons render correctly but
-                // never respond to clicks.
-                "  var _ent  = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-                "              (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-                "  var _lv   = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-                "              (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-                "  var _up   = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-                "              (typeof cursorUp === 'function' ? cursorUp : null);\n"
-                "  var _dn   = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-                "              (typeof cursorDown === 'function' ? cursorDown : null);\n"
-                "  var _clk  = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-                "              (typeof cursorClick === 'function' ? cursorClick : null);\n"
-                "  var _mv   = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-                "              (typeof cursorMove === 'function' ? cursorMove : null);\n"
-                "  if (!_upd) return null;\n"
-                "  return { update: _upd,\n"
-                "           cursorEnter: _ent, cursorLeave: _lv,\n"
-                "           cursorUp: _up, cursorDown: _dn,\n"
-                "           cursorClick: _clk, cursorMove: _mv };\n"
-                "})(thisLayer)\n")
-                .arg(propsInit, scriptSrc);
+        // the global binding that the next script compile will inherit.  See
+        // buildColorScriptWrapperJs for what the wrapper itself does.
+        QString wrapped = buildColorScriptWrapperJs(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError()) {
@@ -2426,13 +2598,18 @@ void SceneObject::setupTextScripts() {
                 break;
             }
         }
-        state.cursorEnterFn = result.property("cursorEnter");
-        state.cursorLeaveFn = result.property("cursorLeave");
-        state.cursorUpFn    = result.property("cursorUp");
-        state.cursorDownFn  = result.property("cursorDown");
-        state.cursorClickFn = result.property("cursorClick");
-        state.cursorMoveFn  = result.property("cursorMove");
-        state.currentColor  = csi.initialColor;
+        state.cursorEnterFn            = result.property("cursorEnter");
+        state.cursorLeaveFn            = result.property("cursorLeave");
+        state.cursorUpFn               = result.property("cursorUp");
+        state.cursorDownFn             = result.property("cursorDown");
+        state.cursorClickFn            = result.property("cursorClick");
+        state.cursorMoveFn             = result.property("cursorMove");
+        state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+        state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+        state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+        state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+        state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+        state.currentColor             = csi.initialColor;
         m_colorScriptStates.push_back(std::move(state));
         qCInfo(wekdeScene, "Color script compiled for id=%d", csi.id);
     }
@@ -2480,43 +2657,8 @@ void SceneObject::setupTextScripts() {
         // never ran — the media-info fade/scale on Totoro (2891663007) broke.
         QString initArg = wek::qml_helper::shaderValueInitExpr(svi.initialValue, svi.argShape);
 
-        QString wrapped =
-            QString(
-                "(function(_tlo) {\n"
-                "  'use strict';\n"
-                "  var exports = {};\n"
-                "  var thisLayer = _tlo;\n"
-                "  %1\n" // scriptProperties override
-                "  %2\n" // script body
-                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                "              (typeof init === 'function' ? init : null);\n"
-                "  if (_init) {\n"
-                "    try { _init(%3); }\n"
-                "    catch(e) { console.log('sv-script init err: ' + (e && e.message ? e.message : "
-                "e)); }\n"
-                "  }\n"
-                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                "             (typeof update === 'function' ? update : null);\n"
-                "  var _ent = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-                "             (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-                "  var _lv  = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-                "             (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-                "  var _up  = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-                "             (typeof cursorUp === 'function' ? cursorUp : null);\n"
-                "  var _dn  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-                "             (typeof cursorDown === 'function' ? cursorDown : null);\n"
-                "  var _clk = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-                "             (typeof cursorClick === 'function' ? cursorClick : null);\n"
-                "  var _mv  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-                "             (typeof cursorMove === 'function' ? cursorMove : null);\n"
-                "  return { update: _upd,\n"
-                "           cursorEnter: _ent, cursorLeave: _lv,\n"
-                "           cursorUp: _up, cursorDown: _dn,\n"
-                "           cursorClick: _clk, cursorMove: _mv };\n"
-                "})(thisLayer)\n")
-                .arg(propsInit, scriptSrc, initArg);
+        // See buildShaderValueScriptWrapperJs for what the wrapper does.
+        QString wrapped = buildShaderValueScriptWrapperJs(propsInit, scriptSrc, initArg);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError() || result.isNull() || result.isUndefined()) {
@@ -2530,21 +2672,26 @@ void SceneObject::setupTextScripts() {
         }
 
         ShaderValueScriptState state;
-        state.id              = svi.id;
-        state.effectIdx       = svi.effectIdx;
-        state.uniformName     = svi.uniformName;
-        state.layerName       = layerName;
-        state.updateFn        = result.property("update");
-        state.thisLayerProxy  = m_jsEngine->globalObject().property("thisLayer");
-        state.thisObjectProxy = state.thisLayerProxy;
-        state.cursorEnterFn   = result.property("cursorEnter");
-        state.cursorLeaveFn   = result.property("cursorLeave");
-        state.cursorUpFn      = result.property("cursorUp");
-        state.cursorDownFn    = result.property("cursorDown");
-        state.cursorClickFn   = result.property("cursorClick");
-        state.cursorMoveFn    = result.property("cursorMove");
-        state.argShape        = svi.argShape;
-        state.cachedValue     = svi.initialValue;
+        state.id                       = svi.id;
+        state.effectIdx                = svi.effectIdx;
+        state.uniformName              = svi.uniformName;
+        state.layerName                = layerName;
+        state.updateFn                 = result.property("update");
+        state.thisLayerProxy           = m_jsEngine->globalObject().property("thisLayer");
+        state.thisObjectProxy          = state.thisLayerProxy;
+        state.cursorEnterFn            = result.property("cursorEnter");
+        state.cursorLeaveFn            = result.property("cursorLeave");
+        state.cursorUpFn               = result.property("cursorUp");
+        state.cursorDownFn             = result.property("cursorDown");
+        state.cursorClickFn            = result.property("cursorClick");
+        state.cursorMoveFn             = result.property("cursorMove");
+        state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+        state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+        state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+        state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+        state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+        state.argShape                 = svi.argShape;
+        state.cachedValue              = svi.initialValue;
         m_shaderValueScriptStates.push_back(std::move(state));
     }
     if (! m_shaderValueScriptStates.empty()) {
@@ -3251,32 +3398,12 @@ void SceneObject::setupTextScripts() {
             propsInit = QString(wek::qml_helper::kCreateScriptPropertiesShadowJs).arg(jsonStr);
         }
 
-        // Wrap in IIFE that returns {update, init} functions.
-        // `_tlo` carries the current global thisLayer into a local shadow for
-        // the scriptProperties overlay (WE `thisLayer.<propName>` convention —
-        // solar media script reads `thisLayer.debug` to gate logging).
-        QString wrapped =
-            QString(
-                "(function(_tlo) {\n"
-                "  'use strict';\n"
-                "  var exports = {};\n"
-                "  var thisLayer = _tlo;\n"
-                "  %1\n"
-                "  %2\n"
-                "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-                "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-                "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-                "             (typeof update === 'function' ? update : null);\n"
-                "  var _init = typeof exports.init === 'function' ? exports.init :\n"
-                "              (typeof init === 'function' ? init : null);\n"
-                "  var _aup  = typeof exports.applyUserProperties === 'function' ? "
-                "exports.applyUserProperties :\n"
-                "              (typeof applyUserProperties === 'function' ? applyUserProperties "
-                ": null);\n"
-                "  if (!_upd) return null;\n"
-                "  return { update: _upd, init: _init, applyUserProperties: _aup };\n"
-                "})(thisLayer)\n")
-                .arg(propsInit, scriptSrc);
+        // Wrap in IIFE.  `_tlo` carries the current global thisLayer into a
+        // local shadow for the scriptProperties overlay (WE
+        // `thisLayer.<propName>` convention — solar media script reads
+        // `thisLayer.debug` to gate logging).  See buildTextScriptWrapperJs
+        // for what the wrapper itself extracts.
+        QString wrapped = buildTextScriptWrapperJs(propsInit, scriptSrc);
 
         QJSValue result = m_jsEngine->evaluate(wrapped);
         if (result.isError()) {
@@ -3301,10 +3428,15 @@ void SceneObject::setupTextScripts() {
         }
 
         TextScriptState state;
-        state.id                    = tsi.id;
-        state.updateFn              = updateFn;
-        state.applyUserPropertiesFn = result.property("applyUserProperties");
-        state.currentText           = QString::fromStdString(tsi.initialValue);
+        state.id                       = tsi.id;
+        state.updateFn                 = updateFn;
+        state.applyUserPropertiesFn    = result.property("applyUserProperties");
+        state.currentText              = QString::fromStdString(tsi.initialValue);
+        state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+        state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+        state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+        state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+        state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
 
         // Call init(value) if available
         if (initFn.isCallable()) {
@@ -6019,6 +6151,80 @@ void SceneObject::seedShaderValueScriptForTesting(int32_t id, int32_t effectIdx,
     state.uniformName = uniformName;
     state.argShape    = argShape;
     state.updateFn    = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    m_shaderValueScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::seedTextScriptFromSourceForTesting(int32_t id, const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+    // Unnamed-object stand-in, matching setupTextScripts' own fallback for a
+    // script with no layer to bind (see its "Unnamed scripted object" comment).
+    m_globalObj.setProperty("thisLayer", m_jsEngine->newObject());
+
+    QJSValue result =
+        m_jsEngine->evaluate(buildTextScriptWrapperJs(QString(), QString::fromStdString(jsSource)));
+
+    TextScriptState state;
+    state.id                       = id;
+    state.updateFn                 = result.property("update");
+    state.applyUserPropertiesFn    = result.property("applyUserProperties");
+    state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+    state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+    state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+    state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+    state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+    m_textScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::seedColorScriptFromSourceForTesting(int32_t id, const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+    m_globalObj.setProperty("thisLayer", m_jsEngine->newObject());
+
+    QJSValue result = m_jsEngine->evaluate(
+        buildColorScriptWrapperJs(QString(), QString::fromStdString(jsSource)));
+
+    ColorScriptState state;
+    state.id                       = id;
+    state.updateFn                 = result.property("update");
+    state.thisLayerProxy           = m_jsEngine->globalObject().property("thisLayer");
+    state.thisObjectProxy          = state.thisLayerProxy;
+    state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+    state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+    state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+    state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+    state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+    // Black seed, matching seedColorScriptForTesting: any non-black return is
+    // a change, so one tick is enough to see what the script dispatched.
+    state.currentColor = { 0.0f, 0.0f, 0.0f };
+    m_colorScriptStates.push_back(std::move(state));
+}
+
+void SceneObject::seedShaderValueScriptFromSourceForTesting(int32_t id, int32_t effectIdx,
+                                                            const std::string& uniformName,
+                                                            int                argShape,
+                                                            const std::string& jsSource) {
+    bootstrapScriptEngineForTesting();
+    m_globalObj.setProperty("thisLayer", m_jsEngine->newObject());
+
+    QJSValue result = m_jsEngine->evaluate(buildShaderValueScriptWrapperJs(
+        QString(), QString::fromStdString(jsSource), QStringLiteral("undefined")));
+
+    ShaderValueScriptState state;
+    state.id                       = id;
+    state.effectIdx                = effectIdx;
+    state.uniformName              = uniformName;
+    state.argShape                 = argShape;
+    state.updateFn                 = result.property("update");
+    state.thisLayerProxy           = m_jsEngine->globalObject().property("thisLayer");
+    state.thisObjectProxy          = state.thisLayerProxy;
+    state.mediaPlaybackChangedFn   = result.property("mediaPlaybackChanged");
+    state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+    state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+    state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+    state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+    // Zero-fill to argShape so the eval loop's size-mismatch "changed" check
+    // doesn't fire a spurious dispatch on the very first tick (production
+    // seeds this from the constant's real initial value; a test has none).
+    state.cachedValue.assign(static_cast<size_t>(std::max(argShape, 1)), 0.0f);
     m_shaderValueScriptStates.push_back(std::move(state));
 }
 
