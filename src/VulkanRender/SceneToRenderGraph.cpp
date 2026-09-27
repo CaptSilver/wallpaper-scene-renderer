@@ -1,6 +1,8 @@
 #include "SceneToRenderGraph.hpp"
 
 #include <cassert>
+#include <cstdint>
+#include <unordered_set>
 
 #include "Scene/Scene.h"
 #include "RenderGraph/RenderGraph.hpp"
@@ -95,6 +97,28 @@ struct DelayLinkInfo {
     rg::NodeID owner_img_id;
 };
 
+// A (node id, effect index) pair packed into one key for
+// ExtraInfo::hideable_terminal_keys -- cheaper than a pair-keyed set and the
+// two fields are each well within 32 bits (scene object ids and effect
+// counts never approach it).
+inline uint64_t PackNodeEffectKey(i32 nodeId, i32 effectIndex) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(nodeId)) << 32) |
+           static_cast<uint32_t>(effectIndex);
+}
+
+// What ToGraphPass needs, only for a terminal-hideable pass, to wire up the
+// runtime buffer-selection predicate: the layer's two physical ping-pong
+// buffer names (so both can be registered as reads regardless of which one
+// the terminal's own material already reads), and one representative node
+// per predecessor effect (0..terminalIndex-1) whose IsVisible() the pass
+// reads every frame. Built once per layer in LoadEffectChain, before the
+// terminal's own ToGraphPass call -- see CustomShaderPass::SelectPassthroughSource.
+struct PassthroughSourceInfo {
+    std::string             bufferA;
+    std::string             bufferB;
+    std::vector<SceneNode*> predecessorNodes;
+};
+
 struct ExtraInfo {
     Map<size_t, rg::TexNode*>  id_link_map {};
     Map<size_t, rg::TexNode*>  id_preeffect_map {};
@@ -102,6 +126,15 @@ struct ExtraInfo {
     rg::RenderGraph*           rgraph { nullptr };
     Scene*                     scene { nullptr };
     bool                       use_mipmap_framebuffer { false };
+
+    // Every (node id, effect index) pair that carries a script or
+    // user-property visibility binding, built once from
+    // scene.propertyScripts / scene.userPropEffectVisBindings before the
+    // graph traversal starts.  LoadEffectChain consults this, keyed by its
+    // layer's actual terminal index, to decide is_terminal_hideable --
+    // membership here says nothing on its own about WHICH position is a
+    // layer's terminal, only that some position carries a binding.
+    std::unordered_set<uint64_t> hideable_terminal_keys {};
 };
 
 // Register a self-write-hazard copy's destination as a name-bound render
@@ -210,13 +243,54 @@ static void addTextureReads(rg::RenderGraphBuilder& builder, ExtraInfo& extra,
     }
 }
 
-static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra);
+static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra,
+                        bool                         is_terminal_hideable = false,
+                        const PassthroughSourceInfo* passthrough_info     = nullptr);
 
 static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
 
     effs->ResolveEffect(scene.default_effect_mesh, "effect");
+
+    // The terminal write target ResolveEffect just picked, if this layer has
+    // one, and whether some position on this node's layer -- necessarily the
+    // terminal index once found, since a hideable binding only ever survives
+    // registration for the layer's actual last built effect (see
+    // ScriptEffectVisResolve.hpp / UserPropEffectVisResolve.hpp) -- carries a
+    // runtime visibility binding.  Checked once per layer instead of per
+    // node so a multi-material terminal effect's non-last nodes don't each
+    // repeat the lookup.
+    SceneNode* terminal_node        = effs->ResolvedLastOutput();
+    bool       terminal_is_hideable = false;
+    if (terminal_node != nullptr && effs->EffectCount() > 0) {
+        const i32 termIdx = (i32)(effs->EffectCount() - 1);
+        terminal_is_hideable =
+            extra.hideable_terminal_keys.count(PackNodeEffectKey(node->ID(), termIdx)) != 0;
+    }
+
+    // Gathered only when needed -- the overwhelming majority of layers carry
+    // no terminal binding and never walk their chain for this.
+    PassthroughSourceInfo passthrough_info;
+    if (terminal_is_hideable) {
+        passthrough_info.bufferA = std::string(effs->FirstTarget());
+        passthrough_info.bufferB = std::string(effs->SecondTarget());
+        const usize termIdx      = effs->EffectCount() - 1;
+        passthrough_info.predecessorNodes.reserve(termIdx);
+        for (usize j = 0; j < termIdx; j++) {
+            auto&      eff_j = effs->GetEffect(j);
+            SceneNode* rep   = nullptr;
+            if (! eff_j->nodes.empty()) rep = eff_j->nodes.front().sceneNode.get();
+            if (rep == nullptr) {
+                LOG_ERROR("terminal-hideable layer's predecessor effect %zu (node %d) has no "
+                          "representative node -- treating it as always hidden for passthrough "
+                          "buffer selection",
+                          j,
+                          node->ID());
+            }
+            passthrough_info.predecessorNodes.push_back(rep);
+        }
+    }
 
     for (usize i = 0; i < effs->EffectCount(); i++) {
         auto& eff     = effs->GetEffect(i);
@@ -247,13 +321,21 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
                          (int)n.sceneNode->Mesh()->Material()->blenmode,
                          tex_list.c_str());
             }
-            ToGraphPass(n.sceneNode.get(), name, node->ID(), extra);
+            const bool this_is_hideable_terminal =
+                terminal_is_hideable && n.sceneNode.get() == terminal_node;
+            ToGraphPass(n.sceneNode.get(),
+                        name,
+                        node->ID(),
+                        extra,
+                        this_is_hideable_terminal,
+                        this_is_hideable_terminal ? &passthrough_info : nullptr);
             nodePos++;
         }
     }
 }
 
-static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra) {
+static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra,
+                        bool is_terminal_hideable, const PassthroughSourceInfo* passthrough_info) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
 
@@ -341,8 +423,16 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, imgeff, &output, &imgId, &rgraph, &scene, &extra](
-            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
+        [material,
+         node,
+         imgeff,
+         &output,
+         &imgId,
+         &rgraph,
+         &scene,
+         &extra,
+         is_terminal_hideable,
+         passthrough_info](rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
             const auto& pass = builder.workPassNode();
             pdesc.node       = node;
             pdesc.output     = output;
@@ -356,6 +446,33 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                             pass.ID(),
                             imgId,
                             TextureReadOptions {});
+
+            pdesc.is_terminal_hideable = is_terminal_hideable;
+            if (is_terminal_hideable && passthrough_info != nullptr) {
+                // Register BOTH of the chain's ping-pong buffers as extra
+                // reads, independent of which single slot the terminal's own
+                // (real) material happens to read -- execute() picks between
+                // them every frame (SelectPassthroughSource) instead of
+                // trusting a single slot resolved once here. Both names are
+                // always registered render targets for this node regardless
+                // of chain length (WPSceneParser sets up effect_ppong_a/b
+                // whenever a layer has effects at all), so neither read can
+                // dangle.
+                addTextureReads(builder,
+                                extra,
+                                rgraph,
+                                { passthrough_info->bufferA, passthrough_info->bufferB },
+                                pdesc,
+                                output,
+                                pass.ID(),
+                                imgId,
+                                TextureReadOptions { .checkSelfWriteHazard   = false,
+                                                     .registerSpecLinkTex    = false,
+                                                     .trackMipmapFramebuffer = false });
+                pdesc.passthrough_input_tex_index_a = (i32)(pdesc.textures.size() - 2);
+                pdesc.passthrough_input_tex_index_b = (i32)(pdesc.textures.size() - 1);
+                pdesc.passthrough_predecessor_nodes = passthrough_info->predecessorNodes;
+            }
 
             rg::TexNode* output_node { nullptr };
             output_node =
@@ -570,6 +687,21 @@ static void bindSelfReferencingLink(rg::RenderGraph& rgraph, ExtraInfo& extra,
 std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     std::unique_ptr<rg::RenderGraph> rgraph = std::make_unique<rg::RenderGraph>();
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
+    // Every (node id, effect index) the parser registered a runtime
+    // visibility binding for, script- or user-property-bound alike.
+    // LoadEffectChain looks these up by each layer's own actual terminal
+    // index as it walks the scene graph, so this set only needs to answer
+    // "does this exact position have a binding", not which positions are
+    // terminals.
+    for (auto& ps : scene.propertyScripts) {
+        if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
+        extra.hideable_terminal_keys.insert(PackNodeEffectKey(ps.id, ps.effectIndex));
+    }
+    for (auto& [name, bindings] : scene.userPropEffectVisBindings) {
+        for (auto& b : bindings) {
+            extra.hideable_terminal_keys.insert(PackNodeEffectKey(b.nodeId, b.effectIndex));
+        }
+    }
     {
         int pos = 0;
         for (auto& child : scene.sceneGraph->GetChildren()) {

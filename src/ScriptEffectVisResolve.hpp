@@ -37,12 +37,15 @@ struct PendingScriptEffectVis {
 
 // Walks `pending`, looks each entry's layer up in `nodeEffectLayerMap`, and
 // -- for every entry whose effect pointer is still present in that layer's
-// CURRENT m_effects, and is not the last entry in it -- appends a resolved
-// ScenePropertyScript to `out`. An entry that was dropped by
-// RemoveFailedEffects, whose node never made it into nodeEffectLayerMap, or
-// that ended up last on its layer is silently skipped: leaving the effect
-// unregistered means it keeps its static `value` visibility forever, the
-// same safe degrade an ordinary material-load failure already gets.
+// CURRENT m_effects -- appends a resolved ScenePropertyScript to `out`,
+// including one that ends up last on its layer: the render side now draws a
+// hidden terminal's passthrough (CustomShaderPass::is_terminal_hideable)
+// instead of leaving the structural write forced visible, so the terminal
+// position is safe to register like any other. An entry that was dropped by
+// RemoveFailedEffects, or whose node never made it into nodeEffectLayerMap,
+// is still silently skipped: leaving the effect unregistered means it keeps
+// its static `value` visibility forever, the same safe degrade an ordinary
+// material-load failure already gets.
 inline void resolvePendingScriptEffectVis(
     const std::vector<PendingScriptEffectVis>&             pending,
     const std::unordered_map<i32, SceneImageEffectLayer*>& nodeEffectLayerMap,
@@ -53,7 +56,6 @@ inline void resolvePendingScriptEffectVis(
         auto* layer = it->second;
         for (std::size_t i = 0; i < layer->EffectCount(); i++) {
             if (layer->GetEffect(i).get() != p.effect) continue;
-            if (i + 1 == layer->EffectCount()) break; // terminal -- leave unregistered, see header
             ScenePropertyScript sps;
             sps.id               = p.nodeId;
             sps.property         = "visible";

@@ -1978,13 +1978,16 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             auto* csp = csps[i];
             if (! csp || ! csp->prepared() || ! csp->isCacheable()) continue;
             cacheable_total++;
-            if (safe[i]) {
-                // Skip cache for passes whose output is _rt_default: PrePass
-                // unconditionally clears _rt_default each frame, so a cached
-                // CSP for it would leave clearcolor visible on every frame
-                // after the cache marks it skip-safe.  Offscreen/pingpong RTs
-                // are not touched by PrePass and remain safe to cache.
-                if (csp->desc().output == SpecTex_Default) continue;
+            // EligibleForOutputCache folds two carve-outs on top of the alias
+            // verdict: _rt_default is never cached (PrePass clears it every
+            // frame, so a cached CSP for it would leave clearcolor visible
+            // once the cache marks it skip-safe), and neither is a terminal-
+            // hideable pass, even on a private offscreen RT (which pipeline
+            // it draws depends on runtime visibility -- caching would freeze
+            // whichever one happened to run through the next toggle).
+            if (EligibleForOutputCache(csp->desc().output == SpecTex_Default,
+                                       csp->desc().is_terminal_hideable,
+                                       safe[i])) {
                 csp->setCanCache(true);
                 cache_gated++;
                 auto&             d    = csp->desc();

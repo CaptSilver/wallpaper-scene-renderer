@@ -53,6 +53,7 @@ public:
     // a hole at the end of the chain.
     std::size_t RemoveFailedEffects();
     const auto& FirstTarget() const { return m_pingpong_a; }
+    const auto& SecondTarget() const { return m_pingpong_b; }
     SceneMesh&  FinalMesh() const { return *m_final_mesh; }
     SceneNode&  FinalNode() const { return *m_final_node; }
     void        SetFinalBlend(BlendMode m) { m_final_blend = m; }

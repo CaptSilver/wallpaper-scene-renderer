@@ -171,6 +171,213 @@ TEST_SUITE("CustomShaderPass time-uniform detection") {
     }
 }
 
+// ShouldDrawPassthrough gates the pipeline-select branch in execute(): does
+// THIS frame draw the terminal's passthrough pipeline instead of its real
+// one?  Only when the pass both carries a runtime visibility binding on the
+// terminal position (is_terminal_hideable) AND the node is hidden right now
+// AND prepare() actually managed to build the passthrough pipeline and UBO.
+TEST_SUITE("CustomShaderPass::ShouldDrawPassthrough") {
+    using wallpaper::vulkan::ShouldDrawPassthrough;
+
+    TEST_CASE("an ordinary (non-terminal-hideable) pass never draws passthrough, hidden or not") {
+        CHECK_FALSE(ShouldDrawPassthrough(
+            /*is_terminal_hideable=*/false, /*node_hidden=*/false, /*passthrough_ready=*/false));
+        // Can't happen through the render graph today (nothing marks a
+        // non-hideable pass this way), but pins the byte-identical
+        // blast-radius contract: is_terminal_hideable is the only thing that
+        // can turn this on.
+        CHECK_FALSE(ShouldDrawPassthrough(
+            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*passthrough_ready=*/true));
+    }
+    TEST_CASE("a terminal-hideable pass that's currently visible draws its real material") {
+        CHECK_FALSE(ShouldDrawPassthrough(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/false, /*passthrough_ready=*/true));
+    }
+    TEST_CASE("a terminal-hideable pass that's hidden draws the passthrough") {
+        CHECK(ShouldDrawPassthrough(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/true));
+    }
+    TEST_CASE("a hidden terminal-hideable pass whose passthrough failed to build never binds it") {
+        // prepare() leaves passthrough_pipeline default-constructed when the
+        // shader compile, reflection, render pass, pipeline or UBO step fails;
+        // binding that null handle would be invalid Vulkan usage.
+        CHECK_FALSE(ShouldDrawPassthrough(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    }
+}
+
+// HiddenTerminalKeepsRealDraw is the fallback for the last case above: with no
+// passthrough to draw, a hidden terminal-hideable pass keeps drawing its real
+// material -- the same thing it did before terminal effects could be hidden at
+// all -- rather than dropping its draw and blanking the whole layer.
+TEST_SUITE("CustomShaderPass::HiddenTerminalKeepsRealDraw") {
+    using wallpaper::vulkan::HiddenTerminalKeepsRealDraw;
+
+    TEST_CASE("only a hidden terminal-hideable pass with no passthrough falls back to its real "
+              "draw") {
+        CHECK(HiddenTerminalKeepsRealDraw(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    }
+    TEST_CASE("a working passthrough, a visible node, or an ordinary pass never takes the "
+              "fallback") {
+        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/true));
+        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/false, /*passthrough_ready=*/false));
+        // An ordinary hidden pass keeps the existing skip-or-draw-nothing path.
+        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
+            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    }
+}
+
+// SelectPassthroughSource picks which of the chain's two physical ping-pong
+// buffers the passthrough pipeline samples, given the visibility of every
+// effect ahead of the terminal (index 0..N-1, N-1 being the terminal's
+// immediate predecessor).  SceneImageEffectLayer::ResolveEffect's swap_pp
+// alternates each effect's OUTPUT between buffer B (even index) and buffer A
+// (odd index), and the un-effected base draw always lands in buffer A too --
+// so walking backward from the last predecessor to the first visible one,
+// and falling back to buffer A when none are, is exactly "the last visible
+// effect's output, or the layer's own image when nothing ahead is visible".
+//
+// A fixed, compile-time-resolved slot (this predicate's predecessor) gets
+// this wrong whenever the terminal's immediate predecessor is ALSO hidden:
+// that predecessor is a non-terminal pass, so it already takes the ordinary
+// skip path when hidden (CustomShaderPass's existing invisible-fast-path),
+// leaving its buffer holding stale content from whenever it was last drawn
+// instead of this frame's real answer.  Object 174's "Album Cover" layer
+// hits exactly this: Current (index 1) and Previous (the terminal) hide
+// together on an artless track, and the fixed slot would show Current's
+// stale last-drawn thumbnail instead of Defualt's (index 0) fresh output.
+TEST_SUITE("CustomShaderPass::SelectPassthroughSource") {
+    using wallpaper::vulkan::PassthroughSource;
+    using wallpaper::vulkan::SelectPassthroughSource;
+
+    TEST_CASE("no predecessors (single-effect chain, terminal IS effect 0) -> buffer A, the "
+              "layer's own image") {
+        CHECK(SelectPassthroughSource({}) == PassthroughSource::BufferA);
+    }
+
+    TEST_CASE("one predecessor") {
+        // visible -> its own output, buffer B (index 0 is even)
+        CHECK(SelectPassthroughSource({ true }) == PassthroughSource::BufferB);
+        // hidden, nothing before it -> the layer's own image, buffer A
+        CHECK(SelectPassthroughSource({ false }) == PassthroughSource::BufferA);
+    }
+
+    TEST_CASE("two predecessors (Album Cover's Defualt/Current shape)") {
+        // both hidden -> buffer A
+        CHECK(SelectPassthroughSource({ false, false }) == PassthroughSource::BufferA);
+        // only Current (index 1, odd) visible -> buffer A, its own output
+        CHECK(SelectPassthroughSource({ false, true }) == PassthroughSource::BufferA);
+        // only Defualt (index 0, even) visible, Current hidden -> buffer B --
+        // the exact failure scenario: a fixed slot pointed at Current's own
+        // (stale) buffer A instead.
+        CHECK(SelectPassthroughSource({ true, false }) == PassthroughSource::BufferB);
+        // both visible -> Current (last, index 1) wins -> buffer A
+        CHECK(SelectPassthroughSource({ true, true }) == PassthroughSource::BufferA);
+    }
+
+    TEST_CASE("three predecessors -- every hidden-run pattern") {
+        CHECK(SelectPassthroughSource({ false, false, false }) == PassthroughSource::BufferA);
+        CHECK(SelectPassthroughSource({ false, false, true }) == PassthroughSource::BufferB);
+        CHECK(SelectPassthroughSource({ false, true, false }) == PassthroughSource::BufferA);
+        CHECK(SelectPassthroughSource({ false, true, true }) == PassthroughSource::BufferB);
+        CHECK(SelectPassthroughSource({ true, false, false }) == PassthroughSource::BufferB);
+        CHECK(SelectPassthroughSource({ true, false, true }) == PassthroughSource::BufferB);
+        CHECK(SelectPassthroughSource({ true, true, false }) == PassthroughSource::BufferA);
+        CHECK(SelectPassthroughSource({ true, true, true }) == PassthroughSource::BufferB);
+    }
+}
+
+// Pins the new Desc fields' defaults so an untouched pass (no
+// SceneToRenderGraph wiring) behaves exactly like today: no passthrough
+// anything gets built or bound.
+TEST_SUITE("CustomShaderPass::Desc terminal-hideable fields") {
+    TEST_CASE("is_terminal_hideable defaults to false") {
+        CustomShaderPass::Desc desc;
+        CHECK_FALSE(desc.is_terminal_hideable);
+    }
+    TEST_CASE("passthrough_input_tex_index_a and _b default to -1") {
+        CustomShaderPass::Desc desc;
+        CHECK(desc.passthrough_input_tex_index_a == -1);
+        CHECK(desc.passthrough_input_tex_index_b == -1);
+    }
+    TEST_CASE("passthrough_predecessor_nodes defaults empty") {
+        CustomShaderPass::Desc desc;
+        CHECK(desc.passthrough_predecessor_nodes.empty());
+    }
+    TEST_CASE("passthrough_tex_binding defaults to -1") {
+        CustomShaderPass::Desc desc;
+        CHECK(desc.passthrough_tex_binding == -1);
+    }
+}
+
+// IsHiddenPassSkippable alone would let a hidden terminal-hideable pass on a
+// non-clearing RT (the shared _rt_default, whenever this object isn't the
+// first thing drawn onto the composite) take the early-return skip and never
+// record anything -- silently breaking the "hiding it still draws something"
+// contract the passthrough pipeline depends on.  The guard at
+// CustomShaderPass::execute()'s invisible-node fast path adds the
+// is_terminal_hideable exemption; this wrapper mirrors that exact
+// conjunction so the exemption is covered without a live Device.
+namespace
+{
+bool wouldTakeHiddenSkipPath(bool is_terminal_hideable, bool node_hidden, bool clears_output) {
+    return ! is_terminal_hideable &&
+           wallpaper::vulkan::IsHiddenPassSkippable(node_hidden, clears_output);
+}
+} // namespace
+
+TEST_SUITE("CustomShaderPass terminal-hideable skip-guard exemption") {
+    TEST_CASE("an ordinary hidden pass on a non-clearing RT takes the skip path") {
+        CHECK(wouldTakeHiddenSkipPath(
+            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*clears_output=*/false));
+    }
+    TEST_CASE("a hidden terminal-hideable pass on the SAME shape does NOT take the skip path") {
+        // clears_output=false is exactly the shared _rt_default, not-first-
+        // layer case -- without the exemption this is the one that silently
+        // never records.
+        CHECK_FALSE(wouldTakeHiddenSkipPath(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*clears_output=*/false));
+    }
+    TEST_CASE("a hidden terminal-hideable pass that owns its RT's clear still never skips either "
+              "way") {
+        // clears_output=true already made IsHiddenPassSkippable false on its
+        // own (the private-offscreen-RT case) -- the exemption changes
+        // nothing there, it's only load-bearing for clears_output=false.
+        CHECK_FALSE(wouldTakeHiddenSkipPath(
+            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*clears_output=*/true));
+        CHECK_FALSE(wouldTakeHiddenSkipPath(
+            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*clears_output=*/true));
+    }
+}
+
+// A terminal-hideable pass appends 2 extra texture reads (the chain's two
+// ping-pong buffers) on top of however many the real material already
+// declares, so an index built from vk_textures.size() can run past
+// WE_GLTEX_NAMES' fixed 13 entries -- Wallpaper Engine materials only ever
+// declare g_Texture0 through g_Texture12. GLTexNameForIndex is the
+// bounds-checked stand-in for indexing that array directly.
+TEST_SUITE("CustomShaderPass::GLTexNameForIndex") {
+    using wallpaper::vulkan::GLTexNameForIndex;
+
+    TEST_CASE("in-range indices return the matching g_TextureN name") {
+        CHECK(std::string_view(GLTexNameForIndex(0)) == "g_Texture0");
+        CHECK(std::string_view(GLTexNameForIndex(12)) == "g_Texture12");
+    }
+    TEST_CASE("the first index past the table returns null, not a read past the end") {
+        // A material that already declares all 13 slots (0..12) plus this
+        // pass's 2 passthrough reads lands exactly here (index 13) --
+        // without the bound this indexed WE_GLTEX_NAMES out of range.
+        CHECK(GLTexNameForIndex(13) == nullptr);
+    }
+    TEST_CASE("further past the table also returns null") {
+        CHECK(GLTexNameForIndex(14) == nullptr);
+        CHECK(GLTexNameForIndex(100) == nullptr);
+    }
+}
+
 TEST_SUITE("CustomShaderPass fallback texture") {
     using wallpaper::i32;
     using wallpaper::vulkan::ImageSlotsRef;

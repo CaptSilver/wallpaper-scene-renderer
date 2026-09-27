@@ -3113,8 +3113,12 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(effectScriptCount == 1);
     }
 
-    TEST_CASE("a script-bound effect visible field on the layer's last effect gets no property "
-              "script") {
+    TEST_CASE("a script-bound effect visible field on a single-effect layer's only (and so "
+              "terminal) effect now registers at index 0") {
+        // The dominant real-world shape (426/865 hits in the library scan):
+        // a single-effect chain where the terminal IS effect 0.  CustomShaderPass
+        // draws a passthrough pipeline for it when hidden instead of forcing
+        // the write visible, so it's safe to register like any other effect.
         ensureGlslangInit();
         auto                vfs        = makeAssetsVfsWith({
             { "/effects/bloom.json", kEffectFileJson },
@@ -3143,20 +3147,71 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
             parser.Parse("scene_terminal_script_bound_effect", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
+        int effectScriptCount = 0;
         for (const auto& ps : scene->propertyScripts) {
-            CHECK(ps.attachment != ScenePropertyScript::Attachment::Effect);
+            if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
+            effectScriptCount++;
+            CHECK(ps.id == 512);
+            CHECK(ps.effectIndex == 0);
         }
+        CHECK(effectScriptCount == 1);
     }
 
-    TEST_CASE("Album Cover's real Current/Previous shape resolves Current, excludes Previous") {
+    TEST_CASE("a user-bound effect on a single-effect layer's only (and so terminal) effect now "
+              "registers at index 0") {
+        // The "Blurred Cover" idiom (Now Playing 2883312700, object 2065):
+        // one image effect whose own visible field is a plain user-property
+        // toggle, not a script.  Same single-effect-chain shape as above, on
+        // the user-property path instead of the script one.
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/blur.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 2065, "name": "Blurred Cover",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "blur",
+          "visible": {"user": "blurredcover_enable", "value": true},
+          "file": "effects/blur.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_terminal_user_bound_single_effect", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(2065) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(2065);
+        REQUIRE(effLayer->EffectCount() == 1u);
+
+        REQUIRE(scene->userPropEffectVisBindings.count("blurredcover_enable") == 1u);
+        const auto& binding = scene->userPropEffectVisBindings.at("blurredcover_enable");
+        REQUIRE(binding.size() == 1u);
+        CHECK(binding[0].nodeId == 2065);
+        CHECK(binding[0].effectIndex == 0);
+        CHECK(binding[0].defaultVisible);
+    }
+
+    TEST_CASE("Album Cover's real Current/Previous shape resolves both Current and Previous") {
         // Verbatim shape from this wallpaper's real scene.json (Now Playing
         // album-art crossfade): three effects -- a static placeholder
         // ("Defualt"), then two script-gated ones ("Current"/"Previous") that
         // toggle on mediaThumbnailChanged. "Previous" is the structurally-last
-        // effect on the layer, so the terminal-safety rule excludes it from
-        // ever getting a runtime binding -- its OWN visibility never toggles
-        // via this mechanism (a separate pass-level script still fades its
-        // edge-glow, unaffected by this exclusion).
+        // effect on the layer; CustomShaderPass draws a passthrough pipeline
+        // for it when hidden (is_terminal_hideable) instead of forcing its
+        // write visible, so it registers a runtime binding like "Current"
+        // does.
         ensureGlslangInit();
         constexpr const char* kDefualtEffectFileJson  = R"({
             "name": "Defualt",
@@ -3210,15 +3265,26 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(174);
         REQUIRE(effLayer->EffectCount() == 3u); // all three build -- none is a plain "false"
 
-        int effectScriptCount = 0;
+        std::vector<std::string> registeredEffects;
         for (const auto& ps : scene->propertyScripts) {
             if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
-            effectScriptCount++;
             CHECK(ps.id == 174);
             CHECK(ps.layerName == "Album Cover");
-            CHECK(effLayer->GetEffect((std::size_t)ps.effectIndex)->name == "Current");
+            registeredEffects.push_back(effLayer->GetEffect((std::size_t)ps.effectIndex)->name);
+            if (registeredEffects.back() == "Previous") {
+                CHECK(ps.effectIndex == 2); // the layer's actual terminal index
+            }
         }
-        CHECK(effectScriptCount == 1); // "Previous" -- the terminal effect -- is excluded
+        // Both script-gated effects register now -- "Previous" no longer
+        // needs the terminal exclusion (see CustomShaderPass::is_terminal_hideable).
+        bool sawCurrent = false, sawPrevious = false;
+        for (auto& name : registeredEffects) {
+            if (name == "Current") sawCurrent = true;
+            if (name == "Previous") sawPrevious = true;
+        }
+        CHECK(registeredEffects.size() == 2u);
+        CHECK(sawCurrent);
+        CHECK(sawPrevious);
     }
 
     // The sibling case for the OTHER survivor on this line (`cxx_gt_to_ge`,

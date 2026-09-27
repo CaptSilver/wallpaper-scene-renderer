@@ -111,6 +111,22 @@ std::vector<bool> ComputeIsSafeToSkip(std::span<const H>              outputs,
     return safe;
 }
 
+// Should a pass ComputeIsSafeToSkip already cleared for caching actually
+// have canCache() set?  Folds the two carve-outs the cache-gating loop in
+// VulkanRender::compileRenderGraph applies on top of the alias verdict:
+//   - _rt_default is never cached -- PrePass clears it every frame, so a
+//     cached pass there would leave a stale clear-color on screen.
+//   - a terminal-hideable pass is never cached, even on a private offscreen
+//     RT: which pipeline it draws (real vs. passthrough) depends on runtime
+//     visibility, so a cached frame would freeze whichever one happened to
+//     be current through the next toggle.
+inline bool EligibleForOutputCache(bool is_rt_default, bool is_terminal_hideable,
+                                   bool safe_to_skip) {
+    if (is_rt_default) return false;
+    if (is_terminal_hideable) return false;
+    return safe_to_skip;
+}
+
 // Invisible-node fast path guard.  A runtime-hidden pass can skip its
 // whole execute (no render pass begin/end, no barriers, no descriptor
 // pushes) only when doing so wouldn't strand a depth image in

@@ -66,6 +66,24 @@ TEST_SUITE("UserPropRuntimeUpdate") {
 
         CHECK(needReload.empty());
     }
+
+    TEST_CASE("a binding at a layer's terminal effect index needs no reload either") {
+        // Regression guard for retiring the terminal-position full-reload
+        // fallback: userPropHasRuntimeBinding never special-cased effectIndex
+        // by position, so once ScriptEffectVisResolve/UserPropEffectVisResolve
+        // stopped dropping the terminal binding at the parser layer (the case
+        // this guards), the map simply gains an entry the parser used to
+        // withhold -- this function's own behaviour needs no change. Index 2
+        // mirrors Album Cover's "Previous" position (a 3-effect layer's
+        // terminal).
+        Scene scene;
+        scene.userPropEffectVisBindings["mediaplayer_previous_enable"].push_back(
+            { 174, 2, true, "{}" });
+
+        auto needReload = wek::userPropsNeedingReload(scene, { "mediaplayer_previous_enable" });
+
+        CHECK(needReload.empty());
+    }
 }
 
 TEST_SUITE("ResolveVisibilityFromJson") {

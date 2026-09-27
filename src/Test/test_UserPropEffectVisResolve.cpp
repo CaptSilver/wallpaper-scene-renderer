@@ -70,7 +70,11 @@ TEST_SUITE("UserPropEffectVisResolve") {
         CHECK(bindings.at("godrays_enable")[0].nodeId == 42);
     }
 
-    TEST_CASE("an effect that ends up last on its layer is left unregistered") {
+    TEST_CASE("an effect that ends up last on its layer now registers normally") {
+        // CustomShaderPass draws a passthrough pipeline for a hidden terminal
+        // (is_terminal_hideable) instead of forcing its structural write
+        // visible, so the terminal position no longer needs the special-cased
+        // skip -- it resolves exactly like any other bound effect.
         auto                  worldNode = std::make_shared<SceneNode>();
         SceneImageEffectLayer layer(worldNode.get(), "_rt_a", "_rt_b");
         layer.AddEffect(makeEffectWithNode("pulse", makeNodeWithCodes({ goodCode() })));
@@ -85,7 +89,36 @@ TEST_SUITE("UserPropEffectVisResolve") {
 
         wek::resolvePendingUserPropEffectVis(pending, nodeMap, bindings);
 
-        CHECK(bindings.count("godrays_enable") == 0);
+        REQUIRE(bindings.count("godrays_enable") == 1);
+        REQUIRE(bindings.at("godrays_enable").size() == 1);
+        CHECK(bindings.at("godrays_enable")[0].effectIndex == 1);
+        CHECK(bindings.at("godrays_enable")[0].nodeId == 42);
+    }
+
+    TEST_CASE("a single-effect layer's one bound effect registers at index 0") {
+        // The dominant real-world shape (the "Blurred Cover" idiom): the
+        // terminal and effect 0 are the same effect, so there's no
+        // predecessor at all -- the passthrough must fall back to the
+        // layer's own base image rather than sampling a buffer no earlier
+        // effect ever wrote.
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "_rt_a", "_rt_b");
+        auto bound = makeEffectWithNode("bound", makeNodeWithCodes({ goodCode() }));
+        layer.AddEffect(bound);
+        REQUIRE(layer.EffectCount() == 1u);
+
+        std::unordered_map<i32, SceneImageEffectLayer*> nodeMap { { 99, &layer } };
+        std::vector<wek::PendingUserPropEffectVis>      pending {
+            { bound.get(), 99, true, "{}", "blurredcover_enable" }
+        };
+        std::unordered_map<std::string, std::vector<Scene::UserPropEffectVisibility>> bindings;
+
+        wek::resolvePendingUserPropEffectVis(pending, nodeMap, bindings);
+
+        REQUIRE(bindings.count("blurredcover_enable") == 1);
+        REQUIRE(bindings.at("blurredcover_enable").size() == 1);
+        CHECK(bindings.at("blurredcover_enable")[0].effectIndex == 0);
+        CHECK(bindings.at("blurredcover_enable")[0].nodeId == 99);
     }
 
     TEST_CASE("an effect RemoveFailedEffects dropped entirely is left unregistered") {

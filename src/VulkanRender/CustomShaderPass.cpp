@@ -63,20 +63,65 @@ int g_invisible_skips = 0;
 } // namespace wallpaper::vulkan
 
 CustomShaderPass::CustomShaderPass(const Desc& desc) {
-    m_desc.node               = desc.node;
-    m_desc.textures           = desc.textures;
-    m_desc.output             = desc.output;
-    m_desc.sprites_map        = desc.sprites_map;
-    m_desc.camera_override    = desc.camera_override;
-    m_desc.disableDepth       = desc.disableDepth;
-    m_desc.flipCullMode       = desc.flipCullMode;
-    m_desc.useReflectionDepth = desc.useReflectionDepth;
-    m_desc.needsSceneDepth    = desc.needsSceneDepth;
-    m_desc.force_clear_output = desc.force_clear_output;
+    m_desc.node                          = desc.node;
+    m_desc.textures                      = desc.textures;
+    m_desc.output                        = desc.output;
+    m_desc.sprites_map                   = desc.sprites_map;
+    m_desc.camera_override               = desc.camera_override;
+    m_desc.disableDepth                  = desc.disableDepth;
+    m_desc.flipCullMode                  = desc.flipCullMode;
+    m_desc.useReflectionDepth            = desc.useReflectionDepth;
+    m_desc.needsSceneDepth               = desc.needsSceneDepth;
+    m_desc.force_clear_output            = desc.force_clear_output;
+    m_desc.is_terminal_hideable          = desc.is_terminal_hideable;
+    m_desc.passthrough_input_tex_index_a = desc.passthrough_input_tex_index_a;
+    m_desc.passthrough_input_tex_index_b = desc.passthrough_input_tex_index_b;
+    m_desc.passthrough_predecessor_nodes = desc.passthrough_predecessor_nodes;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+
+// Hand-written passthrough pair for a terminal-hideable pass (in the spirit
+// of FinPass.cpp's own hand-rolled quad shaders).  The real material's
+// translated-HLSL vertex shader gives no guarantee about which varyings it
+// exposes or at which locations, so the passthrough can't reuse it -- it
+// draws the terminal's own mesh with its own tiny shader pair instead,
+// sampling the chain's already-resolved input 1:1.  a_Position/a_TexCoord
+// match every mesh's vertex-attribute names (WPSceneParser's WE_IN_POSITION/
+// WE_IN_TEXCOORD), so the same mesh vertex buffers bind unchanged.
+constexpr std::string_view kPassthroughVertCode = R"(#version 320 es
+layout(location = 0) in vec3 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(location = 0) out vec2 v_Texcoord;
+
+layout(binding = 0) uniform PassthroughBlock {
+    mat4 g_ModelViewProjectionMatrix;
+};
+
+void main()
+{
+    v_Texcoord = a_TexCoord;
+    gl_Position = g_ModelViewProjectionMatrix * vec4(a_Position, 1.0);
+}
+)";
+
+// No color transform: passing the sampled texel straight through IS "the
+// layer's own image" for a single-effect chain, or "the last visible
+// effect's output" for a longer one -- see CustomShaderPass.hpp's
+// ShouldDrawPassthrough and the design note above is_terminal_hideable.
+constexpr std::string_view kPassthroughFragCode = R"(#version 320 es
+precision highp float;
+layout(location = 0) in vec2 v_Texcoord;
+layout(location = 0) out vec4 out_FragColor;
+
+layout(binding = 1) uniform sampler2D g_Texture0;
+
+void main()
+{
+    out_FragColor = texture(g_Texture0, v_Texcoord);
+}
+)";
 
 static std::shared_ptr<VmaImageParameters>
 GetOrCreateDepthImage(std::shared_ptr<void>& storage, const Device& device, VkExtent3D extent,
@@ -659,9 +704,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             });
 
         for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-            i32 binding { -1 };
-            if (exists(ref.binding_map, WE_GLTEX_NAMES[i]))
-                binding = (i32)ref.binding_map.at(WE_GLTEX_NAMES[i]).binding;
+            i32         binding { -1 };
+            const char* tex_name = GLTexNameForIndex(i);
+            if (tex_name != nullptr && exists(ref.binding_map, tex_name))
+                binding = (i32)ref.binding_map.at(tex_name).binding;
             m_desc.vk_tex_binding.push_back(binding);
         }
     }
@@ -963,6 +1009,170 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                          (int)mesh.Material()->depthWrite,
                          mesh.Material()->cullmode.c_str(),
                          (int)mesh.Material()->blenmode);
+            }
+        }
+
+        // Terminal-hideable: build a second, minimal pipeline that samples
+        // this pass's already-resolved chain input straight through, bound
+        // instead of the real one while the node is hidden (see execute()'s
+        // ShouldDrawPassthrough branch). It shares this pass's vertex/index
+        // buffers and framebuffer; only the render-pass OBJECT is a second,
+        // attachment-compatible one -- GraphicsPipeline::create() takes
+        // ownership of whatever vvk::RenderPass it's handed (moves it into
+        // the output PipelineParameters), so handing it the real pipeline's
+        // own m_desc.pipeline.pass would empty that out from under the real
+        // draw. Vulkan only requires the bound pipeline's render pass be
+        // COMPATIBLE with the one active at vkCmdBeginRenderPass time, not
+        // the identical handle, so a second render pass built from the exact
+        // same attachment description is legal to bind against the same
+        // framebuffer.
+        if (m_desc.is_terminal_hideable) {
+            std::vector<Uni_ShaderSpv> pt_compiled;
+            bool                       pt_ok = true;
+            {
+                ShaderCompOpt opt;
+                opt.client_ver             = glslang::EShTargetVulkan_1_1;
+                opt.relaxed_errors_glsl    = true;
+                opt.relaxed_rules_vulkan   = true;
+                opt.suppress_warnings_glsl = true;
+
+                std::array<ShaderCompUnit, 2> units;
+                units[0] = ShaderCompUnit { EShLangVertex, std::string(kPassthroughVertCode) };
+                units[1] = ShaderCompUnit { EShLangFragment, std::string(kPassthroughFragCode) };
+                pt_ok    = CompileAndLinkShaderUnits(units, opt, pt_compiled);
+                if (! pt_ok) {
+                    LOG_ERROR("passthrough shader compile failed for terminal-hideable pass "
+                              "(shader '%s')",
+                              mesh.Material()->customShader.shader->name.c_str());
+                }
+            }
+
+            std::vector<Uni_ShaderSpv> pt_spvs;
+            ShaderReflected            pt_ref;
+            if (pt_ok) {
+                std::vector<std::vector<uint>> pt_codes;
+                pt_codes.reserve(pt_compiled.size());
+                for (auto& spv : pt_compiled) pt_codes.push_back(spv->spirv);
+                pt_ok = GenReflect(pt_codes, pt_spvs, pt_ref);
+                if (! pt_ok) {
+                    LOG_ERROR("passthrough shader reflect failed for terminal-hideable pass "
+                              "(shader '%s')",
+                              mesh.Material()->customShader.shader->name.c_str());
+                }
+            }
+
+            if (pt_ok && ! pt_ref.blocks.empty() && exists(pt_ref.binding_map, "g_Texture0")) {
+                m_desc.passthrough_tex_binding = (i32)pt_ref.binding_map.at("g_Texture0").binding;
+
+                std::vector<VkVertexInputAttributeDescription> pt_attr_descriptions;
+                for (uint i = 0; i < mesh.VertexCount(); i++) {
+                    const auto& vertex    = mesh.GetVertexArray(i);
+                    auto        attrs_map = vertex.GetAttrOffsetMap();
+                    for (auto& item : pt_ref.input_location_map) {
+                        auto& name   = item.first;
+                        auto& input  = item.second;
+                        bool  found  = exists(attrs_map, name);
+                        usize offset = found ? attrs_map[name].offset : 0;
+                        pt_attr_descriptions.push_back(VkVertexInputAttributeDescription {
+                            .location = input.location,
+                            .binding  = i,
+                            .format   = input.format,
+                            .offset   = (u32)offset,
+                        });
+                    }
+                }
+
+                DescriptorSetInfo pt_descriptor_info;
+                pt_descriptor_info.push_descriptor = true;
+                pt_descriptor_info.bindings.resize(pt_ref.binding_map.size());
+                std::transform(pt_ref.binding_map.begin(),
+                               pt_ref.binding_map.end(),
+                               pt_descriptor_info.bindings.begin(),
+                               [](auto& item) {
+                                   return item.second;
+                               });
+
+                auto pt_opt = CreateRenderPass(device.handle(),
+                                               output_vk_format,
+                                               loadOp,
+                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                               useDepth,
+                                               depthLoadOp,
+                                               m_desc.msaaSamples);
+                if (! pt_opt.has_value()) {
+                    LOG_ERROR("passthrough CreateRenderPass failed for shader '%s'",
+                              mesh.Material()->customShader.shader->name.c_str());
+                } else {
+                    auto&            pt_pass = pt_opt.value();
+                    GraphicsPipeline pt_pipeline;
+                    pt_pipeline.toDefault();
+                    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+                        pt_pipeline.multisample.rasterizationSamples = m_desc.msaaSamples;
+                    }
+                    // Same depth/cull state as the real pipeline: it draws the
+                    // identical geometry at the identical transform, so a 3D
+                    // node's passthrough must depth-test/write and cull the
+                    // same way or it would show through/behind neighbours the
+                    // real draw wouldn't have.
+                    pt_pipeline.depth  = pipeline.depth;
+                    pt_pipeline.raster = pipeline.raster;
+                    pt_pipeline.addDescriptorSetInfo(spanone { pt_descriptor_info })
+                        .setColorBlendStates(spanone { color_blend })
+                        .setTopology(m_desc.index_buf        ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+                                     : m_desc.point_topology ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+                                                             : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP)
+                        .addInputBindingDescription(bind_descriptions)
+                        .addInputAttributeDescription(pt_attr_descriptions);
+                    for (auto& spv : pt_spvs) pt_pipeline.addStage(std::move(spv));
+
+                    if (! pt_pipeline.create(device, pt_pass, m_desc.passthrough_pipeline)) {
+                        LOG_ERROR("passthrough pipeline.create failed for shader '%s'",
+                                  mesh.Material()->customShader.shader->name.c_str());
+                    } else if (rr.dyn_buf->allocateSubRef(
+                                   pt_ref.blocks.front().size,
+                                   m_desc.passthrough_ubo_buf,
+                                   device.limits().minUniformBufferOffsetAlignment)) {
+                        rr.dyn_buf->fillBuf(
+                            m_desc.passthrough_ubo_buf, 0, m_desc.passthrough_ubo_buf.size, 0);
+                        auto  pt_block        = pt_ref.blocks.front();
+                        auto* pt_buf          = rr.dyn_buf;
+                        auto* pt_bufref       = &m_desc.passthrough_ubo_buf;
+                        auto* pt_node         = m_desc.node;
+                        auto  pt_cam_override = m_desc.camera_override;
+                        auto* pt_updater      = scene.shaderValueUpdater.get();
+                        // Deliberately does NOT call InitUniforms again for
+                        // this node: that call resets the shared per-node
+                        // WPUniformInfo the real material's update_op above
+                        // already populated (keyed by SceneNode* alone), and
+                        // a second, narrower call would silently drop that
+                        // material's own g_Time/audio/etc. requirements.
+                        // UpdateUniforms only reads that info and writes
+                        // whichever globals it flags; our block just ignores
+                        // (via UpdateUniform's own not-found return) any name
+                        // it doesn't declare, so it's safe to call a second
+                        // time against the same per-node info.
+                        m_desc.passthrough_update_op =
+                            [pt_updater, pt_block, pt_buf, pt_bufref, pt_node, pt_cam_override]() {
+                                sprite_map_t no_sprites;
+                                auto update_unf_op = [&pt_block, pt_buf, pt_bufref](
+                                                         std::string_view              name,
+                                                         const wallpaper::ShaderValue& value) {
+                                    UpdateUniform(pt_buf, *pt_bufref, pt_block, name, value);
+                                };
+                                pt_updater->UpdateUniforms(
+                                    pt_node, no_sprites, update_unf_op, pt_cam_override);
+                            };
+                        m_desc.passthrough_ready = true;
+                    } else {
+                        LOG_ERROR("passthrough UBO allocate failed, size %zu",
+                                  (size_t)pt_ref.blocks.front().size);
+                    }
+                }
+            }
+            if (! m_desc.passthrough_ready) {
+                LOG_ERROR("no passthrough for terminal-hideable pass (shader '%s'); hiding it "
+                          "will leave its effect drawn",
+                          mesh.Material()->customShader.shader->name.c_str());
             }
         }
     }
@@ -1282,7 +1492,14 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // A hidden pass that opens or closes a merged group still records the
     // boundary — there is no way to hand a render pass instance over — but
     // its draw is dropped below by the same visibility test.
-    if (m_desc.node != nullptr &&
+    //
+    // A terminal-hideable pass is exempt: hiding it must still show whatever
+    // came before it in the chain, which needs the passthrough draw below,
+    // not a dropped record. Without this exemption a terminal writing to the
+    // shared _rt_default (clears_output false whenever this object isn't the
+    // first thing drawn onto the composite) would take the early-return skip
+    // and never record anything — see ShouldDrawPassthrough.
+    if (m_desc.node != nullptr && ! m_desc.is_terminal_hideable &&
         IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output) &&
         HiddenPassDropsRecording(role)) {
         // The hidden pass may still be the first user of its depth image this
@@ -1302,6 +1519,37 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     }
 
     if (m_desc.update_op) m_desc.update_op();
+
+    // Which pipeline this frame actually draws with.  A terminal-hideable
+    // pass whose node is hidden binds the passthrough pipeline built in
+    // prepare() instead of its real one; every other pass is unaffected.
+    const bool node_hidden = m_desc.node != nullptr && ! m_desc.node->IsVisible();
+    const bool draw_passthrough =
+        ShouldDrawPassthrough(m_desc.is_terminal_hideable, node_hidden, m_desc.passthrough_ready);
+    const bool keep_real_draw = HiddenTerminalKeepsRealDraw(
+        m_desc.is_terminal_hideable, node_hidden, m_desc.passthrough_ready);
+    const PipelineParameters& pipeline_to_bind =
+        draw_passthrough ? m_desc.passthrough_pipeline : m_desc.pipeline;
+    if (draw_passthrough && m_desc.passthrough_update_op) m_desc.passthrough_update_op();
+
+    // Which of the chain's two ping-pong buffers the passthrough samples
+    // THIS frame -- re-decided every execute() from the predecessors' live
+    // visibility, not baked in once at graph-compile time.  See
+    // SelectPassthroughSource for why a fixed slot isn't enough (a hidden
+    // immediate predecessor already took the ordinary skip path and is
+    // holding stale content, not this frame's answer).
+    i32 passthrough_tex_index = -1;
+    if (draw_passthrough) {
+        std::vector<bool> predecessorVisible(m_desc.passthrough_predecessor_nodes.size());
+        for (usize i = 0; i < predecessorVisible.size(); i++) {
+            auto* n               = m_desc.passthrough_predecessor_nodes[i];
+            predecessorVisible[i] = (n != nullptr) && n->IsVisible();
+        }
+        passthrough_tex_index =
+            (SelectPassthroughSource(predecessorVisible) == PassthroughSource::BufferB)
+                ? m_desc.passthrough_input_tex_index_b
+                : m_desc.passthrough_input_tex_index_a;
+    }
 
     // First-frame execution trace: log every pass with order, shader, output, load op, textures
     {
@@ -1396,62 +1644,144 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     m_image_infos_scratch.clear();
     m_descriptor_writes_scratch.clear();
 
-    for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-        auto& slot    = m_desc.vk_textures[i];
-        int   binding = m_desc.vk_tex_binding[i];
-        if (binding < 0) continue;
+    // Scope-local descriptor buffer infos, alive through the push call below.
+    VkDescriptorBufferInfo desc_buf {};
+    VkDescriptorBufferInfo pt_desc_buf {};
 
-        VkSampler   sampler;
-        VkImageView view;
-        if (slot.slots.empty()) {
-            // Shader declares this texture binding but no texture was loaded.
-            // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
-            // Vulkan validation error VUID-vkCmdDraw-None-08114.
-            if (! m_desc.vk_fallback_tex.sampler) continue;
-            sampler = m_desc.vk_fallback_tex.sampler;
-            view    = m_desc.vk_fallback_tex.view;
-        } else {
-            auto& img = slot.getActive();
-            sampler   = img.sampler;
-            view      = img.view;
-
-            // Skipped for a pass recorded inside someone else's render pass:
-            // vkCmdPipelineBarrier may only name attachments there.  Nothing
-            // is lost — this barrier's source access is a read and its layout
-            // does not change, so it orders nothing, and a pass is only
-            // merged when it samples none of the group's attachments.
-            if (opens)
-                m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
-                    .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-                    .pNext               = nullptr,
-                    .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
-                    .dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
-                    .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                    .image               = img.handle,
-                    .subresourceRange    = base_srang,
+    if (draw_passthrough) {
+        // One sampler: whichever of the chain's two ping-pong buffers
+        // passthrough_tex_index just picked for this frame.
+        if (m_desc.passthrough_tex_binding >= 0 && passthrough_tex_index >= 0 &&
+            (usize)passthrough_tex_index < m_desc.vk_textures.size()) {
+            auto& slot = m_desc.vk_textures[(usize)passthrough_tex_index];
+            if (! slot.slots.empty()) {
+                auto& img = slot.getActive();
+                if (opens)
+                    m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
+                        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        .pNext               = nullptr,
+                        .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+                        .dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
+                        .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image               = img.handle,
+                        .subresourceRange    = base_srang,
+                    });
+                m_image_infos_scratch.push_back(VkDescriptorImageInfo {
+                    img.sampler, img.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+                m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
+                    .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .pNext            = nullptr,
+                    .dstSet           = {},
+                    .dstBinding       = (uint32_t)m_desc.passthrough_tex_binding,
+                    .dstArrayElement  = 0,
+                    .descriptorCount  = 1,
+                    .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                    .pImageInfo       = &m_image_infos_scratch.back(),
+                    .pBufferInfo      = nullptr,
+                    .pTexelBufferView = nullptr,
                 });
+            }
+        }
+        if (m_desc.passthrough_ubo_buf) {
+            pt_desc_buf = {
+                rr.dyn_buf->gpuBuf(),
+                m_desc.passthrough_ubo_buf.offset,
+                m_desc.passthrough_ubo_buf.size,
+            };
+            m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
+                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext            = nullptr,
+                .dstSet           = {},
+                .dstBinding       = 0, // the passthrough vertex shader's UBO binding
+                .dstArrayElement  = 0,
+                .descriptorCount  = 1,
+                .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pImageInfo       = nullptr,
+                .pBufferInfo      = &pt_desc_buf,
+                .pTexelBufferView = nullptr,
+            });
+        }
+    } else {
+        for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
+            auto& slot    = m_desc.vk_textures[i];
+            int   binding = m_desc.vk_tex_binding[i];
+            if (binding < 0) continue;
+
+            VkSampler   sampler;
+            VkImageView view;
+            if (slot.slots.empty()) {
+                // Shader declares this texture binding but no texture was loaded.
+                // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
+                // Vulkan validation error VUID-vkCmdDraw-None-08114.
+                if (! m_desc.vk_fallback_tex.sampler) continue;
+                sampler = m_desc.vk_fallback_tex.sampler;
+                view    = m_desc.vk_fallback_tex.view;
+            } else {
+                auto& img = slot.getActive();
+                sampler   = img.sampler;
+                view      = img.view;
+
+                // Skipped for a pass recorded inside someone else's render pass:
+                // vkCmdPipelineBarrier may only name attachments there.  Nothing
+                // is lost — this barrier's source access is a read and its layout
+                // does not change, so it orders nothing, and a pass is only
+                // merged when it samples none of the group's attachments.
+                if (opens)
+                    m_image_barriers_scratch.push_back(VkImageMemoryBarrier {
+                        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                        .pNext               = nullptr,
+                        .srcAccessMask       = VK_ACCESS_MEMORY_READ_BIT,
+                        .dstAccessMask       = VK_ACCESS_SHADER_READ_BIT,
+                        .oldLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .newLayout           = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                        .image               = img.handle,
+                        .subresourceRange    = base_srang,
+                    });
+            }
+
+            // Push the image-info FIRST so its address is stable for the
+            // matching write below.  Capacity reserved at prepare-time →
+            // no realloc → addresses stay valid until the final array push.
+            m_image_infos_scratch.push_back(
+                VkDescriptorImageInfo { sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
+            m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
+                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext            = nullptr,
+                .dstSet           = {},
+                .dstBinding       = (uint32_t)binding,
+                .dstArrayElement  = 0,
+                .descriptorCount  = 1,
+                .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo       = &m_image_infos_scratch.back(),
+                .pBufferInfo      = nullptr,
+                .pTexelBufferView = nullptr,
+            });
         }
 
-        // Push the image-info FIRST so its address is stable for the
-        // matching write below.  Capacity reserved at prepare-time →
-        // no realloc → addresses stay valid until the final array push.
-        m_image_infos_scratch.push_back(
-            VkDescriptorImageInfo { sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL });
-        m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = {},
-            .dstBinding       = (uint32_t)binding,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .pImageInfo       = &m_image_infos_scratch.back(),
-            .pBufferInfo      = nullptr,
-            .pTexelBufferView = nullptr,
-        });
+        if (m_desc.ubo_buf) {
+            desc_buf = {
+                rr.dyn_buf->gpuBuf(),
+                m_desc.ubo_buf.offset,
+                m_desc.ubo_buf.size,
+            };
+            m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
+                .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .pNext            = nullptr,
+                .dstSet           = {},
+                .dstBinding       = 0,
+                .dstArrayElement  = 0,
+                .descriptorCount  = 1,
+                .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pImageInfo       = nullptr,
+                .pBufferInfo      = &desc_buf,
+                .pTexelBufferView = nullptr,
+            });
+        }
     }
 
     // Single batched barrier call instead of one per texture
@@ -1464,33 +1794,10 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                             m_image_barriers_scratch);
     }
 
-    // Append the UBO writeset (scope-local desc_buf, alive through the push
-    // call below).
-    VkDescriptorBufferInfo desc_buf {};
-    if (m_desc.ubo_buf) {
-        desc_buf = {
-            rr.dyn_buf->gpuBuf(),
-            m_desc.ubo_buf.offset,
-            m_desc.ubo_buf.size,
-        };
-        m_descriptor_writes_scratch.push_back(VkWriteDescriptorSet {
-            .sType            = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .pNext            = nullptr,
-            .dstSet           = {},
-            .dstBinding       = 0,
-            .dstArrayElement  = 0,
-            .descriptorCount  = 1,
-            .descriptorType   = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .pImageInfo       = nullptr,
-            .pBufferInfo      = &desc_buf,
-            .pTexelBufferView = nullptr,
-        });
-    }
-
     // The one push — replaces N+1 driver round-trips with 1.
     if (! m_descriptor_writes_scratch.empty()) {
         cmd.PushDescriptorSetKHR(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 *m_desc.pipeline.layout,
+                                 *pipeline_to_bind.layout,
                                  0,
                                  m_descriptor_writes_scratch);
     }
@@ -1526,7 +1833,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     };
     if (opens) cmd.BeginRenderPass(pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
 
-    cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *m_desc.pipeline.handle);
+    cmd.BindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS, *pipeline_to_bind.handle);
     VkViewport viewport {
         .x        = 0,
         .y        = (float)outext.height,
@@ -1543,8 +1850,12 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     auto gpu_buf = m_desc.dyn_vertex ? rr.dyn_buf->gpuBuf() : rr.vertex_buf->gpuBuf();
 
     // Skip draw (but keep render pass begin/end) if node is hidden at runtime
+    // -- unless this is a terminal-hideable pass drawing its passthrough,
+    // which must draw (the identical mesh, at the identical transform) to
+    // put the chain's prior content on screen instead of nothing, or one
+    // whose passthrough failed to build and falls back to its real draw.
     bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
-    if (nodeVisible) {
+    if (nodeVisible || draw_passthrough || keep_real_draw) {
         for (usize i = 0; i < m_desc.vertex_bufs.size(); i++) {
             auto& buf = m_desc.vertex_bufs[i];
             cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);

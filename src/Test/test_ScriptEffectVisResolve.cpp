@@ -74,7 +74,11 @@ TEST_SUITE("ScriptEffectVisResolve") {
         CHECK(out[0].id == 42);
     }
 
-    TEST_CASE("an effect that ends up last on its layer is left unregistered") {
+    TEST_CASE("an effect that ends up last on its layer now registers normally") {
+        // CustomShaderPass draws a passthrough pipeline for a hidden terminal
+        // (is_terminal_hideable) instead of forcing its structural write
+        // visible, so the terminal position no longer needs the special-cased
+        // skip -- it resolves exactly like any other bound effect.
         auto                  worldNode = std::make_shared<SceneNode>();
         SceneImageEffectLayer layer(worldNode.get(), "_rt_a", "_rt_b");
         layer.AddEffect(makeEffectWithNode("pulse", makeNodeWithCodes({ goodCode() })));
@@ -94,7 +98,40 @@ TEST_SUITE("ScriptEffectVisResolve") {
 
         wek::resolvePendingScriptEffectVis(pending, nodeMap, out);
 
-        CHECK(out.empty());
+        REQUIRE(out.size() == 1);
+        CHECK(out[0].id == 42);
+        CHECK(out[0].effectIndex == 1);
+        CHECK(out[0].attachment == ScenePropertyScript::Attachment::Effect);
+    }
+
+    TEST_CASE("a single-effect layer's one effect registers at index 0") {
+        // The dominant real-world shape (the "Blurred Cover" idiom): the
+        // terminal and effect 0 are the same effect, so there's no
+        // predecessor at all -- the passthrough must fall back to the
+        // layer's own base image rather than sampling a buffer no earlier
+        // effect ever wrote.
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "_rt_a", "_rt_b");
+        auto bound = makeEffectWithNode("bound", makeNodeWithCodes({ goodCode() }));
+        layer.AddEffect(bound);
+        REQUIRE(layer.EffectCount() == 1u);
+
+        std::unordered_map<i32, SceneImageEffectLayer*> nodeMap { { 99, &layer } };
+        std::vector<wek::PendingScriptEffectVis>        pending {
+            { bound.get(),
+              99,
+              "solo_layer",
+              "export function mediaThumbnailChanged(e){}",
+              "",
+              true }
+        };
+        std::vector<ScenePropertyScript> out;
+
+        wek::resolvePendingScriptEffectVis(pending, nodeMap, out);
+
+        REQUIRE(out.size() == 1);
+        CHECK(out[0].id == 99);
+        CHECK(out[0].effectIndex == 0);
     }
 
     TEST_CASE("an effect resolved on identity keeps the right script string and layerName") {

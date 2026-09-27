@@ -99,26 +99,29 @@ std::string extractUserPropName(const nlohmann::json& visibleField) {
 //
 // The terminal exclusion: SceneImageEffectLayer::ResolveEffect picks
 // whichever effect ends up LAST in the built layer as the chain's write
-// target, regardless of visibility, and CustomShaderPass keeps that pass's
-// render-target clear even when the node is hidden -- so a hidden node
-// landing in that position blanks the whole composite instead of just
-// hiding its own contribution (see UserPropEffectVisResolve.hpp). Excluding
-// only the raw JSON's last visible-or-bound index isn't enough by itself:
-// if that index is itself bound and currently resolved false, dropping it
-// makes whichever candidate comes before it the layer's new actual last
-// built effect -- which has the identical hazard if it's also resolved
-// false. So the exclusion walks backward from the end of the candidate
-// list, dropping the whole trailing run of resolved-false candidates, and
-// stops at the first one that's genuinely visible: that one anchors the
-// layer's actual last built effect, so it still builds, but -- like every
-// dropped candidate before it -- it's excluded from ever getting a runtime
-// binding, matching today's "the terminal position always reloads"
-// contract regardless of its current value.
+// target, regardless of visibility.  Excluding only the raw JSON's last
+// visible-or-bound index isn't enough by itself: if that index is itself
+// bound and currently resolved false, dropping it makes whichever candidate
+// comes before it the layer's new actual last built effect -- which has the
+// identical hazard if it's also resolved false. So the exclusion walks
+// backward from the end of the candidate list, dropping the whole trailing
+// run of resolved-false candidates, and stops at the first one that's
+// genuinely visible: that one anchors the layer's actual last built effect,
+// so it still builds.  This walk is unchanged by CustomShaderPass's
+// passthrough draw for a hidden terminal (is_terminal_hideable) -- what
+// changed is only what the anchor position's excludedAsTerminal flag now
+// means to its caller: assembleEffects used to also read it as "never
+// eligible for a runtime binding" and has stopped, since the render side can
+// now hide that position safely; every dropped, never-built candidate before
+// it is untouched by that change.
 struct EffectBuildPlan {
     std::vector<bool> wouldBuild;         // per-index: does this effect get added to the layer
-    std::vector<bool> excludedAsTerminal; // per-index: never eligible for a runtime binding --
-                                          // either dropped outright, or the one visible
+    std::vector<bool> excludedAsTerminal; // per-index: either dropped outright (never built,
+                                          // never eligible for anything), or the one visible
                                           // candidate that anchors the actual terminal position
+                                          // (built, and -- since CustomShaderPass can draw a
+                                          // passthrough for it when hidden -- eligible for a
+                                          // runtime binding like any other built effect)
 };
 
 EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffect>& effects) {
@@ -2399,16 +2402,17 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
 
     // A user-bound effect that resolved false at parse time still gets
     // built (and hidden) so applyUserPropsRuntime can flip it on later
-    // without a reload -- except at the terminal position, which keeps
-    // today's structural skip.  See computeWouldBuildEffects.
+    // without a reload -- including at the terminal position: a hidden
+    // terminal now draws a passthrough pipeline instead of forcing its
+    // structural write visible (CustomShaderPass::is_terminal_hideable), so
+    // it no longer needs the special-cased skip.  See computeWouldBuildEffects.
     auto plan = computeWouldBuildEffects(effects);
 
     int32_t i_eff   = -1;
     usize   raw_idx = 0;
     for (const auto& wpeffobj : effects) {
         i_eff++;
-        bool is_terminal_candidate = plan.excludedAsTerminal[raw_idx];
-        bool build                 = plan.wouldBuild[raw_idx];
+        bool build = plan.wouldBuild[raw_idx];
         raw_idx++;
         if (! build) {
             i_eff--;
@@ -2572,7 +2576,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
         if (eff_mat_ok) {
             imgEffect->name = wpeffobj.name;
             layer.AddEffect(imgEffect);
-            if (! wpeffobj.userVisibleRawJson.empty() && ! is_terminal_candidate) {
+            if (! wpeffobj.userVisibleRawJson.empty()) {
                 if (! wpeffobj.visible) {
                     imgEffect->visible = false;
                     for (auto& n : imgEffect->nodes) {
@@ -2594,7 +2598,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                                                                      propName });
                 }
             }
-            if (! wpeffobj.visibleScript.empty() && ! is_terminal_candidate) {
+            if (! wpeffobj.visibleScript.empty()) {
                 if (! wpeffobj.visible) {
                     imgEffect->visible = false;
                     for (auto& n : imgEffect->nodes) {

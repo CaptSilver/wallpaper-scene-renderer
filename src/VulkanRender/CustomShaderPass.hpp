@@ -77,6 +77,75 @@ inline bool IsHiddenPassSkippable(bool node_hidden, bool clears_output) {
     return node_hidden && ! clears_output;
 }
 
+// Should execute() bind the terminal's passthrough pipeline (sample the
+// chain's last-visible-effect buffer, or the base draw's own buffer for a
+// single-effect chain) instead of its real one?  Only when this pass
+// actually carries a runtime visibility binding on the terminal position
+// (is_terminal_hideable) AND the node is hidden this frame -- an ordinary
+// hidden node with no such binding takes the existing skip-or-draw-nothing
+// path untouched, and a terminal-hideable pass that's currently visible
+// draws its real material like any other pass.  passthrough_ready is false
+// when prepare() failed to build the passthrough pipeline or its UBO; the
+// pipeline handle is then null and must never be bound.
+inline bool ShouldDrawPassthrough(bool is_terminal_hideable, bool node_hidden,
+                                  bool passthrough_ready) {
+    return is_terminal_hideable && node_hidden && passthrough_ready;
+}
+
+// The fallback when ShouldDrawPassthrough says no only because the
+// passthrough never got built: keep drawing the real material, as the
+// terminal did before it could be hidden at all.  Dropping the draw instead
+// would blank the whole layer, since the terminal is its only writer.
+inline bool HiddenTerminalKeepsRealDraw(bool is_terminal_hideable, bool node_hidden,
+                                        bool passthrough_ready) {
+    return is_terminal_hideable && node_hidden && ! passthrough_ready;
+}
+
+// Which of a terminal-hideable pass's two physical ping-pong buffers holds
+// "the last visible effect's output ahead of it, or the layer's own image
+// when nothing ahead is visible" -- the thing the passthrough pipeline
+// samples once ShouldDrawPassthrough says to draw it.
+//
+// SceneImageEffectLayer::ResolveEffect's swap_pp alternates each effect's
+// write target starting at buffer B for effect 0, so a predecessor's output
+// buffer is decided purely by its position's parity, and the un-effected
+// base draw always lands in buffer A (the same physical resource effect 0
+// reads as its input). Walking backward from the terminal's immediate
+// predecessor to the first one that's actually visible this frame, and
+// answering BufferA when none are, reproduces that rule exactly.
+//
+// A single fixed slot resolved once at graph-compile time gets this wrong
+// the moment the immediate predecessor is ALSO hidden: that predecessor is
+// an ordinary (non-terminal) pass, so it already takes the existing
+// invisible-fast-path skip when hidden, and its buffer keeps holding
+// whatever it drew the last time it was visible -- not this frame's answer.
+// `predecessorVisible[i]` is effect i's current IsVisible(), for i in
+// [0, terminalIndex).
+enum class PassthroughSource
+{
+    BufferA,
+    BufferB,
+};
+
+inline PassthroughSource SelectPassthroughSource(const std::vector<bool>& predecessorVisible) {
+    for (usize i = predecessorVisible.size(); i-- > 0;) {
+        if (predecessorVisible[i]) {
+            return (i % 2 == 0) ? PassthroughSource::BufferB : PassthroughSource::BufferA;
+        }
+    }
+    return PassthroughSource::BufferA;
+}
+
+// A terminal-hideable pass appends 2 extra texture reads (the chain's ping-
+// pong buffers) on top of however many the real material's own JSON
+// declares, so a texture-slot index can run past WE_GLTEX_NAMES' fixed 13
+// entries (Wallpaper Engine materials only ever declare g_Texture0 through
+// g_Texture12). Bounds-checked stand-in for indexing the array directly --
+// returns null past the table instead of reading out of bounds.
+inline const char* GLTexNameForIndex(usize index) {
+    return index < WE_GLTEX_NAMES.size() ? WE_GLTEX_NAMES[index] : nullptr;
+}
+
 // Path-A depth-image usage flags: SAMPLED_BIT is appended iff the device
 // advertises sampled-image support for D32_SFLOAT on optimal tiling
 // (Device::d32_sampleable()); the attachment/transfer-dst bits are
@@ -189,6 +258,35 @@ public:
         // Geometry shader: use POINT_LIST topology instead of TRIANGLE_STRIP
         bool point_topology { false };
 
+        // True when a script or user property has a registered visibility
+        // binding on THIS pass's node and this pass is the terminal write of
+        // its effect chain (SceneImageEffectLayer::ResolveEffect's pick,
+        // regardless of visibility).  Set by SceneToRenderGraph's
+        // LoadEffectChain/ToGraphPass from the scene's resolved binding
+        // tables, before this pass is ever constructed.  Gates both the
+        // skip-guard exemption and the passthrough-pipeline build in
+        // prepare() -- see ShouldDrawPassthrough above.
+        bool is_terminal_hideable { false };
+
+        // Indices into `textures`/`vk_textures` for the chain's two physical
+        // ping-pong buffers (SceneImageEffectLayer's FirstTarget/SecondTarget),
+        // both registered as reads by SceneToRenderGraph regardless of which
+        // single slot the terminal's own (real) material happens to read.
+        // Set alongside is_terminal_hideable; -1/-1 when not terminal-hideable.
+        // execute() picks between them every frame via SelectPassthroughSource
+        // -- see that function for why a single fixed slot isn't enough.
+        i32 passthrough_input_tex_index_a { -1 };
+        i32 passthrough_input_tex_index_b { -1 };
+
+        // One representative SceneNode per predecessor effect (index 0..
+        // terminalIndex-1), in chain order, whose IsVisible() this frame feeds
+        // SelectPassthroughSource. Empty for a single-effect chain (the
+        // terminal IS effect 0 -- no predecessors to check, always BufferA).
+        // Every node an effect owns is set visible/hidden together (see the
+        // PendingUpdateQueues drain in SceneWallpaper.cpp), so any one node
+        // per effect reflects that effect's current state.
+        std::vector<SceneNode*> passthrough_predecessor_nodes {};
+
         // -----prepared
         // vulkan texs
         std::vector<ImageSlotsRef> vk_textures;
@@ -233,6 +331,22 @@ public:
 
         // uniforms
         std::function<void()> update_op;
+
+        // Terminal-hideable passthrough (only built when is_terminal_hideable):
+        // a second, minimal pipeline sharing this pass's render pass and
+        // framebuffer, drawn instead of `pipeline` while the node is hidden.
+        // See CustomShaderPass::prepare()'s is_terminal_hideable branch.
+        PipelineParameters passthrough_pipeline;
+        StagingBufferRef   passthrough_ubo_buf;
+        // Descriptor binding number the passthrough fragment shader's sampler
+        // reflects to (resolved from its own GenReflect pass; independent of
+        // vk_tex_binding, which describes the REAL pipeline's bindings).
+        i32                   passthrough_tex_binding { -1 };
+        std::function<void()> passthrough_update_op;
+        // Set by prepare() only once the passthrough pipeline, its UBO and
+        // passthrough_update_op all exist.  Any failed step leaves it false,
+        // and execute() then keeps the real draw (HiddenTerminalKeepsRealDraw).
+        bool passthrough_ready { false };
     };
 
     CustomShaderPass(const Desc&);

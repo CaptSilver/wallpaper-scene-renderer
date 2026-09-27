@@ -13,14 +13,15 @@
 // captured index sidesteps the whole class of bug: whatever position the
 // bound SceneImageEffect actually ends up at, that's the index recorded.
 //
-// Also excludes whichever effect ends up LAST on its layer: ResolveEffect
+// Registers whichever effect ends up LAST on its layer too: ResolveEffect
 // (SceneImageEffectLayer.cpp) picks the structurally-last effect as the
 // chain's terminal write target without looking at visibility, and that
-// write is forced to keep its render target's CLEAR even when hidden
-// (CustomShaderPass.hpp's IsHiddenPassSkippable) -- so toggling the last
-// effect off risks clearing the whole composite instead of just hiding one
-// effect's contribution. Nothing in this codebase currently proves that's
-// safe, so the last position keeps today's full-reload behaviour.
+// write used to be forced to keep its render target's CLEAR even when
+// hidden (CustomShaderPass.hpp's IsHiddenPassSkippable) -- toggling the last
+// effect off would have cleared the whole composite instead of just hiding
+// one effect's contribution. CustomShaderPass now draws a passthrough
+// pipeline for a hidden terminal (is_terminal_hideable) instead of taking
+// that skip path, so the terminal position is safe to bind like any other.
 
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
@@ -50,10 +51,10 @@ struct PendingUserPropEffectVis {
 
 // Walks `pending`, looks each entry's layer up in `nodeEffectLayerMap`, and
 // -- for every entry whose effect pointer is still present in that layer's
-// CURRENT m_effects, and is not the last entry in it -- records its live
-// index into `bindings`. An entry that was dropped by RemoveFailedEffects,
-// whose node never made it into nodeEffectLayerMap, or that ended up last on
-// its layer is silently skipped: no binding means
+// CURRENT m_effects -- records its live index into `bindings`, including one
+// that ended up last on its layer (see the header comment above). An entry
+// that was dropped by RemoveFailedEffects, or whose node never made it into
+// nodeEffectLayerMap, is still silently skipped: no binding means
 // userPropHasRuntimeBinding() returns false for that name, and the existing
 // reload fallback covers it -- the same safe degrade an ordinary
 // material-load failure already gets.
@@ -67,7 +68,6 @@ inline void resolvePendingUserPropEffectVis(
         auto* layer = it->second;
         for (std::size_t i = 0; i < layer->EffectCount(); i++) {
             if (layer->GetEffect(i).get() != p.effect) continue;
-            if (i + 1 == layer->EffectCount()) break; // last on its layer -- leave unregistered
             bindings[p.propName].push_back(
                 { p.nodeId, (i32)i, p.defaultVisible, p.rawVisibleJson });
             break;
