@@ -514,6 +514,18 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
         LOG_INFO("image object no material");
         return false;
     }
+    // Per-object "instance" override: 24 app-launcher icons in a single
+    // wallpaper all point at the same model file and differ ONLY through
+    // this block (each names its own icon via usertextures) -- without it
+    // every launcher renders the model's shared default icon. It carries
+    // the identical {combos, textures, usertextures} shape a pass override
+    // already does, so parse it as one and reuse WPMaterial::MergePass
+    // rather than hand-rolling a second overlay rule.
+    if (json.contains("instance") && json.at("instance").is_object()) {
+        WPMaterialPass instanceOverride;
+        instanceOverride.FromJson(json.at("instance"));
+        material.MergePass(instanceOverride);
+    }
     if (json.contains("effects")) {
         for (const auto& jE : json.at("effects")) {
             WPImageEffect wpeff;

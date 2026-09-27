@@ -820,4 +820,75 @@ TEST_SUITE("WPImageObject::FromJson — image-backed") {
         REQUIRE(obj.FromJson(j, *vfs));
         CHECK(obj.visibleIsComboSelector);
     }
+
+    // App-launcher icons (24 of them in workshop 3616389236) all share one
+    // model file and differentiate purely through this per-object "instance"
+    // block -- it's the ONLY place each launcher's own icon is named. Before
+    // this override was parsed, every launcher rendered the model's shared
+    // default_dock_icon texture regardless of which app the user picked.
+    TEST_CASE("instance block overlays combos/textures/usertextures onto the resolved material") {
+        auto vfs = Vfs({
+            { "models/instanced.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 288, "name":"Launcher 2", "image":"models/instanced.json",
+            "origin":"0 0 0", "scale":"1 1 1", "angles":"0 0 0", "size":"10 10",
+            "instance": {
+                "id": 290,
+                "combos": {"version": 2},
+                "textures": ["default_dock_icon"],
+                "usertextures": [{"name": "launcher2", "type": "usershortcut"}]
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        CHECK(obj.material.combos.at("version") == 2);
+        REQUIRE(obj.material.textures.size() == 1u);
+        CHECK(obj.material.textures[0] == "default_dock_icon");
+        REQUIRE(obj.material.usertextures.size() == 1u);
+        CHECK(obj.material.usertextures[0].name == "launcher2");
+        CHECK(obj.material.usertextures[0].type == "usershortcut");
+    }
+
+    // The "scenetexture" family (Solid Color's user-picked "Custom"/"Add
+    // Texture" slots) spells its instance usertexture as a bare string, not
+    // the {name,type} object launchers use -- both shapes have to survive.
+    TEST_CASE("instance usertextures accepts the bare-string reference shape") {
+        auto vfs = Vfs({
+            { "models/instanced.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 247, "name":"Custom", "image":"models/instanced.json",
+            "origin":"0 0 0", "scale":"1 1 1", "angles":"0 0 0", "size":"10 10",
+            "instance": {
+                "id": 248,
+                "combos": {"version": 2},
+                "textures": ["util/white"],
+                "usertextures": ["custom"]
+            }
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        REQUIRE(obj.material.usertextures.size() == 1u);
+        CHECK(obj.material.usertextures[0].name == "custom");
+        CHECK(obj.material.usertextures[0].type.empty());
+    }
+
+    TEST_CASE("no instance block leaves the resolved material untouched") {
+        auto vfs = Vfs({
+            { "models/x.json", R"({"material":"materials/util/m.json"})" },
+            { "materials/util/m.json", kFlatMat },
+        });
+        auto j = nlohmann::json::parse(R"({
+            "id": 1, "name":"x", "image":"models/x.json",
+            "origin":"0 0 0", "scale":"1 1 1", "angles":"0 0 0", "size":"10 10"
+        })");
+        WPImageObject obj;
+        REQUIRE(obj.FromJson(j, *vfs));
+        CHECK(obj.material.textures.empty());
+        CHECK(obj.material.usertextures.empty());
+        CHECK(obj.material.combos.empty());
+    }
 }
