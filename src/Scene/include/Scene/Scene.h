@@ -116,6 +116,7 @@ struct ScenePropertyScript {
     {
         Object         = 0,
         AnimationLayer = 1,
+        Effect         = 2, // effects[N].visible = {"script":...} on an image/text layer
     };
 
     i32                  id;
@@ -128,6 +129,7 @@ struct ScenePropertyScript {
     float                initialFloat { 1.0f };
     Attachment           attachment { Attachment::Object };
     i32                  animationLayerIndex { -1 }; // Attachment::AnimationLayer → 0-based idx
+    i32                  effectIndex { -1 }; // Attachment::Effect → compacted (post-build) index
 };
 class Scene : NoCopy, NoMove {
 public:

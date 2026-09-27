@@ -221,9 +221,15 @@ bool WPImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     if (this->IsEffectBlacklisted(filePath)) {
         // hide blacklisted effects
         visible = false;
-    } else if (json.contains("visible") && json.at("visible").is_object() &&
-               json.at("visible").contains("user")) {
-        userVisibleRawJson = json.at("visible").dump();
+    } else if (json.contains("visible") && json.at("visible").is_object()) {
+        const auto& vis = json.at("visible");
+        if (vis.contains("user")) {
+            userVisibleRawJson = vis.dump();
+        } else if (vis.contains("script") && vis.at("script").is_string()) {
+            visibleScript = vis.at("script").get<std::string>();
+            if (vis.contains("scriptproperties"))
+                visibleScriptProperties = vis.at("scriptproperties").dump();
+        }
     }
     nlohmann::json jEffect;
     if (! PARSE_JSON(fs::GetFileContentBounded(vfs, "/assets/" + filePath, kMaxJsonBytes),

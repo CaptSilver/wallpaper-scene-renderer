@@ -3065,6 +3065,161 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
     }
 
+    TEST_CASE("a script-bound effect visible field produces an Effect-attached property script "
+              "with the right effectIndex") {
+        ensureGlslangInit();
+        constexpr const char* kBloomEffectFileJson = R"({
+            "name": "bloom",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        auto                  vfs                  = makeAssetsVfsWith({
+            { "/effects/tint.json", kEffectFileJson },
+            { "/effects/bloom.json", kBloomEffectFileJson },
+        });
+        const char*           kSceneJson           = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 511, "name": "script_bound_effect_layer",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 11, "name": "bloom",
+          "visible": {"script": "export function mediaThumbnailChanged(e){}", "value": true},
+          "file": "effects/bloom.json" },
+        { "id": 10, "name": "tint", "visible": true, "file": "effects/tint.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager   sm;
+        WPUserProperties      props {};
+        WPSceneParser         parser;
+        auto scene = parser.Parse("scene_script_bound_effect", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        int effectScriptCount = 0;
+        for (const auto& ps : scene->propertyScripts) {
+            if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
+            effectScriptCount++;
+            CHECK(ps.id == 511);
+            CHECK(ps.effectIndex == 0); // "bloom" -- "tint" (last) anchors the terminal position
+            CHECK(ps.property == "visible");
+            CHECK(ps.script == "export function mediaThumbnailChanged(e){}");
+        }
+        CHECK(effectScriptCount == 1);
+    }
+
+    TEST_CASE("a script-bound effect visible field on the layer's last effect gets no property "
+              "script") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/bloom.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 512, "name": "terminal_script_bound_effect",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "bloom",
+          "visible": {"script": "export function mediaThumbnailChanged(e){}", "value": true},
+          "file": "effects/bloom.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_terminal_script_bound_effect", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        for (const auto& ps : scene->propertyScripts) {
+            CHECK(ps.attachment != ScenePropertyScript::Attachment::Effect);
+        }
+    }
+
+    TEST_CASE("Album Cover's real Current/Previous shape resolves Current, excludes Previous") {
+        // Verbatim shape from this wallpaper's real scene.json (Now Playing
+        // album-art crossfade): three effects -- a static placeholder
+        // ("Defualt"), then two script-gated ones ("Current"/"Previous") that
+        // toggle on mediaThumbnailChanged. "Previous" is the structurally-last
+        // effect on the layer, so the terminal-safety rule excludes it from
+        // ever getting a runtime binding -- its OWN visibility never toggles
+        // via this mechanism (a separate pass-level script still fades its
+        // edge-glow, unaffected by this exclusion).
+        ensureGlslangInit();
+        constexpr const char* kDefualtEffectFileJson  = R"({
+            "name": "Defualt",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        constexpr const char* kCurrentEffectFileJson  = R"({
+            "name": "Current",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        constexpr const char* kPreviousEffectFileJson = R"({
+            "name": "Previous",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        auto                  vfs                     = makeAssetsVfsWith({
+            { "/effects/Defualt.json", kDefualtEffectFileJson },
+            { "/effects/Current.json", kCurrentEffectFileJson },
+            { "/effects/Previous.json", kPreviousEffectFileJson },
+        });
+        const char*           kSceneJson              = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 174, "name": "Album Cover",
+      "image": "models/_plain.json",
+      "origin": "1100 1080 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 473, "name": "Defualt", "visible": true, "file": "effects/Defualt.json" },
+        { "id": 476, "name": "Current",
+          "visible": {
+            "script": "export function mediaThumbnailChanged(event) { thisObject.visible = event.hasThumbnail; }",
+            "value": true },
+          "file": "effects/Current.json" },
+        { "id": 482, "name": "Previous",
+          "visible": {
+            "script": "export function mediaThumbnailChanged(event) { thisObject.visible = event.hasThumbnail; }",
+            "value": true },
+          "file": "effects/Previous.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager   sm;
+        WPUserProperties      props {};
+        WPSceneParser         parser;
+        auto scene = parser.Parse("scene_album_cover", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(174) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(174);
+        REQUIRE(effLayer->EffectCount() == 3u); // all three build -- none is a plain "false"
+
+        int effectScriptCount = 0;
+        for (const auto& ps : scene->propertyScripts) {
+            if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
+            effectScriptCount++;
+            CHECK(ps.id == 174);
+            CHECK(ps.layerName == "Album Cover");
+            CHECK(effLayer->GetEffect((std::size_t)ps.effectIndex)->name == "Current");
+        }
+        CHECK(effectScriptCount == 1); // "Previous" -- the terminal effect -- is excluded
+    }
+
     // The sibling case for the OTHER survivor on this line (`cxx_gt_to_ge`,
     // diverging from `context.ortho_w > 0` only at ortho_w exactly 0) is not
     // implemented: forcing `context.ortho_w == 0` requires an explicit

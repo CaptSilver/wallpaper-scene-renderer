@@ -415,7 +415,7 @@ public:
     // dispatch state, building the minimal JS engine + `_runAllPropertyScripts`
     // machinery on first call.  Bypasses setupTextScripts (which reads m_scene).
     void seedPropertyScriptForTesting(int32_t id, TestScriptKind kind, const std::string& property,
-                                      const std::string& jsSource);
+                                      const std::string& jsSource, int32_t effectIndex = -1);
     // Seed a text-style change so the next evaluateTextScripts tick dispatches
     // updateTextStyle(id, halign, valign, fontName).
     void seedTextStyleScriptForTesting(int32_t id, const std::string& halign,
@@ -452,9 +452,33 @@ public:
     void seedShaderValueScriptFromSourceForTesting(int32_t id, int32_t effectIdx,
                                                    const std::string& uniformName, int argShape,
                                                    const std::string& jsSource);
+    // Same idea, for an effect-attached `visible` property script (Album
+    // Cover's Current/Previous crossfade shape): builds just enough
+    // _layerInitStates/getEffect machinery for `layerName` to resolve, with
+    // `effectNames` standing in for the layer's real effect list (getEffect
+    // resolves by index, so the names themselves don't have to match a real
+    // scene -- see resolvePropertyScriptThisObject's own comment).
+    void seedEffectVisibleScriptFromSourceForTesting(int32_t id, const std::string& layerName,
+                                                     const std::vector<std::string>& effectNames,
+                                                     int32_t                         effectIndex,
+                                                     const std::string&              jsSource);
     // Install the JS globals a wallpaper script sees, in production order:
     // the createScriptProperties builder, then the SceneScript API layer.
     void installScriptApiGlobalsForTesting();
+    // Thin public wrapper around the private resolvePropertyScriptThisObject,
+    // so a test can exercise the thisObject-resolution decision directly.
+    QJSValue resolvePropertyScriptThisObjectForTesting(const QJSValue& thisLayerProxy,
+                                                       int32_t         effectIndex,
+                                                       int32_t         animationLayerIndex) {
+        return resolvePropertyScriptThisObject(thisLayerProxy, effectIndex, animationLayerIndex);
+    }
+    // Thin public wrapper around bootstrapLayerProxyForTesting, for a test
+    // that wants a real thisLayer proxy (with a working getEffect()) to hand
+    // straight to resolvePropertyScriptThisObjectForTesting.
+    QJSValue layerProxyForTesting(int32_t id, const std::string& layerName,
+                                  const std::vector<std::string>& effectNames) {
+        return bootstrapLayerProxyForTesting(id, layerName, effectNames);
+    }
     // Public aliases for the private eval slots so a test can tick dispatch.
     void evaluatePropertyScriptsForTesting();
     void evaluateTextScriptsForTesting();
@@ -474,6 +498,22 @@ private:
     void bootstrapScriptEngineForTesting();
     void setScenePropertyQurl(std::string_view, QUrl);
     void setupTextScripts();
+    // Resolve a property script's `thisObject` from its `thisLayer` proxy and
+    // attachment (Object / AnimationLayer / Effect). Pulled out of
+    // setupTextScripts' compile loop so the Effect branch -- unreachable from
+    // a doctest otherwise, since it needs a real getEffect() proxy -- has
+    // something a test can call directly.
+    QJSValue resolvePropertyScriptThisObject(const QJSValue& thisLayerProxy, int32_t effectIndex,
+                                             int32_t animationLayerIndex);
+    // Shared by seedEffectVisibleScriptFromSourceForTesting and
+    // layerProxyForTesting: builds (once per engine) the minimal
+    // _layerInitStates + getLayer/getEffect machinery a test needs without a
+    // real m_scene, and returns the resulting thisLayer proxy. `id` seeds
+    // _layerNameToId so a dirty-flag write on the resulting proxy (or an
+    // effect proxy pulled off it) resolves to a real id instead of being
+    // dropped as unresolved by evaluatePropertyScripts' dirty-layer flush.
+    QJSValue bootstrapLayerProxyForTesting(int32_t id, const std::string& layerName,
+                                           const std::vector<std::string>& effectNames);
     void setupEngineGlobals();
     void installScriptPropertiesGlobal();
     void installScriptApiGlobals();
@@ -668,6 +708,11 @@ private:
         // specific rig layer rather than the parent image.
         QJSValue             thisObjectProxy;
         int32_t              animationLayerIndex { -1 };
+        // >= 0 for a script attached to effects[N].visible on the owning
+        // object (Album Cover's Current/Previous crossfade). thisObject then
+        // resolves to thisLayer.getEffect(effectIndex) instead of the layer
+        // itself, so thisObject.visible = ... toggles just that one effect.
+        int32_t              effectIndex { -1 };
         bool                 currentVisible { true };
         std::array<float, 3> currentVec3 { 0, 0, 0 };
         float                currentFloat { 1.0f };

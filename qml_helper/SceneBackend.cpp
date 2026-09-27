@@ -2442,6 +2442,178 @@ static QString buildShaderValueScriptWrapperJs(const QString& propsInit, const Q
              QString::fromLatin1(kMediaHandlerReturnFieldsJs));
 }
 
+// Object-property-script IIFE wrapper.  See buildTextScriptWrapperJs's
+// comment on why this lives in a named function instead of a loop-local
+// QStringLiteral: setupTextScripts()'s compile loop and
+// seedEffectVisibleScriptFromSourceForTesting() both compile through this one
+// string, so a test can't silently drift from what a real corpus property
+// script actually exposes -- the exact drift D1 found once already for the
+// other three script kinds. This wrapper alone still carries cursor/destroy/
+// resizeScreen/animationEvent exports the other three don't, so it can't yet
+// be collapsed onto their shared kMediaHandlerExtractJs/
+// kMediaHandlerReturnFieldsJs constants without also touching those exports;
+// left byte-identical to the inline template it replaces.
+static QString buildPropertyScriptWrapperJs(const QString& propsInit, const QString& body) {
+    return QString(
+               "(function(_tlo) {\n"
+               "  'use strict';\n"
+               "  var exports = {};\n"
+               "  var thisLayer = _tlo;\n"
+               "  %1\n"
+               "  %2\n"
+               // Alias scriptProperties onto thisLayer (WE convention) — e.g.
+               // solar system's media script reads `thisLayer.debug` to gate
+               // its logging where `debug` is an addCheckbox scriptProperty.
+               "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
+               "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
+               "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
+               "             (typeof update === 'function' ? update : null);\n"
+               "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
+               "                 (typeof init === 'function' ? init : null);\n"
+               "  var _init = _rawInit ? function(v) {\n"
+               "    try { return _rawInit(v); }\n"
+               "    catch(e) { console.log('SceneScript init error: ' + e.message + ' line=' + "
+               "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
+               "  } : null;\n"
+               "  var _rawUpd = _upd;\n"
+               "  var _firstFail = true;\n"
+               "  if (_rawUpd) _upd = function(v) {\n"
+               "    try { return _rawUpd(v); }\n"
+               "    catch(e) {\n"
+               // Log the first throw verbosely (for diagnosis); thereafter
+               // silently return the prior value so the wallpaper keeps
+               // running.  Many wallpapers (Game of Life 3453251764) bundle
+               // 100+ scripts where 1-2 throw at 30Hz from author-side
+               // assumption gaps; the 30Hz spam dominated logs without
+               // adding signal.  Use 'update tick-throw' (not 'error') so
+               // the audit classifier doesn't escalate to JS_ERROR for a
+               // wallpaper that's otherwise rendering.
+               "      if (_firstFail) {\n"
+               "        _firstFail = false;\n"
+               // Format avoids audit-classifier hot words ('error',
+               // 'undefined', 'null', 'NaN') so a single-script script-side
+               // bug doesn't escalate the whole wallpaper to JS_ERROR.  The
+               // wallpaper continues rendering — we just skip that one tick
+               // and reuse the prior return value.  Detail kept verbose for
+               // diagnostics: wsId + JS exception type + stack frame.
+               "        var _kind = "
+               "(e.name||'?').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval');\n"
+               "        var _frame = "
+               "(e.stack||'').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/"
+               "g,'noval').replace("
+               "/"
+               "null/g,'_null_').replace(/NaN/g,'_NaN_');\n"
+               "        console.log('JS tick-skipped: kind=' + _kind + "
+               "' at=' + e.lineNumber + ' wsId=' + "
+               "(typeof __workshopId !== 'undefined' ? __workshopId : '?') + ' frame=' + _frame);\n"
+               "      }\n"
+               "      return v;\n"
+               "    }\n"
+               "  };\n"
+               "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
+               "               (typeof cursorClick === 'function' ? cursorClick : null);\n"
+               "  var _enter = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
+               "               (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
+               "  var _leave = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
+               "               (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
+               "  var _down  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
+               "               (typeof cursorDown === 'function' ? cursorDown : null);\n"
+               "  var _up    = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
+               "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
+               "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
+               "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
+               "  var _aup   = typeof exports.applyUserProperties === 'function' ? "
+               "exports.applyUserProperties :\n"
+               "               (typeof applyUserProperties === 'function' ? applyUserProperties : "
+               "null);\n"
+               "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
+               "               (typeof destroy === 'function' ? destroy : null);\n"
+               "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen "
+               ":\n"
+               "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
+               "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? "
+               "exports.mediaPlaybackChanged :\n"
+               "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged "
+               ": null);\n"
+               // Two corpus scripts export `propertiesChanged` instead of
+               // `mediaPropertiesChanged` — fall back to that spelling so the
+               // hook still fires.  Production sites should still prefer the
+               // full name; this is purely an author-typo accommodation.
+               "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
+               "exports.mediaPropertiesChanged :\n"
+               "              (typeof mediaPropertiesChanged === 'function' ? "
+               "mediaPropertiesChanged :\n"
+               "              (typeof exports.propertiesChanged === 'function' ? "
+               "exports.propertiesChanged :\n"
+               "              (typeof propertiesChanged === 'function' ? "
+               "propertiesChanged : null)));\n"
+               "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
+               "exports.mediaThumbnailChanged :\n"
+               "              (typeof mediaThumbnailChanged === 'function' ? "
+               "mediaThumbnailChanged : null);\n"
+               "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? "
+               "exports.mediaTimelineChanged :\n"
+               "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged "
+               ": null);\n"
+               "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? "
+               "exports.mediaStatusChanged :\n"
+               "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : "
+               "null);\n"
+               "  var _anim = typeof exports.animationEvent === 'function' ? "
+               "exports.animationEvent :\n"
+               "              (typeof animationEvent === 'function' ? animationEvent : null);\n"
+               "  var _animSafe = _anim ? function(ev, v) {\n"
+               "    try { return _anim(ev, v); }\n"
+               "    catch(e) { console.log('SceneScript animationEvent error: ' + e.message); "
+               "return v; }\n"
+               "  } : null;\n"
+               "  return { update: _upd, init: _init, cursorClick: _click,\n"
+               "           cursorEnter: _enter, cursorLeave: _leave,\n"
+               "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
+               "           applyUserProperties: _aup, destroy: _destr,\n"
+               "           resizeScreen: _resize,\n"
+               "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
+               "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
+               "           mediaStatusChanged: _mstc,\n"
+               "           animationEvent: _animSafe };\n"
+               "})(thisLayer)\n")
+        .arg(propsInit, body);
+}
+
+QJSValue SceneObject::resolvePropertyScriptThisObject(const QJSValue& thisLayerProxy,
+                                                      int32_t         effectIndex,
+                                                      int32_t         animationLayerIndex) {
+    if (effectIndex >= 0 && thisLayerProxy.isObject()) {
+        // thisLayer.getEffect(idx) is the same per-effect proxy a general
+        // script gets by calling it explicitly (SceneScriptShimsJs.hpp's
+        // p.getEffect) -- its .visible setter pushes into that layer's own
+        // _s._efxDirty, not the object's _s._dirty.visible, so writing
+        // thisObject.visible from an effect's own script toggles only that
+        // effect. getEffect(idx) returns JS null on a bad index or an
+        // unpopulated efx list -- fall back to _nullProxy (a real, inert
+        // stand-in whose .visible setter is a no-op), not the whole-layer
+        // proxy: a wrong-but-successful write to the whole object would hide
+        // more than the one effect this script is supposed to control.
+        QJSValue getEffect = thisLayerProxy.property("getEffect");
+        QJSValue effProxy =
+            getEffect.isCallable()
+                ? getEffect.callWithInstance(thisLayerProxy, { QJSValue(effectIndex) })
+                : QJSValue();
+        if (effProxy.isObject() && ! effProxy.isNull()) return effProxy;
+        return m_jsEngine->evaluate(QStringLiteral("_nullProxy"));
+    }
+    if (animationLayerIndex >= 0 && thisLayerProxy.isObject()) {
+        // AnimationLayer-attached scripts (Lucy's puppet animation offsets)
+        // bind thisObject to the specific rig layer so thisObject.setFrame /
+        // play / frameCount land on it.
+        QJSValue getAL = thisLayerProxy.property("getAnimationLayer");
+        return getAL.isCallable()
+                   ? getAL.callWithInstance(thisLayerProxy, { QJSValue(animationLayerIndex) })
+                   : thisLayerProxy;
+    }
+    return thisLayerProxy;
+}
+
 void SceneObject::setupTextScripts() {
     cleanupTextScripts();
 
@@ -2745,136 +2917,11 @@ void SceneObject::setupTextScripts() {
             m_globalObj.setProperty("thisLayer", m_jsEngine->newObject());
         }
 
-        // Wrap in IIFE returning {update, init}
-        // Scripts that only use thisScene.getLayer() side effects may not have update()
-        // Wrap init in try-catch so partial initialization still works (variables
-        // set before the error point remain available to update).
-        // `_tlo` carries the current global `thisLayer` into a local shadow so
-        // the scriptProperties overlay below doesn't contaminate sibling scripts.
-        const QString kPropWrap = QStringLiteral(
-            "(function(_tlo) {\n"
-            "  'use strict';\n"
-            "  var exports = {};\n"
-            "  var thisLayer = _tlo;\n"
-            "  %1\n"
-            "  %2\n"
-            // Alias scriptProperties onto thisLayer (WE convention) — e.g.
-            // solar system's media script reads `thisLayer.debug` to gate
-            // its logging where `debug` is an addCheckbox scriptProperty.
-            "  if (typeof scriptProperties !== 'undefined' && scriptProperties)\n"
-            "    thisLayer = _overlayScriptProps(thisLayer, scriptProperties);\n"
-            "  var _upd = typeof exports.update === 'function' ? exports.update :\n"
-            "             (typeof update === 'function' ? update : null);\n"
-            "  var _rawInit = typeof exports.init === 'function' ? exports.init :\n"
-            "                 (typeof init === 'function' ? init : null);\n"
-            "  var _init = _rawInit ? function(v) {\n"
-            "    try { return _rawInit(v); }\n"
-            "    catch(e) { console.log('SceneScript init error: ' + e.message + ' line=' + "
-            "e.lineNumber + ' stack=' + (e.stack||'')); }\n"
-            "  } : null;\n"
-            "  var _rawUpd = _upd;\n"
-            "  var _firstFail = true;\n"
-            "  if (_rawUpd) _upd = function(v) {\n"
-            "    try { return _rawUpd(v); }\n"
-            "    catch(e) {\n"
-            // Log the first throw verbosely (for diagnosis); thereafter
-            // silently return the prior value so the wallpaper keeps
-            // running.  Many wallpapers (Game of Life 3453251764) bundle
-            // 100+ scripts where 1-2 throw at 30Hz from author-side
-            // assumption gaps; the 30Hz spam dominated logs without
-            // adding signal.  Use 'update tick-throw' (not 'error') so
-            // the audit classifier doesn't escalate to JS_ERROR for a
-            // wallpaper that's otherwise rendering.
-            "      if (_firstFail) {\n"
-            "        _firstFail = false;\n"
-            // Format avoids audit-classifier hot words ('error',
-            // 'undefined', 'null', 'NaN') so a single-script script-side
-            // bug doesn't escalate the whole wallpaper to JS_ERROR.  The
-            // wallpaper continues rendering — we just skip that one tick
-            // and reuse the prior return value.  Detail kept verbose for
-            // diagnostics: wsId + JS exception type + stack frame.
-            "        var _kind = "
-            "(e.name||'?').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval');\n"
-            "        var _frame = "
-            "(e.stack||'').replace(/[Ee]rror/g,'Throw').replace(/[Uu]ndefined/g,'noval').replace(/"
-            "null/g,'_null_').replace(/NaN/g,'_NaN_');\n"
-            "        console.log('JS tick-skipped: kind=' + _kind + "
-            "' at=' + e.lineNumber + ' wsId=' + "
-            "(typeof __workshopId !== 'undefined' ? __workshopId : '?') + ' frame=' + _frame);\n"
-            "      }\n"
-            "      return v;\n"
-            "    }\n"
-            "  };\n"
-            "  var _click = typeof exports.cursorClick === 'function' ? exports.cursorClick :\n"
-            "               (typeof cursorClick === 'function' ? cursorClick : null);\n"
-            "  var _enter = typeof exports.cursorEnter === 'function' ? exports.cursorEnter :\n"
-            "               (typeof cursorEnter === 'function' ? cursorEnter : null);\n"
-            "  var _leave = typeof exports.cursorLeave === 'function' ? exports.cursorLeave :\n"
-            "               (typeof cursorLeave === 'function' ? cursorLeave : null);\n"
-            "  var _down  = typeof exports.cursorDown === 'function' ? exports.cursorDown :\n"
-            "               (typeof cursorDown === 'function' ? cursorDown : null);\n"
-            "  var _up    = typeof exports.cursorUp === 'function' ? exports.cursorUp :\n"
-            "               (typeof cursorUp === 'function' ? cursorUp : null);\n"
-            "  var _move  = typeof exports.cursorMove === 'function' ? exports.cursorMove :\n"
-            "               (typeof cursorMove === 'function' ? cursorMove : null);\n"
-            "  var _aup   = typeof exports.applyUserProperties === 'function' ? "
-            "exports.applyUserProperties :\n"
-            "               (typeof applyUserProperties === 'function' ? applyUserProperties : "
-            "null);\n"
-            "  var _destr = typeof exports.destroy === 'function' ? exports.destroy :\n"
-            "               (typeof destroy === 'function' ? destroy : null);\n"
-            "  var _resize = typeof exports.resizeScreen === 'function' ? exports.resizeScreen "
-            ":\n"
-            "                (typeof resizeScreen === 'function' ? resizeScreen : null);\n"
-            "  var _mpbc = typeof exports.mediaPlaybackChanged === 'function' ? "
-            "exports.mediaPlaybackChanged :\n"
-            "              (typeof mediaPlaybackChanged === 'function' ? mediaPlaybackChanged "
-            ": null);\n"
-            // Two corpus scripts export `propertiesChanged` instead of
-            // `mediaPropertiesChanged` — fall back to that spelling so the
-            // hook still fires.  Production sites should still prefer the
-            // full name; this is purely an author-typo accommodation.
-            "  var _mprc = typeof exports.mediaPropertiesChanged === 'function' ? "
-            "exports.mediaPropertiesChanged :\n"
-            "              (typeof mediaPropertiesChanged === 'function' ? "
-            "mediaPropertiesChanged :\n"
-            "              (typeof exports.propertiesChanged === 'function' ? "
-            "exports.propertiesChanged :\n"
-            "              (typeof propertiesChanged === 'function' ? "
-            "propertiesChanged : null)));\n"
-            "  var _mtbc = typeof exports.mediaThumbnailChanged === 'function' ? "
-            "exports.mediaThumbnailChanged :\n"
-            "              (typeof mediaThumbnailChanged === 'function' ? "
-            "mediaThumbnailChanged : null);\n"
-            "  var _mtlc = typeof exports.mediaTimelineChanged === 'function' ? "
-            "exports.mediaTimelineChanged :\n"
-            "              (typeof mediaTimelineChanged === 'function' ? mediaTimelineChanged "
-            ": null);\n"
-            "  var _mstc = typeof exports.mediaStatusChanged === 'function' ? "
-            "exports.mediaStatusChanged :\n"
-            "              (typeof mediaStatusChanged === 'function' ? mediaStatusChanged : "
-            "null);\n"
-            "  var _anim = typeof exports.animationEvent === 'function' ? "
-            "exports.animationEvent :\n"
-            "              (typeof animationEvent === 'function' ? animationEvent : null);\n"
-            "  var _animSafe = _anim ? function(ev, v) {\n"
-            "    try { return _anim(ev, v); }\n"
-            "    catch(e) { console.log('SceneScript animationEvent error: ' + e.message); "
-            "return v; }\n"
-            "  } : null;\n"
-            "  return { update: _upd, init: _init, cursorClick: _click,\n"
-            "           cursorEnter: _enter, cursorLeave: _leave,\n"
-            "           cursorDown: _down, cursorUp: _up, cursorMove: _move,\n"
-            "           applyUserProperties: _aup, destroy: _destr,\n"
-            "           resizeScreen: _resize,\n"
-            "           mediaPlaybackChanged: _mpbc, mediaPropertiesChanged: _mprc,\n"
-            "           mediaThumbnailChanged: _mtbc, mediaTimelineChanged: _mtlc,\n"
-            "           mediaStatusChanged: _mstc,\n"
-            "           animationEvent: _animSafe };\n"
-            "})(thisLayer)\n");
-
+        // Wrap in IIFE returning {update, init} -- see buildPropertyScriptWrapperJs
+        // for the template itself (shared with the effect-visible-script test seed
+        // helper so a test can't compile through a drifted copy).
         auto buildWrapped = [&](const QString& body) {
-            return kPropWrap.arg(propsInit, body);
+            return buildPropertyScriptWrapperJs(propsInit, body);
         };
         QString  wrapped = buildWrapped(scriptSrc);
         QJSValue result  = m_jsEngine->evaluate(wrapped);
@@ -2980,6 +3027,9 @@ void SceneObject::setupTextScripts() {
             (psi.attachment == wallpaper::PropertyScriptInfo::Attachment::AnimationLayer)
                 ? psi.animationLayerIndex
                 : -1;
+        state.effectIndex    = (psi.attachment == wallpaper::PropertyScriptInfo::Attachment::Effect)
+                                   ? psi.effectIndex
+                                   : -1;
         state.currentVisible = psi.initialVisible;
         state.currentVec3    = psi.initialVec3;
         state.currentFloat   = psi.initialFloat;
@@ -2991,21 +3041,10 @@ void SceneObject::setupTextScripts() {
                 wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(psi.layerName)));
         }
 
-        // Resolve thisObject.  For Object-attached scripts this equals
-        // thisLayer; for AnimationLayer-attached scripts (Lucy's puppet
-        // animation offsets) it's the specific animation-layer proxy so
-        // thisObject.setFrame / play / frameCount land on the rig layer.
-        if (state.animationLayerIndex >= 0 && state.thisLayerProxy.isObject()) {
-            QJSValue getAL = state.thisLayerProxy.property("getAnimationLayer");
-            if (getAL.isCallable()) {
-                state.thisObjectProxy = getAL.callWithInstance(
-                    state.thisLayerProxy, { QJSValue(state.animationLayerIndex) });
-            } else {
-                state.thisObjectProxy = state.thisLayerProxy;
-            }
-        } else {
-            state.thisObjectProxy = state.thisLayerProxy;
-        }
+        // Resolve thisObject -- Object/AnimationLayer/Effect, see
+        // resolvePropertyScriptThisObject's own comment.
+        state.thisObjectProxy = resolvePropertyScriptThisObject(
+            state.thisLayerProxy, state.effectIndex, state.animationLayerIndex);
 
         // Call init(value) if available
         if (initFn.isCallable()) {
@@ -5237,7 +5276,14 @@ void SceneObject::evaluatePropertyScripts() {
             case Kind::Visible: {
                 bool v               = list[i + 1].toDouble() != 0.0;
                 state.currentVisible = v;
-                m_dispatch->updateNodeVisible(state.id, v);
+                // An effect-attached script's update() return -- if it ever
+                // has one -- means "this effect", not "the whole object";
+                // route accordingly rather than hiding more than the script
+                // asked for.
+                if (state.effectIndex >= 0)
+                    m_dispatch->updateEffectVisible(state.id, state.effectIndex, v);
+                else
+                    m_dispatch->updateNodeVisible(state.id, v);
                 if (s_scriptDiag) s_updatesVisible++;
                 break;
             }
@@ -6075,14 +6121,15 @@ void SceneObject::bootstrapScriptEngineForTesting() {
 
 void SceneObject::seedPropertyScriptForTesting(int32_t id, TestScriptKind kind,
                                                const std::string& property,
-                                               const std::string& jsSource) {
+                                               const std::string& jsSource, int32_t effectIndex) {
     bootstrapScriptEngineForTesting();
 
     PropertyScriptState state;
-    state.id       = id;
-    state.property = property;
-    state.kind     = static_cast<PropertyScriptState::Kind>(static_cast<uint8_t>(kind));
-    state.updateFn = m_jsEngine->evaluate(QString::fromStdString(jsSource));
+    state.id          = id;
+    state.property    = property;
+    state.kind        = static_cast<PropertyScriptState::Kind>(static_cast<uint8_t>(kind));
+    state.effectIndex = effectIndex;
+    state.updateFn    = m_jsEngine->evaluate(QString::fromStdString(jsSource));
     // Seed current values so the first eval's delta compare fires on a change:
     // visible starts true, alpha/particle-rate start 1.0, vec3 starts (0,0,0).
     state.currentVisible = true;
@@ -6226,6 +6273,82 @@ void SceneObject::seedShaderValueScriptFromSourceForTesting(int32_t id, int32_t 
     // seeds this from the constant's real initial value; a test has none).
     state.cachedValue.assign(static_cast<size_t>(std::max(argShape, 1)), 0.0f);
     m_shaderValueScriptStates.push_back(std::move(state));
+}
+
+QJSValue SceneObject::bootstrapLayerProxyForTesting(int32_t id, const std::string& layerName,
+                                                    const std::vector<std::string>& effectNames) {
+    bootstrapScriptEngineForTesting();
+    // getEffect() lives on the real layer proxy (kLayerProxyJs), which this
+    // test path doesn't otherwise build (that needs a real m_scene) -- so
+    // bootstrap just enough of it once: an empty _layerInitStates/
+    // _layerNameToId pair, then the same production JS
+    // buildLayerProxyStates() would install to define them.
+    if (! m_collectDirtyLayersFn.isCallable()) {
+        m_jsEngine->evaluate(QStringLiteral("var _layerInitStates = {};\n"
+                                            "var _layerNameToId = {};\n"
+                                            "var _sceneOrtho = [1920,1080];\n"));
+        // _makeLayerProxy calls _installHierarchyMethods on every proxy it
+        // creates (including from getEffect's own effect proxies), so this
+        // has to land before kLayerProxyJs or getLayer()/getEffect() throw a
+        // ReferenceError the moment anything actually builds a proxy.
+        m_jsEngine->evaluate(wek::qml_helper::kHierarchyProxyJs);
+        m_jsEngine->evaluate(wek::qml_helper::kLayerProxyJs);
+        m_jsEngine->evaluate(wek::qml_helper::kApplyLayerLiteralJs);
+        m_jsEngine->evaluate(wek::qml_helper::kLayerRuntimeJs);
+        m_collectDirtyLayersFn = m_jsEngine->globalObject().property("_collectDirtyLayers");
+    }
+    // Register (or re-register) this one layer's init state + id. Extends
+    // rather than replaces _layerInitStates/_layerNameToId, so a second call
+    // on the same engine can seed a second layer without losing the first.
+    // The id has to land in _layerNameToId BEFORE getLayer() below -- a
+    // proxy caches itself in _layerCache on first construction, and reads
+    // _layerNameToId only at that moment (SceneScriptShimsJs.hpp's
+    // _makeLayerProxy); without it, the dirty-layer flush in
+    // evaluatePropertyScripts can't resolve the proxy back to a node id and
+    // silently drops the update as unresolved.
+    QString efx = QStringLiteral("[");
+    for (size_t i = 0; i < effectNames.size(); i++) {
+        if (i) efx += QStringLiteral(",");
+        efx += QStringLiteral("'") + QString::fromStdString(effectNames[i]) + QStringLiteral("'");
+    }
+    efx += QStringLiteral("]");
+    QString registerLayer =
+        QStringLiteral("_layerInitStates['%1'] = {o:[0,0,0], s:[1,1,1], a:[0,0,0], v:true, "
+                       "sz:[100,100], pd:[0,0], wo:[0,0,0], ws:[1,1,1], efx:%2};\n"
+                       "_layerNameToId['%1'] = %3;\n")
+            .arg(QString::fromStdString(layerName), efx, QString::number(id));
+    m_jsEngine->evaluate(registerLayer);
+
+    QJSValue thisLayerProxy =
+        m_jsEngine->evaluate(wek::qml_helper::jsLayerLookupExpr(QString::fromStdString(layerName)));
+    m_globalObj.setProperty("thisLayer", thisLayerProxy);
+    return thisLayerProxy;
+}
+
+void SceneObject::seedEffectVisibleScriptFromSourceForTesting(
+    int32_t id, const std::string& layerName, const std::vector<std::string>& effectNames,
+    int32_t effectIndex, const std::string& jsSource) {
+    QJSValue thisLayerProxy = bootstrapLayerProxyForTesting(id, layerName, effectNames);
+
+    QJSValue result = m_jsEngine->evaluate(
+        buildPropertyScriptWrapperJs(QString(), QString::fromStdString(jsSource)));
+
+    PropertyScriptState state;
+    state.id                     = id;
+    state.property               = "visible";
+    state.kind                   = PropertyScriptState::Kind::Visible;
+    state.layerName              = layerName;
+    state.effectIndex            = effectIndex;
+    state.thisLayerProxy         = thisLayerProxy;
+    state.thisObjectProxy        = resolvePropertyScriptThisObject(thisLayerProxy, effectIndex, -1);
+    state.updateFn               = result.property("update");
+    state.mediaPlaybackChangedFn = result.property("mediaPlaybackChanged");
+    state.mediaPropertiesChangedFn = result.property("mediaPropertiesChanged");
+    state.mediaThumbnailChangedFn  = result.property("mediaThumbnailChanged");
+    state.mediaTimelineChangedFn   = result.property("mediaTimelineChanged");
+    state.mediaStatusChangedFn     = result.property("mediaStatusChanged");
+    state.currentVisible           = true;
+    m_propertyScriptStates.push_back(std::move(state));
 }
 
 void SceneObject::installScriptApiGlobalsForTesting() {

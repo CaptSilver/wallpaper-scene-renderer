@@ -334,6 +334,66 @@ TEST_SUITE("WPImageEffect::FromJson") {
         REQUIRE(e.FromJson(j, *vfs));
         CHECK_FALSE(e.visible);
         CHECK(e.userVisibleRawJson.empty());
+        CHECK(e.visibleScript.empty());
+    }
+
+    TEST_CASE("a script-bound visible field captures the script string alongside the resolved "
+              "bool") {
+        auto vfs = Vfs({
+            { "effects/scripted/effect.json", R"({
+                "name": "fx", "version": 1,
+                "passes": [{"material": "materials/util/effA.json"}]
+            })" },
+            { "materials/util/effA.json", kFlatMat },
+        });
+        auto j   = nlohmann::json::parse(
+            R"({"file":"effects/scripted/effect.json",
+                "visible": {"script": "export function mediaThumbnailChanged(e){}",
+                            "value": true}})");
+
+        WPImageEffect e;
+        REQUIRE(e.FromJson(j, *vfs));
+        CHECK(e.visible); // resolved from the embedded "value", same as any other shape
+        CHECK(e.visibleScript == "export function mediaThumbnailChanged(e){}");
+        CHECK(e.userVisibleRawJson.empty()); // the two visible-binding shapes don't cross-populate
+    }
+
+    TEST_CASE("a user-bound visible field does not populate visibleScript") {
+        auto vfs = Vfs({
+            { "effects/bound2/effect.json", R"({
+                "name": "fx", "version": 1,
+                "passes": [{"material": "materials/util/effA.json"}]
+            })" },
+            { "materials/util/effA.json", kFlatMat },
+        });
+        auto j   = nlohmann::json::parse(
+            R"({"file":"effects/bound2/effect.json",
+                "visible": {"user": "godrays_enable", "value": true}})");
+
+        WPImageEffect e;
+        REQUIRE(e.FromJson(j, *vfs));
+        CHECK(e.visibleScript.empty());
+        CHECK_FALSE(e.userVisibleRawJson.empty()); // the user-binding path still works
+    }
+
+    TEST_CASE("scriptproperties on a visible script round-trips as JSON") {
+        auto vfs = Vfs({
+            { "effects/scriptedprops/effect.json", R"({
+                "name": "fx", "version": 1,
+                "passes": [{"material": "materials/util/effA.json"}]
+            })" },
+            { "materials/util/effA.json", kFlatMat },
+        });
+        auto j   = nlohmann::json::parse(
+            R"({"file":"effects/scriptedprops/effect.json",
+                "visible": {"script": "export function mediaThumbnailChanged(e){}",
+                            "value": true,
+                            "scriptproperties": {"speed": {"value": 2}}}})");
+
+        WPImageEffect e;
+        REQUIRE(e.FromJson(j, *vfs));
+        CHECK(e.visibleScriptProperties ==
+              nlohmann::json::parse(R"({"speed":{"value":2}})").dump());
     }
 }
 

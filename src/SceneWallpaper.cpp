@@ -3400,8 +3400,11 @@ void MainHandler::loadScene() {
             psi.attachment =
                 (ps.attachment == wallpaper::ScenePropertyScript::Attachment::AnimationLayer)
                     ? PropertyScriptInfo::Attachment::AnimationLayer
+                : (ps.attachment == wallpaper::ScenePropertyScript::Attachment::Effect)
+                    ? PropertyScriptInfo::Attachment::Effect
                     : PropertyScriptInfo::Attachment::Object;
             psi.animationLayerIndex = ps.animationLayerIndex;
+            psi.effectIndex         = ps.effectIndex;
             m_property_scripts.push_back(std::move(psi));
         }
         if (! m_property_scripts.empty()) {

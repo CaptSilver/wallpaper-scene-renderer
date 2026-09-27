@@ -63,6 +63,7 @@ struct PropertyScriptInfo {
     {
         Object         = 0,
         AnimationLayer = 1,
+        Effect         = 2, // effects[N].visible = {"script":...} on an image/text layer
     };
 
     int32_t              id;
@@ -75,6 +76,7 @@ struct PropertyScriptInfo {
     float                initialFloat { 1.0f };
     Attachment           attachment { Attachment::Object };
     int32_t              animationLayerIndex { -1 };
+    int32_t              effectIndex { -1 }; // Attachment::Effect -> compacted effect index
 };
 
 struct VolumeAnimInfo {

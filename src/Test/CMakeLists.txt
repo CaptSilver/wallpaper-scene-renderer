@@ -177,6 +177,9 @@ add_executable(backend_scene_tests
     # Reconciling a parse-time effect-visibility binding against a layer's
     # final, post-RemoveFailedEffects state.
     test_UserPropEffectVisResolve.cpp
+    # Same resolver shape, for effect-level visible.script bindings instead
+    # of visible.user ones.
+    test_ScriptEffectVisResolve.cpp
     test_WPParticleObject.cpp
     test_WPImageObjectExpanded.cpp
     test_WPParticleParserMore.cpp

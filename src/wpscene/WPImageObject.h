@@ -55,6 +55,12 @@ public:
     // assembleEffects re-resolve the binding at runtime without re-parsing
     // the scene.
     std::string                  userVisibleRawJson;
+    // Script half of an effect-level {"script":...,"value":...} visible
+    // field -- the idiom Wallpaper Engine's own "Now Playing" album-art
+    // crossfade uses (Album Cover's Current/Previous passes). Empty when
+    // visible was a plain bool or a {"user":...} binding.
+    std::string                  visibleScript;
+    std::string                  visibleScriptProperties; // JSON string, optional scriptproperties
     std::vector<WPMaterial>      materials;
     std::vector<WPMaterialPass>  passes;
     std::vector<WPEffectCommand> commands;

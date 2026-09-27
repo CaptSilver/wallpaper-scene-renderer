@@ -8,6 +8,7 @@
 #include "WPJson.hpp"
 #include "WPCommon.hpp"
 #include "WPPropertyScriptExtract.hpp"
+#include "ScriptEffectVisResolve.hpp"
 #include "UserPropEffectVisResolve.hpp"
 #include "WPRopeCombos.hpp"
 #include "WPSceneGroupParse.hpp"
@@ -89,8 +90,8 @@ std::string extractUserPropName(const nlohmann::json& visibleField) {
 
 // Which effects in `effects` will actually be added to a layer, and which
 // ones the terminal exclusion covers.  An effect builds if it's literally
-// visible, or if it carries a user-property binding and survives the
-// terminal exclusion below.  Shared by countVisibleEffects/
+// visible, or if it carries a user-property or visible.script binding and
+// survives the terminal exclusion below.  Shared by countVisibleEffects/
 // adjustBlendForTextEffects (deciding whether to build an effect layer at
 // all) and assembleEffects's own build loop, so all three agree on which
 // effects survive.
@@ -129,7 +130,8 @@ EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffec
     bool foundSafeTail = false;
     for (i32 i = (i32)effects.size() - 1; i >= 0; i--) {
         usize idx         = (usize)i;
-        bool  isCandidate = effects[idx].visible || ! effects[idx].userVisibleRawJson.empty();
+        bool  isCandidate = effects[idx].visible || ! effects[idx].userVisibleRawJson.empty() ||
+                            ! effects[idx].visibleScript.empty();
         if (! isCandidate) continue;
         if (! foundSafeTail) {
             if (! effects[idx].visible) {
@@ -280,6 +282,12 @@ struct ParseContext {
     // effect chain -- resolved to live indices once, after finalizeParse's
     // RemoveFailedEffects compaction, by resolvePendingUserPropEffectVis.
     std::vector<wek::PendingUserPropEffectVis> pending_user_prop_effect_vis;
+
+    // Effect-level visible.script bindings, captured by identity the same
+    // way as pending_user_prop_effect_vis above -- resolved to live indices
+    // by resolvePendingScriptEffectVis once assembleEffects has finished
+    // building every layer.
+    std::vector<wek::PendingScriptEffectVis> pending_script_effect_vis;
 };
 
 using WPObjectVar =
@@ -2575,6 +2583,20 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                                                                      wpeffobj.userVisibleRawJson,
                                                                      propName });
                 }
+            }
+            if (! wpeffobj.visibleScript.empty() && ! is_terminal_candidate) {
+                if (! wpeffobj.visible) {
+                    imgEffect->visible = false;
+                    for (auto& n : imgEffect->nodes) {
+                        if (n.sceneNode) n.sceneNode->SetVisible(false);
+                    }
+                }
+                context.pending_script_effect_vis.push_back({ imgEffect.get(),
+                                                              opts.layer_id,
+                                                              layer_name,
+                                                              wpeffobj.visibleScript,
+                                                              wpeffobj.visibleScriptProperties,
+                                                              wpeffobj.visible });
             }
             LOG_INFO("  effect[%d] '%s' loaded OK (%zu nodes)",
                      i_eff,
@@ -5790,6 +5812,10 @@ void finalizeParse(ParseContext& context) {
     wek::resolvePendingUserPropEffectVis(context.pending_user_prop_effect_vis,
                                          context.scene->nodeEffectLayerMap,
                                          context.scene->userPropEffectVisBindings);
+
+    wek::resolvePendingScriptEffectVis(context.pending_script_effect_vis,
+                                       context.scene->nodeEffectLayerMap,
+                                       context.scene->propertyScripts);
 
     releaseParseSubsystems();
 

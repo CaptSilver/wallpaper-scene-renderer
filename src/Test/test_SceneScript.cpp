@@ -7001,9 +7001,18 @@ struct MediaDispatchTestSink : scenebackend::IPropertyDispatchSink {
         std::string        name;
         std::vector<float> floats;
     };
+    struct EffectVisibleCall {
+        int32_t id;
+        int32_t effectIndex;
+        bool    visible;
+    };
     std::vector<TextCall>           textCalls;
     std::vector<ColorCall>          colorCalls;
     std::vector<EffectMaterialCall> effectMaterialCalls;
+    std::vector<EffectVisibleCall>  effectVisibleCalls;
+    // updateNodeVisible calls -- separate from effectVisibleCalls so a test
+    // can assert a script toggled ONE effect and never the whole object.
+    std::vector<std::pair<int32_t, bool>> visibleCalls;
 
     void updateText(int32_t id, const std::string& text) override {
         textCalls.push_back({ id, text });
@@ -7013,12 +7022,16 @@ struct MediaDispatchTestSink : scenebackend::IPropertyDispatchSink {
         colorCalls.push_back({ id, r, g, b });
     }
     void updateNodeTransform(int32_t, const std::string&, float, float, float) override {}
-    void updateNodeVisible(int32_t, bool) override {}
+    void updateNodeVisible(int32_t id, bool visible) override {
+        visibleCalls.push_back({ id, visible });
+    }
     void updateNodeAlpha(int32_t, float) override {}
     void updateParticleRate(int32_t, float) override {}
     void applyLayerBatch(const std::vector<wallpaper::SceneWallpaper::LayerBatchUpdate>&) override {
     }
-    void updateEffectVisible(int32_t, int32_t, bool) override {}
+    void updateEffectVisible(int32_t id, int32_t effectIndex, bool visible) override {
+        effectVisibleCalls.push_back({ id, effectIndex, visible });
+    }
     void updateMaterialValue(int32_t, std::string, std::vector<float>) override {}
     void updateEffectMaterialValue(int32_t id, int32_t effectIdx, std::string name,
                                    std::vector<float> floats) override {
@@ -7275,6 +7288,92 @@ TEST_SUITE("Media dispatch reaches text/color/shader-value scripts") {
         INFO("log: " << DispatchLogCapture::text);
         CHECK(DispatchLogCapture::mentions("mediaPropertiesChanged error id=177"));
         CHECK(DispatchLogCapture::mentions("boom"));
+    }
+}
+
+// Real Album Cover "Current" effect's visible.script (objects[13].effects[1],
+// stripped of the ES-module `export` keywords the way stripESModuleSyntax
+// would before a compile -- see the other kAlbumOutlineColorScript-style
+// fixtures above for the same convention).
+const char* kAlbumCoverCurrentScript = R"JS(
+let __workshopId = '3616258436';
+
+function mediaThumbnailChanged(event) {
+    thisObject.visible = event.hasThumbnail;
+}
+)JS";
+
+TEST_SUITE("Effect-attached visible.script dispatch (Album Cover Current/Previous)") {
+    TEST_CASE("resolvePropertyScriptThisObject binds an effect script's thisObject to the "
+              "effect proxy, not the layer") {
+        scenebackend::SceneObject obj;
+        QJSValue                  thisLayerProxy =
+            obj.layerProxyForTesting(174, "Album Cover", { "Defualt", "Current" });
+
+        QJSValue effObj = obj.resolvePropertyScriptThisObjectForTesting(thisLayerProxy, 1, -1);
+
+        CHECK(effObj.property("name").toString() == "Current");
+        CHECK_FALSE(effObj.strictlyEquals(thisLayerProxy));
+    }
+
+    TEST_CASE("an effect-visible script's mediaThumbnailChanged toggles only that effect, "
+              "never the whole object") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        obj.seedEffectVisibleScriptFromSourceForTesting(
+            174, "Album Cover", { "Defualt", "Current" }, 1, kAlbumCoverCurrentScript);
+
+        obj.mediaThumbnailChanged(false, QVariantList());
+        obj.evaluatePropertyScriptsForTesting();
+
+        REQUIRE(sinkPtr->effectVisibleCalls.size() == 1);
+        CHECK(sinkPtr->effectVisibleCalls[0].id == 174);
+        CHECK(sinkPtr->effectVisibleCalls[0].effectIndex == 1);
+        CHECK_FALSE(sinkPtr->effectVisibleCalls[0].visible);
+        // The wrong-but-plausible bug this guards: binding thisObject to the
+        // whole layer instead of the effect would hide the entire Album
+        // Cover object here, not just the "Current" effect.
+        CHECK(sinkPtr->visibleCalls.empty());
+    }
+
+    TEST_CASE("an out-of-range effectIndex falls back to the inert proxy, not the whole "
+              "object") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        // Only 2 effects exist (indices 0-1); seed with an index beyond that.
+        obj.seedEffectVisibleScriptFromSourceForTesting(
+            174, "Album Cover", { "Defualt", "Current" }, 5, kAlbumCoverCurrentScript);
+
+        obj.mediaThumbnailChanged(false, QVariantList());
+        obj.evaluatePropertyScriptsForTesting();
+
+        CHECK(sinkPtr->effectVisibleCalls.empty());
+        CHECK(sinkPtr->visibleCalls.empty());
+    }
+
+    TEST_CASE("a Kind::Visible script with both update() and an effectIndex routes through "
+              "updateEffectVisible, not updateNodeVisible") {
+        scenebackend::SceneObject obj;
+        auto                      sink    = std::make_unique<MediaDispatchTestSink>();
+        auto*                     sinkPtr = sink.get();
+        obj.setDispatchSinkForTesting(std::move(sink));
+        using Kind = scenebackend::SceneObject::TestScriptKind;
+        // Seeded currentVisible starts true; returning false is a change, so
+        // one tick is enough to see which dispatch call fires.
+        obj.seedPropertyScriptForTesting(
+            174, Kind::Visible, "visible", "(function(v){ return false; })", 2);
+
+        obj.evaluatePropertyScriptsForTesting();
+
+        REQUIRE(sinkPtr->effectVisibleCalls.size() == 1);
+        CHECK(sinkPtr->effectVisibleCalls[0].id == 174);
+        CHECK(sinkPtr->effectVisibleCalls[0].effectIndex == 2);
+        CHECK_FALSE(sinkPtr->effectVisibleCalls[0].visible);
+        CHECK(sinkPtr->visibleCalls.empty());
     }
 }
 
