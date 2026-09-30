@@ -150,6 +150,51 @@ TEST_SUITE("LOG_DEBUG gating") {
     }
 }
 
+// LOG_INFO is gated like LOG_DEBUG: off unless WEKDE_LOG_INFO (or
+// WEKDE_LOG_DEBUG) is set.  Pin both sides of the gate so the default can't
+// silently flip back to a journald firehose, nor INFO become unreachable.
+TEST_SUITE("LOG_INFO gating") {
+    TEST_CASE("disabled: LOG_INFO never reaches the sink") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(false);
+        LOG_INFO("%s", "should-not-appear");
+        CHECK(g_captured_level.load() == -1);
+        wallpaper::SetLogInfoEnabled(was);
+    }
+
+    TEST_CASE("enabled: LOG_INFO reaches the sink at LOGLEVEL_INFO") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(true);
+        LOG_INFO("%s", "marker");
+        CHECK(g_captured_level.load() == LOGLEVEL_INFO);
+        CHECK(std::string(g_captured_msg) == "marker");
+        wallpaper::SetLogInfoEnabled(was);
+    }
+
+    TEST_CASE("the environment rule: either variable set, non-empty and not 0") {
+        using wallpaper::LogInfoEnabledFromEnv;
+        CHECK_FALSE(LogInfoEnabledFromEnv(nullptr, nullptr)); // the default
+        CHECK_FALSE(LogInfoEnabledFromEnv("", ""));
+        CHECK_FALSE(LogInfoEnabledFromEnv("0", "0"));
+        CHECK(LogInfoEnabledFromEnv("1", nullptr));
+        CHECK(LogInfoEnabledFromEnv(nullptr, "1")); // debug implies info
+        CHECK(LogInfoEnabledFromEnv("yes", "0"));
+        CHECK(LogInfoEnabledFromEnv("0", "1"));
+        CHECK_FALSE(LogInfoEnabledFromEnv("", "0"));
+    }
+
+    TEST_CASE("ERROR is never gated") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(false);
+        LOG_ERROR("%s", "err");
+        CHECK(g_captured_level.load() == LOGLEVEL_ERROR);
+        wallpaper::SetLogInfoEnabled(was);
+    }
+}
+
 // WallpaperLog renders prefix + body + newline into one buffer and writes it
 // with a single fwrite so concurrent callers (WPTexImageParser::Parse()
 // during a multi-threaded texture prefetch) can't interleave mid-line. Two

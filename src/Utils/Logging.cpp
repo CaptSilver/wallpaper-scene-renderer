@@ -25,8 +25,22 @@ std::atomic<bool>& debugLogFlag() {
     }();
     return flag;
 }
+std::atomic<bool>& infoLogFlag() {
+    static std::atomic<bool> flag =
+        LogInfoEnabledFromEnv(std::getenv("WEKDE_LOG_INFO"), std::getenv("WEKDE_LOG_DEBUG"));
+    return flag;
+}
 } // namespace
 
+bool LogInfoEnabledFromEnv(const char* info, const char* debug) {
+    auto on = [](const char* v) {
+        return v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0;
+    };
+    return on(info) || on(debug);
+}
+
+bool LogInfoEnabled() { return infoLogFlag().load(std::memory_order_relaxed); }
+void SetLogInfoEnabled(bool enabled) { infoLogFlag().store(enabled, std::memory_order_relaxed); }
 bool LogDebugEnabled() { return debugLogFlag().load(std::memory_order_relaxed); }
 void SetLogDebugEnabled(bool enabled) { debugLogFlag().store(enabled, std::memory_order_relaxed); }
 } // namespace wallpaper

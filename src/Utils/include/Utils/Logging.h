@@ -35,7 +35,14 @@ enum
     LOGLEVEL_DEBUG = 2
 };
 
-#define LOG_INFO(...)  WallpaperLog(LOGLEVEL_INFO, "", 0, __VA_ARGS__)
+// Off by default too (see wallpaper::LogInfoEnabled), gated in the macro the
+// same way as LOG_DEBUG below.  Scene loads log thousands of INFO lines and
+// hover/cursor paths log per event; inside plasmashell every line is a
+// journald record.
+#define LOG_INFO(...)                                                                     \
+    do {                                                                                  \
+        if (wallpaper::LogInfoEnabled()) WallpaperLog(LOGLEVEL_INFO, "", 0, __VA_ARGS__); \
+    } while (0)
 #define LOG_ERROR(...) WallpaperLog(LOGLEVEL_ERROR, __SHORT_FILE__, __LINE__, __VA_ARGS__)
 
 // Off by default (see wallpaper::LogDebugEnabled). The guard sits in the
@@ -58,6 +65,13 @@ namespace wallpaper {
 // journal.
 bool LogDebugEnabled();
 void SetLogDebugEnabled(bool enabled);
+// Seeded once from getenv("WEKDE_LOG_INFO") or getenv("WEKDE_LOG_DEBUG")
+// (either non-empty and not "0" enables it): whoever asks for debug output
+// wants the INFO context around it too.  Default off; ERROR always prints.
+bool LogInfoEnabled();
+void SetLogInfoEnabled(bool enabled);
+// The seeding rule, given the two variables' values (null = unset).
+bool LogInfoEnabledFromEnv(const char* info, const char* debug);
 } // namespace wallpaper
 
 // Test-only sink. When non-null, called from WallpaperLog with the rendered
