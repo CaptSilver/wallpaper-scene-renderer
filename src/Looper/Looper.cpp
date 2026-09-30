@@ -1,4 +1,5 @@
 #include "Looper.hpp"
+#include <pthread.h>
 #include <algorithm>
 #include <exception>
 
@@ -77,6 +78,7 @@ status_t Looper::start() {
                 auto self = wlooper.lock();
                 if (! self) return;
                 name = self->name();
+                pthread_setname_np(pthread_self(), WorkerThreadName(name).c_str());
                 LOG_INFO("%s looper started", name.c_str());
                 if (testHook_workerLockedRef) testHook_workerLockedRef();
             }

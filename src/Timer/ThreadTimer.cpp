@@ -1,6 +1,7 @@
 #include "ThreadTimer.hpp"
 
 #include <cassert>
+#include <pthread.h>
 
 using namespace wallpaper;
 
@@ -23,6 +24,7 @@ void ThreadTimer::Start() {
     // stale false and quit before the first tick.
     m_running = true;
     m_timer_thread = std::thread([this]() {
+        pthread_setname_np(pthread_self(), "wek:timer");
         // First wake immediate — init/play/resume rely on a prompt frame.
         auto deadline = Clock::now();
         // seen carries ACROSS iterations and only advances under the lock,

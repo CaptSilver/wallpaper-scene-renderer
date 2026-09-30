@@ -33,6 +33,16 @@ using handler_id = int32_t;
 class Handler;
 class Message;
 
+// OS-level name for a looper's worker thread: "wek:" + the looper name, cut
+// to the 15 characters Linux allows.  Named threads let `top -H`, perf and gdb
+// attribute plasmashell's CPU time to the wallpaper instead of a wall of
+// anonymous "plasmashell" threads.
+inline std::string WorkerThreadName(std::string_view looperName) {
+    std::string name = "wek:";
+    name += looperName;
+    return name.substr(0, 15);
+}
+
 class Looper : NoCopy, public std::enable_shared_from_this<Looper> {
 public:
     Looper();
