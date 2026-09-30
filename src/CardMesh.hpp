@@ -48,6 +48,18 @@ inline CardStripArrays FlattenCardStrip(const std::array<CardVertex, 4>& card) {
     return out;
 }
 
+// Texture-coordinate scale that maps a card onto the image inside its texture.
+// A non-power-of-two image is stored padded out to a power-of-two texture
+// (1920x1080 in 2048x2048) and g_Texture0Resolution carries both sizes as
+// {texture w, texture h, image w, image h}; an unpadded texture gives {1, 1}.
+// This is a property of the texture storage only.  A model's `nopadding` flag
+// is about the mesh and must not skip it: doing so stretched the padding over
+// the card and left the image in the top half of the screen.
+inline std::array<float, 2> PaddedTextureUvRate(float texW, float texH, float imgW, float imgH) {
+    if (texW <= 0.0f || texH <= 0.0f) return { 1.0f, 1.0f };
+    return { imgW / texW, imgH / texH };
+}
+
 // Twice the signed area of the strip's first triangle, projected on XY.
 // Positive is counter-clockwise seen from +Z, i.e. front-facing.
 inline float CardStripFacing(const std::array<CardVertex, 4>& v) {

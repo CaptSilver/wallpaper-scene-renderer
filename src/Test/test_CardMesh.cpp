@@ -2,6 +2,8 @@
 
 #include "CardMesh.hpp"
 
+#include <utility>
+
 using wallpaper::CardStrip;
 using wallpaper::CardStripFacing;
 using wallpaper::CardVertex;
@@ -64,5 +66,39 @@ TEST_SUITE("card mesh winding") {
         CHECK(right == 2);
         CHECK(bottom == 2);
         CHECK(top == 2);
+    }
+}
+
+using wallpaper::PaddedTextureUvRate;
+
+// A 1920x1080 image stored in a 2048x2048 texture: the card must only sample
+// the image part, whatever the model's `nopadding` flag says.  Before the fix
+// the parser skipped this for `nopadding` models and the image filled only the
+// top 53% of the screen (1080 / 2048).
+TEST_SUITE("padded texture uv rate") {
+    TEST_CASE("a padded texture maps the card onto the image part") {
+        const auto rate = PaddedTextureUvRate(2048.0f, 2048.0f, 1920.0f, 1080.0f);
+        CHECK(rate[0] == doctest::Approx(1920.0f / 2048.0f));
+        CHECK(rate[1] == doctest::Approx(1080.0f / 2048.0f));
+    }
+
+    TEST_CASE("an unpadded texture maps one to one") {
+        const auto rate = PaddedTextureUvRate(1920.0f, 1080.0f, 1920.0f, 1080.0f);
+        CHECK(rate[0] == doctest::Approx(1.0f));
+        CHECK(rate[1] == doctest::Approx(1.0f));
+    }
+
+    // Each side on its own: a zero width or a zero height alone must not
+    // divide by zero either.
+    TEST_CASE("a missing texture size falls back to one to one") {
+        for (const auto& [w, h] : { std::pair { 0.0f, 0.0f },
+                                    std::pair { 0.0f, 2048.0f },
+                                    std::pair { 2048.0f, 0.0f } }) {
+            CAPTURE(w);
+            CAPTURE(h);
+            const auto rate = PaddedTextureUvRate(w, h, 1920.0f, 1080.0f);
+            CHECK(rate[0] == doctest::Approx(1.0f));
+            CHECK(rate[1] == doctest::Approx(1.0f));
+        }
     }
 }

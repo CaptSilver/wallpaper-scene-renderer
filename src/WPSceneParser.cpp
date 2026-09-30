@@ -2018,12 +2018,11 @@ std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
     auto& mesh   = *spMesh;
 
     {
-        // deal with pow of 2
+        // deal with pow of 2 (independent of nopadding, see PaddedTextureUvRate)
         std::array<float, 2> mapRate { 1.0f, 1.0f };
-        if (! wpimgobj.nopadding &&
-            exists(material.customShader.constValues, WE_GLTEX_RESOLUTION_NAMES[0])) {
+        if (exists(material.customShader.constValues, WE_GLTEX_RESOLUTION_NAMES[0])) {
             const auto& r = material.customShader.constValues.at(WE_GLTEX_RESOLUTION_NAMES[0]);
-            mapRate       = { r[2] / r[0], r[3] / r[1] };
+            mapRate       = PaddedTextureUvRate(r[0], r[1], r[2], r[3]);
         }
 
         if (puppet) {
