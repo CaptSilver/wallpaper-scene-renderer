@@ -88,6 +88,34 @@ TEST_SUITE("PreShaderSrc #include handling") {
     }
 }
 
+TEST_SUITE("PreShaderSrc include placement") {
+    // The include is pasted after the last attribute/varying/uniform line, but
+    // never inside an #if block: when that line sits in one, the paste moves
+    // past the matching #endif.  Pins the #if/#endif walk in
+    // FindIncludeInsertPos (FindIfOrEndif), which otherwise has no coverage.
+    TEST_CASE("an include is pasted after an #if block that holds the last uniform") {
+        auto memfs = std::make_unique<MemFs>();
+        memfs->add("/shaders/common.h", "float WEK_INCLUDE_MARKER = 1.0;\n");
+        auto         vfs = makeAssetsVfs(std::move(memfs));
+        WPShaderInfo info;
+        std::string  src = "#include \"common.h\"\n"
+                           "uniform float u_first;\n"
+                           "#if HAS_EXTRA\n"
+                           "uniform float u_extra;\n"
+                           "#endif\n"
+                           "void main(){}\n";
+        std::string  out;
+        CHECK_NOTHROW(out = WPShaderParser::PreShaderSrc(*vfs, src, &info, {}));
+        const auto marker = out.find("WEK_INCLUDE_MARKER");
+        const auto endif  = out.find("#endif");
+        const auto body   = out.find("void main");
+        REQUIRE(marker != std::string::npos);
+        REQUIRE(endif != std::string::npos);
+        CHECK(marker > endif); // not inside the #if block
+        CHECK(marker < body);  // still ahead of the functions
+    }
+}
+
 TEST_SUITE("LoadGlslInclude cycles and malformed tails") {
     TEST_CASE("self-including header terminates instead of overflowing the stack") {
         auto memfs = std::make_unique<MemFs>();
