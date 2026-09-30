@@ -102,6 +102,7 @@ add_executable(backend_scene_tests
     test_ConsoleFlushDedup.cpp
     test_DiagDumpEnv.cpp
     test_RenderCallbackGuard.cpp
+    test_BackgroundReleaser.cpp
     test_AudioAnalyzer.cpp
     test_SoundManager.cpp
     test_AudioCapture.cpp

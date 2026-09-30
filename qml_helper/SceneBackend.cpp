@@ -15,6 +15,7 @@
 #include "PropertyScriptDispatchJs.hpp"
 #include "EngineResolution.hpp"
 #include "RenderCallbackGuard.hpp"
+#include "BackgroundReleaser.hpp"
 #include "SceneScriptShimsJs.hpp"
 #include "SceneTickHelpers.h"
 #include "SceneScriptBridge.h"
@@ -121,6 +122,16 @@ wallpaper::FillMode ToWPFillMode(int fillMode) {
 
 using sp_scene_t = std::shared_ptr<wallpaper::SceneWallpaper>;
 
+namespace
+{
+// Drop a scene reference off the calling thread; see BackgroundReleaser.hpp
+// for why ~TextureNode must not run a scene's teardown itself.
+void ReleaseSceneInBackground(sp_scene_t&& scene) {
+    static wek::qml_helper::BackgroundReleaser<wallpaper::SceneWallpaper> releaser("wek:reaper");
+    releaser.release(std::move(scene));
+}
+} // namespace
+
 namespace scenebackend
 {
 
@@ -164,6 +175,9 @@ public:
         delete m_init_texture;
         emit nodeDestroyed();
         _Q_INFO("Destroy texnode");
+        // Usually the last reference to the scene: tearing it down here would
+        // stall the scenegraph sync (and the GUI thread with it).
+        ReleaseSceneInBackground(std::move(m_scene));
     }
 
     // only at qt render thread
@@ -397,6 +411,10 @@ SceneObject::~SceneObject() {
     // Final flush so the 500ms debounce timer doesn't drop pending writes
     // (e.g. solar's icon toggle saved right before sceneviewer exits).
     if (m_lsGlobalDirty || m_lsScreenDirty) flushLocalStorage();
+    // Stop an in-flight parse of a scene nobody will see (rapid wallpaper
+    // switching): the same cooperative abort as the screen-removal path, so
+    // the old load stops competing with the new one for the looper threads.
+    if (m_scene) m_scene->abortLoad();
     _Q_INFO("Destroy sceneobject");
 }
 
