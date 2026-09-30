@@ -34,6 +34,15 @@ public:
 std::unique_ptr<SoundStream> CreateSoundStream(std::shared_ptr<fs::IBinaryStream>,
                                                const SoundStream::Desc&);
 
+// Whether a scene should hold an open output stream.  An open stream, even a
+// silent or stopped one, keeps the audio codec powered (~1 W measured on an
+// Intel laptop, codec runtime-PM status stuck at "active"), and most scenes
+// mount no sound at all.  With nothing mounted there is also nothing for the
+// playback tap to analyse: the spectrum is zero either way.
+inline bool WantsOutputDevice(bool playbackStopped, std::size_t mountedChannels) {
+    return ! playbackStopped && mountedChannels > 0;
+}
+
 class SoundManager : NoCopy, NoMove {
 public:
     SoundManager();
@@ -49,6 +58,8 @@ public:
     bool        IsInited() const;
     void        Play();
     void        Pause();
+    // Drop the audio device/stream; mounted streams survive and Init() reopens.
+    void Close();
 
     float Volume() const;
     bool  Muted() const;

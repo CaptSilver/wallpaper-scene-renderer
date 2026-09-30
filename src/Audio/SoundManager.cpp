@@ -109,6 +109,7 @@ bool SoundManager::Init() {
 bool SoundManager::IsInited() const { return pImpl->device.IsInited(); }
 void SoundManager::Play() { pImpl->device.Start(); }
 void SoundManager::Pause() { pImpl->device.Stop(); }
+void SoundManager::Close() { pImpl->device.Close(); }
 
 void        SoundManager::UnMountAll() { pImpl->device.UnmountAll(); }
 std::size_t SoundManager::MountedChannelCount() const { return pImpl->device.ChannelCount(); }
@@ -120,11 +121,10 @@ void SoundManager::SetMuted(bool v) {
     // path (audio-reactive scripts) keeps receiving PCM frames.  The
     // miniaudio data callback now always decodes channels into a private
     // mix buffer and feeds it to the analyzer; only the speaker output
-    // is silenced when muted.  Init lazily on the first un-mute so we
-    // don't open an audio device on a brand-new wallpaper that's still
-    // being configured.
+    // is silenced when muted.  Muting never opens the device: the scene
+    // host opens it only while a sound is mounted and playback runs
+    // (WantsOutputDevice, MainHandler::syncSoundDevice).
     pImpl->device.SetMuted(v);
-    if (! IsInited()) Init();
 }
 void SoundManager::SetVolume(float v) { pImpl->device.SetVolume(v); }
 void SoundManager::SetAudioAnalyzer(std::shared_ptr<AudioAnalyzer> analyzer) {

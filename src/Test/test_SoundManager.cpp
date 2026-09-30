@@ -4,6 +4,7 @@
 #include "Audio/AudioAnalyzer.h"
 #include "Audio/miniaudio-wrapper.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
@@ -39,26 +40,36 @@ TEST_SUITE("SoundManager") {
         CHECK(sm.Volume() == doctest::Approx(1.0f));
     }
 
-    TEST_CASE("SetMuted toggles flag without tearing down the device") {
-        // Mute must NOT UnInit the device — the spectrum callback is the
+    TEST_CASE("SetMuted toggles the flag and never opens the device") {
+        // Mute must not UnInit an open device -- the spectrum callback is the
         // sole audio-reactivity feed for several wallpapers (e.g. Cyberpunk
-        // Lucy 2866203962), so muting the wallpaper has to leave the data
-        // callback firing.
-        //
-        // SetMuted lazily calls Init() on the first toggle
-        // (`if (!IsInited()) Init();` in SoundManager.cpp), which opens the
-        // default device and can BLOCK on a stale audio socket — so this case
-        // is a device test and must be gated behind the opt-in.
-        if (! wekde_audio_device_optin()) {
-            MESSAGE("no audio device opt-in (set WEKDE_HAS_AUDIO_DEVICE=1); "
-                    "skipping SetMuted (lazily opens the device)");
-            return;
-        }
+        // Lucy 2866203962), so muting has to leave the data callback firing.
+        // Nor may it open one: the scene host opens the device only while a
+        // sound is mounted and playback runs (WantsOutputDevice), since an
+        // open stream keeps the audio codec powered.  So this no longer needs
+        // the device opt-in.
         SoundManager sm;
         sm.SetMuted(true);
         CHECK(sm.Muted());
+        CHECK_FALSE(sm.IsInited());
         sm.SetMuted(false);
         CHECK_FALSE(sm.Muted());
+        CHECK_FALSE(sm.IsInited());
+    }
+
+    TEST_CASE("WantsOutputDevice: only while a sound is mounted and playback runs") {
+        CHECK(WantsOutputDevice(/*playbackStopped=*/false, /*mountedChannels=*/1));
+        CHECK(WantsOutputDevice(false, 3));
+        CHECK_FALSE(WantsOutputDevice(false, 0)); // most scenes: no sound at all
+        CHECK_FALSE(WantsOutputDevice(true, 1));  // paused (maximized window etc.)
+        CHECK_FALSE(WantsOutputDevice(true, 0));
+    }
+
+    TEST_CASE("Close() on an unopened device is a no-op") {
+        SoundManager sm;
+        sm.Close();
+        CHECK_FALSE(sm.IsInited());
+        CHECK(sm.MountedChannelCount() == 0u);
     }
 
     TEST_CASE("Init() succeeds even after SetMuted(true) (used to early-return false)") {
@@ -271,6 +282,71 @@ TEST_SUITE("miniaudio::Device::SetSpectrumCallback") {
     }
 }
 
+// Close() releases the stream of a scene with no sound (and of a paused one).
+// An open device fed the playback tap silence every period, so the spectrum
+// of the last sound decayed to zero; a closed one feeds nothing, and
+// AudioAnalyzer::Process() keeps the last spectrum when no new PCM arrives.
+TEST_SUITE("miniaudio::Device spectrum after Close") {
+    // A 1.5 kHz square wave at 48 kHz, loud enough to light up the spectrum.
+    std::vector<float> squareWave(uint32_t frames) {
+        std::vector<float> pcm(frames * 2);
+        for (std::size_t i = 0; i < pcm.size(); i++) pcm[i] = (i / 2) % 32 < 16 ? 0.5f : -0.5f;
+        return pcm;
+    }
+
+    float loudestBand(const AudioAnalyzer& a) {
+        float m = 0.0f;
+        for (float v : a.GetRawSpectrum(64, 0)) m = std::max(m, v);
+        return m;
+    }
+
+    TEST_CASE("without new PCM the analyser keeps the last spectrum") {
+        // The problem FeedSpectrumSilence solves.
+        AudioAnalyzer a;
+        const auto    tone = squareWave(4096);
+        a.FeedPcm(tone.data(), 4096, 2);
+        a.Process();
+        const float before = loudestBand(a);
+        REQUIRE(before > 0.1f);
+        for (int i = 0; i < 10; i++) a.Process();
+        CHECK(loudestBand(a) == doctest::Approx(before));
+    }
+
+    TEST_CASE("the silence handed over on Close decays the spectrum to zero") {
+        AudioAnalyzer a;
+        const auto    tone = squareWave(4096);
+        a.FeedPcm(tone.data(), 4096, 2);
+        a.Process();
+        REQUIRE(loudestBand(a) > 0.1f);
+
+        miniaudio::Device dev;
+        dev.SetSpectrumCallback([&a](const float* data, uint32_t frames, uint32_t ch) {
+            a.FeedPcm(data, frames, ch);
+        });
+        dev.FeedSpectrumSilence();
+        a.Process();
+
+        CHECK(loudestBand(a) < 1e-3f);
+    }
+
+    TEST_CASE("the silence is all zeros, and nothing happens without a callback") {
+        miniaudio::Device dev;
+        dev.FeedSpectrumSilence(); // no callback: must not crash
+
+        uint32_t gotFrames = 0, gotChannels = 0;
+        bool     allZero = true;
+        dev.SetSpectrumCallback([&](const float* data, uint32_t frames, uint32_t ch) {
+            gotFrames   = frames;
+            gotChannels = ch;
+            for (uint32_t i = 0; i < frames * ch; i++) allZero = allZero && data[i] == 0.0f;
+        });
+        dev.FeedSpectrumSilence();
+        CHECK(gotFrames == miniaudio::Device::kCloseSilenceFrames);
+        CHECK(gotChannels == 2u);
+        CHECK(allZero);
+    }
+}
+
 TEST_SUITE("miniaudio::Device channel lifetime") {
     TEST_CASE("a failed device open leaves already-mounted channels alone") {
         // Init() bails through AbortInit() when the backend won't open (no
@@ -286,6 +362,43 @@ TEST_SUITE("miniaudio::Device channel lifetime") {
         dev.AbortInit();
 
         CHECK(dev.ChannelCount() == 1u);
+    }
+
+    TEST_CASE("Close keeps the mounted channels for the next Init") {
+        // Close() releases the OS stream when a scene pauses; the scene's
+        // sounds stay mounted so resuming only reopens the device.  Only an
+        // open device has a stream to release, so this needs a real one.
+        if (! wekde_audio_device_optin()) {
+            MESSAGE("no audio device opt-in (set WEKDE_HAS_AUDIO_DEVICE=1); "
+                    "skipping Close (needs an open device)");
+            return;
+        }
+        miniaudio::Device dev;
+        dev.MountChannel(std::make_shared<ToneChannel>(0.5f, 2, /*frames=*/128));
+        REQUIRE(dev.Init({}));
+        REQUIRE(dev.IsInited());
+
+        dev.Close();
+
+        CHECK_FALSE(dev.IsInited());
+        CHECK(dev.ChannelCount() == 1u);
+        CHECK(dev.Init({})); // resuming reopens it, channels still there
+        CHECK(dev.ChannelCount() == 1u);
+    }
+
+    TEST_CASE("Close on a device that was never opened leaves everything alone") {
+        miniaudio::Device dev;
+        dev.MountChannel(std::make_shared<ToneChannel>(0.5f, 2, /*frames=*/128));
+        int calls = 0;
+        dev.SetSpectrumCallback([&](const float*, uint32_t, uint32_t) {
+            calls++;
+        });
+
+        dev.Close();
+
+        CHECK_FALSE(dev.IsInited());
+        CHECK(dev.ChannelCount() == 1u);
+        CHECK(calls == 0); // nothing was playing, so no silence to report
     }
 
     TEST_CASE("UnInit drops the channels the device was mixing") {

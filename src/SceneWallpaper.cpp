@@ -345,6 +345,19 @@ private:
 
     WPSceneParser                         m_scene_parser;
     std::unique_ptr<audio::SoundManager>  m_sound_manager;
+    bool                                  m_playback_stopped { false };
+    // Open the output stream only while there is something to play and close
+    // it otherwise (see audio::WantsOutputDevice).  Mounted streams survive a
+    // Close(); called after (un)mounting and on every STOP / resume.
+    void syncSoundDevice() {
+        if (audio::WantsOutputDevice(m_playback_stopped, m_sound_manager->MountedChannelCount())) {
+            if (! m_sound_manager->IsInited() && ! m_sound_manager->Init()) return;
+            m_sound_manager->Play();
+        } else {
+            m_sound_manager->Pause();
+            m_sound_manager->Close();
+        }
+    }
     std::shared_ptr<audio::AudioAnalyzer> m_audio_analyzer;
     // Live "this scene reads the spectrum" declaration handed to the AudioBus;
     // the bus thread runs the FFT only while it is held.  Taken/dropped from
@@ -2839,11 +2852,8 @@ MHANDLER_CMD_IMPL(MainHandler, SET_PROPERTY) {
 MHANDLER_CMD_IMPL(MainHandler, STOP) {
     bool stop { false };
     if (msg->findBool("value", &stop)) {
-        if (stop) {
-            m_sound_manager->Pause();
-        } else {
-            m_sound_manager->Play();
-        }
+        m_playback_stopped = stop;
+        syncSoundDevice();
 
         auto msg_r = CreateMsgWithCmd(m_render_handler, RenderHandler::CMD::CMD_STOP);
         msg_r->setBool("value", stop);
@@ -3020,16 +3030,13 @@ void MainHandler::loadScene() {
     LOG_INFO("loading scene: %s", m_source.c_str());
 
     // Drop the published stream aliases before anything can free the streams
-    // they name.  Unconditional and ahead of the init check because both
-    // branches can free: UnMountAll() obviously, and Init() by way of the
-    // device teardown on its failure path.  The QML property tick keeps
+    // they name.  Unconditional and ahead of syncSoundDevice() because both
+    // can free: UnMountAll() obviously, and Init() by way of the device
+    // teardown on its failure path.  The QML property tick keeps
     // calling soundLayer*/updateSoundVolume by index for the whole parse below
     // — and forever, on the error returns, which never republish.
     UnmountSoundStreams(*m_sound_manager, m_sound_layers, m_sound_volumes);
-    if (! m_sound_manager->IsInited()) {
-        m_sound_manager->Init();
-        m_sound_manager->Play();
-    }
+    syncSoundDevice(); // nothing is mounted now: release the output stream
 
     // Acquire shared analyzer + capture from the process-singleton AudioBus.
     // Both this SceneWallpaper and any active WebAudioBridge tap the same
@@ -3427,6 +3434,7 @@ void MainHandler::loadScene() {
         }
         m_sound_layers.publish(std::move(infos), std::move(streams));
     }
+    syncSoundDevice(); // opens the device only if this scene mounted sounds
 
     // Store layer name → node ID mapping for thisScene.getLayer()
     {

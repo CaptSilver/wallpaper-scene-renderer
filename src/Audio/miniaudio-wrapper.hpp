@@ -167,6 +167,35 @@ public:
     // them.  The next successful Init() re-PassDeviceDesc's whatever is still
     // mounted.
     void AbortInit() { ma_device_uninit(&m_device); }
+    // Release the OS audio stream but keep the mounted channels (a later
+    // Init() re-passes the device description to them).  An open stream,
+    // even silent or stopped, keeps the audio codec powered; scenes without
+    // sounds and paused scenes have no reason to hold one.
+    void Close() {
+        if (! IsInited()) return;
+        LOG_INFO("close sound device");
+        ma_device_uninit(&m_device);
+        FeedSpectrumSilence();
+    }
+    // An open device calls the spectrum callback every period, with silence
+    // when nothing is mounted, so a spectrum left over from the last sound
+    // decays to zero.  A closed one calls nothing and the analyser would keep
+    // showing that last value, e.g. to an audio-reactive scene with no sound
+    // of its own that follows a scene with music.  Close() hands the callback
+    // that silence once: kCloseSilenceFrames is enough FFT windows for the
+    // analyser's smoothing to reach zero.  Public for testing, like
+    // ProcessFrame.
+    static constexpr ma_uint32 kCloseSilenceFrames = 8192;
+    void                       FeedSpectrumSilence() {
+        SpectrumCallback cb_copy;
+        {
+            std::lock_guard<std::mutex> lock(m_spectrum_callback_mutex);
+            cb_copy = m_spectrum_callback;
+        }
+        if (! cb_copy) return;
+        const std::vector<float> silence(kCloseSilenceFrames * 2, 0.0f);
+        cb_copy(silence.data(), kCloseSilenceFrames, 2);
+    }
     // bool IsStarted() const { return ma_device_is_started(&m_device); }
     // bool IsStopped() const { return ma_device_get_state(&m_device) == MA_STATE_STOPPED; }
     void Start() {
