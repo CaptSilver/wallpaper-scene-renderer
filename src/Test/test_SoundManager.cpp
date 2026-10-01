@@ -5,6 +5,7 @@
 #include "Audio/miniaudio-wrapper.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -263,6 +264,15 @@ TEST_SUITE("miniaudio::Device::SetSpectrumCallback") {
             // the audio thread sees both populated and empty states.
             if ((i & 0x3F) == 0) dev.SetSpectrumCallback({});
         }
+        // The writer loop often finishes before the audio thread has run a
+        // single frame (thread start-up outlasts 4096 assigns), which left
+        // the count at 0 in most runs.  The last iteration leaves a callback
+        // installed, so wait for the audio thread to reach it before
+        // stopping; bounded so a callback that is never invoked still fails.
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (cb_invocations.load(std::memory_order_relaxed) == 0 &&
+               std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
         stop.store(true, std::memory_order_relaxed);
         audio.join();
 
