@@ -1265,7 +1265,10 @@ private:
                     if (eit == scene->nodeEffectLayerMap.end()) continue;
                     auto* effLayer = eit->second;
                     if (effIdx < 0 || effIdx >= (i32)effLayer->EffectCount()) continue;
-                    auto& eff    = effLayer->GetEffect(effIdx);
+                    auto& eff = effLayer->GetEffect(effIdx);
+                    if (eff->visible != vis)
+                        LOG_INFO(
+                            "effect visible: node=%d effect=%d -> %d", nodeId, effIdx, (int)vis);
                     eff->visible = vis;
                     for (auto& en : eff->nodes) {
                         en.sceneNode->SetVisible(vis);
