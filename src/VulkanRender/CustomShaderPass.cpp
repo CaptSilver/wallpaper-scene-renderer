@@ -76,7 +76,8 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.hideable                      = desc.hideable;
     m_desc.passthrough_input_tex_index_a = desc.passthrough_input_tex_index_a;
     m_desc.passthrough_input_tex_index_b = desc.passthrough_input_tex_index_b;
-    m_desc.passthrough_predecessor_nodes = desc.passthrough_predecessor_nodes;
+    m_desc.chain_effects                 = desc.chain_effects;
+    m_desc.chain_index                   = desc.chain_index;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
@@ -1501,7 +1502,15 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // onto the composite) would take the early-return skip and never record
     // anything. SceneToRenderGraph assigns only Terminal here, and a Terminal
     // must copy whenever it is hidden, so must_copy is true.
-    const bool own_hidden        = m_desc.node != nullptr && ! m_desc.node->IsVisible();
+    std::vector<bool> chain_visible;
+    bool              own_hidden = m_desc.node != nullptr && ! m_desc.node->IsVisible();
+    const bool        chain_known = m_desc.hideable != HideableKind::None &&
+                             m_desc.chain_index >= 0 &&
+                             (usize)m_desc.chain_index < m_desc.chain_effects.size();
+    if (chain_known) {
+        chain_visible = ChainVisibility(m_desc.chain_effects);
+        own_hidden    = ! chain_visible[(usize)m_desc.chain_index];
+    }
     const bool ancestors_visible = m_desc.node == nullptr || m_desc.node->AncestorsVisible();
     const HideableDecision hide  = DecideHideablePass(m_desc.hideable,
                                                       own_hidden,
@@ -1547,16 +1556,14 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // immediate predecessor already took the ordinary skip path and is
     // holding stale content, not this frame's answer).
     i32 passthrough_tex_index = -1;
-    if (draw_passthrough) {
-        std::vector<bool> predecessorVisible(m_desc.passthrough_predecessor_nodes.size());
-        for (usize i = 0; i < predecessorVisible.size(); i++) {
-            auto* n               = m_desc.passthrough_predecessor_nodes[i];
-            predecessorVisible[i] = (n != nullptr) && n->IsVisible();
-        }
-        passthrough_tex_index =
-            (SelectPassthroughSource(predecessorVisible) == PassthroughSource::BufferB)
-                ? m_desc.passthrough_input_tex_index_b
-                : m_desc.passthrough_input_tex_index_a;
+    if (draw_passthrough && m_desc.hideable == HideableKind::Terminal) {
+        const std::vector<bool> before =
+            chain_known ? std::vector<bool>(chain_visible.begin(),
+                                            chain_visible.begin() + m_desc.chain_index)
+                        : std::vector<bool>();
+        passthrough_tex_index = (SelectPassthroughSource(before) == PassthroughSource::BufferB)
+                                    ? m_desc.passthrough_input_tex_index_b
+                                    : m_desc.passthrough_input_tex_index_a;
     }
 
     // First-frame execution trace: log every pass with order, shader, output, load op, textures

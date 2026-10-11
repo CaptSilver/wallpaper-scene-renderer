@@ -19,9 +19,9 @@ using namespace wallpaper;
 // Covers the wiring SceneToRenderGraph::LoadEffectChain/ToGraphPass do for a
 // terminal-hideable pass: both of the chain's physical ping-pong buffers get
 // registered as reads (not just whichever one the terminal's own material
-// happens to declare), and the terminal's Desc carries one representative
-// node per predecessor effect for CustomShaderPass::SelectPassthroughSource
-// to read every frame. See test_CustomShaderPassDesc.cpp for the predicate
+// happens to declare), and the terminal's Desc carries the whole effect chain
+// and its own index for CustomShaderPass::SelectPassthroughSource to read
+// every frame. See test_CustomShaderPassDesc.cpp for the predicate
 // itself.
 namespace
 {
@@ -116,9 +116,11 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         const auto& desc = terminalPass->desc();
         CHECK(desc.hideable == vulkan::HideableKind::Terminal);
 
-        REQUIRE(desc.passthrough_predecessor_nodes.size() == 2u);
-        CHECK(desc.passthrough_predecessor_nodes[0] == f.effectNodes[0].get()); // Defualt
-        CHECK(desc.passthrough_predecessor_nodes[1] == f.effectNodes[1].get()); // Current
+        REQUIRE(desc.chain_effects.size() == 3u);
+        CHECK(desc.chain_effects[0] == f.layer->GetEffect(0).get()); // Defualt
+        CHECK(desc.chain_effects[1] == f.layer->GetEffect(1).get()); // Current
+        CHECK(desc.chain_effects[2] == f.layer->GetEffect(2).get()); // Previous
+        CHECK(desc.chain_index == 2);
 
         CHECK(desc.passthrough_input_tex_index_a >= 0);
         CHECK(desc.passthrough_input_tex_index_b >= 0);
@@ -146,7 +148,8 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         REQUIRE(terminalPass != nullptr);
         const auto& desc = terminalPass->desc();
         CHECK(desc.hideable == vulkan::HideableKind::Terminal);
-        CHECK(desc.passthrough_predecessor_nodes.empty());
+        CHECK(desc.chain_effects.size() == 1u);
+        CHECK(desc.chain_index == 0);
         CHECK(desc.passthrough_input_tex_index_a >= 0);
         CHECK(desc.passthrough_input_tex_index_b >= 0);
     }
@@ -177,6 +180,7 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         CHECK(desc.hideable == vulkan::HideableKind::None);
         CHECK(desc.passthrough_input_tex_index_a == -1);
         CHECK(desc.passthrough_input_tex_index_b == -1);
-        CHECK(desc.passthrough_predecessor_nodes.empty());
+        CHECK(desc.chain_effects.empty());
+        CHECK(desc.chain_index == -1);
     }
 }

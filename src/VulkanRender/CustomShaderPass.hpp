@@ -8,6 +8,7 @@
 #include "Vulkan/Device.hpp"
 #include "Vulkan/Parameters.hpp"
 #include "Scene/Scene.h"
+#include "Scene/SceneImageEffectLayer.h"
 #include "Vulkan/StagingBuffer.hpp"
 #include "Vulkan/GraphicsPipeline.hpp"
 #include "SpriteAnimation.hpp"
@@ -125,13 +126,23 @@ inline HideableDecision DecideHideablePass(HideableKind kind, bool own_hidden,
 // an ordinary (non-terminal) pass, so it already takes the existing
 // invisible-fast-path skip when hidden, and its buffer keeps holding
 // whatever it drew the last time it was visible -- not this frame's answer.
-// `predecessorVisible[i]` is effect i's current IsVisible(), for i in
+// `predecessorVisible[i]` is effect i's own `visible` flag (see
+// ChainVisibility), without the layer's visibility, for i in
 // [0, terminalIndex).
 enum class PassthroughSource
 {
     BufferA,
     BufferB,
 };
+
+// The chain's per-effect visibility this frame, from each effect's own flag
+// (set together with its nodes by the runtime drain). The layer's own
+// visibility is deliberately not mixed in; DecideHideablePass handles that.
+inline std::vector<bool> ChainVisibility(const std::vector<const SceneImageEffect*>& chain) {
+    std::vector<bool> v(chain.size());
+    for (usize i = 0; i < chain.size(); i++) v[i] = chain[i] != nullptr && chain[i]->visible;
+    return v;
+}
 
 inline PassthroughSource SelectPassthroughSource(const std::vector<bool>& predecessorVisible) {
     for (usize i = predecessorVisible.size(); i-- > 0;) {
@@ -311,14 +322,11 @@ public:
         i32 passthrough_input_tex_index_a { -1 };
         i32 passthrough_input_tex_index_b { -1 };
 
-        // One representative SceneNode per predecessor effect (index 0..
-        // terminalIndex-1), in chain order, whose IsVisible() this frame feeds
-        // SelectPassthroughSource. Empty for a single-effect chain (the
-        // terminal IS effect 0 -- no predecessors to check, always BufferA).
-        // Every node an effect owns is set visible/hidden together (see the
-        // PendingUpdateQueues drain in SceneWallpaper.cpp), so any one node
-        // per effect reflects that effect's current state.
-        std::vector<SceneNode*> passthrough_predecessor_nodes {};
+        // The hideable pass's whole effect chain, in order, and its own index
+        // in it. The effects outlive the graph: SceneImageEffectLayer only
+        // removes effects (RemoveFailedEffects) before the graph is built.
+        std::vector<const SceneImageEffect*> chain_effects {};
+        i32                                  chain_index { -1 };
 
         // -----prepared
         // vulkan texs

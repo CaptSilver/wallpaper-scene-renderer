@@ -288,9 +288,10 @@ TEST_SUITE("CustomShaderPass::Desc terminal-hideable fields") {
         CHECK(desc.passthrough_input_tex_index_a == -1);
         CHECK(desc.passthrough_input_tex_index_b == -1);
     }
-    TEST_CASE("passthrough_predecessor_nodes defaults empty") {
+    TEST_CASE("chain_effects defaults empty and chain_index to -1") {
         CustomShaderPass::Desc desc;
-        CHECK(desc.passthrough_predecessor_nodes.empty());
+        CHECK(desc.chain_effects.empty());
+        CHECK(desc.chain_index == -1);
     }
     TEST_CASE("passthrough_tex_binding defaults to -1") {
         CustomShaderPass::Desc desc;
@@ -450,5 +451,15 @@ TEST_SUITE("CustomShaderPass::HiddenEffectMustCopy") {
         CHECK(copies("HV", /*baseWritten=*/false).empty());
         CHECK(copies("HHHV", /*baseWritten=*/false).empty());
         CHECK(copies("VHV", /*baseWritten=*/false) == std::vector<usize> { 1 });
+    }
+}
+
+TEST_SUITE("CustomShaderPass::ChainVisibility") {
+    TEST_CASE("reads each effect's own flag, treating a missing effect as hidden") {
+        wallpaper::SceneImageEffect a, b;
+        a.visible = true;
+        b.visible = false;
+        auto v = wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b });
+        CHECK(v == std::vector<bool> { true, false, false });
     }
 }

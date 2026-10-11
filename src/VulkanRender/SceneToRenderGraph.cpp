@@ -109,14 +109,15 @@ inline uint64_t PackNodeEffectKey(i32 nodeId, i32 effectIndex) {
 // What ToGraphPass needs, only for a terminal-hideable pass, to wire up the
 // runtime buffer-selection predicate: the layer's two physical ping-pong
 // buffer names (so both can be registered as reads regardless of which one
-// the terminal's own material already reads), and one representative node
-// per predecessor effect (0..terminalIndex-1) whose IsVisible() the pass
-// reads every frame. Built once per layer in LoadEffectChain, before the
+// the terminal's own material already reads), and the whole effect
+// chain and the terminal's index in it, whose per-effect visible flags the
+// pass reads every frame. Built once per layer in LoadEffectChain, before the
 // terminal's own ToGraphPass call -- see CustomShaderPass::SelectPassthroughSource.
 struct PassthroughSourceInfo {
     std::string             bufferA;
     std::string             bufferB;
-    std::vector<SceneNode*> predecessorNodes;
+    std::vector<const SceneImageEffect*> chainEffects;
+    usize                                chainIndex { 0 };
 };
 
 struct ExtraInfo {
@@ -275,21 +276,10 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
     if (terminal_is_hideable) {
         passthrough_info.bufferA = std::string(effs->FirstTarget());
         passthrough_info.bufferB = std::string(effs->SecondTarget());
-        const usize termIdx      = effs->EffectCount() - 1;
-        passthrough_info.predecessorNodes.reserve(termIdx);
-        for (usize j = 0; j < termIdx; j++) {
-            auto&      eff_j = effs->GetEffect(j);
-            SceneNode* rep   = nullptr;
-            if (! eff_j->nodes.empty()) rep = eff_j->nodes.front().sceneNode.get();
-            if (rep == nullptr) {
-                LOG_ERROR("terminal-hideable layer's predecessor effect %zu (node %d) has no "
-                          "representative node -- treating it as always hidden for passthrough "
-                          "buffer selection",
-                          j,
-                          node->ID());
-            }
-            passthrough_info.predecessorNodes.push_back(rep);
-        }
+        passthrough_info.chainIndex = effs->EffectCount() - 1;
+        passthrough_info.chainEffects.reserve(effs->EffectCount());
+        for (usize j = 0; j < effs->EffectCount(); j++)
+            passthrough_info.chainEffects.push_back(effs->GetEffect(j).get());
     }
 
     for (usize i = 0; i < effs->EffectCount(); i++) {
@@ -472,7 +462,8 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                                                      .trackMipmapFramebuffer = false });
                 pdesc.passthrough_input_tex_index_a = (i32)(pdesc.textures.size() - 2);
                 pdesc.passthrough_input_tex_index_b = (i32)(pdesc.textures.size() - 1);
-                pdesc.passthrough_predecessor_nodes = passthrough_info->predecessorNodes;
+                pdesc.chain_effects = passthrough_info->chainEffects;
+                pdesc.chain_index   = (i32)passthrough_info->chainIndex;
             }
 
             rg::TexNode* output_node { nullptr };
