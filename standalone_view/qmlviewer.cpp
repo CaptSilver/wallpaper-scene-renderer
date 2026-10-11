@@ -257,6 +257,41 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --media-thumbnail a.png,none,b.png   drive the "Now Playing" texture and
+    // mediaThumbnailChanged scripts without a real MPRIS player, one entry
+    // per --media-interval. Colours are left zero; only the art matters here.
+    {
+        const QString list = QString::fromStdString(program.get<std::string>("--media-thumbnail"));
+        if (! list.isEmpty()) {
+            const QStringList entries  = list.split(',', Qt::SkipEmptyParts);
+            const double      delay_s  = program.get<double>("--media-delay");
+            const double      interval = program.get<double>("--media-interval");
+            for (qsizetype i = 0; i < entries.size(); i++) {
+                const QString entry = entries[i].trimmed();
+                const int     at_ms = (int)((delay_s + interval * (double)i) * 1000.0);
+                QTimer::singleShot(at_ms, sv, [sv, entry]() {
+                    QImage image;
+                    if (entry != QLatin1String("none")) {
+                        image = QImage(entry);
+                        if (image.isNull()) {
+                            std::cerr << "media-thumbnail: cannot load " << entry.toStdString()
+                                      << std::endl;
+                            return;
+                        }
+                    }
+                    const bool has = ! image.isNull();
+                    std::cout << "media-thumbnail: " << entry.toStdString()
+                              << " hasThumbnail=" << has << std::endl;
+                    QMetaObject::invokeMethod(sv,
+                                              "mediaThumbnailChanged",
+                                              Q_ARG(bool, has),
+                                              Q_ARG(QVariantList, QVariantList()),
+                                              Q_ARG(QImage, image));
+                });
+            }
+        }
+    }
+
     // --cursor X,Y   repeat cursor hover at that widget-space position each
     //                second (keeps hover-driven UI visible for screenshots).
     // --click  X,Y   fire a single click event 1s after startup.

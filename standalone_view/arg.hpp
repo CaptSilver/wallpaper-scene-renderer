@@ -249,6 +249,27 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .nargs(1)
         .scan<'g', double>();
 
+    arg.add_argument("--media-thumbnail")
+        .help("(sceneviewer-script only) comma-separated album-art images fed to "
+              "mediaThumbnailChanged one at a time, as if MPRIS reported a track "
+              "change; 'none' sends a track with no art. Fires from --media-delay "
+              "on, every --media-interval seconds.")
+        .default_value(std::string())
+        .nargs(1);
+
+    arg.add_argument("--media-delay")
+        .help("(sceneviewer-script only) seconds before the first --media-thumbnail entry (default "
+              "2)")
+        .default_value<double>(2.0)
+        .nargs(1)
+        .scan<'g', double>();
+
+    arg.add_argument("--media-interval")
+        .help("(sceneviewer-script only) seconds between --media-thumbnail entries (default 3)")
+        .default_value<double>(3.0)
+        .nargs(1)
+        .scan<'g', double>();
+
     arg.add_argument("--list-env-vars")
         .help("print the WEKDE_* diagnostic environment variables and exit")
         .default_value(false)
