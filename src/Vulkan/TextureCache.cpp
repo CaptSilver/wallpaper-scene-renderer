@@ -1031,7 +1031,16 @@ bool TextureCache::ReuploadTex(const std::string& key, Image& image) {
 
         for (usize j = 0; j < mip_count; j++) {
             auto& image_data = image_slot.mipmaps[j];
-            auto& buf        = stage_bufs[j];
+            if (! detail::mipHasPayload((long long)image_data.size, image_data.data.get())) {
+                if (noteReuploadFailure(key))
+                    LOG_ERROR("ReuploadTex '%s': slot %zu mip %zu has no pixel data (%zu bytes)",
+                              key.c_str(),
+                              i,
+                              j,
+                              (usize)image_data.size);
+                return false;
+            }
+            auto&      buf     = stage_bufs[j];
             VkResult   map_res = VK_SUCCESS;
             const auto mapped  = detail::acquireMappedStaging(
                 stagingBufferReusable(

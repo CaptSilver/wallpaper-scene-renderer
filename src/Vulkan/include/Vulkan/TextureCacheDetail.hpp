@@ -163,6 +163,11 @@ inline UploadPublish planUploadPublish(std::size_t slots_built, std::size_t slot
     return UploadPublish { complete, complete && may_release };
 }
 
+// Whether a re-upload source mip carries pixels. An Image whose CPU bytes the
+// cache already freed after its first upload has size 0 and no pointer;
+// staging that would ask Vulkan for a zero-size VkBuffer, which is invalid.
+inline bool mipHasPayload(long long size, const void* data) { return size > 0 && data != nullptr; }
+
 // Rate-limit a per-texture upload-failure log.  `prior_failures` is how many
 // times in a row this texture already refused.  Video textures re-upload every
 // frame and a text layer retries every frame until it lands, so a permanently

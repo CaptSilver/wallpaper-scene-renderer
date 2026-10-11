@@ -458,3 +458,28 @@ TEST_SUITE("TextureCache upload failure log") {
         CHECK(shouldLogUploadFailure(1203));
     }
 }
+
+// A re-upload source can arrive empty: an Image whose CPU pixels the cache
+// already freed after its first upload. Staging zero bytes asks Vulkan for a
+// zero-size VkBuffer (invalid usage, VK_ERROR_INITIALIZATION_FAILED on RADV),
+// which then reads in the journal as an allocation failure.
+TEST_SUITE("TextureCache re-upload payload check") {
+    TEST_CASE("a mip with bytes and a pointer has a payload") {
+        std::uint8_t px[4] {};
+        CHECK(wallpaper::vulkan::detail::mipHasPayload(4, px));
+    }
+    TEST_CASE("a zero-size mip has none, even with a pointer") {
+        std::uint8_t px[4] {};
+        CHECK_FALSE(wallpaper::vulkan::detail::mipHasPayload(0, px));
+    }
+    TEST_CASE("a released mip (size 0, no pointer) has none") {
+        CHECK_FALSE(wallpaper::vulkan::detail::mipHasPayload(0, nullptr));
+    }
+    TEST_CASE("a size with no pointer has none") {
+        CHECK_FALSE(wallpaper::vulkan::detail::mipHasPayload(16, nullptr));
+    }
+    TEST_CASE("a negative size has none") {
+        std::uint8_t px[4] {};
+        CHECK_FALSE(wallpaper::vulkan::detail::mipHasPayload(-1, px));
+    }
+}
