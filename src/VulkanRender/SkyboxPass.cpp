@@ -6,6 +6,7 @@
 #include "Utils/Logging.h"
 #include "Utils/SceneProfiler.h"
 
+#include <mutex>
 #include <optional>
 
 using namespace wallpaper::vulkan;
@@ -222,7 +223,10 @@ void SkyboxPass::prepare(Scene& scene, const Device& device, RenderingResources&
         std::array<ShaderCompUnit, 2> units;
         units[0] = ShaderCompUnit { .stage = EShLangVertex, .src = std::string(vert_code) };
         units[1] = ShaderCompUnit { .stage = EShLangFragment, .src = std::string(frag_code) };
-        CompileAndLinkShaderUnits(units, opt, spvs);
+        {
+            std::lock_guard<std::mutex> lock(GlslangSerialiseMutex());
+            CompileAndLinkShaderUnits(units, opt, spvs);
+        }
     }
 
     VkVertexInputBindingDescription                bind_description;

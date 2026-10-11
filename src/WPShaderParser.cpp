@@ -45,12 +45,6 @@ using namespace wallpaper;
 namespace
 {
 
-// Serialises every glslang/regex-heavy entry point in this file so concurrent
-// shader compilations don't race on glslang's static keyword hashtable or
-// libstdc++'s shared regex NFA state.  Held across Preprocessor + the
-// CompileShaderUnits chain (Finalprocessor + FixImplicitConversions + glslang).
-std::mutex g_glslangSerialiseMtx;
-
 // Re-bound here for readability of the call sites below.
 static constexpr const char* pre_shader_code      = ::wallpaper::kPreShaderCodeCommon;
 static constexpr const char* pre_shader_code_vert = ::wallpaper::kPreShaderCodeVert;
@@ -641,8 +635,8 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
 
 // Standalone compile function: runs Finalprocessor + FixImplicitConversions + glslang.
 //
-// Serialized across threads via WPShaderParser::g_glslangSerialiseMtx (declared at
-// the parser entry points).  Two third-party / standard-library races would
+// Serialized across threads via vulkan::GlslangSerialiseMutex().  Two
+// third-party / standard-library races would
 // otherwise fire under parallel async compilation:
 //
 //   1. libstdc++ std::regex_search with a `thread_local const std::regex` shared between
@@ -655,7 +649,7 @@ inline void SaveShaderToFile(std::span<const ShaderCode> codes, fs::IBinaryStrea
 // Caching dedupes by SHA1 so the same shader still only compiles once total —
 // the lock just serializes the per-shader work across threads.
 static bool CompileShaderUnits(std::vector<WPShaderUnit>& units, std::vector<ShaderCode>& codes) {
-    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+    std::lock_guard<std::mutex>         _guard(vulkan::GlslangSerialiseMutex());
     std::vector<vulkan::ShaderCompUnit> vunits(units.size());
     for (usize i = 0; i < units.size(); i++) {
         auto&               unit     = units[i];
@@ -1010,11 +1004,11 @@ std::string WPShaderParser::PreShaderHeader(const std::string& src, const Combos
 }
 
 void WPShaderParser::InitGlslang() {
-    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+    std::lock_guard<std::mutex> _guard(vulkan::GlslangSerialiseMutex());
     glslang::InitializeProcess();
 }
 void WPShaderParser::FinalGlslang() {
-    std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+    std::lock_guard<std::mutex> _guard(vulkan::GlslangSerialiseMutex());
     glslang::FinalizeProcess();
 }
 
@@ -1039,12 +1033,12 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         //    invocations.
         //  - Preprocessor() invokes glslang::TShader::preprocess, which holds
         //    non-thread-safe static keyword tables.
-        // See the g_glslangSerialiseMtx declaration block above for the full
+        // See the GlslangSerialiseMutex comment in Vulkan/Shader.cpp for the full
         // race rationale.  The translator + preprocessor block was scoped to
         // the lock together because both surfaces share the same compilation
         // critical section; splitting them lets CompileToSpv from parallel
         // ParseParticleObj calls race in TranslateGeometryShader.
-        std::lock_guard<std::mutex> _guard(g_glslangSerialiseMtx);
+        std::lock_guard<std::mutex> _guard(vulkan::GlslangSerialiseMutex());
 
         // Translate WE geometry shader syntax to GLSL before preprocessing.
         // Fragment units also pick up the HLSL clip()-statement rewrite so the
@@ -1129,7 +1123,7 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
         // Compilation is serialised, not parallel: glslang's keyword scanner
         // caches `const char*` keys in a process-global hash table that is not
         // safe under concurrent reads, so CompileShaderUnits takes
-        // g_glslangSerialiseMtx anyway.  This used to be a
+        // GlslangSerialiseMutex anyway.  This used to be a
         // std::async(std::launch::deferred) task run from an end-of-parse
         // flush, which bought dedupe and batched disk writes but ran the
         // compile on the flushing thread all the same — while parking a raw

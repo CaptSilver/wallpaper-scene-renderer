@@ -122,6 +122,7 @@ add_executable(backend_scene_tests
     test_PassMerge.cpp
     test_BlendModeFactors.cpp
     test_CustomShaderPassDesc.cpp
+    test_PassthroughShader.cpp
     test_CardMesh.cpp
     test_CustomShaderPass_DepthBinding.cpp
     test_CustomShaderPass_ForceClearOutput.cpp
@@ -279,6 +280,7 @@ add_executable(backend_scene_tests
     # (prepare/execute/destory) is never called from tests, so no real GPU
     # interaction occurs — the heavy headers are compile-only.
     ${SRC_DIR}/VulkanRender/CustomShaderPass.cpp
+    ${SRC_DIR}/VulkanRender/PassthroughShader.cpp
     # Tiny stubs for the per-pass RT dump globals (live in VulkanRender.cpp,
     # which is too heavy to pull in to the headless test binary).  They are
     # never read — CustomShaderPass::execute() is the sole consumer and tests

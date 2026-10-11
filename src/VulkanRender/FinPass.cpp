@@ -4,6 +4,7 @@
 #include "PassCommon.hpp"
 #include "Utils/SceneProfiler.h"
 
+#include <mutex>
 #include <optional>
 
 using namespace wallpaper::vulkan;
@@ -157,7 +158,10 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
         units[1] =
             ShaderCompUnit { .stage = EShLangFragment,
                              .src   = std::string(use_tonemap ? frag_code_sdr : frag_code_hdr) };
-        CompileAndLinkShaderUnits(units, opt, spvs);
+        {
+            std::lock_guard<std::mutex> lock(GlslangSerialiseMutex());
+            CompileAndLinkShaderUnits(units, opt, spvs);
+        }
     }
 
     VkVertexInputBindingDescription                bind_description;

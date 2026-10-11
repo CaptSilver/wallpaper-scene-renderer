@@ -7,6 +7,7 @@ CustomShaderPass.cpp
 FenceWaitRetry.cpp
 FinPass.cpp
 FrameFenceCycle.cpp
+PassthroughShader.cpp
 PrePass.cpp
 SceneToRenderGraph.cpp
 SkyboxPass.cpp

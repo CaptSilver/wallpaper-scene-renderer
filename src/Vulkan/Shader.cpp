@@ -437,3 +437,12 @@ bool wallpaper::vulkan::CompileAndLinkShaderUnits(std::span<const ShaderCompUnit
 
     return true;
 }
+
+// Serialises every glslang/regex-heavy entry point so concurrent shader
+// compilations don't race on glslang's static keyword hashtable or libstdc++'s
+// shared regex NFA state.  WPShaderParser holds it across Preprocessor + the
+// CompileShaderUnits chain (Finalprocessor + FixImplicitConversions + glslang).
+std::mutex& wallpaper::vulkan::GlslangSerialiseMutex() {
+    static std::mutex m;
+    return m;
+}

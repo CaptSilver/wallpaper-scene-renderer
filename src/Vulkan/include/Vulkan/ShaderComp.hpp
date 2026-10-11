@@ -1,5 +1,6 @@
 #pragma once
 #include <span>
+#include <mutex>
 #include "Spv.hpp"
 #include <glslang/Public/ShaderLang.h>
 
@@ -9,6 +10,11 @@ namespace vulkan
 {
 
 extern const TBuiltInResource DefaultTBuiltInResource;
+
+// glslang's compiler keeps process-wide state and is not thread-safe. Every
+// caller that compiles shaders -- the scene parser on the loader thread and
+// the renderer's own built-in shaders -- holds this.
+std::mutex& GlslangSerialiseMutex();
 
 struct ShaderCompUnit {
     EShLanguage stage;
