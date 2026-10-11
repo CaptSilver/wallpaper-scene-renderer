@@ -59,16 +59,17 @@ TEST_SUITE("timer JS shim contract") {
     // Build an engine with a mock _timerBridge that records create/clear calls,
     // an `engine` object for the aliases, then the production timer shim.
     static void setupTimerShim(QJSEngine& e) {
-        e.evaluate(
-            "var _created = [];\n"
-            "var _cleared = [];\n"
-            "var _nextId = 1;\n"
-            "var _timerBridge = {\n"
-            "  createTimer: function(fn, delay, repeat) {\n"
-            "    _created.push({ delay: delay, repeat: repeat }); return _nextId++; },\n"
-            "  clearTimer: function(id) { _cleared.push(id); }\n"
-            "};\n"
-            "var engine = {};\n");
+        e.evaluate("var _created = [];\n"
+                   "var _cleared = [];\n"
+                   "var _fns = [];\n"
+                   "var _nextId = 1;\n"
+                   "var _timerBridge = {\n"
+                   "  createTimer: function(fn, delay, repeat) {\n"
+                   "    _fns.push(fn);\n"
+                   "    _created.push({ delay: delay, repeat: repeat }); return _nextId++; },\n"
+                   "  clearTimer: function(id) { _cleared.push(id); }\n"
+                   "};\n"
+                   "var engine = {};\n");
         e.evaluate(wek::qml_helper::kTimerShimJs);
     }
 
@@ -113,6 +114,58 @@ TEST_SUITE("timer JS shim contract") {
         setupTimerShim(e);
         e.evaluate("clearTimeout(42);");
         CHECK(e.evaluate("_cleared[0]").toInt() == 42);
+    }
+
+    // thisObject / thisLayer are globals the tick loop and media dispatch
+    // reassign before every script call, so by the time a timer fires they
+    // name whichever script ran last. 3616389236's "Previous" cover overlay
+    // hides itself with setTimeout(() => { thisObject.visible = false }, 1000);
+    // without this binding the hide landed on some other object and the
+    // overlay stayed up for good.
+    TEST_CASE("a timer callback sees the thisObject/thisLayer current when it was scheduled") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("var thisObject = 'effectA'; var thisLayer = 'layerA';\n"
+                   "var seenObj, seenLayer;\n"
+                   "setTimeout(function(){ seenObj = thisObject; seenLayer = thisLayer; }, 10);\n"
+                   "thisObject = 'other'; thisLayer = 'otherLayer';\n"
+                   "_fns[0]();\n");
+        CHECK(e.evaluate("seenObj").toString() == "effectA");
+        CHECK(e.evaluate("seenLayer").toString() == "layerA");
+    }
+
+    TEST_CASE("after a timer callback the dispatcher's current globals are put back") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("var thisObject = 'effectA'; var thisLayer = 'layerA';\n"
+                   "setTimeout(function(){}, 10);\n"
+                   "thisObject = 'other'; thisLayer = 'otherLayer';\n"
+                   "_fns[0]();\n");
+        CHECK(e.evaluate("thisObject").toString() == "other");
+        CHECK(e.evaluate("thisLayer").toString() == "otherLayer");
+    }
+
+    TEST_CASE("the globals are put back even when the callback throws") {
+        QJSEngine e;
+        setupTimerShim(e);
+        QJSValue r = e.evaluate("var thisObject = 'effectA'; var thisLayer = 'layerA';\n"
+                                "setTimeout(function(){ throw new Error('boom'); }, 10);\n"
+                                "thisObject = 'other'; thisLayer = 'otherLayer';\n"
+                                "_fns[0]();\n");
+        CHECK(r.isError()); // the error still reaches the bridge for logging
+        CHECK(e.evaluate("thisObject").toString() == "other");
+        CHECK(e.evaluate("thisLayer").toString() == "otherLayer");
+    }
+
+    TEST_CASE("every setInterval tick sees the scheduling script's thisObject") {
+        QJSEngine e;
+        setupTimerShim(e);
+        e.evaluate("var thisObject = 'effectA'; var thisLayer = null;\n"
+                   "var seen = [];\n"
+                   "setInterval(function(){ seen.push(thisObject); }, 10);\n"
+                   "thisObject = 'b'; _fns[0]();\n"
+                   "thisObject = 'c'; _fns[0]();\n");
+        CHECK(e.evaluate("seen.join(',')").toString() == "effectA,effectA");
     }
 
     TEST_CASE("engine.setTimeout aliases the same shim") {

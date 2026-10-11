@@ -1488,9 +1488,31 @@ inline constexpr const char* kFinalGetLayerSafetyJs =
 // We return a cancel function that also carries its numeric id, and accept
 // either spelling in clear*, so both `stop()` and `clearTimeout(stop)` /
 // `clearTimeout(id)` keep working.
+//
+// thisObject / thisLayer are globals the tick loop and media dispatch reassign
+// before every script call, so when a timer fires they belong to whichever
+// script ran last. Bind the callback to the ones current at scheduling time and
+// put the dispatcher's back afterwards, even when the callback throws.
 inline constexpr const char* kTimerShimJs = R"JS(
+function _wekBindTimerScope(fn) {
+  if (typeof fn !== 'function') return fn;
+  var obj   = typeof thisObject !== 'undefined' ? thisObject : undefined;
+  var layer = typeof thisLayer !== 'undefined' ? thisLayer : undefined;
+  return function() {
+    var prevObj   = typeof thisObject !== 'undefined' ? thisObject : undefined;
+    var prevLayer = typeof thisLayer !== 'undefined' ? thisLayer : undefined;
+    thisObject = obj;
+    thisLayer  = layer;
+    try {
+      return fn.apply(this, arguments);
+    } finally {
+      thisObject = prevObj;
+      thisLayer  = prevLayer;
+    }
+  };
+}
 function _wekMakeTimer(fn, delay, repeat) {
-  var id = _timerBridge.createTimer(fn, delay || 0, repeat);
+  var id = _timerBridge.createTimer(_wekBindTimerScope(fn), delay || 0, repeat);
   var cancel = function() { _timerBridge.clearTimer(id); };
   cancel.__timerId = id;
   return cancel;
