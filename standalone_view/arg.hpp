@@ -257,9 +257,15 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .default_value(std::string())
         .nargs(1);
 
+    arg.add_argument("--media-properties")
+        .help("(sceneviewer-script only) 'title|artist|album' sent to mediaPropertiesChanged "
+              "at --media-delay, as if a music player reported the track")
+        .default_value(std::string())
+        .nargs(1);
+
     arg.add_argument("--media-delay")
-        .help("(sceneviewer-script only) seconds before the first --media-thumbnail entry (default "
-              "2)")
+        .help("(sceneviewer-script only) seconds before the first --media-thumbnail entry or the "
+              "--media-properties event (default 2)")
         .default_value<double>(2.0)
         .nargs(1)
         .scan<'g', double>();

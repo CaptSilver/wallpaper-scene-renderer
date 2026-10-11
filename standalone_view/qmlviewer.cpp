@@ -292,6 +292,31 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --media-properties "title|artist|album"   one track-info event, so text
+    // layers bound to the media title/artist/album have something to draw.
+    {
+        const QString props =
+            QString::fromStdString(program.get<std::string>("--media-properties"));
+        if (! props.isEmpty()) {
+            const QStringList parts   = props.split('|');
+            const double      delay_s = program.get<double>("--media-delay");
+            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, parts, props]() {
+                std::cout << "media-properties: " << props.toStdString() << std::endl;
+                auto at = [&parts](qsizetype i) {
+                    return i < parts.size() ? parts[i] : QString();
+                };
+                QMetaObject::invokeMethod(sv,
+                                          "mediaPropertiesChanged",
+                                          Q_ARG(QString, at(0)),
+                                          Q_ARG(QString, at(1)),
+                                          Q_ARG(QString, at(2)),
+                                          Q_ARG(QString, QString()),
+                                          Q_ARG(QString, QString()),
+                                          Q_ARG(double, 0.0));
+            });
+        }
+    }
+
     // --cursor X,Y   repeat cursor hover at that widget-space position each
     //                second (keeps hover-driven UI visible for screenshots).
     // --click  X,Y   fire a single click event 1s after startup.
