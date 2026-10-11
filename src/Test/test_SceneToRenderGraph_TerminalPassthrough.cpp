@@ -57,9 +57,9 @@ vulkan::CustomShaderPass* findPassForNode(rg::RenderGraph& rgraph, SceneNode* no
 
 // Populates `scene` with one world node (id `worldId`) whose camera owns an
 // image-effect chain with `effectNames.size()` effects, one node each, in
-// order.  Registers a script-attached visibility binding on the terminal
-// (last) effect so sceneToRenderGraph marks it hideable, exactly
-// as a real "visible": {"script": ...} on the layer's last effect would.
+// order.  Registers a script-attached visibility binding on each effect index
+// in `boundIndices` so sceneToRenderGraph marks it hideable, exactly as a real
+// "visible": {"script": ...} on that effect would.
 // Takes `scene` by reference (rather than owning one) because Scene is
 // NoCopy/NoMove -- a fixture struct can hold the shared_ptrs this returns,
 // not the Scene itself.
@@ -69,8 +69,8 @@ struct Fixture {
     std::shared_ptr<SceneImageEffectLayer>  layer;
 };
 
-Fixture makeHideableTerminalChain(Scene& scene, i32 worldId,
-                                  const std::vector<std::string>& effectNames) {
+Fixture makeChain(Scene& scene, i32 worldId, const std::vector<std::string>& effectNames,
+                  const std::vector<i32>& boundIndices) {
     Fixture f;
     scene.cameras["effect"]    = std::make_shared<SceneCamera>(2, 2, 0.1f, 100.0f);
     scene.cameras["world_cam"] = std::make_shared<SceneCamera>(2, 2, 0.1f, 100.0f);
@@ -92,13 +92,20 @@ Fixture makeHideableTerminalChain(Scene& scene, i32 worldId,
     }
     scene.cameras.at("world_cam")->AttatchImgEffect(f.layer);
 
-    ScenePropertyScript ps;
-    ps.id          = worldId;
-    ps.attachment  = ScenePropertyScript::Attachment::Effect;
-    ps.effectIndex = (i32)(effectNames.size() - 1); // the layer's actual terminal index
-    scene.propertyScripts.push_back(ps);
+    for (i32 idx : boundIndices) {
+        ScenePropertyScript ps;
+        ps.id          = worldId;
+        ps.attachment  = ScenePropertyScript::Attachment::Effect;
+        ps.effectIndex = idx;
+        scene.propertyScripts.push_back(ps);
+    }
 
     return f;
+}
+
+Fixture makeHideableTerminalChain(Scene& scene, i32 worldId,
+                                  const std::vector<std::string>& effectNames) {
+    return makeChain(scene, worldId, effectNames, { (i32)effectNames.size() - 1 });
 }
 
 } // namespace
@@ -182,5 +189,91 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         CHECK(desc.passthrough_input_tex_index_b == -1);
         CHECK(desc.chain_effects.empty());
         CHECK(desc.chain_index == -1);
+    }
+
+    TEST_CASE("a bound first effect becomes a middle pass reading the layer image buffer") {
+        Scene scene;
+        auto  f      = makeChain(scene, 177, { "scroll", "tint" }, { 0 });
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* pass   = findPassForNode(*rgraph, f.effectNodes[0].get());
+        REQUIRE(pass != nullptr);
+        const auto& d = pass->desc();
+        CHECK(d.hideable == vulkan::HideableKind::Middle);
+        CHECK(d.chain_index == 0);
+        CHECK(d.chain_effects.size() == 2u);
+        REQUIRE(d.passthrough_input_tex_index_a >= 0);
+        CHECK(d.textures[(usize)d.passthrough_input_tex_index_a] == f.layer->FirstTarget());
+        CHECK(d.passthrough_input_tex_index_b == -1);
+    }
+
+    TEST_CASE("a bound second effect of three reads the second buffer") {
+        Scene scene;
+        auto  f      = makeChain(scene, 300, { "a", "b", "c" }, { 1 });
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* pass   = findPassForNode(*rgraph, f.effectNodes[1].get());
+        REQUIRE(pass != nullptr);
+        const auto& d = pass->desc();
+        CHECK(d.hideable == vulkan::HideableKind::Middle);
+        REQUIRE(d.passthrough_input_tex_index_a >= 0);
+        CHECK(d.textures[(usize)d.passthrough_input_tex_index_a] == f.layer->SecondTarget());
+    }
+
+    TEST_CASE("an unbound effect stays an ordinary pass") {
+        Scene scene;
+        auto  f      = makeChain(scene, 301, { "a", "b" }, { 1 });
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* pass   = findPassForNode(*rgraph, f.effectNodes[0].get());
+        REQUIRE(pass != nullptr);
+        CHECK(pass->desc().hideable == vulkan::HideableKind::None);
+    }
+
+    TEST_CASE("the last effect stays a terminal reading both buffers") {
+        Scene scene;
+        auto  f      = makeChain(scene, 302, { "a", "b" }, { 0, 1 });
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* term   = findPassForNode(*rgraph, f.layer->ResolvedLastOutput());
+        REQUIRE(term != nullptr);
+        CHECK(term->desc().hideable == vulkan::HideableKind::Terminal);
+        CHECK(term->desc().passthrough_input_tex_index_b >= 0);
+    }
+
+    TEST_CASE("a compose layer that does not draw its own image marks the base unwritten") {
+        Scene scene;
+        auto  f = makeChain(scene, 303, { "a", "b" }, { 0 });
+        f.layer->SetPassthrough(true);
+        f.layer->SetCopyBackground(false);
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* pass   = findPassForNode(*rgraph, f.effectNodes[0].get());
+        REQUIRE(pass != nullptr);
+        CHECK_FALSE(pass->desc().chain_base_image_written);
+    }
+
+    TEST_CASE("a bound effect whose terminal write comes from the last effect only") {
+        // effect0 bound, effect1 writes only a private FBO: effect0's node is
+        // the layer's terminal node and must be the Terminal pass.
+        Scene scene;
+        auto  f = makeChain(scene, 304, { "a", "b" }, { 0 });
+        // Redirect effect1's node to a private offscreen target.
+        f.layer->GetEffect(1)->nodes.front().output = "_rt_private_304";
+        auto  rgraph                                = wallpaper::sceneToRenderGraph(scene);
+        auto* term = findPassForNode(*rgraph, f.layer->ResolvedLastOutput());
+        REQUIRE(term != nullptr);
+        CHECK(term->desc().hideable == vulkan::HideableKind::Terminal);
+        CHECK(term->desc().chain_index == 0);
+    }
+
+    TEST_CASE("a multi-node effect tags the ping-pong node as its middle pass") {
+        Scene scene;
+        auto  f           = makeChain(scene, 305, { "a", "b" }, { 0 });
+        auto  privateNode = makeMaterialNode("a_private");
+        f.layer->GetEffect(0)->nodes.insert(f.layer->GetEffect(0)->nodes.begin(),
+                                            { "_rt_private_305", privateNode });
+        auto  rgraph = wallpaper::sceneToRenderGraph(scene);
+        auto* priv   = findPassForNode(*rgraph, privateNode.get());
+        auto* pp     = findPassForNode(*rgraph, f.effectNodes[0].get());
+        REQUIRE(priv != nullptr);
+        REQUIRE(pp != nullptr);
+        CHECK(priv->desc().hideable == vulkan::HideableKind::None);
+        CHECK(pp->desc().hideable == vulkan::HideableKind::Middle);
     }
 }

@@ -310,9 +310,10 @@ TEST_SUITE("CustomShaderPass::Desc terminal-hideable fields") {
 namespace
 {
 bool wouldTakeHiddenSkipPath(wallpaper::vulkan::HideableKind kind, bool own_hidden,
-                             bool ancestors_visible, bool passthrough_ready, bool clears_output) {
+                             bool ancestors_visible, bool passthrough_ready, bool clears_output,
+                             bool must_copy = true) {
     const auto hide = wallpaper::vulkan::DecideHideablePass(
-        kind, own_hidden, ancestors_visible, /*must_copy=*/true, passthrough_ready);
+        kind, own_hidden, ancestors_visible, must_copy, passthrough_ready);
     const bool records_while_hidden = hide.draw_passthrough || hide.keep_real_draw;
     return ! records_while_hidden && wallpaper::vulkan::IsHiddenPassSkippable(
                                          own_hidden || ! ancestors_visible, clears_output);
@@ -339,6 +340,26 @@ TEST_SUITE("CustomShaderPass hideable-pass skip-guard exemption") {
         CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::Terminal, true, true, true, true));
         CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::None, true, true, true, true));
     }
+    // execute() feeds a Middle pass HiddenEffectMustCopy; "H" is a hidden
+    // effect, "V" a visible one.
+    TEST_CASE("a hidden middle effect that breaks the chain parity records its copy") {
+        const std::vector<bool> chain { false, true }; // HV
+        const bool              must = wallpaper::vulkan::HiddenEffectMustCopy(0, chain, true);
+        CHECK(must);
+        CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::Middle, true, true, true, false, must));
+    }
+    TEST_CASE("a hidden middle effect that keeps the parity takes the skip") {
+        const std::vector<bool> chain { false, false, true }; // HHV
+        const bool              must = wallpaper::vulkan::HiddenEffectMustCopy(0, chain, true);
+        CHECK_FALSE(must);
+        CHECK(wouldTakeHiddenSkipPath(HideableKind::Middle, true, true, true, false, must));
+    }
+    TEST_CASE("a hidden middle effect in a hidden layer takes the skip") {
+        const std::vector<bool> chain { false, true };
+        const bool              must = wallpaper::vulkan::HiddenEffectMustCopy(0, chain, true);
+        CHECK(wouldTakeHiddenSkipPath(HideableKind::Middle, true, false, true, false, must));
+    }
+
     TEST_CASE("a hideable pass inside a hidden layer takes the skip") {
         CHECK(wouldTakeHiddenSkipPath(HideableKind::Terminal, true, false, true, false));
         CHECK(wouldTakeHiddenSkipPath(HideableKind::Terminal, false, false, true, false));
@@ -351,6 +372,25 @@ TEST_SUITE("CustomShaderPass hideable-pass skip-guard exemption") {
 // WE_GLTEX_NAMES' fixed 13 entries -- Wallpaper Engine materials only ever
 // declare g_Texture0 through g_Texture12. GLTexNameForIndex is the
 // bounds-checked stand-in for indexing that array directly.
+TEST_SUITE("CustomShaderPass::IsAppendedPassthroughSlot") {
+    using wallpaper::vulkan::IsAppendedPassthroughSlot;
+
+    TEST_CASE("a pass without a passthrough has no appended slots") {
+        CHECK_FALSE(IsAppendedPassthroughSlot(0, -1, -1));
+        CHECK_FALSE(IsAppendedPassthroughSlot(5, -1, -1));
+    }
+    TEST_CASE("a middle pass's single slot and anything after it are appended") {
+        CHECK_FALSE(IsAppendedPassthroughSlot(1, 2, -1));
+        CHECK(IsAppendedPassthroughSlot(2, 2, -1));
+        CHECK(IsAppendedPassthroughSlot(3, 2, -1));
+    }
+    TEST_CASE("a terminal's pair starts at the lower index") {
+        CHECK_FALSE(IsAppendedPassthroughSlot(0, 1, 2));
+        CHECK(IsAppendedPassthroughSlot(1, 1, 2));
+        CHECK(IsAppendedPassthroughSlot(2, 2, 1));
+    }
+}
+
 TEST_SUITE("CustomShaderPass::GLTexNameForIndex") {
     using wallpaper::vulkan::GLTexNameForIndex;
 

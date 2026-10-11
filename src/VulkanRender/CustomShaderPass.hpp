@@ -108,7 +108,7 @@ inline HideableDecision DecideHideablePass(HideableKind kind, bool own_hidden,
     return { passthrough_ready, ! passthrough_ready };
 }
 
-// Which of a terminal-hideable pass's two physical ping-pong buffers holds
+// Which of a terminal pass's two physical ping-pong buffers holds
 // "the last visible effect's output ahead of it, or the layer's own image
 // when nothing ahead is visible" -- the thing the passthrough pipeline
 // samples once DecideHideablePass says to draw it.
@@ -185,14 +185,25 @@ inline bool HiddenEffectMustCopy(usize i, const std::vector<bool>& effectVisible
     return ((i32)i - k) % 2 == 1;
 }
 
-// A terminal-hideable pass appends 2 extra texture reads (the chain's ping-
-// pong buffers) on top of however many the real material's own JSON
-// declares, so a texture-slot index can run past WE_GLTEX_NAMES' fixed 13
+// A terminal pass appends 2 extra texture reads (the chain's ping-
+// pong buffers), and a middle pass 1, on top of however many the real
+// material's own JSON declares, so a texture-slot index can run past WE_GLTEX_NAMES' fixed 13
 // entries (Wallpaper Engine materials only ever declare g_Texture0 through
 // g_Texture12). Bounds-checked stand-in for indexing the array directly --
 // returns null past the table instead of reading out of bounds.
 inline const char* GLTexNameForIndex(usize index) {
     return index < WE_GLTEX_NAMES.size() ? WE_GLTEX_NAMES[index] : nullptr;
+}
+
+// True for a texture slot that only the passthrough pipeline reads: the slots
+// a hideable pass appends after the material's own textures. The real
+// pipeline never binds them, even when its shader happens to declare a
+// g_Texture<N> with that index -- exactly as before the pass became hideable.
+inline bool IsAppendedPassthroughSlot(usize index, i32 passthrough_a, i32 passthrough_b) {
+    i32 first = -1;
+    for (i32 v : { passthrough_a, passthrough_b })
+        if (v >= 0 && (first < 0 || v < first)) first = v;
+    return first >= 0 && index >= (usize)first;
 }
 
 // Path-A depth-image usage flags: SAMPLED_BIT is appended iff the device
@@ -312,11 +323,12 @@ public:
         // passthrough build in prepare() and the per-frame DecideHideablePass.
         HideableKind hideable { HideableKind::None };
 
-        // Indices into `textures`/`vk_textures` for the chain's two physical
-        // ping-pong buffers (SceneImageEffectLayer's FirstTarget/SecondTarget),
-        // both registered as reads by SceneToRenderGraph regardless of which
-        // single slot the terminal's own (real) material happens to read.
-        // Set alongside `hideable`; -1/-1 when not hideable.
+        // Indices into `textures`/`vk_textures` of the extra reads a hideable
+        // pass copies from. A terminal gets the chain's two physical ping-pong
+        // buffers (SceneImageEffectLayer's FirstTarget/SecondTarget), both
+        // registered as reads regardless of which single slot its own (real)
+        // material happens to read. A middle pass gets only `_a`, the one
+        // buffer it copies; `_b` stays -1. Both -1 when not hideable.
         // execute() picks between them every frame via SelectPassthroughSource
         // -- see that function for why a single fixed slot isn't enough.
         i32 passthrough_input_tex_index_a { -1 };
@@ -327,6 +339,11 @@ public:
         // removes effects (RemoveFailedEffects) before the graph is built.
         std::vector<const SceneImageEffect*> chain_effects {};
         i32                                  chain_index { -1 };
+
+        // False for a compose layer that does not draw its own image into
+        // buffer A (copybackground off); a hidden first effect then has
+        // nothing valid to copy.
+        bool chain_base_image_written { true };
 
         // -----prepared
         // vulkan texs

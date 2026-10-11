@@ -78,16 +78,17 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.passthrough_input_tex_index_b = desc.passthrough_input_tex_index_b;
     m_desc.chain_effects                 = desc.chain_effects;
     m_desc.chain_index                   = desc.chain_index;
+    m_desc.chain_base_image_written      = desc.chain_base_image_written;
 };
 CustomShaderPass::~CustomShaderPass() {}
 
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
-// Hand-written passthrough pair for a terminal-hideable pass (in the spirit
+// Hand-written passthrough pair for a hideable pass (in the spirit
 // of FinPass.cpp's own hand-rolled quad shaders).  The real material's
 // translated-HLSL vertex shader gives no guarantee about which varyings it
 // exposes or at which locations, so the passthrough can't reuse it -- it
-// draws the terminal's own mesh with its own tiny shader pair instead,
+// draws the hideable pass's own mesh with its own tiny shader pair instead,
 // sampling the chain's already-resolved input 1:1.  a_Position/a_TexCoord
 // match every mesh's vertex-attribute names (WPSceneParser's WE_IN_POSITION/
 // WE_IN_TEXCOORD), so the same mesh vertex buffers bind unchanged.
@@ -707,6 +708,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
             i32         binding { -1 };
             const char* tex_name = GLTexNameForIndex(i);
+            // The passthrough's appended reads are not the material's own
+            // textures; leaving them unbound here keeps the real pipeline's
+            // descriptors as they were before a pass became hideable.
+            if (IsAppendedPassthroughSlot(
+                    i, m_desc.passthrough_input_tex_index_a, m_desc.passthrough_input_tex_index_b))
+                tex_name = nullptr;
             if (tex_name != nullptr && exists(ref.binding_map, tex_name))
                 binding = (i32)ref.binding_map.at(tex_name).binding;
             m_desc.vk_tex_binding.push_back(binding);
@@ -1013,7 +1020,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             }
         }
 
-        // Terminal-hideable: build a second, minimal pipeline that samples
+        // Hideable (terminal or middle): build a second, minimal pipeline that samples
         // this pass's already-resolved chain input straight through, bound
         // instead of the real one while the node is hidden (see execute()'s
         // DecideHideablePass branch). It shares this pass's vertex/index
@@ -1171,7 +1178,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 }
             }
             if (! m_desc.passthrough_ready) {
-                LOG_ERROR("no passthrough for terminal-hideable pass (shader '%s'); hiding it "
+                LOG_ERROR("no passthrough for hideable pass (shader '%s'); hiding it "
                           "will leave its effect drawn",
                           mesh.Material()->customShader.shader->name.c_str());
             }
@@ -1500,8 +1507,9 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // Without the exemption a terminal writing to the shared _rt_default
     // (clears_output false whenever this object isn't the first thing drawn
     // onto the composite) would take the early-return skip and never record
-    // anything. SceneToRenderGraph assigns only Terminal here, and a Terminal
-    // must copy whenever it is hidden, so must_copy is true.
+    // anything. A Terminal copies whenever it is hidden; a Middle copies only
+    // when HiddenEffectMustCopy says its hidden run breaks the chain's
+    // ping-pong parity, and otherwise takes the ordinary path.
     std::vector<bool> chain_visible;
     bool              own_hidden = m_desc.node != nullptr && ! m_desc.node->IsVisible();
     const bool        chain_known = m_desc.hideable != HideableKind::None &&
@@ -1512,11 +1520,12 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         own_hidden    = ! chain_visible[(usize)m_desc.chain_index];
     }
     const bool ancestors_visible = m_desc.node == nullptr || m_desc.node->AncestorsVisible();
-    const HideableDecision hide  = DecideHideablePass(m_desc.hideable,
-                                                      own_hidden,
-                                                      ancestors_visible,
-                                                      /*must_copy=*/true,
-                                                      m_desc.passthrough_ready);
+    const bool must_copy = m_desc.hideable != HideableKind::Middle ||
+                           (chain_known && HiddenEffectMustCopy((usize)m_desc.chain_index,
+                                                                chain_visible,
+                                                                m_desc.chain_base_image_written));
+    const HideableDecision hide = DecideHideablePass(
+        m_desc.hideable, own_hidden, ancestors_visible, must_copy, m_desc.passthrough_ready);
     const bool             records_while_hidden = hide.draw_passthrough || hide.keep_real_draw;
 
     if (m_desc.node != nullptr && ! records_while_hidden &&
@@ -1556,7 +1565,10 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // immediate predecessor already took the ordinary skip path and is
     // holding stale content, not this frame's answer).
     i32 passthrough_tex_index = -1;
-    if (draw_passthrough && m_desc.hideable == HideableKind::Terminal) {
+    if (draw_passthrough && m_desc.hideable == HideableKind::Middle) {
+        // A middle pass copies the one buffer it was wired to read.
+        passthrough_tex_index = m_desc.passthrough_input_tex_index_a;
+    } else if (draw_passthrough && m_desc.hideable == HideableKind::Terminal) {
         const std::vector<bool> before =
             chain_known ? std::vector<bool>(chain_visible.begin(),
                                             chain_visible.begin() + m_desc.chain_index)
@@ -1865,7 +1877,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     auto gpu_buf = m_desc.dyn_vertex ? rr.dyn_buf->gpuBuf() : rr.vertex_buf->gpuBuf();
 
     // Skip draw (but keep render pass begin/end) if node is hidden at runtime
-    // -- unless this is a terminal-hideable pass drawing its passthrough,
+    // -- unless this is a hideable pass drawing its passthrough,
     // which must draw (the identical mesh, at the identical transform) to
     // put the chain's prior content on screen instead of nothing, or one
     // whose passthrough failed to build and falls back to its real draw.
