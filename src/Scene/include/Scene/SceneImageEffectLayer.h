@@ -34,6 +34,13 @@ struct SceneImageEffect {
     bool                            visible { true }; // runtime visibility toggle
     std::vector<Command>            commands;
     std::list<SceneImageEffectNode> nodes;
+
+    // Filled by SceneImageEffectLayer::ResolveEffect. Lets a hidden effect pass
+    // its input through: chain_writer is the node that copies (null when the
+    // effect writes only private FBOs or its writing node has no material),
+    // chain_input is the chain buffer it copies.
+    SceneNode*  chain_writer { nullptr };
+    std::string chain_input;
 };
 
 class SceneImageEffectLayer {

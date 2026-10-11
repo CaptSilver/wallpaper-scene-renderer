@@ -57,14 +57,17 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
 
     SceneImageEffectNode* last_output { nullptr };
     for (auto& eff : m_effects) {
+        eff->chain_input  = std::string(ppong_a);
+        eff->chain_writer = nullptr;
         for (auto& cmd : eff->commands) {
             if (sstart_with(cmd.src, WE_EFFECT_PPONG_PREFIX_A)) cmd.src = ppong_a;
 
             if (sstart_with(cmd.dst, WE_EFFECT_PPONG_PREFIX_A)) cmd.dst = ppong_a;
         }
         for (auto it = eff->nodes.begin(); it != eff->nodes.end(); it++) {
-            if (sstart_with(it->output, WE_EFFECT_PPONG_PREFIX_B) ||
-                it->output == SpecTex_Default) {
+            const bool is_chain_output =
+                sstart_with(it->output, WE_EFFECT_PPONG_PREFIX_B) || it->output == SpecTex_Default;
+            if (is_chain_output) {
                 it->output  = ppong_b;
                 last_output = &(*it);
             }
@@ -76,6 +79,9 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
                 LOG_ERROR("effect-layer node has no material, skipping");
                 continue;
             }
+
+            // Only a node that gets a render pass can do a copy.
+            if (is_chain_output) eff->chain_writer = it->sceneNode.get();
 
             auto& material = *(it->sceneNode->Mesh()->Material());
             {

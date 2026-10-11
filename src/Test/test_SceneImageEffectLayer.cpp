@@ -189,6 +189,100 @@ SceneMesh makeDefaultMesh() { return SceneMesh(false); }
 
 TEST_SUITE("SceneImageEffectLayer::ResolveEffect")
 {
+    TEST_CASE("each effect records the chain buffer it reads and the node that writes the next") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        auto                  n0 = makeNodeWithCodes({ goodCode() });
+        auto                  n1 = makeNodeWithCodes({ goodCode() });
+        auto                  n2 = makeNodeWithCodes({ goodCode() });
+        layer.AddEffect(makeEffectWithNode("e0", n0));
+        layer.AddEffect(makeEffectWithNode("e1", n1));
+        layer.AddEffect(makeEffectWithNode("e2", n2));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+
+        CHECK(layer.GetEffect(0)->chain_input == "PPA");
+        CHECK(layer.GetEffect(0)->chain_writer == n0.get());
+        CHECK(layer.GetEffect(1)->chain_input == "PPB");
+        CHECK(layer.GetEffect(1)->chain_writer == n1.get());
+        CHECK(layer.GetEffect(2)->chain_input == "PPA");
+        CHECK(layer.GetEffect(2)->chain_writer == n2.get());
+    }
+
+    TEST_CASE("a multi-pass effect's chain writer is its last ping-pong node, not an FBO pass") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        auto                  fbo  = makeNodeWithCodes({ goodCode() });
+        auto                  out  = makeNodeWithCodes({ goodCode() });
+        auto                  last = makeNodeWithCodes({ goodCode() });
+        auto                  eff  = std::make_shared<SceneImageEffect>();
+        eff->name                  = "blur";
+        eff->nodes.push_back({ "_rt_private_fbo", fbo });
+        eff->nodes.push_back({ "_rt_effect_pingpong_b_", out });
+        layer.AddEffect(eff);
+        layer.AddEffect(makeEffectWithNode("tail", last));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+
+        CHECK(layer.GetEffect(0)->chain_writer == out.get());
+        CHECK(layer.GetEffect(0)->chain_input == "PPA");
+    }
+
+    TEST_CASE("an effect that writes only private FBOs has no chain writer") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        layer.AddEffect(
+            makeEffectWithNode("fboOnly", makeNodeWithCodes({ goodCode() }), "_rt_private_fbo"));
+        layer.AddEffect(makeEffectWithNode("tail", makeNodeWithCodes({ goodCode() })));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+
+        CHECK(layer.GetEffect(0)->chain_writer == nullptr);
+    }
+
+    TEST_CASE("a ping-pong node with no material is not a chain writer") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        layer.AddEffect(makeEffectWithNode("bare", std::make_shared<SceneNode>()));
+        layer.AddEffect(makeEffectWithNode("tail", makeNodeWithCodes({ goodCode() })));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+
+        CHECK(layer.GetEffect(0)->chain_writer == nullptr);
+    }
+
+    TEST_CASE("resolving twice does not leave a stale chain writer") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        auto                  n = makeNodeWithCodes({ goodCode() });
+        layer.AddEffect(makeEffectWithNode("e0", n));
+        layer.AddEffect(makeEffectWithNode("tail", makeNodeWithCodes({ goodCode() })));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+        CHECK(layer.GetEffect(0)->chain_writer == n.get());
+
+        layer.GetEffect(0)->nodes.front().output = "_rt_private_fbo";
+        layer.ResolveEffect(dm, "effectCam");
+        CHECK(layer.GetEffect(0)->chain_writer == nullptr);
+    }
+
+    TEST_CASE("a node whose output starts as the default target is the chain writer") {
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "PPA", "PPB");
+        auto                  n = makeNodeWithCodes({ goodCode() });
+        layer.AddEffect(makeEffectWithNode("e0", n, "_rt_default"));
+
+        SceneMesh dm = makeDefaultMesh();
+        layer.ResolveEffect(dm, "effectCam");
+
+        CHECK(layer.GetEffect(0)->chain_writer == n.get());
+    }
+
     // ── ping-pong RT substitution ───────────────────────────────────────────
 
     TEST_CASE("PPONG_A prefix on cmd.src is replaced with concrete pingpong_a") {
