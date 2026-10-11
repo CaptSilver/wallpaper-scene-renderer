@@ -136,6 +136,38 @@ inline PassthroughSource SelectPassthroughSource(const std::vector<bool>& predec
     return PassthroughSource::BufferA;
 }
 
+// Index of the nearest visible effect before `i`, or -1 when none is: -1
+// stands for the layer's own image, which the base draw puts in buffer A.
+inline i32 NearestVisibleBefore(usize i, const std::vector<bool>& effectVisible) {
+    for (usize j = i; j-- > 0;)
+        if (effectVisible[j]) return (i32)j;
+    return -1;
+}
+
+// Must hidden effect `i` draw a passthrough copy this frame instead of being
+// skipped?  Effect i reads buf(i-1) and writes buf(i), alternating between two
+// buffers, so a visible effect j after a hidden run reads the output of the
+// nearest visible effect k only when the run's length j-1-k is even. The last
+// hidden effect before j fixes an odd run with one copy: it reads buf(i-1),
+// which still holds k's output (an even distance, untouched by the skipped
+// effects between), and writes the other buffer, so it never reads its own
+// output. Every buffer any pass reads is then written this frame.
+//
+// The last effect is never asked: it writes the layer's output, not a chain
+// buffer, and picks its source itself (SelectPassthroughSource).
+// `baseImageWritten` is false for compose layers that do not draw their own
+// image (copybackground off); copying that never-written buffer would only
+// spread undefined contents.
+inline bool HiddenEffectMustCopy(usize i, const std::vector<bool>& effectVisible,
+                                 bool baseImageWritten) {
+    if (effectVisible[i]) return false;
+    if (i + 1 >= effectVisible.size()) return false;
+    if (! effectVisible[i + 1]) return false;
+    const i32 k = NearestVisibleBefore(i, effectVisible);
+    if (k < 0 && ! baseImageWritten) return false;
+    return ((i32)i - k) % 2 == 1;
+}
+
 // A terminal-hideable pass appends 2 extra texture reads (the chain's ping-
 // pong buffers) on top of however many the real material's own JSON
 // declares, so a texture-slot index can run past WE_GLTEX_NAMES' fixed 13

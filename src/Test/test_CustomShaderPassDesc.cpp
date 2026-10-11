@@ -408,3 +408,56 @@ TEST_SUITE("CustomShaderPass fallback texture") {
         CHECK(NeedsFallbackTexture(bindings, textures));
     }
 }
+
+// The chain alternates two buffers: effect i writes B for even i, A for odd,
+// and the layer's own image is drawn into A. A hidden effect must copy only
+// when it ends a hidden run and the run leaves the next visible effect
+// reading the wrong buffer.
+TEST_SUITE("CustomShaderPass::HiddenEffectMustCopy") {
+    using wallpaper::usize;
+    using wallpaper::vulkan::HiddenEffectMustCopy;
+    using wallpaper::vulkan::NearestVisibleBefore;
+
+    // 'V'/'v' visible, 'H' hidden; returns the indices that must copy.
+    std::vector<usize> copies(const char* pattern, bool baseWritten = true) {
+        std::vector<bool> vis;
+        for (const char* p = pattern; *p; p++) vis.push_back(*p != 'H');
+        std::vector<usize> out;
+        for (usize i = 0; i < vis.size(); i++)
+            if (HiddenEffectMustCopy(i, vis, baseWritten)) out.push_back(i);
+        return out;
+    }
+
+    TEST_CASE("nearest visible before: -1 means the layer's own image") {
+        CHECK(NearestVisibleBefore(0, { false, true }) == -1);
+        CHECK(NearestVisibleBefore(2, { true, false, false }) == 0);
+        CHECK(NearestVisibleBefore(3, { false, true, false, true }) == 1);
+    }
+    TEST_CASE("a hidden first effect before a visible one copies the layer image") {
+        CHECK(copies("HV") == std::vector<usize> { 0 });
+    }
+    TEST_CASE("an even hidden run already leaves the right buffer") {
+        CHECK(copies("HHV").empty());
+        CHECK(copies("VHHV").empty());
+    }
+    TEST_CASE("an odd hidden run copies once, at its end") {
+        CHECK(copies("HHHV") == std::vector<usize> { 2 });
+        CHECK(copies("VHV") == std::vector<usize> { 1 });
+        CHECK(copies("VHHHV") == std::vector<usize> { 3 });
+    }
+    TEST_CASE("alternating patterns copy at every odd run") {
+        CHECK(copies("vHVHV") == (std::vector<usize> { 1, 3 }));
+        CHECK(copies("HVHV") == (std::vector<usize> { 0, 2 }));
+    }
+    TEST_CASE("a hidden last effect never copies; it picks its own source") {
+        CHECK(copies("VHH").empty());
+        CHECK(copies("HHH").empty());
+        CHECK(copies("H").empty());
+    }
+    TEST_CASE("a visible effect never copies") { CHECK(copies("VVV").empty()); }
+    TEST_CASE("no copy of the layer image when nothing draws it") {
+        CHECK(copies("HV", /*baseWritten=*/false).empty());
+        CHECK(copies("HHHV", /*baseWritten=*/false).empty());
+        CHECK(copies("VHV", /*baseWritten=*/false) == std::vector<usize> { 1 });
+    }
+}
