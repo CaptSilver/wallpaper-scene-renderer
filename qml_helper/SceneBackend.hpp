@@ -435,6 +435,7 @@ public:
     // slots, bypassing m_scene (null under WEKDE_TEST_NO_SCENE, and even a
     // real SceneWallpaper only carries a media-texture registry after a full
     // asset-backed loadScene() -- see extract-to-testable-header.md).
+    void replayMediaStateForTesting() { replayMediaState(); }
     void dispatchMediaTextureForTesting(bool hasThumbnail, const QImage& image,
                                         std::optional<wallpaper::MediaTextureSlot> currentSlot,
                                         std::optional<wallpaper::MediaTextureSlot> previousSlot);
@@ -595,6 +596,34 @@ private:
     // (survives a scene reload -- reset in cleanupTextScripts() so a cover
     // from the previous wallpaper isn't promoted into the new one's slot).
     scenebackend::MediaThumbnailCrossfade m_media_crossfade;
+
+    // The latest of each media event, kept so a scene whose scripts come up
+    // after MprisMonitor first reported (the usual start: music already
+    // playing while the wallpaper loads) still hears the current track.
+    // Describes the player, not the wallpaper, so it survives scene reloads.
+    struct MediaState {
+        std::optional<bool> status;
+        struct Properties {
+            QString title, artist, albumTitle, albumArtist, genres;
+            double  duration;
+        };
+        std::optional<Properties> properties;
+        struct Thumbnail {
+            bool         hasThumbnail;
+            QVariantList colors;
+            QImage       image;
+        };
+        std::optional<Thumbnail> thumbnail;
+        std::optional<int>       playback;
+        struct Timeline {
+            double position, duration;
+            int    state;
+        };
+        std::optional<Timeline> timeline;
+    } m_media_state;
+    // Re-delivers m_media_state through the normal handlers, once the scene
+    // and its scripts exist (on firstFrame, after setupTextScripts).
+    void replayMediaState();
 
     // 500 ms debounce timer for QGuiApplication::screenRemoved.  Lazy-created
     // the first time a screen is removed on this backend's window; cancelled

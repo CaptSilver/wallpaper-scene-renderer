@@ -350,7 +350,10 @@ SceneObject::SceneObject(QQuickItem* parent): QQuickItem(parent) {
         m_dispatch = std::make_unique<scenebackend::SceneWallpaperDispatchSink>(m_scene.get());
     }
 
-    connect(this, &SceneObject::firstFrame, this, &SceneObject::setupTextScripts);
+    connect(this, &SceneObject::firstFrame, this, [this]() {
+        setupTextScripts();
+        replayMediaState();
+    });
 
     // Screen-removal cooperative-abort plumbing.  When the wallpaper's screen
     // is unplugged (monitor, USB-C dock, KVM switch), Plasma destroys the
@@ -909,6 +912,7 @@ void SceneObject::dispatchMediaEvent(const char* eventName,
 }
 
 void SceneObject::mediaPlaybackChanged(int state) {
+    m_media_state.playback = state;
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("state", state);
@@ -952,6 +956,8 @@ std::shared_ptr<wallpaper::Image> BuildResizedSystemImage(const QImage&         
 void SceneObject::mediaPropertiesChanged(const QString& title, const QString& artist,
                                          const QString& albumTitle, const QString& albumArtist,
                                          const QString& genres, double duration) {
+    m_media_state.properties =
+        MediaState::Properties { title, artist, albumTitle, albumArtist, genres, duration };
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("title", title);
@@ -997,6 +1003,7 @@ void SceneObject::dispatchMediaTexture(bool hasThumbnail, const QImage& image,
 
 void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& colors,
                                         const QImage& image) {
+    m_media_state.thumbnail = MediaState::Thumbnail { hasThumbnail, colors, image };
     // Texture delivery runs and returns independently of the JS engine: a
     // wallpaper can reference $mediaThumbnail on its always-visible base
     // quad with zero scripts attached to it, so this must not sit behind
@@ -1034,6 +1041,7 @@ void SceneObject::mediaThumbnailChanged(bool hasThumbnail, const QVariantList& c
 }
 
 void SceneObject::mediaTimelineChanged(double position, double duration, int state) {
+    m_media_state.timeline = MediaState::Timeline { position, duration, state };
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("position", position);
@@ -1051,6 +1059,7 @@ void SceneObject::mediaTimelineChanged(double position, double duration, int sta
 }
 
 void SceneObject::mediaStatusChanged(bool enabled) {
+    m_media_state.status = enabled;
     if (! m_jsEngine) return;
     QJSValue event = m_jsEngine->newObject();
     event.setProperty("enabled", enabled);
@@ -1060,6 +1069,23 @@ void SceneObject::mediaStatusChanged(bool enabled) {
                        &ColorScriptState::mediaStatusChangedFn,
                        &ShaderValueScriptState::mediaStatusChangedFn,
                        event);
+}
+
+void SceneObject::replayMediaState() {
+    // Copy first: each handler records into m_media_state again.
+    const MediaState st = m_media_state;
+    if (st.status) mediaStatusChanged(*st.status);
+    if (st.properties) {
+        const auto& p = *st.properties;
+        mediaPropertiesChanged(
+            p.title, p.artist, p.albumTitle, p.albumArtist, p.genres, p.duration);
+    }
+    if (st.thumbnail)
+        mediaThumbnailChanged(
+            st.thumbnail->hasThumbnail, st.thumbnail->colors, st.thumbnail->image);
+    if (st.playback) mediaPlaybackChanged(*st.playback);
+    if (st.timeline)
+        mediaTimelineChanged(st.timeline->position, st.timeline->duration, st.timeline->state);
 }
 
 void SceneObject::play() {

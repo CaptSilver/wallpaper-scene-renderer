@@ -807,3 +807,96 @@ TEST_SUITE("Script API globals") {
               "function");
     }
 }
+
+// MprisMonitor reports the current track as soon as it connects, which on a
+// normal start (music already playing, wallpaper loading) is before the scene's
+// first frame -- before any script exists to hear it. Those events used to be
+// dropped, so the wallpaper showed its "nothing playing" state until the next
+// track. SceneObject now keeps the latest of each media event and replays them
+// once the scripts are up.
+namespace
+{
+// Appends "<event>:<detail>" to the `_mlog` array startLog() declares.
+constexpr const char* kRecordProps =
+    "(function(ev){ _mlog.push('props:' + ev.title + '/' + ev.artist); })";
+constexpr const char* kRecordThumb  = "(function(ev){ _mlog.push('thumb:' + ev.hasThumbnail); })";
+constexpr const char* kRecordPlay   = "(function(ev){ _mlog.push('play:' + ev.state); })";
+constexpr const char* kRecordStatus = "(function(ev){ _mlog.push('status:' + ev.enabled); })";
+constexpr const char* kRecordTime   = "(function(ev){ _mlog.push('time:' + ev.position); })";
+
+// Call after the first seed, which is what brings the script engine up.
+void startLog(scenebackend::SceneObject& obj) { obj.debugEvalJs("var _mlog = [];"); }
+
+std::string mediaLog(scenebackend::SceneObject& obj) {
+    return obj.debugEvalJs("_mlog.join(',')").toStdString();
+}
+} // namespace
+
+TEST_SUITE("media state replay for late-loading scenes") {
+    TEST_CASE("track info sent before the scripts exist reaches them on replay") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+
+        obj->mediaPropertiesChanged("Nos vies en lumiere", "Lorien Testard", "", "", "", 200.0);
+        obj->mediaThumbnailChanged(true, {});
+
+        obj->seedMediaHandlerForTesting(1, "origin", "mediaPropertiesChanged", kRecordProps);
+        obj->seedMediaHandlerForTesting(2, "alpha", "mediaThumbnailChanged", kRecordThumb);
+        startLog(*obj);
+        CHECK(mediaLog(*obj) == ""); // nothing delivered yet
+
+        obj->replayMediaStateForTesting();
+        CHECK(mediaLog(*obj) == "props:Nos vies en lumiere/Lorien Testard,thumb:true");
+    }
+
+    TEST_CASE("only the latest value of each event is replayed") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+
+        obj->mediaPropertiesChanged("old", "x", "", "", "", 1.0);
+        obj->mediaPropertiesChanged("new", "y", "", "", "", 1.0);
+        obj->mediaPlaybackChanged(1);
+        obj->mediaPlaybackChanged(2);
+
+        obj->seedMediaHandlerForTesting(1, "origin", "mediaPropertiesChanged", kRecordProps);
+        obj->seedMediaHandlerForTesting(2, "alpha", "mediaPlaybackChanged", kRecordPlay);
+        startLog(*obj);
+        obj->replayMediaStateForTesting();
+        CHECK(mediaLog(*obj) == "props:new/y,play:2");
+    }
+
+    TEST_CASE("an event that never arrived is not invented on replay") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+
+        obj->mediaPlaybackChanged(1);
+        obj->seedMediaHandlerForTesting(1, "origin", "mediaPropertiesChanged", kRecordProps);
+        obj->seedMediaHandlerForTesting(2, "scale", "mediaThumbnailChanged", kRecordThumb);
+        obj->seedMediaHandlerForTesting(3, "alpha", "mediaPlaybackChanged", kRecordPlay);
+        startLog(*obj);
+        obj->replayMediaStateForTesting();
+        CHECK(mediaLog(*obj) == "play:1");
+    }
+
+    TEST_CASE("replay order: availability, track info, cover, playback, timeline") {
+        RecordingDispatchSink* sink = nullptr;
+        auto                   obj  = makeObj(&sink);
+
+        // Sent in a scrambled order; a script that gates on availability or
+        // reads the title from its cover handler needs them in this order.
+        obj->mediaTimelineChanged(12.0, 200.0, 1);
+        obj->mediaPlaybackChanged(1);
+        obj->mediaThumbnailChanged(false, {});
+        obj->mediaPropertiesChanged("t", "a", "", "", "", 200.0);
+        obj->mediaStatusChanged(true);
+
+        obj->seedMediaHandlerForTesting(1, "origin", "mediaTimelineChanged", kRecordTime);
+        obj->seedMediaHandlerForTesting(2, "alpha", "mediaPlaybackChanged", kRecordPlay);
+        obj->seedMediaHandlerForTesting(3, "scale", "mediaThumbnailChanged", kRecordThumb);
+        obj->seedMediaHandlerForTesting(4, "angles", "mediaPropertiesChanged", kRecordProps);
+        obj->seedMediaHandlerForTesting(5, "color", "mediaStatusChanged", kRecordStatus);
+        startLog(*obj);
+        obj->replayMediaStateForTesting();
+        CHECK(mediaLog(*obj) == "status:true,props:t/a,thumb:false,play:1,time:12");
+    }
+}
