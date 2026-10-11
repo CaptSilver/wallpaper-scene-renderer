@@ -94,7 +94,10 @@ std::string ResolveMediaSystemTexture(const std::string& systemName,
         sample     = registered->header.sample;
     }
 
-    imgParser->RegisterImage(systemName, registered);
+    // The pass gets its own copy: TextureCache::CreateTex frees the CPU pixels
+    // of whatever it uploads, and the slot's image is the "no art" restore
+    // source for the life of the scene.
+    imgParser->RegisterImage(systemName, CopyImageMip0(*registered, systemName));
     pScene->mediaTextureSlots.push_back(MediaTextureSlot { systemName, w, h, sample, registered });
     return systemName;
 }

@@ -4,6 +4,7 @@
 #include "Image.hpp"
 #include "SpecTexs.hpp"
 #include "WPTexImageParser.hpp"
+#include "ImagePayload.h"
 #include "Scene/include/Scene/Scene.h"
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
@@ -242,6 +243,49 @@ TEST_SUITE("ResolveMediaSystemTexture") {
         REQUIRE(scene.mediaTextureSlots.size() == 1);
         CHECK(scene.mediaTextureSlots[0].width == kMediaSystemTextureFallbackSize);
         CHECK(scene.mediaTextureSlots[0].height == kMediaSystemTextureFallbackSize);
+    }
+
+    // TextureCache::CreateTex frees a texture's CPU pixels once they are on the
+    // GPU. The slot's placeholder is what a track with no art restores later,
+    // so it must survive that: on 3616389236 every artless track tried to
+    // upload a 0-byte image (VK_ERROR_INITIALIZATION_FAILED on the staging
+    // buffer) because the placeholder WAS the registered image.
+    TEST_CASE("the texture cache freeing the registered image leaves the placeholder's pixels") {
+        Fixture fixture("SS", 64, 32);
+        Scene   scene;
+        scene.imageParser.reset(fixture.parser.release());
+
+        ResolveMediaSystemTexture("$mediaThumbnail", "SS", &scene);
+        REQUIRE(scene.mediaTextureSlots.size() == 1);
+
+        // What CreateTex does with the image LoadMaterial parses for the pass.
+        auto registered = scene.imageParser->Parse("$mediaThumbnail");
+        REQUIRE(registered);
+        if (mayReleaseDecodedPayload(*registered)) releaseDecodedPayload(*registered);
+
+        auto shape = InspectImageForTesting(scene.mediaTextureSlots[0].placeholder);
+        REQUIRE(shape.ok);
+        CHECK(shape.width == 64);
+        CHECK(shape.height == 32);
+        const auto& mip = scene.mediaTextureSlots[0].placeholder->slots[0].mipmaps[0];
+        CHECK(mip.size == 64 * 32 * 4);
+        CHECK(mip.data != nullptr);
+    }
+
+    TEST_CASE("the transparent fallback placeholder also survives the cache's release") {
+        Fixture fixture("SS");
+        Scene   scene;
+        scene.imageParser.reset(fixture.parser.release());
+
+        ResolveMediaSystemTexture("$mediaThumbnail", "", &scene);
+        auto registered = scene.imageParser->Parse("$mediaThumbnail");
+        REQUIRE(registered);
+        if (mayReleaseDecodedPayload(*registered)) releaseDecodedPayload(*registered);
+
+        const auto& mip = scene.mediaTextureSlots[0].placeholder->slots[0].mipmaps[0];
+        CHECK(mip.size ==
+              (isize)kMediaSystemTextureFallbackSize * kMediaSystemTextureFallbackSize * 4);
+        CHECK(mip.data != nullptr);
     }
 
     TEST_CASE("calling it twice for the same name is idempotent") {
