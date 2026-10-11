@@ -340,6 +340,22 @@ TEST_SUITE("SceneNode.Visibility") {
         CHECK_FALSE(c->IsVisible());
     }
 
+    TEST_CASE("AncestorsVisible ignores the node's own flag but follows owner and parent") {
+        auto      parent = std::make_shared<SceneNode>();
+        auto      n      = std::make_shared<SceneNode>();
+        SceneNode owner;
+        parent->AppendChild(n); // sets n's visibility parent
+        n->SetVisibilityOwner(&owner);
+        n->SetVisible(false);
+        CHECK(n->AncestorsVisible());
+        CHECK_FALSE(n->IsVisible());
+        owner.SetVisible(false);
+        CHECK_FALSE(n->AncestorsVisible());
+        owner.SetVisible(true);
+        parent->SetVisible(false);
+        CHECK_FALSE(n->AncestorsVisible());
+    }
+
     TEST_CASE("visibility owner overrides even when self is visible") {
         SceneNode owner;
         SceneNode effect;

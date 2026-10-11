@@ -39,7 +39,7 @@ struct PendingScriptEffectVis {
 // -- for every entry whose effect pointer is still present in that layer's
 // CURRENT m_effects -- appends a resolved ScenePropertyScript to `out`,
 // including one that ends up last on its layer: the render side now draws a
-// hidden terminal's passthrough (CustomShaderPass::is_terminal_hideable)
+// hidden terminal's passthrough (CustomShaderPass::hideable)
 // instead of leaving the structural write forced visible, so the terminal
 // position is safe to register like any other. An entry that was dropped by
 // RemoveFailedEffects, or whose node never made it into nodeEffectLayerMap,

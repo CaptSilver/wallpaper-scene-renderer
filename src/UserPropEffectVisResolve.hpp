@@ -20,7 +20,7 @@
 // hidden (CustomShaderPass.hpp's IsHiddenPassSkippable) -- toggling the last
 // effect off would have cleared the whole composite instead of just hiding
 // one effect's contribution. CustomShaderPass now draws a passthrough
-// pipeline for a hidden terminal (is_terminal_hideable) instead of taking
+// pipeline for a hidden terminal (a Terminal-kind hideable pass) instead of taking
 // that skip path, so the terminal position is safe to bind like any other.
 
 #include "Scene/Scene.h"

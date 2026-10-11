@@ -120,10 +120,9 @@ std::vector<bool> ComputeIsSafeToSkip(std::span<const H>              outputs,
 //     RT: which pipeline it draws (real vs. passthrough) depends on runtime
 //     visibility, so a cached frame would freeze whichever one happened to
 //     be current through the next toggle.
-inline bool EligibleForOutputCache(bool is_rt_default, bool is_terminal_hideable,
-                                   bool safe_to_skip) {
+inline bool EligibleForOutputCache(bool is_rt_default, bool is_hideable, bool safe_to_skip) {
     if (is_rt_default) return false;
-    if (is_terminal_hideable) return false;
+    if (is_hideable) return false;
     return safe_to_skip;
 }
 

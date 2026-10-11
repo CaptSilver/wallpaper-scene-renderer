@@ -76,7 +76,7 @@ TEST_SUITE("ScriptEffectVisResolve") {
 
     TEST_CASE("an effect that ends up last on its layer now registers normally") {
         // CustomShaderPass draws a passthrough pipeline for a hidden terminal
-        // (is_terminal_hideable) instead of forcing its structural write
+        // (a Terminal-kind hideable pass) instead of forcing its structural write
         // visible, so the terminal position no longer needs the special-cased
         // skip -- it resolves exactly like any other bound effect.
         auto                  worldNode = std::make_shared<SceneNode>();

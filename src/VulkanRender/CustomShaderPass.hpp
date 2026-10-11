@@ -77,34 +77,40 @@ inline bool IsHiddenPassSkippable(bool node_hidden, bool clears_output) {
     return node_hidden && ! clears_output;
 }
 
-// Should execute() bind the terminal's passthrough pipeline (sample the
-// chain's last-visible-effect buffer, or the base draw's own buffer for a
-// single-effect chain) instead of its real one?  Only when this pass
-// actually carries a runtime visibility binding on the terminal position
-// (is_terminal_hideable) AND the node is hidden this frame -- an ordinary
-// hidden node with no such binding takes the existing skip-or-draw-nothing
-// path untouched, and a terminal-hideable pass that's currently visible
-// draws its real material like any other pass.  passthrough_ready is false
-// when prepare() failed to build the passthrough pipeline or its UBO; the
-// pipeline handle is then null and must never be bound.
-inline bool ShouldDrawPassthrough(bool is_terminal_hideable, bool node_hidden,
-                                  bool passthrough_ready) {
-    return is_terminal_hideable && node_hidden && passthrough_ready;
-}
+// Which kind of runtime-hideable chain pass this is. Terminal writes the
+// layer's output and picks its passthrough source each frame; Middle writes a
+// chain buffer and copies its one input when HiddenEffectMustCopy says so.
+enum class HideableKind
+{
+    None,
+    Terminal,
+    Middle,
+};
 
-// The fallback when ShouldDrawPassthrough says no only because the
-// passthrough never got built: keep drawing the real material, as the
-// terminal did before it could be hidden at all.  Dropping the draw instead
-// would blank the whole layer, since the terminal is its only writer.
-inline bool HiddenTerminalKeepsRealDraw(bool is_terminal_hideable, bool node_hidden,
-                                        bool passthrough_ready) {
-    return is_terminal_hideable && node_hidden && ! passthrough_ready;
+struct HideableDecision {
+    bool draw_passthrough { false }; // bind the passthrough pipeline
+    bool keep_real_draw { false };   // passthrough missing: draw the real material
+};
+
+// Decided every frame, before the hidden-pass skip guard. `own_hidden` is the
+// effect's own visibility flag; `ancestors_visible` is the layer's (a hidden
+// layer copies nothing: Normal blend would stamp transparent black over the
+// scene). `must_copy` is HiddenEffectMustCopy for a Middle pass and true for a
+// Terminal. When neither field is set the pass takes the ordinary path.
+// `passthrough_ready` is false when prepare() failed to build the passthrough
+// pipeline or its UBO; the null pipeline must never be bound, so the pass
+// keeps its real draw (dropping it would blank a terminal's whole layer).
+inline HideableDecision DecideHideablePass(HideableKind kind, bool own_hidden,
+                                           bool ancestors_visible, bool must_copy,
+                                           bool passthrough_ready) {
+    if (kind == HideableKind::None || ! own_hidden || ! ancestors_visible || ! must_copy) return {};
+    return { passthrough_ready, ! passthrough_ready };
 }
 
 // Which of a terminal-hideable pass's two physical ping-pong buffers holds
 // "the last visible effect's output ahead of it, or the layer's own image
 // when nothing ahead is visible" -- the thing the passthrough pipeline
-// samples once ShouldDrawPassthrough says to draw it.
+// samples once DecideHideablePass says to draw it.
 //
 // SceneImageEffectLayer::ResolveEffect's swap_pp alternates each effect's
 // write target starting at buffer B for effect 0, so a predecessor's output
@@ -290,21 +296,16 @@ public:
         // Geometry shader: use POINT_LIST topology instead of TRIANGLE_STRIP
         bool point_topology { false };
 
-        // True when a script or user property has a registered visibility
-        // binding on THIS pass's node and this pass is the terminal write of
-        // its effect chain (SceneImageEffectLayer::ResolveEffect's pick,
-        // regardless of visibility).  Set by SceneToRenderGraph's
-        // LoadEffectChain/ToGraphPass from the scene's resolved binding
-        // tables, before this pass is ever constructed.  Gates both the
-        // skip-guard exemption and the passthrough-pipeline build in
-        // prepare() -- see ShouldDrawPassthrough above.
-        bool is_terminal_hideable { false };
+        // Set by SceneToRenderGraph for the chain-writing pass of an effect that
+        // carries a script or user-property visibility binding. Gates the
+        // passthrough build in prepare() and the per-frame DecideHideablePass.
+        HideableKind hideable { HideableKind::None };
 
         // Indices into `textures`/`vk_textures` for the chain's two physical
         // ping-pong buffers (SceneImageEffectLayer's FirstTarget/SecondTarget),
         // both registered as reads by SceneToRenderGraph regardless of which
         // single slot the terminal's own (real) material happens to read.
-        // Set alongside is_terminal_hideable; -1/-1 when not terminal-hideable.
+        // Set alongside `hideable`; -1/-1 when not hideable.
         // execute() picks between them every frame via SelectPassthroughSource
         // -- see that function for why a single fixed slot isn't enough.
         i32 passthrough_input_tex_index_a { -1 };
@@ -364,10 +365,10 @@ public:
         // uniforms
         std::function<void()> update_op;
 
-        // Terminal-hideable passthrough (only built when is_terminal_hideable):
+        // Terminal-hideable passthrough (only built when `hideable` is set):
         // a second, minimal pipeline sharing this pass's render pass and
         // framebuffer, drawn instead of `pipeline` while the node is hidden.
-        // See CustomShaderPass::prepare()'s is_terminal_hideable branch.
+        // See CustomShaderPass::prepare()'s hideable branch.
         PipelineParameters passthrough_pipeline;
         StagingBufferRef   passthrough_ubo_buf;
         // Descriptor binding number the passthrough fragment shader's sampler
@@ -377,7 +378,7 @@ public:
         std::function<void()> passthrough_update_op;
         // Set by prepare() only once the passthrough pipeline, its UBO and
         // passthrough_update_op all exist.  Any failed step leaves it false,
-        // and execute() then keeps the real draw (HiddenTerminalKeepsRealDraw).
+        // and execute() then keeps the real draw (DecideHideablePass's keep_real_draw).
         bool passthrough_ready { false };
     };
 

@@ -3209,7 +3209,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         // ("Defualt"), then two script-gated ones ("Current"/"Previous") that
         // toggle on mediaThumbnailChanged. "Previous" is the structurally-last
         // effect on the layer; CustomShaderPass draws a passthrough pipeline
-        // for it when hidden (is_terminal_hideable) instead of forcing its
+        // for it when hidden (a Terminal-kind hideable pass) instead of forcing its
         // write visible, so it registers a runtime binding like "Current"
         // does.
         ensureGlslangInit();
@@ -3276,7 +3276,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
             }
         }
         // Both script-gated effects register now -- "Previous" no longer
-        // needs the terminal exclusion (see CustomShaderPass::is_terminal_hideable).
+        // needs the terminal exclusion (see CustomShaderPass::hideable).
         bool sawCurrent = false, sawPrevious = false;
         for (auto& name : registeredEffects) {
             if (name == "Current") sawCurrent = true;

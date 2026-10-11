@@ -73,7 +73,7 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.useReflectionDepth            = desc.useReflectionDepth;
     m_desc.needsSceneDepth               = desc.needsSceneDepth;
     m_desc.force_clear_output            = desc.force_clear_output;
-    m_desc.is_terminal_hideable          = desc.is_terminal_hideable;
+    m_desc.hideable                      = desc.hideable;
     m_desc.passthrough_input_tex_index_a = desc.passthrough_input_tex_index_a;
     m_desc.passthrough_input_tex_index_b = desc.passthrough_input_tex_index_b;
     m_desc.passthrough_predecessor_nodes = desc.passthrough_predecessor_nodes;
@@ -109,7 +109,7 @@ void main()
 // No color transform: passing the sampled texel straight through IS "the
 // layer's own image" for a single-effect chain, or "the last visible
 // effect's output" for a longer one -- see CustomShaderPass.hpp's
-// ShouldDrawPassthrough and the design note above is_terminal_hideable.
+// DecideHideablePass and the design note above `hideable`.
 constexpr std::string_view kPassthroughFragCode = R"(#version 320 es
 precision highp float;
 layout(location = 0) in vec2 v_Texcoord;
@@ -1015,7 +1015,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // Terminal-hideable: build a second, minimal pipeline that samples
         // this pass's already-resolved chain input straight through, bound
         // instead of the real one while the node is hidden (see execute()'s
-        // ShouldDrawPassthrough branch). It shares this pass's vertex/index
+        // DecideHideablePass branch). It shares this pass's vertex/index
         // buffers and framebuffer; only the render-pass OBJECT is a second,
         // attachment-compatible one -- GraphicsPipeline::create() takes
         // ownership of whatever vvk::RenderPass it's handed (moves it into
@@ -1026,7 +1026,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // the identical handle, so a second render pass built from the exact
         // same attachment description is legal to bind against the same
         // framebuffer.
-        if (m_desc.is_terminal_hideable) {
+        if (m_desc.hideable != HideableKind::None) {
             std::vector<Uni_ShaderSpv> pt_compiled;
             bool                       pt_ok = true;
             {
@@ -1041,7 +1041,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 units[1] = ShaderCompUnit { EShLangFragment, std::string(kPassthroughFragCode) };
                 pt_ok    = CompileAndLinkShaderUnits(units, opt, pt_compiled);
                 if (! pt_ok) {
-                    LOG_ERROR("passthrough shader compile failed for terminal-hideable pass "
+                    LOG_ERROR("passthrough shader compile failed for hideable pass "
                               "(shader '%s')",
                               mesh.Material()->customShader.shader->name.c_str());
                 }
@@ -1055,7 +1055,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 for (auto& spv : pt_compiled) pt_codes.push_back(spv->spirv);
                 pt_ok = GenReflect(pt_codes, pt_spvs, pt_ref);
                 if (! pt_ok) {
-                    LOG_ERROR("passthrough shader reflect failed for terminal-hideable pass "
+                    LOG_ERROR("passthrough shader reflect failed for hideable pass "
                               "(shader '%s')",
                               mesh.Material()->customShader.shader->name.c_str());
                 }
@@ -1493,13 +1493,24 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // boundary — there is no way to hand a render pass instance over — but
     // its draw is dropped below by the same visibility test.
     //
-    // A terminal-hideable pass is exempt: hiding it must still show whatever
-    // came before it in the chain, which needs the passthrough draw below,
-    // not a dropped record. Without this exemption a terminal writing to the
-    // shared _rt_default (clears_output false whenever this object isn't the
-    // first thing drawn onto the composite) would take the early-return skip
-    // and never record anything — see ShouldDrawPassthrough.
-    if (m_desc.node != nullptr && ! m_desc.is_terminal_hideable &&
+    // A hideable pass that copies or falls back is exempt, decided here before
+    // the guard: hiding it must still show whatever came before it in the
+    // chain, which needs the passthrough draw below, not a dropped record.
+    // Without the exemption a terminal writing to the shared _rt_default
+    // (clears_output false whenever this object isn't the first thing drawn
+    // onto the composite) would take the early-return skip and never record
+    // anything. SceneToRenderGraph assigns only Terminal here, and a Terminal
+    // must copy whenever it is hidden, so must_copy is true.
+    const bool own_hidden        = m_desc.node != nullptr && ! m_desc.node->IsVisible();
+    const bool ancestors_visible = m_desc.node == nullptr || m_desc.node->AncestorsVisible();
+    const HideableDecision hide  = DecideHideablePass(m_desc.hideable,
+                                                      own_hidden,
+                                                      ancestors_visible,
+                                                      /*must_copy=*/true,
+                                                      m_desc.passthrough_ready);
+    const bool             records_while_hidden = hide.draw_passthrough || hide.keep_real_draw;
+
+    if (m_desc.node != nullptr && ! records_while_hidden &&
         IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output) &&
         HiddenPassDropsRecording(role)) {
         // The hidden pass may still be the first user of its depth image this
@@ -1520,14 +1531,11 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
 
     if (m_desc.update_op) m_desc.update_op();
 
-    // Which pipeline this frame actually draws with.  A terminal-hideable
-    // pass whose node is hidden binds the passthrough pipeline built in
-    // prepare() instead of its real one; every other pass is unaffected.
-    const bool node_hidden = m_desc.node != nullptr && ! m_desc.node->IsVisible();
-    const bool draw_passthrough =
-        ShouldDrawPassthrough(m_desc.is_terminal_hideable, node_hidden, m_desc.passthrough_ready);
-    const bool keep_real_draw = HiddenTerminalKeepsRealDraw(
-        m_desc.is_terminal_hideable, node_hidden, m_desc.passthrough_ready);
+    // Which pipeline this frame actually draws with.  A hideable pass that
+    // must copy binds the passthrough pipeline built in prepare() instead of
+    // its real one; every other pass is unaffected.
+    const bool                draw_passthrough = hide.draw_passthrough;
+    const bool                keep_real_draw   = hide.keep_real_draw;
     const PipelineParameters& pipeline_to_bind =
         draw_passthrough ? m_desc.passthrough_pipeline : m_desc.pipeline;
     if (draw_passthrough && m_desc.passthrough_update_op) m_desc.passthrough_update_op();

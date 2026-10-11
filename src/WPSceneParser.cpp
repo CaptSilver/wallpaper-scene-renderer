@@ -108,7 +108,7 @@ std::string extractUserPropName(const nlohmann::json& visibleField) {
 // run of resolved-false candidates, and stops at the first one that's
 // genuinely visible: that one anchors the layer's actual last built effect,
 // so it still builds.  This walk is unchanged by CustomShaderPass's
-// passthrough draw for a hidden terminal (is_terminal_hideable) -- what
+// passthrough draw for a hidden terminal (a Terminal-kind hideable pass) -- what
 // changed is only what the anchor position's excludedAsTerminal flag now
 // means to its caller: assembleEffects used to also read it as "never
 // eligible for a runtime binding" and has stopped, since the render side can
@@ -2404,7 +2404,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     // built (and hidden) so applyUserPropsRuntime can flip it on later
     // without a reload -- including at the terminal position: a hidden
     // terminal now draws a passthrough pipeline instead of forcing its
-    // structural write visible (CustomShaderPass::is_terminal_hideable), so
+    // structural write visible (CustomShaderPass::hideable), so
     // it no longer needs the special-cased skip.  See computeWouldBuildEffects.
     auto plan = computeWouldBuildEffects(effects);
 

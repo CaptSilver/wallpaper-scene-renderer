@@ -58,7 +58,7 @@ vulkan::CustomShaderPass* findPassForNode(rg::RenderGraph& rgraph, SceneNode* no
 // Populates `scene` with one world node (id `worldId`) whose camera owns an
 // image-effect chain with `effectNames.size()` effects, one node each, in
 // order.  Registers a script-attached visibility binding on the terminal
-// (last) effect so sceneToRenderGraph marks it is_terminal_hideable, exactly
+// (last) effect so sceneToRenderGraph marks it hideable, exactly
 // as a real "visible": {"script": ...} on the layer's last effect would.
 // Takes `scene` by reference (rather than owning one) because Scene is
 // NoCopy/NoMove -- a fixture struct can hold the shared_ptrs this returns,
@@ -114,7 +114,7 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         auto* terminalPass = findPassForNode(*rgraph, f.layer->ResolvedLastOutput());
         REQUIRE(terminalPass != nullptr);
         const auto& desc = terminalPass->desc();
-        CHECK(desc.is_terminal_hideable);
+        CHECK(desc.hideable == vulkan::HideableKind::Terminal);
 
         REQUIRE(desc.passthrough_predecessor_nodes.size() == 2u);
         CHECK(desc.passthrough_predecessor_nodes[0] == f.effectNodes[0].get()); // Defualt
@@ -145,7 +145,7 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         auto* terminalPass = findPassForNode(*rgraph, f.layer->ResolvedLastOutput());
         REQUIRE(terminalPass != nullptr);
         const auto& desc = terminalPass->desc();
-        CHECK(desc.is_terminal_hideable);
+        CHECK(desc.hideable == vulkan::HideableKind::Terminal);
         CHECK(desc.passthrough_predecessor_nodes.empty());
         CHECK(desc.passthrough_input_tex_index_a >= 0);
         CHECK(desc.passthrough_input_tex_index_b >= 0);
@@ -174,7 +174,7 @@ TEST_SUITE("SceneToRenderGraph_TerminalPassthrough") {
         auto* terminalPass = findPassForNode(*rgraph, layer->ResolvedLastOutput());
         REQUIRE(terminalPass != nullptr);
         const auto& desc = terminalPass->desc();
-        CHECK_FALSE(desc.is_terminal_hideable);
+        CHECK(desc.hideable == vulkan::HideableKind::None);
         CHECK(desc.passthrough_input_tex_index_a == -1);
         CHECK(desc.passthrough_input_tex_index_b == -1);
         CHECK(desc.passthrough_predecessor_nodes.empty());

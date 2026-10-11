@@ -174,8 +174,10 @@ public:
     bool IsOffscreen() const { return m_offscreen; }
     void SetOffscreen(bool v) { m_offscreen = v; }
 
-    bool IsVisible() const {
-        if (! m_visible) return false;
+    // Visibility inherited from the owner and the scene-graph parent, ignoring
+    // this node's own flag. A hidden effect inside a visible layer still has
+    // visible ancestors.
+    bool AncestorsVisible() const {
         // Effect nodes inherit visibility from their owner (the image object node).
         // Owner is checked recursively so the owner's own parent chain propagates.
         if (m_visibilityOwner && ! m_visibilityOwner->IsVisible()) return false;
@@ -186,6 +188,7 @@ public:
         if (m_visibility_parent && ! m_visibility_parent->IsVisible()) return false;
         return true;
     }
+    bool IsVisible() const { return m_visible && AncestorsVisible(); }
     void SetVisible(bool v) { m_visible = v; }
 
     // Set the owner node whose visibility this node inherits (for effect chain nodes)

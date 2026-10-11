@@ -1986,7 +1986,7 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             // it draws depends on runtime visibility -- caching would freeze
             // whichever one happened to run through the next toggle).
             if (EligibleForOutputCache(csp->desc().output == SpecTex_Default,
-                                       csp->desc().is_terminal_hideable,
+                                       csp->desc().hideable != HideableKind::None,
                                        safe[i])) {
                 csp->setCanCache(true);
                 cache_gated++;

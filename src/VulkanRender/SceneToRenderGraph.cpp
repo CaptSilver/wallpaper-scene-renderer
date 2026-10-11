@@ -447,8 +447,9 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                             imgId,
                             TextureReadOptions {});
 
-            pdesc.is_terminal_hideable = is_terminal_hideable;
-            if (is_terminal_hideable && passthrough_info != nullptr) {
+            pdesc.hideable =
+                is_terminal_hideable ? vulkan::HideableKind::Terminal : vulkan::HideableKind::None;
+            if (pdesc.hideable == vulkan::HideableKind::Terminal && passthrough_info != nullptr) {
                 // Register BOTH of the chain's ping-pong buffers as extra
                 // reads, independent of which single slot the terminal's own
                 // (real) material happens to read -- execute() picks between

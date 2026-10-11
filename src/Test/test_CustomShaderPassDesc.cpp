@@ -171,62 +171,47 @@ TEST_SUITE("CustomShaderPass time-uniform detection") {
     }
 }
 
-// ShouldDrawPassthrough gates the pipeline-select branch in execute(): does
-// THIS frame draw the terminal's passthrough pipeline instead of its real
-// one?  Only when the pass both carries a runtime visibility binding on the
-// terminal position (is_terminal_hideable) AND the node is hidden right now
-// AND prepare() actually managed to build the passthrough pipeline and UBO.
-TEST_SUITE("CustomShaderPass::ShouldDrawPassthrough") {
-    using wallpaper::vulkan::ShouldDrawPassthrough;
+// One decision for every hideable pass, taken each frame before the
+// hidden-pass skip guard: draw the passthrough copy, draw the real material
+// as a fallback, or neither (the pass then takes the ordinary skip path).
+TEST_SUITE("CustomShaderPass::DecideHideablePass") {
+    using wallpaper::vulkan::DecideHideablePass;
+    using wallpaper::vulkan::HideableKind;
 
-    TEST_CASE("an ordinary (non-terminal-hideable) pass never draws passthrough, hidden or not") {
-        CHECK_FALSE(ShouldDrawPassthrough(
-            /*is_terminal_hideable=*/false, /*node_hidden=*/false, /*passthrough_ready=*/false));
-        // Can't happen through the render graph today (nothing marks a
-        // non-hideable pass this way), but pins the byte-identical
-        // blast-radius contract: is_terminal_hideable is the only thing that
-        // can turn this on.
-        CHECK_FALSE(ShouldDrawPassthrough(
-            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*passthrough_ready=*/true));
+    TEST_CASE("a pass with no binding never copies or falls back") {
+        auto d = DecideHideablePass(HideableKind::None, true, true, true, true);
+        CHECK_FALSE(d.draw_passthrough);
+        CHECK_FALSE(d.keep_real_draw);
     }
-    TEST_CASE("a terminal-hideable pass that's currently visible draws its real material") {
-        CHECK_FALSE(ShouldDrawPassthrough(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/false, /*passthrough_ready=*/true));
+    TEST_CASE("a visible hideable pass draws its real material") {
+        auto d = DecideHideablePass(HideableKind::Terminal, false, true, true, true);
+        CHECK_FALSE(d.draw_passthrough);
+        CHECK_FALSE(d.keep_real_draw);
     }
-    TEST_CASE("a terminal-hideable pass that's hidden draws the passthrough") {
-        CHECK(ShouldDrawPassthrough(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/true));
+    TEST_CASE("a hidden terminal draws the passthrough") {
+        auto d = DecideHideablePass(HideableKind::Terminal, true, true, true, true);
+        CHECK(d.draw_passthrough);
+        CHECK_FALSE(d.keep_real_draw);
     }
-    TEST_CASE("a hidden terminal-hideable pass whose passthrough failed to build never binds it") {
-        // prepare() leaves passthrough_pipeline default-constructed when the
-        // shader compile, reflection, render pass, pipeline or UBO step fails;
-        // binding that null handle would be invalid Vulkan usage.
-        CHECK_FALSE(ShouldDrawPassthrough(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    TEST_CASE("a hidden middle effect copies only when the chain rule says so") {
+        CHECK(DecideHideablePass(HideableKind::Middle, true, true, true, true).draw_passthrough);
+        auto skip = DecideHideablePass(HideableKind::Middle, true, true, false, true);
+        CHECK_FALSE(skip.draw_passthrough);
+        CHECK_FALSE(skip.keep_real_draw);
     }
-}
-
-// HiddenTerminalKeepsRealDraw is the fallback for the last case above: with no
-// passthrough to draw, a hidden terminal-hideable pass keeps drawing its real
-// material -- the same thing it did before terminal effects could be hidden at
-// all -- rather than dropping its draw and blanking the whole layer.
-TEST_SUITE("CustomShaderPass::HiddenTerminalKeepsRealDraw") {
-    using wallpaper::vulkan::HiddenTerminalKeepsRealDraw;
-
-    TEST_CASE("only a hidden terminal-hideable pass with no passthrough falls back to its real "
-              "draw") {
-        CHECK(HiddenTerminalKeepsRealDraw(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    TEST_CASE("inside a hidden layer nothing copies, so nothing is stamped over the scene") {
+        for (auto kind : { HideableKind::Terminal, HideableKind::Middle }) {
+            auto d = DecideHideablePass(kind, true, /*ancestors_visible=*/false, true, true);
+            CHECK_FALSE(d.draw_passthrough);
+            CHECK_FALSE(d.keep_real_draw);
+        }
     }
-    TEST_CASE("a working passthrough, a visible node, or an ordinary pass never takes the "
-              "fallback") {
-        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*passthrough_ready=*/true));
-        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/false, /*passthrough_ready=*/false));
-        // An ordinary hidden pass keeps the existing skip-or-draw-nothing path.
-        CHECK_FALSE(HiddenTerminalKeepsRealDraw(
-            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*passthrough_ready=*/false));
+    TEST_CASE("with no passthrough pipeline a needed copy falls back to the real draw") {
+        for (auto kind : { HideableKind::Terminal, HideableKind::Middle }) {
+            auto d = DecideHideablePass(kind, true, true, true, /*passthrough_ready=*/false);
+            CHECK_FALSE(d.draw_passthrough);
+            CHECK(d.keep_real_draw);
+        }
     }
 }
 
@@ -294,9 +279,9 @@ TEST_SUITE("CustomShaderPass::SelectPassthroughSource") {
 // SceneToRenderGraph wiring) behaves exactly like today: no passthrough
 // anything gets built or bound.
 TEST_SUITE("CustomShaderPass::Desc terminal-hideable fields") {
-    TEST_CASE("is_terminal_hideable defaults to false") {
+    TEST_CASE("hideable defaults to None") {
         CustomShaderPass::Desc desc;
-        CHECK_FALSE(desc.is_terminal_hideable);
+        CHECK(desc.hideable == wallpaper::vulkan::HideableKind::None);
     }
     TEST_CASE("passthrough_input_tex_index_a and _b default to -1") {
         CustomShaderPass::Desc desc;
@@ -313,43 +298,49 @@ TEST_SUITE("CustomShaderPass::Desc terminal-hideable fields") {
     }
 }
 
-// IsHiddenPassSkippable alone would let a hidden terminal-hideable pass on a
+// IsHiddenPassSkippable alone would let a hidden hideable pass on a
 // non-clearing RT (the shared _rt_default, whenever this object isn't the
 // first thing drawn onto the composite) take the early-return skip and never
 // record anything -- silently breaking the "hiding it still draws something"
 // contract the passthrough pipeline depends on.  The guard at
-// CustomShaderPass::execute()'s invisible-node fast path adds the
-// is_terminal_hideable exemption; this wrapper mirrors that exact
-// conjunction so the exemption is covered without a live Device.
+// CustomShaderPass::execute()'s invisible-node fast path is exempted by
+// DecideHideablePass; this wrapper derives the exemption from it the same
+// way, so it is covered without a live Device.
 namespace
 {
-bool wouldTakeHiddenSkipPath(bool is_terminal_hideable, bool node_hidden, bool clears_output) {
-    return ! is_terminal_hideable &&
-           wallpaper::vulkan::IsHiddenPassSkippable(node_hidden, clears_output);
+bool wouldTakeHiddenSkipPath(wallpaper::vulkan::HideableKind kind, bool own_hidden,
+                             bool ancestors_visible, bool passthrough_ready, bool clears_output) {
+    const auto hide = wallpaper::vulkan::DecideHideablePass(
+        kind, own_hidden, ancestors_visible, /*must_copy=*/true, passthrough_ready);
+    const bool records_while_hidden = hide.draw_passthrough || hide.keep_real_draw;
+    return ! records_while_hidden && wallpaper::vulkan::IsHiddenPassSkippable(
+                                         own_hidden || ! ancestors_visible, clears_output);
 }
 } // namespace
 
-TEST_SUITE("CustomShaderPass terminal-hideable skip-guard exemption") {
+TEST_SUITE("CustomShaderPass hideable-pass skip-guard exemption") {
+    using wallpaper::vulkan::HideableKind;
+
     TEST_CASE("an ordinary hidden pass on a non-clearing RT takes the skip path") {
-        CHECK(wouldTakeHiddenSkipPath(
-            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*clears_output=*/false));
+        CHECK(wouldTakeHiddenSkipPath(HideableKind::None, true, true, true, false));
     }
-    TEST_CASE("a hidden terminal-hideable pass on the SAME shape does NOT take the skip path") {
+    TEST_CASE("a hidden hideable pass on the SAME shape does NOT take the skip path") {
         // clears_output=false is exactly the shared _rt_default, not-first-
         // layer case -- without the exemption this is the one that silently
         // never records.
-        CHECK_FALSE(wouldTakeHiddenSkipPath(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*clears_output=*/false));
+        CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::Terminal, true, true, true, false));
+        CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::Middle, true, true, true, false));
     }
-    TEST_CASE("a hidden terminal-hideable pass that owns its RT's clear still never skips either "
-              "way") {
+    TEST_CASE("a hidden hideable pass that owns its RT's clear still never skips either way") {
         // clears_output=true already made IsHiddenPassSkippable false on its
         // own (the private-offscreen-RT case) -- the exemption changes
         // nothing there, it's only load-bearing for clears_output=false.
-        CHECK_FALSE(wouldTakeHiddenSkipPath(
-            /*is_terminal_hideable=*/true, /*node_hidden=*/true, /*clears_output=*/true));
-        CHECK_FALSE(wouldTakeHiddenSkipPath(
-            /*is_terminal_hideable=*/false, /*node_hidden=*/true, /*clears_output=*/true));
+        CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::Terminal, true, true, true, true));
+        CHECK_FALSE(wouldTakeHiddenSkipPath(HideableKind::None, true, true, true, true));
+    }
+    TEST_CASE("a hideable pass inside a hidden layer takes the skip") {
+        CHECK(wouldTakeHiddenSkipPath(HideableKind::Terminal, true, false, true, false));
+        CHECK(wouldTakeHiddenSkipPath(HideableKind::Terminal, false, false, true, false));
     }
 }
 

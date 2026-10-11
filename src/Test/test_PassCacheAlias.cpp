@@ -379,23 +379,23 @@ TEST_SUITE("PassCacheAlias::ComputeIsSafeToSkip") {
 TEST_SUITE("PassCacheAlias::EligibleForOutputCache") {
     TEST_CASE("_rt_default is never cached, whatever else is true") {
         CHECK_FALSE(EligibleForOutputCache(
-            /*is_rt_default=*/true, /*is_terminal_hideable=*/false, /*safe_to_skip=*/true));
+            /*is_rt_default=*/true, /*is_hideable=*/false, /*safe_to_skip=*/true));
         CHECK_FALSE(EligibleForOutputCache(
-            /*is_rt_default=*/true, /*is_terminal_hideable=*/true, /*safe_to_skip=*/true));
+            /*is_rt_default=*/true, /*is_hideable=*/true, /*safe_to_skip=*/true));
         CHECK_FALSE(EligibleForOutputCache(
-            /*is_rt_default=*/true, /*is_terminal_hideable=*/false, /*safe_to_skip=*/false));
+            /*is_rt_default=*/true, /*is_hideable=*/false, /*safe_to_skip=*/false));
     }
     TEST_CASE("a terminal-hideable pass on a private offscreen RT is still never cached") {
         // The new case: today nothing excludes it, so an unmodified gate
         // would return true here and freeze whichever pipeline last drew.
         CHECK_FALSE(EligibleForOutputCache(
-            /*is_rt_default=*/false, /*is_terminal_hideable=*/true, /*safe_to_skip=*/true));
+            /*is_rt_default=*/false, /*is_hideable=*/true, /*safe_to_skip=*/true));
     }
     TEST_CASE("an ordinary offscreen/pingpong pass follows the alias verdict") {
         CHECK(EligibleForOutputCache(
-            /*is_rt_default=*/false, /*is_terminal_hideable=*/false, /*safe_to_skip=*/true));
+            /*is_rt_default=*/false, /*is_hideable=*/false, /*safe_to_skip=*/true));
         CHECK_FALSE(EligibleForOutputCache(
-            /*is_rt_default=*/false, /*is_terminal_hideable=*/false, /*safe_to_skip=*/false));
+            /*is_rt_default=*/false, /*is_hideable=*/false, /*safe_to_skip=*/false));
     }
 }
 
