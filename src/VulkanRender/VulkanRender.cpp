@@ -1949,7 +1949,8 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                     }
                 }
                 inputs.push_back(std::move(in_handles));
-                cacheable.push_back(csp->isCacheable());
+                cacheable.push_back(CacheableForSafetyAnalysis(
+                    csp->isCacheable(), csp->desc().hideable != HideableKind::None));
             } else if (auto* cp = dynamic_cast<CopyPass*>(p); cp && cp->prepared()) {
                 // CopyPass writes to `_rt_link_<id>`, which the RT allocator
                 // frequently aliases to the same VkImage as an upstream

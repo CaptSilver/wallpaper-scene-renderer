@@ -477,3 +477,25 @@ TEST_SUITE("PassCacheAlias::ShouldRecordDepthInit") {
         CHECK(ShouldRecordDepthInit(/*has_depth=*/true, A, &inited) == true);
     }
 }
+
+// A pass whose draw depends on runtime visibility must not count as cacheable
+// in the alias analysis itself, or a static consumer of its output is judged
+// safe to skip and freezes across a toggle.
+TEST_SUITE("PassCacheAlias::CacheableForSafetyAnalysis") {
+    TEST_CASE("a hideable producer is not cacheable, so its consumer is not safe to skip") {
+        // P writes A (hideable, otherwise static); C reads A and writes its own private B.
+        std::vector<H>              outs { A, B };
+        std::vector<std::vector<H>> ins { {}, { A } };
+        std::vector<bool>           cach { CacheableForSafetyAnalysis(true, /*is_hideable=*/true),
+                                           CacheableForSafetyAnalysis(true, false) };
+        auto                        r = ComputeIsSafeToSkip<H>(outs, ins, cach);
+        REQUIRE(r.size() == 2);
+        CHECK_FALSE(r[0]);
+        CHECK_FALSE(r[1]);
+    }
+    TEST_CASE("an ordinary cacheable pass keeps its cacheability") {
+        CHECK(CacheableForSafetyAnalysis(true, false));
+        CHECK_FALSE(CacheableForSafetyAnalysis(false, false));
+        CHECK_FALSE(CacheableForSafetyAnalysis(false, true));
+    }
+}

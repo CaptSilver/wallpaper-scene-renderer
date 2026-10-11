@@ -120,10 +120,21 @@ std::vector<bool> ComputeIsSafeToSkip(std::span<const H>              outputs,
 //     RT: which pipeline it draws (real vs. passthrough) depends on runtime
 //     visibility, so a cached frame would freeze whichever one happened to
 //     be current through the next toggle.
+//     This backs up CacheableForSafetyAnalysis, which already keeps hideable
+//     passes out of the safety analysis itself.
 inline bool EligibleForOutputCache(bool is_rt_default, bool is_hideable, bool safe_to_skip) {
     if (is_rt_default) return false;
     if (is_hideable) return false;
     return safe_to_skip;
+}
+
+// The cacheability a pass contributes to ComputeIsSafeToSkip. A hideable pass
+// draws its real material or a passthrough depending on runtime visibility, so
+// it is never cacheable -- and that has to be known inside the analysis, not
+// applied afterwards, or a static pass reading its output is wrongly judged
+// safe to skip and freezes across the next toggle.
+inline bool CacheableForSafetyAnalysis(bool is_cacheable, bool is_hideable) {
+    return is_cacheable && ! is_hideable;
 }
 
 // Invisible-node fast path guard.  A runtime-hidden pass can skip its
