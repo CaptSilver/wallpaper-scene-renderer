@@ -433,6 +433,14 @@ TEST_SUITE("RtResidency::ComputeBlockedPasses") {
         std::vector<bool>             resident { false, true };
         CHECK(ComputeBlockedPasses(s, f, resident) == std::vector<bool> { true, false });
     }
+    TEST_CASE("every pass is judged, not just the first") {
+        // Only the second pass samples the absent slot.
+        std::vector<PassDemandStatic> s { reader({ K::ForSlot(0) }), reader({ K::ForSlot(1) }) };
+        std::vector<PassDemandFrame>  f { { true, false, DemandInputs::Own },
+                                          { true, false, DemandInputs::Own } };
+        std::vector<bool>             resident { true, false };
+        CHECK(ComputeBlockedPasses(s, f, resident) == std::vector<bool> { false, true });
+    }
     TEST_CASE("only the buffer actually sampled counts for a passthrough") {
         std::vector<PassDemandStatic> s { reader({}, K::ForSlot(0), K::ForSlot(1)) };
         std::vector<bool>             resident { true, false };

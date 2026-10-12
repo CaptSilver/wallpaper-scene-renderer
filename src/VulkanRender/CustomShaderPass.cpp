@@ -692,17 +692,10 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             });
 
         for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-            i32         binding { -1 };
-            const char* tex_name = GLTexNameForIndex(i);
-            // The passthrough's appended reads are not the material's own
-            // textures; leaving them unbound here keeps the real pipeline's
-            // descriptors as they were before a pass became hideable.
-            if (IsAppendedPassthroughSlot(
-                    i, m_desc.passthrough_input_tex_index_a, m_desc.passthrough_input_tex_index_b))
-                tex_name = nullptr;
-            if (tex_name != nullptr && exists(ref.binding_map, tex_name))
-                binding = (i32)ref.binding_map.at(tex_name).binding;
-            m_desc.vk_tex_binding.push_back(binding);
+            m_desc.vk_tex_binding.push_back(MaterialTexBinding(i,
+                                                               m_desc.passthrough_input_tex_index_a,
+                                                               m_desc.passthrough_input_tex_index_b,
+                                                               ref.binding_map));
         }
     }
 
@@ -719,10 +712,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 .sample       = {},
                 .mipmap_level = 1,
             };
-            if (auto* slot = device.tex_cache().QuerySlot(dummy_key, tk, true);
-                slot != nullptr && slot->params()) {
-                m_desc.vk_fallback_tex = *slot->params();
-            }
+            if (auto params = ResidentSlotParams(device.tex_cache().QuerySlot(dummy_key, tk, true)))
+                m_desc.vk_fallback_tex = *params;
         }
     }
 
@@ -744,30 +735,17 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             };
             bind_descriptions.push_back(bind_desc);
 
-            for (auto& item : ref.input_location_map) {
-                auto& name   = item.first;
-                auto& input  = item.second;
-                bool  found  = exists(attrs_map, name);
-                usize offset = found ? attrs_map[name].offset : 0;
-
-                VkVertexInputAttributeDescription attr_desc {
-                    .location = input.location,
-                    .binding  = i,
-                    .format   = input.format,
-                    .offset   = (u32)offset,
-                };
-                attr_descriptions.push_back(attr_desc);
-
-                if (m_desc.point_topology) {
+            AppendVertexArrayAttributes(attr_descriptions, i, attrs_map, ref.input_location_map);
+            if (m_desc.point_topology) {
+                for (auto& [name, input] : ref.input_location_map) {
+                    const auto it = attrs_map.find(name);
                     LOG_INFO("  GS vtx attr '%s': loc=%u fmt=%u offset=%zu found=%d",
                              name.c_str(),
                              input.location,
                              (u32)input.format,
-                             offset,
-                             (int)found);
+                             it != attrs_map.end() ? it->second.offset : (usize)0,
+                             (int)(it != attrs_map.end()));
                 }
-            }
-            if (m_desc.point_topology) {
                 LOG_INFO("  GS mesh attrs (stride=%zu):", vertex.OneSizeOf());
                 for (auto& [an, ai] : attrs_map)
                     LOG_INFO("    mesh '%s': offset=%zu", an.c_str(), ai.offset);
@@ -1046,23 +1024,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             if (pt_ok && ! pt_ref.blocks.empty() && exists(pt_ref.binding_map, "g_Texture0")) {
                 m_desc.passthrough_tex_binding = (i32)pt_ref.binding_map.at("g_Texture0").binding;
 
-                std::vector<VkVertexInputAttributeDescription> pt_attr_descriptions;
-                for (uint i = 0; i < mesh.VertexCount(); i++) {
-                    const auto& vertex    = mesh.GetVertexArray(i);
-                    auto        attrs_map = vertex.GetAttrOffsetMap();
-                    for (auto& item : pt_ref.input_location_map) {
-                        auto& name   = item.first;
-                        auto& input  = item.second;
-                        bool  found  = exists(attrs_map, name);
-                        usize offset = found ? attrs_map[name].offset : 0;
-                        pt_attr_descriptions.push_back(VkVertexInputAttributeDescription {
-                            .location = input.location,
-                            .binding  = i,
-                            .format   = input.format,
-                            .offset   = (u32)offset,
-                        });
-                    }
-                }
+                const auto pt_attr_descriptions =
+                    VertexAttributeDescriptions(mesh, pt_ref.input_location_map);
 
                 DescriptorSetInfo pt_descriptor_info;
                 pt_descriptor_info.push_descriptor = true;
@@ -1416,37 +1379,54 @@ PassDemandFrame CustomShaderPass::demandFrame() const {
     return DemandFrameFor(frameHideable(m_desc.merge_role), canCache() && isCached());
 }
 
+PassCacheDecision CustomShaderPass::cacheDecision(PassMergeRole role, bool own_dirty,
+                                                  bool node_visible) const {
+    // compileRenderGraph never merges a cacheable pass, precisely because
+    // the early return in execute() would strand the group's begin or end.  The
+    // role check keeps that a local, checkable fact rather than an invariant
+    // spread across two files: a merged pass re-records instead.
+    return DecidePassCache<ResidencyKey>(
+        canCache(),
+        isCached(),
+        own_dirty,
+        node_visible,
+        m_cached_visible,
+        m_input_keys,
+        m_backward_input_keys,
+        m_rewritten_frame_tracker,
+        m_rewritten_last_frame_tracker,
+        role == PassMergeRole::Standalone,
+        m_desc.out_slot != nullptr && m_desc.out_slot->generation != m_cached_output_generation);
+}
+
+bool CustomShaderPass::outputSkipsRecord() const {
+    return m_desc.out_slot != nullptr &&
+           wallpaper::vulkan::detail::outputAbsent(
+               m_desc.out_slot->managed(), m_desc.out_slot->resident(), outputNeeded());
+}
+
 bool CustomShaderPass::ensureFramebuffer(const Device& device, PassMergeRole role) {
     // vkCmdBeginRenderPass is the only consumer of the framebuffer, so only
     // the pass that opens the render pass needs one.
-    if (! PassOpensRenderPass(role)) return true;
-    if (m_desc.out_slot == nullptr) return *m_desc.fb != VK_NULL_HANDLE;
-    if (! m_desc.out_slot->resident()) return false;
-    if (! FramebufferNeedsRebuild(
-            *m_desc.fb != VK_NULL_HANDLE, m_desc.fb_generation, *m_desc.out_slot))
-        return true;
-    // Attachments match the render pass: [0]=color, [1]=depth; with MSAA
-    // [0]=msaa color, [1]=resolve, [2]=msaa depth.  Render attachments must be
-    // single-mip views; mip0_view aliases view for single-mip images.
-    VkImageView fb_attachments[3];
-    uint32_t    fb_count;
-    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-        fb_attachments[0] = m_desc.msaaColorView;
-        fb_attachments[1] = m_desc.vk_output.mip0_view;
-        fb_attachments[2] = m_desc.depthView;
-        fb_count          = m_desc.hasDepth ? 3u : 2u;
-    } else {
-        fb_attachments[0] = m_desc.vk_output.mip0_view;
-        fb_attachments[1] = m_desc.depthView;
-        fb_count          = m_desc.hasDepth ? 2u : 1u;
+    switch (DecideFramebufferStep(
+        PassOpensRenderPass(role), m_desc.out_slot, m_desc.fb, m_desc.fb_generation)) {
+    case FbStep::Ready: return true;
+    case FbStep::Fail: return false;
+    case FbStep::Build: break;
     }
+    // mip0_view aliases view for single-mip images.
+    const FbAttachments     att = FramebufferAttachments(m_desc.msaaSamples,
+                                                         m_desc.hasDepth,
+                                                         m_desc.msaaColorView,
+                                                         m_desc.vk_output.mip0_view,
+                                                         m_desc.depthView);
     VkFramebufferCreateInfo info {
         .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .pNext           = nullptr,
         .flags           = 0,
         .renderPass      = *m_desc.pipeline.pass,
-        .attachmentCount = fb_count,
-        .pAttachments    = fb_attachments,
+        .attachmentCount = att.count,
+        .pAttachments    = att.views,
         .width           = m_desc.vk_output.extent.width,
         .height          = m_desc.vk_output.extent.height,
         .layers          = 1,
@@ -1455,7 +1435,7 @@ bool CustomShaderPass::ensureFramebuffer(const Device& device, PassMergeRole rol
     auto             res = device.handle().CreateFramebuffer(info, fb);
     if (ShouldLogFramebufferFailure(res != VK_SUCCESS, m_fb_failure_logged)) VVK_CHECK(res);
     if (res != VK_SUCCESS) return false;
-    RetireOldFramebuffer(*m_desc.fb != VK_NULL_HANDLE, m_desc.fb, m_fb_retirer);
+    RetireOldFramebuffer(m_desc.fb, m_fb_retirer);
     m_desc.fb            = std::move(fb);
     m_desc.fb_generation = m_desc.out_slot->generation;
     return true;
@@ -1505,23 +1485,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         auto* mat = m_desc.node->Mesh()->Material();
         own_dirty = mat && mat->customShader.constValuesDirty;
     }
-    const HideableFrame hf = frameHideable(role);
-    // compileRenderGraph never merges a cacheable pass, precisely because
-    // the early return below would strand the group's begin or end.  The role
-    // check keeps that a local, checkable fact rather than an invariant
-    // spread across two files: a merged pass re-records instead.
-    const PassCacheDecision cache = DecidePassCache<ResidencyKey>(
-        canCache(),
-        isCached(),
-        own_dirty,
-        hf.node_visible,
-        m_cached_visible,
-        m_input_keys,
-        m_backward_input_keys,
-        m_rewritten_frame_tracker,
-        m_rewritten_last_frame_tracker,
-        role == PassMergeRole::Standalone,
-        m_desc.out_slot != nullptr && m_desc.out_slot->generation != m_cached_output_generation);
+    const HideableFrame     hf    = frameHideable(role);
+    const PassCacheDecision cache = cacheDecision(role, own_dirty, hf.node_visible);
     if (cache.invalidate) invalidateCache();
     if (cache.skip) {
         g_cache_hits++;
@@ -1576,9 +1541,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // output slot, so a group records or skips as a whole.  Ahead of
     // ensureFramebuffer so an absent output is not mistaken for a failed
     // framebuffer, which would abandon a group that was merely not needed.
-    if (m_desc.out_slot != nullptr &&
-        wallpaper::vulkan::detail::outputAbsent(
-            m_desc.out_slot->managed(), m_desc.out_slot->resident(), outputNeeded())) {
+    if (outputSkipsRecord()) {
         if (g_pass_dump_active)
             LOG_DEBUG("pass dump: skip %s -> %s, render target not resident",
                       m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
@@ -1592,7 +1555,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // every image change.  Nothing to draw into means skip the frame and retry;
     // a GroupBegin that skips here takes its members with it.
     if (! ensureFramebuffer(device, role)) {
-        if (role == PassMergeRole::GroupBegin) rr.group_abandoned = true;
+        if (FramebufferFailureAbandonsGroup(role)) rr.group_abandoned = true;
         return;
     }
 
@@ -1731,9 +1694,9 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     if (draw_passthrough) {
         // One sampler: whichever of the chain's two ping-pong buffers
         // passthrough_tex_index just picked for this frame.
-        if (m_desc.passthrough_tex_binding >= 0 && passthrough_tex_index >= 0 &&
-            (usize)passthrough_tex_index < m_desc.vk_textures.size()) {
-            auto& slot = m_desc.vk_textures[(usize)passthrough_tex_index];
+        if (const auto pt_index = PassthroughSamplerIndex(
+                m_desc.passthrough_tex_binding, passthrough_tex_index, m_desc.vk_textures.size())) {
+            auto& slot = m_desc.vk_textures[*pt_index];
             if (! slot.slots.empty()) {
                 auto& img = slot.getActive();
                 if (opens)
@@ -1764,9 +1727,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                     .pTexelBufferView = nullptr,
                 });
             } else {
-                const usize pt = (usize)passthrough_tex_index;
-                dropDrawForAbsentInput(pt < m_desc.in_slots.size() ? m_desc.in_slots[pt] : nullptr,
-                                       pt);
+                dropDrawForAbsentInput(SlotAt(m_desc.in_slots, *pt_index), *pt_index);
             }
         }
         if (m_desc.passthrough_ubo_buf) {
@@ -1789,25 +1750,30 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             });
         }
     } else {
-        for (usize i = 0; i < m_desc.vk_textures.size(); i++) {
-            auto& slot    = m_desc.vk_textures[i];
-            int   binding = m_desc.vk_tex_binding[i];
-            if (binding < 0) continue;
+        PlanTextureBindsInto(m_tex_bind_scratch,
+                             m_desc.vk_textures,
+                             m_desc.vk_tex_binding,
+                             m_desc.in_slots,
+                             hf.draws,
+                             static_cast<bool>(m_desc.vk_fallback_tex.sampler));
+        for (const TexBindStep& step : m_tex_bind_scratch) {
+            if (step.how == TexBind::Skip) continue;
+            const usize i       = step.index;
+            auto&       slot    = m_desc.vk_textures[i];
+            const int   binding = m_desc.vk_tex_binding[i];
 
             VkSampler   sampler;
             VkImageView view;
-            if (slot.slots.empty()) {
+            if (step.how != TexBind::Image) {
                 // in_slots is sized to vk_textures by prepare(); a Desc built
                 // directly (tests) may carry fewer entries.
-                RtSlot* in = i < m_desc.in_slots.size() ? m_desc.in_slots[i] : nullptr;
-                dropDrawForAbsentInput(in, i);
-                // A record that does not draw samples nothing: write no
-                // descriptor for the absent input rather than bind the fallback.
-                if (AbsentManagedInputSkipsBind(in, hf.draws)) continue;
+                dropDrawForAbsentInput(SlotAt(m_desc.in_slots, i), i);
+                // Omit: nothing to write, either because the record does not draw
+                // or because no fallback texture exists.
+                if (step.how == TexBind::Omit) continue;
                 // Shader declares this texture binding but no texture was loaded.
                 // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
                 // Vulkan validation error VUID-vkCmdDraw-None-08114.
-                if (! m_desc.vk_fallback_tex.sampler) continue;
                 sampler = m_desc.vk_fallback_tex.sampler;
                 view    = m_desc.vk_fallback_tex.view;
             } else {

@@ -752,6 +752,16 @@ TEST_SUITE("PassCacheAlias::ClassifyBackwardInputs") {
         auto                        r = ClassifyBackwardInputs<H>(outs, ins);
         CHECK(r[1].empty());
     }
+    TEST_CASE("every pass is classified, not just the first") {
+        // 0 writes A, 1 writes B and reads it back: pass 1 is the one with a
+        // backward input, so a loop that stops after pass 0 leaves it empty.
+        std::vector<H>              outs { A, B };
+        std::vector<std::vector<H>> ins { {}, { B } };
+        auto                        r = ClassifyBackwardInputs<H>(outs, ins);
+        REQUIRE(r.size() == 2);
+        CHECK(r[0].empty());
+        CHECK(r[1] == std::vector<H> { B });
+    }
     TEST_CASE("a pass reading its own output reads last frame's") {
         std::vector<H>              outs { A };
         std::vector<std::vector<H>> ins { { A } };

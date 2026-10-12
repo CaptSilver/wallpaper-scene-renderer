@@ -1062,7 +1062,7 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
     query.lru_tick = ++m_lru_clock;
     query.last_gen = m_query_generation;
     if (! createUpFrontIfNeeded(query, persist)) return nullptr;
-    if (m_query_texs.size() > m_query_soft_cap) {
+    if (detail::queryPoolOverCap(m_query_texs.size(), m_query_soft_cap)) {
         evictColdQueryTexs();
     }
     return &query;

@@ -183,10 +183,10 @@ void SkyboxPass::prepare(Scene& scene, const Device& device, RenderingResources&
         RtSlot* slot  = device.tex_cache().QuerySlot(m_desc.output, ToTexKey(rt), ! rt.allowReuse);
         // The image handles are copied once below, so a slot that can lose its image would
         // go stale.  Checked before the params() test so the off switch does not hide it.
-        assert(slot == nullptr || ! slot->managed());
-        if (slot != nullptr && slot->params()) {
+        assert(SlotHoldsFixedImage(slot));
+        if (auto params = ResidentSlotParams(slot)) {
             m_desc.out_slot  = slot;
-            m_desc.vk_output = *slot->params();
+            m_desc.vk_output = *params;
         } else {
             LOG_ERROR("skybox output RT query failed for '%s'", m_desc.output.c_str());
             return;

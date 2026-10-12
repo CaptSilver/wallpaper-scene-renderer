@@ -13,6 +13,7 @@
 #include "Core/MapSet.hpp"
 #include "StagingReuse.hpp"
 #include "Vulkan/RetireRing.hpp"
+#include "Vulkan/TextureCacheDetail.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -135,6 +136,23 @@ struct BoundImage {
 
 inline bool BoundImageStale(const BoundImage& bound, const RtSlot& slot) {
     return bound.generation != slot.generation || bound.resident != slot.resident();
+}
+
+// The slot's image parameters, or nothing for a missing slot or one with no
+// image.
+inline std::optional<ImageParameters> ResidentSlotParams(const RtSlot* s) {
+    return s != nullptr ? s->params() : std::nullopt;
+}
+
+// A pass that copies the image handles out of its slot once (the skybox) needs
+// a slot that never loses its image: persistent, or no slot at all.
+inline bool SlotHoldsFixedImage(const RtSlot* s) { return s == nullptr || ! s->managed(); }
+
+// A copy has nothing to do this frame when either side is missing, the source
+// has no image, or the destination is a managed target nobody needs.
+inline bool CopySkips(const RtSlot* src, const RtSlot* dst, bool dst_needed) {
+    return src == nullptr || dst == nullptr || ! src->resident() ||
+           detail::outputAbsent(dst->managed(), dst->resident(), dst_needed);
 }
 
 // Parameters for a slot with no image: null handles, but the extent and mip

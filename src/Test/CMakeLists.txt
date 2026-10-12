@@ -138,6 +138,7 @@ add_executable(backend_scene_tests
     test_TextureCache_SamplerDedup.cpp
     test_TextureCacheSamplerAxes.cpp
     test_TextureCacheInitialContents.cpp
+    test_VvkCreateWrappers.cpp
     test_TextureCache_LoadStaging.cpp
     test_TextureCacheQueryLRU.cpp
     test_TexFormatVk.cpp

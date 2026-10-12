@@ -1,5 +1,6 @@
 #pragma once
 #include "VulkanPass.hpp"
+#include "VulkanRender/PassCacheAlias.hpp"
 #include "VulkanRender/PassMerge.hpp"
 #include "VulkanRender/RtResidency.hpp"
 #include <cstdint>
@@ -283,6 +284,44 @@ inline bool IsAppendedPassthroughSlot(usize index, i32 passthrough_a, i32 passth
     return first >= 0 && index >= (usize)first;
 }
 
+// The descriptor binding of the material's own texture `index`, or -1 when the
+// shader never declared it.  The passthrough's appended reads are not the
+// material's textures; leaving them unbound keeps the real pipeline's
+// descriptors as they were before a pass became hideable.
+inline i32 MaterialTexBinding(usize index, i32 passthrough_a, i32 passthrough_b,
+                              const Map<std::string, VkDescriptorSetLayoutBinding>& binding_map) {
+    const char* tex_name = GLTexNameForIndex(index);
+    if (IsAppendedPassthroughSlot(index, passthrough_a, passthrough_b)) tex_name = nullptr;
+    if (tex_name != nullptr && exists(binding_map, tex_name))
+        return (i32)binding_map.find(tex_name)->second.binding;
+    return -1;
+}
+
+// One vertex-input attribute per (vertex array, shader input).  An input the
+// array does not carry gets offset 0, as the shader still needs a location.
+inline void AppendVertexArrayAttributes(
+    std::vector<VkVertexInputAttributeDescription>& out, u32 binding,
+    const Map<std::string, SceneVertexArray::SceneVertexAttributeOffset>& mesh_attrs,
+    const Map<std::string, ShaderReflected::Input>&                       inputs) {
+    for (auto& item : inputs) {
+        const auto found = mesh_attrs.find(item.first);
+        out.push_back(VkVertexInputAttributeDescription {
+            .location = item.second.location,
+            .binding  = binding,
+            .format   = item.second.format,
+            .offset   = (u32)(found != mesh_attrs.end() ? found->second.offset : 0),
+        });
+    }
+}
+inline std::vector<VkVertexInputAttributeDescription>
+VertexAttributeDescriptions(const SceneMesh&                                mesh,
+                            const Map<std::string, ShaderReflected::Input>& inputs) {
+    std::vector<VkVertexInputAttributeDescription> out;
+    for (uint i = 0; i < mesh.VertexCount(); i++)
+        AppendVertexArrayAttributes(out, i, mesh.GetVertexArray(i).GetAttrOffsetMap(), inputs);
+    return out;
+}
+
 // Path-A depth-image usage flags: SAMPLED_BIT is appended iff the device
 // advertises sampled-image support for D32_SFLOAT on optimal tiling
 // (Device::d32_sampleable()); the attachment/transfer-dst bits are
@@ -367,15 +406,95 @@ inline bool FramebufferNeedsRebuild(bool has_fb, std::uint32_t fb_generation, co
     return ! has_fb || fb_generation != out.generation;
 }
 
+// How one material texture reaches the descriptor set on a drawing frame.
+// Skip: the shader never declared it.  Image: the slot has an image.  Fallback:
+// declared but absent, so the 1x1 dummy stands in.  Omit: declared and absent,
+// but nothing to write (a record that does not draw, or no dummy exists).
+enum class TexBind
+{
+    Skip,
+    Image,
+    Fallback,
+    Omit,
+};
+
+// One entry per material texture: `index` into vk_textures / vk_tex_binding.
+struct TexBindStep {
+    TexBind how { TexBind::Skip };
+    usize   index { 0 };
+};
+
 // Replacing a framebuffer a submitted frame may still be using: hand the old
 // one to the retirer instead of letting the assignment destroy it.  False when
 // there was nothing to retire or nobody to retire it to (the old one is then
 // destroyed in place, which is only safe with the device idle).
 template<typename Fb, typename Retirer>
-bool RetireOldFramebuffer(bool has_old, Fb& old, const Retirer& retirer) {
+bool RetireOldFramebuffer(Fb& old, const Retirer& retirer) {
+    const bool has_old = *old != VK_NULL_HANDLE;
     if (! has_old || ! retirer) return false;
     retirer(std::move(old));
     return true;
+}
+
+// What ensureFramebuffer has to do before the pass can record: nothing (the
+// framebuffer is usable, or this role never begins a render pass), give up
+// for the frame, or build a new one.  A pass without a slot owns a fixed
+// framebuffer and only reports whether it exists.
+enum class FbStep
+{
+    Ready,
+    Fail,
+    Build,
+};
+template<typename Fb>
+FbStep DecideFramebufferStep(bool opens, const RtSlot* out, const Fb& fb, std::uint32_t fb_gen) {
+    if (! opens) return FbStep::Ready;
+    const bool has_fb = *fb != VK_NULL_HANDLE;
+    if (out == nullptr) return has_fb ? FbStep::Ready : FbStep::Fail;
+    if (! out->resident()) return FbStep::Fail;
+    return FramebufferNeedsRebuild(has_fb, fb_gen, *out) ? FbStep::Build : FbStep::Ready;
+}
+
+// Attachments match the render pass: [0]=color, [1]=depth; with MSAA
+// [0]=msaa color, [1]=resolve, [2]=msaa depth.  Render attachments must be
+// single-mip views; the caller passes the output's mip0 view.
+struct FbAttachments {
+    VkImageView   views[3] {};
+    std::uint32_t count { 0 };
+};
+inline FbAttachments FramebufferAttachments(VkSampleCountFlagBits samples, bool has_depth,
+                                            VkImageView msaa_color, VkImageView out,
+                                            VkImageView depth) {
+    FbAttachments a;
+    if (samples > VK_SAMPLE_COUNT_1_BIT) {
+        a.views[0] = msaa_color;
+        a.views[1] = out;
+        a.views[2] = depth;
+        a.count    = has_depth ? 3u : 2u;
+    } else {
+        a.views[0] = out;
+        a.views[1] = depth;
+        a.count    = has_depth ? 2u : 1u;
+    }
+    return a;
+}
+
+// Only the pass that opens a merged group can abandon it: it is the one whose
+// failed begin leaves the members with no render pass to record into.
+inline bool FramebufferFailureAbandonsGroup(PassMergeRole role) {
+    return role == PassMergeRole::GroupBegin;
+}
+
+// The slot at `i`, or null for a bitmap texture or an index past the list.
+inline RtSlot* SlotAt(const std::vector<RtSlot*>& slots, usize i) {
+    return i < slots.size() ? slots[i] : nullptr;
+}
+
+// Which texture the passthrough draw samples this frame: the index the chain
+// picked, if the pass has a passthrough sampler and the index names a texture.
+inline std::optional<usize> PassthroughSamplerIndex(i32 binding, i32 tex_index, usize n_textures) {
+    if (binding >= 0 && tex_index >= 0 && (usize)tex_index < n_textures) return (usize)tex_index;
+    return std::nullopt;
 }
 
 // A merged group's members record inside the render pass the GroupBegin
@@ -570,6 +689,12 @@ public:
     bool canCache() const { return m_can_cache; }
     // The frame's one visibility verdict for this pass; execute() reads it once.
     HideableFrame frameHideable(PassMergeRole role) const;
+    // The cache step at the top of execute(): whether the cached bytes are
+    // dropped and whether the pass may return without recording.
+    PassCacheDecision cacheDecision(PassMergeRole role, bool own_dirty, bool node_visible) const;
+    // True when the output is a managed target with no image or nobody needing
+    // it this frame; execute() then records nothing.
+    bool outputSkipsRecord() const;
     // The per-frame half of this pass's demand, built from frameHideable().
     PassDemandFrame demandFrame() const override;
     void setCanCache(bool v) { m_can_cache = v; }
@@ -711,6 +836,7 @@ private:
     std::vector<VkImageMemoryBarrier>  m_image_barriers_scratch;
     std::vector<VkDescriptorImageInfo> m_image_infos_scratch;
     std::vector<VkWriteDescriptorSet>  m_descriptor_writes_scratch;
+    std::vector<TexBindStep>           m_tex_bind_scratch;
 };
 
 // A slot's key is its id, so it survives the slot's image coming and going.
@@ -756,6 +882,30 @@ inline bool AbsentManagedInputBlocksDraw(const RtSlot* in, bool draws) {
 // bind loop skips the descriptor write instead of binding the fallback.
 inline bool AbsentManagedInputSkipsBind(const RtSlot* in, bool draws) {
     return ! draws && in != nullptr && in->managed() && ! in->resident();
+}
+
+inline TexBind PlanTextureBind(i32 binding, bool has_image, const RtSlot* in, bool draws,
+                               bool has_fallback) {
+    if (binding < 0) return TexBind::Skip;
+    if (has_image) return TexBind::Image;
+    if (AbsentManagedInputSkipsBind(in, draws) || ! has_fallback) return TexBind::Omit;
+    return TexBind::Fallback;
+}
+// Fills `plan` with one entry per texture.  A reused vector keeps its capacity,
+// so a pass that records every frame allocates nothing in the steady state.
+inline void PlanTextureBindsInto(std::vector<TexBindStep>&         plan,
+                                 const std::vector<ImageSlotsRef>& textures,
+                                 const std::vector<i32>&           bindings,
+                                 const std::vector<RtSlot*>& in_slots, bool draws,
+                                 bool has_fallback) {
+    plan.clear();
+    for (usize i = 0; i < textures.size(); i++)
+        plan.push_back({ PlanTextureBind(bindings[i],
+                                         ! textures[i].slots.empty(),
+                                         SlotAt(in_slots, i),
+                                         draws,
+                                         has_fallback),
+                         i });
 }
 
 } // namespace vulkan

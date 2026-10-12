@@ -295,3 +295,13 @@ TEST_SUITE("TextureCache on-demand slots") {
         CHECK_FALSE(outputAbsent(false, true, false));
     }
 }
+
+TEST_SUITE("TextureCache query pool cap") {
+    using wallpaper::vulkan::detail::queryPoolOverCap;
+
+    TEST_CASE("the pool is over the cap only once it holds more than the cap") {
+        CHECK_FALSE(queryPoolOverCap(63, 64));
+        CHECK_FALSE(queryPoolOverCap(64, 64));
+        CHECK(queryPoolOverCap(65, 64));
+    }
+}

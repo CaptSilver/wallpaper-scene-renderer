@@ -8,6 +8,16 @@
 using wallpaper::vulkan::CustomShaderPass;
 using wallpaper::vulkan::VmaImageParameters;
 
+namespace
+{
+// Stands in for vvk::Framebuffer: what the decisions read is `*fb`.
+struct FakeFb {
+    VkFramebuffer h { VK_NULL_HANDLE };
+    VkFramebuffer operator*() const { return h; }
+};
+VkFramebuffer fb(std::uintptr_t v) { return reinterpret_cast<VkFramebuffer>(v); }
+} // namespace
+
 // Pin the default-constructed Desc's capability flags.  needsSceneDepth must
 // default to false so existing passes continue to behave exactly as before;
 // only volumetric-front (and future SSAO/DOF) flips it on.
@@ -391,6 +401,12 @@ TEST_SUITE("CustomShaderPass::IsAppendedPassthroughSlot") {
         CHECK(IsAppendedPassthroughSlot(1, 1, 2));
         CHECK(IsAppendedPassthroughSlot(2, 2, 1));
     }
+    TEST_CASE("index 0 is a valid passthrough slot and the lower of the pair still wins") {
+        // A later, larger index must not replace a first index of 0.
+        CHECK(IsAppendedPassthroughSlot(1, 0, 3));
+        CHECK(IsAppendedPassthroughSlot(0, 0, 3));
+        CHECK(IsAppendedPassthroughSlot(1, 3, 0));
+    }
 }
 
 TEST_SUITE("CustomShaderPass::GLTexNameForIndex") {
@@ -503,6 +519,12 @@ TEST_SUITE("CustomShaderPass::ChainVisibility") {
         b.visible = false;
         auto v = wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b });
         CHECK(v == std::vector<bool> { true, false, false });
+    }
+    TEST_CASE("every entry is filled, not just the first") {
+        wallpaper::SceneImageEffect a, b;
+        a.visible = false;
+        b.visible = true;
+        CHECK(wallpaper::vulkan::ChainVisibility({ &a, &b }) == std::vector<bool> { false, true });
     }
     TEST_CASE("ChainVisibilityInto gives the same answer into a reused buffer") {
         wallpaper::SceneImageEffect a, b;
@@ -741,19 +763,20 @@ TEST_SUITE("CustomShaderPass framebuffer rebuild") {
     }
     TEST_CASE("a replaced framebuffer goes to the retirer, and only when there is one") {
         using wallpaper::vulkan::RetireOldFramebuffer;
-        std::vector<int>         retired;
-        std::function<void(int)> retirer = [&](int fb) {
-            retired.push_back(fb);
+        std::vector<VkFramebuffer>  retired;
+        std::function<void(FakeFb)> retirer = [&](FakeFb fb) {
+            retired.push_back(fb.h);
         };
-        int old = 7;
-        CHECK(RetireOldFramebuffer(true, old, retirer));
-        CHECK(retired == std::vector<int> { 7 });
-        CHECK_FALSE(RetireOldFramebuffer(false, old, retirer)); // nothing was built yet
+        FakeFb old { fb(7) };
+        CHECK(RetireOldFramebuffer(old, retirer));
+        CHECK(retired == std::vector<VkFramebuffer> { fb(7) });
+        FakeFb none_built { VK_NULL_HANDLE };
+        CHECK_FALSE(RetireOldFramebuffer(none_built, retirer)); // nothing was built yet
         CHECK(retired.size() == 1);
-        std::function<void(int)> none;
-        old = 9;
-        CHECK_FALSE(RetireOldFramebuffer(true, old, none)); // caller destroys in place
-        CHECK(old == 9);
+        std::function<void(FakeFb)> none;
+        old = FakeFb { fb(9) };
+        CHECK_FALSE(RetireOldFramebuffer(old, none)); // caller destroys in place
+        CHECK(old.h == fb(9));
     }
     TEST_CASE("a member or end of a group whose opener could not begin its render pass skips") {
         using wallpaper::vulkan::GroupMemberSkips;
@@ -1179,5 +1202,463 @@ TEST_SUITE("CopyPass barrier source") {
         const auto access = wallpaper::vulkan::CopyBarrierSourceAccess();
         CHECK((access & VK_ACCESS_MEMORY_READ_BIT) != 0);
         CHECK((access & VK_ACCESS_MEMORY_WRITE_BIT) != 0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decisions execute() and prepare() make that need no device to check.
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("CustomShaderPass::MaterialTexBinding") {
+    using wallpaper::i32;
+    using wallpaper::vulkan::MaterialTexBinding;
+
+    static wallpaper::Map<std::string, VkDescriptorSetLayoutBinding> bindings() {
+        wallpaper::Map<std::string, VkDescriptorSetLayoutBinding> m;
+        m["g_Texture0"].binding = 1;
+        m["g_Texture1"].binding = 2;
+        return m;
+    }
+
+    TEST_CASE("a declared texture reports its descriptor binding") {
+        const auto m = bindings();
+        CHECK(MaterialTexBinding(0, -1, -1, m) == 1);
+        CHECK(MaterialTexBinding(1, -1, -1, m) == 2);
+    }
+    TEST_CASE("a texture the shader never declared has no binding") {
+        const auto m = bindings();
+        CHECK(MaterialTexBinding(2, -1, -1, m) == -1);
+    }
+    TEST_CASE("an appended passthrough slot stays unbound even if the shader declares it") {
+        const auto m = bindings();
+        CHECK(MaterialTexBinding(1, 1, -1, m) == -1);
+        CHECK(MaterialTexBinding(0, 1, -1, m) == 1);
+    }
+    TEST_CASE("an index past the name table has no binding") {
+        const auto m = bindings();
+        CHECK(MaterialTexBinding(20, -1, -1, m) == -1);
+    }
+}
+
+TEST_SUITE("CustomShaderPass::ResidentSlotParams") {
+    using wallpaper::vulkan::ResidentSlotParams;
+    using wallpaper::vulkan::RtSlot;
+
+    TEST_CASE("a missing slot and a slot with no image give nothing") {
+        CHECK_FALSE(ResidentSlotParams(nullptr).has_value());
+        RtSlot s;
+        CHECK_FALSE(ResidentSlotParams(&s).has_value());
+    }
+    TEST_CASE("a slot with an image gives its parameters") {
+        RtSlot s;
+        s.image.emplace();
+        s.image->extent = { 1, 1, 1 };
+        auto p          = ResidentSlotParams(&s);
+        REQUIRE(p.has_value());
+        CHECK(p->extent.width == 1);
+        CHECK(p->extent.height == 1);
+    }
+}
+
+TEST_SUITE("CustomShaderPass vertex attributes") {
+    using wallpaper::SceneMesh;
+    using wallpaper::SceneVertexArray;
+    using wallpaper::vulkan::ShaderReflected;
+    using wallpaper::vulkan::VertexAttributeDescriptions;
+
+    static SceneVertexArray array(std::vector<std::string> names) {
+        std::vector<SceneVertexArray::SceneVertexAttribute> attrs;
+        for (auto& n : names) attrs.push_back({ n, wallpaper::VertexType::FLOAT2 });
+        return SceneVertexArray(attrs, 1);
+    }
+    static wallpaper::Map<std::string, ShaderReflected::Input> inputs() {
+        wallpaper::Map<std::string, ShaderReflected::Input> m;
+        m["a_Position"] = { 0, VK_FORMAT_R32G32_SFLOAT };
+        m["a_TexCoord"] = { 1, VK_FORMAT_R32G32_SFLOAT };
+        return m;
+    }
+
+    TEST_CASE("one attribute per input for a single vertex array") {
+        SceneMesh m;
+        m.AddVertexArray(array({ "a_Position", "a_TexCoord" }));
+        auto d = VertexAttributeDescriptions(m, inputs());
+        REQUIRE(d.size() == 2);
+        CHECK(d[0].binding == 0);
+        CHECK(d[1].binding == 0);
+        CHECK(d[0].location == 0); // a_Position sorts first
+        CHECK(d[1].location == 1);
+        CHECK(d[0].offset == 0);
+        // Attributes are padded, so a_TexCoord does not start right after a_Position's two floats.
+        const auto offsets = m.GetVertexArray(0).GetAttrOffsetMap();
+        CHECK(d[1].offset == offsets.at("a_TexCoord").offset);
+        CHECK(d[1].offset > 0);
+    }
+    TEST_CASE("every vertex array gets its own binding") {
+        SceneMesh m;
+        m.AddVertexArray(array({ "a_Position", "a_TexCoord" }));
+        m.AddVertexArray(array({ "a_Position", "a_TexCoord" }));
+        auto d = VertexAttributeDescriptions(m, inputs());
+        REQUIRE(d.size() == 4);
+        CHECK(d[0].binding == 0);
+        CHECK(d[1].binding == 0);
+        CHECK(d[2].binding == 1);
+        CHECK(d[3].binding == 1);
+    }
+    TEST_CASE("an input the array does not carry gets offset 0") {
+        SceneMesh m;
+        m.AddVertexArray(array({ "a_Position" }));
+        auto d = VertexAttributeDescriptions(m, inputs());
+        REQUIRE(d.size() == 2);
+        CHECK(d[1].location == 1);
+        CHECK(d[1].offset == 0);
+    }
+    TEST_CASE("a mesh with no vertex arrays has no attributes") {
+        SceneMesh m;
+        CHECK(VertexAttributeDescriptions(m, inputs()).empty());
+    }
+}
+
+TEST_SUITE("CustomShaderPass::frameHideable chain") {
+    using wallpaper::SceneImageEffect;
+    using wallpaper::vulkan::HideableKind;
+    using wallpaper::vulkan::PassMergeRole;
+
+    TEST_CASE("a hideable pass reads its own effect's flag from the chain") {
+        SceneImageEffect a, b;
+        a.visible = true;
+        b.visible = false;
+        CustomShaderPass::Desc d;
+        d.hideable      = HideableKind::Terminal;
+        d.chain_effects = { &a, &b };
+        d.chain_index   = 1;
+        CustomShaderPass pass(d);
+        CHECK(pass.frameHideable(PassMergeRole::Standalone).own_hidden);
+    }
+    TEST_CASE("a visible effect in the chain is not hidden") {
+        SceneImageEffect a, b;
+        a.visible = false;
+        b.visible = true;
+        CustomShaderPass::Desc d;
+        d.hideable      = HideableKind::Terminal;
+        d.chain_effects = { &a, &b };
+        d.chain_index   = 1;
+        CustomShaderPass pass(d);
+        CHECK_FALSE(pass.frameHideable(PassMergeRole::Standalone).own_hidden);
+    }
+}
+
+TEST_SUITE("CustomShaderPass::takeFramebuffer") {
+    TEST_CASE("a pass that built no framebuffer has none to give") {
+        CustomShaderPass::Desc d;
+        CustomShaderPass       pass(d);
+        CHECK_FALSE(pass.takeFramebuffer().has_value());
+    }
+}
+
+TEST_SUITE("CustomShaderPass::DecideFramebufferStep") {
+    using wallpaper::vulkan::DecideFramebufferStep;
+    using wallpaper::vulkan::FbStep;
+    using wallpaper::vulkan::RtSlot;
+
+    static const FakeFb kBuilt { reinterpret_cast<VkFramebuffer>(0x1) };
+    static const FakeFb kNone {};
+
+    TEST_CASE("a role that never opens a render pass needs nothing") {
+        RtSlot s;
+        CHECK(DecideFramebufferStep(false, &s, kNone, 0) == FbStep::Ready);
+        CHECK(DecideFramebufferStep(false, nullptr, kNone, 0) == FbStep::Ready);
+    }
+    TEST_CASE("a pass without a slot is ready exactly when its framebuffer exists") {
+        CHECK(DecideFramebufferStep(true, nullptr, kBuilt, 0) == FbStep::Ready);
+        CHECK(DecideFramebufferStep(true, nullptr, kNone, 0) == FbStep::Fail);
+    }
+    TEST_CASE("a slot with no image cannot be built over") {
+        RtSlot s;
+        CHECK(DecideFramebufferStep(true, &s, kNone, 0) == FbStep::Fail);
+        CHECK(DecideFramebufferStep(true, &s, kBuilt, 0) == FbStep::Fail);
+    }
+    TEST_CASE("an attached slot builds when there is no framebuffer or the image changed") {
+        RtSlot s;
+        s.image.emplace();
+        s.generation = 3;
+        CHECK(DecideFramebufferStep(true, &s, kNone, 0) == FbStep::Build);
+        CHECK(DecideFramebufferStep(true, &s, kBuilt, 3) == FbStep::Ready);
+        ++s.generation;
+        CHECK(DecideFramebufferStep(true, &s, kBuilt, 3) == FbStep::Build);
+    }
+}
+
+TEST_SUITE("CustomShaderPass::FramebufferAttachments") {
+    using wallpaper::vulkan::FramebufferAttachments;
+
+    static VkImageView v(std::uintptr_t x) { return reinterpret_cast<VkImageView>(x); }
+
+    TEST_CASE("one sample per pixel attaches the output, then the depth") {
+        auto a = FramebufferAttachments(VK_SAMPLE_COUNT_1_BIT, true, v(1), v(2), v(3));
+        CHECK(a.count == 2);
+        CHECK(a.views[0] == v(2));
+        CHECK(a.views[1] == v(3));
+        auto b = FramebufferAttachments(VK_SAMPLE_COUNT_1_BIT, false, v(1), v(2), v(3));
+        CHECK(b.count == 1);
+        CHECK(b.views[0] == v(2));
+    }
+    TEST_CASE("multisampling attaches the msaa colour, the resolve target, then the depth") {
+        auto a = FramebufferAttachments(VK_SAMPLE_COUNT_4_BIT, true, v(1), v(2), v(3));
+        CHECK(a.count == 3);
+        CHECK(a.views[0] == v(1));
+        CHECK(a.views[1] == v(2));
+        CHECK(a.views[2] == v(3));
+        auto b = FramebufferAttachments(VK_SAMPLE_COUNT_4_BIT, false, v(1), v(2), v(3));
+        CHECK(b.count == 2);
+        CHECK(b.views[0] == v(1));
+        CHECK(b.views[1] == v(2));
+    }
+}
+
+TEST_SUITE("CustomShaderPass::FramebufferFailureAbandonsGroup") {
+    using wallpaper::vulkan::FramebufferFailureAbandonsGroup;
+    using wallpaper::vulkan::PassMergeRole;
+
+    TEST_CASE("only the pass that opens a group abandons it") {
+        CHECK(FramebufferFailureAbandonsGroup(PassMergeRole::GroupBegin));
+        CHECK_FALSE(FramebufferFailureAbandonsGroup(PassMergeRole::Standalone));
+        CHECK_FALSE(FramebufferFailureAbandonsGroup(PassMergeRole::GroupMiddle));
+        CHECK_FALSE(FramebufferFailureAbandonsGroup(PassMergeRole::GroupEnd));
+    }
+}
+
+TEST_SUITE("CustomShaderPass::cacheDecision") {
+    using wallpaper::vulkan::PassMergeRole;
+    using wallpaper::vulkan::RtSlot;
+
+    static std::unique_ptr<CustomShaderPass> cachedPass(RtSlot * slot, std::uint32_t cached_gen) {
+        CustomShaderPass::Desc d;
+        d.out_slot = slot;
+        auto pass  = std::make_unique<CustomShaderPass>(d);
+        pass->setCanCache(true);
+        pass->markCached(true, cached_gen);
+        return pass;
+    }
+
+    TEST_CASE("an unchanged cached standalone pass skips; a merged one re-records") {
+        RtSlot s;
+        s.generation = 3;
+        auto pass    = cachedPass(&s, 3);
+        auto d       = pass->cacheDecision(PassMergeRole::Standalone, false, true);
+        CHECK(d.skip);
+        CHECK_FALSE(d.invalidate);
+        auto merged = pass->cacheDecision(PassMergeRole::GroupBegin, false, true);
+        CHECK_FALSE(merged.skip);
+        CHECK_FALSE(merged.invalidate);
+    }
+    TEST_CASE("a new image in the output slot drops the cache") {
+        RtSlot s;
+        s.generation = 3;
+        auto pass    = cachedPass(&s, 3);
+        ++s.generation;
+        auto d = pass->cacheDecision(PassMergeRole::Standalone, false, true);
+        CHECK(d.invalidate);
+        CHECK_FALSE(d.skip);
+    }
+    TEST_CASE("a pass without an output slot never sees a generation change") {
+        auto pass = cachedPass(nullptr, 0);
+        auto d    = pass->cacheDecision(PassMergeRole::Standalone, false, true);
+        CHECK(d.skip);
+        CHECK_FALSE(d.invalidate);
+    }
+}
+
+TEST_SUITE("CustomShaderPass::outputSkipsRecord") {
+    using wallpaper::vulkan::RtSlot;
+
+    TEST_CASE("a managed output with no image skips once nobody needs it") {
+        RtSlot                 s;
+        CustomShaderPass::Desc d;
+        d.out_slot = &s;
+        CustomShaderPass pass(d);
+        pass.setOutputNeeded(false);
+        CHECK(pass.outputSkipsRecord());
+        s.image.emplace();
+        CHECK(pass.outputSkipsRecord()); // resident but unneeded
+        pass.setOutputNeeded(true);
+        CHECK_FALSE(pass.outputSkipsRecord());
+    }
+    TEST_CASE("a persistent output never skips") {
+        RtSlot s;
+        s.persist = true;
+        CustomShaderPass::Desc d;
+        d.out_slot = &s;
+        CustomShaderPass pass(d);
+        pass.setOutputNeeded(false);
+        CHECK_FALSE(pass.outputSkipsRecord());
+    }
+    TEST_CASE("a pass without an output slot never skips") {
+        CustomShaderPass::Desc d;
+        CustomShaderPass       pass(d);
+        pass.setOutputNeeded(false);
+        CHECK_FALSE(pass.outputSkipsRecord());
+    }
+}
+
+TEST_SUITE("CustomShaderPass::PassthroughSamplerIndex") {
+    using wallpaper::vulkan::PassthroughSamplerIndex;
+
+    TEST_CASE("binding 0 and texture 0 are valid") {
+        CHECK(PassthroughSamplerIndex(0, 0, 1) == std::optional<std::size_t> { 0 });
+        CHECK(PassthroughSamplerIndex(1, 0, 1) == std::optional<std::size_t> { 0 });
+    }
+    TEST_CASE("an in-range index is returned") {
+        CHECK(PassthroughSamplerIndex(1, 2, 3) == std::optional<std::size_t> { 2 });
+    }
+    TEST_CASE("a missing sampler binding or index gives nothing") {
+        CHECK_FALSE(PassthroughSamplerIndex(-1, 2, 3).has_value());
+        CHECK_FALSE(PassthroughSamplerIndex(1, -1, 3).has_value());
+    }
+    TEST_CASE("an index at or past the texture count gives nothing") {
+        CHECK_FALSE(PassthroughSamplerIndex(1, 3, 3).has_value());
+        CHECK_FALSE(PassthroughSamplerIndex(1, 5, 3).has_value());
+    }
+}
+
+TEST_SUITE("CustomShaderPass::SlotAt") {
+    using wallpaper::vulkan::RtSlot;
+    using wallpaper::vulkan::SlotAt;
+
+    TEST_CASE("an index inside the list returns that slot") {
+        RtSlot               a, b;
+        std::vector<RtSlot*> v { &a, &b };
+        CHECK(SlotAt(v, 0) == &a);
+        CHECK(SlotAt(v, 1) == &b);
+    }
+    TEST_CASE("an index at or past the end returns null") {
+        RtSlot               a, b;
+        std::vector<RtSlot*> v { &a, &b };
+        v.pop_back(); // capacity still holds &b
+        CHECK(SlotAt(v, 1) == nullptr);
+        CHECK(SlotAt(v, 7) == nullptr);
+    }
+}
+
+TEST_SUITE("CustomShaderPass::PlanTextureBinds") {
+    using wallpaper::i32;
+    using wallpaper::vulkan::ImageSlotsRef;
+    using wallpaper::vulkan::PlanTextureBind;
+    using wallpaper::vulkan::PlanTextureBindsInto;
+    using wallpaper::vulkan::RtSlot;
+    using wallpaper::vulkan::TexBind;
+    using wallpaper::vulkan::TexBindStep;
+
+    // A texture list where `loaded[i]` says whether texture i has an image.
+    static std::vector<ImageSlotsRef> textures(std::vector<bool> loaded) {
+        std::vector<ImageSlotsRef> t(loaded.size());
+        for (std::size_t i = 0; i < loaded.size(); i++)
+            if (loaded[i]) t[i].slots.emplace_back();
+        return t;
+    }
+    static std::vector<TexBind> how(const std::vector<TexBindStep>& plan) {
+        std::vector<TexBind> h;
+        for (auto& s : plan) h.push_back(s.how);
+        return h;
+    }
+
+    TEST_CASE("each texture is skipped, imaged or backed by the fallback") {
+        std::vector<TexBindStep> plan;
+        PlanTextureBindsInto(plan, textures({ true, true, false }), { 1, -1, 2 }, {}, true, true);
+        REQUIRE(plan.size() == 3);
+        CHECK(how(plan) ==
+              std::vector<TexBind> { TexBind::Image, TexBind::Skip, TexBind::Fallback });
+        CHECK(plan[0].index == 0);
+        CHECK(plan[2].index == 2);
+    }
+    TEST_CASE("every texture is planned, not just the first") {
+        std::vector<TexBindStep> plan;
+        PlanTextureBindsInto(plan, textures({ true, true }), { 1, 2 }, {}, true, true);
+        REQUIRE(plan.size() == 2);
+        CHECK(plan[1].how == TexBind::Image);
+    }
+    TEST_CASE("binding 0 is a declared binding, only negative ones are skipped") {
+        std::vector<TexBindStep> plan;
+        PlanTextureBindsInto(plan, textures({ true }), { 0 }, {}, true, true);
+        REQUIRE(plan.size() == 1);
+        CHECK(plan[0].how == TexBind::Image);
+        CHECK(PlanTextureBind(-1, true, nullptr, true, true) == TexBind::Skip);
+    }
+    TEST_CASE("a record that does not draw omits an absent managed input") {
+        RtSlot absent;
+        CHECK(PlanTextureBind(1, false, &absent, false, true) == TexBind::Omit);
+        CHECK(PlanTextureBind(1, false, &absent, true, true) == TexBind::Fallback);
+        CHECK(PlanTextureBind(1, false, nullptr, false, true) == TexBind::Fallback);
+    }
+    TEST_CASE("without a fallback texture an absent input is omitted") {
+        CHECK(PlanTextureBind(1, false, nullptr, true, false) == TexBind::Omit);
+    }
+    TEST_CASE("an absent managed input found through in_slots is seen") {
+        RtSlot                   absent;
+        std::vector<RtSlot*>     in { &absent };
+        std::vector<TexBindStep> plan;
+        PlanTextureBindsInto(plan, textures({ false }), { 1 }, in, false, true);
+        REQUIRE(plan.size() == 1);
+        CHECK(plan[0].how ==
+              TexBind::Omit); // without the in_slots lookup this would bind the fallback
+    }
+    TEST_CASE("a reused plan is rebuilt, not appended to") {
+        std::vector<TexBindStep> plan;
+        PlanTextureBindsInto(plan, textures({ true, true }), { 1, 2 }, {}, true, true);
+        PlanTextureBindsInto(plan, textures({ true }), { 1 }, {}, true, true);
+        CHECK(plan.size() == 1);
+    }
+}
+
+TEST_SUITE("CopyPass skip decision") {
+    using wallpaper::vulkan::CopySkips;
+    using wallpaper::vulkan::RtSlot;
+
+    static void resident(RtSlot & s) { s.image.emplace(); }
+
+    TEST_CASE("a resident source and destination copy") {
+        RtSlot s, d;
+        resident(s);
+        resident(d);
+        CHECK_FALSE(CopySkips(&s, &d, true));
+    }
+    TEST_CASE("a missing side skips") {
+        RtSlot s, d;
+        resident(s);
+        resident(d);
+        CHECK(CopySkips(nullptr, &d, true));
+        CHECK(CopySkips(&s, nullptr, true));
+    }
+    TEST_CASE("a source with no image skips") {
+        RtSlot s, d;
+        resident(d);
+        CHECK(CopySkips(&s, &d, true));
+    }
+    TEST_CASE("a managed destination skips when it has no image or nobody needs it") {
+        RtSlot s, d;
+        resident(s);
+        CHECK(CopySkips(&s, &d, true)); // no image
+        resident(d);
+        CHECK(CopySkips(&s, &d, false)); // resident but unneeded
+    }
+    TEST_CASE("a persistent destination is never gated") {
+        RtSlot s, d;
+        resident(s);
+        d.persist = true;
+        CHECK_FALSE(CopySkips(&s, &d, false));
+    }
+}
+
+TEST_SUITE("SkyboxPass output slot") {
+    using wallpaper::vulkan::RtSlot;
+    using wallpaper::vulkan::SlotHoldsFixedImage;
+
+    TEST_CASE("no slot or a persistent slot holds a fixed image; a managed one does not") {
+        CHECK(SlotHoldsFixedImage(nullptr));
+        RtSlot p;
+        p.persist = true;
+        CHECK(SlotHoldsFixedImage(&p));
+        RtSlot m;
+        m.persist = false;
+        CHECK_FALSE(SlotHoldsFixedImage(&m));
     }
 }

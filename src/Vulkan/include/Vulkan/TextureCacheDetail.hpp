@@ -201,6 +201,10 @@ inline std::uint32_t parseQueryCapEnv(const char* env, std::uint32_t default_cap
     return static_cast<std::uint32_t>(val);
 }
 
+// Whether the query-texture pool has outgrown its soft cap and is worth an
+// eviction pass.
+inline bool queryPoolOverCap(std::size_t size, std::size_t soft_cap) { return size > soft_cap; }
+
 // Choose which non-persist query-tex entries to evict so the pool shrinks
 // back to <= soft_cap.  Pure function — operates on a parallel ticks/persist
 // view of the cache so it can be unit-tested without a live VkDevice or VMA

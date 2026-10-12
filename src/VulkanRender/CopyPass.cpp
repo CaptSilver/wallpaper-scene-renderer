@@ -92,10 +92,7 @@ void CopyPass::execute(const Device& device, RenderingResources& rr) {
     // destination is only needed when its reader draws, and then the demand
     // walk made the source resident too.  A destination nobody needs is not
     // written even when it happens to be resident.
-    if (m_desc.src_slot == nullptr || m_desc.dst_slot == nullptr || ! m_desc.src_slot->resident() ||
-        wallpaper::vulkan::detail::outputAbsent(
-            m_desc.dst_slot->managed(), m_desc.dst_slot->resident(), outputNeeded()))
-        return;
+    if (CopySkips(m_desc.src_slot, m_desc.dst_slot, outputNeeded())) return;
     // First-frame execution trace for copy passes
     {
         extern int g_exec_pass_counter;

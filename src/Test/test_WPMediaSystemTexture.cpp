@@ -352,3 +352,48 @@ TEST_SUITE("BuildImageFromRgba8888 / InspectImageForTesting") {
         CHECK_FALSE(shape.ok);
     }
 }
+
+// A zero-byte mip carries no buffer, and a 1x1 RGBA image (exactly 4 bytes) is
+// still readable: both sit on the edges of the size checks.
+TEST_SUITE("media system texture size edges") {
+    TEST_CASE("CopyImageMip0 of a zero-size mip allocates nothing") {
+        Image       src;
+        Image::Slot slot;
+        slot.width  = 1;
+        slot.height = 1;
+        ImageData mip;
+        mip.width  = 1;
+        mip.height = 1;
+        mip.size   = 0;
+        mip.data   = ImageDataPtr(new uint8_t[1] {}, [](uint8_t* p) {
+            delete[] p;
+        });
+        slot.mipmaps.push_back(std::move(mip));
+        src.slots.push_back(std::move(slot));
+
+        auto copy = CopyImageMip0(src, "$k");
+        REQUIRE(copy);
+        REQUIRE(copy->slots.size() == 1);
+        REQUIRE(copy->slots[0].mipmaps.size() == 1);
+        CHECK(copy->slots[0].mipmaps[0].size == 0);
+        CHECK(copy->slots[0].mipmaps[0].data == nullptr);
+    }
+    TEST_CASE("BuildImageFromRgba8888 with a zero byte count allocates nothing") {
+        uint8_t b[4] {};
+        auto    img = BuildImageFromRgba8888(b, 0, 1, 1, "k", {});
+        REQUIRE(img);
+        REQUIRE(img->slots.size() == 1);
+        REQUIRE(img->slots[0].mipmaps.size() == 1);
+        CHECK(img->slots[0].mipmaps[0].size == 0);
+        CHECK(img->slots[0].mipmaps[0].data == nullptr);
+    }
+    TEST_CASE("InspectImageForTesting reads the pixel of a 1x1 RGBA image") {
+        const uint8_t px[4] { 10, 20, 30, 40 };
+        auto          shape = InspectImageForTesting(BuildImageFromRgba8888(px, 4, 1, 1, "k", {}));
+        REQUIRE(shape.ok);
+        CHECK(shape.r == 10);
+        CHECK(shape.g == 20);
+        CHECK(shape.b == 30);
+        CHECK(shape.a == 40);
+    }
+}
