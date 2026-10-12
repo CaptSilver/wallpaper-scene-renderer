@@ -89,73 +89,36 @@ std::string extractUserPropName(const nlohmann::json& visibleField) {
     return {};
 }
 
-// Which effects in `effects` will actually be added to a layer, and which
-// ones the terminal exclusion covers.  An effect builds if it's literally
-// visible, or if it carries a user-property or visible.script binding and
-// survives the terminal exclusion below.  Shared by countVisibleEffects/
-// adjustBlendForTextEffects (deciding whether to build an effect layer at
-// all) and assembleEffects's own build loop, so all three agree on which
-// effects survive.
-//
-// The terminal exclusion: SceneImageEffectLayer::ResolveEffect picks
-// whichever effect ends up LAST in the built layer as the chain's write
-// target, regardless of visibility.  Excluding only the raw JSON's last
-// visible-or-bound index isn't enough by itself: if that index is itself
-// bound and currently resolved false, dropping it makes whichever candidate
-// comes before it the layer's new actual last built effect -- which has the
-// identical hazard if it's also resolved false. So the exclusion walks
-// backward from the end of the candidate list, dropping the whole trailing
-// run of resolved-false candidates, and stops at the first one that's
-// genuinely visible: that one anchors the layer's actual last built effect,
-// so it still builds.  This walk is unchanged by CustomShaderPass's
-// passthrough draw for a hidden terminal (a Terminal-kind hideable pass) -- what
-// changed is only what the anchor position's excludedAsTerminal flag now
-// means to its caller: assembleEffects used to also read it as "never
-// eligible for a runtime binding" and has stopped, since the render side can
-// now hide that position safely; every dropped, never-built candidate before
-// it is untouched by that change.
+// The user property an effect's `"visible": {"user": ...}` binding names, or
+// empty if the stored JSON is missing, malformed or names nothing.
+std::string effectUserPropName(const wpscene::WPImageEffect& effect) {
+    if (effect.userVisibleRawJson.empty()) return {};
+    try {
+        return extractUserPropName(nlohmann::json::parse(effect.userVisibleRawJson));
+    } catch (const std::exception& e) {
+        LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
+        return {};
+    }
+}
+
+// Which effects in `effects` get added to a layer: an effect builds if it is
+// visible or carries a binding that resolves (a named user property or a
+// visible.script), so a later toggle can show it without a reload. A binding
+// that names nothing can never show the effect, so it counts as hidden. A hidden last effect draws
+// a passthrough of whatever is visible before it, and a hidden effect elsewhere copies its input
+// when its hidden run would break the chain, so no position needs excluding. Shared by
+// countVisibleEffects/adjustBlendForTextEffects (whether to build an effect layer at all) and
+// assembleEffects.
 struct EffectBuildPlan {
-    std::vector<bool> wouldBuild;         // per-index: does this effect get added to the layer
-    std::vector<bool> excludedAsTerminal; // per-index: either dropped outright (never built,
-                                          // never eligible for anything), or the one visible
-                                          // candidate that anchors the actual terminal position
-                                          // (built, and -- since CustomShaderPass can draw a
-                                          // passthrough for it when hidden -- eligible for a
-                                          // runtime binding like any other built effect)
+    std::vector<bool> wouldBuild;
 };
 
 EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffect>& effects) {
     EffectBuildPlan plan;
-    plan.wouldBuild.assign(effects.size(), false);
-    plan.excludedAsTerminal.assign(effects.size(), false);
-
-    // Have we, scanning backward, anchored the chain's actual last built
-    // effect yet?
-    bool foundSafeTail = false;
-    for (i32 i = (i32)effects.size() - 1; i >= 0; i--) {
-        usize idx         = (usize)i;
-        bool  isCandidate = effects[idx].visible || ! effects[idx].userVisibleRawJson.empty() ||
-                            ! effects[idx].visibleScript.empty();
-        if (! isCandidate) continue;
-        if (! foundSafeTail) {
-            if (! effects[idx].visible) {
-                // Bound, currently resolved false, still inside the
-                // trailing run of hidden candidates -- drop it and keep
-                // scanning leftward for the real tail.
-                plan.excludedAsTerminal[idx] = true;
-                continue;
-            }
-            // First genuinely-visible candidate found: it anchors the
-            // layer's actual last built effect, builds normally, and stays
-            // excluded from ever getting a binding.
-            foundSafeTail                = true;
-            plan.wouldBuild[idx]         = true;
-            plan.excludedAsTerminal[idx] = true;
-            continue;
-        }
-        // Already past the terminal position -- normal force-build rule.
-        plan.wouldBuild[idx] = true;
-    }
+    plan.wouldBuild.reserve(effects.size());
+    for (const auto& e : effects)
+        plan.wouldBuild.push_back(e.visible || ! effectUserPropName(e).empty() ||
+                                  ! e.visibleScript.empty());
     return plan;
 }
 
@@ -2402,10 +2365,8 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
 
     // A user-bound effect that resolved false at parse time still gets
     // built (and hidden) so applyUserPropsRuntime can flip it on later
-    // without a reload -- including at the terminal position: a hidden
-    // terminal now draws a passthrough pipeline instead of forcing its
-    // structural write visible (CustomShaderPass::hideable), so
-    // it no longer needs the special-cased skip.  See computeWouldBuildEffects.
+    // without a reload, at any position: a hidden last effect draws a
+    // passthrough (CustomShaderPass::hideable). See computeWouldBuildEffects.
     auto plan = computeWouldBuildEffects(effects);
 
     int32_t i_eff   = -1;
@@ -2583,13 +2544,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                         if (n.sceneNode) n.sceneNode->SetVisible(false);
                     }
                 }
-                std::string propName;
-                try {
-                    propName =
-                        extractUserPropName(nlohmann::json::parse(wpeffobj.userVisibleRawJson));
-                } catch (const std::exception& e) {
-                    LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
-                }
+                std::string propName = effectUserPropName(wpeffobj);
                 if (! propName.empty()) {
                     context.pending_user_prop_effect_vis.push_back({ imgEffect.get(),
                                                                      opts.layer_id,

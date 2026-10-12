@@ -2808,9 +2808,9 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         audio::SoundManager   sm;
         WPUserProperties      props;
         // Override resolves "godrays_enable" FALSE at parse time -- this is
-        // what makes the run cross the structural-skip red/green boundary.
-        // An embedded-"value":true default with no override would already
-        // build under today's code and prove nothing about this fix.
+        // what makes the run exercise the hidden-at-parse-time path.
+        // An embedded "value":true with no override builds visible and would
+        // not exercise this path.
         REQUIRE(props.LoadFromProjectJson(
             R"({"general":{"properties":{"godrays_enable":{"value":false,"type":"bool"}}}})"));
         WPSceneParser parser;
@@ -2819,7 +2819,8 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
         REQUIRE(scene->nodeEffectLayerMap.count(506) == 1);
         SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(506);
-        REQUIRE(effLayer->EffectCount() == 2u); // both built -- "bloom" is NOT structurally skipped
+        REQUIRE(effLayer->EffectCount() ==
+                2u); // both built: a bound effect that resolves hidden still builds
 
         std::shared_ptr<SceneImageEffect> bloom;
         for (std::size_t i = 0; i < effLayer->EffectCount(); i++) {
@@ -2837,8 +2838,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(effLayer->GetEffect((std::size_t)binding[0].effectIndex)->name == "bloom");
     }
 
-    TEST_CASE(
-        "a user-bound effect that would be the LAST one built keeps today's structural skip") {
+    TEST_CASE("a user-bound single effect that starts hidden is built, hidden, with its binding") {
         ensureGlslangInit();
         auto                vfs        = makeAssetsVfsWith({
             { "/effects/bloom.json", kEffectFileJson },
@@ -2868,35 +2868,26 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         auto scene = parser.Parse("scene_terminal_user_bound_effect", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
-        // Today's structural-skip behaviour, preserved: the only effect on
-        // this layer is both user-bound-resolved-false AND would be last, so
-        // the object ends up exactly like one whose sole effect is a plain
-        // "visible": false -- no surviving effect means no effect layer is
-        // built for it at all (countVisibleEffects gates assembleEffectChain
-        // on at least one effect actually building).
-        CHECK(scene->nodeEffectLayerMap.count(507) == 0);
-        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
+        // A bound effect builds even when it resolves hidden and is the last
+        // (here the only) effect, so a later toggle can show it without a
+        // reload. While hidden, the last effect draws a passthrough, so the
+        // layer still shows its own image.
+        REQUIRE(scene->nodeEffectLayerMap.count(507) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(507);
+        REQUIRE(effLayer->EffectCount() == 1u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible);
+        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 1u);
     }
 
-    TEST_CASE("an object whose ONLY effects are user-bound and all currently resolve false "
-              "drops every one of them, not just the raw-JSON terminal") {
-        // Regression guard for countVisibleEffects/adjustBlendForTextEffects's
-        // hasEffect gate: it must count a user-bound effect that WOULD build
-        // (Step 4's rule) even though its raw wpeffobj.visible resolved false,
-        // or the whole assembleEffectChain call is skipped before assembleEffects
-        // ever gets a chance to run at all.
-        //
-        // Both effects here are candidates for the terminal exclusion (both
-        // bound, both currently false) -- excluding only the raw-JSON-last one
-        // ("glow") would leave "bloom" force-built hidden, and "bloom" would
-        // then become this layer's actual last BUILT effect once "glow" drops
-        // out. That is exactly the state the terminal exclusion exists to
-        // prevent (SceneImageEffectLayer::ResolveEffect picks the built list's
-        // real last effect as its write target regardless of visibility), so
-        // the exclusion has to cascade: once the raw-JSON-last candidate
-        // drops, whichever candidate becomes the new last one is checked
-        // against the same rule, and so on, until a genuinely visible one is
-        // found or the object has none left.
+    TEST_CASE("an object whose only effects are user-bound and start hidden builds all of "
+              "them hidden") {
+        // countVisibleEffects/adjustBlendForTextEffects's hasEffect gate must
+        // count a bound effect that WOULD build even though it resolved
+        // hidden, or the whole assembleEffectChain call is skipped before
+        // assembleEffects runs. Both effects are bound and hidden; both build
+        // hidden so a toggle can show either without a reload, and the layer
+        // shows its own image meanwhile (the hidden last effect draws a
+        // passthrough).
         ensureGlslangInit();
         constexpr const char* kBloomEffectFileJson = R"({
             "name": "bloom",
@@ -2938,24 +2929,20 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         auto scene = parser.Parse("scene_all_user_bound_effect", kSceneJson, *vfs, sm, props);
         REQUIRE(scene != nullptr);
 
-        // No effect survives -- exactly like an object whose sole effect is a
-        // plain "visible": false: no surviving effect means no effect layer
-        // is built for it at all (countVisibleEffects gates
-        // assembleEffectChain on at least one effect actually building).
-        CHECK(scene->nodeEffectLayerMap.count(509) == 0);
-        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
+        REQUIRE(scene->nodeEffectLayerMap.count(509) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(509);
+        REQUIRE(effLayer->EffectCount() == 2u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible);
+        CHECK_FALSE(effLayer->GetEffect(1)->visible);
+        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 1u);
     }
 
-    TEST_CASE("the terminal exclusion cascades past a non-terminal resolved-false candidate "
-              "to stop at the nearest genuinely-visible effect") {
+    TEST_CASE("bound effects after a visible one are built hidden, not dropped") {
         // Three effects: a plain-visible base ("tint"), then two user-bound
-        // effects both currently resolved false ("bloom" non-terminal,
-        // "glow" the raw-JSON terminal). Excluding only "glow" (the old,
-        // buggy single-index rule) would force-build "bloom" hidden, and
-        // "bloom" would become the layer's actual last built effect once
-        // "glow" drops -- the exact hidden-terminal-write-target hazard the
-        // exclusion exists to prevent. The fix must exclude "bloom" too, and
-        // stop the cascade at "tint" (genuinely visible, safe to be last).
+        // effects both currently hidden ("bloom" in the middle, "glow" last).
+        // Both bound effects build hidden after "tint" so a toggle can show
+        // them without a reload; the hidden run at the end draws a
+        // passthrough of "tint"'s output.
         ensureGlslangInit();
         constexpr const char* kTintEffectFileJson  = R"({
             "name": "tint",
@@ -3005,14 +2992,99 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
         REQUIRE(scene->nodeEffectLayerMap.count(510) == 1);
         SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(510);
-        // Only "tint" survives -- "bloom" and "glow" are both excluded, not
-        // just "glow". If "bloom" were force-built here (the bug), it would
-        // be this layer's actual last built effect and this REQUIRE would
-        // see EffectCount() == 2u instead.
-        REQUIRE(effLayer->EffectCount() == 1u);
+        REQUIRE(effLayer->EffectCount() == 3u);
         CHECK(effLayer->GetEffect(0)->name == "tint");
         CHECK(effLayer->GetEffect(0)->visible);
-        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
+        CHECK_FALSE(effLayer->GetEffect(1)->visible);
+        CHECK_FALSE(effLayer->GetEffect(2)->visible);
+        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 1u);
+    }
+
+    TEST_CASE("a bound effect whose binding cannot resolve to a property name is not built") {
+        // A "user" field that is not a string and has no "name" gives no
+        // property to toggle it by, so it can never be shown; building it
+        // hidden at the tail would only blank the layer. It is treated like
+        // a plain "visible": false, while a sibling with a valid binding
+        // still builds.
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/bloom.json", kEffectFileJson },
+            { "/effects/glow.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 511, "name": "unresolvable_binding_layer",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "bloom",
+          "visible": {"user": "godrays_enable", "value": true},
+          "file": "effects/bloom.json" },
+        { "id": 11, "name": "glow",
+          "visible": {"user": 42, "value": false},
+          "file": "effects/glow.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"godrays_enable":{"value":false,"type":"bool"}}}})"));
+        WPSceneParser parser;
+        auto scene = parser.Parse("scene_unresolvable_binding", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(511) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(511);
+        REQUIRE(effLayer->EffectCount() == 1u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible); // the bound sibling, not the unresolvable one
+        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 1u);
+    }
+
+    TEST_CASE("a fullscreen layer whose only effects are bound and start hidden gets an effect "
+              "layer, not the script-host placeholder") {
+        ensureGlslangInit();
+        auto                vfs        = makeAssetsVfsWith({
+            { "/effects/bloom.json", kEffectFileJson },
+        });
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 512, "name": "fullscreen_bound_layer",
+      "image": "models/_plain.json",
+      "fullscreen": true,
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "bloom",
+          "visible": {"user": "godrays_enable", "value": true},
+          "file": "effects/bloom.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"godrays_enable":{"value":false,"type":"bool"}}}})"));
+        WPSceneParser parser;
+        auto          scene = parser.Parse("scene_fullscreen_bound", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(512) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(512);
+        REQUIRE(effLayer->EffectCount() == 1u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible);
+        CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 1u);
+        // Still reachable by id for getLayer().
+        CHECK(scene->nodeById.count(512) == 1u);
     }
 
     TEST_CASE("a user-bound effect whose material fails to load registers no runtime binding") {
@@ -3275,8 +3347,8 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
                 CHECK(ps.effectIndex == 2); // the layer's actual terminal index
             }
         }
-        // Both script-gated effects register now -- "Previous" no longer
-        // needs the terminal exclusion (see CustomShaderPass::hideable).
+        // Both script-gated effects register, including the last one (it
+        // draws a passthrough when hidden; see CustomShaderPass::hideable).
         bool sawCurrent = false, sawPrevious = false;
         for (auto& name : registeredEffects) {
             if (name == "Current") sawCurrent = true;
