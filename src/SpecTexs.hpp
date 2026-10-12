@@ -22,6 +22,30 @@ constexpr std::array WE_GLTEX_MIPMAPINFO_NAMES { BASE_GLTEX_NAMES(MipMapInfo) };
 
 constexpr std::string_view WE_SPEC_PREFIX { "_rt_" };
 constexpr std::string_view WE_IMAGE_LAYER_COMPOSITE_PREFIX { "_rt_imageLayerComposite_" };
+// True when `tex`, bound to an effect's input slot (g_Texture0) on layer
+// `layer_id`, names that layer's own composite and so means "the previous
+// effect's output". WE's editor writes these names into effect passes (the
+// workshop CRT scan-line effect almost always has one); read as a link to the
+// layer's finished output they make the chain read itself, which cycles the
+// render graph. `_b` is left alone when the layer has a static source texture,
+// where it routes to that texture instead (Real-Time Earth 3557068717).
+inline bool IsOwnCompositeChainInput(std::string_view tex, int32_t layer_id,
+                                     bool has_static_source) {
+    const auto prefix = WE_IMAGE_LAYER_COMPOSITE_PREFIX;
+    if (tex.substr(0, prefix.size()) != prefix) return false;
+    std::string_view rest    = tex.substr(prefix.size());
+    usize            ndigits = 0;
+    while (ndigits < rest.size() && rest[ndigits] >= '0' && rest[ndigits] <= '9') ndigits++;
+    if (ndigits == 0 || ndigits > 9) return false;
+    int32_t id = 0;
+    for (usize i = 0; i < ndigits; i++) id = id * 10 + (rest[i] - '0');
+    if (id != layer_id) return false;
+    std::string_view suffix = rest.substr(ndigits);
+    if (suffix.empty() || suffix == "_a") return true;
+    if (suffix == "_b") return ! has_static_source;
+    return false;
+}
+
 constexpr std::string_view WE_HALF_COMPO_BUFFER_PREFIX { "_rt_HalfCompoBuffer" };
 constexpr std::string_view WE_QUARTER_COMPO_BUFFER_PREFIX { "_rt_QuarterCompoBuffer" };
 constexpr std::string_view WE_FULL_COMPO_BUFFER_PREFIX { "_rt_FullCompoBuffer" };

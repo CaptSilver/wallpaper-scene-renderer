@@ -85,3 +85,30 @@ TEST_SUITE("SpecTexs_Volumetrics") {
         CHECK(IsSpecTex(WE_VOLUMETRICS_SINGLE));
     }
 } // SpecTexs_Volumetrics
+
+TEST_SUITE("SpecTexs_OwnCompositeChainInput") {
+    TEST_CASE("the layer's own composite A in slot 0 means the chain input") {
+        CHECK(IsOwnCompositeChainInput("_rt_imageLayerComposite_140_a", 140, false));
+        CHECK(IsOwnCompositeChainInput("_rt_imageLayerComposite_140_a", 140, true));
+        CHECK(IsOwnCompositeChainInput("_rt_imageLayerComposite_140", 140, false));
+    }
+
+    TEST_CASE("own composite B means the chain input only without a static source") {
+        // With a static source texture the _b route samples that instead.
+        CHECK(IsOwnCompositeChainInput("_rt_imageLayerComposite_18_b", 18, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_424_b", 424, true));
+    }
+
+    TEST_CASE("another layer's composite is a cross-layer link, not the chain input") {
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_141_a", 140, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_1400_a", 140, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_14_a", 140, false));
+    }
+
+    TEST_CASE("other names are never the chain input") {
+        CHECK_FALSE(IsOwnCompositeChainInput("", 140, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_FullFrameBuffer", 140, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_140_c", 140, false));
+        CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_x_a", 140, false));
+    }
+}

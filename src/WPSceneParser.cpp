@@ -2464,6 +2464,15 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                 }
             }
             if (wpmat.textures.size() == 0) wpmat.textures.resize(1);
+            if (IsOwnCompositeChainInput(wpmat.textures[0],
+                                         opts.layer_id,
+                                         scene.imgIdToSourceTexture.count(opts.layer_id) != 0)) {
+                LOG_INFO("  effect %d of id=%d: '%s' in slot 0 is the chain input",
+                         i_eff,
+                         opts.layer_id,
+                         wpmat.textures[0].c_str());
+                wpmat.textures[0].clear();
+            }
             if (wpmat.textures.at(0).empty()) {
                 wpmat.textures[0] = inRT;
             }
