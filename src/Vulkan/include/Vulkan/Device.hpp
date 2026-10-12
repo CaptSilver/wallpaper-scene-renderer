@@ -125,5 +125,19 @@ private:
     std::unique_ptr<TextureCache> m_tex_cache;
 };
 
+// The heaps VRAM lives in.  Heap indices are driver-chosen (heap 0 can be
+// host memory), so a report keyed on "heap 0" would name the wrong one.
+inline Device::HeapBudget
+SumDeviceLocalHeaps(const std::array<Device::HeapBudget, VK_MAX_MEMORY_HEAPS>& heaps) {
+    Device::HeapBudget sum {};
+    for (const auto& h : heaps) {
+        if (! (h.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)) continue;
+        sum.usage += h.usage;
+        sum.budget += h.budget;
+        sum.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
+    }
+    return sum;
+}
+
 } // namespace vulkan
 } // namespace wallpaper

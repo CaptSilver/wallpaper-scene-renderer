@@ -12,6 +12,7 @@
 #include "Core/NoCopyMove.hpp"
 #include "Core/MapSet.hpp"
 #include "StagingReuse.hpp"
+#include "Vulkan/RetireRing.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -141,6 +142,14 @@ inline ImageParameters AbsentImageParameters(const TextureKey& key) {
     return p;
 }
 
+// What a released slot leaves behind until the frames that may still name it
+// have retired.  Members destroy in reverse order, so the framebuffers go
+// before the image they were built over.
+struct RetiredImage {
+    std::optional<VmaImageParameters> image;
+    std::vector<vvk::Framebuffer>     framebuffers;
+};
+
 class TextureCache : NoCopy, NoMove {
 public:
     TextureCache(const Device&);
@@ -177,6 +186,16 @@ public:
     // Nothing is submitted: the caller records the initial state into the
     // frame with RecInitialState.  false leaves the slot untouched.
     bool CreateImageForSlot(RtSlot& slot);
+    // Move the slot's image and the framebuffers built over it into the retire
+    // ring, stamped with the frame that stopped using them.
+    void ReleaseSlot(RtSlot& slot, std::vector<vvk::Framebuffer> framebuffers, std::uint64_t frame);
+    // Retire a framebuffer on its own (a pass rebuilt it over a new image).
+    void RetireFramebuffer(vvk::Framebuffer framebuffer, std::uint64_t frame);
+    // Destroy retired entries no in-flight frame can still name.
+    void CollectRetired(std::uint64_t frame, std::uint64_t frames_in_flight);
+    // Destroy every retired entry; the caller has waited for the device.
+    void        DrainRetired();
+    std::size_t retiredCount() const { return m_retired.size(); }
     // Leave a freshly attached image in SHADER_READ_ONLY_OPTIMAL, cleared to
     // GenInitialClearColor(key) when `clear` is set.
     void RecInitialState(const vvk::CommandBuffer& cmd, const RtSlot& slot, bool clear) const;
@@ -210,7 +229,9 @@ public:
 private:
     std::optional<VmaImageParameters> CreateTex(TextureKey);
     // Image, views and sampler only; no submit.  CreateTex adds the clear.
-    std::optional<VmaImageParameters> createImageOnly(const TextureKey&);
+    // `releasable` marks an image residency may destroy again; large ones get
+    // their own device memory (see DedicatedRtMemory.hpp).
+    std::optional<VmaImageParameters> createImageOnly(const TextureKey&, bool releasable = false);
     bool                              m_eager_managed { false };
     void                              allocateCmd();
     vvk::CommandBuffers               m_tex_cmds;
@@ -235,6 +256,9 @@ private:
     // logged under the rate limit.
     bool noteReuploadFailure(const std::string& key);
 
+    // Declared before the images so it outlives them; tokens keep it alive anyway.
+    DedicatedLiveCount                   m_dedicated_live;
+    RetireRing<RetiredImage>             m_retired;
     std::vector<std::unique_ptr<RtSlot>> m_query_texs;
     Map<std::string, RtSlot*>            m_query_map;
     SlotId                               m_next_slot_id { 0 };

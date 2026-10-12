@@ -3,6 +3,7 @@
 #include "VulkanRender/RtResidency.hpp"
 
 #include <cstdint>
+#include <string>
 #include <unordered_set>
 
 using namespace wallpaper::vulkan;
@@ -287,5 +288,180 @@ TEST_SUITE("RtResidency::PassOutputNeeded") {
         auto                          r = ComputeFrameDemand(s, f, 2);
         CHECK_FALSE(PassOutputNeeded(s[0], r.needed));
         CHECK(r.needed == std::vector<bool> { false, false });
+    }
+}
+
+TEST_SUITE("RtResidency::DecideSlotAction") {
+    TEST_CASE("absent and needed creates; absent and idle does nothing") {
+        std::uint32_t idle = 0;
+        CHECK(DecideSlotAction(false, true, idle, 150, true) == SlotAction::Create);
+        CHECK(DecideSlotAction(false, false, idle, 150, true) == SlotAction::None);
+        CHECK(idle == 0);
+    }
+    TEST_CASE("a slot toggled every frame never releases") {
+        std::uint32_t idle = 0;
+        for (int f = 0; f < 1000; ++f) {
+            const bool needed = f % 2 == 0;
+            auto       a      = DecideSlotAction(true, needed, idle, 150, true);
+            CHECK(a != SlotAction::Release);
+            CHECK(idle <= 1);
+        }
+    }
+    TEST_CASE("idle for hold - 1 frames then needed restarts the count") {
+        std::uint32_t idle = 0;
+        for (int f = 0; f < 149; ++f)
+            CHECK(DecideSlotAction(true, false, idle, 150, true) == SlotAction::None);
+        CHECK(idle == 149);
+        CHECK(DecideSlotAction(true, true, idle, 150, true) == SlotAction::Keep);
+        CHECK(idle == 0);
+    }
+    TEST_CASE("release happens at exactly the hold") {
+        std::uint32_t idle   = 0;
+        SlotAction    last   = SlotAction::None;
+        int           frames = 0;
+        while (last != SlotAction::Release) {
+            last = DecideSlotAction(true, false, idle, 150, true);
+            ++frames;
+        }
+        CHECK(frames == 150);
+    }
+    TEST_CASE("with release disabled an idle slot is kept forever") {
+        std::uint32_t idle = 0;
+        for (int f = 0; f < 5000; ++f)
+            CHECK(DecideSlotAction(true, false, idle, 150, false) == SlotAction::None);
+    }
+    TEST_CASE(
+        "hold zero releases every unneeded resident slot at once (the out-of-memory collapse)") {
+        std::uint32_t idle = 0;
+        CHECK(DecideSlotAction(true, false, idle, 0, true) == SlotAction::Release);
+    }
+    TEST_CASE(
+        "released at R, needed at R+1: a new image is created, the old one is still retiring") {
+        std::uint32_t idle = 149;
+        CHECK(DecideSlotAction(true, false, idle, 150, true) == SlotAction::Release);
+        // the caller moved the image out; the slot is now absent.  Resetting idle_frames on
+        // attach is the caller's job (detail::attachImage), not this function's.
+        CHECK(DecideSlotAction(false, true, idle, 150, true) == SlotAction::Create);
+    }
+}
+
+TEST_SUITE("RtResidency::hold window and backoff") {
+    TEST_CASE("WEKDE_RT_RELEASE_FRAMES: a number is clamped to [2, 100000], anything else is 150") {
+        CHECK(ParseHoldFrames(nullptr) == 150);
+        CHECK(ParseHoldFrames("") == 150);
+        CHECK(ParseHoldFrames("abc") == 150);
+        CHECK(ParseHoldFrames("12x") == 150);
+        CHECK(ParseHoldFrames("-5") == 150);
+        CHECK(ParseHoldFrames(" -5") == 150);
+        CHECK(ParseHoldFrames("+5") == 150);
+        CHECK(ParseHoldFrames(" 5") == 150);
+        CHECK(ParseHoldFrames("\t7") == 150);
+        CHECK(ParseHoldFrames("0") == 2); // never "release every frame": 2 is the floor
+        CHECK(ParseHoldFrames("1") == 2);
+        CHECK(ParseHoldFrames("2") == 2);
+        CHECK(ParseHoldFrames("600") == 600);
+        CHECK(ParseHoldFrames("100000") == 100000);
+        CHECK(ParseHoldFrames("1000000000") == 100000);
+        CHECK(ParseHoldFrames("99999999999999999999") == 100000); // overflow still lands on the cap
+        CHECK(kDefaultHoldFrames == 150);
+    }
+    TEST_CASE("the retry frame grows with the streak and caps at 3600 frames out") {
+        CHECK(RetryAfter(1000, 1) == 1060);
+        CHECK(RetryAfter(1000, 2) == 1120);
+        CHECK(RetryAfter(1000, 60) == 4600);
+        CHECK(RetryAfter(1000, 61) == 4600);
+        CHECK(RetryAfter(1000, 100000) == 4600);
+        CHECK_FALSE(CanRetryCreate(1059, 1060));
+        CHECK(CanRetryCreate(1060, 1060));
+        CHECK(CanRetryCreate(0, 0));
+    }
+}
+
+TEST_SUITE("RtResidency::RetireRing") {
+    TEST_CASE("an entry released at R is destroyed at R+2 with two frames in flight, not before") {
+        RetireRing<std::string> ring;
+        ring.push("img", 10);
+        CHECK(ring.collect(10, 2).empty());
+        CHECK(ring.collect(11, 2).empty());
+        auto out = ring.collect(12, 2);
+        REQUIRE(out.size() == 1);
+        CHECK(out[0] == "img");
+        CHECK(ring.size() == 0);
+    }
+    TEST_CASE("collecting the same frame twice (an abandoned frame) destroys nothing new and "
+              "nothing early") {
+        RetireRing<std::string> ring;
+        ring.push("a", 10);
+        ring.push("b", 11);
+        CHECK(ring.collect(11, 2).empty());
+        CHECK(ring.collect(11, 2).empty());
+        auto out = ring.collect(12, 2);
+        REQUIRE(out.size() == 1);
+        CHECK(out[0] == "a");
+        CHECK(ring.collect(12, 2).empty());
+        CHECK(ring.collect(13, 2).size() == 1);
+    }
+    TEST_CASE("drain returns everything regardless of stamp") {
+        RetireRing<std::string> ring;
+        ring.push("a", 10);
+        ring.push("b", 10000);
+        auto out = ring.drain();
+        CHECK(out.size() == 2);
+        CHECK(ring.size() == 0);
+    }
+}
+
+// When a create failed, the passes that would sample the absent slot are
+// treated as hidden for the frame: nothing draws from a slot with no image,
+// and the opaque 1x1 fallback is never drawn in a buffer's place.
+TEST_SUITE("RtResidency::ComputeBlockedPasses") {
+    using K = ResidencyKey;
+    static PassDemandStatic reader(std::vector<K> own, K a = {}, K b = {}) {
+        PassDemandStatic s;
+        s.out           = K::ForHandle(0xDEF);
+        s.own_inputs    = std::move(own);
+        s.passthrough_a = a;
+        s.passthrough_b = b;
+        return s;
+    }
+    TEST_CASE("a drawing pass with an absent own input is blocked; a resident one is not") {
+        std::vector<PassDemandStatic> s { reader({ K::ForSlot(0) }), reader({ K::ForSlot(1) }) };
+        std::vector<PassDemandFrame>  f { { true, false, DemandInputs::Own },
+                                          { true, false, DemandInputs::Own } };
+        std::vector<bool>             resident { false, true };
+        CHECK(ComputeBlockedPasses(s, f, resident) == std::vector<bool> { true, false });
+    }
+    TEST_CASE("only the buffer actually sampled counts for a passthrough") {
+        std::vector<PassDemandStatic> s { reader({}, K::ForSlot(0), K::ForSlot(1)) };
+        std::vector<bool>             resident { true, false };
+        std::vector<PassDemandFrame>  a { { true, false, DemandInputs::PassthroughA } };
+        std::vector<PassDemandFrame>  b { { true, false, DemandInputs::PassthroughB } };
+        CHECK(ComputeBlockedPasses(s, a, resident) == std::vector<bool> { false });
+        CHECK(ComputeBlockedPasses(s, b, resident) == std::vector<bool> { true });
+    }
+    TEST_CASE("a pass that does not draw is never blocked, and handle keys never block") {
+        std::vector<PassDemandStatic> s { reader({ K::ForSlot(0), K::ForHandle(0x9) }) };
+        std::vector<PassDemandFrame>  f { { false, false, DemandInputs::None } };
+        std::vector<bool>             resident { false };
+        CHECK(ComputeBlockedPasses(s, f, resident) == std::vector<bool> { false });
+        f[0]        = { true, false, DemandInputs::Own };
+        resident[0] = true;
+        CHECK(ComputeBlockedPasses(s, f, resident) == std::vector<bool> { false });
+    }
+}
+
+TEST_SUITE("RtResidency::TimestampDeltaUs") {
+    TEST_CASE("a 64-bit counter at 1 ns per tick reads straight through") {
+        CHECK(TimestampDeltaUs(1000, 1000 + 2500, 64, 1.0f) == doctest::Approx(2.5));
+    }
+    TEST_CASE("the device tick period scales the result") {
+        CHECK(TimestampDeltaUs(0, 100, 64, 40.0f) == doctest::Approx(4.0)); // 100 ticks x 40 ns
+    }
+    TEST_CASE("a narrower counter that wrapped between the two reads still gives the right delta") {
+        const std::uint64_t top = (1ull << 36) - 10;
+        CHECK(TimestampDeltaUs(top, 5, 36, 1000.0f) == doctest::Approx(15.0)); // 15 ticks x 1 us
+    }
+    TEST_CASE("a queue without timestamps reports zero") {
+        CHECK(TimestampDeltaUs(0, 1000, 0, 1.0f) == 0.0);
     }
 }

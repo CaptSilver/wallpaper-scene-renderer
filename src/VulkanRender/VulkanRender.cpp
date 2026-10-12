@@ -210,10 +210,27 @@ struct VulkanRender::Impl {
     std::vector<RtSlot*>           m_slot_by_id;
     std::vector<bool>              m_slot_clear_on_attach;
     std::vector<CustomShaderPass*> m_csp_by_pass; // parallel to m_passes; nullptr for other kinds
+    // Passes drawing into each slot, by slot id: their framebuffers go with
+    // the image.
+    std::vector<std::vector<CustomShaderPass*>> m_slot_writers;
+    std::uint32_t                               m_rt_hold_frames { kDefaultHoldFrames };
+    bool                                        m_rt_release_enabled { true };
+    void                                        releaseSlot(RtSlot& slot);
+    // Two timestamps per in-flight frame around the initial-state batch, read
+    // back under the fence of the frame that wrote them.  Only when debug
+    // logging is on: the measurement is for the frame-time report.
+    vvk::QueryPool                    m_rt_timestamps;
+    bool                              m_rt_gpu_timing { false };
+    std::array<bool, kFramesInFlight> m_rt_ts_pending {};
+    // Set while recording; becomes m_rt_ts_pending only once the frame is
+    // submitted, since a frame abandoned after record leaves queries nobody
+    // will ever complete.
+    bool          m_rt_ts_recorded { false };
     std::uint64_t m_rt_created_total { 0 }, m_rt_failed_total { 0 }, m_rt_released_total { 0 };
 
     void              buildResidencyTables();
     std::vector<bool> computeDemand();
+    void              applyOutputNeeded(const std::vector<bool>& needed);
     void              createLoadSlots(std::vector<SlotId>& fresh);
     void              residencyStep(RenderingResources& rr);
 };
@@ -1089,6 +1106,29 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
 
     if (! initRes()) return false;
 
+    m_rt_hold_frames     = ParseHoldFrames(std::getenv("WEKDE_RT_RELEASE_FRAMES"));
+    m_rt_release_enabled = ! m_device->tex_cache().eagerManaged();
+    LOG_INFO("RT-RESIDENCY: %s, hold %u frames",
+             m_rt_release_enabled ? "on" : "off (WEKDE_RT_RESIDENCY=0)",
+             m_rt_hold_frames);
+
+    m_rt_gpu_timing =
+        wallpaper::LogDebugEnabled() && m_device->graphics_queue().timestamp_valid_bits != 0;
+    if (m_rt_gpu_timing) {
+        const VkQueryPoolCreateInfo ci {
+            .sType              = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+            .pNext              = nullptr,
+            .flags              = 0,
+            .queryType          = VK_QUERY_TYPE_TIMESTAMP,
+            .queryCount         = 2 * kFramesInFlight,
+            .pipelineStatistics = 0,
+        };
+        if (m_device->handle().CreateQueryPool(ci, m_rt_timestamps) != VK_SUCCESS) {
+            LOG_INFO("RT-RESIDENCY: timestamp query pool unavailable, GPU timing off");
+            m_rt_gpu_timing = false;
+        }
+    }
+
     // Initialize glslang once at startup.  Routed through WPShaderParser so it
     // serialises against any concurrent shader compilation on the parser thread.
     WPShaderParser::InitGlslang();
@@ -1168,8 +1208,11 @@ void VulkanRender::Impl::destroy() {
         for (auto& p : m_passes) {
             p->destory(*m_device, m_rendering_resources[0]);
         }
+        m_device->tex_cache().DrainRetired();
         m_vertex_buf->destroy();
         m_dyn_buf->destroy();
+
+        m_rt_timestamps = vvk::QueryPool {};
 
         // Release sync objects before destroying device
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -1476,6 +1519,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         m_frame_index,
         submitted));
     if (! submitted) return;
+    m_rt_ts_pending[slot] = m_rt_ts_recorded;
 
     const auto&      image = m_device->swapchain().images()[image_index];
     VkPresentInfoKHR present_info {
@@ -1598,6 +1642,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         .pCommandBuffers    = rr.command.address(),
     };
     VVK_CHECK_DEVICE_LOST(m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame));
+    m_rt_ts_pending[slot] = m_rt_ts_recorded;
 
     // Screenshot/pass-dump readback needs this slot's work to be done
     // before sampling the output image.  Same per-slot fence wait as the
@@ -1771,7 +1816,15 @@ void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
         p->destory(*m_device, m_rendering_resources[0]);
     }
     m_passes.clear();
+    m_device->tex_cache().DrainRetired();
     m_device->tex_cache().Clear();
+    // The tables point into the slots and passes just destroyed.
+    m_slot_by_id.clear();
+    m_slot_writers.clear();
+    m_csp_by_pass.clear();
+    m_demand_static.clear();
+    m_demand_frame.clear();
+    m_slot_clear_on_attach.clear();
 
     // (Removed: g_msaa_color_inited.clear() — the MSAA first-use latch now
     // lives on VmaImageParameters as initial_layout_transitioned and dies
@@ -2201,6 +2254,7 @@ void VulkanRender::Impl::buildResidencyTables() {
     m_demand_static.assign(m_passes.size(), {});
     m_demand_frame.assign(m_passes.size(), {});
     m_csp_by_pass.assign(m_passes.size(), nullptr);
+    m_slot_writers.assign(cache.slotCount(), {});
     std::vector<bool> clears(m_passes.size(), true);
     for (std::size_t i = 0; i < m_passes.size(); ++i) {
         VulkanPass*       p = m_passes[i];
@@ -2210,6 +2264,12 @@ void VulkanRender::Impl::buildResidencyTables() {
         if (auto* csp = m_csp_by_pass[i]) {
             s         = PassDemandStaticFor(csp->desc());
             clears[i] = csp->desc().clears_output;
+            if (csp->desc().out_slot) m_slot_writers[csp->desc().out_slot->id].push_back(csp);
+            // A framebuffer rebuilt over a new image may still be in a
+            // submitted frame; the ring holds it until that frame retires.
+            csp->setFramebufferRetirer([this](vvk::Framebuffer fb) {
+                m_device->tex_cache().RetireFramebuffer(std::move(fb), m_frame_index);
+            });
         } else if (auto* cp = dynamic_cast<CopyPass*>(p)) {
             s.out         = KeyForSlot(cp->desc().dst_slot);
             s.out_managed = cp->desc().dst_slot != nullptr && cp->desc().dst_slot->managed();
@@ -2232,12 +2292,22 @@ std::vector<bool> VulkanRender::Impl::computeDemand() {
         .needed;
 }
 
+// Tell each pass whether its output is wanted.  Under the eager switch every
+// pass draws as it always did.  Runs at load and again every frame, so a layer
+// shown after load gets its writer back.
+void VulkanRender::Impl::applyOutputNeeded(const std::vector<bool>& needed) {
+    const bool eager = m_device->tex_cache().eagerManaged();
+    for (std::size_t i = 0; i < m_passes.size(); ++i)
+        m_passes[i]->setOutputNeeded(eager || PassOutputNeeded(m_demand_static[i], needed));
+}
+
 // Load is not a show: create what default visibility needs (everything under
 // WEKDE_RT_RESIDENCY=0), and let the caller batch the initial clears into the
 // vertex upload submit instead of one submit-and-wait per image.
 void VulkanRender::Impl::createLoadSlots(std::vector<SlotId>& fresh) {
     auto&      cache   = m_device->tex_cache();
     const auto needed  = computeDemand();
+    applyOutputNeeded(needed);
     unsigned   managed = 0, failed = 0;
     for (RtSlot* s : m_slot_by_id) {
         if (s == nullptr || ! s->managed()) continue;
@@ -2262,47 +2332,133 @@ void VulkanRender::Impl::createLoadSlots(std::vector<SlotId>& fresh) {
              (unsigned)cache.slotCount());
 }
 
+// The framebuffers go with the image: a pass rebuilds its own on the next
+// record that finds a new image (FramebufferNeedsRebuild).
+void VulkanRender::Impl::releaseSlot(RtSlot& slot) {
+    std::vector<vvk::Framebuffer> fbs;
+    for (CustomShaderPass* csp : m_slot_writers[slot.id])
+        if (auto fb = csp->takeFramebuffer()) fbs.push_back(std::move(*fb));
+    m_device->tex_cache().ReleaseSlot(slot, std::move(fbs), m_frame_index);
+}
+
 void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
     WEK_PROFILE_SCOPE("VulkanRender::residencyStep");
     const auto t0      = std::chrono::steady_clock::now();
     auto&      cache   = m_device->tex_cache();
+    // Blocked is a per-frame verdict (set below from what this frame could
+    // create).  Clearing it first keeps last frame's verdict out of this
+    // frame's demand: the reader of a failed slot still counts as drawing, so
+    // the slot stays needed, nothing releases it, and CanRetryCreate alone
+    // decides when the create is tried again.
+    for (CustomShaderPass* csp : m_csp_by_pass)
+        if (csp != nullptr) csp->setBlockedThisFrame(false);
+    cache.CollectRetired(m_frame_index, kFramesInFlight);
+    const uint32_t ts_slot = (uint32_t)(m_frame_index % kFramesInFlight);
+    if (m_rt_gpu_timing) {
+        // This frame already waited on this slot's fence at its head, so the
+        // queries written two frames ago are complete.
+        if (m_rt_ts_pending[ts_slot]) {
+            std::array<uint64_t, 2> ts {};
+            if (m_rt_timestamps.GetResults(2 * ts_slot, 2, ts, 0) == VK_SUCCESS)
+                LOG_DEBUG("RT-RESIDENCY gpu frame=%llu initial_state_us=%.1f",
+                          (unsigned long long)(m_frame_index - kFramesInFlight),
+                          TimestampDeltaUs(ts[0],
+                                           ts[1],
+                                           m_device->graphics_queue().timestamp_valid_bits,
+                                           m_device->limits().timestampPeriod));
+            m_rt_ts_pending[ts_slot] = false;
+        }
+        rr.command.ResetQueryPool(*m_rt_timestamps, 2 * ts_slot, 2);
+        // BOTTOM_OF_PIPE on both stamps: the delta then covers only what is
+        // recorded between them, not the drain of earlier work.
+        rr.command.WriteTimestamp(
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, *m_rt_timestamps, 2 * ts_slot);
+    }
     const auto needed  = computeDemand();
-    unsigned   created = 0, failed = 0, resident = 0, wanted = 0;
+    applyOutputNeeded(needed);
+    unsigned created = 0, failed = 0, resident = 0, wanted = 0, released = 0;
     for (RtSlot* s : m_slot_by_id) {
         if (s == nullptr || ! s->managed()) continue;
         const bool want = needed[s->id];
         wanted += want ? 1u : 0u;
-        if (s->resident()) {
-            ++resident;
-            continue;
-        }
-        if (! want) continue;
-        if (cache.CreateImageForSlot(*s)) {
-            cache.RecInitialState(rr.command, *s, m_slot_clear_on_attach[s->id]);
-            // Readers cached against the old bytes must redraw.
-            m_rewritten_frame.insert(ResidencyKey::ForSlot(s->id));
-            ++created;
-            ++resident;
-        } else {
-            ++failed;
-            ++s->create_fail_streak;
+        switch (DecideSlotAction(
+            s->resident(), want, s->idle_frames, m_rt_hold_frames, m_rt_release_enabled)) {
+        case SlotAction::Keep: ++resident; break;
+        case SlotAction::None: resident += s->resident() ? 1u : 0u; break;
+        case SlotAction::Release:
+            releaseSlot(*s);
+            ++released;
+            break;
+        case SlotAction::Create:
+            if (! CanRetryCreate(m_frame_index, s->retry_after_frame)) break;
+            if (cache.CreateImageForSlot(*s)) {
+                cache.RecInitialState(rr.command, *s, m_slot_clear_on_attach[s->id]);
+                // Readers cached against the old bytes must redraw.
+                m_rewritten_frame.insert(ResidencyKey::ForSlot(s->id));
+                ++created;
+                ++resident;
+            } else {
+                ++failed;
+                ++s->create_fail_streak;
+                s->retry_after_frame = RetryAfter(m_frame_index, s->create_fail_streak);
+                if (s->create_fail_streak == 1) {
+                    const auto vram = SumDeviceLocalHeaps(m_device->GetHeapBudgets());
+                    LOG_ERROR("render target %u (%dx%d) could not be created; device-local usage "
+                              "%.1f of %.1f MB, retry after frame %llu",
+                              s->id,
+                              s->key.width,
+                              s->key.height,
+                              (double)vram.usage / (1024.0 * 1024.0),
+                              (double)vram.budget / (1024.0 * 1024.0),
+                              (unsigned long long)s->retry_after_frame);
+                }
+            }
+            break;
         }
     }
-    // Tell each pass whether its output is wanted.  Under the eager switch
-    // every pass draws as it always did.
-    for (std::size_t i = 0; i < m_passes.size(); ++i)
-        m_passes[i]->setOutputNeeded(cache.eagerManaged() ||
-                                     PassOutputNeeded(m_demand_static[i], needed));
+    if (m_rt_gpu_timing) {
+        rr.command.WriteTimestamp(
+            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, *m_rt_timestamps, 2 * ts_slot + 1);
+        m_rt_ts_recorded = created != 0;
+    }
+    if (failed != 0 && m_rt_release_enabled) {
+        // Make room now: every resident slot nobody needs goes, hold or not.
+        // Not under WEKDE_RT_RESIDENCY=0, whose contract is that nothing is
+        // ever released.
+        for (RtSlot* s : m_slot_by_id) {
+            if (s == nullptr || ! s->managed() || ! s->resident() || needed[s->id]) continue;
+            releaseSlot(*s);
+            ++released;
+        }
+    }
+    {
+        // Blocking is one level deep on purpose: a visible reader of a blocked
+        // writer's (resident) output samples stale or cleared bytes for the
+        // backoff window, a missing effect rather than garbage.  Chasing the
+        // block down the chain would hide whole layers for a transient failure.
+        // Each pass gets two per-frame verdicts at fixed points: output-needed
+        // is set right after computeDemand(); blocked is cleared before it
+        // (top of this function) and set here, from what is resident once the
+        // create loop and any collapse are done.
+        std::vector<bool> resident_now(cache.slotCount(), false);
+        for (RtSlot* s : m_slot_by_id)
+            if (s != nullptr) resident_now[s->id] = s->resident();
+        const auto blocked = ComputeBlockedPasses(m_demand_static, m_demand_frame, resident_now);
+        for (std::size_t i = 0; i < m_csp_by_pass.size(); ++i)
+            if (m_csp_by_pass[i] != nullptr) m_csp_by_pass[i]->setBlockedThisFrame(blocked[i]);
+    }
     m_rt_created_total += created;
     m_rt_failed_total += failed;
-    if (created != 0 || failed != 0) {
+    m_rt_released_total += released;
+    if (created != 0 || released != 0 || failed != 0) {
         const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                             std::chrono::steady_clock::now() - t0)
                             .count();
-        LOG_DEBUG("RT-RESIDENCY frame=%llu created=%u released=0 failed=%u resident=%u needed=%u "
+        LOG_DEBUG("RT-RESIDENCY frame=%llu created=%u released=%u failed=%u resident=%u needed=%u "
                   "cpu_us=%lld",
                   (unsigned long long)m_frame_index,
                   created,
+                  released,
                   failed,
                   resident,
                   wanted,

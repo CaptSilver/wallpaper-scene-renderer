@@ -90,6 +90,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdEndDebugUtilsLabelEXT);
     X(vkCmdFillBuffer);
     X(vkCmdPipelineBarrier);
+    X(vkCmdResetQueryPool);
     X(vkCmdPushConstants);
     X(vkCmdPushDescriptorSetKHR);
     X(vkCmdPushDescriptorSetWithTemplateKHR);
@@ -103,6 +104,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdSetStencilWriteMask);
     X(vkCmdSetViewport);
     X(vkCmdWaitEvents);
+    X(vkCmdWriteTimestamp);
     X(vkCmdSetLineWidth);
     X(vkCmdResolveImage);
     X(vkCreateBuffer);
@@ -246,6 +248,10 @@ void Destroy(VkDevice device, VkFence handle, const DeviceDispatch& dld) noexcep
 
 void Destroy(VkDevice device, VkFramebuffer handle, const DeviceDispatch& dld) noexcept {
     dld.vkDestroyFramebuffer(device, handle, nullptr);
+}
+
+void Destroy(VkDevice device, VkQueryPool handle, const DeviceDispatch& dld) noexcept {
+    dld.vkDestroyQueryPool(device, handle, nullptr);
 }
 
 void Destroy(VkInstance instance, VkSurfaceKHR handle, const InstanceDispatch& dld) noexcept {
@@ -422,6 +428,13 @@ VkResult Device::CreateFramebuffer(const VkFramebufferCreateInfo& ci,
     VkFramebuffer object;
     VkResult      res = dld->vkCreateFramebuffer(handle, &ci, nullptr, &object);
     if (res == VK_SUCCESS) fb = Framebuffer(object, handle, *dld);
+    return res;
+}
+
+VkResult Device::CreateQueryPool(const VkQueryPoolCreateInfo& ci, QueryPool& pool) const noexcept {
+    VkQueryPool object;
+    VkResult    res = dld->vkCreateQueryPool(handle, &ci, nullptr, &object);
+    if (res == VK_SUCCESS) pool = QueryPool(object, handle, *dld);
     return res;
 }
 

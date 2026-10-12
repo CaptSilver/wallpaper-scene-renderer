@@ -350,7 +350,7 @@ std::optional<ExImageParameters> CreateExImage(uint32_t width, uint32_t height, 
 inline std::optional<VmaImageParameters>
 CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat format,
             VkSampler sampler, VkImageUsageFlags usage,
-            VmaMemoryUsage mem_usage = VMA_MEMORY_USAGE_GPU_ONLY) {
+            VmaMemoryUsage mem_usage = VMA_MEMORY_USAGE_GPU_ONLY, bool dedicated = false) {
     // Sampler is resolved by the caller (TextureCache::GetOrCreateSampler) so
     // identical sampler configs share one underlying VkSampler; the image just
     // holds the raw handle non-owning.
@@ -375,6 +375,9 @@ CreateImage(const Device& device, VkExtent3D extent, u32 miplevel, VkFormat form
         image.extent = info.extent;
         VmaAllocationCreateInfo vma_info {};
         vma_info.usage = mem_usage;
+        // Own VkDeviceMemory, so destroying the image returns it to the driver
+        // instead of leaving it inside a half-empty VMA block.
+        if (dedicated) vma_info.flags |= VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
         VVK_CHECK_ACT(break,
                       vvk::CreateImage(device.vma_allocator(), info, vma_info, image.handle));
 
@@ -829,7 +832,8 @@ void TextureCache::allocateCmd() {
     m_tex_cmd = vvk::CommandBuffer(m_tex_cmds[0], m_device.handle().Dispatch());
 }
 
-std::optional<VmaImageParameters> TextureCache::createImageOnly(const TextureKey& tex_key) {
+std::optional<VmaImageParameters> TextureCache::createImageOnly(const TextureKey& tex_key,
+                                                                bool              releasable) {
     // maxLod gates the highest mip the hardware sampler may pick.  Set to
     // the key's actual mip count so trilinear can pick lower mips when the
     // image has them.  When mipmap_level == 1 (the normal case for current
@@ -843,20 +847,58 @@ std::optional<VmaImageParameters> TextureCache::createImageOnly(const TextureKey
     VkFormat   format         = ToVkType(tex_key.format);
     VkExtent3D ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
 
-    return CreateImage(m_device,
-                       ext,
-                       tex_key.mipmap_level,
-                       format,
-                       shared_sampler,
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    // Only an image that residency will release gains from dedicated memory;
+    // persistent targets and eagerly created ones stay in the shared blocks.
+    const bool dedicated =
+        releasable &&
+        ShouldUseDedicatedMemory(
+            RtImageBytes(tex_key.width, tex_key.height, tex_key.format, tex_key.mipmap_level),
+            m_dedicated_live.live(),
+            m_device.limits().maxMemoryAllocationCount);
+    auto opt = CreateImage(m_device,
+                           ext,
+                           tex_key.mipmap_level,
+                           format,
+                           shared_sampler,
+                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                           VMA_MEMORY_USAGE_GPU_ONLY,
+                           dedicated);
+    if (opt.has_value() && dedicated) opt->dedicated_token = m_dedicated_live.take();
+    return opt;
 }
 
 bool TextureCache::CreateImageForSlot(RtSlot& slot) {
-    auto opt = createImageOnly(slot.key);
+    auto opt = createImageOnly(slot.key, ! slot.persist && ! m_eager_managed);
     if (! opt.has_value()) return false;
     detail::attachImage(slot, std::move(opt.value()));
     return true;
+}
+
+void TextureCache::ReleaseSlot(RtSlot& slot, std::vector<vvk::Framebuffer> framebuffers,
+                               std::uint64_t frame) {
+    RetiredImage r;
+    r.image        = std::move(slot.image);
+    r.framebuffers = std::move(framebuffers);
+    slot.image.reset();
+    slot.idle_frames = 0;
+    m_retired.push(std::move(r), frame);
+}
+
+void TextureCache::RetireFramebuffer(vvk::Framebuffer framebuffer, std::uint64_t frame) {
+    RetiredImage r;
+    r.framebuffers.push_back(std::move(framebuffer));
+    m_retired.push(std::move(r), frame);
+}
+
+void TextureCache::CollectRetired(std::uint64_t frame, std::uint64_t frames_in_flight) {
+    auto dead = m_retired.collect(frame, frames_in_flight);
+    (void)dead; // destroyed here: framebuffers first, then the image
+}
+
+void TextureCache::DrainRetired() {
+    auto dead = m_retired.drain();
+    (void)dead;
 }
 
 void TextureCache::RecInitialState(const vvk::CommandBuffer& cmd, const RtSlot& slot,
@@ -962,6 +1004,7 @@ TextureCache::TextureCache(const Device& device): m_device(device) {
 TextureCache::~TextureCache() {};
 
 void TextureCache::Clear() {
+    DrainRetired();
     m_tex_map.clear();
     m_reupload_staging.clear();
     m_reupload_fail_streak.clear();

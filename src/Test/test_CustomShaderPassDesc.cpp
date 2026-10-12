@@ -2,6 +2,8 @@
 
 #include "VulkanRender/CustomShaderPass.hpp"
 #include "Vulkan/Parameters.hpp"
+#include "Vulkan/Device.hpp"
+#include "VulkanRender/CopyPass.hpp"
 
 using wallpaper::vulkan::CustomShaderPass;
 using wallpaper::vulkan::VmaImageParameters;
@@ -708,6 +710,22 @@ TEST_SUITE("CustomShaderPass framebuffer rebuild") {
         CHECK_FALSE(FramebufferNeedsRebuild(true, 3, out));
         CHECK(FramebufferNeedsRebuild(true, 2, out));
     }
+    TEST_CASE("a replaced framebuffer goes to the retirer, and only when there is one") {
+        using wallpaper::vulkan::RetireOldFramebuffer;
+        std::vector<int>         retired;
+        std::function<void(int)> retirer = [&](int fb) {
+            retired.push_back(fb);
+        };
+        int old = 7;
+        CHECK(RetireOldFramebuffer(true, old, retirer));
+        CHECK(retired == std::vector<int> { 7 });
+        CHECK_FALSE(RetireOldFramebuffer(false, old, retirer)); // nothing was built yet
+        CHECK(retired.size() == 1);
+        std::function<void(int)> none;
+        old = 9;
+        CHECK_FALSE(RetireOldFramebuffer(true, old, none)); // caller destroys in place
+        CHECK(old == 9);
+    }
     TEST_CASE("a member or end of a group whose opener could not begin its render pass skips") {
         using wallpaper::vulkan::GroupMemberSkips;
         using wallpaper::vulkan::PassMergeRole;
@@ -1022,5 +1040,99 @@ TEST_SUITE("CustomShaderPass::PassDemandStaticFor") {
         CHECK_FALSE(s.out_managed);
         CHECK(s.own_inputs.empty());
         CHECK(s.passthrough_a == K {});
+    }
+}
+
+TEST_SUITE("CustomShaderPass blocked frame") {
+    TEST_CASE("a blocked pass takes the hidden path: no draw, no sampled inputs") {
+        CustomShaderPass::Desc d;
+        CustomShaderPass       pass(d);
+        pass.setBlockedThisFrame(true);
+        auto f = pass.frameHideable(wallpaper::vulkan::PassMergeRole::Standalone);
+        CHECK_FALSE(f.draws);
+        CHECK(f.inputs == wallpaper::vulkan::DemandInputs::None);
+        CHECK_FALSE(pass.demandFrame().draws);
+        // The flag is per frame: once residencyStep clears it, the next
+        // frame's demand sees the pass drawing again, so the slot it was
+        // waiting for stays needed and is retried, instead of being judged
+        // unneeded and the pass unblocked onto an absent input.
+        pass.setBlockedThisFrame(false);
+        CHECK(pass.frameHideable(wallpaper::vulkan::PassMergeRole::Standalone).draws);
+        CHECK(pass.demandFrame().draws);
+    }
+}
+
+// The guard at the bind site: a drawing pass must never bind the opaque 1x1
+// fallback where a managed render target should be.  rebindImages empties
+// the texture's slot list exactly when the slot is absent, so the check
+// belongs to the empty-slots branch.
+TEST_SUITE("CustomShaderPass absent managed input") {
+    using wallpaper::vulkan::AbsentManagedInputBlocksDraw;
+    using wallpaper::vulkan::RtSlot;
+    TEST_CASE("a bitmap texture (no slot) never blocks") {
+        CHECK_FALSE(AbsentManagedInputBlocksDraw(nullptr, true));
+    }
+    TEST_CASE("an absent managed slot blocks a drawing pass only") {
+        RtSlot s;
+        CHECK(AbsentManagedInputBlocksDraw(&s, true));
+        CHECK_FALSE(AbsentManagedInputBlocksDraw(&s, false)); // a non-drawing record binds nothing
+    }
+    TEST_CASE("a resident slot or a persistent slot never blocks") {
+        RtSlot s;
+        s.image.emplace();
+        CHECK_FALSE(AbsentManagedInputBlocksDraw(&s, true));
+        RtSlot p;
+        p.persist = true;
+        CHECK_FALSE(AbsentManagedInputBlocksDraw(&p, true));
+    }
+    // A record that does not draw (a hidden pass holding a clear, a group
+    // member) samples nothing, so it writes no descriptor for an absent input
+    // instead of binding the opaque fallback in its place.
+    TEST_CASE("a non-drawing record skips the descriptor for an absent managed input only") {
+        using wallpaper::vulkan::AbsentManagedInputSkipsBind;
+        RtSlot absent;
+        CHECK(AbsentManagedInputSkipsBind(&absent, false));
+        CHECK_FALSE(AbsentManagedInputSkipsBind(&absent, true)); // the block rule owns this case
+        CHECK_FALSE(
+            AbsentManagedInputSkipsBind(nullptr, false)); // bitmap texture keeps the fallback
+        RtSlot resident;
+        resident.image.emplace();
+        CHECK_FALSE(AbsentManagedInputSkipsBind(&resident, false));
+        RtSlot persistent;
+        persistent.persist = true;
+        CHECK_FALSE(AbsentManagedInputSkipsBind(&persistent, false));
+    }
+}
+
+// The out-of-memory log reports the device-local heaps, whichever indices
+// they sit at (heap 0 is host memory on some drivers).
+TEST_SUITE("Device::SumDeviceLocalHeaps") {
+    TEST_CASE("only DEVICE_LOCAL heaps are summed") {
+        std::array<wallpaper::vulkan::Device::HeapBudget, VK_MAX_MEMORY_HEAPS> heaps {};
+        heaps[0]       = { 100, 1000, 0 }; // host-visible, ignored
+        heaps[1]       = { 200, 4000, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT };
+        heaps[2]       = { 50, 256, VK_MEMORY_HEAP_DEVICE_LOCAL_BIT }; // BAR window, counted
+        const auto sum = wallpaper::vulkan::SumDeviceLocalHeaps(heaps);
+        CHECK(sum.usage == 250);
+        CHECK(sum.budget == 4256);
+        CHECK(sum.flags == VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+    }
+}
+
+// The copy's destination moves UNDEFINED -> TRANSFER_DST and its source
+// SHADER_READ_ONLY -> TRANSFER_SRC.  Both have to wait for whoever last read
+// or wrote those images (fragment sampling, a render pass store, an earlier
+// copy); TOP_OF_PIPE waits for nothing.
+TEST_SUITE("CopyPass barrier source") {
+    TEST_CASE("source stage covers fragment reads, attachment writes and transfers") {
+        const auto stages = wallpaper::vulkan::CopyBarrierSourceStages();
+        // doctest rejects a bare & inside CHECK, so the masks are compared out here.
+        CHECK((stages & VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) != 0);
+        CHECK((stages & VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) != 0);
+        CHECK((stages & VK_PIPELINE_STAGE_TRANSFER_BIT) != 0);
+        CHECK((stages & VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT) == 0);
+        const auto access = wallpaper::vulkan::CopyBarrierSourceAccess();
+        CHECK((access & VK_ACCESS_MEMORY_READ_BIT) != 0);
+        CHECK((access & VK_ACCESS_MEMORY_WRITE_BIT) != 0);
     }
 }

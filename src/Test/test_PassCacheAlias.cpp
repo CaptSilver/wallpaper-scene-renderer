@@ -585,6 +585,10 @@ struct SimPass {
     bool           hidden_skip { false }; // execute returns before recording
     bool           cached { false };
     bool           visible_when_cached { true };
+    // The output slot's image generation now, and the one this pass cached
+    // against; a release-and-recreate of the slot moves the first.
+    std::uint32_t  out_gen { 0 };
+    std::uint32_t  cached_gen { 0 };
     std::vector<H> backward_in; // filled by SimFrames from pass order
 };
 
@@ -612,7 +616,8 @@ struct SimFrames {
                                         p.backward_in,
                                         &cur,
                                         &prev,
-                                        /*standalone=*/true);
+                                        /*standalone=*/true,
+                                        p.out_gen != p.cached_gen);
             if (d.invalidate) p.cached = false;
             if (d.skip) {
                 drew.push_back(false);
@@ -626,6 +631,7 @@ struct SimFrames {
             if (p.can_cache) {
                 p.cached              = true;
                 p.visible_when_cached = p.visible;
+                p.cached_gen          = p.out_gen;
             }
             drew.push_back(true);
         }
@@ -645,9 +651,19 @@ TEST_SUITE("PassCacheAlias::DecidePassCache") {
                                     const std::vector<H>& back,
                                     const Set*            cur,
                                     const Set*            prev,
-                                    bool                  standalone = true) {
-        return DecidePassCache<H>(
-            can_cache, is_cached, dirty, vis, vis_cached, in, back, cur, prev, standalone);
+                                    bool                  standalone       = true,
+                                    bool                  generation_moved = false) {
+        return DecidePassCache<H>(can_cache,
+                                  is_cached,
+                                  dirty,
+                                  vis,
+                                  vis_cached,
+                                  in,
+                                  back,
+                                  cur,
+                                  prev,
+                                  standalone,
+                                  generation_moved);
     }
 
     TEST_CASE("an uncached or non-cacheable pass is never invalidated or skipped") {
@@ -667,6 +683,25 @@ TEST_SUITE("PassCacheAlias::DecidePassCache") {
         d = decide(true, true, false, true, true, { A }, {}, &cur, &prev, false);
         CHECK_FALSE(d.invalidate);
         CHECK_FALSE(d.skip);
+    }
+    TEST_CASE("a replaced output image invalidates a clean cached pass") {
+        Set  cur, prev;
+        auto d = decide(true,
+                        true,
+                        false,
+                        true,
+                        true,
+                        { A },
+                        {},
+                        &cur,
+                        &prev,
+                        true,
+                        /*generation_moved=*/true);
+        CHECK(d.invalidate);
+        CHECK_FALSE(d.skip);
+        d = decide(true, true, false, true, true, { A }, {}, &cur, &prev, true, false);
+        CHECK_FALSE(d.invalidate);
+        CHECK(d.skip);
     }
     TEST_CASE("own dirty material invalidates") {
         Set  cur, prev;
@@ -772,6 +807,19 @@ TEST_SUITE("PassCacheAlias::cache chain over frames") {
         CHECK(f3 == std::vector<bool> { false, false, false });
         auto f4 = sim.run(passes);
         CHECK(f4 == std::vector<bool> { false, false, false });
+    }
+
+    TEST_CASE("a cached first writer whose slot was released and recreated redraws") {
+        // The cached bytes lived in the old image; nothing dirtied the pass or
+        // its inputs, so only the generation can tell it.
+        auto      passes = chain();
+        SimFrames sim;
+        sim.run(passes);
+        CHECK(sim.run(passes) == std::vector<bool> { false, false, false });
+        ++passes[0].out_gen;
+        auto f = sim.run(passes);
+        CHECK(f == std::vector<bool> { true, true, true });
+        CHECK(sim.run(passes) == std::vector<bool> { false, false, false });
     }
 
     TEST_CASE("a cached pass hidden without recording leaves its consumers cached") {

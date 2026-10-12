@@ -118,6 +118,7 @@ std::vector<VkDeviceQueueCreateInfo> Device::ChooseDeviceQueue(VkSurfaceKHR surf
             }
         }
     }
+    m_graphics_queue.timestamp_valid_bits = props[m_graphics_queue.family_index].timestampValidBits;
     const static float      defaultQueuePriority = 0.0f;
     VkDeviceQueueCreateInfo gi {
         .sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,

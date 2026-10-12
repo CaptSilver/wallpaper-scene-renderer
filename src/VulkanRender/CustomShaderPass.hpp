@@ -3,6 +3,7 @@
 #include "VulkanRender/PassMerge.hpp"
 #include "VulkanRender/RtResidency.hpp"
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -363,6 +364,17 @@ inline bool FramebufferNeedsRebuild(bool has_fb, std::uint32_t fb_generation, co
     return ! has_fb || fb_generation != out.generation;
 }
 
+// Replacing a framebuffer a submitted frame may still be using: hand the old
+// one to the retirer instead of letting the assignment destroy it.  False when
+// there was nothing to retire or nobody to retire it to (the old one is then
+// destroyed in place, which is only safe with the device idle).
+template<typename Fb, typename Retirer>
+bool RetireOldFramebuffer(bool has_old, Fb& old, const Retirer& retirer) {
+    if (! has_old || ! retirer) return false;
+    retirer(std::move(old));
+    return true;
+}
+
 // A merged group's members record inside the render pass the GroupBegin
 // opened.  If that begin never happened (its framebuffer could not be built),
 // a member drawing anyway would record outside any render pass, so the
@@ -558,16 +570,23 @@ public:
     // The per-frame half of this pass's demand, built from frameHideable().
     PassDemandFrame demandFrame() const override;
     void setCanCache(bool v) { m_can_cache = v; }
+    // True for a frame in which a slot this pass samples has no image.  The
+    // pass then takes the hidden path: nothing draws from a slot with no image.
+    void setBlockedThisFrame(bool b) { m_blocked_frame = b; }
 
     // Check if output is already cached and valid
     bool isCached() const { return m_cached; }
     void invalidateCache() { m_cached = false; }
     // `visible` is the node's visibility at draw time: hiding or showing it
     // later does not dirty the material, so the cache has to notice itself.
-    void markCached(bool visible) {
-        m_cached         = true;
-        m_cached_visible = visible;
+    // `output_generation` is the output slot's image generation: a new image
+    // means the cached bytes are gone.
+    void markCached(bool visible, std::uint32_t output_generation) {
+        m_cached                   = true;
+        m_cached_visible           = visible;
+        m_cached_output_generation = output_generation;
     }
+    std::uint32_t cachedOutputGeneration() const { return m_cached_output_generation; }
 
     // Assigned by VulkanRender::compileRenderGraph once every pass is
     // prepared and its attachment handles are known.
@@ -629,6 +648,11 @@ public:
     // Moves the framebuffer out (for deferred destruction); empty if none was built.
     std::optional<vvk::Framebuffer> takeFramebuffer();
 
+    // Where a framebuffer replaced by ensureFramebuffer goes, so it outlives
+    // the frames still in flight.  Without one it is destroyed on the spot.
+    using FramebufferRetirer = std::function<void(vvk::Framebuffer)>;
+    void setFramebufferRetirer(FramebufferRetirer r) { m_fb_retirer = std::move(r); }
+
 private:
     // Builds m_desc.fb over the output's current view when it is missing or was
     // built for another image.  False when there is nothing to draw into or
@@ -651,11 +675,14 @@ private:
     std::vector<ResidencyKey>         m_input_keys;
     std::vector<ResidencyKey>         m_backward_input_keys;
     bool                              m_cached { false };
+    bool                              m_blocked_frame { false };
     bool                              m_cached_visible { true };
+    std::uint32_t                     m_cached_output_generation { 0 };
     bool                              m_can_cache { false };
     bool                              m_uses_time_uniforms { false };
     bool                              m_samples_mutable_texture { false };
     bool                              m_fb_failure_logged { false };
+    FramebufferRetirer                m_fb_retirer;
 
     // Per-pass scratch storage reused across execute() calls.
     //
@@ -710,6 +737,20 @@ inline PassDemandStatic PassDemandStaticFor(const CustomShaderPass::Desc& d) {
     s.passthrough_a = slot_at(d.passthrough_input_tex_index_a);
     s.passthrough_b = slot_at(d.passthrough_input_tex_index_b);
     return s;
+}
+
+// A drawing pass whose managed input has no image would bind the opaque 1x1
+// fallback in the buffer's place.  The demand walk makes every sampled slot
+// resident before a pass may draw, so a hit here is a walk bug, not a
+// condition to render through.
+inline bool AbsentManagedInputBlocksDraw(const RtSlot* in, bool draws) {
+    return draws && in != nullptr && in->managed() && ! in->resident();
+}
+
+// The same input on a record that does not draw: nothing samples it, so the
+// bind loop skips the descriptor write instead of binding the fallback.
+inline bool AbsentManagedInputSkipsBind(const RtSlot* in, bool draws) {
+    return ! draws && in != nullptr && in->managed() && ! in->resident();
 }
 
 } // namespace vulkan

@@ -26,7 +26,8 @@ VmaImageParameters::VmaImageParameters(VmaImageParameters&& o) noexcept
       sampler(o.sampler),
       extent(o.extent),
       mipmap_level(o.mipmap_level),
-      initial_layout_transitioned(o.initial_layout_transitioned) {}
+      initial_layout_transitioned(o.initial_layout_transitioned),
+      dedicated_token(std::move(o.dedicated_token)) {}
 VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexcept {
     handle                      = std::move(o.handle);
     view                        = std::move(o.view);
@@ -35,6 +36,7 @@ VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexce
     extent                      = o.extent;
     mipmap_level                = o.mipmap_level;
     initial_layout_transitioned = o.initial_layout_transitioned;
+    dedicated_token             = std::move(o.dedicated_token);
     return *this;
 }
 

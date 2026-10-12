@@ -48,5 +48,18 @@ private:
     BoundImage m_src_bound, m_dst_bound;
 };
 
+// The image barriers before a copy wait for the last readers and writers of
+// both images; the previous TOP_OF_PIPE source waited for nothing, and the
+// destination's UNDEFINED -> TRANSFER_DST discard could overtake a sampler
+// still reading it in the frame before.  The access mask names reads and
+// writes, which TOP_OF_PIPE cannot carry.
+inline VkPipelineStageFlags CopyBarrierSourceStages() {
+    return VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+           VK_PIPELINE_STAGE_TRANSFER_BIT;
+}
+inline VkAccessFlags CopyBarrierSourceAccess() {
+    return VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+}
+
 } // namespace vulkan
 } // namespace wallpaper

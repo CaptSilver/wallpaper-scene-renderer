@@ -2,6 +2,7 @@
 
 #include "Instance.hpp"
 #include "Swapchain.hpp"
+#include "DedicatedRtMemory.hpp"
 #include "Core/NoCopyMove.hpp"
 #include "vk_mem_alloc.h"
 #include "vvk/vma_wrapper.hpp"
@@ -14,6 +15,8 @@ namespace vulkan
 struct QueueParameters {
     vvk::Queue handle;
     uint32_t   family_index;
+    // 0 when the family cannot write timestamps.
+    uint32_t timestamp_valid_bits { 0 };
 };
 
 struct VmaBufferParameters {
@@ -56,6 +59,9 @@ struct VmaImageParameters : NoCopy {
     // (validation: "Image must be in COLOR_ATTACHMENT_OPTIMAL but is in
     // UNDEFINED"; black tile / undefined contents on real GPUs).
     bool initial_layout_transitioned { false };
+    // Set while this image owns a dedicated VkDeviceMemory; counts it against the
+    // live-dedicated budget until the image is destroyed.
+    DedicatedLiveCount::Token dedicated_token;
 
     VmaImageParameters();
     ~VmaImageParameters();

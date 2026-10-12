@@ -181,17 +181,19 @@ struct PassCacheDecision {
 // redrawn: `inputs` against this frame's set, `backward_inputs` (see
 // ClassifyBackwardInputs) against last frame's.  Either set may be null when
 // the pass was never wired.  Skipping also needs the pass to be standalone,
-// since a merged pass re-records to keep its render pass group whole.
+// since a merged pass re-records to keep its render pass group whole.  A cached
+// pass is also dropped when its output slot got a new image: the cached bytes
+// died with the old one and no input need have changed.
 template<typename H, typename Set>
 PassCacheDecision DecidePassCache(bool can_cache, bool is_cached, bool own_material_dirty,
                                   bool visible_now, bool visible_when_cached,
                                   std::span<const H> inputs, std::span<const H> backward_inputs,
                                   const Set* rewritten_this_frame, const Set* rewritten_last_frame,
-                                  bool standalone) {
+                                  bool standalone, bool output_generation_moved) {
     PassCacheDecision d;
     if (! can_cache || ! is_cached) return d;
     d.invalidate =
-        own_material_dirty || visible_now != visible_when_cached ||
+        own_material_dirty || visible_now != visible_when_cached || output_generation_moved ||
         (rewritten_this_frame && CachedPassMustRedraw<H>(inputs, *rewritten_this_frame)) ||
         (rewritten_last_frame && CachedPassMustRedraw<H>(backward_inputs, *rewritten_last_frame));
     d.skip = ! d.invalidate && standalone;

@@ -1390,7 +1390,10 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
 }
 
 HideableFrame CustomShaderPass::frameHideable(PassMergeRole role) const {
-    const bool              has_node      = m_desc.node != nullptr;
+    // A blocked pass is a hidden node with hidden ancestors, whether or not it
+    // has a node of its own.
+    const bool              has_node      = m_desc.node != nullptr || m_blocked_frame;
+    const bool              shown         = m_desc.node != nullptr && ! m_blocked_frame;
     const std::vector<bool> chain_visible = m_desc.hideable != HideableKind::None
                                                 ? ChainVisibility(m_desc.chain_effects)
                                                 : std::vector<bool>();
@@ -1398,8 +1401,8 @@ HideableFrame CustomShaderPass::frameHideable(PassMergeRole role) const {
                           chain_visible,
                           m_desc.chain_index,
                           has_node,
-                          has_node && m_desc.node->IsVisible(),
-                          has_node && m_desc.node->AncestorsVisible(),
+                          shown && m_desc.node->IsVisible(),
+                          shown && m_desc.node->AncestorsVisible(),
                           m_desc.chain_base_image_written,
                           m_desc.passthrough_ready,
                           m_desc.clears_output,
@@ -1451,6 +1454,7 @@ bool CustomShaderPass::ensureFramebuffer(const Device& device, PassMergeRole rol
     auto             res = device.handle().CreateFramebuffer(info, fb);
     if (ShouldLogFramebufferFailure(res != VK_SUCCESS, m_fb_failure_logged)) VVK_CHECK(res);
     if (res != VK_SUCCESS) return false;
+    RetireOldFramebuffer(*m_desc.fb != VK_NULL_HANDLE, m_desc.fb, m_fb_retirer);
     m_desc.fb            = std::move(fb);
     m_desc.fb_generation = m_desc.out_slot->generation;
     return true;
@@ -1505,17 +1509,18 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // the early return below would strand the group's begin or end.  The role
     // check keeps that a local, checkable fact rather than an invariant
     // spread across two files: a merged pass re-records instead.
-    const PassCacheDecision cache =
-        DecidePassCache<ResidencyKey>(canCache(),
-                                      isCached(),
-                                      own_dirty,
-                                      hf.node_visible,
-                                      m_cached_visible,
-                                      m_input_keys,
-                                      m_backward_input_keys,
-                                      m_rewritten_frame_tracker,
-                                      m_rewritten_last_frame_tracker,
-                                      role == PassMergeRole::Standalone);
+    const PassCacheDecision cache = DecidePassCache<ResidencyKey>(
+        canCache(),
+        isCached(),
+        own_dirty,
+        hf.node_visible,
+        m_cached_visible,
+        m_input_keys,
+        m_backward_input_keys,
+        m_rewritten_frame_tracker,
+        m_rewritten_last_frame_tracker,
+        role == PassMergeRole::Standalone,
+        m_desc.out_slot != nullptr && m_desc.out_slot->generation != m_cached_output_generation);
     if (cache.invalidate) invalidateCache();
     if (cache.skip) {
         g_cache_hits++;
@@ -1704,6 +1709,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // Scope-local descriptor buffer infos, alive through the push call below.
     VkDescriptorBufferInfo desc_buf {};
     VkDescriptorBufferInfo pt_desc_buf {};
+    bool                   draw_blocked = false;
 
     if (draw_passthrough) {
         // One sampler: whichever of the chain's two ping-pong buffers
@@ -1770,6 +1776,24 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             VkSampler   sampler;
             VkImageView view;
             if (slot.slots.empty()) {
+                // in_slots is sized to vk_textures by prepare(); a Desc built
+                // directly (tests) may carry fewer entries.
+                RtSlot* in = i < m_desc.in_slots.size() ? m_desc.in_slots[i] : nullptr;
+                if (AbsentManagedInputBlocksDraw(in, hf.draws)) {
+                    static int s_absent_input_logs = 0;
+                    if (++s_absent_input_logs <= 5)
+                        LOG_ERROR(
+                            "pass '%s' would draw from absent render target %u (texture %zu); "
+                            "draw dropped this frame",
+                            m_desc.output.c_str(),
+                            in->id,
+                            i);
+                    assert(false && "demand walk left a sampled render target absent");
+                    draw_blocked = true;
+                }
+                // A record that does not draw samples nothing: write no
+                // descriptor for the absent input rather than bind the fallback.
+                if (AbsentManagedInputSkipsBind(in, hf.draws)) continue;
                 // Shader declares this texture binding but no texture was loaded.
                 // Bind a 1x1 dummy texture to satisfy the descriptor and avoid
                 // Vulkan validation error VUID-vkCmdDraw-None-08114.
@@ -1911,7 +1935,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // which must draw (the identical mesh, at the identical transform) to
     // put the chain's prior content on screen instead of nothing, or one
     // whose passthrough failed to build and falls back to its real draw.
-    if (hf.draws) {
+    if (hf.draws && ! draw_blocked) {
         for (usize i = 0; i < m_desc.vertex_bufs.size(); i++) {
             auto& buf = m_desc.vertex_bufs[i];
             cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
@@ -1972,7 +1996,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // First-frame draw complete; the RT contents are now stable for any
     // later-frame cache skip (safe iff canCache(), which VulkanRender set
     // based on alias analysis — see compileRenderGraph).
-    if (canCache()) markCached(hf.node_visible);
+    if (canCache()) markCached(hf.node_visible, m_desc.out_slot ? m_desc.out_slot->generation : 0);
     // Reaching here means the draw was recorded, so consumers sampling this
     // output must not trust their own cache.
     RecordPassDrawn<ResidencyKey>(m_rewritten_frame_tracker, outputKey());

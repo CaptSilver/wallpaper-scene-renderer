@@ -1,12 +1,18 @@
 #pragma once
 #include <algorithm>
 #include <cassert>
+#include <cctype>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <functional>
 #include <span>
 #include <type_traits>
+#include <utility>
 #include <vector>
+
+#include "Vulkan/RetireRing.hpp"
 
 // The key type the pass analyses use to name a render target independently of
 // its VkImage: the slot id for render targets, the Vulkan handle for everything
@@ -181,6 +187,103 @@ inline std::vector<bool> ComputeClearOnAttach(std::span<const PassDemandStatic> 
         out[s] = NeedsInitialClear(has_writer, clears, backward[s]);
     }
     return out;
+}
+
+enum class SlotAction : std::uint8_t
+{
+    None,
+    Create,
+    Keep,
+    Release,
+};
+
+// Per managed slot, per frame.  The idle counter is the hysteresis: a script
+// toggling a layer every frame never reaches the hold, a layer hidden for the
+// evening is released once it does.  `hold` 0 releases everything idle at
+// once (used when a create just failed).
+inline SlotAction DecideSlotAction(bool resident, bool needed, std::uint32_t& idle_frames,
+                                   std::uint32_t hold, bool release_enabled) {
+    if (! resident) return needed ? SlotAction::Create : SlotAction::None;
+    if (needed) {
+        idle_frames = 0;
+        return SlotAction::Keep;
+    }
+    ++idle_frames;
+    if (release_enabled && idle_frames >= hold) return SlotAction::Release;
+    return SlotAction::None;
+}
+
+// About two seconds at 72 Hz; tuned from the Persona 5 measurements.
+constexpr std::uint32_t kDefaultHoldFrames = 150;
+// 2 keeps "release" from meaning "every frame"; 100000 is about 23 minutes
+// at 72 Hz, past which the setting is effectively "never".
+constexpr std::uint32_t kMinHoldFrames = 2;
+constexpr std::uint32_t kMaxHoldFrames = 100000;
+
+// WEKDE_RT_RELEASE_FRAMES: a whole decimal number is clamped into range (so
+// "0" and "1" mean 2, and an absurd value means the cap), and anything that
+// is not one falls back to the default.  Clamping rather than rejecting:
+// someone typing a value wants it honoured as far as it can be.
+inline std::uint32_t ParseHoldFrames(const char* env) {
+    // strtoull would skip leading whitespace and accept a sign; require a digit first.
+    if (env == nullptr || ! std::isdigit(static_cast<unsigned char>(env[0])))
+        return kDefaultHoldFrames;
+    char* end                  = nullptr;
+    errno                      = 0;
+    const unsigned long long v = std::strtoull(env, &end, 10);
+    if (end == env || *end != '\0') return kDefaultHoldFrames;
+    if (errno == ERANGE) return kMaxHoldFrames;
+    return static_cast<std::uint32_t>(
+        std::clamp<unsigned long long>(v, kMinHoldFrames, kMaxHoldFrames));
+}
+
+// Out-of-memory backoff: a minute's worth of frames per failure, at most an
+// hour between attempts.
+inline std::uint64_t RetryAfter(std::uint64_t frame, std::uint32_t streak) {
+    return frame + std::min<std::uint64_t>(60ull * streak, 3600ull);
+}
+inline bool CanRetryCreate(std::uint64_t frame, std::uint64_t retry_after) {
+    return frame >= retry_after;
+}
+
+// GPU microseconds between two vkCmdWriteTimestamp queries.  The counter is
+// only `valid_bits` wide, so the difference is taken in that width (a wrap
+// between the two writes then cancels), then scaled by the device's tick.
+inline double TimestampDeltaUs(std::uint64_t begin, std::uint64_t end, std::uint32_t valid_bits,
+                               float period_ns) {
+    if (valid_bits == 0) return 0.0;
+    const std::uint64_t mask  = valid_bits >= 64 ? ~0ull : ((1ull << valid_bits) - 1ull);
+    const std::uint64_t ticks = (end - begin) & mask;
+    return static_cast<double>(ticks) * static_cast<double>(period_ns) / 1000.0;
+}
+
+// Which drawing passes would sample a slot that has no image (a create
+// failed).  Such a pass is treated as hidden for the frame.  Only the pass
+// that samples the absent slot is blocked, not the readers of its output: those
+// see stale or cleared bytes (never undefined ones) until the retry succeeds.
+inline std::vector<bool> ComputeBlockedPasses(std::span<const PassDemandStatic> statics,
+                                              std::span<const PassDemandFrame>  frames,
+                                              const std::vector<bool>&          resident) {
+    const std::size_t n = std::min(statics.size(), frames.size());
+    std::vector<bool> blocked(n, false);
+    auto              absent = [&](const ResidencyKey& k) {
+        return k.kind == ResidencyKey::Kind::Slot &&
+               (k.value >= resident.size() || ! resident[k.value]);
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        const PassDemandStatic& s = statics[i];
+        const PassDemandFrame&  f = frames[i];
+        if (! f.draws) continue;
+        switch (f.inputs) {
+        case DemandInputs::None: break;
+        case DemandInputs::Own:
+            for (const ResidencyKey& k : s.own_inputs) blocked[i] = blocked[i] || absent(k);
+            break;
+        case DemandInputs::PassthroughA: blocked[i] = absent(s.passthrough_a); break;
+        case DemandInputs::PassthroughB: blocked[i] = absent(s.passthrough_b); break;
+        }
+    }
+    return blocked;
 }
 
 } // namespace wallpaper::vulkan

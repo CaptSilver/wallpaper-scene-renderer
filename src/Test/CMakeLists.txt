@@ -121,6 +121,7 @@ add_executable(backend_scene_tests
     test_PassCacheAlias.cpp
     test_PassMerge.cpp
     test_RtResidency.cpp
+    test_DedicatedRtMemory.cpp
     test_BlendModeFactors.cpp
     test_CustomShaderPassDesc.cpp
     test_PassthroughShader.cpp
