@@ -67,3 +67,14 @@ TEST_SUITE("vvk::Device::CreateQueryPool") {
         CHECK(g_destroyed_pools.empty());
     }
 }
+
+// Without libvulkan, LoadLibrary leaves vkGetInstanceProcAddr null. Loading the
+// global entry points through it then called a null function pointer, so a
+// host without Vulkan crashed instead of reporting it.
+TEST_SUITE("vvk instance loading") {
+    TEST_CASE("Load refuses a dispatch with no vkGetInstanceProcAddr") {
+        vvk::InstanceDispatch dld {};
+        CHECK_FALSE(vvk::Load(dld));
+        CHECK_FALSE(vvk::Load(VkInstance(nullptr), dld));
+    }
+}

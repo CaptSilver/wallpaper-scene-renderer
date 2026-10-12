@@ -10,6 +10,11 @@ namespace vvk
 template<typename T>
 bool Proc(T& result, const InstanceDispatch& dld, const char* proc_name,
           VkInstance instance = nullptr) noexcept {
+    // Null when libvulkan could not be loaded (LoadLibrary failed).
+    if (dld.vkGetInstanceProcAddr == nullptr) {
+        result = nullptr;
+        return false;
+    }
     result = reinterpret_cast<T>(dld.vkGetInstanceProcAddr(instance, proc_name));
     return result != nullptr;
 }

@@ -158,8 +158,10 @@ void Instance::Destroy() {}
 
 bool Instance::Create(Instance& inst, std::span<const Extension> instExts,
                       std::span<const InstanceLayer> instLayers) {
-    vvk::LoadLibrary(inst.m_vklib, inst.m_dld);
-    vvk::Load(inst.m_dld);
+    if (vvk::LoadLibrary(inst.m_vklib, inst.m_dld) != VK_SUCCESS || ! vvk::Load(inst.m_dld)) {
+        LOG_ERROR("could not load the Vulkan loader (libvulkan.so.1); is a Vulkan driver installed?");
+        return false;
+    }
 
     EnumateExts(inst.m_extensions, inst.m_dld);
     Set<std::string> exts, layers;
