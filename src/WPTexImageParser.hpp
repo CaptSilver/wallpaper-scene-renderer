@@ -1,6 +1,7 @@
 #pragma once
 #include "Interface/IImageParser.h"
 #include "Fs/VFS.h"
+#include "TexVariants.hpp"
 #include <mutex>
 #include <span>
 #include <unordered_map>
@@ -29,6 +30,11 @@ public:
 
     void SetCachePath(const std::string& path) { m_cachePath = path; }
 
+    // Decides which conditional variant Parse() builds for a texture that has
+    // them. Unset, every texture loads its base image. Set it before the first
+    // Parse(); PrefetchTextures reads it from worker threads.
+    void SetVariantSelector(texvariant::Selector s) { m_variantSelector = std::move(s); }
+
     // Returns the number of entries in the header-only cache.  Used in tests
     // to assert that error-path returns are not written to the cache.
     std::size_t headerCacheSize() const { return m_headerCache.size(); }
@@ -37,6 +43,7 @@ private:
     fs::VFS*    m_vfs;
     i64         m_maxTotalBytes;
     std::string m_cachePath;
+    texvariant::Selector m_variantSelector;
     // Guards m_registered only.  PrefetchTextures() (below) calls Parse()
     // for many names at once from a worker pool, and Parse() both reads
     // and writes m_registered on every call.  m_headerCache stays

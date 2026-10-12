@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include "WPTexImageParser.hpp"
+#include "TexVariants.hpp"
 #include "Fs/VFS.h"
 #include "Fs/MemBinaryStream.h"
 #include "Type.hpp"
@@ -997,13 +998,13 @@ TEST_SUITE("WPTexImageParser") {
         CHECK(img->slots[0].height == 4);
     }
 
-    TEST_CASE("TEXB v4 header reads imageType and isVideoMp4") {
+    TEST_CASE("TEXB v4 header reads imageType and an empty variant table") {
         // imageType=UNKNOWN(-1) routes through the raw-copy branch (the raw
         // RGBA payload here is not a valid image container, so the stbi
         // pre-validation guard would otherwise reject it).
         auto buf = makeTexHeader(1, 1, 4, 0, 0, 4, 4, 4, 4, 1);
         appendInt32(buf, -1); // imageType = UNKNOWN (texb >= 3)
-        appendInt32(buf, 0); // isVideoMp4 flag    (texb >= 4)
+        appendInt32(buf, 0);  // variant count      (texb >= 4)
         appendInt32(buf, 1); // mipmap count
         appendInt32(buf, 4); // w
         appendInt32(buf, 4); // h
@@ -2287,7 +2288,7 @@ TEST_SUITE("WPTexImageParser.PrefetchConcurrency") {
 // Fuzz crash regression replay.
 //
 // Iterates tests/fixtures/fuzz_regressions/WPTexImageParser/*.bin and feeds
-// each file through the same entry point fuzz_WPTexImageParser drives.
+// each file through the same entry points fuzz_WPTexImageParser drives.
 // ---------------------------------------------------------------------------
 
 #include "test_data_root.hpp"
@@ -2311,8 +2312,15 @@ TEST_SUITE("regression: minimised fuzz crashes") {
                 auto mockFs = std::make_unique<MockFs>();
                 mockFs->AddFile("/materials/fuzz.tex", std::move(buf));
                 vfs.Mount("/assets", std::move(mockFs));
+                // Same calls as the harness: a variant selector that always
+                // holds, then ParseHeader on a fresh parser.
                 WPTexImageParser parser(&vfs);
+                parser.SetVariantSelector([](const std::string&, const std::string&) {
+                    return true;
+                });
                 CHECK_NOTHROW((void)parser.Parse("fuzz"));
+                WPTexImageParser header_parser(&vfs);
+                CHECK_NOTHROW((void)header_parser.ParseHeader("fuzz"));
             }
         }
     }
@@ -2498,5 +2506,319 @@ TEST_SUITE("WPTexImageParser texture budget") {
         MaxTexBytesEnvGuard guard;
         setenv("WEKDE_MAX_TEX_BYTES", "4096", 1);
         CHECK(DefaultMaxTexBytes() == 4096);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conditional texture variants (TEXB0004 with a non-zero variant count).
+//
+// Layout: after imageType the header carries a variant count and that many
+// records {i32 1, i32 index, i32 0, NUL-terminated JSON condition}. Every mip
+// is then followed by {i32 1, i32 n} and n patches {i32 1, i32 index, i32 x,
+// i32 y, i32 w, i32 h, i32 13, i32 size} + LZ4 bytes that replace the
+// rectangle (x, y, w, h) of the base mip when that variant is selected.
+// ---------------------------------------------------------------------------
+namespace
+{
+
+struct VariantPatch {
+    int32_t index;
+    int32_t x, y, w, h;
+    uint8_t fill;
+    int32_t lead { 1 };
+    int32_t kind { 13 };
+};
+
+std::vector<uint8_t> lz4(const std::vector<uint8_t>& raw) {
+    std::vector<char> out((size_t)LZ4_compressBound((int)raw.size()));
+    int               n = LZ4_compress_default(
+        reinterpret_cast<const char*>(raw.data()), out.data(), (int)raw.size(), (int)out.size());
+    return { out.begin(), out.begin() + n };
+}
+
+int32_t bc2Bytes(int32_t w, int32_t h) { return ((w + 3) / 4) * ((h + 3) / 4) * 16; }
+
+// BC2 8x8 texture, two mips (8x8, 4x4), base bytes 0x11. `conds` are the
+// header records; `patchesPerMip[m]` the patches written after mip m.
+// `mip0PatchCount` overrides the patch count written after mip 0.
+std::vector<uint8_t> makeVariantTex(const std::vector<std::pair<int32_t, std::string>>& conds,
+                                    const std::vector<std::vector<VariantPatch>>& patchesPerMip,
+                                    int32_t mip0PatchCount = -1) {
+    auto buf = makeTexHeader(1, 1, 4, /*BC2*/ 6, 0, 8, 8, 8, 8, 1);
+    appendInt32(buf, -1); // imageType UNKNOWN
+    appendInt32(buf, (int32_t)conds.size());
+    for (auto& [idx, json] : conds) {
+        appendInt32(buf, 1);
+        appendInt32(buf, idx);
+        appendInt32(buf, 0);
+        append(buf, json.c_str(), json.size() + 1);
+    }
+    appendInt32(buf, 2); // mipmap count
+    for (int32_t m = 0; m < 2; m++) {
+        int32_t              dim = 8 >> m;
+        std::vector<uint8_t> base((size_t)bc2Bytes(dim, dim), 0x11);
+        appendMipmapV2(buf, dim, dim, base, /*compress=*/true);
+        const auto& patches = patchesPerMip[(size_t)m];
+        appendInt32(buf, 1);
+        appendInt32(buf, m == 0 && mip0PatchCount >= 0 ? mip0PatchCount : (int32_t)patches.size());
+        for (auto& p : patches) {
+            auto data = lz4(std::vector<uint8_t>((size_t)bc2Bytes(p.w, p.h), p.fill));
+            appendInt32(buf, p.lead);
+            appendInt32(buf, p.index);
+            appendInt32(buf, p.x);
+            appendInt32(buf, p.y);
+            appendInt32(buf, p.w);
+            appendInt32(buf, p.h);
+            appendInt32(buf, p.kind);
+            appendInt32(buf, (int32_t)data.size());
+            append(buf, data.data(), data.size());
+        }
+    }
+    return buf;
+}
+
+const std::vector<std::pair<int32_t, std::string>> kFaceConds {
+    { 1, R"({"condition":{"condition":"Ariane","name":"facestyles"}})" },
+    { 2, R"({"condition":{"condition":"Bloodied","name":"facestyles"}})" },
+};
+
+// Variant 1 replaces the whole image; variant 2 only the right half.
+const std::vector<std::vector<VariantPatch>> kFacePatches {
+    { { 1, 0, 0, 8, 8, 0x22 }, { 2, 4, 0, 4, 8, 0x33 } },
+    { { 1, 0, 0, 4, 4, 0x22 }, { 2, 0, 0, 4, 4, 0x33 } },
+};
+
+texvariant::Selector selectFace(std::string value) {
+    return [value](const std::string& prop, const std::string& v) {
+        return prop == "facestyles" && v == value;
+    };
+}
+
+// Byte at block (bx, by) of an 8x8 BC2 mip (2 blocks per row).
+uint8_t blockByte(const Image& img, size_t mip, int bx, int by) {
+    return img.slots[0].mipmaps[mip].data.get()[(by * 2 + bx) * 16];
+}
+
+} // namespace
+
+TEST_SUITE("WPTexImageParser variants") {
+    TEST_CASE("Without a matching condition the base image loads") {
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, kFacePatches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Elster"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        REQUIRE(img->slots[0].mipmaps.size() == 2);
+        CHECK(img->slots[0].mipmaps[0].size == 64);
+        CHECK(blockByte(*img, 0, 0, 0) == 0x11);
+        CHECK(blockByte(*img, 0, 1, 1) == 0x11);
+        CHECK(img->slots[0].mipmaps[1].data.get()[0] == 0x11);
+    }
+
+    TEST_CASE("Header records the variant conditions") {
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, kFacePatches));
+        WPTexImageParser parser(&vfs);
+        auto             h = parser.ParseHeader("face");
+        REQUIRE(h.variants.size() == 2);
+        CHECK(h.variants[0].index == 1);
+        CHECK(h.variants[0].property == "facestyles");
+        CHECK(h.variants[0].value == "Ariane");
+        CHECK(h.variants[1].value == "Bloodied");
+        // The mip table after the records was read, not the JSON bytes.
+        CHECK(h.mipmap_pow2);
+        CHECK_FALSE(h.mipmap_larger);
+    }
+
+    TEST_CASE("A full-image variant replaces every mip") {
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, kFacePatches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Ariane"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        CHECK(blockByte(*img, 0, 0, 0) == 0x22);
+        CHECK(blockByte(*img, 0, 1, 1) == 0x22);
+        CHECK(img->slots[0].mipmaps[1].data.get()[0] == 0x22);
+    }
+
+    TEST_CASE("A patch variant replaces only its rectangle") {
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, kFacePatches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Bloodied"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        CHECK(blockByte(*img, 0, 0, 0) == 0x11);
+        CHECK(blockByte(*img, 0, 0, 1) == 0x11);
+        CHECK(blockByte(*img, 0, 1, 0) == 0x33);
+        CHECK(blockByte(*img, 0, 1, 1) == 0x33);
+        CHECK(img->slots[0].mipmaps[1].data.get()[0] == 0x33);
+    }
+
+    TEST_CASE("A patch with an unknown kind keeps the base image") {
+        auto patches       = kFacePatches;
+        patches[0][0].kind = 7;
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, patches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Ariane"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        CHECK(blockByte(*img, 0, 0, 0) == 0x11);
+        // The next mip's patch is well-formed and still applies.
+        CHECK(img->slots[0].mipmaps[1].data.get()[0] == 0x22);
+    }
+
+    TEST_CASE("A patch outside its mip keeps the base image") {
+        auto patches    = kFacePatches;
+        patches[0][1].x = 8;
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, patches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Bloodied"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        CHECK(blockByte(*img, 0, 1, 0) == 0x11);
+    }
+
+    TEST_CASE("A patch count larger than the stream is rejected") {
+        // Under the plausibility cap, so the stream-size check is what rejects it.
+        auto buf = makeVariantTex(kFaceConds, { {}, {} }, /*mip0PatchCount=*/60);
+        VFS  vfs;
+        mountTex(vfs, "face", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("face") == nullptr);
+    }
+
+    TEST_CASE("A variant count larger than the stream is rejected") {
+        auto buf = makeTexHeader(1, 1, 4, 6, 0, 8, 8, 8, 8, 1);
+        appendInt32(buf, -1);
+        appendInt32(buf, 60); // under the cap; the stream holds no records
+        VFS vfs;
+        mountTex(vfs, "face", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK(parser.Parse("face") == nullptr);
+    }
+    TEST_CASE("A patch size larger than the stream is rejected") {
+        auto buf = makeVariantTex(kFaceConds, { { { 1, 0, 0, 8, 8, 0x22 } }, {} });
+        // The selected patch's size field is the int right before its LZ4
+        // bytes; find it from the end of mip 0's single patch header.
+        // Patch header: {1, 1, 0, 0, 8, 8, 13, size}.
+        const int32_t hdr[7] = { 1, 1, 0, 0, 8, 8, 13 };
+        auto          it     = std::search(buf.begin(),
+                                           buf.end(),
+                                           reinterpret_cast<const uint8_t*>(hdr),
+                                           reinterpret_cast<const uint8_t*>(hdr) + sizeof(hdr));
+        REQUIRE(it != buf.end());
+        int32_t huge = 0x7fffffff;
+        std::memcpy(&*(it + sizeof(hdr)), &huge, 4);
+        VFS vfs;
+        mountTex(vfs, "face", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Ariane"));
+        CHECK(parser.Parse("face") == nullptr);
+    }
+
+    TEST_CASE("A sprite with variants still reads its frame table") {
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 4, 0, spriteFlag, 4, 4, 4, 4, 1);
+        appendInt32(buf, -1); // imageType UNKNOWN
+        appendInt32(buf, 1);  // one variant
+        appendInt32(buf, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 0);
+        std::string json = R"({"condition":{"condition":"Isa","name":"facestyles"}})";
+        append(buf, json.c_str(), json.size() + 1);
+        appendInt32(buf, 1); // mipmap count
+        std::vector<uint8_t> pixels(4 * 4 * 4, 0x11);
+        appendMipmapV2(buf, 4, 4, pixels);
+        auto patch = lz4(std::vector<uint8_t>(4 * 4 * 4, 0x22));
+        appendInt32(buf, 1); // trailer lead
+        appendInt32(buf, 1); // one patch
+        for (int32_t v : { 1, 1, 0, 0, 4, 4, 13 }) appendInt32(buf, v);
+        appendInt32(buf, (int32_t)patch.size());
+        append(buf, patch.data(), patch.size());
+        appendTexVersion(buf, 2); // texs
+        appendInt32(buf, 1);      // framecount
+        appendInt32(buf, 0);      // imageId
+        for (float f : { 0.5f, 0.0f, 0.0f, 4.0f, 0.0f, 0.0f, 4.0f }) appendFloat(buf, f);
+
+        VFS vfs;
+        mountTex(vfs, "sprite_variant", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_variant");
+        CHECK(header.isSprite);
+        REQUIRE(header.spriteAnim.numFrames() == 1);
+        CHECK(header.spriteAnim.GetCurFrame().frametime == doctest::Approx(0.5f));
+    }
+    TEST_CASE("Every patch the selected variant has in a mip is applied") {
+        // Two rectangles for variant 2 in mip 0: left column and right column.
+        auto patches = kFacePatches;
+        patches[0]   = { { 2, 0, 0, 4, 8, 0x44 }, { 2, 4, 0, 4, 8, 0x33 } };
+        VFS vfs;
+        mountTex(vfs, "face", makeVariantTex(kFaceConds, patches));
+        WPTexImageParser parser(&vfs);
+        parser.SetVariantSelector(selectFace("Bloodied"));
+        auto img = parser.Parse("face");
+        REQUIRE(img != nullptr);
+        CHECK(blockByte(*img, 0, 0, 0) == 0x44);
+        CHECK(blockByte(*img, 0, 1, 1) == 0x33);
+    }
+
+    TEST_CASE("A sprite whose trailer overruns the stream is no longer a sprite") {
+        uint32_t spriteFlag = (1u << 2);
+        auto     buf        = makeTexHeader(1, 1, 4, 0, spriteFlag, 4, 4, 4, 4, 1);
+        appendInt32(buf, -1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 1);
+        appendInt32(buf, 0);
+        std::string json = R"({"condition":{"condition":"Isa","name":"facestyles"}})";
+        append(buf, json.c_str(), json.size() + 1);
+        appendInt32(buf, 1);
+        std::vector<uint8_t> pixels(4 * 4 * 4, 0x11);
+        appendMipmapV2(buf, 4, 4, pixels);
+        appendInt32(buf, 1);
+        appendInt32(buf, 30); // patch count the stream cannot hold
+        VFS vfs;
+        mountTex(vfs, "sprite_short", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        auto             header = parser.ParseHeader("sprite_short");
+        CHECK_FALSE(header.isSprite);
+    }
+
+    // ParseHeader's sprite walk takes its image, mip and frame counts from
+    // the file; each must be bounded by the stream, or a short file loops
+    // reading zeros for billions of iterations (fuzz timeout).
+    TEST_CASE("ParseHeader rejects a sprite image count beyond the stream") {
+        auto buf = makeTexHeader(1, 1, 2, 0, (1u << 2), 4, 4, 4, 4, 0x7ffffff0);
+        VFS  vfs;
+        mountTex(vfs, "sprite_count", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK_FALSE(parser.ParseHeader("sprite_count").isSprite);
+    }
+
+    TEST_CASE("ParseHeader rejects a sprite mip count beyond the stream") {
+        auto buf = makeTexHeader(1, 1, 2, 0, (1u << 2), 4, 4, 4, 4, 1);
+        appendInt32(buf, 0x7ffffff0); // mipmap count
+        VFS vfs;
+        mountTex(vfs, "sprite_mips", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK_FALSE(parser.ParseHeader("sprite_mips").isSprite);
+    }
+
+    TEST_CASE("ParseHeader rejects a sprite frame count beyond the stream") {
+        auto buf = makeTexHeader(1, 1, 2, 0, (1u << 2), 4, 4, 4, 4, 1);
+        appendInt32(buf, 1);
+        std::vector<uint8_t> pixels(4 * 4 * 4, 0);
+        appendMipmapV2(buf, 4, 4, pixels);
+        appendTexVersion(buf, 2);
+        appendInt32(buf, 0x7ffffff0); // framecount
+        VFS vfs;
+        mountTex(vfs, "sprite_frames", std::move(buf));
+        WPTexImageParser parser(&vfs);
+        CHECK_FALSE(parser.ParseHeader("sprite_frames").isSprite);
     }
 }

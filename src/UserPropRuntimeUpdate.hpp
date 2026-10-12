@@ -83,13 +83,18 @@ inline bool userPropHasRuntimeBinding(const Scene& scene, const std::string& nam
     return false;
 }
 
-// The subset of `changed` that nothing in the live scene can apply, i.e. the
-// reason to reload.
+inline bool userPropSelectsTextureVariant(const Scene& scene, const std::string& name) {
+    return scene.userPropTextureVariantNames.count(name) != 0;
+}
+
+// The subset of `changed` that the live scene cannot apply in place, i.e. the
+// reason to reload: nothing binds it, or it picks a texture variant.
 inline std::vector<std::string> userPropsNeedingReload(const Scene&                    scene,
                                                        const std::vector<std::string>& changed) {
     std::vector<std::string> needReload;
     for (const auto& name : changed) {
-        if (! userPropHasRuntimeBinding(scene, name)) needReload.push_back(name);
+        if (! userPropHasRuntimeBinding(scene, name) || userPropSelectsTextureVariant(scene, name))
+            needReload.push_back(name);
     }
     return needReload;
 }

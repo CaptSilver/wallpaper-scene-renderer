@@ -34,6 +34,14 @@ std::set<std::string> allNames {
 // wired properties out of the gray zone while actually excluding the rest,
 // rather than declaring everything bound.
 TEST_SUITE("active user-property binding names") {
+    TEST_CASE("a name that picks a texture variant is included") {
+        Scene scene;
+        scene.userPropTextureVariantNames.insert("orphan");
+
+        auto active = activeUserPropBindingNames(allNames, scene);
+        CHECK(active.count("orphan") == 1);
+    }
+
     TEST_CASE("a name absent from every binding table is excluded") {
         Scene scene;
         auto  active = activeUserPropBindingNames(allNames, scene);

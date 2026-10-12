@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 #include <vector>
 #include <string>
 
@@ -495,6 +496,9 @@ public:
     };
     std::unordered_map<std::string, std::vector<UserPropEffectVisibility>>
         userPropEffectVisBindings;
+    // User properties that pick a conditional variant of some texture. The
+    // variant is decoded into the texture at load, so changing one reloads.
+    std::set<std::string> userPropTextureVariantNames;
     // Node lookup by ID for visibility updates and SceneScript getLayer
     // resolution.
     //

@@ -152,6 +152,17 @@ public:
         return *propValue;
     }
 
+    // True when property `name` currently equals `value`, compared the way a
+    // {"user": {"condition": value, "name": name}} visibility binding compares:
+    // a string by its text, anything else by its JSON text. An empty `value`
+    // is no condition at all and never holds.
+    bool ConditionHolds(const std::string& name, const std::string& value) const {
+        if (value.empty()) return false;
+        auto prop = GetProperty(name);
+        if (! prop) return false;
+        return (prop->is_string() ? prop->get<std::string>() : prop->dump()) == value;
+    }
+
     // Insert all property names into a set (for activeBindings)
     void InsertAllNames(std::set<std::string>& out) const {
         for (const auto& [name, _] : m_properties) out.insert(name);

@@ -61,6 +61,7 @@ add_executable(backend_scene_tests
     # Layer alpha / colour fan-out into image- and flat-shader uniforms.
     test_SceneMaterialLayerWrite.cpp
     test_WPTexImageHelpers.cpp
+    test_TexVariants.cpp
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
     test_WPTextRendererGlyphCache.cpp

@@ -55,7 +55,17 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                     std::vector<uint8_t>(data, data + size));
     vfs.Mount("/assets", std::move(mockFs));
 
+    // A selector that always holds picks the first conditional variant, so a
+    // file with variant patches also runs their decompress-and-copy path.
     wallpaper::WPTexImageParser parser(&vfs);
+    parser.SetVariantSelector([](const std::string&, const std::string&) {
+        return true;
+    });
     (void)parser.Parse("fuzz");
+
+    // ParseHeader walks the same header and variant trailers on its own path;
+    // a fresh parser keeps it from answering out of Parse's cache.
+    wallpaper::WPTexImageParser header_parser(&vfs);
+    (void)header_parser.ParseHeader("fuzz");
     return 0;
 }

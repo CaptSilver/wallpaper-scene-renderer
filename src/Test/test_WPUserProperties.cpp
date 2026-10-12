@@ -324,3 +324,38 @@ TEST_SUITE("WPUserProperties::Misc") {
     }
 
 } // TEST_SUITE
+
+// ===========================================================================
+// ConditionHolds
+// ===========================================================================
+
+TEST_SUITE("WPUserProperties::ConditionHolds") {
+    TEST_CASE("a combo matches only its current value") {
+        WPUserProperties props;
+        props.SetProperty("facestyles", "Isa");
+        CHECK(props.ConditionHolds("facestyles", "Isa"));
+        CHECK_FALSE(props.ConditionHolds("facestyles", "Ariane"));
+    }
+
+    TEST_CASE("a non-string value is compared by its JSON text") {
+        WPUserProperties props;
+        props.SetProperty("count", 3);
+        props.SetProperty("enabled", true);
+        CHECK(props.ConditionHolds("count", "3"));
+        CHECK(props.ConditionHolds("enabled", "true"));
+        CHECK_FALSE(props.ConditionHolds("enabled", "false"));
+    }
+
+    TEST_CASE("an empty condition never matches") {
+        WPUserProperties props;
+        props.LoadFromProjectJson(R"({"general":{"properties":{
+            "facestyles":{"type":"combo","value":"Elster"}}}})");
+        props.SetProperty("facestyles", "Isa");
+        CHECK_FALSE(props.ConditionHolds("facestyles", ""));
+    }
+
+    TEST_CASE("an unknown property never matches") {
+        WPUserProperties props;
+        CHECK_FALSE(props.ConditionHolds("facestyles", "Isa"));
+    }
+}

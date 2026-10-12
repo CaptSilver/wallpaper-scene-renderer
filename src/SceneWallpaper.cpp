@@ -3053,13 +3053,15 @@ namespace wallpaper
 // property wired only inside a script body still does something — editing it
 // just happens to need a reload, same as any other script-baked value. What's
 // excluded is a name neither path reaches at all: a stale project.json entry,
-// or a toggle whose handler was dropped.
+// or a toggle whose handler was dropped. A property that picks a texture
+// variant counts too; like a script-read one, it applies through a reload.
 std::set<std::string> activeUserPropBindingNames(const std::set<std::string>& allPropNames,
                                                  const Scene&                 scene) {
     std::set<std::string> active;
     for (const auto& name : allPropNames) {
         if (wek::userPropHasRuntimeBinding(scene, name) ||
-            wek::userPropReferencedInScript(scene, name))
+            wek::userPropReferencedInScript(scene, name) ||
+            wek::userPropSelectsTextureVariant(scene, name))
             active.insert(name);
     }
     return active;

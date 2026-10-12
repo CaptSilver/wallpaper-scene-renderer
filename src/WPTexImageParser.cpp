@@ -2,6 +2,7 @@
 
 #include "Type.hpp"
 #include "WPTexImageHelpers.h"
+#include "TexVariants.hpp"
 #include "WPCommon.hpp"
 #include <cerrno>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -106,7 +108,140 @@ std::vector<char> Lz4Decompress(const char* src, int size, int decompressed_size
     }
     return dst;
 }
-void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
+// Header records and per-mip patches of conditional variants (TexVariants.hpp).
+// Every file in the wild carries a handful; the cap only bounds hostile input.
+constexpr i32 kMaxTexVariants = 64;
+// Smallest variant header record: three i32 plus the JSON's NUL.
+constexpr usize kVariantRecordMinBytes = 13;
+// Every patch record is eight i32 ahead of its bytes.
+constexpr usize kVariantPatchHeaderBytes = 32;
+
+// Reads the variant table that follows imageType in a TEXB0004 header: a count,
+// then per variant {i32 1, i32 index, i32 0, NUL-terminated JSON condition}.
+// A record whose fixed fields or JSON are not the known shape is logged and
+// dropped, so its variant can never be selected and the base image shows.
+// Returns false when the count cannot fit the rest of the stream.
+bool LoadVariantTable(fs::IBinaryStream& file, ImageHeader& header) {
+    i32 count = file.ReadInt32();
+    if (count < 0 || count > kMaxTexVariants ||
+        ! CountFitsStream(file, (usize)count, kVariantRecordMinBytes)) {
+        LOG_ERROR("tex: variant count %d is not plausible for this file", count);
+        return false;
+    }
+    header.extraHeader["variantcount"].val = count;
+    for (i32 i = 0; i < count; i++) {
+        i32         tag   = file.ReadInt32();
+        i32         index = file.ReadInt32();
+        i32         pad   = file.ReadInt32();
+        std::string json  = file.ReadStr();
+        auto        cond  = texvariant::ParseCondition(index, json);
+        if (tag != 1 || pad != 0 || ! cond) {
+            LOG_INFO("tex: ignoring variant record %d (tag=%d index=%d pad=%d): %.200s",
+                     i,
+                     tag,
+                     index,
+                     pad,
+                     json.c_str());
+            continue;
+        }
+        header.variants.push_back(std::move(*cond));
+    }
+    return true;
+}
+
+// One patch of the selected variant for a single mip, still LZ4-compressed.
+struct MipVariantPatch {
+    i32               x { 0 }, y { 0 }, w { 0 }, h { 0 };
+    std::vector<char> bytes;
+};
+
+// Reads the trailer a file with variants stores after each mip:
+// {i32 1, i32 n} then n patches of {i32 1, i32 index, i32 x, i32 y, i32 w,
+// i32 h, i32 13, i32 size} + `size` LZ4 bytes. Keeps the patches belonging to
+// `selected` (0 keeps nothing) and seeks past the rest. A selected patch
+// whose fixed fields are unfamiliar is logged and skipped, leaving that mip
+// on the base image. Returns false when the trailer overruns the stream.
+bool ReadMipVariantTrailer(fs::IBinaryStream& file, const std::string& name, usize mip,
+                           i32 selected, std::vector<MipVariantPatch>& out) {
+    i32 lead = file.ReadInt32();
+    i32 n    = file.ReadInt32();
+    if (n < 0 || n > kMaxTexVariants ||
+        ! CountFitsStream(file, (usize)n, kVariantPatchHeaderBytes)) {
+        LOG_ERROR("tex '%s' mip[%zu]: variant patch count %d exceeds stream", name.c_str(), mip, n);
+        return false;
+    }
+    for (i32 i = 0; i < n; i++) {
+        i32 rec[8];
+        for (auto& v : rec) v = file.ReadInt32();
+        const i32 size = rec[7];
+        if (size < 0 || ! CountFitsStream(file, (usize)size)) {
+            LOG_ERROR(
+                "tex '%s' mip[%zu]: variant patch size %d exceeds stream", name.c_str(), mip, size);
+            return false;
+        }
+        if (rec[1] != selected || selected == 0) {
+            file.SeekCur(size);
+            continue;
+        }
+        if (lead != 1 || rec[0] != 1 || rec[6] != 13) {
+            LOG_INFO("tex '%s' mip[%zu]: skipping variant %d patch with unknown "
+                     "fields (lead=%d tag=%d kind=%d)",
+                     name.c_str(),
+                     mip,
+                     selected,
+                     lead,
+                     rec[0],
+                     rec[6]);
+            file.SeekCur(size);
+            continue;
+        }
+        MipVariantPatch p { rec[2], rec[3], rec[4], rec[5], std::vector<char>((usize)size) };
+        file.Read(p.bytes.data(), (usize)size);
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool HasVariantTrailers(const ImageHeader& header) {
+    auto it = header.extraHeader.find("variantcount");
+    return it != header.extraHeader.end() && it->second.val > 0;
+}
+
+// Decompresses `patch` and copies it over its rectangle of `mip`. A patch
+// that does not decode to exactly its rectangle's size, or does not fit the
+// mip, leaves the mip on the base image.
+void ApplyMipVariantPatch(const std::string& name, usize mip_index, TextureFormat fmt,
+                          std::vector<char>& mip, i32 mipW, i32 mipH,
+                          const MipVariantPatch& patch) {
+    const i64         want = texvariant::RegionBytes(fmt, patch.w, patch.h);
+    std::vector<char> raw;
+    if (want > 0 && want <= (i64)mip.size())
+        raw = Lz4Decompress(patch.bytes.data(), (int)patch.bytes.size(), (int)want);
+    if (raw.empty() || ! texvariant::BlitPatch(fmt,
+                                               reinterpret_cast<uint8_t*>(mip.data()),
+                                               (isize)mip.size(),
+                                               mipW,
+                                               mipH,
+                                               reinterpret_cast<const uint8_t*>(raw.data()),
+                                               (isize)raw.size(),
+                                               patch.x,
+                                               patch.y,
+                                               patch.w,
+                                               patch.h)) {
+        LOG_ERROR("tex '%s' mip[%zu]: variant patch %dx%d at (%d,%d) does not fit the "
+                  "%dx%d mip, keeping the base image",
+                  name.c_str(),
+                  mip_index,
+                  patch.w,
+                  patch.h,
+                  patch.x,
+                  patch.y,
+                  mipW,
+                  mipH);
+    }
+}
+
+bool LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
     header.extraHeader["texv"].val = ReadTexVesion(file);
     header.extraHeader["texi"].val = ReadTexVesion(file);
 
@@ -150,7 +285,8 @@ void LoadHeader(fs::IBinaryStream& file, ImageHeader& header) {
     header.count = file.ReadInt32();
 
     if (header.extraHeader["texb"].val >= 3) header.type = static_cast<ImageType>(file.ReadInt32());
-    if (header.extraHeader["texb"].val >= 4) file.ReadInt32(); // isVideoMp4 flag, skip
+    if (header.extraHeader["texb"].val >= 4) return LoadVariantTable(file, header);
+    return true;
 }
 
 inline ImageHeader MakeFallbackHeader() {
@@ -239,7 +375,10 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
     if (! pfile) return nullptr;
     auto& file     = *pfile;
     auto  startpos = file.Tell();
-    LoadHeader(file, img.header);
+    if (! LoadHeader(file, img.header)) return nullptr;
+    const i32 variant = texvariant::SelectVariant(img.header.variants, m_variantSelector);
+    if (variant != 0)
+        LOG_INFO("tex '%s': user properties select variant %d", name.c_str(), variant);
 
     {
         LOG_INFO("tex '%s': %dx%d fmt=%s sprite=%d count=%d",
@@ -345,6 +484,11 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             std::vector<char> result((usize)src_size);
             file.Read(result.data(), (usize)src_size);
 
+            std::vector<MipVariantPatch> variant_patches;
+            if (HasVariantTrailers(img.header) &&
+                ! ReadMipVariantTrailer(file, name, i_mipmap, variant, variant_patches))
+                return nullptr;
+
             // is LZ4 compress
             if (LZ4_compressed) {
                 auto decompressed = Lz4Decompress(result.data(), src_size, decompressed_size);
@@ -398,6 +542,10 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                                   videoPath.c_str());
                     }
                 }
+                if (! variant_patches.empty())
+                    LOG_INFO("tex '%s' mip[%zu]: variant patches do not apply to a video",
+                             name.c_str(),
+                             i_mipmap);
                 img.header.isVideoTexture = true;
                 img.header.videoFilePath  = videoPath;
 
@@ -439,6 +587,11 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
             }
             // is image container
             if (img.header.extraHeader["texb"].val >= 3 && img.header.type != ImageType::UNKNOWN) {
+                if (! variant_patches.empty())
+                    LOG_INFO("tex '%s' mip[%zu]: variant patches do not apply to an embedded "
+                             "image",
+                             name.c_str(),
+                             i_mipmap);
                 // Pre-validate the embedded image's declared dimensions before
                 // calling stbi_load_from_memory.  stbi allocates its output
                 // buffer up front from the decoded image header (TGA/PNG/JPEG);
@@ -517,6 +670,15 @@ std::shared_ptr<Image> WPTexImageParser::Parse(const std::string& name) {
                 }
                 total_bytes += mip_bytes;
 
+                for (const auto& patch : variant_patches)
+                    ApplyMipVariantPatch(name,
+                                         i_mipmap,
+                                         img.header.format,
+                                         result,
+                                         mipmap.width,
+                                         mipmap.height,
+                                         patch);
+
                 auto buf = std::make_unique<uint8_t[]>((usize)src_size);
                 std::copy(result.data(), result.data() + src_size, buf.get());
                 mipmap.data = ImageDataPtr(buf.release(), [](uint8_t* p) {
@@ -561,23 +723,35 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
     if (! pfile) return header;
     auto& file = *pfile;
 
-    LoadHeader(file, header);
+    if (! LoadHeader(file, header)) return header;
     if (header.count < 0) return header;
 
     usize image_count = (usize)header.count;
 
     // load sprite info
     if (header.isSprite) {
+        // Every count below comes from the file. Unbounded, a short file
+        // allocated per image and looped for billions of iterations reading
+        // zeros past the end (fuzz timeout); the same caps Parse() applies.
+        auto notASprite = [&header]() {
+            header.isSprite = false;
+            return header;
+        };
+        if (image_count > kMaxImageCount || ! CountFitsStream(file, image_count, 4))
+            return notASprite();
         // bypass image data, store width and height
         std::vector<std::vector<float>> imageDatas(image_count);
         for (usize i_image = 0; i_image < image_count; i_image++) {
             int mipmap_count = file.ReadInt32();
+            if (mipmap_count < 0 || (usize)mipmap_count > kMaxMipmapCount ||
+                ! CountFitsStream(file, (usize)mipmap_count, 12))
+                return notASprite();
             for (int32_t i_mipmap = 0; i_mipmap < mipmap_count; i_mipmap++) {
                 int32_t width  = file.ReadInt32();
                 int32_t height = file.ReadInt32();
                 if (i_mipmap == 0) {
                     imageDatas.at(i_image) = { (float)width, (float)height };
-                    header.mipmap_pow2     = algorism::IsPowOfTwo((u32)(width * height));
+                    header.mipmap_pow2     = algorism::IsPowOfTwo((u32)((i64)width * height));
                     // The full Parse() path calls SetHeaderPow2() per slot, which
                     // also derives mipmap_larger (mip0 area > map area).  The
                     // header-only path here forgot to, leaving mipmap_larger at
@@ -602,11 +776,20 @@ ImageHeader WPTexImageParser::ParseHeader(const std::string& name) {
                 }
                 long src_size = file.ReadInt32();
                 file.SeekCur(src_size);
+                std::vector<MipVariantPatch> none;
+                if (HasVariantTrailers(header) &&
+                    ! ReadMipVariantTrailer(file, name, (usize)i_mipmap, 0, none)) {
+                    // No frame table follows a broken trailer; a sprite with
+                    // no frames would index an empty animation later.
+                    return notASprite();
+                }
             }
         }
         // sprite pos
         int32_t texs       = ReadTexVesion(file);
         int32_t framecount = file.ReadInt32();
+        // A frame is at least an image id and seven floats.
+        if (framecount < 0 || ! CountFitsStream(file, (usize)framecount, 32)) return notASprite();
         if (texs > 3) {
             LOG_ERROR("Unkown texs version");
         }

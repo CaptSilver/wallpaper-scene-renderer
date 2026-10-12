@@ -84,6 +84,18 @@ TEST_SUITE("UserPropRuntimeUpdate") {
 
         CHECK(needReload.empty());
     }
+
+    TEST_CASE("a property that picks a texture variant reloads even with a live binding") {
+        // The variant is chosen when the .tex is decoded; nothing re-decodes
+        // it in place, so a visibility binding on the same combo is not enough.
+        Scene scene;
+        scene.userPropVisBindings["facestyles"].push_back({ nullptr, true, "Isa", "{}" });
+        scene.userPropTextureVariantNames.insert("facestyles");
+
+        auto needReload = wek::userPropsNeedingReload(scene, { "facestyles" });
+
+        CHECK(needReload == std::vector<std::string> { "facestyles" });
+    }
 }
 
 TEST_SUITE("ResolveVisibilityFromJson") {

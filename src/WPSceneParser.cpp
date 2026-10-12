@@ -792,6 +792,8 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
         } else if (! IsSpecTex(el)) {
             const auto& texh = pScene->imageParser->ParseHeader(el);
             texHeaders[el]   = texh;
+            for (const auto& v : texh.variants)
+                pScene->userPropTextureVariantNames.insert(v.property);
             // Require ALL THREE compo* keys before reading them: a malformed
             // .tex header carrying compo1 but not compo2/compo3 would throw
             // out_of_range from .at("compo2"/"compo3").  Runs on the parse
@@ -5946,6 +5948,12 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // LoadMaterial calls on the same instance hit the cache instead of
     // re-opening .tex files.
     auto imageParser = std::make_unique<WPTexImageParser>(&vfs);
+    // Textures are decoded later on the render thread; keep the selector's
+    // own copy of the properties this scene was built with.
+    imageParser->SetVariantSelector(
+        [props = userProps](const std::string& name, const std::string& value) {
+            return props.ConditionHolds(name, value);
+        });
 
     computeAutoOrthoSize(sc, wp_objs, *imageParser);
 

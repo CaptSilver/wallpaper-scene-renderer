@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <memory>
 #include <unordered_map>
@@ -29,6 +30,14 @@ struct ImageData {
     ImageData() = default;
 };
 
+// One conditional variant of a texture: the image becomes variant `index`
+// when user property `property` equals `value`. Index 0 is the base image.
+struct TexVariantCondition {
+    i32         index { 0 };
+    std::string property;
+    std::string value;
+};
+
 struct ImageHeader {
     // these two size is not for tex, just come from we
     // using Slot's size for tex
@@ -50,6 +59,8 @@ struct ImageHeader {
     TextureSample sample;
 
     SpriteAnimation spriteAnim;
+    // Variants a user property can switch this texture to; empty for most.
+    std::vector<TexVariantCondition> variants;
     // for specific property
     std::unordered_map<std::string, ImageExtra> extraHeader;
 };
