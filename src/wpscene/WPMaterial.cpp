@@ -1,4 +1,5 @@
 #include "WPMaterial.h"
+#include "WPAnimationJson.h"
 #include "WPUserProperties.hpp"
 #include <functional>
 #include <sstream>
@@ -34,6 +35,7 @@ void ParsePassFields(
     std::vector<WPMaterialPassUserTexture>&                               usertextures,
     std::unordered_map<std::string, int32_t>&                             combos,
     std::unordered_map<std::string, std::vector<float>>&                  constantshadervalues,
+    std::unordered_map<std::string, wallpaper::ConstantAnimation>&        constantAnimations,
     const std::function<void(const std::string&, const nlohmann::json&)>& onConstantValue = {}) {
     if (json.contains("textures")) {
         for (const auto& jT : json.at("textures")) {
@@ -56,6 +58,8 @@ void ParsePassFields(
             GET_JSON_VALUE(jC.key(), name);
             GET_JSON_VALUE(jC.value(), value);
             constantshadervalues[name] = value;
+            if (auto anim = ParseConstantAnimation(jC.value(), value))
+                constantAnimations[name] = std::move(*anim);
             if (onConstantValue) onConstantValue(name, jC.value());
         }
     }
@@ -74,11 +78,12 @@ void ParsePassFields(
 // per-instance pass override onto a base pass or material. An empty texture string (or, for
 // usertextures, an empty name) means "no override for this slot", not "clear it", so it's
 // skipped rather than written; combos and constantshadervalues are plain last-write-wins maps.
-void MergeOverlayFields(std::vector<std::string>&                            textures,
-                        std::vector<WPMaterialPassUserTexture>&              usertextures,
-                        std::unordered_map<std::string, int32_t>&            combos,
-                        std::unordered_map<std::string, std::vector<float>>& constantshadervalues,
-                        const WPMaterialPass&                                p) {
+void MergeOverlayFields(
+    std::vector<std::string>& textures, std::vector<WPMaterialPassUserTexture>& usertextures,
+    std::unordered_map<std::string, int32_t>&                      combos,
+    std::unordered_map<std::string, std::vector<float>>&           constantshadervalues,
+    std::unordered_map<std::string, wallpaper::ConstantAnimation>& constantAnimations,
+    const WPMaterialPass&                                          p) {
     int32_t i = -1;
     for (const auto& el : p.textures) {
         i++;
@@ -97,6 +102,11 @@ void MergeOverlayFields(std::vector<std::string>&                            tex
     }
     for (const auto& el : p.constantshadervalues) {
         constantshadervalues[el.first] = el.second;
+        // A plain value replaces whatever curve the base carried for it.
+        if (p.constantAnimations.count(el.first) == 0) constantAnimations.erase(el.first);
+    }
+    for (const auto& el : p.constantAnimations) {
+        constantAnimations[el.first] = el.second;
     }
     for (const auto& el : p.combos) {
         combos[el.first] = el.second;
@@ -124,15 +134,15 @@ bool WPMaterialPassUserTexture::FromJson(const nlohmann::json& json) {
 }
 
 void WPMaterialPass::Update(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, p);
+    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, constantAnimations, p);
 }
 
 void WPMaterial::MergePass(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, p);
+    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, constantAnimations, p);
 }
 
 bool WPMaterialPass::FromJson(const nlohmann::json& json) {
-    ParsePassFields(json, textures, usertextures, combos, constantshadervalues);
+    ParsePassFields(json, textures, usertextures, combos, constantshadervalues, constantAnimations);
     GET_JSON_NAME_VALUE_NOWARN(json, "target", target);
     if (json.contains("bind")) {
         for (const auto& jB : json.at("bind")) {
@@ -173,6 +183,7 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
                     usertextures,
                     combos,
                     constantshadervalues,
+                    constantAnimations,
                     [this](const std::string& name, const nlohmann::json& rawValue) {
                         if (auto prop = UserPropertyNameOf(rawValue); ! prop.empty())
                             userShaderBindings[prop] = name;

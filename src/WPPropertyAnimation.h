@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "Core/Literals.hpp"
@@ -150,6 +151,32 @@ inline float ComposePropertyAnimation(const PropertyAnimation& anim, double time
     if (anim.keyframes.empty()) return anim.initialValue;
     const float value = EvaluatePropertyAnimation(anim, time);
     return anim.relative ? anim.initialValue + value : value;
+}
+
+// A keyframed effect shader constant ("alpha", "scale", a tint colour): its
+// current value, which starts at the authored base, and one curve per animated
+// channel (WE's c0..c3). Channels without a curve keep their base.
+struct ConstantAnimation {
+    std::vector<float>                               value;
+    std::vector<std::pair<usize, PropertyAnimation>> tracks;
+};
+
+// Advances every playing track by `dt` seconds and writes each channel's
+// composed value. Returns true when any channel moved, so the caller uploads
+// the uniform only then -- a finished single-shot fade holds still and stops
+// invalidating the passes that read it.
+inline bool TickConstantAnimation(ConstantAnimation& anim, double dt) {
+    bool changed = false;
+    for (auto& [channel, track] : anim.tracks) {
+        if (channel >= anim.value.size()) continue;
+        if (track.playing) track.time += dt;
+        const float v = ComposePropertyAnimation(track, track.time);
+        if (v != anim.value[channel]) {
+            anim.value[channel] = v;
+            changed             = true;
+        }
+    }
+    return changed;
 }
 
 // The axis (0/1/2 = x/y/z) and base property name ("origin"/"scale"/"angles")

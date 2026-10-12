@@ -1045,23 +1045,24 @@ void LoadAlignment(SceneNode& node, std::string_view align, Vector2f size) {
     node.SetTranslate(trans);
 }
 
+// The GLSL uniform a material constant name binds to: the shader's alias for
+// it, else a uniform whose name minus its `g_` prefix matches.  Empty when the
+// shader declares neither.
+std::string ConstantUniformName(const WPShaderInfo& info, const std::string& name) {
+    if (info.alias.count(name) != 0) return info.alias.at(name);
+    for (const auto& el : info.alias) {
+        if (el.second.substr(2) == name) return el.second;
+    }
+    return {};
+}
+
 void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
                     const WPShaderInfo& info) {
     // load glname from alias and load to constvalue
     for (const auto& cs : wpmat.constantshadervalues) {
-        const auto&               name  = cs.first;
-        const std::vector<float>& value = cs.second;
-        std::string               glname;
-        if (info.alias.count(name) != 0) {
-            glname = info.alias.at(name);
-        } else {
-            for (const auto& el : info.alias) {
-                if (el.second.substr(2) == name) {
-                    glname = el.second;
-                    break;
-                }
-            }
-        }
+        const auto&               name   = cs.first;
+        const std::vector<float>& value  = cs.second;
+        std::string               glname = ConstantUniformName(info, name);
         if (glname.empty()) {
             // Not a renderer error — WE editor often lets authors expose
             // material settings in the UI that their custom shader never
@@ -2514,6 +2515,17 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
             }
             spMesh->AddMaterial(std::move(material));
             spEffNode->AddMesh(spMesh);
+
+            for (const auto& [constName, anim] : wpmat.constantAnimations) {
+                auto glname = ConstantUniformName(wpEffShaderInfo, constName);
+                if (glname.empty()) continue;
+                LOG_INFO("  effect constant animation: '%s' -> '%s' on effect %d of id=%d",
+                         constName.c_str(),
+                         glname.c_str(),
+                         i_eff,
+                         opts.layer_id);
+                scene.effectUniformAnimations.push_back({ spMesh, glname, anim });
+            }
 
             // Register user property bindings for effect material uniforms
             if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {

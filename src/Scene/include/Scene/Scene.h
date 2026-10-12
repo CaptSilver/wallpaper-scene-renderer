@@ -693,6 +693,19 @@ public:
     // thread; values written directly into the node's material const data.
     std::unordered_map<i32, std::vector<PropertyAnimation>> nodePropertyAnimations;
 
+    // Keyframed effect shader constants (an opacity fade, a pulsing scale):
+    // the mesh whose material each one drives, and its GLSL uniform.  Ticked
+    // with nodePropertyAnimations on the render thread.  The record shares
+    // ownership of the mesh: an effect dropped after registration (a later
+    // pass failed to load, or RemoveFailedEffects reaped it) would otherwise
+    // leave the tick writing through a freed material.
+    struct EffectUniformAnimation {
+        std::shared_ptr<SceneMesh> mesh;
+        std::string                uniform;
+        ConstantAnimation          anim;
+    };
+    std::vector<EffectUniformAnimation> effectUniformAnimations;
+
     double elapsingTime { 0.0f }, frameTime { 0.0f };
     void   PassFrameTime(double t) {
         frameTime = t;

@@ -435,3 +435,65 @@ TEST_SUITE("ApplyPropertyAnimCommand") {
         CHECK(a.time == doctest::Approx(5.0));
     }
 }
+
+TEST_SUITE("TickConstantAnimation") {
+    // The 2883312700 intro: alpha holds 1 for 15 frames, fades to ~0 at frame
+    // 30, 7.5 fps, plays once.
+    ConstantAnimation makeFade() {
+        PropertyAnimation a;
+        a.mode         = PropertyAnimMode::Single;
+        a.fps          = 7.5f;
+        a.length       = 30.0f;
+        a.keyframes    = { { 0.0f, 1.0f }, { 15.0f, 1.0f }, { 30.0f, 0.0f } };
+        a.initialValue = 1.0f;
+        a.playing      = true;
+        ConstantAnimation c;
+        c.value  = { 1.0f };
+        c.tracks = { { 0, a } };
+        return c;
+    }
+
+    TEST_CASE("a playing track drives its channel") {
+        auto c = makeFade();
+        CHECK_FALSE(TickConstantAnimation(c, 1.0)); // frame 7.5: still on the hold
+        CHECK(c.value[0] == doctest::Approx(1.0f));
+        CHECK(TickConstantAnimation(c, 2.0)); // frame 22.5: halfway down
+        CHECK(c.value[0] == doctest::Approx(0.5f));
+        CHECK(TickConstantAnimation(c, 10.0)); // long past the end: holds the last key
+        CHECK(c.value[0] == doctest::Approx(0.0f));
+        CHECK_FALSE(TickConstantAnimation(c, 1.0));
+    }
+
+    TEST_CASE("a paused track holds its starting value") {
+        auto c                     = makeFade();
+        c.tracks[0].second.playing = false;
+        CHECK_FALSE(TickConstantAnimation(c, 3.0));
+        CHECK(c.value[0] == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("each track drives only its own channel") {
+        PropertyAnimation y;
+        y.mode      = PropertyAnimMode::Single;
+        y.fps       = 1.0f;
+        y.length    = 1.0f;
+        y.keyframes = { { 0.0f, 2.0f }, { 1.0f, 4.0f } };
+        y.playing   = true;
+        ConstantAnimation c;
+        c.value  = { 7.0f, 2.0f };
+        c.tracks = { { 1, y } };
+        CHECK(TickConstantAnimation(c, 0.5));
+        CHECK(c.value[0] == doctest::Approx(7.0f));
+        CHECK(c.value[1] == doctest::Approx(3.0f));
+    }
+
+    TEST_CASE("a track past the value's size is ignored") {
+        PropertyAnimation a;
+        a.keyframes = { { 0.0f, 5.0f } };
+        a.playing   = true;
+        ConstantAnimation c;
+        c.value  = { 1.0f };
+        c.tracks = { { 3, a } };
+        CHECK_FALSE(TickConstantAnimation(c, 1.0));
+        CHECK(c.value.size() == 1u);
+    }
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include "WPPropertyAnimation.h"
 #include "WPJson.hpp"
 #include <nlohmann/json.hpp>
 #include <string>
@@ -40,6 +41,8 @@ public:
     std::vector<WPMaterialPassUserTexture>              usertextures;
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
+    // Keyframed constants, by the same name as their constantshadervalues entry.
+    std::unordered_map<std::string, ConstantAnimation>  constantAnimations;
     std::string                                         target;
     std::vector<WPMaterialPassBindItem>                 bind;
 };
@@ -57,6 +60,7 @@ public:
     std::vector<WPMaterialPassUserTexture>              usertextures;
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
+    std::unordered_map<std::string, ConstantAnimation>  constantAnimations;
 
     // Maps user property name → shader constant name (from usershadervalues)
     std::unordered_map<std::string, std::string> userShaderBindings;

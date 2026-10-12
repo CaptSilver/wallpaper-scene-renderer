@@ -143,6 +143,58 @@ TEST_SUITE("WPMaterialPass::FromJson") {
     }
 }
 
+TEST_SUITE("WPMaterialPass::FromJson — keyframed constants") {
+    TEST_CASE("a keyframed scalar keeps its base value and records its curve") {
+        auto           j = nlohmann::json::parse(R"({"constantshadervalues": {"alpha": {
+            "animation": {"c0": [{"frame": 0, "value": 1}, {"frame": 30, "value": 0}],
+                          "options": {"fps": 7.5, "length": 30, "mode": "single"}},
+            "value": 1}}})");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        CHECK(p.constantshadervalues.at("alpha") == std::vector<float> { 1.0f });
+        REQUIRE(p.constantAnimations.count("alpha") == 1u);
+        const auto& c = p.constantAnimations.at("alpha");
+        CHECK(c.value == std::vector<float> { 1.0f });
+        REQUIRE(c.tracks.size() == 1u);
+        CHECK(c.tracks[0].first == 0u);
+        CHECK(c.tracks[0].second.mode == wallpaper::PropertyAnimMode::Single);
+        CHECK(c.tracks[0].second.fps == doctest::Approx(7.5f));
+        CHECK(c.tracks[0].second.keyframes.size() == 2u);
+        CHECK(c.tracks[0].second.playing);
+    }
+
+    TEST_CASE("a keyframed vector animates each authored channel") {
+        auto           j = nlohmann::json::parse(R"({"constantshadervalues": {"scale": {
+            "animation": {"c1": [{"frame": 0, "value": 2}, {"frame": 10, "value": 4}],
+                          "options": {"fps": 30, "length": 10, "startpaused": true}},
+            "value": "1 2"}}})");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        const auto& c = p.constantAnimations.at("scale");
+        CHECK(c.value == std::vector<float> { 1.0f, 2.0f });
+        REQUIRE(c.tracks.size() == 1u);
+        CHECK(c.tracks[0].first == 1u);
+        CHECK(c.tracks[0].second.initialValue == doctest::Approx(2.0f));
+        CHECK_FALSE(c.tracks[0].second.playing);
+    }
+
+    TEST_CASE("a plain constant records no animation") {
+        auto           j = nlohmann::json::parse(R"({"constantshadervalues": {"alpha": 0.5}})");
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(j));
+        CHECK(p.constantAnimations.empty());
+    }
+
+    TEST_CASE("MergePass carries a pass's animations onto the material") {
+        WPMaterialPass pass;
+        pass.constantshadervalues["alpha"]     = { 1.0f };
+        pass.constantAnimations["alpha"].value = { 1.0f };
+        WPMaterial mat;
+        mat.MergePass(pass);
+        CHECK(mat.constantAnimations.count("alpha") == 1u);
+    }
+}
+
 TEST_SUITE("WPMaterialPass::Update") {
     TEST_CASE("Update overlays textures + combos + constantshadervalues") {
         WPMaterialPass base;

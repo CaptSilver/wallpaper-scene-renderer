@@ -1,4 +1,5 @@
 #include "WPImageObject.h"
+#include "WPAnimationJson.h"
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
@@ -11,26 +12,6 @@ namespace
 using wallpaper::ParsePropertyAnimMode;
 using wallpaper::PropertyAnimation;
 using wallpaper::PropertyAnimKeyframe;
-
-// Read the playback options every keyframe animation shares.  WE keeps them on
-// `animation.options`, except `relative`, which sits on the animation object
-// itself.  Scalar and vec3 tracks want the identical set, and while each parser
-// spelled the block out by hand the scalar one quietly missed `wraploop`: every
-// alpha animation held its last keyframe and snapped at the loop boundary.
-void ParseAnimationOptions(const nlohmann::json& animJson, PropertyAnimation& out) {
-    if (animJson.contains("options") && animJson.at("options").is_object()) {
-        const auto& opts = animJson.at("options");
-        GET_JSON_NAME_VALUE_NOWARN(opts, "name", out.name);
-        GET_JSON_NAME_VALUE_NOWARN(opts, "fps", out.fps);
-        GET_JSON_NAME_VALUE_NOWARN(opts, "length", out.length);
-        std::string mode;
-        GET_JSON_NAME_VALUE_NOWARN(opts, "mode", mode);
-        out.mode = ParsePropertyAnimMode(mode);
-        GET_JSON_NAME_VALUE_NOWARN(opts, "startpaused", out.startPaused);
-        GET_JSON_NAME_VALUE_NOWARN(opts, "wraploop", out.wraploop);
-    }
-    GET_JSON_NAME_VALUE_NOWARN(animJson, "relative", out.relative);
-}
 
 void LogPropertyAnimation(const PropertyAnimation& anim) {
     LOG_INFO("property anim parsed: prop=%s name='%s' mode=%d fps=%.2f len=%.2f paused=%d "

@@ -12,6 +12,7 @@
 #include "WPJson.hpp"
 #include "AttachmentLinkOrder.hpp"
 #include "UserPropRuntimeUpdate.hpp"
+#include "EffectUniformAnimation.hpp"
 #include "UserPropScriptReference.hpp"
 #include "WPSceneParser.hpp"
 #include "Scene/Scene.h"
@@ -2002,6 +2003,7 @@ public:
     void tickPropertyAnimations(double dt) {
         auto scene = m_scene.load();
         if (! scene) return;
+        TickEffectUniformAnimations(scene->effectUniformAnimations, dt);
         if (scene->nodePropertyAnimations.empty()) return;
         applyPendingPropertyAnimCommands();
         std::unordered_set<i32> animMoved;

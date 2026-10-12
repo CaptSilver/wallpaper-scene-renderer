@@ -63,6 +63,7 @@ add_executable(backend_scene_tests
     test_WPTexImageHelpers.cpp
     test_TexVariants.cpp
     test_ColorBlendOverride.cpp
+    test_EffectUniformAnimation.cpp
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
     test_WPTextRendererGlyphCache.cpp
@@ -246,6 +247,7 @@ add_executable(backend_scene_tests
     # Compile specific source files to avoid pulling in Vulkan
     ${SRC_DIR}/wpscene/WPScene.cpp
     ${SRC_DIR}/wpscene/WPImageObject.cpp
+    ${SRC_DIR}/wpscene/WPAnimationJson.cpp
     ${SRC_DIR}/WPTexImageParser.cpp
     ${SRC_DIR}/WPMediaSystemTexture.cpp
     ${SRC_DIR}/Type.cpp
@@ -643,6 +645,7 @@ if(BUILD_FUZZERS)
         ${SRC_DIR}/Type.cpp
         ${SRC_DIR}/WPJson.cpp
         ${SRC_DIR}/wpscene/WPMaterial.cpp
+        ${SRC_DIR}/wpscene/WPAnimationJson.cpp
         ${SRC_DIR}/Scene/SceneShader.cpp
         ${SRC_DIR}/Scene/SceneVertexArray.cpp
         ${SRC_DIR}/Scene/SceneIndexArray.cpp
@@ -733,6 +736,7 @@ if(BUILD_FUZZERS)
         fuzz/fuzz_WPSceneParser.cpp
         ${SRC_DIR}/wpscene/WPScene.cpp
         ${SRC_DIR}/wpscene/WPImageObject.cpp
+        ${SRC_DIR}/wpscene/WPAnimationJson.cpp
         ${SRC_DIR}/wpscene/WPParticleObject.cpp
         ${SRC_DIR}/wpscene/WPMaterial.cpp
         ${SRC_DIR}/wpscene/WPLightObject.cpp
@@ -756,6 +760,7 @@ if(BUILD_FUZZERS)
         ${SRC_DIR}/WPParticleParser.cpp
         ${SRC_DIR}/wpscene/WPParticleObject.cpp
         ${SRC_DIR}/wpscene/WPMaterial.cpp
+        ${SRC_DIR}/wpscene/WPAnimationJson.cpp
         ${SRC_DIR}/Type.cpp
         ${SRC_DIR}/WPJson.cpp
     )

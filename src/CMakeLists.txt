@@ -76,6 +76,7 @@ add_library(
   WPJson.cpp
   WPPkgFs.cpp
   Type.cpp
+  wpscene/WPAnimationJson.cpp
   wpscene/WPImageObject.cpp
   wpscene/WPParticleObject.cpp
   wpscene/WPMaterial.cpp
