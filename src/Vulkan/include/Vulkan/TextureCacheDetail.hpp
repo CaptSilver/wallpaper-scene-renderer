@@ -283,6 +283,30 @@ void eraseEvictedSlots(Slots& slots, KeyMap& by_key, const std::vector<std::size
     }
 }
 
+// WEKDE_RT_RESIDENCY=0 keeps every render target resident from load (the
+// behaviour before on-demand creation), for A/B runs and field triage.
+inline bool residencyEnabledFromEnv(const char* env) {
+    return ! (env != nullptr && env[0] == '0' && env[1] == '\0');
+}
+
+// Give a slot a fresh image.  The generation tells passes holding handle
+// copies that they are stale; the counters restart because the slot was
+// needed this frame and the create succeeded.
+template<typename Slot, typename Img>
+void attachImage(Slot& slot, Img&& image) {
+    slot.image.emplace(std::forward<Img>(image));
+    ++slot.generation;
+    slot.idle_frames        = 0;
+    slot.create_fail_streak = 0;
+}
+
+// Whether a pass must skip for want of an output to draw into: the slot is
+// managed and either has no image or nobody needs it this frame.  Persistent
+// targets are always there, so they never gate.
+inline bool outputAbsent(bool managed, bool resident, bool needed) {
+    return managed && (! resident || ! needed);
+}
+
 } // namespace detail
 } // namespace vulkan
 } // namespace wallpaper

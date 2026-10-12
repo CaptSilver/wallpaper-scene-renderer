@@ -729,3 +729,298 @@ TEST_SUITE("CustomShaderPass framebuffer rebuild") {
         CHECK(ShouldLogFramebufferFailure(true, logged));
     }
 }
+
+// Every visibility read in execute() and the per-frame demand walk go through
+// one decision, so what a pass records, whether it draws and which buffers it
+// samples can never disagree between the two.
+TEST_SUITE("CustomShaderPass::DecideHideable") {
+    using wallpaper::i32;
+    using wallpaper::vulkan::DecideHideable;
+    using wallpaper::vulkan::DemandInputs;
+    using wallpaper::vulkan::HideableFrame;
+    using wallpaper::vulkan::HideableKind;
+    using wallpaper::vulkan::PassMergeRole;
+
+    // Defaults: a node that is visible with visible ancestors, passthrough
+    // built, not the clear owner, standalone, passthrough reads at 5 and 6.
+    static HideableFrame decide(HideableKind kind,
+                                std::vector<bool>
+                                              chain,
+                                i32           index,
+                                bool          node_visible,
+                                bool          ancestors_visible = true,
+                                bool          passthrough_ready = true,
+                                bool          clears_output     = false,
+                                PassMergeRole role              = PassMergeRole::Standalone) {
+        return DecideHideable(kind,
+                              chain,
+                              index,
+                              /*has_node=*/true,
+                              node_visible,
+                              ancestors_visible,
+                              /*base_image_written=*/true,
+                              passthrough_ready,
+                              clears_output,
+                              role,
+                              5,
+                              6);
+    }
+
+    TEST_CASE("an ordinary visible pass records, draws and samples its own textures") {
+        auto f = decide(HideableKind::None, {}, -1, true);
+        CHECK(f.records);
+        CHECK(f.draws);
+        CHECK(f.inputs == DemandInputs::Own);
+        CHECK(f.passthrough_tex_index == -1);
+    }
+    TEST_CASE("a pass without a node always draws") {
+        auto f = DecideHideable(HideableKind::None,
+                                {},
+                                -1,
+                                false,
+                                false,
+                                false,
+                                true,
+                                false,
+                                false,
+                                PassMergeRole::Standalone,
+                                -1,
+                                -1);
+        CHECK(f.node_visible);
+        CHECK(f.draws);
+        CHECK(f.inputs == DemandInputs::Own);
+    }
+    TEST_CASE("a hidden ordinary pass that owns nothing drops its whole record") {
+        auto f = decide(HideableKind::None, {}, -1, false);
+        CHECK_FALSE(f.records);
+        CHECK_FALSE(f.draws);
+        CHECK(f.inputs == DemandInputs::None);
+    }
+    TEST_CASE("a hidden clear owner records without drawing and samples nothing") {
+        auto f = decide(HideableKind::None, {}, -1, false, true, true, /*clears_output=*/true);
+        CHECK(f.records);
+        CHECK_FALSE(f.draws);
+        CHECK(f.inputs == DemandInputs::None);
+    }
+    TEST_CASE("a hidden pass that opens a merged group records the boundary without drawing") {
+        auto f =
+            decide(HideableKind::None, {}, -1, false, true, true, false, PassMergeRole::GroupBegin);
+        CHECK(f.records);
+        CHECK_FALSE(f.draws);
+        CHECK(f.inputs == DemandInputs::None);
+    }
+    TEST_CASE("a visible terminal draws its material and reads its own textures only") {
+        auto f = decide(HideableKind::Terminal, { true, true }, 1, true);
+        CHECK(f.draws);
+        CHECK_FALSE(f.hide.draw_passthrough);
+        CHECK(f.inputs == DemandInputs::Own);
+    }
+    TEST_CASE("a hidden terminal behind a visible effect copies buffer B") {
+        auto f = decide(HideableKind::Terminal, { true, false }, 1, false);
+        CHECK(f.own_hidden);
+        CHECK(f.hide.draw_passthrough);
+        CHECK(f.draws);
+        CHECK(f.inputs == DemandInputs::PassthroughB);
+        CHECK(f.passthrough_tex_index == 6);
+    }
+    TEST_CASE("a hidden terminal behind hidden effects copies the layer image in buffer A") {
+        auto f = decide(HideableKind::Terminal, { false, false }, 1, false);
+        CHECK(f.inputs == DemandInputs::PassthroughA);
+        CHECK(f.passthrough_tex_index == 5);
+    }
+    TEST_CASE("a hidden terminal with no passthrough pipeline keeps its real draw") {
+        auto f = decide(HideableKind::Terminal, { true, false }, 1, false, true, /*ready=*/false);
+        CHECK(f.hide.keep_real_draw);
+        CHECK(f.draws);
+        CHECK(f.inputs == DemandInputs::Own);
+    }
+    TEST_CASE("a terminal inside a hidden layer copies nothing and drops its record") {
+        auto f = decide(HideableKind::Terminal, { true, false }, 1, false, /*ancestors=*/false);
+        CHECK_FALSE(f.hide.draw_passthrough);
+        CHECK_FALSE(f.records);
+    }
+    TEST_CASE("a hidden middle effect that must copy reads its chain input") {
+        auto f = decide(HideableKind::Middle, { false, true }, 0, false);
+        CHECK(f.must_copy);
+        CHECK(f.hide.draw_passthrough);
+        CHECK(f.inputs == DemandInputs::PassthroughA);
+        CHECK(f.passthrough_tex_index == 5);
+    }
+    TEST_CASE("a hidden middle effect that keeps the parity takes the hidden path") {
+        auto skip = decide(HideableKind::Middle, { false, false }, 0, false);
+        CHECK_FALSE(skip.must_copy);
+        CHECK_FALSE(skip.records);
+        auto clear_owner =
+            decide(HideableKind::Middle, { false, false }, 0, false, true, true, true);
+        CHECK(clear_owner.records);
+        CHECK_FALSE(clear_owner.draws);
+        CHECK(clear_owner.inputs == DemandInputs::None);
+    }
+    TEST_CASE("frameHideable on a node-less pass is the plain draw") {
+        CustomShaderPass::Desc d;
+        CustomShaderPass       pass(d);
+        auto                   f = pass.frameHideable(PassMergeRole::Standalone);
+        CHECK(f.draws);
+        CHECK(f.inputs == DemandInputs::Own);
+    }
+    TEST_CASE("every kind x chain shape x visibility x passthrough_ready x clear x role obeys the "
+              "invariants execute() relies on") {
+        // Exhaustive rather than sampled: the demand walk trusts these four
+        // relations for every combination, so every combination is checked.
+        const HideableKind                   kinds[] = { HideableKind::None,
+                                                         HideableKind::Middle,
+                                                         HideableKind::Terminal };
+        const std::vector<std::vector<bool>> chains  = { {},
+                                                         { true },
+                                                         { false },
+                                                         { true, true },
+                                                         { true, false },
+                                                         { false, true },
+                                                         { false, false },
+                                                         { true, false, true },
+                                                         { false, false, false } };
+        const PassMergeRole                  roles[] = { PassMergeRole::Standalone,
+                                                         PassMergeRole::GroupBegin,
+                                                         PassMergeRole::GroupMiddle,
+                                                         PassMergeRole::GroupEnd };
+        int                                  combos  = 0;
+        for (HideableKind kind : kinds)
+            for (const auto& chain : chains)
+                for (i32 index = -1; index < (i32)chain.size(); ++index)
+                    for (bool node_visible : { true, false })
+                        for (bool ancestors : { true, false })
+                            for (bool ready : { true, false })
+                                for (bool clears : { true, false })
+                                    for (bool base_written : { true, false })
+                                        for (PassMergeRole role : roles) {
+                                            ++combos;
+                                            const auto f = DecideHideable(kind,
+                                                                          chain,
+                                                                          index,
+                                                                          true,
+                                                                          node_visible,
+                                                                          ancestors,
+                                                                          base_written,
+                                                                          ready,
+                                                                          clears,
+                                                                          role,
+                                                                          5,
+                                                                          6);
+                                            INFO("kind=" << (int)kind << " index=" << index
+                                                         << " node_visible=" << node_visible
+                                                         << " ancestors=" << ancestors << " ready="
+                                                         << ready << " clears=" << clears
+                                                         << " role=" << (int)role);
+                                            // 1. a draw is always recorded
+                                            if (f.draws) CHECK(f.records);
+                                            // 2. draws == visible || one of the two hidden draws
+                                            CHECK(f.draws ==
+                                                  (f.node_visible || f.hide.draw_passthrough ||
+                                                   f.hide.keep_real_draw));
+                                            // 3. inputs None exactly when nothing is drawn
+                                            CHECK((f.inputs == DemandInputs::None) == ! f.draws);
+                                            // 4. a passthrough names its buffer, Own names none
+                                            const bool pt =
+                                                f.inputs == DemandInputs::PassthroughA ||
+                                                f.inputs == DemandInputs::PassthroughB;
+                                            CHECK(pt == (f.passthrough_tex_index != -1));
+                                            if (pt) CHECK(f.hide.draw_passthrough);
+                                            // 5. a hidden pass drops its record only on a role
+                                            //    that may drop it
+                                            if (! f.records) CHECK(HiddenPassDropsRecording(role));
+                                            // 6. a visible node never takes a hidden draw
+                                            if (f.node_visible && ! f.own_hidden)
+                                                CHECK_FALSE(f.hide.draw_passthrough);
+                                        }
+        CHECK(combos > 3000);
+    }
+}
+
+// The per-frame half of a pass's demand comes from its HideableFrame; cached
+// bytes depend on the images they were drawn from, so a cached pass keeps its
+// own inputs resident even on a frame it records nothing.
+TEST_SUITE("CustomShaderPass::DemandFrameFor") {
+    using wallpaper::vulkan::DemandFrameFor;
+    using wallpaper::vulkan::DemandInputs;
+    using wallpaper::vulkan::HideableFrame;
+    TEST_CASE("a drawing pass passes its inputs through") {
+        HideableFrame hf;
+        hf.draws  = true;
+        hf.inputs = DemandInputs::PassthroughB;
+        auto f    = DemandFrameFor(hf, false);
+        CHECK(f.draws);
+        CHECK_FALSE(f.cached);
+        CHECK(f.inputs == DemandInputs::PassthroughB);
+    }
+    TEST_CASE("a cached pass that records nothing this frame still needs its own inputs") {
+        HideableFrame hf; // records=true, draws=false, inputs=None by default
+        auto          f = DemandFrameFor(hf, true);
+        CHECK_FALSE(f.draws);
+        CHECK(f.cached);
+        CHECK(f.inputs == DemandInputs::Own);
+    }
+    TEST_CASE("an uncached non-drawing pass needs nothing") {
+        HideableFrame hf;
+        auto          f = DemandFrameFor(hf, false);
+        CHECK(f.inputs == DemandInputs::None);
+    }
+}
+
+// One pass's compile-time demand entry: what it writes, the slots its own
+// textures sample, and the two chain buffers a hidden effect may copy from.
+TEST_SUITE("CustomShaderPass::PassDemandStaticFor") {
+    using wallpaper::vulkan::PassDemandStaticFor;
+    using wallpaper::vulkan::ResidencyKey;
+    using wallpaper::vulkan::RtSlot;
+    using K = ResidencyKey;
+
+    TEST_CASE("a terminal's two appended passthrough reads are not own inputs") {
+        // RtSlot is neither copyable nor movable, so the ids are assigned in place.
+        RtSlot out, tex, a, b;
+        out.id      = 9;
+        tex.id      = 1;
+        a.id        = 2;
+        b.id        = 3;
+        out.persist = true; // writes _rt_default
+        CustomShaderPass::Desc d;
+        d.textures                      = { "bitmap.tex", "_rt_tex", "_rt_a", "_rt_b" };
+        d.in_slots                      = { nullptr, &tex, &a, &b };
+        d.out_slot                      = &out;
+        d.passthrough_input_tex_index_a = 2;
+        d.passthrough_input_tex_index_b = 3;
+        const auto s                    = PassDemandStaticFor(d);
+        CHECK(s.out == K::ForSlot(9));
+        CHECK_FALSE(s.out_managed);
+        CHECK(s.own_inputs == std::vector<K> { K::ForSlot(1) });
+        CHECK(s.passthrough_a == K::ForSlot(2));
+        CHECK(s.passthrough_b == K::ForSlot(3));
+    }
+    TEST_CASE("a middle effect has one passthrough read; b stays null") {
+        RtSlot out, in;
+        out.id = 5;
+        in.id  = 4;
+        CustomShaderPass::Desc d;
+        d.textures                      = { "_rt_in" };
+        d.in_slots                      = { &in };
+        d.out_slot                      = &out;
+        d.passthrough_input_tex_index_a = 0;
+        d.passthrough_input_tex_index_b = -1;
+        const auto s                    = PassDemandStaticFor(d);
+        CHECK(s.out_managed);
+        CHECK(s.own_inputs.empty());
+        CHECK(s.passthrough_a == K::ForSlot(4));
+        CHECK(s.passthrough_b == K {});
+    }
+    TEST_CASE(
+        "an unbound slot and a pass with no output give null keys, never a read past the end") {
+        CustomShaderPass::Desc d;
+        d.textures                      = { "a", "b" };
+        d.in_slots                      = { nullptr, nullptr };
+        d.passthrough_input_tex_index_a = 7; // out of range: ignored
+        const auto s                    = PassDemandStaticFor(d);
+        CHECK(s.out == K {});
+        CHECK_FALSE(s.out_managed);
+        CHECK(s.own_inputs.empty());
+        CHECK(s.passthrough_a == K {});
+    }
+}

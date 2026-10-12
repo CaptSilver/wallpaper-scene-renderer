@@ -10,6 +10,7 @@
 using wallpaper::TextureFormat;
 using wallpaper::vulkan::GenInitialClearColor;
 using wallpaper::vulkan::RecClearNewImage;
+using wallpaper::vulkan::RecTransitionNewImage;
 using wallpaper::vulkan::TextureKey;
 
 namespace
@@ -20,6 +21,8 @@ struct Recording {
     VkImageLayout                     clear_layout { VK_IMAGE_LAYOUT_UNDEFINED };
     VkClearColorValue                 color {};
     std::vector<VkImageMemoryBarrier> barriers;
+    std::vector<VkPipelineStageFlags> src_stages;
+    std::vector<VkPipelineStageFlags> dst_stages;
 };
 
 Recording g_rec;
@@ -32,11 +35,15 @@ void VKAPI_PTR recordClear(VkCommandBuffer, VkImage, VkImageLayout layout,
     g_rec.color        = *color;
 }
 
-void VKAPI_PTR recordBarrier(VkCommandBuffer, VkPipelineStageFlags, VkPipelineStageFlags,
+void VKAPI_PTR recordBarrier(VkCommandBuffer, VkPipelineStageFlags src, VkPipelineStageFlags dst,
                              VkDependencyFlags, uint32_t, const VkMemoryBarrier*, uint32_t,
                              const VkBufferMemoryBarrier*, uint32_t count,
                              const VkImageMemoryBarrier* barriers) {
-    for (uint32_t i = 0; i < count; i++) g_rec.barriers.push_back(barriers[i]);
+    for (uint32_t i = 0; i < count; i++) {
+        g_rec.barriers.push_back(barriers[i]);
+        g_rec.src_stages.push_back(src);
+        g_rec.dst_stages.push_back(dst);
+    }
 }
 
 // Drives the recording path through a dispatch table of local functions, so the
@@ -52,6 +59,23 @@ Recording record(const VkClearColorValue& color, VkImageLayout final_layout) {
     RecClearNewImage(cmd, reinterpret_cast<VkImage>(0x2), color, final_layout);
     return g_rec;
 }
+
+Recording recordTransition(VkImageLayout final_layout) {
+    g_rec = Recording {};
+
+    vvk::DeviceDispatch dld {};
+    dld.vkCmdClearColorImage = recordClear;
+    dld.vkCmdPipelineBarrier = recordBarrier;
+
+    vvk::CommandBuffer cmd(reinterpret_cast<VkCommandBuffer>(0x1), dld);
+    RecTransitionNewImage(cmd, reinterpret_cast<VkImage>(0x2), final_layout);
+    return g_rec;
+}
+
+constexpr VkPipelineStageFlags kFirstUseStages =
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+constexpr VkAccessFlags kFirstUseAccess =
+    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
 
 TextureKey keyOf(int width, int height) {
     return TextureKey {
@@ -91,6 +115,35 @@ TEST_SUITE("TextureCache initial contents") {
         CHECK(rec.barriers.front().oldLayout == VK_IMAGE_LAYOUT_UNDEFINED);
         CHECK(rec.barriers.front().newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         CHECK(rec.barriers.back().newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    }
+
+    TEST_CASE("the clear's closing barrier covers a transfer or shader first use") {
+        const VkClearColorValue color { { 0.0f, 0.0f, 0.0f, 0.0f } };
+        const auto              rec = record(color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        REQUIRE(rec.barriers.size() == 2);
+        CHECK(rec.dst_stages.back() == kFirstUseStages);
+        CHECK(rec.barriers.back().dstAccessMask == kFirstUseAccess);
+    }
+
+    TEST_CASE("a transition-only init is one barrier and no clear") {
+        const auto rec = recordTransition(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        CHECK(rec.clear_calls == 0);
+        REQUIRE(rec.barriers.size() == 1);
+        CHECK(rec.barriers[0].oldLayout == VK_IMAGE_LAYOUT_UNDEFINED);
+        CHECK(rec.barriers[0].newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        CHECK(rec.barriers[0].srcAccessMask == 0);
+        CHECK(rec.barriers[0].dstAccessMask == kFirstUseAccess);
+        CHECK(rec.src_stages[0] == VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+        CHECK(rec.dst_stages[0] == kFirstUseStages);
+    }
+
+    TEST_CASE("a transition-only init ends in whatever layout was asked for") {
+        const auto rec = recordTransition(VK_IMAGE_LAYOUT_GENERAL);
+
+        REQUIRE(rec.barriers.size() == 1);
+        CHECK(rec.barriers[0].newLayout == VK_IMAGE_LAYOUT_GENERAL);
     }
 
     TEST_CASE("the 1x1 placeholder gets a normal-map-neutral colour") {

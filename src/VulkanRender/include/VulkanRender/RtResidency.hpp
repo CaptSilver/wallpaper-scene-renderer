@@ -1,8 +1,12 @@
 #pragma once
+#include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <span>
 #include <type_traits>
+#include <vector>
 
 // The key type the pass analyses use to name a render target independently of
 // its VkImage: the slot id for render targets, the Vulkan handle for everything
@@ -48,6 +52,135 @@ ResidencyKey KeyForImage(VkH handle) {
             static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(handle)));
     else
         return ResidencyKey::ForHandle(static_cast<std::uint64_t>(handle));
+}
+
+// Which of a pass's texture slots it samples this frame: its material's own
+// textures, or one of the chain buffers a hidden effect copies through.
+enum class DemandInputs : std::uint8_t
+{
+    None,
+    Own,
+    PassthroughA,
+    PassthroughB,
+};
+
+// A pass's part of the demand walk that is fixed at compile: what it writes
+// and the slots behind each kind of read.
+struct PassDemandStatic {
+    ResidencyKey              out;
+    bool                      out_managed { false };
+    std::vector<ResidencyKey> own_inputs; // the material's own textures
+    ResidencyKey              passthrough_a;
+    ResidencyKey              passthrough_b;
+};
+
+// What changes per frame: whether the pass draws, whether its cached bytes are
+// in use, and which of its reads apply.
+struct PassDemandFrame {
+    bool         draws { false };
+    bool         cached { false };
+    DemandInputs inputs { DemandInputs::None };
+};
+
+struct DemandResult {
+    std::vector<bool> needed; // indexed by slot id
+    int               iterations { 0 };
+};
+
+// Whether a pass's output is wanted this frame: an unmanaged output, or one
+// that is not a slot, always is; a managed slot is when the walk marked it.
+// A slot id past the vector is not needed.
+inline bool PassOutputNeeded(const PassDemandStatic& s, const std::vector<bool>& needed) {
+    if (! s.out_managed || s.out.kind != ResidencyKey::Kind::Slot) return true;
+    return s.out.value < needed.size() && needed[s.out.value];
+}
+
+// Last pass to first: a pass is active when its output is unmanaged or needed,
+// and an active pass that draws or is cached needs what it samples.  A reader
+// ordered before its writer is only reached after the writer was judged, so
+// the walk repeats until nothing changes; demand only grows, so it ends.
+// statics and frames are parallel; a size mismatch is a caller bug, and in a
+// release build every slot is reported needed rather than guessing which
+// passes the missing entries would have kept alive.
+inline DemandResult ComputeFrameDemand(std::span<const PassDemandStatic> statics,
+                                       std::span<const PassDemandFrame>  frames,
+                                       std::size_t                       slot_count) {
+    DemandResult r;
+    assert(statics.size() == frames.size());
+    if (statics.size() != frames.size()) {
+        r.needed.assign(slot_count, true);
+        return r;
+    }
+    r.needed.assign(slot_count, false);
+    auto mark = [&](const ResidencyKey& k, bool& changed) {
+        if (k.kind != ResidencyKey::Kind::Slot || k.value >= slot_count) return;
+        if (! r.needed[k.value]) {
+            r.needed[k.value] = true;
+            changed           = true;
+        }
+    };
+    for (;;) {
+        ++r.iterations;
+        bool changed = false;
+        for (std::size_t i = statics.size(); i-- > 0;) {
+            const PassDemandStatic& s = statics[i];
+            const PassDemandFrame&  f = frames[i];
+            if (! PassOutputNeeded(s, r.needed) || ! (f.draws || f.cached)) continue;
+            switch (f.inputs) {
+            case DemandInputs::None: break;
+            case DemandInputs::Own:
+                for (const ResidencyKey& k : s.own_inputs) mark(k, changed);
+                break;
+            case DemandInputs::PassthroughA: mark(s.passthrough_a, changed); break;
+            case DemandInputs::PassthroughB: mark(s.passthrough_b, changed); break;
+            }
+        }
+        if (! changed) break;
+    }
+    return r;
+}
+
+// A fresh image is cleared when something could read it before this frame's
+// first write: a reader ordered ahead of the writer, a first writer that loads
+// instead of clearing, or no writer at all.
+inline bool NeedsInitialClear(bool has_writer, bool first_writer_clears, bool has_backward_reader) {
+    return ! has_writer || ! first_writer_clears || has_backward_reader;
+}
+
+// Per slot id, whether an image attached to it must be cleared before the pass
+// loop runs.  Decided from the graph once at compile: the first writer in pass
+// order owns the CLEAR load op, and a reader at or before the last writer's
+// position reads the previous frame's contents.
+inline std::vector<bool> ComputeClearOnAttach(std::span<const PassDemandStatic> statics,
+                                              const std::vector<bool>&          clears_output,
+                                              std::size_t                       slot_count) {
+    constexpr std::size_t    none = static_cast<std::size_t>(-1);
+    std::vector<std::size_t> first_writer(slot_count, none), last_writer(slot_count, none);
+    for (std::size_t i = 0; i < statics.size(); ++i) {
+        const ResidencyKey& out = statics[i].out;
+        if (out.kind != ResidencyKey::Kind::Slot || out.value >= slot_count) continue;
+        if (first_writer[out.value] == none) first_writer[out.value] = i;
+        last_writer[out.value] = i;
+    }
+    std::vector<bool> backward(slot_count, false);
+    auto              note = [&](const ResidencyKey& k, std::size_t reader) {
+        if (k.kind != ResidencyKey::Kind::Slot || k.value >= slot_count) return;
+        if (last_writer[k.value] != none && last_writer[k.value] >= reader)
+            backward[k.value] = true;
+    };
+    for (std::size_t i = 0; i < statics.size(); ++i) {
+        for (const ResidencyKey& k : statics[i].own_inputs) note(k, i);
+        note(statics[i].passthrough_a, i);
+        note(statics[i].passthrough_b, i);
+    }
+    std::vector<bool> out(slot_count);
+    for (std::size_t s = 0; s < slot_count; ++s) {
+        const bool has_writer = first_writer[s] != none;
+        const bool clears =
+            has_writer && first_writer[s] < clears_output.size() && clears_output[first_writer[s]];
+        out[s] = NeedsInitialClear(has_writer, clears, backward[s]);
+    }
+    return out;
 }
 
 } // namespace wallpaper::vulkan

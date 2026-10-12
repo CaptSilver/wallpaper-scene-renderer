@@ -11,8 +11,11 @@
 
 using wallpaper::vulkan::RtSlot;
 using wallpaper::vulkan::detail::AllocateSlotId;
+using wallpaper::vulkan::detail::attachImage;
 using wallpaper::vulkan::detail::effectiveEvictionPersist;
+using wallpaper::vulkan::detail::outputAbsent;
 using wallpaper::vulkan::detail::parseQueryCapEnv;
+using wallpaper::vulkan::detail::residencyEnabledFromEnv;
 using wallpaper::vulkan::detail::selectEvictionVictims;
 
 // Pure-helper coverage for the TextureCache query-tex LRU + soft-cap added
@@ -254,5 +257,41 @@ TEST_SUITE("TextureCache slot ids") {
         CHECK(by_key.at("key2") == slots[1].get());
         CHECK(next == 4);
         CHECK(AllocateSlotId(next) == 4); // the evicted id 1 is never handed out again
+    }
+}
+
+TEST_SUITE("TextureCache on-demand slots") {
+    TEST_CASE("WEKDE_RT_RESIDENCY=0 is the only value that turns residency off") {
+        CHECK(residencyEnabledFromEnv(nullptr));
+        CHECK(residencyEnabledFromEnv(""));
+        CHECK(residencyEnabledFromEnv("1"));
+        CHECK(residencyEnabledFromEnv("off"));
+        CHECK_FALSE(residencyEnabledFromEnv("0"));
+    }
+    TEST_CASE("attaching an image bumps the generation and resets the idle and failure counts") {
+        RtSlot s;
+        s.idle_frames        = 40;
+        s.create_fail_streak = 2;
+        wallpaper::vulkan::VmaImageParameters img;
+        img.extent = { 16, 16, 1 };
+        attachImage(s, std::move(img));
+        CHECK(s.resident());
+        CHECK(s.generation == 1);
+        CHECK(s.idle_frames == 0);
+        CHECK(s.create_fail_streak == 0);
+        CHECK(s.image->extent.width == 16);
+        wallpaper::vulkan::VmaImageParameters again;
+        attachImage(s, std::move(again));
+        CHECK(s.generation == 2);
+    }
+    TEST_CASE("a pass skips only when its managed output has no image or is not needed") {
+        // managed, resident, needed
+        CHECK_FALSE(outputAbsent(true, true, true));
+        CHECK(outputAbsent(true, false, true));
+        CHECK(outputAbsent(true, true, false));
+        CHECK(outputAbsent(true, false, false));
+        // A persistent target is never gated, whatever the other inputs say.
+        CHECK_FALSE(outputAbsent(false, false, true));
+        CHECK_FALSE(outputAbsent(false, true, false));
     }
 }

@@ -116,6 +116,15 @@ VkClearColorValue GenInitialClearColor(const TextureKey& key) {
     return VkClearColorValue { { 0.0f, 0.0f, 0.0f, 0.0f } };
 }
 
+// A fresh image's first user may be a shader read, a render pass, or a copy
+// (CopyPass opens with TOP_OF_PIPE barriers of its own), so the closing barrier
+// covers both fragment-shader and transfer stages and the reads and writes
+// either can make.
+static constexpr VkPipelineStageFlags kFirstUseStages =
+    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+static constexpr VkAccessFlags kFirstUseAccess =
+    VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+
 void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClearColorValue& color,
                       VkImageLayout final_layout) {
     const VkImageSubresourceRange range {
@@ -146,16 +155,36 @@ void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClea
         .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .pNext            = nullptr,
         .srcAccessMask    = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask    = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask    = kFirstUseAccess,
         .oldLayout        = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .newLayout        = final_layout,
         .image            = image,
         .subresourceRange = range,
     };
-    cmd.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
-                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                        VK_DEPENDENCY_BY_REGION_BIT,
-                        to_final);
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TRANSFER_BIT, kFirstUseStages, VK_DEPENDENCY_BY_REGION_BIT, to_final);
+}
+
+void RecTransitionNewImage(const vvk::CommandBuffer& cmd, VkImage image,
+                           VkImageLayout final_layout) {
+    const VkImageMemoryBarrier barrier {
+        .sType            = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext            = nullptr,
+        .srcAccessMask    = 0,
+        .dstAccessMask    = kFirstUseAccess,
+        .oldLayout        = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout        = final_layout,
+        .image            = image,
+        .subresourceRange = {
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = VK_REMAINING_MIP_LEVELS,
+            .baseArrayLayer = 0,
+            .layerCount     = VK_REMAINING_ARRAY_LAYERS,
+        },
+    };
+    cmd.PipelineBarrier(
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, kFirstUseStages, VK_DEPENDENCY_BY_REGION_BIT, barrier);
 }
 } // namespace vulkan
 } // namespace wallpaper
@@ -800,31 +829,52 @@ void TextureCache::allocateCmd() {
     m_tex_cmd = vvk::CommandBuffer(m_tex_cmds[0], m_device.handle().Dispatch());
 }
 
+std::optional<VmaImageParameters> TextureCache::createImageOnly(const TextureKey& tex_key) {
+    // maxLod gates the highest mip the hardware sampler may pick.  Set to
+    // the key's actual mip count so trilinear can pick lower mips when the
+    // image has them.  When mipmap_level == 1 (the normal case for current
+    // pingpongs and _rt_default), maxLod is 1.0.  When multi-mip RTs are
+    // ever re-enabled, this lifts the artificial clamp without exposing the
+    // rotated-quad pixelation that mip-gen for halo softening produced.
+    const float         max_lod = std::max(1.0f, (float)tex_key.mipmap_level);
+    VkSamplerCreateInfo sam_info =
+        GenSamplerInfo(tex_key.sample, max_lod, m_device.maxAnisotropy());
+    VkSampler  shared_sampler = GetOrCreateSampler(sam_info);
+    VkFormat   format         = ToVkType(tex_key.format);
+    VkExtent3D ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
+
+    return CreateImage(m_device,
+                       ext,
+                       tex_key.mipmap_level,
+                       format,
+                       shared_sampler,
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                           VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+}
+
+bool TextureCache::CreateImageForSlot(RtSlot& slot) {
+    auto opt = createImageOnly(slot.key);
+    if (! opt.has_value()) return false;
+    detail::attachImage(slot, std::move(opt.value()));
+    return true;
+}
+
+void TextureCache::RecInitialState(const vvk::CommandBuffer& cmd, const RtSlot& slot,
+                                   bool clear) const {
+    if (! slot.image) return;
+    if (clear)
+        RecClearNewImage(cmd,
+                         *slot.image->handle,
+                         GenInitialClearColor(slot.key),
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    else
+        RecTransitionNewImage(cmd, *slot.image->handle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
 std::optional<VmaImageParameters> TextureCache::CreateTex(TextureKey tex_key) {
     VmaImageParameters image_paras;
     do {
-        // maxLod gates the highest mip the hardware sampler may pick.  Set to
-        // the key's actual mip count so trilinear can pick lower mips when the
-        // image has them.  When mipmap_level == 1 (the normal case for current
-        // pingpongs and _rt_default), maxLod is 1.0.  When multi-mip RTs are
-        // ever re-enabled, this lifts the artificial clamp without exposing the
-        // rotated-quad pixelation that mip-gen for halo softening produced.
-        const float         max_lod = std::max(1.0f, (float)tex_key.mipmap_level);
-        VkSamplerCreateInfo sam_info =
-            GenSamplerInfo(tex_key.sample, max_lod, m_device.maxAnisotropy());
-        VkSampler  shared_sampler = GetOrCreateSampler(sam_info);
-        VkFormat   format         = ToVkType(tex_key.format);
-        VkExtent3D ext { (u32)tex_key.width, (u32)tex_key.height, 1 };
-
-        if (auto opt =
-                CreateImage(m_device,
-                            ext,
-                            tex_key.mipmap_level,
-                            format,
-                            shared_sampler,
-                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-            opt.has_value()) {
+        if (auto opt = createImageOnly(tex_key); opt.has_value()) {
             image_paras = std::move(opt.value());
         } else
             break;
@@ -883,6 +933,9 @@ void TextureCache::evictColdQueryTexs() {
 }
 
 TextureCache::TextureCache(const Device& device): m_device(device) {
+    m_eager_managed = ! detail::residencyEnabledFromEnv(std::getenv("WEKDE_RT_RESIDENCY"));
+    if (m_eager_managed)
+        LOG_INFO("TextureCache: WEKDE_RT_RESIDENCY=0, render targets stay resident from load");
     const char* env = std::getenv("WEK_TEXCACHE_QUERY_CAP");
     if (env != nullptr && env[0] != '\0') {
         // Sentinel-based accept/reject probe: pass two distinct defaults and
@@ -932,6 +985,7 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
         query.persist     = persist;
         query.lru_tick    = ++m_lru_clock;
         query.last_gen    = m_query_generation;
+        if (! giveImageIfPersistent(query, persist)) return nullptr;
         return &query;
     };
 
@@ -947,6 +1001,7 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
         query->last_gen = m_query_generation;
 
         m_query_map[std::string(key)] = &(*query);
+        if (! giveImageIfPersistent(*query, persist)) return nullptr;
         return query.get();
     }
 
@@ -961,15 +1016,21 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
     query.persist  = persist;
     query.lru_tick = ++m_lru_clock;
     query.last_gen = m_query_generation;
-    if (auto opt = CreateTex(content_hash); opt.has_value()) {
-        query.image = std::move(opt.value());
-        ++query.generation;
-        if (m_query_texs.size() > m_query_soft_cap) {
-            evictColdQueryTexs();
-        }
-        return &query;
+    if (! giveImageIfPersistent(query, persist)) return nullptr;
+    if (m_query_texs.size() > m_query_soft_cap) {
+        evictColdQueryTexs();
     }
-    return nullptr;
+    return &query;
+}
+
+bool TextureCache::giveImageIfPersistent(RtSlot& slot, bool persist) {
+    // A managed slot gets its image when a frame first needs it, unless the
+    // eager switch is on; a persistent slot is read from the first frame.
+    if (! (persist || m_eager_managed) || slot.image) return true;
+    auto opt = CreateTex(slot.key);
+    if (! opt.has_value()) return false;
+    detail::attachImage(slot, std::move(opt.value()));
+    return true;
 }
 
 void TextureCache::MarkShareReady(std::string_view key) {

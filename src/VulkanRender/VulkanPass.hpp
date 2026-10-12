@@ -1,5 +1,6 @@
 #pragma once
 #include "RenderGraph/Pass.hpp"
+#include "VulkanRender/RtResidency.hpp"
 #include <span>
 #include <vector>
 #include <string>
@@ -36,6 +37,16 @@ public:
     std::span<const std::string> releaseTexs() const { return m_release_texs; }
     void                         clearReleaseTexs() { m_release_texs.clear(); }
 
+    // What the residency walk needs from this pass this frame.  Passes with no
+    // node (PrePass, FinPass, SkyboxPass, CopyPass) always draw.
+    virtual PassDemandFrame demandFrame() const { return { true, false, DemandInputs::Own }; }
+
+    // Whether the demand walk wanted this pass's output this frame.  Set by the
+    // residency step before the pass loop; a pass whose managed output is
+    // resident but not needed skips, since nothing will read what it draws.
+    bool outputNeeded() const { return m_output_needed; }
+    void setOutputNeeded(bool v) { m_output_needed = v; }
+
     // Override in subclasses to indicate if pass can be cached
     virtual bool isStatic() const { return false; }
 
@@ -44,6 +55,7 @@ protected:
 
 private:
     bool                     m_prepared { false };
+    bool                     m_output_needed { true };
     std::vector<std::string> m_release_texs;
 };
 } // namespace vulkan

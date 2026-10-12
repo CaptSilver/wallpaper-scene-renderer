@@ -189,6 +189,75 @@ inline bool HiddenEffectMustCopy(usize i, const std::vector<bool>& effectVisible
     return ((i32)i - k) % 2 == 1;
 }
 
+// Everything execute() decides from visibility, decided once.  The per-frame
+// demand walk reads the same struct, so what it keeps resident is exactly what
+// the record will sample.
+struct HideableFrame {
+    bool             has_node { false };
+    bool             node_visible { true };      // node == nullptr || node->IsVisible()
+    bool             own_hidden { false };       // the effect's own flag when the chain is known
+    bool             ancestors_visible { true }; // node == nullptr || node->AncestorsVisible()
+    bool             must_copy { false };
+    HideableDecision hide;
+    bool             records { true }; // false: execute returns before recording anything
+    bool             draws { false };  // a draw call is issued (real material or passthrough)
+    DemandInputs     inputs { DemandInputs::None };
+    i32              passthrough_tex_index { -1 };
+};
+
+inline HideableFrame DecideHideable(HideableKind kind, const std::vector<bool>& chain_visible,
+                                    i32 chain_index, bool has_node, bool node_visible,
+                                    bool ancestors_visible, bool base_image_written,
+                                    bool passthrough_ready, bool clears_output, PassMergeRole role,
+                                    i32 pt_a, i32 pt_b) {
+    HideableFrame f;
+    f.has_node          = has_node;
+    f.node_visible      = ! has_node || node_visible;
+    f.ancestors_visible = ! has_node || ancestors_visible;
+    const bool chain_known =
+        kind != HideableKind::None && chain_index >= 0 && (usize)chain_index < chain_visible.size();
+    f.own_hidden = has_node && ! node_visible;
+    if (chain_known) f.own_hidden = ! chain_visible[(usize)chain_index];
+    f.must_copy = kind != HideableKind::Middle ||
+                  (chain_known &&
+                   HiddenEffectMustCopy((usize)chain_index, chain_visible, base_image_written));
+    f.hide =
+        DecideHideablePass(kind, f.own_hidden, f.ancestors_visible, f.must_copy, passthrough_ready);
+    const bool records_while_hidden = f.hide.draw_passthrough || f.hide.keep_real_draw;
+    if (has_node && ! records_while_hidden &&
+        IsHiddenPassSkippable(! node_visible, clears_output) && HiddenPassDropsRecording(role)) {
+        f.records = false;
+        return f;
+    }
+    f.records = true;
+    f.draws   = f.node_visible || f.hide.draw_passthrough || f.hide.keep_real_draw;
+    if (! f.draws) return f; // a hidden clear owner or group boundary: records, samples nothing
+    if (f.hide.draw_passthrough && kind == HideableKind::Middle) {
+        f.inputs                = DemandInputs::PassthroughA;
+        f.passthrough_tex_index = pt_a;
+    } else if (f.hide.draw_passthrough && kind == HideableKind::Terminal) {
+        const std::vector<bool> before =
+            chain_known
+                ? std::vector<bool>(chain_visible.begin(), chain_visible.begin() + chain_index)
+                : std::vector<bool>();
+        const bool from_b       = SelectPassthroughSource(before) == PassthroughSource::BufferB;
+        f.inputs                = from_b ? DemandInputs::PassthroughB : DemandInputs::PassthroughA;
+        f.passthrough_tex_index = from_b ? pt_b : pt_a;
+    } else {
+        f.inputs = DemandInputs::Own;
+    }
+    return f;
+}
+
+// Cached bytes are only right while every image they were drawn from is
+// untouched, so a cached pass keeps its own inputs resident even on a frame
+// it records nothing.
+inline PassDemandFrame DemandFrameFor(const HideableFrame& hf, bool cached) {
+    PassDemandFrame f { hf.draws, cached, hf.inputs };
+    if (f.cached && f.inputs == DemandInputs::None) f.inputs = DemandInputs::Own;
+    return f;
+}
+
 // A terminal pass appends 2 extra texture reads (the chain's ping-
 // pong buffers), and a middle pass 1, on top of however many the real
 // material's own JSON declares, so a texture-slot index can run past WE_GLTEX_NAMES' fixed 13
@@ -484,6 +553,10 @@ public:
     // would read stale data.  Set by VulkanRender::compileRenderGraph after
     // all passes are prepared and their output VkImages are resolved.
     bool canCache() const { return m_can_cache; }
+    // The frame's one visibility verdict for this pass; execute() reads it once.
+    HideableFrame frameHideable(PassMergeRole role) const;
+    // The per-frame half of this pass's demand, built from frameHideable().
+    PassDemandFrame demandFrame() const override;
     void setCanCache(bool v) { m_can_cache = v; }
 
     // Check if output is already cached and valid
@@ -614,6 +687,30 @@ inline ResidencyKey KeyForSlot(const RtSlot* slot) {
 }
 
 inline ResidencyKey CustomShaderPass::outputKey() const { return KeyForSlot(m_desc.out_slot); }
+
+// The compile-time half of a pass's demand.  The two appended passthrough
+// reads are the chain buffers a hidden effect copies through; they are only
+// sampled on a frame DecideHideable picks one, so they are kept apart from
+// the material's own textures.
+inline PassDemandStatic PassDemandStaticFor(const CustomShaderPass::Desc& d) {
+    PassDemandStatic s;
+    s.out         = KeyForSlot(d.out_slot);
+    s.out_managed = d.out_slot != nullptr && d.out_slot->managed();
+    for (usize t = 0; t < d.in_slots.size(); ++t) {
+        if (d.in_slots[t] == nullptr) continue;
+        if (IsAppendedPassthroughSlot(
+                t, d.passthrough_input_tex_index_a, d.passthrough_input_tex_index_b))
+            continue;
+        s.own_inputs.push_back(KeyForSlot(d.in_slots[t]));
+    }
+    auto slot_at = [&](i32 idx) {
+        return idx >= 0 && (usize)idx < d.in_slots.size() ? KeyForSlot(d.in_slots[(usize)idx])
+                                                          : ResidencyKey {};
+    };
+    s.passthrough_a = slot_at(d.passthrough_input_tex_index_a);
+    s.passthrough_b = slot_at(d.passthrough_input_tex_index_b);
+    return s;
+}
 
 } // namespace vulkan
 } // namespace wallpaper

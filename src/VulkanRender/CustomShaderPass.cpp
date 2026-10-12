@@ -4,6 +4,7 @@
 
 #include "SpecTexs.hpp"
 #include "Vulkan/Shader.hpp"
+#include "Vulkan/TextureCacheDetail.hpp"
 #include "Utils/Logging.h"
 #include "Utils/SceneProfiler.h"
 #include "Utils/AutoDeletor.hpp"
@@ -1388,6 +1389,29 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
     }
 }
 
+HideableFrame CustomShaderPass::frameHideable(PassMergeRole role) const {
+    const bool              has_node      = m_desc.node != nullptr;
+    const std::vector<bool> chain_visible = m_desc.hideable != HideableKind::None
+                                                ? ChainVisibility(m_desc.chain_effects)
+                                                : std::vector<bool>();
+    return DecideHideable(m_desc.hideable,
+                          chain_visible,
+                          m_desc.chain_index,
+                          has_node,
+                          has_node && m_desc.node->IsVisible(),
+                          has_node && m_desc.node->AncestorsVisible(),
+                          m_desc.chain_base_image_written,
+                          m_desc.passthrough_ready,
+                          m_desc.clears_output,
+                          role,
+                          m_desc.passthrough_input_tex_index_a,
+                          m_desc.passthrough_input_tex_index_b);
+}
+
+PassDemandFrame CustomShaderPass::demandFrame() const {
+    return DemandFrameFor(frameHideable(m_desc.merge_role), canCache() && isCached());
+}
+
 bool CustomShaderPass::ensureFramebuffer(const Device& device, PassMergeRole role) {
     // vkCmdBeginRenderPass is the only consumer of the framebuffer, so only
     // the pass that opens the render pass needs one.
@@ -1476,6 +1500,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         auto* mat = m_desc.node->Mesh()->Material();
         own_dirty = mat && mat->customShader.constValuesDirty;
     }
+    const HideableFrame hf = frameHideable(role);
     // compileRenderGraph never merges a cacheable pass, precisely because
     // the early return below would strand the group's begin or end.  The role
     // check keeps that a local, checkable fact rather than an invariant
@@ -1484,7 +1509,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         DecidePassCache<ResidencyKey>(canCache(),
                                       isCached(),
                                       own_dirty,
-                                      m_desc.node == nullptr || m_desc.node->IsVisible(),
+                                      hf.node_visible,
                                       m_cached_visible,
                                       m_input_keys,
                                       m_backward_input_keys,
@@ -1514,8 +1539,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // boundary — there is no way to hand a render pass instance over — but
     // its draw is dropped below by the same visibility test.
     //
-    // A hideable pass that copies or falls back is exempt, decided here before
-    // the guard: hiding it must still show whatever came before it in the
+    // A hideable pass that copies or falls back is exempt (DecideHideable sets
+    // records): hiding it must still show whatever came before it in the
     // chain, which needs the passthrough draw below, not a dropped record.
     // Without the exemption a terminal writing to the shared _rt_default
     // (clears_output false whenever this object isn't the first thing drawn
@@ -1523,27 +1548,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // anything. A Terminal copies whenever it is hidden; a Middle copies only
     // when HiddenEffectMustCopy says its hidden run breaks the chain's
     // ping-pong parity, and otherwise takes the ordinary path.
-    std::vector<bool> chain_visible;
-    bool              own_hidden = m_desc.node != nullptr && ! m_desc.node->IsVisible();
-    const bool        chain_known = m_desc.hideable != HideableKind::None &&
-                             m_desc.chain_index >= 0 &&
-                             (usize)m_desc.chain_index < m_desc.chain_effects.size();
-    if (chain_known) {
-        chain_visible = ChainVisibility(m_desc.chain_effects);
-        own_hidden    = ! chain_visible[(usize)m_desc.chain_index];
-    }
-    const bool ancestors_visible = m_desc.node == nullptr || m_desc.node->AncestorsVisible();
-    const bool must_copy = m_desc.hideable != HideableKind::Middle ||
-                           (chain_known && HiddenEffectMustCopy((usize)m_desc.chain_index,
-                                                                chain_visible,
-                                                                m_desc.chain_base_image_written));
-    const HideableDecision hide = DecideHideablePass(
-        m_desc.hideable, own_hidden, ancestors_visible, must_copy, m_desc.passthrough_ready);
-    const bool             records_while_hidden = hide.draw_passthrough || hide.keep_real_draw;
-
-    if (m_desc.node != nullptr && ! records_while_hidden &&
-        IsHiddenPassSkippable(! m_desc.node->IsVisible(), m_desc.clears_output) &&
-        HiddenPassDropsRecording(role)) {
+    if (! hf.records) {
         // The hidden pass may still be the first user of its depth image this
         // frame.  Hand the initialisation over before bailing out rather than
         // leaving the image UNDEFINED for a later visible pass that shares it.
@@ -1560,6 +1565,23 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         return;
     }
 
+    // Nothing to write into: the slot is managed and nobody needed it this
+    // frame (or its create failed).  Every member of a merged group shares the
+    // output slot, so a group records or skips as a whole.  Ahead of
+    // ensureFramebuffer so an absent output is not mistaken for a failed
+    // framebuffer, which would abandon a group that was merely not needed.
+    if (m_desc.out_slot != nullptr &&
+        wallpaper::vulkan::detail::outputAbsent(
+            m_desc.out_slot->managed(), m_desc.out_slot->resident(), outputNeeded())) {
+        if (g_pass_dump_active)
+            LOG_DEBUG("pass dump: skip %s -> %s, render target not resident",
+                      m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
+                          ? m_desc.node->Mesh()->Material()->customShader.shader->name.c_str()
+                          : "???",
+                      m_desc.output.c_str());
+        return;
+    }
+
     // The framebuffer is built over the live image on the first record and after
     // every image change.  Nothing to draw into means skip the frame and retry;
     // a GroupBegin that skips here takes its members with it.
@@ -1573,8 +1595,8 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // Which pipeline this frame actually draws with.  A hideable pass that
     // must copy binds the passthrough pipeline built in prepare() instead of
     // its real one; every other pass is unaffected.
-    const bool                draw_passthrough = hide.draw_passthrough;
-    const bool                keep_real_draw   = hide.keep_real_draw;
+    const bool                draw_passthrough = hf.hide.draw_passthrough;
+    const bool                keep_real_draw   = hf.hide.keep_real_draw;
     const PipelineParameters& pipeline_to_bind =
         draw_passthrough ? m_desc.passthrough_pipeline : m_desc.pipeline;
     if (draw_passthrough && m_desc.passthrough_update_op) m_desc.passthrough_update_op();
@@ -1585,19 +1607,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // SelectPassthroughSource for why a fixed slot isn't enough (a hidden
     // immediate predecessor already took the ordinary skip path and is
     // holding stale content, not this frame's answer).
-    i32 passthrough_tex_index = -1;
-    if (draw_passthrough && m_desc.hideable == HideableKind::Middle) {
-        // A middle pass copies the one buffer it was wired to read.
-        passthrough_tex_index = m_desc.passthrough_input_tex_index_a;
-    } else if (draw_passthrough && m_desc.hideable == HideableKind::Terminal) {
-        const std::vector<bool> before =
-            chain_known ? std::vector<bool>(chain_visible.begin(),
-                                            chain_visible.begin() + m_desc.chain_index)
-                        : std::vector<bool>();
-        passthrough_tex_index = (SelectPassthroughSource(before) == PassthroughSource::BufferB)
-                                    ? m_desc.passthrough_input_tex_index_b
-                                    : m_desc.passthrough_input_tex_index_a;
-    }
+    const i32 passthrough_tex_index = hf.passthrough_tex_index;
 
     // First-frame execution trace: log every pass with order, shader, output, load op, textures
     {
@@ -1607,7 +1617,6 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             auto shaderName  = m_desc.node && m_desc.node->Mesh() && m_desc.node->Mesh()->Material()
                                    ? m_desc.node->Mesh()->Material()->customShader.shader->name
                                    : "???";
-            bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
             int  nodeId      = m_desc.node ? m_desc.node->ID() : -1;
             LOG_INFO("EXEC[%d] pass#%d id=%d shader='%s' out='%.*s' draw=%u visible=%d "
                      "depth=%d blend=%d tex_count=%zu out_img=%p out_view=%p out_ext=%ux%u",
@@ -1618,7 +1627,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                      (int)m_desc.output.size(),
                      m_desc.output.data(),
                      m_desc.draw_count,
-                     (int)nodeVisible,
+                     (int)hf.node_visible,
                      (int)m_desc.hasDepth,
                      (int)m_desc.blending,
                      m_desc.vk_textures.size(),
@@ -1902,8 +1911,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // which must draw (the identical mesh, at the identical transform) to
     // put the chain's prior content on screen instead of nothing, or one
     // whose passthrough failed to build and falls back to its real draw.
-    bool nodeVisible = (m_desc.node == nullptr || m_desc.node->IsVisible());
-    if (nodeVisible || draw_passthrough || keep_real_draw) {
+    if (hf.draws) {
         for (usize i = 0; i < m_desc.vertex_bufs.size(); i++) {
             auto& buf = m_desc.vertex_bufs[i];
             cmd.BindVertexBuffers((u32)i, 1, &gpu_buf, &buf.offset);
@@ -1964,7 +1972,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // First-frame draw complete; the RT contents are now stable for any
     // later-frame cache skip (safe iff canCache(), which VulkanRender set
     // based on alias analysis — see compileRenderGraph).
-    if (canCache()) markCached(m_desc.node == nullptr || m_desc.node->IsVisible());
+    if (canCache()) markCached(hf.node_visible);
     // Reaching here means the draw was recorded, so consumers sampling this
     // output must not trust their own cache.
     RecordPassDrawn<ResidencyKey>(m_rewritten_frame_tracker, outputKey());

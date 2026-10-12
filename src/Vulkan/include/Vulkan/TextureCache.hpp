@@ -69,6 +69,12 @@ VkClearColorValue GenInitialClearColor(const TextureKey& key);
 void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClearColorValue& color,
                       VkImageLayout final_layout);
 
+// Leaves a fresh image in `final_layout` without touching its contents.  A
+// fresh image has nothing to wait for; the first writer's render pass starts
+// from UNDEFINED (clear) or from this layout (load).
+void RecTransitionNewImage(const vvk::CommandBuffer& cmd, VkImage image,
+                           VkImageLayout final_layout);
+
 // Scene-lifetime identity of a render target.  Same type as
 // VulkanRender/RtResidency.hpp's SlotId, which wpVulkan cannot include.
 using SlotId = std::uint32_t;
@@ -167,6 +173,17 @@ public:
     // of the soft cap.
     void beginQueryGeneration() { ++m_query_generation; }
 
+    // Attach a fresh image (image, views, shared sampler) to a managed slot.
+    // Nothing is submitted: the caller records the initial state into the
+    // frame with RecInitialState.  false leaves the slot untouched.
+    bool CreateImageForSlot(RtSlot& slot);
+    // Leave a freshly attached image in SHADER_READ_ONLY_OPTIMAL, cleared to
+    // GenInitialClearColor(key) when `clear` is set.
+    void RecInitialState(const vvk::CommandBuffer& cmd, const RtSlot& slot, bool clear) const;
+    // True under WEKDE_RT_RESIDENCY=0: managed slots get their image at query
+    // time and are never released.
+    bool eagerManaged() const { return m_eager_managed; }
+
     void MarkShareReady(std::string_view key);
 
     void RecGenerateMipmaps(vvk::CommandBuffer& cmd, const ImageParameters& image) const;
@@ -192,6 +209,9 @@ public:
 
 private:
     std::optional<VmaImageParameters> CreateTex(TextureKey);
+    // Image, views and sampler only; no submit.  CreateTex adds the clear.
+    std::optional<VmaImageParameters> createImageOnly(const TextureKey&);
+    bool                              m_eager_managed { false };
     void                              allocateCmd();
     vvk::CommandBuffers               m_tex_cmds;
     vvk::CommandBuffer                m_tex_cmd;
@@ -238,6 +258,9 @@ private:
     uint32_t m_query_soft_cap { 64 };
 
     void evictColdQueryTexs();
+    // Creates (with the one-shot clear) the slot's image when it is persistent or
+    // residency is off and it has none yet.  false when that create failed.
+    bool giveImageIfPersistent(RtSlot& slot, bool persist);
 
     // Lazily-allocated depth sampler (NEAREST/CLAMP/no-compare).  See
     // GetOrCreateDepthSampler().

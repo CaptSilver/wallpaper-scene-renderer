@@ -24,6 +24,7 @@
 
 #include "Vulkan/Device.hpp"
 #include "Vulkan/TextureCache.hpp"
+#include "Vulkan/TextureCacheDetail.hpp"
 #include "Vulkan/Swapchain.hpp"
 #include "Vulkan/SwapchainPolicy.hpp"
 #include "Vulkan/VulkanExSwapchain.hpp"
@@ -201,6 +202,20 @@ struct VulkanRender::Impl {
     void takeScreenshotIfRequested(VkImage swap_image, VkFormat swap_format, uint32_t width,
                                    uint32_t height);
     void dumpPassesIfRequested();
+
+    // Residency: per-pass demand inputs fixed at compile, the per-frame half,
+    // the slot table by id and which slots need a clear when they get an image.
+    std::vector<PassDemandStatic>  m_demand_static;
+    std::vector<PassDemandFrame>   m_demand_frame;
+    std::vector<RtSlot*>           m_slot_by_id;
+    std::vector<bool>              m_slot_clear_on_attach;
+    std::vector<CustomShaderPass*> m_csp_by_pass; // parallel to m_passes; nullptr for other kinds
+    std::uint64_t m_rt_created_total { 0 }, m_rt_failed_total { 0 }, m_rt_released_total { 0 };
+
+    void              buildResidencyTables();
+    std::vector<bool> computeDemand();
+    void              createLoadSlots(std::vector<SlotId>& fresh);
+    void              residencyStep(RenderingResources& rr);
 };
 
 // Write a swapchain image to a PPM file.  Called with the device idle.
@@ -1220,7 +1235,9 @@ void VulkanRender::Impl::drawFrame([[maybe_unused]] Scene& scene) {
         if (frame_ms > s_frame_max_ms) s_frame_max_ms = frame_ms;
         s_frame_count++;
 
-        if (++s_diag_frame % 1800 == 0) { // every ~60s at 30fps
+        static const int s_diag_every =
+            (int)detail::parseQueryCapEnv(std::getenv("WEKDE_DIAG_FRAMES"), 1800, 30, 1000000);
+        if (++s_diag_frame % s_diag_every == 0) { // default: every ~60s at 30fps
             double elapsed_s = std::chrono::duration<double>(now - s_diag_start).count();
             double avg_ms    = s_frame_count > 0 ? s_frame_sum_ms / s_frame_count : 0;
             double vma_mb    = m_device->GetUsage() / (1024.0 * 1024.0);
@@ -1254,6 +1271,11 @@ void VulkanRender::Impl::drawFrame([[maybe_unused]] Scene& scene) {
                      hit_pct,
                      hidden);
             m_device->LogMemoryStats("diag");
+            LOG_INFO("RT-RESIDENCY since last DIAG: created=%llu released=%llu failed=%llu",
+                     (unsigned long long)m_rt_created_total,
+                     (unsigned long long)m_rt_released_total,
+                     (unsigned long long)m_rt_failed_total);
+            m_rt_created_total = m_rt_released_total = m_rt_failed_total = 0;
             g_cache_hits      = 0;
             g_cache_misses    = 0;
             g_invisible_skips = 0;
@@ -1386,6 +1408,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
             m_depth_inited_frame.clear();
             rr.group_abandoned = false;
             AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
+            residencyStep(rr);
             for (auto* p : m_passes) {
                 if (p->prepared()) {
                     p->execute(*m_device, rr);
@@ -1546,6 +1569,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         m_depth_inited_frame.clear();
         rr.group_abandoned = false;
         AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
+        residencyStep(rr);
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -2132,12 +2156,19 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                  m_passes.size());
     }
 
+    buildResidencyTables();
+    std::vector<SlotId> fresh;
+    createLoadSlots(fresh);
+
     VVK_CHECK_VOID_RE(m_upload_cmd.Begin(VkCommandBufferBeginInfo {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .pNext = nullptr,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     }));
     m_vertex_buf->recordUpload(m_upload_cmd);
+    for (SlotId id : fresh)
+        m_device->tex_cache().RecInitialState(
+            m_upload_cmd, *m_slot_by_id[id], m_slot_clear_on_attach[id]);
     VVK_CHECK_VOID_RE(m_upload_cmd.End());
     {
         // Use fence instead of WaitIdle for better performance
@@ -2161,3 +2192,120 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     }
     m_pass_loaded = true;
 };
+
+void VulkanRender::Impl::buildResidencyTables() {
+    auto& cache = m_device->tex_cache();
+    m_slot_by_id.assign(cache.slotCount(), nullptr);
+    for (auto& sp : cache.slots()) m_slot_by_id[sp->id] = sp.get();
+
+    m_demand_static.assign(m_passes.size(), {});
+    m_demand_frame.assign(m_passes.size(), {});
+    m_csp_by_pass.assign(m_passes.size(), nullptr);
+    std::vector<bool> clears(m_passes.size(), true);
+    for (std::size_t i = 0; i < m_passes.size(); ++i) {
+        VulkanPass*       p = m_passes[i];
+        PassDemandStatic& s = m_demand_static[i];
+        m_csp_by_pass[i]    = dynamic_cast<CustomShaderPass*>(p);
+        if (! p->prepared()) continue; // an unprepared pass is neither a writer nor a reader
+        if (auto* csp = m_csp_by_pass[i]) {
+            s         = PassDemandStaticFor(csp->desc());
+            clears[i] = csp->desc().clears_output;
+        } else if (auto* cp = dynamic_cast<CopyPass*>(p)) {
+            s.out         = KeyForSlot(cp->desc().dst_slot);
+            s.out_managed = cp->desc().dst_slot != nullptr && cp->desc().dst_slot->managed();
+            s.own_inputs  = { KeyForSlot(cp->desc().src_slot) };
+            clears[i]     = true; // a copy overwrites the whole destination
+        } else if (auto* sky = dynamic_cast<SkyboxPass*>(p)) {
+            s.out = KeyForSlot(sky->desc().out_slot);
+        } else if (auto* pre = dynamic_cast<PrePass*>(p)) {
+            s.out = KeyForSlot(pre->desc().result_slot);
+        }
+    }
+    m_slot_clear_on_attach = ComputeClearOnAttach(m_demand_static, clears, cache.slotCount());
+}
+
+std::vector<bool> VulkanRender::Impl::computeDemand() {
+    for (std::size_t i = 0; i < m_passes.size(); ++i)
+        m_demand_frame[i] =
+            m_passes[i]->prepared() ? m_passes[i]->demandFrame() : PassDemandFrame {};
+    return ComputeFrameDemand(m_demand_static, m_demand_frame, m_device->tex_cache().slotCount())
+        .needed;
+}
+
+// Load is not a show: create what default visibility needs (everything under
+// WEKDE_RT_RESIDENCY=0), and let the caller batch the initial clears into the
+// vertex upload submit instead of one submit-and-wait per image.
+void VulkanRender::Impl::createLoadSlots(std::vector<SlotId>& fresh) {
+    auto&      cache   = m_device->tex_cache();
+    const auto needed  = computeDemand();
+    unsigned   managed = 0, failed = 0;
+    for (RtSlot* s : m_slot_by_id) {
+        if (s == nullptr || ! s->managed()) continue;
+        ++managed;
+        if (s->resident()) continue;
+        if (! (needed[s->id] || cache.eagerManaged())) continue;
+        if (cache.CreateImageForSlot(*s)) {
+            fresh.push_back(s->id);
+        } else {
+            ++failed;
+            ++s->create_fail_streak;
+            LOG_ERROR("render target slot %u (%dx%d) could not be created at load",
+                      s->id,
+                      s->key.width,
+                      s->key.height);
+        }
+    }
+    LOG_INFO("RT-RESIDENCY load: %zu of %u managed render targets created, %u failed, %u slots",
+             fresh.size(),
+             managed,
+             failed,
+             (unsigned)cache.slotCount());
+}
+
+void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
+    WEK_PROFILE_SCOPE("VulkanRender::residencyStep");
+    const auto t0      = std::chrono::steady_clock::now();
+    auto&      cache   = m_device->tex_cache();
+    const auto needed  = computeDemand();
+    unsigned   created = 0, failed = 0, resident = 0, wanted = 0;
+    for (RtSlot* s : m_slot_by_id) {
+        if (s == nullptr || ! s->managed()) continue;
+        const bool want = needed[s->id];
+        wanted += want ? 1u : 0u;
+        if (s->resident()) {
+            ++resident;
+            continue;
+        }
+        if (! want) continue;
+        if (cache.CreateImageForSlot(*s)) {
+            cache.RecInitialState(rr.command, *s, m_slot_clear_on_attach[s->id]);
+            // Readers cached against the old bytes must redraw.
+            m_rewritten_frame.insert(ResidencyKey::ForSlot(s->id));
+            ++created;
+            ++resident;
+        } else {
+            ++failed;
+            ++s->create_fail_streak;
+        }
+    }
+    // Tell each pass whether its output is wanted.  Under the eager switch
+    // every pass draws as it always did.
+    for (std::size_t i = 0; i < m_passes.size(); ++i)
+        m_passes[i]->setOutputNeeded(cache.eagerManaged() ||
+                                     PassOutputNeeded(m_demand_static[i], needed));
+    m_rt_created_total += created;
+    m_rt_failed_total += failed;
+    if (created != 0 || failed != 0) {
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+        LOG_DEBUG("RT-RESIDENCY frame=%llu created=%u released=0 failed=%u resident=%u needed=%u "
+                  "cpu_us=%lld",
+                  (unsigned long long)m_frame_index,
+                  created,
+                  failed,
+                  resident,
+                  wanted,
+                  (long long)us);
+    }
+}
