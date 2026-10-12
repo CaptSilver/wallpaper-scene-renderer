@@ -168,4 +168,23 @@ TEST_SUITE("ScriptEffectVisResolve") {
         CHECK(sps.attachment == ScenePropertyScript::Attachment::Effect);
         CHECK(sps.effectIndex == 1); // "Current" is index 1 -- "Defualt" anchors, not terminal
     }
+
+    TEST_CASE("an effect dropped from its layer is skipped without indexing past the end") {
+        // RemoveFailedEffects took "dropped" out of the layer, so the scan for its pointer runs
+        // to the end of the effect list and finds nothing.  GetEffect() is bounds-checked, so
+        // a scan that stepped one past the end would throw.
+        auto                  worldNode = std::make_shared<SceneNode>();
+        SceneImageEffectLayer layer(worldNode.get(), "_rt_a", "_rt_b");
+        layer.AddEffect(makeEffectWithNode("kept", makeNodeWithCodes({ goodCode() })));
+        auto dropped = makeEffectWithNode("dropped", makeNodeWithCodes({ goodCode() }));
+
+        std::unordered_map<i32, SceneImageEffectLayer*> nodeMap { { 7, &layer } };
+        std::vector<wek::PendingScriptEffectVis>        pending {
+            { dropped.get(), 7, "gone", "export function f(){}", "", true }
+        };
+        std::vector<ScenePropertyScript> out;
+
+        CHECK_NOTHROW(wek::resolvePendingScriptEffectVis(pending, nodeMap, out));
+        CHECK(out.empty());
+    }
 }
