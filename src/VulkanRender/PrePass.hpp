@@ -23,6 +23,8 @@ public:
         VkClearValue    clear_value;
     };
 
+    const Desc& desc() const { return m_desc; }
+
     PrePass(const Desc&);
     virtual ~PrePass();
 

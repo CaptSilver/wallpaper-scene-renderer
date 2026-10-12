@@ -444,7 +444,12 @@ public:
     // Check if output is already cached and valid
     bool isCached() const { return m_cached; }
     void invalidateCache() { m_cached = false; }
-    void markCached() { m_cached = true; }
+    // `visible` is the node's visibility at draw time: hiding or showing it
+    // later does not dirty the material, so the cache has to notice itself.
+    void markCached(bool visible) {
+        m_cached         = true;
+        m_cached_visible = visible;
+    }
 
     // Assigned by VulkanRender::compileRenderGraph once every pass is
     // prepared and its attachment handles are known.
@@ -475,6 +480,25 @@ public:
     // constructs directly and never runs through execute()).
     bool hasDepthInitedFrameSet() const { return m_depth_inited_frame_tracker != nullptr; }
 
+    // Output images drawn this frame and last frame, owned by
+    // VulkanRender::Impl and wired in alongside the depth tracker.  A cached
+    // pass consults them (see DecidePassCache) and every pass that really
+    // records a draw adds its output to this frame's set.
+    void setRewrittenFrameSets(std::unordered_set<VkImage>* this_frame,
+                               std::unordered_set<VkImage>* last_frame) {
+        m_rewritten_frame_tracker      = this_frame;
+        m_rewritten_last_frame_tracker = last_frame;
+    }
+    // The images this pass samples, as compileRenderGraph resolved them for the
+    // cache-safety analysis, and the subset written by a pass at or after this
+    // one in execution order (read a frame late); the redraw check reads both.
+    void setInputImages(std::vector<VkImage> all, std::vector<VkImage> backward) {
+        m_input_images          = std::move(all);
+        m_backward_input_images = std::move(backward);
+    }
+    const std::vector<VkImage>& inputImages() const { return m_input_images; }
+    const std::vector<VkImage>& backwardInputImages() const { return m_backward_input_images; }
+
     // Accessors for per-pass debug dump (VulkanRender::Impl reads output image
     // info after a frame WaitIdle to produce PPMs of each pass's render target).
     const Desc& desc() const { return m_desc; }
@@ -489,7 +513,12 @@ private:
 
     Desc                         m_desc;
     std::unordered_set<VkImage>* m_depth_inited_frame_tracker { nullptr };
+    std::unordered_set<VkImage>* m_rewritten_frame_tracker { nullptr };
+    std::unordered_set<VkImage>* m_rewritten_last_frame_tracker { nullptr };
+    std::vector<VkImage>         m_input_images;
+    std::vector<VkImage>         m_backward_input_images;
     bool                         m_cached { false };
+    bool                         m_cached_visible { true };
     bool                         m_can_cache { false };
     bool                         m_uses_time_uniforms { false };
     bool                         m_samples_mutable_texture { false };

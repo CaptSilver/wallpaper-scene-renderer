@@ -176,6 +176,13 @@ struct VulkanRender::Impl {
     // relative to a render thread that might still be mid-frame.
     std::unordered_set<VkImage> m_depth_inited_frame;
 
+    // Output images some pass actually drew this frame and the frame before.
+    // Lets a cached pass notice that a producer it samples re-ran; the previous
+    // frame's set covers a reader ordered ahead of its writer.  Advanced with
+    // the depth tracker at the top of each frame.
+    std::unordered_set<VkImage> m_rewritten_frame;
+    std::unordered_set<VkImage> m_rewritten_last_frame;
+
     // Screenshot request.  Set from any thread via setScreenshotPath;
     // consumed on the render thread inside drawFrameSwapchain after WaitIdle.
     std::mutex        m_screenshot_mutex;
@@ -1372,6 +1379,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
             g_exec_pass_counter  = 0;
             g_exec_frame_counter = _render_frame_count;
             m_depth_inited_frame.clear();
+            AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
             for (auto* p : m_passes) {
                 if (p->prepared()) {
                     p->execute(*m_device, rr);
@@ -1530,6 +1538,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         g_exec_pass_counter  = 0;
         g_exec_frame_counter = _render_frame_count;
         m_depth_inited_frame.clear();
+        AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
         for (auto* p : m_passes) {
             if (p->prepared()) {
                 p->execute(*m_device, rr);
@@ -1829,8 +1838,10 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     // in the header) precisely because the pointer has to survive a graph
     // rebuild while m_depth_inited_frame itself does not move.
     for (auto* p : m_passes) {
-        if (auto* csp = dynamic_cast<CustomShaderPass*>(p))
+        if (auto* csp = dynamic_cast<CustomShaderPass*>(p)) {
             csp->setDepthInitedFrameSet(&m_depth_inited_frame);
+            csp->setRewrittenFrameSets(&m_rewritten_frame, &m_rewritten_last_frame);
+        }
     }
 
     // Every pass's own prepare() call below blocks synchronously on
@@ -1965,6 +1976,18 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                 in_handles.push_back(cp->desc().vk_src.handle);
                 inputs.push_back(std::move(in_handles));
                 cacheable.push_back(false);
+            } else if (auto* sky = dynamic_cast<SkyboxPass*>(p); sky && sky->prepared()) {
+                // The skybox redraws _rt_default every frame.  Left as a null
+                // output it would be invisible to the analysis, and a cacheable
+                // pass sampling _rt_default would freeze on the first frame.
+                outputs.push_back(sky->desc().vk_output.handle);
+                inputs.emplace_back();
+                cacheable.push_back(false);
+            } else if (auto* pre = dynamic_cast<PrePass*>(p); pre && pre->prepared()) {
+                // PrePass clears _rt_default each frame; same reasoning.
+                outputs.push_back(pre->desc().vk_result.handle);
+                inputs.emplace_back();
+                cacheable.push_back(false);
             } else {
                 outputs.push_back(VK_NULL_HANDLE);
                 inputs.emplace_back();
@@ -1972,6 +1995,15 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             }
         }
         auto safe = ComputeIsSafeToSkip<VkImage>(outputs, inputs, cacheable);
+
+        // Cached passes re-check the inputs they sample against what was
+        // redrawn (see DecidePassCache); inputs written later in the order are
+        // read a frame behind and get the previous frame's set.
+        auto backward = ClassifyBackwardInputs<VkImage>(outputs, inputs);
+        for (std::size_t i = 0; i < m_passes.size(); ++i) {
+            if (csps[i] && csps[i]->prepared())
+                csps[i]->setInputImages(inputs[i], std::move(backward[i]));
+        }
 
         int cacheable_total = 0;
         int cache_gated     = 0;

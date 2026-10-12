@@ -1404,8 +1404,9 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     const bool          opens  = PassOpensRenderPass(role);
     const bool          closes = PassClosesRenderPass(role);
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
-    // uniforms, AND is the last writer of its output VkImage (see
-    // canCache() / VulkanRender::compileRenderGraph for the alias check),
+    // uniforms, is the only writer of its output VkImage, and reads only
+    // images written by other such passes (see canCache() /
+    // VulkanRender::compileRenderGraph for the alias check),
     // its RT contents persist across frames — so a second-and-later frame
     // can skip the full record+draw and leave the image untouched.
     // g_cache_hits / g_cache_misses track behaviour for the periodic diag.
@@ -1416,15 +1417,28 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // constValuesDirty on the material; we must re-execute so the new
     // uniform values reach the UBO (otherwise the cached draw freezes
     // the old values).  The flag is cleared inside the draw lambda.
-    if (canCache() && isCached() && m_desc.node && m_desc.node->Mesh()) {
+    bool own_dirty = false;
+    if (m_desc.node && m_desc.node->Mesh()) {
         auto* mat = m_desc.node->Mesh()->Material();
-        if (mat && mat->customShader.constValuesDirty) invalidateCache();
+        own_dirty = mat && mat->customShader.constValuesDirty;
     }
     // compileRenderGraph never merges a cacheable pass, precisely because
-    // this early return would strand the group's begin or end.  The role
+    // the early return below would strand the group's begin or end.  The role
     // check keeps that a local, checkable fact rather than an invariant
     // spread across two files: a merged pass re-records instead.
-    if (canCache() && isCached() && role == PassMergeRole::Standalone) {
+    const PassCacheDecision cache =
+        DecidePassCache<VkImage>(canCache(),
+                                 isCached(),
+                                 own_dirty,
+                                 m_desc.node == nullptr || m_desc.node->IsVisible(),
+                                 m_cached_visible,
+                                 m_input_images,
+                                 m_backward_input_images,
+                                 m_rewritten_frame_tracker,
+                                 m_rewritten_last_frame_tracker,
+                                 role == PassMergeRole::Standalone);
+    if (cache.invalidate) invalidateCache();
+    if (cache.skip) {
         g_cache_hits++;
         return;
     }
@@ -1888,7 +1902,10 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // First-frame draw complete; the RT contents are now stable for any
     // later-frame cache skip (safe iff canCache(), which VulkanRender set
     // based on alias analysis — see compileRenderGraph).
-    if (canCache()) markCached();
+    if (canCache()) markCached(m_desc.node == nullptr || m_desc.node->IsVisible());
+    // Reaching here means the draw was recorded, so consumers sampling this
+    // output must not trust their own cache.
+    RecordPassDrawn<VkImage>(m_rewritten_frame_tracker, m_desc.vk_output.handle);
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {

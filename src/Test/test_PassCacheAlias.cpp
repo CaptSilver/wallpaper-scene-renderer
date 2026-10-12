@@ -499,3 +499,336 @@ TEST_SUITE("PassCacheAlias::CacheableForSafetyAnalysis") {
         CHECK_FALSE(CacheableForSafetyAnalysis(false, true));
     }
 }
+
+// A cached pass keeps its bytes only while its inputs are untouched. A producer
+// that re-runs this frame (its own uniforms went dirty) must pull its cached
+// consumers back in, and a consumer that redraws must do the same for the next.
+TEST_SUITE("PassCacheAlias::CachedPassMustRedraw") {
+    TEST_CASE("an input rewritten this frame forces a redraw") {
+        std::unordered_set<H> rewritten { A };
+        std::vector<H>        in { A };
+        CHECK(CachedPassMustRedraw<H>(in, rewritten));
+    }
+    TEST_CASE("untouched inputs leave the cache valid") {
+        std::unordered_set<H> rewritten { C };
+        std::vector<H>        in { A, B };
+        CHECK_FALSE(CachedPassMustRedraw<H>(in, rewritten));
+    }
+    TEST_CASE("an empty rewritten set never forces a redraw") {
+        std::unordered_set<H> rewritten;
+        std::vector<H>        in { A, B };
+        CHECK_FALSE(CachedPassMustRedraw<H>(in, rewritten));
+    }
+    TEST_CASE("null and external handles are ignored") {
+        std::unordered_set<H> rewritten { A };
+        std::vector<H>        in { NULLH, B };
+        CHECK_FALSE(CachedPassMustRedraw<H>(in, rewritten));
+        std::unordered_set<H> with_null { NULLH };
+        CHECK_FALSE(CachedPassMustRedraw<H>(in, with_null));
+    }
+    TEST_CASE("a pass with no inputs never redraws") {
+        std::unordered_set<H> rewritten { A };
+        CHECK_FALSE(CachedPassMustRedraw<H>(std::span<const H> {}, rewritten));
+    }
+    TEST_CASE("redraw propagates down a chain once each consumer records its output") {
+        // base(A) -> opacity(B, cached) -> copy(C, cached)
+        std::unordered_set<H> rewritten;
+        std::vector<H>        opacity_in { A }, copy_in { B };
+        rewritten.insert(A); // base re-ran
+        bool opacity = CachedPassMustRedraw<H>(opacity_in, rewritten);
+        CHECK(opacity);
+        if (opacity) rewritten.insert(B);
+        CHECK(CachedPassMustRedraw<H>(copy_in, rewritten));
+    }
+    TEST_CASE("a cache hit does not propagate") {
+        std::unordered_set<H> rewritten;
+        std::vector<H>        opacity_in { A }, copy_in { B };
+        CHECK_FALSE(CachedPassMustRedraw<H>(opacity_in, rewritten));
+        CHECK_FALSE(CachedPassMustRedraw<H>(copy_in, rewritten));
+    }
+}
+
+TEST_SUITE("PassCacheAlias::ComputeIsSafeToSkip non-pass writers") {
+    TEST_CASE("a cacheable reader of an image a non-cacheable writer also draws is unsafe") {
+        // PrePass / SkyboxPass redraw _rt_default every frame.  Registered as
+        // non-cacheable writers they make a cached pass that samples the image
+        // unsafe, even when the only other writer of it is that fixed pass.
+        // 0: sky -> A (non-cacheable), 1: reader of A -> B (cacheable)
+        std::vector<H>              outs { A, B };
+        std::vector<std::vector<H>> ins { {}, { A } };
+        std::vector<bool>           cach { false, true };
+        auto                        r = ComputeIsSafeToSkip<H>(outs, ins, cach);
+        REQUIRE(r.size() == 2);
+        CHECK_FALSE(r[1]);
+    }
+    TEST_CASE("an image with a non-cacheable writer and a cacheable one is unsafe for both") {
+        std::vector<H>              outs { A, A, B };
+        std::vector<std::vector<H>> ins { {}, {}, { A } };
+        std::vector<bool>           cach { false, true, true };
+        auto                        r = ComputeIsSafeToSkip<H>(outs, ins, cach);
+        REQUIRE(r.size() == 3);
+        CHECK_FALSE(r[1]);
+        CHECK_FALSE(r[2]);
+    }
+}
+
+namespace
+{
+// Drives the same per-pass steps CustomShaderPass::execute takes, over several
+// frames, so the cache decision under test is the one that runs.
+struct SimPass {
+    H              out { NULLH };
+    std::vector<H> in;
+    bool           can_cache { true };
+    bool           dirty { false };       // own material went dirty this frame
+    bool           visible { true };      // node visibility this frame
+    bool           hidden_skip { false }; // execute returns before recording
+    bool           cached { false };
+    bool           visible_when_cached { true };
+    std::vector<H> backward_in; // filled by SimFrames from pass order
+};
+
+struct SimFrames {
+    std::unordered_set<H> cur, prev;
+    // Returns, per pass, whether it recorded a draw this frame.
+    std::vector<bool> run(std::vector<SimPass>& passes) {
+        std::vector<H>              outs;
+        std::vector<std::vector<H>> ins;
+        for (auto& p : passes) {
+            outs.push_back(p.out);
+            ins.push_back(p.in);
+        }
+        auto back = ClassifyBackwardInputs<H>(outs, ins);
+        for (std::size_t i = 0; i < passes.size(); ++i) passes[i].backward_in = back[i];
+        AdvanceRewrittenFrame(cur, prev);
+        std::vector<bool> drew;
+        for (auto& p : passes) {
+            auto d = DecidePassCache<H>(p.can_cache,
+                                        p.cached,
+                                        p.dirty,
+                                        p.visible,
+                                        p.visible_when_cached,
+                                        p.in,
+                                        p.backward_in,
+                                        &cur,
+                                        &prev,
+                                        /*standalone=*/true);
+            if (d.invalidate) p.cached = false;
+            if (d.skip) {
+                drew.push_back(false);
+                continue;
+            }
+            if (p.hidden_skip) {
+                drew.push_back(false);
+                continue;
+            }
+            RecordPassDrawn(&cur, p.out);
+            if (p.can_cache) {
+                p.cached              = true;
+                p.visible_when_cached = p.visible;
+            }
+            drew.push_back(true);
+        }
+        return drew;
+    }
+};
+} // namespace
+
+TEST_SUITE("PassCacheAlias::DecidePassCache") {
+    using Set = std::unordered_set<H>;
+    static PassCacheDecision decide(bool                  can_cache,
+                                    bool                  is_cached,
+                                    bool                  dirty,
+                                    bool                  vis,
+                                    bool                  vis_cached,
+                                    const std::vector<H>& in,
+                                    const std::vector<H>& back,
+                                    const Set*            cur,
+                                    const Set*            prev,
+                                    bool                  standalone = true) {
+        return DecidePassCache<H>(
+            can_cache, is_cached, dirty, vis, vis_cached, in, back, cur, prev, standalone);
+    }
+
+    TEST_CASE("an uncached or non-cacheable pass is never invalidated or skipped") {
+        Set  cur, prev;
+        auto d = decide(true, false, true, true, true, { A }, {}, &cur, &prev);
+        CHECK_FALSE(d.invalidate);
+        CHECK_FALSE(d.skip);
+        d = decide(false, true, true, true, true, { A }, {}, &cur, &prev);
+        CHECK_FALSE(d.invalidate);
+        CHECK_FALSE(d.skip);
+    }
+    TEST_CASE("a clean cached pass skips only when it is standalone") {
+        Set  cur, prev;
+        auto d = decide(true, true, false, true, true, { A }, {}, &cur, &prev, true);
+        CHECK_FALSE(d.invalidate);
+        CHECK(d.skip);
+        d = decide(true, true, false, true, true, { A }, {}, &cur, &prev, false);
+        CHECK_FALSE(d.invalidate);
+        CHECK_FALSE(d.skip);
+    }
+    TEST_CASE("own dirty material invalidates") {
+        Set  cur, prev;
+        auto d = decide(true, true, true, true, true, {}, {}, &cur, &prev);
+        CHECK(d.invalidate);
+        CHECK_FALSE(d.skip);
+    }
+    TEST_CASE("a visibility change since the pass was cached invalidates") {
+        Set  cur, prev;
+        auto d = decide(true, true, false, false, true, {}, {}, &cur, &prev);
+        CHECK(d.invalidate);
+        CHECK_FALSE(d.skip);
+        d = decide(true, true, false, true, false, {}, {}, &cur, &prev);
+        CHECK(d.invalidate);
+    }
+    TEST_CASE("an input drawn this frame invalidates") {
+        Set cur { A }, none;
+        CHECK(decide(true, true, false, true, true, { A }, {}, &cur, &none).invalidate);
+        CHECK_FALSE(decide(true, true, false, true, true, { B }, {}, &cur, &none).invalidate);
+    }
+    TEST_CASE("last frame's draws count only for backward inputs") {
+        // A forward input drawn last frame was already seen last frame; only an
+        // input written later in the order is read one frame behind.
+        Set none, prev { B };
+        CHECK(decide(true, true, false, true, true, { B }, { B }, &none, &prev).invalidate);
+        CHECK_FALSE(decide(true, true, false, true, true, { B }, {}, &none, &prev).invalidate);
+    }
+    TEST_CASE("unwired sets never invalidate") {
+        auto d = decide(true, true, false, true, true, { A }, { A }, nullptr, nullptr);
+        CHECK_FALSE(d.invalidate);
+        CHECK(d.skip);
+    }
+}
+
+TEST_SUITE("PassCacheAlias::ClassifyBackwardInputs") {
+    TEST_CASE("an input written by a later pass is backward") {
+        // 0 reads A, 1 writes A
+        std::vector<H>              outs { B, A };
+        std::vector<std::vector<H>> ins { { A }, {} };
+        auto                        r = ClassifyBackwardInputs<H>(outs, ins);
+        REQUIRE(r.size() == 2);
+        CHECK(r[0] == std::vector<H> { A });
+        CHECK(r[1].empty());
+    }
+    TEST_CASE("an input written by an earlier pass or by nobody is not backward") {
+        std::vector<H>              outs { A, B };
+        std::vector<std::vector<H>> ins { {}, { A, C, NULLH } };
+        auto                        r = ClassifyBackwardInputs<H>(outs, ins);
+        CHECK(r[1].empty());
+    }
+    TEST_CASE("a pass reading its own output reads last frame's") {
+        std::vector<H>              outs { A };
+        std::vector<std::vector<H>> ins { { A } };
+        auto                        r = ClassifyBackwardInputs<H>(outs, ins);
+        CHECK(r[0] == std::vector<H> { A });
+    }
+}
+
+TEST_SUITE("PassCacheAlias::RecordPassDrawn / AdvanceRewrittenFrame") {
+    TEST_CASE("records a real output and ignores null or an unwired set") {
+        std::unordered_set<H> cur;
+        RecordPassDrawn(&cur, A);
+        RecordPassDrawn(&cur, NULLH);
+        CHECK(cur.size() == 1);
+        CHECK(cur.count(A) == 1);
+        RecordPassDrawn<H, std::unordered_set<H>>(nullptr, A); // must not crash
+    }
+    TEST_CASE("advancing keeps the finished frame as prev and empties cur") {
+        std::unordered_set<H> cur { A }, prev { B };
+        AdvanceRewrittenFrame(cur, prev);
+        CHECK(cur.empty());
+        CHECK(prev.count(A) == 1);
+        CHECK(prev.count(B) == 0);
+    }
+}
+
+TEST_SUITE("PassCacheAlias::cache chain over frames") {
+    // base(A) -> opacity(B, cached) -> copy(C, cached)
+    static std::vector<SimPass> chain() {
+        SimPass base;
+        base.out = A;
+        SimPass opacity;
+        opacity.out = B;
+        opacity.in  = { A };
+        SimPass copy;
+        copy.out = C;
+        copy.in  = { B };
+        return { base, opacity, copy };
+    }
+
+    TEST_CASE("a dirty base redraws the whole chain once, then everything hits") {
+        auto      passes = chain();
+        SimFrames sim;
+        auto      f1 = sim.run(passes);
+        CHECK(f1 == std::vector<bool> { true, true, true });
+        auto f2a = sim.run(passes); // clean
+        CHECK(f2a == std::vector<bool> { false, false, false });
+        passes[0].dirty = true;
+        auto f2         = sim.run(passes);
+        CHECK(f2 == std::vector<bool> { true, true, true });
+        passes[0].dirty = false;
+        auto f3         = sim.run(passes);
+        CHECK(f3 == std::vector<bool> { false, false, false });
+        auto f4 = sim.run(passes);
+        CHECK(f4 == std::vector<bool> { false, false, false });
+    }
+
+    TEST_CASE("a cached pass hidden without recording leaves its consumers cached") {
+        // A hidden pass that does not own its target's clear returns before
+        // recording: its output keeps the last draw, so readers stay valid.
+        auto      passes = chain();
+        SimFrames sim;
+        sim.run(passes);
+        sim.run(passes);
+        passes[0].visible     = false;
+        passes[0].hidden_skip = true;
+        auto f                = sim.run(passes);
+        CHECK(f == std::vector<bool> { false, false, false });
+        CHECK_FALSE(passes[0].cached); // its own cache was dropped by the change
+        auto again = sim.run(passes);
+        CHECK(again == std::vector<bool> { false, false, false });
+    }
+
+    TEST_CASE("a reader ordered before its writer picks up the change one frame late") {
+        // 0: reader of A -> B (cached), 1: writer of A (cached).  The reader
+        // samples last frame's A, so a writer re-run in frame F reaches it on F+1.
+        SimPass reader;
+        reader.out = B;
+        reader.in  = { A };
+        SimPass writer;
+        writer.out = A;
+        std::vector<SimPass> passes { reader, writer };
+        SimFrames            sim;
+        sim.run(passes);
+        // The reader's first draw sampled A before the writer ran, so it
+        // redraws once on the second frame and then settles.
+        auto second = sim.run(passes);
+        CHECK(second == std::vector<bool> { true, false });
+        auto clean = sim.run(passes);
+        CHECK(clean == std::vector<bool> { false, false });
+        passes[1].dirty = true;
+        auto f          = sim.run(passes); // writer re-runs
+        CHECK(f == std::vector<bool> { false, true });
+        passes[1].dirty = false;
+        auto f1         = sim.run(passes); // reader sees it in prev
+        CHECK(f1 == std::vector<bool> { true, false });
+        auto f2 = sim.run(passes);
+        CHECK(f2 == std::vector<bool> { false, false });
+    }
+
+    TEST_CASE("hiding a cached pass redraws it, showing it again redraws once more") {
+        auto      passes = chain();
+        SimFrames sim;
+        sim.run(passes);
+        sim.run(passes);
+        passes[1].visible = false;
+        auto hide         = sim.run(passes);
+        CHECK(hide[1]);
+        passes[1].visible = true;
+        auto show         = sim.run(passes);
+        CHECK(show[1]);
+        auto settle = sim.run(passes);
+        CHECK(settle == std::vector<bool> { false, false, false });
+    }
+}

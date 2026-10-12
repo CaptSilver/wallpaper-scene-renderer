@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <span>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -126,6 +127,92 @@ inline bool EligibleForOutputCache(bool is_rt_default, bool is_hideable, bool sa
     if (is_rt_default) return false;
     if (is_hideable) return false;
     return safe_to_skip;
+}
+
+// A cached pass keeps its bytes only while every image it samples is untouched.
+// ComputeIsSafeToSkip treats a cacheable producer as invariant, but a cached
+// producer still re-runs whenever its own uniforms go dirty (a script drives
+// its alpha, a user property changes) and that redraw never reaches the
+// consumers that sampled the old bytes.  rewritten_this_frame holds every
+// output image a pass actually drew so far this frame; a cached pass whose
+// input is in it must redraw, and then adds its own output so the redraw
+// carries on down the chain.  Null handles (unbound slots) never match.
+template<typename H, typename Set>
+bool CachedPassMustRedraw(std::span<const H> inputs, const Set& rewritten_this_frame) {
+    for (const H& in : inputs) {
+        if (in != H {} && rewritten_this_frame.count(in) > 0) return true;
+    }
+    return false;
+}
+
+// Per pass, the inputs that some pass at the same or a later position writes.
+// The render graph orders a reader of a render target ahead of a later writer
+// of it (the reader gets the previous frame's content, same VkImage), so a
+// writer that re-runs in frame F reaches such a reader only in frame F + 1.
+// Forward inputs are covered by this frame's set; these need last frame's.
+template<typename H>
+std::vector<std::vector<H>> ClassifyBackwardInputs(std::span<const H>              outputs,
+                                                   std::span<const std::vector<H>> inputs) {
+    std::unordered_map<H, std::size_t> last_writer;
+    last_writer.reserve(outputs.size());
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i] != H {}) last_writer[outputs[i]] = i;
+    }
+    std::vector<std::vector<H>> result(inputs.size());
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        for (const H& in : inputs[i]) {
+            if (in == H {}) continue;
+            auto it = last_writer.find(in);
+            if (it != last_writer.end() && it->second >= i) result[i].push_back(in);
+        }
+    }
+    return result;
+}
+
+struct PassCacheDecision {
+    bool invalidate { false }; // drop the cached bytes; the pass must draw
+    bool skip { false };       // keep them; execute() may return now
+};
+
+// The per-pass cache step at the top of CustomShaderPass::execute.  A cached
+// pass is dropped when its own uniforms went dirty, when its node's visibility
+// is not what it was cached with (a hide script never dirties the material, and
+// the hidden path is decided after the cache early-out), or when an input was
+// redrawn: `inputs` against this frame's set, `backward_inputs` (see
+// ClassifyBackwardInputs) against last frame's.  Either set may be null when
+// the pass was never wired.  Skipping also needs the pass to be standalone,
+// since a merged pass re-records to keep its render pass group whole.
+template<typename H, typename Set>
+PassCacheDecision DecidePassCache(bool can_cache, bool is_cached, bool own_material_dirty,
+                                  bool visible_now, bool visible_when_cached,
+                                  std::span<const H> inputs, std::span<const H> backward_inputs,
+                                  const Set* rewritten_this_frame, const Set* rewritten_last_frame,
+                                  bool standalone) {
+    PassCacheDecision d;
+    if (! can_cache || ! is_cached) return d;
+    d.invalidate =
+        own_material_dirty || visible_now != visible_when_cached ||
+        (rewritten_this_frame && CachedPassMustRedraw<H>(inputs, *rewritten_this_frame)) ||
+        (rewritten_last_frame && CachedPassMustRedraw<H>(backward_inputs, *rewritten_last_frame));
+    d.skip = ! d.invalidate && standalone;
+    return d;
+}
+
+// Called once a pass has recorded its draw: consumers sampling `output` must
+// not trust their own cache for the rest of the frame.  Null output or an
+// unwired set records nothing.
+template<typename H, typename Set>
+void RecordPassDrawn(Set* rewritten_this_frame, H output) {
+    if (rewritten_this_frame && output != H {}) rewritten_this_frame->insert(output);
+}
+
+// Start of a frame: what was drawn becomes "last frame", and this frame starts
+// empty.  Swap + clear keeps the bucket arrays; each insert still allocates a
+// node, as m_depth_inited_frame already does.
+template<typename Set>
+void AdvanceRewrittenFrame(Set& this_frame, Set& last_frame) {
+    std::swap(this_frame, last_frame);
+    this_frame.clear();
 }
 
 // The cacheability a pass contributes to ComputeIsSafeToSkip. A hideable pass
