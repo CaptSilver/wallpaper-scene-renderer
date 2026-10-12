@@ -13,6 +13,11 @@
 #include "Core/MapSet.hpp"
 #include "StagingReuse.hpp"
 
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <span>
+
 namespace wallpaper
 {
 
@@ -64,6 +69,72 @@ VkClearColorValue GenInitialClearColor(const TextureKey& key);
 void RecClearNewImage(const vvk::CommandBuffer& cmd, VkImage image, const VkClearColorValue& color,
                       VkImageLayout final_layout);
 
+// Scene-lifetime identity of a render target.  Same type as
+// VulkanRender/RtResidency.hpp's SlotId, which wpVulkan cannot include.
+using SlotId = std::uint32_t;
+
+// A render target's identity for the life of the loaded scene: a counter-
+// allocated id, its texture key and its image.  Passes hold the slot rather
+// than a copy of the image handles, so the image can change under them while
+// the slot stays the same.
+struct RtSlot : NoCopy, NoMove {
+    SlotId     id { 0 };
+    TextureKey key {};
+    // Set for _rt_default, depth-style targets and the 1x1 dummy.
+    bool persist { false };
+    // present == resident.  Pass code copies handles out of it by generation.
+    std::optional<VmaImageParameters> image;
+    // Bumped every time an image is attached, so a pass holding stale copies
+    // of the handles can tell.
+    std::uint32_t generation { 0 };
+    // Frames since some pass needed this slot.
+    std::uint32_t idle_frames { 0 };
+    // Out-of-memory backoff: consecutive failed creates, and the frame before
+    // which no retry is attempted.
+    std::uint32_t create_fail_streak { 0 };
+    std::uint64_t retry_after_frame { 0 };
+
+    // Compile-time aliasing: a slot whose last reader has released it can be
+    // adopted by the next Query with the same texture key.
+    bool             share_ready { false };
+    TexHash          content_hash {};
+    Set<std::string> query_keys;
+    // Bumped on Query hit AND at insert time.  Drives the non-persist LRU
+    // eviction sort when the slot list grows past the soft cap.
+    uint64_t lru_tick { 0 };
+    // Render-graph generation this entry was last requested in.  Eviction
+    // skips current-generation entries because they are live render targets
+    // bound to the active scene's pass framebuffers.  See beginQueryGeneration().
+    uint64_t last_gen { 0 };
+
+    bool                           managed() const { return ! persist; }
+    bool                           resident() const { return image.has_value(); }
+    std::optional<ImageParameters> params() const {
+        if (! image) return std::nullopt;
+        return ImageParameters(*image);
+    }
+};
+
+// What a pass last copied out of a slot.  Compared against the slot on every
+// execute so the copies follow an image that was attached or released.
+struct BoundImage {
+    std::uint32_t generation { 0 };
+    bool          resident { false };
+};
+
+inline bool BoundImageStale(const BoundImage& bound, const RtSlot& slot) {
+    return bound.generation != slot.generation || bound.resident != slot.resident();
+}
+
+// Parameters for a slot with no image: null handles, but the extent and mip
+// count the pass's pipelines and viewport were built for.
+inline ImageParameters AbsentImageParameters(const TextureKey& key) {
+    ImageParameters p {};
+    p.extent       = { (uint32_t)key.width, (uint32_t)key.height, 1 };
+    p.mipmap_level = key.mipmap_level;
+    return p;
+}
+
 class TextureCache : NoCopy, NoMove {
 public:
     TextureCache(const Device&);
@@ -79,8 +150,13 @@ public:
     // are only correct once the pixels actually landed.
     [[nodiscard]] bool ReuploadTex(const std::string& key, Image& image);
 
-    std::optional<ImageParameters> Query(std::string_view key, TextureKey content_hash,
-                                         bool persist = false);
+    // The slot behind a render target name.  Creates the entry and its image
+    // on first use, persistent or not; later calls return the same slot.
+    // nullptr whenever the image could not be created.
+    RtSlot* QuerySlot(std::string_view key, TextureKey content_hash, bool persist = false);
+
+    std::span<const std::unique_ptr<RtSlot>> slots() const { return m_query_texs; }
+    SlotId                                   slotCount() const { return m_next_slot_id; }
 
     // Open a new render-graph generation.  Query-texs requested after this
     // call are stamped with the new generation; eviction never reclaims a
@@ -139,26 +215,11 @@ private:
     // logged under the rate limit.
     bool noteReuploadFailure(const std::string& key);
 
-    struct QueryTex {
-        idx                index { 0 };
-        bool               share_ready { false };
-        bool               persist { false };
-        TexHash            content_hash;
-        VmaImageParameters image;
-        Set<std::string>   query_keys;
-        // Bumped on Query hit AND at insert time.  Drives the non-persist
-        // LRU eviction sort when m_query_texs grows past m_query_soft_cap.
-        uint64_t lru_tick { 0 };
-        // Render-graph generation this entry was last requested in.  Eviction
-        // skips current-generation entries because they are live render
-        // targets bound to the active scene's pass framebuffers.  See
-        // beginQueryGeneration().
-        uint64_t last_gen { 0 };
-    };
-    std::vector<std::unique_ptr<QueryTex>> m_query_texs;
-    Map<std::string, QueryTex*>            m_query_map;
+    std::vector<std::unique_ptr<RtSlot>> m_query_texs;
+    Map<std::string, RtSlot*>            m_query_map;
+    SlotId                               m_next_slot_id { 0 };
 
-    // Monotonic per-Query-call counter; assigned to QueryTex::lru_tick on hit
+    // Monotonic per-Query-call counter; assigned to RtSlot::lru_tick on hit
     // or insert.  Wraparound is theoretical — even at one Query() per
     // microsecond, uint64_t lasts ~580k years.
     uint64_t m_lru_clock { 0 };

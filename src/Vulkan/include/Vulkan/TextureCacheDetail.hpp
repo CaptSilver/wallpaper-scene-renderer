@@ -206,7 +206,7 @@ inline std::uint32_t parseQueryCapEnv(const char* env, std::uint32_t default_cap
 // view of the cache so it can be unit-tested without a live VkDevice or VMA
 // allocator.
 //
-// `lru_ticks[i]` is QueryTex[i].lru_tick; `persist[i]` is QueryTex[i].persist.
+// `lru_ticks[i]` is RtSlot[i].lru_tick; `persist[i]` is RtSlot[i].persist.
 // Returns the indices of victims, sorted DESCENDING by index — callers walk
 // the result in order and erase by index without needing to renumber.
 //
@@ -263,6 +263,24 @@ inline std::vector<std::uint8_t> effectiveEvictionPersist(std::span<const std::u
         out[i] = (persist[i] || last_gen[i] == current_gen) ? std::uint8_t { 1 } : std::uint8_t { 0 };
     }
     return out;
+}
+
+// Slot ids come from a counter, never from a position in the slot vector:
+// evictColdQueryTexs erases entries, and every pass analysis keys on the id.
+inline std::uint32_t AllocateSlotId(std::uint32_t& next) { return next++; }
+
+// The erase step of query-tex eviction.  `victims` is sorted descending (what
+// selectEvictionVictims returns), so each erase leaves the remaining indices
+// valid.  Every lookup-map key still pointing at a victim is removed before
+// the owning pointer is destroyed, or the map would hold a dangling pointer.
+// Pure over any vector of owning pointers with a `query_keys` member and any
+// map keyed by those strings, so the test runs the production code.
+template<typename Slots, typename KeyMap>
+void eraseEvictedSlots(Slots& slots, KeyMap& by_key, const std::vector<std::size_t>& victims) {
+    for (std::size_t v : victims) {
+        for (const auto& mapped_key : slots[v]->query_keys) by_key.erase(mapped_key);
+        slots.erase(slots.begin() + static_cast<std::ptrdiff_t>(v));
+    }
 }
 
 } // namespace detail

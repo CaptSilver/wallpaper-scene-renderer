@@ -3,6 +3,7 @@
 #include <string>
 
 #include "Vulkan/Device.hpp"
+#include "Vulkan/TextureCache.hpp"
 
 #include "SpecTexs.hpp"
 
@@ -20,6 +21,7 @@ public:
 
         // prepared
         ImageParameters vk_result;
+        RtSlot*         result_slot { nullptr };
         VkClearValue    clear_value;
     };
 

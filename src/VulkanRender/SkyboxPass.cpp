@@ -179,9 +179,10 @@ void SkyboxPass::prepare(Scene& scene, const Device& device, RenderingResources&
         }
         auto& rt      = *rtp;
         output_format = ToVkType(rt.format);
-        if (auto opt = device.tex_cache().Query(m_desc.output, ToTexKey(rt), ! rt.allowReuse);
-            opt.has_value()) {
-            m_desc.vk_output = opt.value();
+        RtSlot* slot  = device.tex_cache().QuerySlot(m_desc.output, ToTexKey(rt), ! rt.allowReuse);
+        if (slot != nullptr && slot->params()) {
+            m_desc.out_slot  = slot;
+            m_desc.vk_output = *slot->params();
         } else {
             LOG_ERROR("skybox output RT query failed for '%s'", m_desc.output.c_str());
             return;

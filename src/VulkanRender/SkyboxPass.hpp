@@ -5,6 +5,7 @@
 #include <string>
 
 #include "Vulkan/Device.hpp"
+#include "Vulkan/TextureCache.hpp"
 #include "Vulkan/StagingBuffer.hpp"
 #include "Vulkan/GraphicsPipeline.hpp"
 
@@ -70,6 +71,7 @@ public:
 
         // prepared
         ImageParameters vk_output; // resolved _rt_default target
+        RtSlot*         out_slot { nullptr };
         ImageParameters vk_pano;   // resolved panorama texture
         VkClearValue    clear_value;
 

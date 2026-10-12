@@ -1,10 +1,16 @@
 #include <doctest.h>
 
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "Vulkan/TextureCache.hpp"
 #include "Vulkan/TextureCacheDetail.hpp"
 
+using wallpaper::vulkan::RtSlot;
+using wallpaper::vulkan::detail::AllocateSlotId;
 using wallpaper::vulkan::detail::effectiveEvictionPersist;
 using wallpaper::vulkan::detail::parseQueryCapEnv;
 using wallpaper::vulkan::detail::selectEvictionVictims;
@@ -178,5 +184,75 @@ TEST_SUITE("TextureCache query-cap env parse") {
         CHECK(parseQueryCapEnv("8", /*default=*/4, /*min=*/2, /*max=*/16) == 8u);
         CHECK(parseQueryCapEnv("1", /*default=*/4, /*min=*/2, /*max=*/16) == 4u);
         CHECK(parseQueryCapEnv("32", /*default=*/4, /*min=*/2, /*max=*/16) == 4u);
+    }
+}
+
+// A slot's id is its identity for the scene.  evictColdQueryTexs erases
+// entries from the vector, so a position is not stable; the id comes from a
+// counter that never hands out a number twice.
+TEST_SUITE("TextureCache slot ids") {
+    TEST_CASE("ids are allocated from a counter and an erased id is never reused") {
+        wallpaper::vulkan::SlotId next = 0;
+        CHECK(AllocateSlotId(next) == 0);
+        CHECK(AllocateSlotId(next) == 1);
+        CHECK(AllocateSlotId(next) == 2);
+        // "erase" slot 1: the counter does not move backwards
+        CHECK(AllocateSlotId(next) == 3);
+        CHECK(next == 4);
+    }
+    TEST_CASE("a fresh slot is managed, absent, at generation zero and yields no parameters") {
+        RtSlot s;
+        CHECK(s.managed());
+        CHECK_FALSE(s.resident());
+        CHECK(s.generation == 0);
+        CHECK(s.idle_frames == 0);
+        CHECK_FALSE(s.params().has_value());
+        s.persist = true;
+        CHECK_FALSE(s.managed());
+    }
+    TEST_CASE("a slot holding an image is resident and its parameters mirror the image") {
+        RtSlot s;
+        s.image.emplace();
+        s.image->extent       = { 640, 360, 1 };
+        s.image->mipmap_level = 1;
+        CHECK(s.resident());
+        REQUIRE(s.params().has_value());
+        CHECK(s.params()->extent.width == 640);
+        CHECK(s.params()->extent.height == 360);
+        CHECK(s.params()->handle == VK_NULL_HANDLE);
+    }
+    TEST_CASE("eviction erases entries by descending position, prunes their map keys and leaves "
+              "every surviving id intact") {
+        // eraseEvictedSlots is the erase step evictColdQueryTexs runs, here over
+        // real RtSlot entries: the survivors keep the ids they were allocated,
+        // the evicted slot's keys leave the lookup map, and the counter does
+        // not move.
+        wallpaper::vulkan::SlotId                next = 0;
+        std::vector<std::unique_ptr<RtSlot>>     slots;
+        std::unordered_map<std::string, RtSlot*> by_key;
+        for (int i = 0; i < 4; ++i) {
+            slots.emplace_back(std::make_unique<RtSlot>());
+            slots.back()->id       = AllocateSlotId(next);
+            slots.back()->lru_tick = static_cast<uint64_t>(i + 1);
+            slots.back()->query_keys.insert("key" + std::to_string(i));
+            by_key["key" + std::to_string(i)] = slots.back().get();
+        }
+        slots[1]->lru_tick = 0; // coldest
+        const std::vector<std::uint64_t> ticks {
+            slots[0]->lru_tick, slots[1]->lru_tick, slots[2]->lru_tick, slots[3]->lru_tick
+        };
+        const std::vector<std::uint8_t> persist { 0, 0, 0, 0 };
+        const auto                      victims = selectEvictionVictims(ticks, persist, /*cap=*/3);
+        REQUIRE(victims == std::vector<std::size_t> { 1 });
+        wallpaper::vulkan::detail::eraseEvictedSlots(slots, by_key, victims);
+        REQUIRE(slots.size() == 3);
+        CHECK(slots[0]->id == 0);
+        CHECK(slots[1]->id == 2);
+        CHECK(slots[2]->id == 3);
+        CHECK(by_key.size() == 3);
+        CHECK(by_key.count("key1") == 0);
+        CHECK(by_key.at("key2") == slots[1].get());
+        CHECK(next == 4);
+        CHECK(AllocateSlotId(next) == 4); // the evicted id 1 is never handed out again
     }
 }

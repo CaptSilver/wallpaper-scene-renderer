@@ -832,3 +832,35 @@ TEST_SUITE("PassCacheAlias::cache chain over frames") {
         CHECK(settle == std::vector<bool> { false, false, false });
     }
 }
+
+#include "VulkanRender/RtResidency.hpp"
+
+// The analyses run on slot keys once a render target's VkImage can change
+// under a pass.  Same verdicts as with raw handles; an unbound slot (null
+// key) stays invisible.
+TEST_SUITE("PassCacheAlias on ResidencyKey") {
+    using K = ResidencyKey;
+    TEST_CASE("sole-writer and safe-to-skip verdicts match the handle version") {
+        const K        rtA = K::ForSlot(1), rtB = K::ForSlot(2), bitmap = K::ForHandle(0x9000);
+        std::vector<K> outs { rtA, rtB };
+        std::vector<std::vector<K>> ins { { bitmap }, { rtA, K {} } };
+        std::vector<bool>           cacheable { true, true };
+        auto                        safe = ComputeIsSafeToSkip<K>(outs, ins, cacheable);
+        CHECK(safe == std::vector<bool> { true, true });
+        auto back = ClassifyBackwardInputs<K>(outs, ins);
+        CHECK(back[1].empty());
+        ins[0] = { rtB }; // reader of B ahead of B's writer
+        back   = ClassifyBackwardInputs<K>(outs, ins);
+        CHECK(back[0] == std::vector<K> { rtB });
+    }
+    TEST_CASE("the null key is never recorded as drawn and never forces a redraw") {
+        std::unordered_set<K> drawn;
+        RecordPassDrawn<K>(&drawn, K {});
+        CHECK(drawn.empty());
+        RecordPassDrawn<K>(&drawn, K::ForSlot(3));
+        std::vector<K> ins { K {}, K::ForSlot(4) };
+        CHECK_FALSE(CachedPassMustRedraw<K>(ins, drawn));
+        ins[1] = K::ForSlot(3);
+        CHECK(CachedPassMustRedraw<K>(ins, drawn));
+    }
+}

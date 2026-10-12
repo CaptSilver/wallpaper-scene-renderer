@@ -503,3 +503,229 @@ TEST_SUITE("CustomShaderPass::ChainVisibility") {
         CHECK(v == std::vector<bool> { true, false, false });
     }
 }
+
+#include "Vulkan/TextureCache.hpp"
+#include "VulkanRender/CopyPass.hpp"
+
+// A pass keeps a copy of its render targets' VkImage/VkImageView handles for
+// the command stream.  Those copies are refreshed from the slot whenever the
+// slot's generation moved or its image appeared or vanished, each input
+// against its own record: a terminal writes _rt_default but samples the
+// chain's ping-pongs through its appended reads, so an output-keyed refresh
+// would leave it sampling a dead image.
+TEST_SUITE("CustomShaderPass slot rebind") {
+    using wallpaper::vulkan::AbsentImageParameters;
+    using wallpaper::vulkan::BoundImage;
+    using wallpaper::vulkan::BoundImageStale;
+    using wallpaper::vulkan::RtSlot;
+    using wallpaper::vulkan::TextureKey;
+
+    static void attach(RtSlot & s, std::uint32_t w, std::uint32_t h) {
+        s.image.emplace();
+        s.image->extent       = { w, h, 1 };
+        s.image->mipmap_level = 1;
+        ++s.generation;
+    }
+
+    TEST_CASE("Desc defaults carry no slots") {
+        CustomShaderPass::Desc d;
+        CHECK(d.out_slot == nullptr);
+        CHECK(d.in_slots.empty());
+        wallpaper::vulkan::CopyPass::Desc c;
+        CHECK(c.src_slot == nullptr);
+        CHECK(c.dst_slot == nullptr);
+    }
+    TEST_CASE(
+        "a CopyPass refreshes both sides from their slots, absent sides keep the key extent") {
+        RtSlot src, dst;
+        src.key = { .width        = 16,
+                    .height       = 8,
+                    .usage        = {},
+                    .format       = wallpaper::TextureFormat::RGBA8,
+                    .sample       = {},
+                    .mipmap_level = 1 };
+        dst.key = src.key;
+        // The attached extent differs from the key, so a rebind that did
+        // nothing could not pass: 16x8 would stay.
+        attach(src, 32, 4);
+        wallpaper::vulkan::CopyPass::Desc c;
+        c.src_slot = &src;
+        c.dst_slot = &dst;
+        // prepare() seeds the handle copies from the key; this Desc skipped
+        // prepare, so seed them the same way.
+        c.vk_src = AbsentImageParameters(src.key);
+        c.vk_dst = AbsentImageParameters(dst.key);
+        wallpaper::vulkan::CopyPass copy(c);
+        copy.rebindImages();
+        CHECK(copy.desc().vk_src.handle == *src.image->handle);
+        CHECK(copy.desc().vk_src.extent.width == 32);
+        CHECK(copy.desc().vk_src.extent.height == 4);
+        CHECK(copy.desc().vk_dst.handle == VK_NULL_HANDLE);
+        CHECK(copy.desc().vk_dst.extent.width == 16);
+        CHECK(copy.desc().vk_dst.extent.height == 8);
+        attach(dst, 32, 4);
+        copy.rebindImages();
+        CHECK(copy.desc().vk_dst.extent.width == 32);
+        CHECK(copy.desc().vk_dst.extent.height == 4);
+        // Released: the handle goes and the extent falls back to the key's.
+        src.image.reset();
+        copy.rebindImages();
+        CHECK(copy.desc().vk_src.handle == VK_NULL_HANDLE);
+        CHECK(copy.desc().vk_src.extent.width == 16);
+        CHECK(copy.desc().vk_src.extent.height == 8);
+    }
+    TEST_CASE("a bound record is stale when the generation moved or residency flipped") {
+        RtSlot     s;
+        BoundImage b;
+        CHECK_FALSE(BoundImageStale(b, s)); // both absent at generation 0
+        attach(s, 8, 8);
+        CHECK(BoundImageStale(b, s));
+        b = { s.generation, s.resident() };
+        CHECK_FALSE(BoundImageStale(b, s));
+        s.image.reset(); // released: same generation, no image
+        CHECK(BoundImageStale(b, s));
+    }
+    TEST_CASE("absent parameters keep the extent and mip count the pipelines were built for") {
+        TextureKey key { .width        = 1920,
+                         .height       = 1080,
+                         .usage        = {},
+                         .format       = wallpaper::TextureFormat::RGBA8,
+                         .sample       = {},
+                         .mipmap_level = 3 };
+        auto       p = AbsentImageParameters(key);
+        CHECK(p.handle == VK_NULL_HANDLE);
+        CHECK(p.view == VK_NULL_HANDLE);
+        CHECK(p.extent.width == 1920);
+        CHECK(p.extent.height == 1080);
+        CHECK(p.mipmap_level == 3);
+    }
+    TEST_CASE("rebind refreshes the output and every managed input, including the appended "
+              "passthrough reads, and leaves bitmap slots alone") {
+        RtSlot out, a, b;
+        out.key = { .width        = 64,
+                    .height       = 64,
+                    .usage        = {},
+                    .format       = wallpaper::TextureFormat::RGBA8,
+                    .sample       = {},
+                    .mipmap_level = 1 };
+        a.key = b.key = { .width        = 32,
+                          .height       = 32,
+                          .usage        = {},
+                          .format       = wallpaper::TextureFormat::RGBA8,
+                          .sample       = {},
+                          .mipmap_level = 1 };
+        // Every attached extent differs from its key, so a rebind that did
+        // nothing leaves the key extents and fails the checks below.
+        attach(out, 128, 32);
+        attach(a, 16, 48);
+        attach(b, 16, 48);
+
+        CustomShaderPass::Desc d;
+        d.textures = { "bitmap.tex", "_rt_a", "_rt_b" };
+        d.vk_textures.resize(3);
+        d.vk_textures[0].slots.resize(1); // a bitmap texture, not a slot
+        d.vk_textures[0].slots[0].extent = { 7, 7, 1 };
+        d.in_slots                       = { nullptr, &a, &b };
+        d.out_slot                       = &out;
+        d.hideable                       = wallpaper::vulkan::HideableKind::Terminal;
+        d.passthrough_input_tex_index_a  = 1;
+        d.passthrough_input_tex_index_b  = 2;
+        CustomShaderPass pass(d);
+        pass.rebindImages();
+        CHECK(pass.desc().vk_output.handle == *out.image->handle);
+        CHECK(pass.desc().vk_output.extent.width == 128);
+        CHECK(pass.desc().vk_output.extent.height == 32);
+        REQUIRE(pass.desc().vk_textures[1].slots.size() == 1);
+        REQUIRE(pass.desc().vk_textures[2].slots.size() == 1);
+        CHECK(pass.desc().vk_textures[1].slots[0].extent.width == 16);
+        CHECK(pass.desc().vk_textures[0].slots[0].extent.width == 7);
+
+        // Only b moves: a keeps its copy, b's copy follows the new image.
+        attach(b, 48, 48);
+        pass.rebindImages();
+        CHECK(pass.desc().vk_textures[1].slots[0].extent.width == 16);
+        CHECK(pass.desc().vk_textures[2].slots[0].extent.width == 48);
+
+        // b released: its copy is dropped, so a non-drawing record binds nothing for it.
+        b.image.reset();
+        pass.rebindImages();
+        CHECK(pass.desc().vk_textures[2].slots.empty());
+        CHECK(pass.desc().vk_textures[1].slots.size() == 1);
+
+        // The output released: the handles go, the extent falls back to the key's.
+        out.image.reset();
+        pass.rebindImages();
+        CHECK(pass.desc().vk_output.handle == VK_NULL_HANDLE);
+        CHECK(pass.desc().vk_output.extent.width == 64);
+        CHECK(pass.desc().vk_output.extent.height == 64);
+    }
+    TEST_CASE("a second rebind with the same generation leaves the refreshed copy alone") {
+        RtSlot in;
+        in.key = { .width        = 32,
+                   .height       = 32,
+                   .usage        = {},
+                   .format       = wallpaper::TextureFormat::RGBA8,
+                   .sample       = {},
+                   .mipmap_level = 1 };
+        attach(in, 16, 16);
+
+        CustomShaderPass::Desc d;
+        d.textures = { "_rt_a" };
+        d.vk_textures.resize(1);
+        d.in_slots = { &in };
+        CustomShaderPass pass(d);
+
+        ++in.generation; // the image was replaced
+        in.image->extent = { 40, 40, 1 };
+        pass.rebindImages();
+        CHECK(pass.desc().vk_textures[0].slots[0].extent.width == 40);
+
+        // Same generation: the pass already holds this one and must not re-copy.
+        in.image->extent = { 99, 99, 1 };
+        pass.rebindImages();
+        CHECK(pass.desc().vk_textures[0].slots[0].extent.width == 40);
+    }
+}
+
+// The framebuffer is built over the output image's view the first time the
+// pass records, and again whenever the slot's image changed; prepare() no
+// longer needs the image to exist.
+TEST_SUITE("CustomShaderPass framebuffer rebuild") {
+    using wallpaper::vulkan::FramebufferNeedsRebuild;
+    using wallpaper::vulkan::RtSlot;
+
+    TEST_CASE("no framebuffer yet: rebuild only once the output has an image") {
+        RtSlot out;
+        CHECK_FALSE(FramebufferNeedsRebuild(false, 0, out));
+        out.image.emplace();
+        ++out.generation;
+        CHECK(FramebufferNeedsRebuild(false, 0, out));
+    }
+    TEST_CASE("a framebuffer built for the current generation is kept") {
+        RtSlot out;
+        out.image.emplace();
+        out.generation = 3;
+        CHECK_FALSE(FramebufferNeedsRebuild(true, 3, out));
+        CHECK(FramebufferNeedsRebuild(true, 2, out));
+    }
+    TEST_CASE("a member or end of a group whose opener could not begin its render pass skips") {
+        using wallpaper::vulkan::GroupMemberSkips;
+        using wallpaper::vulkan::PassMergeRole;
+        CHECK(GroupMemberSkips(PassMergeRole::GroupMiddle, true));
+        CHECK(GroupMemberSkips(PassMergeRole::GroupEnd, true));
+        CHECK_FALSE(GroupMemberSkips(PassMergeRole::GroupBegin, true)); // it decides, not follows
+        CHECK_FALSE(GroupMemberSkips(PassMergeRole::Standalone, true)); // never inside a group
+        CHECK_FALSE(GroupMemberSkips(PassMergeRole::GroupMiddle, false));
+        CHECK_FALSE(GroupMemberSkips(PassMergeRole::GroupEnd, false));
+    }
+    TEST_CASE("a framebuffer failure logs once per streak and a success re-arms it") {
+        using wallpaper::vulkan::ShouldLogFramebufferFailure;
+        bool logged = false;
+        CHECK_FALSE(ShouldLogFramebufferFailure(false, logged));
+        CHECK(ShouldLogFramebufferFailure(true, logged));
+        CHECK_FALSE(ShouldLogFramebufferFailure(true, logged));
+        CHECK_FALSE(ShouldLogFramebufferFailure(true, logged));
+        CHECK_FALSE(ShouldLogFramebufferFailure(false, logged));
+        CHECK(ShouldLogFramebufferFailure(true, logged));
+    }
+}

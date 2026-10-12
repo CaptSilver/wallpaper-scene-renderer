@@ -67,6 +67,10 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.node                          = desc.node;
     m_desc.textures                      = desc.textures;
     m_desc.output                        = desc.output;
+    m_desc.out_slot                      = desc.out_slot;
+    m_desc.in_slots                      = desc.in_slots;
+    m_desc.vk_textures                   = desc.vk_textures;
+    m_in_bound.assign(m_desc.in_slots.size(), {});
     m_desc.sprites_map                   = desc.sprites_map;
     m_desc.camera_override               = desc.camera_override;
     m_desc.disableDepth                  = desc.disableDepth;
@@ -82,6 +86,24 @@ CustomShaderPass::CustomShaderPass(const Desc& desc) {
     m_desc.chain_base_image_written      = desc.chain_base_image_written;
 };
 CustomShaderPass::~CustomShaderPass() {}
+
+void CustomShaderPass::rebindImages() {
+    if (m_desc.out_slot != nullptr && BoundImageStale(m_out_bound, *m_desc.out_slot)) {
+        m_desc.vk_output =
+            m_desc.out_slot->params().value_or(AbsentImageParameters(m_desc.out_slot->key));
+        m_out_bound = { m_desc.out_slot->generation, m_desc.out_slot->resident() };
+    }
+    for (usize i = 0; i < m_desc.in_slots.size() && i < m_desc.vk_textures.size(); i++) {
+        RtSlot* slot = m_desc.in_slots[i];
+        if (slot == nullptr || ! BoundImageStale(m_in_bound[i], *slot)) continue;
+        auto& dst = m_desc.vk_textures[i].slots;
+        if (auto p = slot->params(); p.has_value())
+            dst = { *p };
+        else
+            dst.clear();
+        m_in_bound[i] = { slot->generation, slot->resident() };
+    }
+}
 
 constexpr VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
@@ -434,6 +456,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         m_samples_mutable_texture = true;
     }
     m_desc.vk_textures.resize(m_desc.textures.size());
+    m_desc.in_slots.assign(m_desc.textures.size(), nullptr);
+    m_in_bound.assign(m_desc.textures.size(), {});
     // Pre-reserve per-pass scratch capacity to the prepare-time texture count
     // + 1 for the UBO writeset.  std::vector::reserve allocates once and never
     // reallocates while size() <= capacity(), so execute() never hits the
@@ -513,10 +537,12 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 continue;
             }
             if (scene.renderTargets.count(tex_name) == 0) continue;
-            auto& rt  = scene.renderTargets.at(tex_name);
-            auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
-            if (! opt.has_value()) continue;
-            img_slots.slots = { opt.value() };
+            auto&   rt   = scene.renderTargets.at(tex_name);
+            RtSlot* slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+            if (slot == nullptr) continue;
+            m_desc.in_slots[i] = slot;
+            if (auto p = slot->params(); p.has_value()) img_slots.slots = { *p };
+            m_in_bound[i] = { slot->generation, slot->resident() };
         } else {
             auto image = scene.imageParser->Parse(tex_name);
             if (image) {
@@ -594,15 +620,16 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         auto& rt                = *rtp;
         output_vk_format        = ToVkType(rt.format);
         m_desc.vk_output_format = output_vk_format;
-        if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
-            opt.has_value()) {
-            m_desc.vk_output = opt.value();
-        } else {
-            LOG_ERROR("output RT query failed for '%s' (shader: %s)",
+        m_desc.out_slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+        if (m_desc.out_slot == nullptr) {
+            LOG_ERROR("output RT slot missing for '%s' (shader: %s)",
                       tex_name.c_str(),
                       m_desc.node->Mesh()->Material()->customShader.shader->name.c_str());
             return;
         }
+        m_desc.vk_output =
+            m_desc.out_slot->params().value_or(AbsentImageParameters(m_desc.out_slot->key));
+        m_out_bound = { m_desc.out_slot->generation, m_desc.out_slot->resident() };
     }
 
     SceneMesh& mesh = *(m_desc.node->Mesh());
@@ -693,8 +720,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                 .sample       = {},
                 .mipmap_level = 1,
             };
-            if (auto opt = device.tex_cache().Query(dummy_key, tk, true); opt.has_value()) {
-                m_desc.vk_fallback_tex = opt.value();
+            if (auto* slot = device.tex_cache().QuerySlot(dummy_key, tk, true);
+                slot != nullptr && slot->params()) {
+                m_desc.vk_fallback_tex = *slot->params();
             }
         }
     }
@@ -856,8 +884,8 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
             ! m_desc.disableDepth && (mesh.Material()->depthTest || mesh.Material()->depthWrite);
         std::shared_ptr<VmaImageParameters> depthImg;
         if (useDepth) {
-            VkExtent3D depthExtent { m_desc.vk_output.extent.width,
-                                     m_desc.vk_output.extent.height,
+            VkExtent3D depthExtent { (u32)m_desc.out_slot->key.width,
+                                     (u32)m_desc.out_slot->key.height,
                                      1 };
             if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
                 // MSAA: depth buffer must be multisampled
@@ -880,7 +908,9 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         // MSAA: create multisampled color image for this RT
         std::shared_ptr<VmaImageParameters> msaaColorImg;
         if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-            VkExtent3D extent { m_desc.vk_output.extent.width, m_desc.vk_output.extent.height, 1 };
+            VkExtent3D extent { (u32)m_desc.out_slot->key.width,
+                                (u32)m_desc.out_slot->key.height,
+                                1 };
             auto&      msaaStorage = scene.msaaColorImages[m_desc.output];
             msaaColorImg           = GetOrCreateMSAAColorImage(
                 msaaStorage, device, extent, m_desc.msaaSamples, output_vk_format);
@@ -1130,39 +1160,6 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
         }
     }
 
-    {
-        // Framebuffer attachments must match render pass attachment order:
-        // No MSAA: [0]=color, [1]=depth
-        // MSAA:    [0]=msaa_color, [1]=resolve, [2]=msaa_depth
-        VkImageView fb_attachments[3];
-        uint32_t    fb_count;
-        // Render attachments must be single-mip-level image views (Vulkan spec).
-        // ImageParameters::mip0_view aliases ::view when the source image is
-        // single-mip, so this works for plain RTs and multi-mip pingpongs alike.
-        if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-            fb_attachments[0] = m_desc.msaaColorView;       // multisampled color
-            fb_attachments[1] = m_desc.vk_output.mip0_view; // resolve target (mip 0 only)
-            fb_attachments[2] = m_desc.depthView;           // multisampled depth
-            fb_count          = m_desc.hasDepth ? 3u : 2u;
-        } else {
-            fb_attachments[0] = m_desc.vk_output.mip0_view;
-            fb_attachments[1] = m_desc.depthView;
-            fb_count          = m_desc.hasDepth ? 2u : 1u;
-        }
-        VkFramebufferCreateInfo info {
-            .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .pNext           = nullptr,
-            .flags           = 0,
-            .renderPass      = *m_desc.pipeline.pass,
-            .attachmentCount = fb_count,
-            .pAttachments    = fb_attachments,
-            .width           = m_desc.vk_output.extent.width,
-            .height          = m_desc.vk_output.extent.height,
-            .layers          = 1,
-        };
-        VVK_CHECK_VOID_RE(device.handle().CreateFramebuffer(info, m_desc.fb));
-    }
-
     if (! ref.blocks.empty()) {
         auto& block = ref.blocks.front();
         if (! rr.dyn_buf->allocateSubRef(
@@ -1391,6 +1388,57 @@ void CustomShaderPass::recordDepthInit(const vvk::CommandBuffer& cmd) {
     }
 }
 
+bool CustomShaderPass::ensureFramebuffer(const Device& device, PassMergeRole role) {
+    // vkCmdBeginRenderPass is the only consumer of the framebuffer, so only
+    // the pass that opens the render pass needs one.
+    if (! PassOpensRenderPass(role)) return true;
+    if (m_desc.out_slot == nullptr) return *m_desc.fb != VK_NULL_HANDLE;
+    if (! m_desc.out_slot->resident()) return false;
+    if (! FramebufferNeedsRebuild(
+            *m_desc.fb != VK_NULL_HANDLE, m_desc.fb_generation, *m_desc.out_slot))
+        return true;
+    // Attachments match the render pass: [0]=color, [1]=depth; with MSAA
+    // [0]=msaa color, [1]=resolve, [2]=msaa depth.  Render attachments must be
+    // single-mip views; mip0_view aliases view for single-mip images.
+    VkImageView fb_attachments[3];
+    uint32_t    fb_count;
+    if (m_desc.msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
+        fb_attachments[0] = m_desc.msaaColorView;
+        fb_attachments[1] = m_desc.vk_output.mip0_view;
+        fb_attachments[2] = m_desc.depthView;
+        fb_count          = m_desc.hasDepth ? 3u : 2u;
+    } else {
+        fb_attachments[0] = m_desc.vk_output.mip0_view;
+        fb_attachments[1] = m_desc.depthView;
+        fb_count          = m_desc.hasDepth ? 2u : 1u;
+    }
+    VkFramebufferCreateInfo info {
+        .sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .pNext           = nullptr,
+        .flags           = 0,
+        .renderPass      = *m_desc.pipeline.pass,
+        .attachmentCount = fb_count,
+        .pAttachments    = fb_attachments,
+        .width           = m_desc.vk_output.extent.width,
+        .height          = m_desc.vk_output.extent.height,
+        .layers          = 1,
+    };
+    vvk::Framebuffer fb;
+    auto             res = device.handle().CreateFramebuffer(info, fb);
+    if (ShouldLogFramebufferFailure(res != VK_SUCCESS, m_fb_failure_logged)) VVK_CHECK(res);
+    if (res != VK_SUCCESS) return false;
+    m_desc.fb            = std::move(fb);
+    m_desc.fb_generation = m_desc.out_slot->generation;
+    return true;
+}
+
+std::optional<vvk::Framebuffer> CustomShaderPass::takeFramebuffer() {
+    if (*m_desc.fb == VK_NULL_HANDLE) return std::nullopt;
+    vvk::Framebuffer fb  = std::move(m_desc.fb);
+    m_desc.fb_generation = 0;
+    return fb;
+}
+
 void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     WEK_PROFILE_SCOPE("CustomShaderPass::execute");
     extern bool g_pass_dump_active;
@@ -1400,9 +1448,15 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // frame back to one render pass per pass: the flag never changes while a
     // command buffer is being recorded, so every pass agrees on the fallback
     // and nobody is left owing a begin or an end.
+    rebindImages();
     const PassMergeRole role   = g_pass_dump_active ? PassMergeRole::Standalone : m_desc.merge_role;
     const bool          opens  = PassOpensRenderPass(role);
     const bool          closes = PassClosesRenderPass(role);
+    // Follow an opener that could not begin its render pass this frame.
+    if (GroupMemberSkips(role, rr.group_abandoned)) {
+        if (closes) rr.group_abandoned = false;
+        return;
+    }
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
     // uniforms, is the only writer of its output VkImage, and reads only
     // images written by other such passes (see canCache() /
@@ -1427,16 +1481,16 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // check keeps that a local, checkable fact rather than an invariant
     // spread across two files: a merged pass re-records instead.
     const PassCacheDecision cache =
-        DecidePassCache<VkImage>(canCache(),
-                                 isCached(),
-                                 own_dirty,
-                                 m_desc.node == nullptr || m_desc.node->IsVisible(),
-                                 m_cached_visible,
-                                 m_input_images,
-                                 m_backward_input_images,
-                                 m_rewritten_frame_tracker,
-                                 m_rewritten_last_frame_tracker,
-                                 role == PassMergeRole::Standalone);
+        DecidePassCache<ResidencyKey>(canCache(),
+                                      isCached(),
+                                      own_dirty,
+                                      m_desc.node == nullptr || m_desc.node->IsVisible(),
+                                      m_cached_visible,
+                                      m_input_keys,
+                                      m_backward_input_keys,
+                                      m_rewritten_frame_tracker,
+                                      m_rewritten_last_frame_tracker,
+                                      role == PassMergeRole::Standalone);
     if (cache.invalidate) invalidateCache();
     if (cache.skip) {
         g_cache_hits++;
@@ -1503,6 +1557,14 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
             if (! depth_safe_to_skip) recordDepthInit(rr.command);
         }
         g_invisible_skips++;
+        return;
+    }
+
+    // The framebuffer is built over the live image on the first record and after
+    // every image change.  Nothing to draw into means skip the frame and retry;
+    // a GroupBegin that skips here takes its members with it.
+    if (! ensureFramebuffer(device, role)) {
+        if (role == PassMergeRole::GroupBegin) rr.group_abandoned = true;
         return;
     }
 
@@ -1905,7 +1967,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     if (canCache()) markCached(m_desc.node == nullptr || m_desc.node->IsVisible());
     // Reaching here means the draw was recorded, so consumers sampling this
     // output must not trust their own cache.
-    RecordPassDrawn<VkImage>(m_rewritten_frame_tracker, m_desc.vk_output.handle);
+    RecordPassDrawn<ResidencyKey>(m_rewritten_frame_tracker, outputKey());
 }
 
 void CustomShaderPass::destory(const Device&, RenderingResources& rr) {

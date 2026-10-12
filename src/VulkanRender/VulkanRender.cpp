@@ -176,12 +176,13 @@ struct VulkanRender::Impl {
     // relative to a render thread that might still be mid-frame.
     std::unordered_set<VkImage> m_depth_inited_frame;
 
-    // Output images some pass actually drew this frame and the frame before.
-    // Lets a cached pass notice that a producer it samples re-ran; the previous
-    // frame's set covers a reader ordered ahead of its writer.  Advanced with
-    // the depth tracker at the top of each frame.
-    std::unordered_set<VkImage> m_rewritten_frame;
-    std::unordered_set<VkImage> m_rewritten_last_frame;
+    // Keys (render-target slot ids; image handles for depth and MSAA) of what
+    // some pass actually drew this frame and the frame before.  Lets a cached
+    // pass notice that a producer it samples re-ran; the previous frame's set
+    // covers a reader ordered ahead of its writer.  Advanced with the depth
+    // tracker at the top of each frame.
+    std::unordered_set<ResidencyKey> m_rewritten_frame;
+    std::unordered_set<ResidencyKey> m_rewritten_last_frame;
 
     // Screenshot request.  Set from any thread via setScreenshotPath;
     // consumed on the render thread inside drawFrameSwapchain after WaitIdle.
@@ -1383,6 +1384,7 @@ void VulkanRender::Impl::drawFrameSwapchain() {
             g_exec_pass_counter  = 0;
             g_exec_frame_counter = _render_frame_count;
             m_depth_inited_frame.clear();
+            rr.group_abandoned = false;
             AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
             for (auto* p : m_passes) {
                 if (p->prepared()) {
@@ -1542,6 +1544,7 @@ void VulkanRender::Impl::drawFrameOffscreen() {
         g_exec_pass_counter  = 0;
         g_exec_frame_counter = _render_frame_count;
         m_depth_inited_frame.clear();
+        rr.group_abandoned = false;
         AdvanceRewrittenFrame(m_rewritten_frame, m_rewritten_last_frame);
         for (auto* p : m_passes) {
             if (p->prepared()) {
@@ -1937,10 +1940,10 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     //
     // See ComputeIsSafeToSkip (pure, unit-tested in test_PassCacheAlias.cpp).
     {
-        std::vector<VkImage>              outputs;
-        std::vector<std::vector<VkImage>> inputs;
-        std::vector<bool>                 cacheable;
-        std::vector<CustomShaderPass*>    csps;
+        std::vector<ResidencyKey>              outputs;
+        std::vector<std::vector<ResidencyKey>> inputs;
+        std::vector<bool>                      cacheable;
+        std::vector<CustomShaderPass*>         csps;
         outputs.reserve(m_passes.size());
         inputs.reserve(m_passes.size());
         cacheable.reserve(m_passes.size());
@@ -1949,21 +1952,26 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             auto* csp = dynamic_cast<CustomShaderPass*>(p);
             csps.push_back(csp);
             if (csp && csp->prepared()) {
-                outputs.push_back(csp->desc().vk_output.handle);
-                std::vector<VkImage> in_handles;
-                in_handles.reserve(csp->desc().vk_textures.size());
-                for (auto const& slots : csp->desc().vk_textures) {
-                    // Unbound slot (pass binds a nullable/empty texture to
-                    // this binding) — treat as VK_NULL_HANDLE so the safety
-                    // analysis ignores it rather than indexing an empty
-                    // std::vector in getActive().
-                    if (slots.slots.empty()) {
-                        in_handles.push_back(VK_NULL_HANDLE);
+                outputs.push_back(csp->outputKey());
+                std::vector<ResidencyKey> in_keys;
+                in_keys.reserve(csp->desc().vk_textures.size());
+                const auto& in_slots = csp->desc().in_slots;
+                for (std::size_t ti = 0; ti < csp->desc().vk_textures.size(); ++ti) {
+                    const auto& slots = csp->desc().vk_textures[ti];
+                    // A render target is keyed by its slot; anything else is a
+                    // bitmap keyed by handle.  An unbound binding (nullable or
+                    // empty texture) gets the null key so the safety analysis
+                    // ignores it rather than indexing an empty vector in
+                    // getActive().
+                    if (ti < in_slots.size() && in_slots[ti] != nullptr) {
+                        in_keys.push_back(KeyForSlot(in_slots[ti]));
+                    } else if (slots.slots.empty()) {
+                        in_keys.push_back(ResidencyKey {});
                     } else {
-                        in_handles.push_back(slots.getActive().handle);
+                        in_keys.push_back(KeyForImage(slots.getActive().handle));
                     }
                 }
-                inputs.push_back(std::move(in_handles));
+                inputs.push_back(std::move(in_keys));
                 cacheable.push_back(CacheableForSafetyAnalysis(
                     csp->isCacheable(), csp->desc().hideable != HideableKind::None));
             } else if (auto* cp = dynamic_cast<CopyPass*>(p); cp && cp->prepared()) {
@@ -1975,38 +1983,36 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
                 // feedback loop).  Treat the copy as an unconditional
                 // non-cacheable writer of dst so alias analysis sees two
                 // writers and refuses to cache either.
-                outputs.push_back(cp->desc().vk_dst.handle);
-                std::vector<VkImage> in_handles;
-                in_handles.push_back(cp->desc().vk_src.handle);
-                inputs.push_back(std::move(in_handles));
+                outputs.push_back(KeyForSlot(cp->desc().dst_slot));
+                inputs.push_back({ KeyForSlot(cp->desc().src_slot) });
                 cacheable.push_back(false);
             } else if (auto* sky = dynamic_cast<SkyboxPass*>(p); sky && sky->prepared()) {
                 // The skybox redraws _rt_default every frame.  Left as a null
                 // output it would be invisible to the analysis, and a cacheable
                 // pass sampling _rt_default would freeze on the first frame.
-                outputs.push_back(sky->desc().vk_output.handle);
+                outputs.push_back(KeyForSlot(sky->desc().out_slot));
                 inputs.emplace_back();
                 cacheable.push_back(false);
             } else if (auto* pre = dynamic_cast<PrePass*>(p); pre && pre->prepared()) {
                 // PrePass clears _rt_default each frame; same reasoning.
-                outputs.push_back(pre->desc().vk_result.handle);
+                outputs.push_back(KeyForSlot(pre->desc().result_slot));
                 inputs.emplace_back();
                 cacheable.push_back(false);
             } else {
-                outputs.push_back(VK_NULL_HANDLE);
+                outputs.push_back(ResidencyKey {});
                 inputs.emplace_back();
                 cacheable.push_back(false);
             }
         }
-        auto safe = ComputeIsSafeToSkip<VkImage>(outputs, inputs, cacheable);
+        auto safe = ComputeIsSafeToSkip<ResidencyKey>(outputs, inputs, cacheable);
 
         // Cached passes re-check the inputs they sample against what was
         // redrawn (see DecidePassCache); inputs written later in the order are
         // read a frame behind and get the previous frame's set.
-        auto backward = ClassifyBackwardInputs<VkImage>(outputs, inputs);
+        auto backward = ClassifyBackwardInputs<ResidencyKey>(outputs, inputs);
         for (std::size_t i = 0; i < m_passes.size(); ++i) {
             if (csps[i] && csps[i]->prepared())
-                csps[i]->setInputImages(inputs[i], std::move(backward[i]));
+                csps[i]->setInputKeys(inputs[i], std::move(backward[i]));
         }
 
         int cacheable_total = 0;
@@ -2060,15 +2066,7 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             return ! (v && v[0] == '0');
         }();
 
-        // Vulkan handles come in two shapes (dispatchable pointers and
-        // 64-bit non-dispatchable handles); both compare as one integer key.
-        // Two distinct handles must never collide into one key or the merge
-        // would fuse passes writing different targets.
-        using MergeH = std::uint64_t;
-        static_assert(sizeof(void*) == sizeof(MergeH), "handle key would truncate");
-        auto key = [](auto handle) -> MergeH {
-            return (MergeH)(std::uintptr_t)handle;
-        };
+        using MergeH = ResidencyKey;
 
         std::vector<PassMergeInfo<MergeH>> infos;
         std::vector<CustomShaderPass*>     merge_csps;
@@ -2084,24 +2082,31 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             if (csp != nullptr && csp->prepared() && ! csp->canCache()) {
                 const auto& d      = csp->desc();
                 info.mergeable     = true;
-                info.color_view    = key(d.vk_output.mip0_view);
-                info.msaa_view     = key(d.msaaColorView);
-                info.depth_view    = key(d.depthView);
+                info.color_view    = csp->outputKey();
+                info.msaa_view     = KeyForImage(d.msaaColorView);
+                info.depth_view    = KeyForImage(d.depthView);
                 info.samples       = (unsigned)d.msaaSamples;
-                info.width         = d.vk_output.extent.width;
-                info.height        = d.vk_output.extent.height;
+                // A prepared pass always has an out_slot: prepare() returns
+                // before setPrepared when the output or its slot is missing.
+                info.width         = (unsigned)d.out_slot->key.width;
+                info.height        = (unsigned)d.out_slot->key.height;
                 info.clears_output = d.clears_output;
-                for (auto h :
-                     { key(d.vk_output.handle), key(d.msaaColorImage), key(d.depthImage) }) {
-                    if (h != 0) info.attachment_images.push_back(h);
+                for (auto h : { csp->outputKey(),
+                                KeyForImage(d.msaaColorImage),
+                                KeyForImage(d.depthImage) }) {
+                    if (h != ResidencyKey {}) info.attachment_images.push_back(h);
                 }
-                for (auto const& slots : d.vk_textures) {
+                for (std::size_t ti = 0; ti < d.vk_textures.size(); ++ti) {
+                    if (ti < d.in_slots.size() && d.in_slots[ti] != nullptr) {
+                        info.sampled_images.push_back(KeyForSlot(d.in_slots[ti]));
+                        continue;
+                    }
                     // Every slot, not just the active one: sprite animation
                     // switches slots between frames while the role assignment
                     // is made once per compile.
-                    for (auto const& img : slots.slots) {
+                    for (auto const& img : d.vk_textures[ti].slots) {
                         if (img.handle != VK_NULL_HANDLE) {
-                            info.sampled_images.push_back(key(img.handle));
+                            info.sampled_images.push_back(KeyForImage(img.handle));
                         }
                     }
                 }

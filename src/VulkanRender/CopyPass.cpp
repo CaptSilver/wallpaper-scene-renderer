@@ -25,31 +25,33 @@ void CopyPass::prepare(Scene& scene, const Device& device,
 
     std::array<std::string, 2>      textures    = { m_desc.src, m_desc.dst };
     std::array<ImageParameters*, 2> vk_textures = { &m_desc.vk_src, &m_desc.vk_dst };
+    std::array<RtSlot**, 2>         slots       = { &m_desc.src_slot, &m_desc.dst_slot };
+    std::array<BoundImage*, 2>      bounds      = { &m_src_bound, &m_dst_bound };
     for (usize i = 0; i < textures.size(); i++) {
         auto& tex_name = textures[i];
         if (tex_name.empty()) continue;
 
-        ImageParameters img;
-        if (IsSpecTex(tex_name)) {
-            // src is guarded by the early-return at the top of prepare(); dst is
-            // normally inserted just above.  Guard anyway so a stray non-existent
-            // SpecTex RT logs+skips rather than throwing onto the worker thread.
-            auto* rtp = scene.tryGetRenderTarget(tex_name);
-            if (rtp == nullptr) {
-                LOG_ERROR("CopyPass RT '%s' missing", tex_name.c_str());
-                continue;
-            }
-            auto& rt  = *rtp;
-            auto  opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
-            if (opt.has_value())
-                img = opt.value();
-            else
-                LOG_ERROR("query image from cache failed");
-        } else {
+        if (! IsSpecTex(tex_name)) {
             LOG_ERROR("can't copy image source");
             return;
         }
-        *vk_textures[i] = img;
+        // src is guarded by the early-return at the top of prepare(); dst is
+        // normally inserted just above.  Guard anyway so a stray non-existent
+        // SpecTex RT logs+skips rather than throwing onto the worker thread.
+        auto* rtp = scene.tryGetRenderTarget(tex_name);
+        if (rtp == nullptr) {
+            LOG_ERROR("CopyPass RT '%s' missing", tex_name.c_str());
+            continue;
+        }
+        auto&   rt   = *rtp;
+        RtSlot* slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+        if (slot == nullptr) {
+            LOG_ERROR("query image from cache failed");
+            continue;
+        }
+        *slots[i]       = slot;
+        *vk_textures[i] = slot->params().value_or(AbsentImageParameters(slot->key));
+        *bounds[i]      = { slot->generation, slot->resident() };
     }
 
     for (auto& tex : releaseTexs()) {
@@ -71,7 +73,20 @@ void CopyPass::prepare(Scene& scene, const Device& device,
 
     setPrepared();
 };
+void CopyPass::rebindImages() {
+    const std::array<RtSlot*, 2>          slots  = { m_desc.src_slot, m_desc.dst_slot };
+    const std::array<ImageParameters*, 2> images = { &m_desc.vk_src, &m_desc.vk_dst };
+    const std::array<BoundImage*, 2>      bounds = { &m_src_bound, &m_dst_bound };
+    for (usize i = 0; i < 2; i++) {
+        RtSlot* slot = slots[i];
+        if (slot == nullptr || ! BoundImageStale(*bounds[i], *slot)) continue;
+        *images[i] = slot->params().value_or(AbsentImageParameters(slot->key));
+        *bounds[i] = { slot->generation, slot->resident() };
+    }
+}
+
 void CopyPass::execute(const Device& device, RenderingResources& rr) {
+    rebindImages();
     // First-frame execution trace for copy passes
     {
         extern int g_exec_pass_counter;

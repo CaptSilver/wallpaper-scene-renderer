@@ -226,3 +226,46 @@ TEST_SUITE("PassMerge role predicates") {
         CHECK_FALSE(CanHandOffDepthInitOnHiddenSkip(PassMergeRole::GroupEnd));
     }
 }
+
+#include "VulkanRender/RtResidency.hpp"
+
+// Merge roles on slot keys: two passes writing the same slot share the
+// attachment configuration exactly as two passes writing the same view did.
+TEST_SUITE("PassMerge on ResidencyKey") {
+    using K = ResidencyKey;
+    static PassMergeInfo<K> SlotPass(K out, K depth) {
+        PassMergeInfo<K> p;
+        p.mergeable         = true;
+        p.color_view        = out;
+        p.depth_view        = depth;
+        p.samples           = 1;
+        p.width             = 1280;
+        p.height            = 720;
+        p.attachment_images = { out, depth };
+        p.sampled_images    = { K::ForHandle(0x3001) };
+        return p;
+    }
+    TEST_CASE("same slot, same depth image: one group") {
+        auto first          = SlotPass(K::ForSlot(1), K::ForHandle(0x1006));
+        first.clears_output = true;
+        auto r              = ComputePassMergeRoles<K>(
+            std::vector<PassMergeInfo<K>> { first, SlotPass(K::ForSlot(1), K::ForHandle(0x1006)) });
+        REQUIRE(r.size() == 2);
+        CHECK(r[0] == PassMergeRole::GroupBegin);
+        CHECK(r[1] == PassMergeRole::GroupEnd);
+    }
+    TEST_CASE("a pass sampling the leader's slot breaks the run") {
+        auto leader           = SlotPass(K::ForSlot(1), K::ForHandle(0x1006));
+        auto reader           = SlotPass(K::ForSlot(1), K::ForHandle(0x1006));
+        reader.sampled_images = { K::ForSlot(1) };
+        auto r = ComputePassMergeRoles<K>(std::vector<PassMergeInfo<K>> { leader, reader });
+        CHECK(r[0] == PassMergeRole::Standalone);
+        CHECK(r[1] == PassMergeRole::Standalone);
+    }
+    TEST_CASE("a pass with the null key as colour never joins a group") {
+        auto a = SlotPass(K {}, K::ForHandle(0x1006));
+        auto b = SlotPass(K {}, K::ForHandle(0x1006));
+        auto r = ComputePassMergeRoles<K>(std::vector<PassMergeInfo<K>> { a, b });
+        CHECK(r[0] == PassMergeRole::Standalone);
+    }
+}

@@ -875,17 +875,7 @@ void TextureCache::evictColdQueryTexs() {
     // eviction batch — eviction is rare (only above cap), so the cost
     // amortises.
     m_device.handle().WaitIdle();
-    // Victims are sorted descending — erasing in this order keeps remaining
-    // indices stable.
-    for (std::size_t v : victims) {
-        // Prune m_query_map of any keys that still point at the evicted
-        // entry BEFORE the unique_ptr is destroyed (the map stores raw
-        // QueryTex*, which would dangle).
-        for (const auto& mapped_key : m_query_texs[v]->query_keys) {
-            m_query_map.erase(mapped_key);
-        }
-        m_query_texs.erase(m_query_texs.begin() + v);
-    }
+    detail::eraseEvictedSlots(m_query_texs, m_query_map, victims);
     LOG_INFO("TextureCache: evicted %zu cold query-tex entries (cap=%u, size=%zu)",
              victims.size(),
              m_query_soft_cap,
@@ -924,6 +914,7 @@ void TextureCache::Clear() {
     m_reupload_fail_streak.clear();
     m_query_texs.clear();
     m_query_map.clear();
+    m_next_slot_id = 0;
     // Clear the sampler cache LAST.  Samplers must be destroyed AFTER the
     // images that reference them (or after vkDeviceWaitIdle); the m_tex_map
     // clear above destroys the images synchronously, so this is the safe
@@ -933,8 +924,7 @@ void TextureCache::Clear() {
     m_sampler_cache.clear();
 }
 
-std::optional<ImageParameters> TextureCache::Query(std::string_view key, TextureKey content_hash,
-                                                   bool persist) {
+RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, bool persist) {
     if (exists(m_query_map, key)) {
         auto& query = *(m_query_map.find(key)->second);
 
@@ -942,8 +932,7 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
         query.persist     = persist;
         query.lru_tick    = ++m_lru_clock;
         query.last_gen    = m_query_generation;
-
-        return query.image;
+        return &query;
     };
 
     TexHash tex_hash = TextureKey::HashValue(content_hash);
@@ -958,15 +947,15 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
         query->last_gen = m_query_generation;
 
         m_query_map[std::string(key)] = &(*query);
-
-        return query->image;
+        return query.get();
     }
 
-    m_query_texs.emplace_back(std::make_unique<QueryTex>());
+    m_query_texs.emplace_back(std::make_unique<RtSlot>());
     auto& query                   = *m_query_texs.back();
     m_query_map[std::string(key)] = &query;
 
-    query.index        = (idx)m_query_texs.size() - 1;
+    query.id           = detail::AllocateSlotId(m_next_slot_id);
+    query.key          = content_hash;
     query.content_hash = tex_hash;
     query.query_keys.insert(std::string(key));
     query.persist  = persist;
@@ -974,12 +963,13 @@ std::optional<ImageParameters> TextureCache::Query(std::string_view key, Texture
     query.last_gen = m_query_generation;
     if (auto opt = CreateTex(content_hash); opt.has_value()) {
         query.image = std::move(opt.value());
+        ++query.generation;
         if (m_query_texs.size() > m_query_soft_cap) {
             evictColdQueryTexs();
         }
-        return query.image;
+        return &query;
     }
-    return std::nullopt;
+    return nullptr;
 }
 
 void TextureCache::MarkShareReady(std::string_view key) {

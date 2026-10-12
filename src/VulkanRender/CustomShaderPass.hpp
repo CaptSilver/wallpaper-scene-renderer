@@ -1,12 +1,16 @@
 #pragma once
 #include "VulkanPass.hpp"
 #include "VulkanRender/PassMerge.hpp"
+#include "VulkanRender/RtResidency.hpp"
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
 #include "Vulkan/Device.hpp"
 #include "Vulkan/Parameters.hpp"
+#include "Vulkan/TextureCache.hpp"
 #include "Scene/Scene.h"
 #include "Scene/SceneImageEffectLayer.h"
 #include "Vulkan/StagingBuffer.hpp"
@@ -282,6 +286,36 @@ inline bool ReferencesMediaSystemTexture(const std::vector<std::string>& texture
     return false;
 }
 
+// Rebuild the framebuffer when there is none and the output has an image, or
+// when the image it was built over was replaced.  An absent output needs no
+// framebuffer: the pass skips.
+inline bool FramebufferNeedsRebuild(bool has_fb, std::uint32_t fb_generation, const RtSlot& out) {
+    if (! out.resident()) return false;
+    return ! has_fb || fb_generation != out.generation;
+}
+
+// A merged group's members record inside the render pass the GroupBegin
+// opened.  If that begin never happened (its framebuffer could not be built),
+// a member drawing anyway would record outside any render pass, so the
+// members and the end follow the opener's failure and skip.
+inline bool GroupMemberSkips(PassMergeRole role, bool group_abandoned) {
+    return group_abandoned &&
+           (role == PassMergeRole::GroupMiddle || role == PassMergeRole::GroupEnd);
+}
+
+// Log a framebuffer-creation failure once per streak: the first failure after
+// a success reports, later ones stay quiet (the pass retries every frame), and
+// a success re-arms the report.  `logged` records that this streak has reported.
+inline bool ShouldLogFramebufferFailure(bool failed, bool& logged) {
+    if (! failed) {
+        logged = false;
+        return false;
+    }
+    if (logged) return false;
+    logged = true;
+    return true;
+}
+
 class CustomShaderPass : public VulkanPass {
 public:
     struct Desc {
@@ -289,6 +323,12 @@ public:
         SceneNode*               node { nullptr };
         std::vector<std::string> textures;
         std::string              output;
+        // The render target this pass writes and, per texture index, the one it
+        // samples (nullptr for bitmap textures, the depth alias and unbound
+        // slots).  Set in prepare(); the handle copies below are refreshed
+        // from them by rebindImages().
+        RtSlot*                  out_slot { nullptr };
+        std::vector<RtSlot*>     in_slots;
         sprite_map_t             sprites_map;
         std::string              camera_override; // use named camera instead of node's
 
@@ -378,6 +418,7 @@ public:
         // stale tracker.  See barrier-emit site in CustomShaderPass.cpp.
         std::shared_ptr<VmaImageParameters> msaaColorOwner;
         vvk::Framebuffer      fb;
+        std::uint32_t                       fb_generation { 0 };
         PipelineParameters    pipeline;
         u32                   draw_count { 0 };
 
@@ -411,6 +452,10 @@ public:
     virtual ~CustomShaderPass();
 
     void setDescTex(u32 index, std::string_view tex_key);
+
+    // Re-copies the output and input handles from their slots when a slot's
+    // generation moved or its image appeared or vanished.
+    void rebindImages();
 
     void prepare(Scene&, const Device&, RenderingResources&) override;
     void execute(const Device&, RenderingResources&) override;
@@ -480,30 +525,43 @@ public:
     // constructs directly and never runs through execute()).
     bool hasDepthInitedFrameSet() const { return m_depth_inited_frame_tracker != nullptr; }
 
-    // Output images drawn this frame and last frame, owned by
+    // Output keys drawn this frame and last frame, owned by
     // VulkanRender::Impl and wired in alongside the depth tracker.  A cached
     // pass consults them (see DecidePassCache) and every pass that really
-    // records a draw adds its output to this frame's set.
-    void setRewrittenFrameSets(std::unordered_set<VkImage>* this_frame,
-                               std::unordered_set<VkImage>* last_frame) {
+    // records a draw adds its output to this frame's set.  Keyed on the
+    // render target's slot, not its VkImage, which can change under a pass.
+    void setRewrittenFrameSets(std::unordered_set<ResidencyKey>* this_frame,
+                               std::unordered_set<ResidencyKey>* last_frame) {
         m_rewritten_frame_tracker      = this_frame;
         m_rewritten_last_frame_tracker = last_frame;
     }
-    // The images this pass samples, as compileRenderGraph resolved them for the
-    // cache-safety analysis, and the subset written by a pass at or after this
-    // one in execution order (read a frame late); the redraw check reads both.
-    void setInputImages(std::vector<VkImage> all, std::vector<VkImage> backward) {
-        m_input_images          = std::move(all);
-        m_backward_input_images = std::move(backward);
+    // The targets this pass samples, as compileRenderGraph resolved them for
+    // the cache-safety analysis, and the subset written by a pass at or after
+    // this one in execution order (read a frame late); the redraw check reads
+    // both.
+    void setInputKeys(std::vector<ResidencyKey> all, std::vector<ResidencyKey> backward) {
+        m_input_keys          = std::move(all);
+        m_backward_input_keys = std::move(backward);
     }
-    const std::vector<VkImage>& inputImages() const { return m_input_images; }
-    const std::vector<VkImage>& backwardInputImages() const { return m_backward_input_images; }
+    const std::vector<ResidencyKey>& inputKeys() const { return m_input_keys; }
+    const std::vector<ResidencyKey>& backwardInputKeys() const { return m_backward_input_keys; }
+    // The key of the render target this pass draws into; null without a slot.
+    // Defined after KeyForSlot, below the class.
+    ResidencyKey outputKey() const;
 
     // Accessors for per-pass debug dump (VulkanRender::Impl reads output image
     // info after a frame WaitIdle to produce PPMs of each pass's render target).
     const Desc& desc() const { return m_desc; }
 
+    // Moves the framebuffer out (for deferred destruction); empty if none was built.
+    std::optional<vvk::Framebuffer> takeFramebuffer();
+
 private:
+    // Builds m_desc.fb over the output's current view when it is missing or was
+    // built for another image.  False when there is nothing to draw into or
+    // creation failed; the pass skips this frame and retries next.
+    bool ensureFramebuffer(const Device& device, PassMergeRole role);
+
     // Clear this pass's depth image to 1.0 and leave it in
     // DEPTH_STENCIL_ATTACHMENT_OPTIMAL, recording the barriers around the
     // clear.  No-op once some pass has already done it for the same image
@@ -511,17 +569,20 @@ private:
     // pass can hand the job over before it bails out, from the skip path.
     void recordDepthInit(const vvk::CommandBuffer& cmd);
 
-    Desc                         m_desc;
-    std::unordered_set<VkImage>* m_depth_inited_frame_tracker { nullptr };
-    std::unordered_set<VkImage>* m_rewritten_frame_tracker { nullptr };
-    std::unordered_set<VkImage>* m_rewritten_last_frame_tracker { nullptr };
-    std::vector<VkImage>         m_input_images;
-    std::vector<VkImage>         m_backward_input_images;
-    bool                         m_cached { false };
-    bool                         m_cached_visible { true };
-    bool                         m_can_cache { false };
-    bool                         m_uses_time_uniforms { false };
-    bool                         m_samples_mutable_texture { false };
+    Desc                              m_desc;
+    BoundImage                        m_out_bound;
+    std::vector<BoundImage>           m_in_bound;
+    std::unordered_set<VkImage>*      m_depth_inited_frame_tracker { nullptr };
+    std::unordered_set<ResidencyKey>* m_rewritten_frame_tracker { nullptr };
+    std::unordered_set<ResidencyKey>* m_rewritten_last_frame_tracker { nullptr };
+    std::vector<ResidencyKey>         m_input_keys;
+    std::vector<ResidencyKey>         m_backward_input_keys;
+    bool                              m_cached { false };
+    bool                              m_cached_visible { true };
+    bool                              m_can_cache { false };
+    bool                              m_uses_time_uniforms { false };
+    bool                              m_samples_mutable_texture { false };
+    bool                              m_fb_failure_logged { false };
 
     // Per-pass scratch storage reused across execute() calls.
     //
@@ -546,6 +607,13 @@ private:
     std::vector<VkDescriptorImageInfo> m_image_infos_scratch;
     std::vector<VkWriteDescriptorSet>  m_descriptor_writes_scratch;
 };
+
+// A slot's key is its id, so it survives the slot's image coming and going.
+inline ResidencyKey KeyForSlot(const RtSlot* slot) {
+    return slot == nullptr ? ResidencyKey {} : ResidencyKey::ForSlot(slot->id);
+}
+
+inline ResidencyKey CustomShaderPass::outputKey() const { return KeyForSlot(m_desc.out_slot); }
 
 } // namespace vulkan
 } // namespace wallpaper

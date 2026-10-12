@@ -25,11 +25,10 @@ void PrePass::prepare(Scene& scene, const Device& device, RenderingResources&) {
         auto tex_name = std::string(m_desc.result);
         if (scene.renderTargets.count(tex_name) == 0) return;
         auto& rt = scene.renderTargets.at(tex_name);
-        if (auto opt = device.tex_cache().Query(tex_name, ToTexKey(rt), ! rt.allowReuse);
-            opt.has_value()) {
-            m_desc.vk_result = opt.value();
-        } else
-            return;
+        RtSlot* slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+        if (slot == nullptr || ! slot->params()) return;
+        m_desc.result_slot = slot;
+        m_desc.vk_result   = *slot->params();
     }
     {
         auto& sc           = scene.clearColor;
