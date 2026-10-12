@@ -62,6 +62,7 @@ add_executable(backend_scene_tests
     test_SceneMaterialLayerWrite.cpp
     test_WPTexImageHelpers.cpp
     test_TexVariants.cpp
+    test_ColorBlendOverride.cpp
     test_WPTextLayer.cpp
     test_WPTextRenderer.cpp
     test_WPTextRendererGlyphCache.cpp

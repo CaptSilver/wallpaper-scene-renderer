@@ -77,7 +77,12 @@ enum class BlendMode
     // Premultiplied alpha: ONE*src + ONE_MINUS_SRC_ALPHA*dst.
     // For DIRECTDRAW effects (shape-quad) where shader output RGB is already
     // scaled by the mask/alpha, avoiding double-multiplication from SRC_ALPHA.
-    Translucent_PA
+    Translucent_PA,
+    // Colour composited by alpha (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), alpha left
+    // as the target holds it. The image draw of a Screen layer with effects:
+    // the chain gets alpha-weighted colour, which Screen's alpha-blind final
+    // step needs, and the same alpha (0) the chain always saw.
+    PremultipliedColorOnly
 };
 
 enum class ShaderType

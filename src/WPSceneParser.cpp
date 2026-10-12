@@ -1,4 +1,5 @@
 #include "WPSceneParser.hpp"
+#include "ColorBlendOverride.hpp"
 #include "TextCanvasSize.hpp"
 #include "CardMesh.hpp"
 #include "CameraLayer.hpp"
@@ -2045,12 +2046,10 @@ BlendMode applyFinalBlendOverride(SceneMaterial&                material,
                                   bool                          hasEffect,
                                   bool                          isCompose,
                                   const wpscene::WPImageObject& wpimgobj) {
-    // Apply colorBlendMode hardware override if set
-    if (colorBlendOverride != BlendMode::Disable) {
-        material.blenmode = colorBlendOverride;
-    }
+    const auto blend  = SplitColorBlendOverride(material.blenmode, colorBlendOverride, hasEffect);
+    material.blenmode = blend.base;
     // material blendmode for last step to use
-    auto imgBlendMode = material.blenmode;
+    auto imgBlendMode = blend.final;
     if (hasEffect) {
         LOG_INFO("  ParseImageObj id=%d: finalBlend=%d hasEffect=1 isCompose=%d passthrough=%d",
                  wpimgobj.id,

@@ -140,6 +140,9 @@ TEST_SUITE("BlendMode → VkAttachmentLoadOp") {
         op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         SetAttachmentLoadOp(BlendMode::Opaque, op);
         CHECK(op == VK_ATTACHMENT_LOAD_OP_LOAD);
+        op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        SetAttachmentLoadOp(BlendMode::PremultipliedColorOnly, op);
+        CHECK(op == VK_ATTACHMENT_LOAD_OP_LOAD);
     }
 }
 
@@ -183,6 +186,33 @@ TEST_SUITE("Blend math — pingpong initialization") {
         CHECK(out[0] == doctest::Approx(1.0f));
         CHECK(out[1] == doctest::Approx(0.18f));
         CHECK(out[2] == doctest::Approx(0.0f));
+        CHECK(out[3] == doctest::Approx(1.0f));
+    }
+    TEST_CASE("PremultipliedColorOnly scales colour by alpha and leaves dst alpha alone") {
+        auto s = makeState();
+        SetBlend(BlendMode::PremultipliedColorOnly, s);
+        std::array<float, 4> src { 1.0f, 0.42f, 0.42f, 0.2f };
+        std::array<float, 4> dst { 0.0f, 0.0f, 0.0f, 0.0f };
+        auto                 out = applyBlend(s, src, dst);
+        CHECK(out[0] == doctest::Approx(0.2f));
+        CHECK(out[1] == doctest::Approx(0.084f));
+        CHECK(out[3] == doctest::Approx(0.0f));
+    }
+    TEST_CASE("a screen layer's texel composites as WE's alpha-weighted screen") {
+        // Base draw into the cleared ping-pong, then the final screen step.
+        // WE: mix(dst, 1 - (1 - dst) * (1 - src), a).
+        auto base = makeState();
+        SetBlend(BlendMode::PremultipliedColorOnly, base);
+        auto fin = makeState();
+        SetBlend(BlendMode::Opaque, fin);
+        std::array<float, 4> texel { 1.0f, 0.42f, 0.42f, 0.2f };
+        std::array<float, 4> scene { 0.5f, 0.5f, 0.5f, 1.0f };
+        auto                 ppong = applyBlend(base, texel, { 0.0f, 0.0f, 0.0f, 0.0f });
+        auto                 out   = applyBlend(fin, ppong, scene);
+        for (int c = 0; c < 3; c++) {
+            const float screen = 1.0f - (1.0f - scene[c]) * (1.0f - texel[c]);
+            CHECK(out[c] == doctest::Approx(scene[c] + (screen - scene[c]) * texel[3]));
+        }
         CHECK(out[3] == doctest::Approx(1.0f));
     }
     TEST_CASE("Normal/overwrite into cleared dst leaks src.rgb at src.a=0 — the OLD bug") {
