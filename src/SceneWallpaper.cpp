@@ -466,9 +466,8 @@ public:
     void requestScreenshotAtFrame(const std::string& path, uint64_t frame) {
         {
             std::lock_guard<std::mutex> lk(m_shot_at_mutex);
-            m_shot_at_path = path;
+            m_shot_at_queue.emplace_back(frame, path);
         }
-        m_shot_at_frame.store(static_cast<int64_t>(frame), std::memory_order_release);
     }
 
     void requestPassDump(const std::string& dir) {
@@ -1524,19 +1523,18 @@ private:
                 scene->paritileSys->Emitt();
             }
 
-            // Frame-exact screenshot: when a target frame is armed and the
-            // monotonic counter has reached it, set the readback path NOW so
-            // THIS drawFrame captures that exact scene-frame.  ShouldCaptureAtFrame
-            // keeps the off-by-one / disabled-sentinel logic pure + unit-tested.
-            if (ShouldCaptureAtFrame(m_shot_at_frame.load(std::memory_order_acquire),
-                                     m_frame_idx.load(std::memory_order_acquire))) {
-                std::string p;
+            // Frame-exact screenshot: pop the queued path armed for the current
+            // monotonic frame (entries already behind it are dropped) and set the
+            // readback path NOW so THIS drawFrame captures that exact scene-frame.
+            // PopDueCapture keeps the queue logic pure + unit-tested.
+            {
+                std::optional<std::string> due;
                 {
                     std::lock_guard<std::mutex> lk(m_shot_at_mutex);
-                    p = m_shot_at_path;
+                    due =
+                        PopDueCapture(m_shot_at_queue, m_frame_idx.load(std::memory_order_acquire));
                 }
-                m_render->setScreenshotPath(p);
-                m_shot_at_frame.store(-1, std::memory_order_release);
+                if (due) m_render->setScreenshotPath(*due);
             }
 
             m_render->drawFrame(*scene);
@@ -2241,16 +2239,15 @@ private:
     // actual render rate instead of the QTimer cadence.
     std::atomic<uint64_t> m_frame_idx { 0 };
 
-    // Frame-exact screenshot target (frame-indexed capture).  -1 = none.  Set
-    // off-thread via requestScreenshotAtFrame(); consumed on the render thread
-    // in CMD_DRAW, which arms m_render->setScreenshotPath() exactly when
-    // m_frame_idx reaches the target.  This makes warm/cold runs capture the
-    // SAME scene-frame regardless of wall-clock / shader-compile time — the
-    // byte-identical-comparison prerequisite the wall-clock --screenshot-frames
-    // sleep cannot provide.
-    std::atomic<int64_t> m_shot_at_frame { -1 };
-    std::mutex           m_shot_at_mutex;
-    std::string          m_shot_at_path;
+    // Frame-exact screenshot targets (frame-indexed capture), possibly several
+    // armed at once.  Set off-thread via requestScreenshotAtFrame(); consumed
+    // on the render thread in CMD_DRAW, which arms m_render->setScreenshotPath()
+    // exactly when m_frame_idx reaches a target.  This makes warm/cold runs
+    // capture the SAME scene-frame regardless of wall-clock / shader-compile
+    // time — the byte-identical-comparison prerequisite the wall-clock
+    // --screenshot-frames sleep cannot provide.
+    std::mutex                                    m_shot_at_mutex;
+    std::vector<std::pair<uint64_t, std::string>> m_shot_at_queue;
 
     // The three per-tick pending-update mutex groups (text / color / property +
     // scene-level).  State + setters + the withXLocked drains live in

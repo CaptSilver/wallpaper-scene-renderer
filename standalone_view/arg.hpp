@@ -1,3 +1,8 @@
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <optional>
 #include <regex>
 #include <tuple>
 #include <utility>
@@ -22,6 +27,8 @@ constexpr std::string_view OPT_USER_PROPS          = "--user-props";
 constexpr std::string_view OPT_SET_PROP            = "--set";
 constexpr std::string_view OPT_SET_RUNTIME         = "--set-runtime";
 constexpr std::string_view OPT_SET_RUNTIME_DELAY   = "--set-runtime-delay";
+constexpr std::string_view OPT_SET_RUNTIME_AT      = "--set-runtime-at";
+constexpr std::string_view OPT_SHOT_AFTER_SET      = "--shot-after-set";
 constexpr std::string_view OPT_SCREENSHOT          = "--screenshot";
 constexpr std::string_view OPT_SCREENSHOT_FRAMES   = "--screenshot-frames";
 constexpr std::string_view OPT_SCREENSHOT_AT_FRAME = "--screenshot-at-frame";
@@ -158,6 +165,17 @@ void setAndParseArg(argparse::ArgumentParser& arg, int argc, char** argv) {
         .default_value<double>(2.0)
         .nargs(1)
         .scan<'g', double>();
+
+    arg.add_argument(OPT_SET_RUNTIME_AT)
+        .help("(sceneviewer-script only) change a user property at a given time after launch "
+              "(repeatable): --set-runtime-at SEC:key=value (SEC from 0 to 86400)")
+        .default_value<std::vector<std::string>>({})
+        .append();
+    arg.add_argument(OPT_SHOT_AFTER_SET)
+        .help("(sceneviewer-script only) with --set-runtime-at: capture the 8 frames after each "
+              "change and the 60th into DIR as <key>=<value>_f<frame>.ppm")
+        .default_value(std::string())
+        .nargs(1);
 
     arg.add_argument("--cursor")
         .help("simulate hover at widget-space x,y (repeats every 0.5s to keep hover UI visible)")
@@ -399,4 +417,41 @@ inline std::string BuildUserPropsJson(const argparse::ArgumentParser& arg) {
 inline std::string BuildRuntimeUserPropsJson(const std::vector<std::string>& sets) {
     if (sets.empty()) return {};
     return MergeUserPropsJson({}, sets);
+}
+
+struct RuntimeSetAt {
+    double      delay_s;
+    std::string set; // key=value, typed like --set
+};
+
+inline std::optional<RuntimeSetAt> ParseRuntimeSetAt(const std::string& spec) {
+    auto colon = spec.find(':');
+    if (colon == std::string::npos || colon + 1 >= spec.size()) return std::nullopt;
+    char*      end   = nullptr;
+    const auto delay = std::strtod(spec.c_str(), &end);
+    if (end != spec.c_str() + colon) return std::nullopt;
+    // The caller turns this into a millisecond int for QTimer, so nan, inf and
+    // huge values would overflow it; negatives are refused rather than guessed at.
+    if (! std::isfinite(delay) || delay < 0.0 || delay > 86400.0) return std::nullopt;
+    return RuntimeSetAt { delay, spec.substr(colon + 1) };
+}
+
+// The change lands on the render thread one to three frames after the main
+// thread sets the property, so arm a burst and read the first frame that
+// differs; the last entry is the steady state well after it.
+inline std::vector<uint64_t> CaptureBurstFrames(uint64_t base) {
+    std::vector<uint64_t> frames;
+    for (uint64_t i = 1; i <= 8; ++i) frames.push_back(base + i);
+    frames.push_back(base + 60);
+    return frames;
+}
+
+inline std::string ShotAfterSetPath(const std::string& dir, const std::string& set,
+                                    uint64_t frame) {
+    std::string name = set;
+    for (char& c : name)
+        if (c == '/' || c == '\\') c = '_';
+    char suffix[32];
+    std::snprintf(suffix, sizeof(suffix), "_f%06llu.ppm", (unsigned long long)frame);
+    return dir + "/" + name + suffix;
 }

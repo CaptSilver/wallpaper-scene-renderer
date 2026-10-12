@@ -169,6 +169,54 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --set-runtime-at SEC:key=value (repeatable): the same runtime path, each
+    // change at its own time.  With --shot-after-set DIR the frames right after
+    // each change are captured by exact frame index; the burst is armed BEFORE
+    // the property is set so the change cannot slip past the first armed frame.
+    {
+        const std::string shot_dir = program.get<std::string>(OPT_SHOT_AFTER_SET);
+        if (! shot_dir.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(shot_dir, ec);
+            if (ec) {
+                std::cerr << "cannot create --shot-after-set directory " << shot_dir << ": "
+                          << ec.message() << std::endl;
+                return 1;
+            }
+        }
+        for (const auto& spec : program.get<std::vector<std::string>>(OPT_SET_RUNTIME_AT)) {
+            auto parsed = ParseRuntimeSetAt(spec);
+            if (! parsed) {
+                std::cerr << "skipping malformed --set-runtime-at (expected SEC:key=value): "
+                          << spec << std::endl;
+                continue;
+            }
+            const std::string json = BuildRuntimeUserPropsJson({ parsed->set });
+            const std::string set  = parsed->set;
+            QTimer::singleShot((int)(parsed->delay_s * 1000.0), sv, [sv, json, set, shot_dir]() {
+                if (! shot_dir.empty()) {
+                    qint64 base = 0;
+                    QMetaObject::invokeMethod(
+                        sv, "frameIndex", Qt::DirectConnection, Q_RETURN_ARG(qint64, base));
+                    if (base < 0)
+                        std::cerr << "set-runtime-at: " << set
+                                  << " came before the first frame; its captures will be missed"
+                                  << std::endl;
+                    for (uint64_t f : CaptureBurstFrames((uint64_t)std::max<qint64>(0, base))) {
+                        QMetaObject::invokeMethod(
+                            sv,
+                            "requestScreenshotAtFrame",
+                            Q_ARG(QString,
+                                  QString::fromStdString(ShotAfterSetPath(shot_dir, set, f))),
+                            Q_ARG(qint64, (qint64)f));
+                    }
+                }
+                std::cout << "set-runtime-at: " << json << std::endl;
+                sv->setProperty("userProperties", QString::fromStdString(json));
+            });
+        }
+    }
+
     sv->setAcceptMouse(true);
     sv->setAcceptHover(true);
 

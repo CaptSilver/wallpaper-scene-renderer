@@ -164,6 +164,8 @@ public:
     Q_INVOKABLE void simulateDragAt(double x1, double y1, double x2, double y2);
     Q_INVOKABLE void requestScreenshot(const QString& path);
     Q_INVOKABLE void requestScreenshotAtFrame(const QString& path, qint64 frame);
+    // The render thread's frame counter, or -1 with no scene.
+    Q_INVOKABLE qint64 frameIndex() const;
     Q_INVOKABLE bool screenshotDone() const;
     Q_INVOKABLE void requestPassDump(const QString& dir);
     Q_INVOKABLE bool passDumpDone() const;

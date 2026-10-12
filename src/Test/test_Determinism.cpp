@@ -278,3 +278,21 @@ TEST_SUITE("DeterminismCaptureGate") {
         CHECK_FALSE(ShouldCaptureAtFrame(120, 121));
     }
 }
+
+TEST_SUITE("DeterminismCaptureQueue") {
+    using wallpaper::PopDueCapture;
+    TEST_CASE("returns the path armed for the current frame and drops older entries") {
+        std::vector<std::pair<uint64_t, std::string>> q { { 12, "a" },
+                                                          { 10, "stale" },
+                                                          { 13, "b" } };
+        CHECK_FALSE(PopDueCapture(q, 11).has_value());
+        CHECK(q.size() == 2); // 10 was already missed and is gone
+        auto due = PopDueCapture(q, 12);
+        REQUIRE(due.has_value());
+        CHECK(*due == "a");
+        CHECK(q.size() == 1);
+        CHECK(*PopDueCapture(q, 13) == "b");
+        CHECK(q.empty());
+        CHECK_FALSE(PopDueCapture(q, 14).has_value());
+    }
+}

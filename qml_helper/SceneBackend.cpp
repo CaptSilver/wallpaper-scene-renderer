@@ -1253,6 +1253,8 @@ void SceneObject::requestScreenshotAtFrame(const QString& path, qint64 frame) {
                                           static_cast<uint64_t>(std::max<qint64>(0, frame)));
 }
 
+qint64 SceneObject::frameIndex() const { return m_scene ? (qint64)m_scene->getFrameIdx() : -1; }
+
 bool SceneObject::screenshotDone() const { return m_scene ? m_scene->screenshotDone() : false; }
 
 void SceneObject::requestPassDump(const QString& dir) {

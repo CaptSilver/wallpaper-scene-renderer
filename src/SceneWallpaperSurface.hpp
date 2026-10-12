@@ -2,6 +2,10 @@
 #include "SceneWallpaper.hpp"
 
 #include <functional>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 #include <string_view>
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -66,6 +70,20 @@ inline double SelectFrameDt(bool deterministic, double fixed_dt, double wall_dt)
 //   current : the render thread's monotonic completed-frame counter (getFrameIdx).
 inline bool ShouldCaptureAtFrame(int64_t target, uint64_t current) noexcept {
     return target >= 0 && current == static_cast<uint64_t>(target);
+}
+
+// Several captures can be armed at once (a burst around a property change).
+// Returns the path due on `current`; entries already behind `current` are
+// dropped so a capture armed late can never hang the viewer waiting for a
+// frame that has passed.
+inline std::optional<std::string>
+PopDueCapture(std::vector<std::pair<uint64_t, std::string>>& queue, uint64_t current) {
+    std::optional<std::string> due;
+    std::erase_if(queue, [&](std::pair<uint64_t, std::string>& e) {
+        if (ShouldCaptureAtFrame(static_cast<int64_t>(e.first), current)) due = std::move(e.second);
+        return e.first <= current;
+    });
+    return due;
 }
 
 // Resolve whether deterministic mode is active given the struct flag and an
