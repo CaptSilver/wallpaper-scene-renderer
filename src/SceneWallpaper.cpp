@@ -1792,6 +1792,7 @@ private:
 
             if (main_handler.isGenGraphviz()) m_rg->ToGraphviz("graph.dot");
             m_render->compileRenderGraph(*scene, *m_rg);
+            m_render->logMemoryStats("compiled");
             m_render->UpdateCameraFillMode(*scene, m_fillmode);
 
             // Deterministic mode (default OFF): seed the particle PRNG here,

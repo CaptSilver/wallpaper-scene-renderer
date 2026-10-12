@@ -34,6 +34,8 @@ public:
 
     void clearLastRenderGraph(Scene* scene = nullptr);
     void compileRenderGraph(Scene&, rg::RenderGraph&);
+    // Logs VMA block/allocation statistics; no-op before the device exists.
+    void logMemoryStats(const char* when) const;
     void UpdateCameraFillMode(Scene&, wallpaper::FillMode);
 
     ExSwapchain* exSwapchain() const;

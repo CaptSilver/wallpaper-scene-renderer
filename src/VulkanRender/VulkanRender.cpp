@@ -898,6 +898,9 @@ void VulkanRender::clearLastRenderGraph(Scene* scene) { pImpl->clearLastRenderGr
 void VulkanRender::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     pImpl->compileRenderGraph(scene, rg);
 };
+void VulkanRender::logMemoryStats(const char* when) const {
+    if (pImpl->m_device) pImpl->m_device->LogMemoryStats(when);
+}
 void VulkanRender::UpdateCameraFillMode(Scene& scene, wallpaper::FillMode fill) {
     pImpl->UpdateCameraFillMode(scene, fill);
 };
@@ -1249,6 +1252,7 @@ void VulkanRender::Impl::drawFrame([[maybe_unused]] Scene& scene) {
                      hits + misses,
                      hit_pct,
                      hidden);
+            m_device->LogMemoryStats("diag");
             g_cache_hits      = 0;
             g_cache_misses    = 0;
             g_invisible_skips = 0;

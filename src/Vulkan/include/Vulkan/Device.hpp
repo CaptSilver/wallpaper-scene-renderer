@@ -90,6 +90,12 @@ public:
 
     VkDeviceSize GetUsage() const;
 
+    // One LOG_INFO line per memory heap plus a total, from vmaCalculateStatistics.
+    // GetUsage() is the driver's process-wide figure when VK_EXT_memory_budget is on,
+    // so it can include memory VMA never handed out; blockBytes - allocationBytes is the
+    // VMA-side slack (reserved block space with nothing placed in it).
+    void LogMemoryStats(const char* when) const;
+
 private:
     std::vector<VkDeviceQueueCreateInfo> ChooseDeviceQueue(VkSurfaceKHR = {});
 

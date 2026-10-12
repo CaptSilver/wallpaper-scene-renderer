@@ -4,6 +4,10 @@
 #include "GraphicsPipeline.hpp"
 #include "PipelineCacheIO.hpp"
 
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
 using namespace wallpaper::vulkan;
 
 namespace
@@ -285,6 +289,72 @@ VkDeviceSize Device::GetUsage() const {
     VkDeviceSize total = 0;
     for (auto& b : budgets) total += b.usage;
     return total;
+}
+
+void Device::LogMemoryStats(const char* when) const {
+    constexpr double MB = 1024.0 * 1024.0;
+    VmaStats         stats {};
+    vmaCalculateStats(*m_allocator, &stats);
+    const auto& mem = m_gpu.GetMemoryProperties().memoryProperties;
+
+    // usedBytes is what live allocations occupy; unusedBytes is free space inside blocks VMA
+    // already reserved. Their sum is the block total. VMA builds this version does not split
+    // out dedicated allocations: each one is a block holding a single allocation.
+    auto line = [&](const char* label, const VmaStatInfo& d) {
+        LOG_INFO("VMA-STATS %s %s: blocks=%u allocs=%u used=%.1fMB unused=%.1fMB "
+                 "blockTotal=%.1fMB unusedRanges=%u unusedMax=%.1fMB allocMax=%.1fMB",
+                 when,
+                 label,
+                 d.blockCount,
+                 d.allocationCount,
+                 static_cast<double>(d.usedBytes) / MB,
+                 static_cast<double>(d.unusedBytes) / MB,
+                 static_cast<double>(d.usedBytes + d.unusedBytes) / MB,
+                 d.unusedRangeCount,
+                 static_cast<double>(d.unusedRangeSizeMax) / MB,
+                 static_cast<double>(d.allocationSizeMax) / MB);
+    };
+    line("total", stats.total);
+    for (uint32_t i = 0; i < mem.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; ++i) {
+        if (stats.memoryHeap[i].blockCount == 0) continue;
+        char label[16];
+        snprintf(label, sizeof(label), "heap%u", i);
+        line(label, stats.memoryHeap[i]);
+    }
+    for (uint32_t i = 0; i < mem.memoryTypeCount && i < VK_MAX_MEMORY_TYPES; ++i) {
+        if (stats.memoryType[i].blockCount == 0) continue;
+        char label[16];
+        snprintf(label, sizeof(label), "type%u(h%u)", i, mem.memoryTypes[i].heapIndex);
+        line(label, stats.memoryType[i]);
+    }
+
+    VmaBudget budgets[VK_MAX_MEMORY_HEAPS] {};
+    vmaGetHeapBudgets(*m_allocator, budgets);
+    for (uint32_t i = 0; i < mem.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; ++i) {
+        LOG_INFO("VMA-STATS %s budget heap%u: usage=%.1fMB blockBytes=%.1fMB allocBytes=%.1fMB "
+                 "budget=%.1fMB",
+                 when,
+                 i,
+                 static_cast<double>(budgets[i].usage) / MB,
+                 static_cast<double>(budgets[i].blockBytes) / MB,
+                 static_cast<double>(budgets[i].allocationBytes) / MB,
+                 static_cast<double>(budgets[i].budget) / MB);
+    }
+    LOG_INFO("VMA-STATS %s GetUsage=%.1fMB", when, static_cast<double>(GetUsage()) / MB);
+
+    // WEKDE_VMA_DUMP=<prefix> also writes VMA's per-allocation JSON map (size, image vs
+    // buffer, usage flags) to <prefix>.<when>.json, for attributing where the bytes went.
+    if (const char* prefix = std::getenv("WEKDE_VMA_DUMP"); prefix && *prefix) {
+        char* json = nullptr;
+        vmaBuildStatsString(*m_allocator, &json, VK_TRUE);
+        const std::string path = std::string(prefix) + "." + when + ".json";
+        if (FILE* f = fopen(path.c_str(), "w")) {
+            fputs(json, f);
+            fclose(f);
+            LOG_INFO("VMA-STATS %s allocation map written to %s", when, path.c_str());
+        }
+        vmaFreeStatsString(*m_allocator, json);
+    }
 }
 
 std::array<Device::HeapBudget, VK_MAX_MEMORY_HEAPS> Device::GetHeapBudgets() const {
