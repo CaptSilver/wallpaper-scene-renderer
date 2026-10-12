@@ -112,3 +112,15 @@ TEST_SUITE("SpecTexs_OwnCompositeChainInput") {
         CHECK_FALSE(IsOwnCompositeChainInput("_rt_imageLayerComposite_x_a", 140, false));
     }
 }
+
+TEST_SUITE("SpecTexs_GlTexNames") {
+    TEST_CASE("texture uniform names carry their suffix on every slot") {
+        CHECK(std::string_view(WE_GLTEX_NAMES[0]) == "g_Texture0");
+        CHECK(std::string_view(WE_GLTEX_NAMES[12]) == "g_Texture12");
+        CHECK(std::string_view(WE_GLTEX_RESOLUTION_NAMES[3]) == "g_Texture3Resolution");
+        CHECK(std::string_view(WE_GLTEX_ROTATION_NAMES[0]) == "g_Texture0Rotation");
+        CHECK(std::string_view(WE_GLTEX_TRANSLATION_NAMES[10]) == "g_Texture10Translation");
+        CHECK(std::string_view(WE_GLTEX_MIPMAPINFO_NAMES[12]) == "g_Texture12MipMapInfo");
+        CHECK(WE_GLTEX_NAMES.size() == 13u);
+    }
+}

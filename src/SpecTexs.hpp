@@ -8,16 +8,20 @@
 namespace wallpaper
 {
 
+// `ext` is a string literal glued on by literal concatenation, not a bare
+// token stringified with #ext: Qt 6.12's moc segfaults on a string literal
+// followed by a stringified empty argument ("a" #ext with ext empty), and
+// every moc'd file that includes this header failed the build.
 #define BASE_GLTEX_NAMES(ext)                                                                      \
-    "g_Texture0" #ext, "g_Texture1" #ext, "g_Texture2" #ext, "g_Texture3" #ext, "g_Texture4" #ext, \
-        "g_Texture5" #ext, "g_Texture6" #ext, "g_Texture7" #ext, "g_Texture8" #ext,                \
-        "g_Texture9" #ext, "g_Texture10" #ext, "g_Texture11" #ext, "g_Texture12" #ext
+    "g_Texture0" ext, "g_Texture1" ext, "g_Texture2" ext, "g_Texture3" ext, "g_Texture4" ext,      \
+        "g_Texture5" ext, "g_Texture6" ext, "g_Texture7" ext, "g_Texture8" ext, "g_Texture9" ext,  \
+        "g_Texture10" ext, "g_Texture11" ext, "g_Texture12" ext
 
-constexpr std::array WE_GLTEX_NAMES { BASE_GLTEX_NAMES() };
-constexpr std::array WE_GLTEX_RESOLUTION_NAMES { BASE_GLTEX_NAMES(Resolution) };
-constexpr std::array WE_GLTEX_ROTATION_NAMES { BASE_GLTEX_NAMES(Rotation) };
-constexpr std::array WE_GLTEX_TRANSLATION_NAMES { BASE_GLTEX_NAMES(Translation) };
-constexpr std::array WE_GLTEX_MIPMAPINFO_NAMES { BASE_GLTEX_NAMES(MipMapInfo) };
+constexpr std::array WE_GLTEX_NAMES { BASE_GLTEX_NAMES("") };
+constexpr std::array WE_GLTEX_RESOLUTION_NAMES { BASE_GLTEX_NAMES("Resolution") };
+constexpr std::array WE_GLTEX_ROTATION_NAMES { BASE_GLTEX_NAMES("Rotation") };
+constexpr std::array WE_GLTEX_TRANSLATION_NAMES { BASE_GLTEX_NAMES("Translation") };
+constexpr std::array WE_GLTEX_MIPMAPINFO_NAMES { BASE_GLTEX_NAMES("MipMapInfo") };
 #undef BASE_GLTEX_NAMES
 
 constexpr std::string_view WE_SPEC_PREFIX { "_rt_" };
