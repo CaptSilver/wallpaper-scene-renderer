@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "SceneGraphApi.hpp"
 #include "Scene/RenderExtent.h"
 #include "Timer/FramePacing.hpp"
 #include "SceneAspect.h"
@@ -413,6 +414,24 @@ void SceneObject::resizeFb() {
 
 QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
     TextureNode* node = static_cast<TextureNode*>(oldNode);
+    const auto*  rif  = window() ? window()->rendererInterface() : nullptr;
+    if (! node && (rif == nullptr || ! CanShareFramesWith(rif->graphicsApi()))) {
+        // No node at all rather than one around a null texture. Said once,
+        // queued: this runs on the render thread.
+        if (! m_glInitFailed) {
+            m_glInitFailed = true;
+            LOG_ERROR("Qt Quick is not rendering through OpenGL; the scene renderer cannot start");
+            QMetaObject::invokeMethod(
+                this,
+                [this]() {
+                    Q_EMIT this->sceneLoadFailed(
+                        QStringLiteral("Qt Quick is not rendering through OpenGL (check "
+                                       "QSG_RHI_BACKEND); scene wallpapers need it."));
+                },
+                Qt::QueuedConnection);
+        }
+        return nullptr;
+    }
     if (! node) {
         node = new TextureNode(window(), m_scene, m_enable_valid, [](QQuickWindow*) {
             return (QSGTexture*)nullptr;

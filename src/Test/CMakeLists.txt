@@ -441,6 +441,7 @@ if(Qt6_FOUND)
         test_SceneScriptDispatch.cpp
         test_PropertyScriptDispatchGate.cpp
         test_SceneLocalStorageDisk.cpp
+        test_SceneGraphApi.cpp
         # Not SceneScript-related, but this is the only test binary that links
         # wescene-renderer (SceneWallpaper.cpp's library) headlessly, and the
         # function under test lives there.
