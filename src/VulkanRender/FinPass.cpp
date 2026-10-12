@@ -1,4 +1,5 @@
 #include "FinPass.hpp"
+#include <cassert>
 #include "Vulkan/Shader.hpp"
 #include "Resource.hpp"
 #include "PassCommon.hpp"
@@ -139,9 +140,11 @@ void FinPass::prepare(Scene& scene, const Device& device, RenderingResources& rr
         if (scene.renderTargets.count(tex_name) == 0) return;
         auto& rt = scene.renderTargets.at(tex_name);
         RtSlot* slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+        // The image handles are copied once below, so a slot that can lose its image would
+        // go stale.  Checked before the params() test so the off switch does not hide it.
+        assert(slot == nullptr || ! slot->managed());
         if (slot != nullptr && slot->params()) {
-            m_desc.result_slot = slot;
-            m_desc.vk_result   = *slot->params();
+            m_desc.vk_result = *slot->params();
         }
     }
     std::vector<Uni_ShaderSpv> spvs;

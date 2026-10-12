@@ -143,9 +143,14 @@ enum class PassthroughSource
 // The chain's per-effect visibility this frame, from each effect's own flag
 // (set together with its nodes by the runtime drain). The layer's own
 // visibility is deliberately not mixed in; DecideHideablePass handles that.
-inline std::vector<bool> ChainVisibility(const std::vector<const SceneImageEffect*>& chain) {
-    std::vector<bool> v(chain.size());
+inline void ChainVisibilityInto(const std::vector<const SceneImageEffect*>& chain,
+                                std::vector<bool>&                          v) {
+    v.assign(chain.size(), false);
     for (usize i = 0; i < chain.size(); i++) v[i] = chain[i] != nullptr && chain[i]->visible;
+}
+inline std::vector<bool> ChainVisibility(const std::vector<const SceneImageEffect*>& chain) {
+    std::vector<bool> v;
+    ChainVisibilityInto(chain, v);
     return v;
 }
 
@@ -194,7 +199,6 @@ inline bool HiddenEffectMustCopy(usize i, const std::vector<bool>& effectVisible
 // demand walk reads the same struct, so what it keeps resident is exactly what
 // the record will sample.
 struct HideableFrame {
-    bool             has_node { false };
     bool             node_visible { true };      // node == nullptr || node->IsVisible()
     bool             own_hidden { false };       // the effect's own flag when the chain is known
     bool             ancestors_visible { true }; // node == nullptr || node->AncestorsVisible()
@@ -212,11 +216,10 @@ inline HideableFrame DecideHideable(HideableKind kind, const std::vector<bool>& 
                                     bool passthrough_ready, bool clears_output, PassMergeRole role,
                                     i32 pt_a, i32 pt_b) {
     HideableFrame f;
-    f.has_node          = has_node;
     f.node_visible      = ! has_node || node_visible;
     f.ancestors_visible = ! has_node || ancestors_visible;
     const bool chain_known =
-        kind != HideableKind::None && chain_index >= 0 && (usize)chain_index < chain_visible.size();
+        kind != HideableKind::None && SignedIndexInRange(chain_index, chain_visible.size());
     f.own_hidden = has_node && ! node_visible;
     if (chain_known) f.own_hidden = ! chain_visible[(usize)chain_index];
     f.must_copy = kind != HideableKind::Middle ||
@@ -563,7 +566,7 @@ public:
     // is not aliased by a later pass in the frame order — otherwise the RT
     // contents are overwritten before the next frame and downstream passes
     // would read stale data.  Set by VulkanRender::compileRenderGraph after
-    // all passes are prepared and their output VkImages are resolved.
+    // all passes are prepared and their output slots are resolved.
     bool canCache() const { return m_can_cache; }
     // The frame's one visibility verdict for this pass; execute() reads it once.
     HideableFrame frameHideable(PassMergeRole role) const;
@@ -586,7 +589,6 @@ public:
         m_cached_visible           = visible;
         m_cached_output_generation = output_generation;
     }
-    std::uint32_t cachedOutputGeneration() const { return m_cached_output_generation; }
 
     // Assigned by VulkanRender::compileRenderGraph once every pass is
     // prepared and its attachment handles are known.
@@ -678,6 +680,9 @@ private:
     bool                              m_blocked_frame { false };
     bool                              m_cached_visible { true };
     std::uint32_t                     m_cached_output_generation { 0 };
+    // Scratch for frameHideable(), which only the render looper calls (demandFrame and
+    // execute), so no lock.
+    mutable std::vector<bool>         m_chain_scratch;
     bool                              m_can_cache { false };
     bool                              m_uses_time_uniforms { false };
     bool                              m_samples_mutable_texture { false };
@@ -731,7 +736,7 @@ inline PassDemandStatic PassDemandStaticFor(const CustomShaderPass::Desc& d) {
         s.own_inputs.push_back(KeyForSlot(d.in_slots[t]));
     }
     auto slot_at = [&](i32 idx) {
-        return idx >= 0 && (usize)idx < d.in_slots.size() ? KeyForSlot(d.in_slots[(usize)idx])
+        return SignedIndexInRange(idx, d.in_slots.size()) ? KeyForSlot(d.in_slots[(usize)idx])
                                                           : ResidencyKey {};
     };
     s.passthrough_a = slot_at(d.passthrough_input_tex_index_a);

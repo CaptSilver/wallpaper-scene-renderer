@@ -26,6 +26,9 @@ TEST_SUITE("DedicatedRtMemory") {
         CHECK(RtImageBytes(8, 8, TextureFormat::R8, 0) == 64);
         CHECK(RtImageBytes(0, 8, TextureFormat::R8, 1) == 0);
         CHECK(RtImageBytes(8, -1, TextureFormat::R8, 1) == 0);
+        // The halved levels of a zero extent floor at 1x1; they must not make it non-empty.
+        CHECK(RtImageBytes(0, 8, TextureFormat::R8, 4) == 0);
+        CHECK(RtImageBytes(8, 0, TextureFormat::R8, 4) == 0);
     }
 
     TEST_CASE("bytes per pixel per render target format") {

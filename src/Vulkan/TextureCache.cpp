@@ -119,7 +119,9 @@ VkClearColorValue GenInitialClearColor(const TextureKey& key) {
 // A fresh image's first user may be a shader read, a render pass, or a copy
 // (CopyPass opens with TOP_OF_PIPE barriers of its own), so the closing barrier
 // covers both fragment-shader and transfer stages and the reads and writes
-// either can make.
+// either can make.  A render pass as first user is ordered by its own
+// external dependency, whose FRAGMENT_SHADER source stage chains with this
+// barrier's destination stage (CustomShaderPass.cpp, render pass creation).
 static constexpr VkPipelineStageFlags kFirstUseStages =
     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
 static constexpr VkAccessFlags kFirstUseAccess =
@@ -1028,7 +1030,7 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
         query.persist     = persist;
         query.lru_tick    = ++m_lru_clock;
         query.last_gen    = m_query_generation;
-        if (! giveImageIfPersistent(query, persist)) return nullptr;
+        if (! createUpFrontIfNeeded(query, persist)) return nullptr;
         return &query;
     };
 
@@ -1044,7 +1046,7 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
         query->last_gen = m_query_generation;
 
         m_query_map[std::string(key)] = &(*query);
-        if (! giveImageIfPersistent(*query, persist)) return nullptr;
+        if (! createUpFrontIfNeeded(*query, persist)) return nullptr;
         return query.get();
     }
 
@@ -1059,14 +1061,14 @@ RtSlot* TextureCache::QuerySlot(std::string_view key, TextureKey content_hash, b
     query.persist  = persist;
     query.lru_tick = ++m_lru_clock;
     query.last_gen = m_query_generation;
-    if (! giveImageIfPersistent(query, persist)) return nullptr;
+    if (! createUpFrontIfNeeded(query, persist)) return nullptr;
     if (m_query_texs.size() > m_query_soft_cap) {
         evictColdQueryTexs();
     }
     return &query;
 }
 
-bool TextureCache::giveImageIfPersistent(RtSlot& slot, bool persist) {
+bool TextureCache::createUpFrontIfNeeded(RtSlot& slot, bool persist) {
     // A managed slot gets its image when a frame first needs it, unless the
     // eager switch is on; a persistent slot is read from the first frame.
     if (! (persist || m_eager_managed) || slot.image) return true;

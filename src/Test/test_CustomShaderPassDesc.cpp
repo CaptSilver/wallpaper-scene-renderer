@@ -504,6 +504,19 @@ TEST_SUITE("CustomShaderPass::ChainVisibility") {
         auto v = wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b });
         CHECK(v == std::vector<bool> { true, false, false });
     }
+    TEST_CASE("ChainVisibilityInto gives the same answer into a reused buffer") {
+        wallpaper::SceneImageEffect a, b;
+        a.visible = true;
+        b.visible = false;
+        std::vector<bool> v;
+        wallpaper::vulkan::ChainVisibilityInto({ &a, nullptr, &b }, v);
+        CHECK(v == wallpaper::vulkan::ChainVisibility({ &a, nullptr, &b }));
+        const auto cap = v.capacity();
+        a.visible      = false;
+        wallpaper::vulkan::ChainVisibilityInto({ &a, &b }, v);
+        CHECK(v == std::vector<bool> { false, false });
+        CHECK(v.capacity() == cap);
+    }
 }
 
 #include "Vulkan/TextureCache.hpp"
@@ -600,6 +613,22 @@ TEST_SUITE("CustomShaderPass slot rebind") {
         CHECK(p.extent.width == 1920);
         CHECK(p.extent.height == 1080);
         CHECK(p.mipmap_level == 3);
+    }
+    TEST_CASE("paramsOrAbsent gives the attached image, or the key's extent once it is released") {
+        RtSlot s;
+        s.key = { .width        = 64,
+                  .height       = 32,
+                  .usage        = {},
+                  .format       = wallpaper::TextureFormat::RGBA8,
+                  .sample       = {},
+                  .mipmap_level = 1 };
+        attach(s, 128, 16);
+        CHECK(s.paramsOrAbsent().extent.width == 128);
+        CHECK(s.paramsOrAbsent().extent.height == 16);
+        s.image.reset();
+        CHECK(s.paramsOrAbsent().handle == VK_NULL_HANDLE);
+        CHECK(s.paramsOrAbsent().extent.width == 64);
+        CHECK(s.paramsOrAbsent().extent.height == 32);
     }
     TEST_CASE("rebind refreshes the output and every managed input, including the appended "
               "passthrough reads, and leaves bitmap slots alone") {
@@ -784,6 +813,13 @@ TEST_SUITE("CustomShaderPass::DecideHideable") {
                               6);
     }
 
+    TEST_CASE("a chain index equal to the chain length is unknown, not read past the end") {
+        // An unknown chain position follows the node.
+        std::vector<bool> chain { true };
+        auto              f = decide(HideableKind::Middle, chain, 1, true);
+        CHECK_FALSE(f.own_hidden);
+        CHECK(f.draws);
+    }
     TEST_CASE("an ordinary visible pass records, draws and samples its own textures") {
         auto f = decide(HideableKind::None, {}, -1, true);
         CHECK(f.records);
@@ -1027,6 +1063,15 @@ TEST_SUITE("CustomShaderPass::PassDemandStaticFor") {
         CHECK(s.out_managed);
         CHECK(s.own_inputs.empty());
         CHECK(s.passthrough_a == K::ForSlot(4));
+        CHECK(s.passthrough_b == K {});
+    }
+    TEST_CASE("a passthrough index equal to the slot count is out of range") {
+        CustomShaderPass::Desc d;
+        d.in_slots                      = { nullptr, nullptr };
+        d.passthrough_input_tex_index_a = 2;
+        d.passthrough_input_tex_index_b = 2;
+        const auto s                    = PassDemandStaticFor(d);
+        CHECK(s.passthrough_a == K {});
         CHECK(s.passthrough_b == K {});
     }
     TEST_CASE(

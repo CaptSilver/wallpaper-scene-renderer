@@ -51,7 +51,7 @@ void CopyPass::prepare(Scene& scene, const Device& device,
             continue;
         }
         *slots[i]       = slot;
-        *vk_textures[i] = slot->params().value_or(AbsentImageParameters(slot->key));
+        *vk_textures[i] = slot->paramsOrAbsent();
         *bounds[i]      = { slot->generation, slot->resident() };
     }
 
@@ -81,7 +81,7 @@ void CopyPass::rebindImages() {
     for (usize i = 0; i < 2; i++) {
         RtSlot* slot = slots[i];
         if (slot == nullptr || ! BoundImageStale(*bounds[i], *slot)) continue;
-        *images[i] = slot->params().value_or(AbsentImageParameters(slot->key));
+        *images[i] = slot->paramsOrAbsent();
         *bounds[i] = { slot->generation, slot->resident() };
     }
 }

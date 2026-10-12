@@ -207,6 +207,12 @@ struct VulkanRender::Impl {
     // the slot table by id and which slots need a clear when they get an image.
     std::vector<PassDemandStatic>  m_demand_static;
     std::vector<PassDemandFrame>   m_demand_frame;
+    // Reused every frame so an idle frame allocates nothing.
+    DemandResult      m_demand_result;
+    std::vector<bool> m_resident_now, m_blocked;
+    // Set at load: every managed slot has its image, so with the eager switch on
+    // there is nothing for the per-frame step to create, release or block.
+    bool                           m_eager_all_resident { false };
     std::vector<RtSlot*>           m_slot_by_id;
     std::vector<bool>              m_slot_clear_on_attach;
     std::vector<CustomShaderPass*> m_csp_by_pass; // parallel to m_passes; nullptr for other kinds
@@ -226,11 +232,13 @@ struct VulkanRender::Impl {
     // submitted, since a frame abandoned after record leaves queries nobody
     // will ever complete.
     bool          m_rt_ts_recorded { false };
-    std::uint64_t m_rt_created_total { 0 }, m_rt_failed_total { 0 }, m_rt_released_total { 0 };
+    // Counts and step cost since the last DIAG line; reset there.
+    ResidencyWindow m_rt_window;
 
     void              buildResidencyTables();
-    std::vector<bool> computeDemand();
+    const std::vector<bool>& computeDemand();
     void              applyOutputNeeded(const std::vector<bool>& needed);
+    void                     noteCreateFailure(RtSlot& slot, bool log);
     void              createLoadSlots(std::vector<SlotId>& fresh);
     void              residencyStep(RenderingResources& rr);
 };
@@ -1313,12 +1321,17 @@ void VulkanRender::Impl::drawFrame([[maybe_unused]] Scene& scene) {
                      hits + misses,
                      hit_pct,
                      hidden);
-            m_device->LogMemoryStats("diag");
-            LOG_INFO("RT-RESIDENCY since last DIAG: created=%llu released=%llu failed=%llu",
-                     (unsigned long long)m_rt_created_total,
-                     (unsigned long long)m_rt_released_total,
-                     (unsigned long long)m_rt_failed_total);
-            m_rt_created_total = m_rt_released_total = m_rt_failed_total = 0;
+            // About a dozen lines per tick: for measurement runs, not the journal.
+            if (wallpaper::LogDebugEnabled()) m_device->LogMemoryStats("diag");
+            LOG_INFO("RT-RESIDENCY since last DIAG: created=%llu released=%llu failed=%llu "
+                     "step_us_sum=%llu step_us_max=%llu steps=%llu",
+                     (unsigned long long)m_rt_window.created,
+                     (unsigned long long)m_rt_window.released,
+                     (unsigned long long)m_rt_window.failed,
+                     (unsigned long long)m_rt_window.step_us_sum,
+                     (unsigned long long)m_rt_window.step_us_max,
+                     (unsigned long long)m_rt_window.steps);
+            m_rt_window       = {};
             g_cache_hits      = 0;
             g_cache_misses    = 0;
             g_invisible_skips = 0;
@@ -1816,7 +1829,7 @@ void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
         p->destory(*m_device, m_rendering_resources[0]);
     }
     m_passes.clear();
-    m_device->tex_cache().DrainRetired();
+    // Clear() drains the retire ring before it drops the slots, so no second drain here.
     m_device->tex_cache().Clear();
     // The tables point into the slots and passes just destroyed.
     m_slot_by_id.clear();
@@ -1824,6 +1837,8 @@ void VulkanRender::Impl::clearLastRenderGraph(Scene* scene) {
     m_csp_by_pass.clear();
     m_demand_static.clear();
     m_demand_frame.clear();
+    m_eager_all_resident = false;
+    m_rt_ts_recorded     = false;
     m_slot_clear_on_attach.clear();
 
     // (Removed: g_msaa_color_inited.clear() — the MSAA first-use latch now
@@ -1853,7 +1868,7 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
 
     // Open a new query-tex generation before (re)building the passes.  Render
     // targets queried by this compile are stamped live and protected from LRU
-    // eviction (they back the framebuffers built in CustomShaderPass::prepare,
+    // eviction (they back the framebuffers each pass builds on its first record,
     // and evicting one mid-scene is a use-after-free); RTs left over from a
     // previous scene fall to a prior generation and become reclaimable.
     m_device->tex_cache().beginQueryGeneration();
@@ -2006,7 +2021,7 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     // pass's cached output bytes remain valid at the moment downstream
     // passes next read them, AND the cached value is still the correct
     // result.  Both conditions must hold:
-    //   (1) sole writer of output VkImage — any aliased write (earlier
+    //   (1) sole writer of its output render target — any aliased write (earlier
     //       OR later) would overwrite the cached bytes on the next frame;
     //   (2) every RT-input is either static (not written by any pass) or
     //       produced by another safe-to-skip pass — else the inputs
@@ -2284,12 +2299,13 @@ void VulkanRender::Impl::buildResidencyTables() {
     m_slot_clear_on_attach = ComputeClearOnAttach(m_demand_static, clears, cache.slotCount());
 }
 
-std::vector<bool> VulkanRender::Impl::computeDemand() {
+const std::vector<bool>& VulkanRender::Impl::computeDemand() {
     for (std::size_t i = 0; i < m_passes.size(); ++i)
         m_demand_frame[i] =
             m_passes[i]->prepared() ? m_passes[i]->demandFrame() : PassDemandFrame {};
-    return ComputeFrameDemand(m_demand_static, m_demand_frame, m_device->tex_cache().slotCount())
-        .needed;
+    ComputeFrameDemandInto(
+        m_demand_static, m_demand_frame, m_device->tex_cache().slotCount(), m_demand_result);
+    return m_demand_result.needed;
 }
 
 // Tell each pass whether its output is wanted.  Under the eager switch every
@@ -2301,33 +2317,57 @@ void VulkanRender::Impl::applyOutputNeeded(const std::vector<bool>& needed) {
         m_passes[i]->setOutputNeeded(eager || PassOutputNeeded(m_demand_static[i], needed));
 }
 
+// One more failed create on a slot: lengthen its streak, schedule the retry,
+// and (on the first failure of a streak, if the caller allows) say how much
+// device-local memory was in use, which is what tells an out-of-memory failure
+// from a bad format.
+void VulkanRender::Impl::noteCreateFailure(RtSlot& slot, bool log) {
+    const auto v            = NoteCreateFailureFor(slot.create_fail_streak, m_frame_index);
+    slot.create_fail_streak = v.streak;
+    slot.retry_after_frame  = v.retry_after;
+    if (! (log && v.first_of_streak)) return;
+    const auto vram = SumDeviceLocalHeaps(m_device->GetHeapBudgets());
+    LOG_ERROR("render target %u (%dx%d) could not be created; device-local usage "
+              "%.1f of %.1f MB, retry after frame %llu",
+              slot.id,
+              slot.key.width,
+              slot.key.height,
+              (double)vram.usage / (1024.0 * 1024.0),
+              (double)vram.budget / (1024.0 * 1024.0),
+              (unsigned long long)slot.retry_after_frame);
+}
+
 // Load is not a show: create what default visibility needs (everything under
 // WEKDE_RT_RESIDENCY=0), and let the caller batch the initial clears into the
 // vertex upload submit instead of one submit-and-wait per image.
 void VulkanRender::Impl::createLoadSlots(std::vector<SlotId>& fresh) {
     auto&      cache   = m_device->tex_cache();
-    const auto needed  = computeDemand();
+    const auto& needed  = computeDemand();
     applyOutputNeeded(needed);
-    unsigned   managed = 0, failed = 0;
+    unsigned managed = 0, resident = 0, failed = 0;
     for (RtSlot* s : m_slot_by_id) {
         if (s == nullptr || ! s->managed()) continue;
         ++managed;
-        if (s->resident()) continue;
-        if (! (needed[s->id] || cache.eagerManaged())) continue;
-        if (cache.CreateImageForSlot(*s)) {
-            fresh.push_back(s->id);
-        } else {
-            ++failed;
-            ++s->create_fail_streak;
-            LOG_ERROR("render target slot %u (%dx%d) could not be created at load",
-                      s->id,
-                      s->key.width,
-                      s->key.height);
+        if (! s->resident() && (needed[s->id] || cache.eagerManaged())) {
+            if (cache.CreateImageForSlot(*s)) {
+                fresh.push_back(s->id);
+            } else {
+                // Under memory pressure at load every slot fails the same way, so
+                // only the first reports; the summary below carries the count.
+                noteCreateFailure(*s, failed == 0);
+                ++failed;
+            }
         }
+        resident += s->resident() ? 1u : 0u;
     }
-    LOG_INFO("RT-RESIDENCY load: %zu of %u managed render targets created, %u failed, %u slots",
-             fresh.size(),
+    m_eager_all_resident = cache.eagerManaged() && failed == 0;
+    // Under WEKDE_RT_RESIDENCY=0 the images were attached when the slots were
+    // queried, so "resident" is the number that means the same in both modes.
+    LOG_INFO("RT-RESIDENCY load: %u of %u managed render targets resident (%zu created now), "
+             "%u failed, %u slots",
+             resident,
              managed,
+             fresh.size(),
              failed,
              (unsigned)cache.slotCount());
 }
@@ -2353,6 +2393,19 @@ void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
     for (CustomShaderPass* csp : m_csp_by_pass)
         if (csp != nullptr) csp->setBlockedThisFrame(false);
     cache.CollectRetired(m_frame_index, kFramesInFlight);
+    const auto elapsed_us = [&t0]() {
+        return (std::uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+                   std::chrono::steady_clock::now() - t0)
+            .count();
+    };
+    if (m_eager_all_resident) {
+        // WEKDE_RT_RESIDENCY=0 with every image created at load: every pass
+        // draws (applyOutputNeeded set that at load), nothing is created or
+        // released, nothing can be blocked.  Skip the demand walk entirely.
+        m_rt_ts_recorded = false; // nothing was stamped this frame
+        m_rt_window.add(0, 0, 0, elapsed_us());
+        return;
+    }
     const uint32_t ts_slot = (uint32_t)(m_frame_index % kFramesInFlight);
     if (m_rt_gpu_timing) {
         // This frame already waited on this slot's fence at its head, so the
@@ -2374,7 +2427,7 @@ void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
         rr.command.WriteTimestamp(
             VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, *m_rt_timestamps, 2 * ts_slot);
     }
-    const auto needed  = computeDemand();
+    const auto& needed = computeDemand();
     applyOutputNeeded(needed);
     unsigned created = 0, failed = 0, resident = 0, wanted = 0, released = 0;
     for (RtSlot* s : m_slot_by_id) {
@@ -2399,19 +2452,7 @@ void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
                 ++resident;
             } else {
                 ++failed;
-                ++s->create_fail_streak;
-                s->retry_after_frame = RetryAfter(m_frame_index, s->create_fail_streak);
-                if (s->create_fail_streak == 1) {
-                    const auto vram = SumDeviceLocalHeaps(m_device->GetHeapBudgets());
-                    LOG_ERROR("render target %u (%dx%d) could not be created; device-local usage "
-                              "%.1f of %.1f MB, retry after frame %llu",
-                              s->id,
-                              s->key.width,
-                              s->key.height,
-                              (double)vram.usage / (1024.0 * 1024.0),
-                              (double)vram.budget / (1024.0 * 1024.0),
-                              (unsigned long long)s->retry_after_frame);
-                }
+                noteCreateFailure(*s, true);
             }
             break;
         }
@@ -2440,28 +2481,25 @@ void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
         // is set right after computeDemand(); blocked is cleared before it
         // (top of this function) and set here, from what is resident once the
         // create loop and any collapse are done.
-        std::vector<bool> resident_now(cache.slotCount(), false);
+        m_resident_now.assign(cache.slotCount(), false);
         for (RtSlot* s : m_slot_by_id)
-            if (s != nullptr) resident_now[s->id] = s->resident();
-        const auto blocked = ComputeBlockedPasses(m_demand_static, m_demand_frame, resident_now);
+            if (s != nullptr) m_resident_now[s->id] = s->resident();
+        ComputeBlockedPassesInto(m_demand_static, m_demand_frame, m_resident_now, m_blocked);
         for (std::size_t i = 0; i < m_csp_by_pass.size(); ++i)
-            if (m_csp_by_pass[i] != nullptr) m_csp_by_pass[i]->setBlockedThisFrame(blocked[i]);
+            if (m_csp_by_pass[i] != nullptr) m_csp_by_pass[i]->setBlockedThisFrame(m_blocked[i]);
     }
-    m_rt_created_total += created;
-    m_rt_failed_total += failed;
-    m_rt_released_total += released;
+    // Every frame pays for the demand walk, so the cost is taken on idle frames too.
+    const auto us = elapsed_us();
+    m_rt_window.add(created, released, failed, us);
     if (created != 0 || released != 0 || failed != 0) {
-        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
-                            std::chrono::steady_clock::now() - t0)
-                            .count();
         LOG_DEBUG("RT-RESIDENCY frame=%llu created=%u released=%u failed=%u resident=%u needed=%u "
-                  "cpu_us=%lld",
+                  "cpu_us=%llu",
                   (unsigned long long)m_frame_index,
                   created,
                   released,
                   failed,
                   resident,
                   wanted,
-                  (long long)us);
+                  (unsigned long long)us);
     }
 }

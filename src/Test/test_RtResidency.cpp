@@ -3,6 +3,7 @@
 #include "VulkanRender/RtResidency.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_set>
 
@@ -137,7 +138,8 @@ TEST_SUITE("RtResidency::ComputeFrameDemand") {
         std::vector<PassDemandFrame>  f { draws(), draws(), draws() };
         auto                          r = ComputeFrameDemand(s, f, 2);
         CHECK(r.needed == std::vector<bool> { true, true });
-        CHECK(r.iterations <= 3);
+        // walk 1 finds the reader's slot, walk 2 the writer's input, walk 3 sees no change
+        CHECK(r.iterations == 3);
     }
     TEST_CASE("a slot aliased between a hidden and a visible layer stays needed") {
         // slot 0 written by both layers' base passes; only the second layer's reader draws
@@ -463,5 +465,171 @@ TEST_SUITE("RtResidency::TimestampDeltaUs") {
     }
     TEST_CASE("a queue without timestamps reports zero") {
         CHECK(TimestampDeltaUs(0, 1000, 0, 1.0f) == 0.0);
+    }
+}
+
+// A slot id equal to the table size is one past the last entry.  The guards are
+// checked directly (IndexInRange) so the boundary needs no out-of-range read,
+// and once more through each caller with ordinary tables.
+TEST_SUITE("RtResidency::slot ids at the table size") {
+    using K = ResidencyKey;
+    static std::vector<bool> tableOf(std::size_t n) { return std::vector<bool>(n, true); }
+    TEST_CASE("IndexInRange accepts up to the last entry and nothing past it") {
+        CHECK(IndexInRange(0, 3));
+        CHECK(IndexInRange(2, 3));
+        CHECK_FALSE(IndexInRange(3, 3));
+        CHECK_FALSE(IndexInRange(4, 3));
+        CHECK_FALSE(IndexInRange(0, 0));
+        CHECK_FALSE(IndexInRange(std::numeric_limits<std::uint64_t>::max(), 3));
+    }
+    TEST_CASE("SignedIndexInRange also refuses negative indices") {
+        CHECK(SignedIndexInRange(0, 3));
+        CHECK(SignedIndexInRange(2, 3));
+        CHECK_FALSE(SignedIndexInRange(3, 3));
+        CHECK_FALSE(SignedIndexInRange(-1, 3));
+        CHECK_FALSE(SignedIndexInRange(-1, 0));
+    }
+    static PassDemandStatic pass(K out, bool managed, std::vector<K> own = {}) {
+        PassDemandStatic s;
+        s.out         = out;
+        s.out_managed = managed;
+        s.own_inputs  = std::move(own);
+        return s;
+    }
+
+    TEST_CASE("PassOutputNeeded: the slot after the last entry is not needed") {
+        const auto s = pass(K::ForSlot(2), true);
+        CHECK_FALSE(PassOutputNeeded(s, tableOf(2)));
+        CHECK(PassOutputNeeded(s, tableOf(3)));
+    }
+    TEST_CASE("ComputeFrameDemand: a read of the slot after the last one is ignored") {
+        std::vector<PassDemandStatic> s { pass(K::ForHandle(0xDEF), false, { K::ForSlot(2) }) };
+        std::vector<PassDemandFrame>  f { { true, false, DemandInputs::Own } };
+        auto                          r = ComputeFrameDemand(s, f, 2);
+        CHECK(r.needed == std::vector<bool> { false, false });
+        CHECK(r.iterations == 1); // nothing was marked, so the first walk is the last
+    }
+    TEST_CASE("ComputeClearOnAttach: a writer or reader of the slot after the last is ignored") {
+        std::vector<PassDemandStatic> s { pass(K::ForSlot(1), true),
+                                          pass(K::ForHandle(0xDEF), false, { K::ForSlot(1) }) };
+        std::vector<bool>             clears { true, false };
+        // Only slot 0 exists; it has no writer, so it alone is cleared.
+        CHECK(ComputeClearOnAttach(s, clears, 1) == std::vector<bool> { true });
+    }
+    TEST_CASE(
+        "ComputeClearOnAttach: a first writer past the end of the clear list does not clear") {
+        std::vector<PassDemandStatic> s { pass(K::ForHandle(0xDEF), false),
+                                          pass(K::ForSlot(0), true) };
+        // The writer is pass 1 but the list has one entry: its clear flag is unknown, so the
+        // slot is cleared on attach.
+        CHECK(ComputeClearOnAttach(s, tableOf(1), 1) == std::vector<bool> { true });
+    }
+    TEST_CASE("ComputeClearOnAttach: a pass that reads the slot it writes reads last frame") {
+        // The reader sits at the last writer's own position: it samples what the slot held
+        // before this frame's write, so the attach clear is needed even though the writer
+        // clears its own output.
+        std::vector<PassDemandStatic> self { pass(K::ForSlot(0), true, { K::ForSlot(0) }) };
+        std::vector<bool>             clears { true };
+        CHECK(ComputeClearOnAttach(self, clears, 1) == std::vector<bool> { true });
+        std::vector<PassDemandStatic> plain { pass(K::ForSlot(0), true) };
+        CHECK(ComputeClearOnAttach(plain, clears, 1) == std::vector<bool> { false });
+    }
+    TEST_CASE("ComputeBlockedPasses: a slot after the last resident entry is absent") {
+        std::vector<PassDemandStatic> s { pass(K::ForHandle(0xDEF), false, { K::ForSlot(2) }) };
+        std::vector<PassDemandFrame>  f { { true, false, DemandInputs::Own } };
+        CHECK(ComputeBlockedPasses(s, f, tableOf(2)) == std::vector<bool> { true });
+        CHECK(ComputeBlockedPasses(s, f, tableOf(3)) == std::vector<bool> { false });
+    }
+}
+
+// A failed create bumps the slot's streak and schedules the retry; only the
+// first failure of a streak earns a log line.
+TEST_SUITE("RtResidency::NoteCreateFailureFor") {
+    TEST_CASE("the first failure starts a streak of one and backs off a minute") {
+        const auto v = NoteCreateFailureFor(0, 1000);
+        CHECK(v.streak == 1);
+        CHECK(v.retry_after == 1060);
+        CHECK(v.first_of_streak);
+    }
+    TEST_CASE("later failures lengthen the backoff and stay quiet") {
+        const auto v = NoteCreateFailureFor(2, 1000);
+        CHECK(v.streak == 3);
+        CHECK(v.retry_after == 1000 + 180);
+        CHECK_FALSE(v.first_of_streak);
+    }
+    TEST_CASE("the backoff caps at an hour and the streak saturates instead of wrapping") {
+        const auto v = NoteCreateFailureFor(1000, 5);
+        CHECK(v.retry_after == 5 + 3600);
+        const auto top = NoteCreateFailureFor(std::numeric_limits<std::uint32_t>::max(), 0);
+        CHECK(top.streak == std::numeric_limits<std::uint32_t>::max());
+        CHECK_FALSE(top.first_of_streak);
+    }
+}
+
+// What the DIAG line reports for the frames since the previous one.
+TEST_SUITE("RtResidency::ResidencyWindow") {
+    TEST_CASE("counts add up and the step cost keeps a sum and a maximum") {
+        ResidencyWindow w;
+        w.add(1, 0, 0, 40);
+        w.add(0, 2, 1, 900);
+        w.add(0, 0, 0, 60);
+        CHECK(w.created == 1);
+        CHECK(w.released == 2);
+        CHECK(w.failed == 1);
+        CHECK(w.steps == 3);
+        CHECK(w.step_us_sum == 1000);
+        CHECK(w.step_us_max == 900);
+    }
+    TEST_CASE("a fresh window is empty, so resetting is assigning one") {
+        ResidencyWindow w;
+        w.add(5, 5, 5, 5);
+        w = ResidencyWindow {};
+        CHECK(w.created == 0);
+        CHECK(w.steps == 0);
+        CHECK(w.step_us_sum == 0);
+        CHECK(w.step_us_max == 0);
+    }
+}
+
+// The per-frame walk reuses caller-owned buffers, so an idle frame allocates
+// nothing; the result must match the allocating form.
+TEST_SUITE("RtResidency::walk buffer reuse") {
+    using K = ResidencyKey;
+    static PassDemandStatic writer(SlotId out, std::vector<K> own = {}) {
+        PassDemandStatic s;
+        s.out         = K::ForSlot(out);
+        s.out_managed = true;
+        s.own_inputs  = std::move(own);
+        return s;
+    }
+    TEST_CASE("ComputeFrameDemandInto matches ComputeFrameDemand and keeps its capacity") {
+        std::vector<PassDemandStatic> s { writer(0),
+                                          writer(1, { K::ForSlot(0) }),
+                                          PassDemandStatic {
+                                              K::ForHandle(1), false, { K::ForSlot(1) }, {}, {} } };
+        std::vector<PassDemandFrame>  f(3, PassDemandFrame { true, false, DemandInputs::Own });
+        DemandResult                  r;
+        ComputeFrameDemandInto(s, f, 2, r);
+        CHECK(r.needed == ComputeFrameDemand(s, f, 2).needed);
+        CHECK(r.iterations == ComputeFrameDemand(s, f, 2).iterations);
+        const auto cap = r.needed.capacity();
+        f[2].draws     = false;
+        ComputeFrameDemandInto(s, f, 2, r);
+        CHECK(r.needed == std::vector<bool> { false, false }); // stale true bits are cleared
+        CHECK(r.needed.capacity() == cap);
+    }
+    TEST_CASE("ComputeBlockedPassesInto matches ComputeBlockedPasses and keeps its capacity") {
+        std::vector<PassDemandStatic> s { PassDemandStatic {
+            K::ForHandle(1), false, { K::ForSlot(0) }, {}, {} } };
+        std::vector<PassDemandFrame>  f { { true, false, DemandInputs::Own } };
+        std::vector<bool>             blocked;
+        ComputeBlockedPassesInto(s, f, std::vector<bool> { false }, blocked);
+        CHECK(blocked == std::vector<bool> { true });
+        const auto cap = blocked.capacity();
+        ComputeBlockedPassesInto(s, f, std::vector<bool> { true }, blocked);
+        CHECK(blocked == std::vector<bool> { false });
+        CHECK(blocked.capacity() == cap);
+        CHECK(ComputeBlockedPasses(s, f, std::vector<bool> { false }) ==
+              std::vector<bool> { true });
     }
 }

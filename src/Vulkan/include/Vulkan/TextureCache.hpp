@@ -87,7 +87,8 @@ using SlotId = std::uint32_t;
 struct RtSlot : NoCopy, NoMove {
     SlotId     id { 0 };
     TextureKey key {};
-    // Set for _rt_default, depth-style targets and the 1x1 dummy.
+    // Set for _rt_default and the 1x1 dummy.  Depth and MSAA colour are not
+    // slots at all.
     bool persist { false };
     // present == resident.  Pass code copies handles out of it by generation.
     std::optional<VmaImageParameters> image;
@@ -120,6 +121,9 @@ struct RtSlot : NoCopy, NoMove {
         if (! image) return std::nullopt;
         return ImageParameters(*image);
     }
+    // The image's parameters, or the absent ones (null handles, the key's extent)
+    // when it has none.  Defined below AbsentImageParameters.
+    ImageParameters paramsOrAbsent() const;
 };
 
 // What a pass last copied out of a slot.  Compared against the slot on every
@@ -140,6 +144,10 @@ inline ImageParameters AbsentImageParameters(const TextureKey& key) {
     p.extent       = { (uint32_t)key.width, (uint32_t)key.height, 1 };
     p.mipmap_level = key.mipmap_level;
     return p;
+}
+
+inline ImageParameters RtSlot::paramsOrAbsent() const {
+    return params().value_or(AbsentImageParameters(key));
 }
 
 // What a released slot leaves behind until the frames that may still name it
@@ -165,9 +173,10 @@ public:
     // are only correct once the pixels actually landed.
     [[nodiscard]] bool ReuploadTex(const std::string& key, Image& image);
 
-    // The slot behind a render target name.  Creates the entry and its image
-    // on first use, persistent or not; later calls return the same slot.
-    // nullptr whenever the image could not be created.
+    // The slot behind a render target name; later calls return the same slot.
+    // Gives it an image now only when it is persistent or residency is off
+    // (managed slots get one when a frame first needs it).  nullptr when that
+    // up-front create failed.
     RtSlot* QuerySlot(std::string_view key, TextureKey content_hash, bool persist = false);
 
     std::span<const std::unique_ptr<RtSlot>> slots() const { return m_query_texs; }
@@ -284,7 +293,7 @@ private:
     void evictColdQueryTexs();
     // Creates (with the one-shot clear) the slot's image when it is persistent or
     // residency is off and it has none yet.  false when that create failed.
-    bool giveImageIfPersistent(RtSlot& slot, bool persist);
+    bool createUpFrontIfNeeded(RtSlot& slot, bool persist);
 
     // Lazily-allocated depth sampler (NEAREST/CLAMP/no-compare).  See
     // GetOrCreateDepthSampler().

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <limits>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -14,11 +15,14 @@
 
 #include "Vulkan/RetireRing.hpp"
 
-// The key type the pass analyses use to name a render target independently of
-// its VkImage: the slot id for render targets, the Vulkan handle for everything
-// else.  It is a tagged struct because Vulkan leaves no free bit in a
-// non-dispatchable handle to tell the two kinds apart.  Header-only so the
-// doctest suite can exercise it without a Vulkan device.
+// The pure decisions behind render-target residency, kept free of Vulkan so
+// the doctest suite can run them without a device: ResidencyKey (how the pass
+// analyses name a render target independently of its VkImage: the slot id for
+// render targets, the Vulkan handle for everything else), the per-frame demand
+// walk, clear-on-attach, the keep/create/release decision and hold-window
+// parsing, the out-of-memory backoff, the GPU timestamp delta, and which passes
+// an absent slot blocks.  ResidencyKey is a tagged struct because Vulkan leaves
+// no free bit in a non-dispatchable handle to tell the two kinds apart.
 namespace wallpaper::vulkan
 {
 
@@ -60,6 +64,13 @@ ResidencyKey KeyForImage(VkH handle) {
         return ResidencyKey::ForHandle(static_cast<std::uint64_t>(handle));
 }
 
+// Whether `i` indexes a table of `n` entries.  Every slot-id and position lookup
+// in this file goes through these so the boundary is decided in one place.
+inline bool IndexInRange(std::uint64_t i, std::size_t n) { return i < n; }
+inline bool SignedIndexInRange(std::int64_t i, std::size_t n) {
+    return i >= 0 && IndexInRange(static_cast<std::uint64_t>(i), n);
+}
+
 // Which of a pass's texture slots it samples this frame: its material's own
 // textures, or one of the chain buffers a hidden effect copies through.
 enum class DemandInputs : std::uint8_t
@@ -98,7 +109,7 @@ struct DemandResult {
 // A slot id past the vector is not needed.
 inline bool PassOutputNeeded(const PassDemandStatic& s, const std::vector<bool>& needed) {
     if (! s.out_managed || s.out.kind != ResidencyKey::Kind::Slot) return true;
-    return s.out.value < needed.size() && needed[s.out.value];
+    return IndexInRange(s.out.value, needed.size()) && needed[s.out.value];
 }
 
 // Last pass to first: a pass is active when its output is unmanaged or needed,
@@ -108,18 +119,18 @@ inline bool PassOutputNeeded(const PassDemandStatic& s, const std::vector<bool>&
 // statics and frames are parallel; a size mismatch is a caller bug, and in a
 // release build every slot is reported needed rather than guessing which
 // passes the missing entries would have kept alive.
-inline DemandResult ComputeFrameDemand(std::span<const PassDemandStatic> statics,
-                                       std::span<const PassDemandFrame>  frames,
-                                       std::size_t                       slot_count) {
-    DemandResult r;
+inline void ComputeFrameDemandInto(std::span<const PassDemandStatic> statics,
+                                   std::span<const PassDemandFrame> frames, std::size_t slot_count,
+                                   DemandResult& r) {
+    r.iterations = 0;
     assert(statics.size() == frames.size());
     if (statics.size() != frames.size()) {
         r.needed.assign(slot_count, true);
-        return r;
+        return;
     }
     r.needed.assign(slot_count, false);
     auto mark = [&](const ResidencyKey& k, bool& changed) {
-        if (k.kind != ResidencyKey::Kind::Slot || k.value >= slot_count) return;
+        if (k.kind != ResidencyKey::Kind::Slot || ! IndexInRange(k.value, slot_count)) return;
         if (! r.needed[k.value]) {
             r.needed[k.value] = true;
             changed           = true;
@@ -143,6 +154,13 @@ inline DemandResult ComputeFrameDemand(std::span<const PassDemandStatic> statics
         }
         if (! changed) break;
     }
+}
+
+inline DemandResult ComputeFrameDemand(std::span<const PassDemandStatic> statics,
+                                       std::span<const PassDemandFrame>  frames,
+                                       std::size_t                       slot_count) {
+    DemandResult r;
+    ComputeFrameDemandInto(statics, frames, slot_count, r);
     return r;
 }
 
@@ -164,13 +182,13 @@ inline std::vector<bool> ComputeClearOnAttach(std::span<const PassDemandStatic> 
     std::vector<std::size_t> first_writer(slot_count, none), last_writer(slot_count, none);
     for (std::size_t i = 0; i < statics.size(); ++i) {
         const ResidencyKey& out = statics[i].out;
-        if (out.kind != ResidencyKey::Kind::Slot || out.value >= slot_count) continue;
+        if (out.kind != ResidencyKey::Kind::Slot || ! IndexInRange(out.value, slot_count)) continue;
         if (first_writer[out.value] == none) first_writer[out.value] = i;
         last_writer[out.value] = i;
     }
     std::vector<bool> backward(slot_count, false);
     auto              note = [&](const ResidencyKey& k, std::size_t reader) {
-        if (k.kind != ResidencyKey::Kind::Slot || k.value >= slot_count) return;
+        if (k.kind != ResidencyKey::Kind::Slot || ! IndexInRange(k.value, slot_count)) return;
         if (last_writer[k.value] != none && last_writer[k.value] >= reader)
             backward[k.value] = true;
     };
@@ -182,8 +200,8 @@ inline std::vector<bool> ComputeClearOnAttach(std::span<const PassDemandStatic> 
     std::vector<bool> out(slot_count);
     for (std::size_t s = 0; s < slot_count; ++s) {
         const bool has_writer = first_writer[s] != none;
-        const bool clears =
-            has_writer && first_writer[s] < clears_output.size() && clears_output[first_writer[s]];
+        const bool clears     = has_writer && IndexInRange(first_writer[s], clears_output.size()) &&
+                                clears_output[first_writer[s]];
         out[s] = NeedsInitialClear(has_writer, clears, backward[s]);
     }
     return out;
@@ -246,6 +264,37 @@ inline bool CanRetryCreate(std::uint64_t frame, std::uint64_t retry_after) {
     return frame >= retry_after;
 }
 
+// What a slot's failure record becomes after one more failed create.  Only the
+// first failure of a streak is worth a log line; the retry time is the part
+// every failure site must agree on.
+struct CreateFailureVerdict {
+    std::uint32_t streak { 0 };
+    std::uint64_t retry_after { 0 };
+    bool          first_of_streak { false };
+};
+inline CreateFailureVerdict NoteCreateFailureFor(std::uint32_t streak, std::uint64_t frame) {
+    const std::uint32_t next =
+        streak == std::numeric_limits<std::uint32_t>::max() ? streak : streak + 1;
+    return { next, RetryAfter(frame, next), next == 1 };
+}
+
+// What residencyStep did since the previous DIAG line: slot counts, and the
+// CPU time of the step itself over every frame (idle ones included), which is
+// the only way to see what the per-frame demand walk costs.
+struct ResidencyWindow {
+    std::uint64_t created { 0 }, released { 0 }, failed { 0 };
+    std::uint64_t steps { 0 }, step_us_sum { 0 }, step_us_max { 0 };
+
+    void add(unsigned created_now, unsigned released_now, unsigned failed_now, std::uint64_t us) {
+        created += created_now;
+        released += released_now;
+        failed += failed_now;
+        ++steps;
+        step_us_sum += us;
+        step_us_max = std::max(step_us_max, us);
+    }
+};
+
 // GPU microseconds between two vkCmdWriteTimestamp queries.  The counter is
 // only `valid_bits` wide, so the difference is taken in that width (a wrap
 // between the two writes then cancels), then scaled by the device's tick.
@@ -261,14 +310,15 @@ inline double TimestampDeltaUs(std::uint64_t begin, std::uint64_t end, std::uint
 // failed).  Such a pass is treated as hidden for the frame.  Only the pass
 // that samples the absent slot is blocked, not the readers of its output: those
 // see stale or cleared bytes (never undefined ones) until the retry succeeds.
-inline std::vector<bool> ComputeBlockedPasses(std::span<const PassDemandStatic> statics,
-                                              std::span<const PassDemandFrame>  frames,
-                                              const std::vector<bool>&          resident) {
+inline void ComputeBlockedPassesInto(std::span<const PassDemandStatic> statics,
+                                     std::span<const PassDemandFrame>  frames,
+                                     const std::vector<bool>&          resident,
+                                     std::vector<bool>&                blocked) {
     const std::size_t n = std::min(statics.size(), frames.size());
-    std::vector<bool> blocked(n, false);
-    auto              absent = [&](const ResidencyKey& k) {
+    blocked.assign(n, false);
+    auto absent = [&](const ResidencyKey& k) {
         return k.kind == ResidencyKey::Kind::Slot &&
-               (k.value >= resident.size() || ! resident[k.value]);
+               (! IndexInRange(k.value, resident.size()) || ! resident[k.value]);
     };
     for (std::size_t i = 0; i < n; ++i) {
         const PassDemandStatic& s = statics[i];
@@ -283,6 +333,13 @@ inline std::vector<bool> ComputeBlockedPasses(std::span<const PassDemandStatic> 
         case DemandInputs::PassthroughB: blocked[i] = absent(s.passthrough_b); break;
         }
     }
+}
+
+inline std::vector<bool> ComputeBlockedPasses(std::span<const PassDemandStatic> statics,
+                                              std::span<const PassDemandFrame>  frames,
+                                              const std::vector<bool>&          resident) {
+    std::vector<bool> blocked;
+    ComputeBlockedPassesInto(statics, frames, resident, blocked);
     return blocked;
 }
 

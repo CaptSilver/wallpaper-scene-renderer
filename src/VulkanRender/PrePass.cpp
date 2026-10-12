@@ -1,4 +1,5 @@
 #include "PrePass.hpp"
+#include <cassert>
 #include "Scene/Scene.h"
 #include "Resource.hpp"
 
@@ -26,6 +27,9 @@ void PrePass::prepare(Scene& scene, const Device& device, RenderingResources&) {
         if (scene.renderTargets.count(tex_name) == 0) return;
         auto& rt = scene.renderTargets.at(tex_name);
         RtSlot* slot = device.tex_cache().QuerySlot(tex_name, ToTexKey(rt), ! rt.allowReuse);
+        // The image handles are copied once below, so a slot that can lose its image would
+        // go stale.  Checked before the params() test so the off switch does not hide it.
+        assert(slot == nullptr || ! slot->managed());
         if (slot == nullptr || ! slot->params()) return;
         m_desc.result_slot = slot;
         m_desc.vk_result   = *slot->params();

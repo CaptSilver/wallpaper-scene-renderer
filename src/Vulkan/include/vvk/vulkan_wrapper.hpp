@@ -111,10 +111,10 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkCmdEndRenderPass                    vkCmdEndRenderPass {};
     PFN_vkCmdFillBuffer                       vkCmdFillBuffer {};
     PFN_vkCmdPipelineBarrier                  vkCmdPipelineBarrier {};
-    PFN_vkCmdResetQueryPool                   vkCmdResetQueryPool {};
     PFN_vkCmdPushConstants                    vkCmdPushConstants {};
     PFN_vkCmdPushDescriptorSetKHR             vkCmdPushDescriptorSetKHR {};
     PFN_vkCmdPushDescriptorSetWithTemplateKHR vkCmdPushDescriptorSetWithTemplateKHR {};
+    PFN_vkCmdResetQueryPool                   vkCmdResetQueryPool {};
     PFN_vkCmdResolveImage                     vkCmdResolveImage {};
     PFN_vkCmdSetBlendConstants                vkCmdSetBlendConstants {};
     PFN_vkCmdSetDepthBias                     vkCmdSetDepthBias {};

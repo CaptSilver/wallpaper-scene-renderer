@@ -90,8 +90,7 @@ CustomShaderPass::~CustomShaderPass() {}
 
 void CustomShaderPass::rebindImages() {
     if (m_desc.out_slot != nullptr && BoundImageStale(m_out_bound, *m_desc.out_slot)) {
-        m_desc.vk_output =
-            m_desc.out_slot->params().value_or(AbsentImageParameters(m_desc.out_slot->key));
+        m_desc.vk_output = m_desc.out_slot->paramsOrAbsent();
         m_out_bound = { m_desc.out_slot->generation, m_desc.out_slot->resident() };
     }
     for (usize i = 0; i < m_desc.in_slots.size() && i < m_desc.vk_textures.size(); i++) {
@@ -628,8 +627,7 @@ void CustomShaderPass::prepare(Scene& scene, const Device& device, RenderingReso
                       m_desc.node->Mesh()->Material()->customShader.shader->name.c_str());
             return;
         }
-        m_desc.vk_output =
-            m_desc.out_slot->params().value_or(AbsentImageParameters(m_desc.out_slot->key));
+        m_desc.vk_output = m_desc.out_slot->paramsOrAbsent();
         m_out_bound = { m_desc.out_slot->generation, m_desc.out_slot->resident() };
     }
 
@@ -1394,11 +1392,14 @@ HideableFrame CustomShaderPass::frameHideable(PassMergeRole role) const {
     // has a node of its own.
     const bool              has_node      = m_desc.node != nullptr || m_blocked_frame;
     const bool              shown         = m_desc.node != nullptr && ! m_blocked_frame;
-    const std::vector<bool> chain_visible = m_desc.hideable != HideableKind::None
-                                                ? ChainVisibility(m_desc.chain_effects)
-                                                : std::vector<bool>();
+    // Called for every pass every frame: the scratch keeps its capacity, so
+    // the steady state allocates nothing.
+    if (m_desc.hideable != HideableKind::None)
+        ChainVisibilityInto(m_desc.chain_effects, m_chain_scratch);
+    else
+        m_chain_scratch.clear();
     return DecideHideable(m_desc.hideable,
-                          chain_visible,
+                          m_chain_scratch,
                           m_desc.chain_index,
                           has_node,
                           shown && m_desc.node->IsVisible(),
@@ -1486,7 +1487,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
         return;
     }
     // Pass-output caching: when a pass is static, uses no time/pointer/audio
-    // uniforms, is the only writer of its output VkImage, and reads only
+    // uniforms, is the only writer of its output target, and reads only
     // images written by other such passes (see canCache() /
     // VulkanRender::compileRenderGraph for the alias check),
     // its RT contents persist across frames — so a second-and-later frame
@@ -1711,6 +1712,22 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     VkDescriptorBufferInfo pt_desc_buf {};
     bool                   draw_blocked = false;
 
+    // A drawing pass must never find a managed input without an image: the
+    // demand walk makes every sampled slot resident first, so this reports a
+    // walk bug and drops the draw instead of sampling the fallback texture.
+    auto dropDrawForAbsentInput = [&](const RtSlot* in, usize tex_index) {
+        if (! AbsentManagedInputBlocksDraw(in, hf.draws)) return;
+        static int s_absent_input_logs = 0;
+        if (++s_absent_input_logs <= 5)
+            LOG_ERROR("pass '%s' would draw from absent render target %u (texture %zu); "
+                      "draw dropped this frame",
+                      m_desc.output.c_str(),
+                      in->id,
+                      tex_index);
+        assert(false && "demand walk left a sampled render target absent");
+        draw_blocked = true;
+    };
+
     if (draw_passthrough) {
         // One sampler: whichever of the chain's two ping-pong buffers
         // passthrough_tex_index just picked for this frame.
@@ -1746,6 +1763,10 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                     .pBufferInfo      = nullptr,
                     .pTexelBufferView = nullptr,
                 });
+            } else {
+                const usize pt = (usize)passthrough_tex_index;
+                dropDrawForAbsentInput(pt < m_desc.in_slots.size() ? m_desc.in_slots[pt] : nullptr,
+                                       pt);
             }
         }
         if (m_desc.passthrough_ubo_buf) {
@@ -1779,18 +1800,7 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
                 // in_slots is sized to vk_textures by prepare(); a Desc built
                 // directly (tests) may carry fewer entries.
                 RtSlot* in = i < m_desc.in_slots.size() ? m_desc.in_slots[i] : nullptr;
-                if (AbsentManagedInputBlocksDraw(in, hf.draws)) {
-                    static int s_absent_input_logs = 0;
-                    if (++s_absent_input_logs <= 5)
-                        LOG_ERROR(
-                            "pass '%s' would draw from absent render target %u (texture %zu); "
-                            "draw dropped this frame",
-                            m_desc.output.c_str(),
-                            in->id,
-                            i);
-                    assert(false && "demand walk left a sampled render target absent");
-                    draw_blocked = true;
-                }
+                dropDrawForAbsentInput(in, i);
                 // A record that does not draw samples nothing: write no
                 // descriptor for the absent input rather than bind the fallback.
                 if (AbsentManagedInputSkipsBind(in, hf.draws)) continue;
@@ -1996,6 +2006,10 @@ void CustomShaderPass::execute(const Device& device, RenderingResources& rr) {
     // First-frame draw complete; the RT contents are now stable for any
     // later-frame cache skip (safe iff canCache(), which VulkanRender set
     // based on alias analysis — see compileRenderGraph).
+    // A dropped draw wrote nothing of its own (a clearing render pass still
+    // ran), so its output is not a result to cache and consumers have no new
+    // draw to be warned about.
+    if (draw_blocked) return;
     if (canCache()) markCached(hf.node_visible, m_desc.out_slot ? m_desc.out_slot->generation : 0);
     // Reaching here means the draw was recorded, so consumers sampling this
     // output must not trust their own cache.

@@ -29,7 +29,6 @@ public:
 
         // prepared
         ImageParameters vk_result;
-        RtSlot*         result_slot { nullptr };
         ImageParameters vk_present;
         VkImageLayout   render_layout;
         VkClearValue    clear_value;

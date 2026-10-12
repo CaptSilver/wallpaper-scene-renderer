@@ -1,4 +1,5 @@
 #include "SkyboxPass.hpp"
+#include <cassert>
 #include "Vulkan/Shader.hpp"
 #include "Resource.hpp"
 #include "PassCommon.hpp"
@@ -180,6 +181,9 @@ void SkyboxPass::prepare(Scene& scene, const Device& device, RenderingResources&
         auto& rt      = *rtp;
         output_format = ToVkType(rt.format);
         RtSlot* slot  = device.tex_cache().QuerySlot(m_desc.output, ToTexKey(rt), ! rt.allowReuse);
+        // The image handles are copied once below, so a slot that can lose its image would
+        // go stale.  Checked before the params() test so the off switch does not hide it.
+        assert(slot == nullptr || ! slot->managed());
         if (slot != nullptr && slot->params()) {
             m_desc.out_slot  = slot;
             m_desc.vk_output = *slot->params();

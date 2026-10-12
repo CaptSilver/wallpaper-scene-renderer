@@ -90,10 +90,10 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkCmdEndDebugUtilsLabelEXT);
     X(vkCmdFillBuffer);
     X(vkCmdPipelineBarrier);
-    X(vkCmdResetQueryPool);
     X(vkCmdPushConstants);
     X(vkCmdPushDescriptorSetKHR);
     X(vkCmdPushDescriptorSetWithTemplateKHR);
+    X(vkCmdResetQueryPool);
     X(vkCmdSetBlendConstants);
     X(vkCmdSetDepthBias);
     X(vkCmdSetDepthBounds);
