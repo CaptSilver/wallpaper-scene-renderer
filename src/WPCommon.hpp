@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 #include <string_view>
 #include <charconv>
 #include "Fs/IBinaryStream.h"
@@ -93,6 +94,29 @@ inline void WriteSPVVesion(fs::IBinaryStreamW& file, int ver) { WriteVersion("SP
 inline bool UsesOrthoOverlayCamera(bool hasGlobalOrtho, bool layerPerspective,
                                    bool inheritsModelSpace) {
     return hasGlobalOrtho && ! layerPerspective && ! inheritsModelSpace;
+}
+
+// Whether an effect layer's final composite takes its parent group's transform.
+// Offscreen dependencies render centred in their own targets, and a fullscreen
+// layer composites through the effect camera, where a group's pixel-space
+// offset would push it off the target.
+inline bool InheritsParentTransform(bool offscreen, bool fullscreen, bool hasParent) {
+    return hasParent && ! offscreen && ! fullscreen;
+}
+
+// Camera for an effect layer's final composite; empty keeps the scene's active
+// camera. A fullscreen layer has no position or size of its own: its final
+// quad is the 2x2 card at the origin, which only the 2x2 "effect" camera
+// stretches over the whole target. Through the scene camera it lands as a few
+// pixels in the corner and the layer's effects never reach the screen. A
+// project layer is different -- it carries the scene's real size and origin,
+// so the scene camera already places it.
+inline std::string FinalCompositeCamera(bool fullscreen, bool hasGlobalOrtho, bool layerPerspective,
+                                        bool inheritsModelSpace) {
+    if (fullscreen) return "effect";
+    if (UsesOrthoOverlayCamera(hasGlobalOrtho, layerPerspective, inheritsModelSpace))
+        return "global_ortho";
+    return {};
 }
 
 } // namespace wallpaper

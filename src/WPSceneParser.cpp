@@ -2691,21 +2691,28 @@ void assembleEffectChain(ParseContext&                     context,
             isCompose && (wpimgobj.config.passthrough || forcePassthroughForCopyBg));
         imgEffectLayer->SetComposeLayer(isCompose);
         imgEffectLayer->SetCopyBackground(wpimgobj.copybackground);
-        // Only visible (non-offscreen) nodes inherit the parent-group
-        // transform.  Offscreen dependency nodes render into their own
-        // fixed-size RTs and must stay centered — applying the parent
-        // group's position would displace their content out of frame.
+        // Only visible (non-offscreen, non-fullscreen) nodes inherit the
+        // parent-group transform.  Offscreen dependency nodes render into
+        // their own fixed-size RTs and must stay centered — applying the
+        // parent group's position would displace their content out of frame.
+        // A fullscreen layer composites through the effect camera, where the
+        // same offset would push it off the target (InheritsParentTransform).
         // A synthesized-passthrough compose layer inherits like any other
         // on-screen layer; it only skips inheritance when a dependent sent
         // it down the offscreen route.
-        imgEffectLayer->SetInheritParent(! effectOffscreen && wpimgobj.parent_id >= 0 &&
-                                         context.node_map.count(wpimgobj.parent_id) > 0);
+        imgEffectLayer->SetInheritParent(InheritsParentTransform(
+            effectOffscreen,
+            wpimgobj.fullscreen,
+            wpimgobj.parent_id >= 0 && context.node_map.count(wpimgobj.parent_id) > 0));
         // Create proxy node with parent's baked world transform.
         // Parent world nodes may have been reset to identity for their own
         // effect chains, so the live parent chain no longer carries the
         // correct transform.  The proxy preserves it.
-        if (! effectOffscreen && wpimgobj.parent_id >= 0 &&
-            context.original_world_transforms.count(wpimgobj.parent_id)) {
+        if (InheritsParentTransform(
+                effectOffscreen,
+                wpimgobj.fullscreen,
+                wpimgobj.parent_id >= 0 &&
+                    context.original_world_transforms.count(wpimgobj.parent_id))) {
             auto proxy = std::make_shared<SceneNode>();
             // The proxy world is `parentWorld * offset`, where offset is the
             // parent's bone-attachment factor (identity without an attachment).
@@ -2813,17 +2820,17 @@ void assembleEffectChain(ParseContext&                     context,
              (int)isCompose,
              (int)isOffscreen);
 
-    // In perspective scenes, flat image layers need the ortho overlay camera
-    // for their final composite (not the perspective camera).  A layer that
-    // descends from a 3D model is not flat — its world transform is in scene
-    // units, and the ortho window would scale it by the model's scale.
-    if (UsesOrthoOverlayCamera(
-            scene.cameras.count("global_ortho") != 0,
-            wpimgobj.perspective,
-            InheritsModelSpace(
-                wpimgobj.parent_id, context.model_object_ids, context.declared_parent))) {
-        imgEffectLayer->SetFinalCamera("global_ortho");
-    }
+    // A fullscreen layer composites through the effect camera.  In perspective
+    // scenes, flat image layers need the ortho overlay camera for their final
+    // composite (not the perspective camera).  A layer that descends from a 3D
+    // model is not flat — its world transform is in scene units, and the ortho
+    // window would scale it by the model's scale.
+    auto finalCamera = FinalCompositeCamera(
+        wpimgobj.fullscreen,
+        scene.cameras.count("global_ortho") != 0,
+        wpimgobj.perspective,
+        InheritsModelSpace(wpimgobj.parent_id, context.model_object_ids, context.declared_parent));
+    if (! finalCamera.empty()) imgEffectLayer->SetFinalCamera(std::move(finalCamera));
 }
 
 void applyFlatPerspectiveOrthoCamera(const ParseContext& context,

@@ -32,3 +32,40 @@ TEST_SUITE("WPCommon.UsesOrthoOverlayCamera") {
         CHECK_FALSE(UsesOrthoOverlayCamera(true, true, true));
     }
 }
+
+TEST_SUITE("FinalCompositeCamera") {
+    TEST_CASE("a fullscreen layer composites through the 2x2 effect camera") {
+        // Its final quad is the unit 2x2 card at the origin; only the effect
+        // camera maps that onto the whole target.
+        CHECK(FinalCompositeCamera(true, true, false, false) == "effect");
+        CHECK(FinalCompositeCamera(true, false, false, false) == "effect");
+    }
+
+    TEST_CASE("a flat layer in a perspective scene uses the ortho overlay") {
+        CHECK(FinalCompositeCamera(false, true, false, false) == "global_ortho");
+    }
+
+    TEST_CASE("otherwise the layer keeps the scene's active camera") {
+        CHECK(FinalCompositeCamera(false, false, false, false).empty());
+        CHECK(FinalCompositeCamera(false, true, true, false).empty());
+        CHECK(FinalCompositeCamera(false, true, false, true).empty());
+    }
+}
+
+TEST_SUITE("InheritsParentTransform") {
+    TEST_CASE("an on-screen layer with a parent group inherits its transform") {
+        CHECK(InheritsParentTransform(false, false, true));
+    }
+
+    TEST_CASE("an offscreen dependency stays centred in its own target") {
+        CHECK_FALSE(InheritsParentTransform(true, false, true));
+    }
+
+    TEST_CASE("a fullscreen layer ignores its group: it covers the target as is") {
+        CHECK_FALSE(InheritsParentTransform(false, true, true));
+    }
+
+    TEST_CASE("no parent, nothing to inherit") {
+        CHECK_FALSE(InheritsParentTransform(false, false, false));
+    }
+}
