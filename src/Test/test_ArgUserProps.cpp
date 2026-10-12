@@ -2,6 +2,8 @@
 
 #include "../../standalone_view/arg.hpp"
 
+#include <limits>
+
 TEST_SUITE("standalone_view::arg user-props JSON") {
     TEST_CASE("empty base and empty sets produce an empty object") {
         CHECK(MergeUserPropsJson("", {}) == "{}");
@@ -59,5 +61,51 @@ TEST_SUITE("standalone_view::arg runtime stepping") {
         "capture paths name the change and the frame, with no path separators from the value") {
         CHECK(ShotAfterSetPath("/out", "time=3", 101) == "/out/time=3_f000101.ppm");
         CHECK(ShotAfterSetPath("/out", "a/b=c", 7) == "/out/a_b=c_f000007.ppm");
+    }
+}
+
+TEST_SUITE("standalone_view::arg delay validation") {
+    TEST_CASE("an in-range delay becomes milliseconds, boundaries included") {
+        CHECK(DelayMs(0.0, 2.0) == 0);
+        CHECK(DelayMs(1.5, 2.0) == 1500);
+        CHECK(DelayMs(86400.0, 2.0) == 86400000);
+    }
+    TEST_CASE("a negative, non-finite or absurd delay uses the fallback instead of overflowing") {
+        CHECK(DelayMs(-0.1, 2.0) == 2000);
+        CHECK(DelayMs(std::numeric_limits<double>::quiet_NaN(), 1.5) == 1500);
+        CHECK(DelayMs(std::numeric_limits<double>::infinity(), 1.5) == 1500);
+        CHECK(DelayMs(86400.001, 2.0) == 2000);
+        CHECK(DelayMs(1e300, 2.0) == 2000);
+    }
+}
+
+TEST_SUITE("standalone_view::arg media interval") {
+    TEST_CASE("zero and positive intervals within a day are accepted") {
+        CHECK(MediaIntervalOk(0.0));
+        CHECK(MediaIntervalOk(0.5));
+        CHECK(MediaIntervalOk(86400.0));
+    }
+    TEST_CASE("a negative, non-finite or over-long interval is rejected") {
+        CHECK_FALSE(MediaIntervalOk(-0.001));
+        CHECK_FALSE(MediaIntervalOk(std::numeric_limits<double>::quiet_NaN()));
+        CHECK_FALSE(MediaIntervalOk(std::numeric_limits<double>::infinity()));
+        CHECK_FALSE(MediaIntervalOk(86400.5));
+    }
+}
+
+TEST_SUITE("standalone_view::arg media schedule") {
+    TEST_CASE("a schedule whose last entry lands within a day is accepted") {
+        CHECK(MediaScheduleOk(2.0, 1.0, 3));
+        CHECK(MediaScheduleOk(0.0, 0.0, 5));
+        CHECK(MediaScheduleOk(86400.0, 5.0, 1));
+        CHECK(MediaScheduleOk(86000.0, 200.0, 3)); // last at exactly 86400
+        CHECK(MediaScheduleOk(5.0, 5.0, 0));
+    }
+    TEST_CASE("a bad delay, bad interval or last entry past a day is rejected") {
+        CHECK_FALSE(MediaScheduleOk(-1.0, 1.0, 2));
+        CHECK_FALSE(MediaScheduleOk(std::numeric_limits<double>::quiet_NaN(), 1.0, 2));
+        CHECK_FALSE(MediaScheduleOk(86401.0, 0.0, 1));
+        CHECK_FALSE(MediaScheduleOk(1.0, -1.0, 2));
+        CHECK_FALSE(MediaScheduleOk(86000.0, 201.0, 3));
     }
 }

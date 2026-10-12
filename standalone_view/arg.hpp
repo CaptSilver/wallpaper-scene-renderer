@@ -419,6 +419,34 @@ inline std::string BuildRuntimeUserPropsJson(const std::vector<std::string>& set
     return MergeUserPropsJson({}, sets);
 }
 
+// Longest delay any viewer flag accepts: a day, well inside an int of milliseconds.
+constexpr double kMaxDelaySeconds = 86400.0;
+
+// Seconds from a viewer delay flag to the millisecond int QTimer takes.  A
+// negative, non-finite or over-long value (a cast of nan or 1e300 to int is
+// undefined) is replaced by `fallback_seconds`, which must itself be in range.
+inline int DelayMs(double seconds, double fallback_seconds) {
+    if (! std::isfinite(seconds) || seconds < 0.0 || seconds > kMaxDelaySeconds)
+        seconds = fallback_seconds;
+    return static_cast<int>(seconds * 1000.0);
+}
+
+// A sequence interval must be a usable delay step: a negative one would push
+// later entries to the fallback time mid-list and reorder them.
+inline bool MediaIntervalOk(double seconds) {
+    return std::isfinite(seconds) && seconds >= 0.0 && seconds <= kMaxDelaySeconds;
+}
+
+// The whole --media-thumbnail schedule: the first entry at `delay_s`, entry i at
+// delay_s + interval * i.  Checked once up front because DelayMs would send an
+// out-of-range entry to its fallback time and reorder the list.
+inline bool MediaScheduleOk(double delay_s, double interval_s, std::size_t entries) {
+    if (! MediaIntervalOk(delay_s) || ! MediaIntervalOk(interval_s)) return false;
+    const double last =
+        entries == 0 ? delay_s : delay_s + interval_s * static_cast<double>(entries - 1);
+    return last <= kMaxDelaySeconds;
+}
+
 struct RuntimeSetAt {
     double      delay_s;
     std::string set; // key=value, typed like --set
@@ -432,7 +460,7 @@ inline std::optional<RuntimeSetAt> ParseRuntimeSetAt(const std::string& spec) {
     if (end != spec.c_str() + colon) return std::nullopt;
     // The caller turns this into a millisecond int for QTimer, so nan, inf and
     // huge values would overflow it; negatives are refused rather than guessed at.
-    if (! std::isfinite(delay) || delay < 0.0 || delay > 86400.0) return std::nullopt;
+    if (! std::isfinite(delay) || delay < 0.0 || delay > kMaxDelaySeconds) return std::nullopt;
     return RuntimeSetAt { delay, spec.substr(colon + 1) };
 }
 

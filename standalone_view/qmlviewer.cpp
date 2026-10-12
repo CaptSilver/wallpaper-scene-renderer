@@ -160,9 +160,8 @@ int main(int argc, char** argv) {
             program.get<std::vector<std::string>>(OPT_SET_RUNTIME);
         if (! runtime_sets.empty()) {
             std::string json    = BuildRuntimeUserPropsJson(runtime_sets);
-            double      delay_s = program.get<double>(OPT_SET_RUNTIME_DELAY);
-            if (delay_s < 0.0) delay_s = 2.0;
-            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, json]() {
+            const int   delay_ms = DelayMs(program.get<double>(OPT_SET_RUNTIME_DELAY), 2.0);
+            QTimer::singleShot(delay_ms, sv, [sv, json]() {
                 std::cout << "set-runtime: " << json << std::endl;
                 sv->setProperty("userProperties", QString::fromStdString(json));
             });
@@ -193,14 +192,17 @@ int main(int argc, char** argv) {
             }
             const std::string json = BuildRuntimeUserPropsJson({ parsed->set });
             const std::string set  = parsed->set;
-            QTimer::singleShot((int)(parsed->delay_s * 1000.0), sv, [sv, json, set, shot_dir]() {
+            QTimer::singleShot(DelayMs(parsed->delay_s, 0.0), sv, [sv, json, set, shot_dir]() {
                 if (! shot_dir.empty()) {
                     qint64 base = 0;
                     QMetaObject::invokeMethod(
                         sv, "frameIndex", Qt::DirectConnection, Q_RETURN_ARG(qint64, base));
-                    if (base < 0)
+                    // frameIndex() counts completed frames: 0 before the first one, -1
+                    // when there is no scene object yet.
+                    if (base <= 0)
                         std::cerr << "set-runtime-at: " << set
-                                  << " came before the first frame; its captures will be missed"
+                                  << " came before the first frame; the captures are still "
+                                     "taken but may not bracket the change"
                                   << std::endl;
                     for (uint64_t f : CaptureBurstFrames((uint64_t)std::max<qint64>(0, base))) {
                         QMetaObject::invokeMethod(
@@ -274,9 +276,7 @@ int main(int argc, char** argv) {
                           << "redirect to a disk-backed path if the dump OOMs." << std::endl;
             }
 
-            double delay_s = delay_raw;
-            if (delay_s < 0.0) delay_s = 2.0;
-            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, dump_dir]() {
+            QTimer::singleShot(DelayMs(delay_raw, 2.0), sv, [sv, dump_dir]() {
                 std::cout << "dump-passes: requesting dump to " << dump_dir << std::endl;
                 QMetaObject::invokeMethod(
                     sv, "requestPassDump", Q_ARG(QString, QString::fromStdString(dump_dir)));
@@ -291,9 +291,8 @@ int main(int argc, char** argv) {
     {
         std::string js_src = program.get<std::string>("--js-eval");
         if (! js_src.empty()) {
-            double delay_s = program.get<double>("--js-eval-delay");
-            if (delay_s < 0.0) delay_s = 2.0;
-            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, js_src]() {
+            const int delay_ms = DelayMs(program.get<double>("--js-eval-delay"), 2.0);
+            QTimer::singleShot(delay_ms, sv, [sv, js_src]() {
                 QString rv;
                 QMetaObject::invokeMethod(sv,
                                           "debugEvalJs",
@@ -314,9 +313,14 @@ int main(int argc, char** argv) {
             const QStringList entries  = list.split(',', Qt::SkipEmptyParts);
             const double      delay_s  = program.get<double>("--media-delay");
             const double      interval = program.get<double>("--media-interval");
+            if (! MediaScheduleOk(delay_s, interval, (std::size_t)entries.size())) {
+                std::cerr << "--media-delay " << delay_s << " and --media-interval " << interval
+                          << " must put every entry between 0 and 86400 seconds" << std::endl;
+                return 1;
+            }
             for (qsizetype i = 0; i < entries.size(); i++) {
                 const QString entry = entries[i].trimmed();
-                const int     at_ms = (int)((delay_s + interval * (double)i) * 1000.0);
+                const int     at_ms = DelayMs(delay_s + interval * (double)i, 2.0);
                 QTimer::singleShot(at_ms, sv, [sv, entry]() {
                     QImage image;
                     if (entry != QLatin1String("none")) {
@@ -348,7 +352,7 @@ int main(int argc, char** argv) {
         if (! props.isEmpty()) {
             const QStringList parts   = props.split('|');
             const double      delay_s = program.get<double>("--media-delay");
-            QTimer::singleShot((int)(delay_s * 1000.0), sv, [sv, parts, props]() {
+            QTimer::singleShot(DelayMs(delay_s, 2.0), sv, [sv, parts, props]() {
                 std::cout << "media-properties: " << props.toStdString() << std::endl;
                 auto at = [&parts](qsizetype i) {
                     return i < parts.size() ? parts[i] : QString();
@@ -382,10 +386,8 @@ int main(int argc, char** argv) {
                 hover_timer->start(500);
             }
         }
-        double click_delay_s = program.get<double>("--click-delay");
-        if (click_delay_s < 0.0) click_delay_s = 1.5;
-        int  click_delay_ms = (int)(click_delay_s * 1000.0);
-        auto click_spec     = program.present<std::string>("--click");
+        const int click_delay_ms = DelayMs(program.get<double>("--click-delay"), 1.5);
+        auto      click_spec     = program.present<std::string>("--click");
         if (click_spec) {
             double cx = 0, cy = 0;
             if (std::sscanf(click_spec->c_str(), "%lf,%lf", &cx, &cy) == 2) {
@@ -458,7 +460,7 @@ int main(int argc, char** argv) {
                         });
                     }
                 });
-            shot_timer->start((int)(interval_s * 1000.0));
+            shot_timer->start(DelayMs(interval_s, 1.0));
 
             // Small initial delay so the scene has some frames under its belt.
             QTimer::singleShot(300, sv, [shot_timer]() {
@@ -510,7 +512,7 @@ int main(int argc, char** argv) {
                 int32_t fps_val        = program.get<int32_t>(OPT_FPS);
                 if (fps_val < 5) fps_val = 60;
                 if (frames_to_wait < 1) frames_to_wait = 30;
-                int delay_ms = (int)(frames_to_wait * 1000.0 / fps_val) + 300;
+                int delay_ms = DelayMs((double)frames_to_wait / fps_val + 0.3, 1.3);
                 std::cout << "screenshot: will request in " << delay_ms << "ms to "
                           << screenshot_path << std::endl;
                 QTimer::singleShot(delay_ms, sv, [sv, screenshot_path, arm_poll]() {
