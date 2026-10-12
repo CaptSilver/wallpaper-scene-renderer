@@ -3,6 +3,7 @@
 #include "Utils/Logging.h"
 #include "GraphicsPipeline.hpp"
 #include "PipelineCacheIO.hpp"
+#include "Vulkan/MemoryStatsMath.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -293,27 +294,27 @@ VkDeviceSize Device::GetUsage() const {
 }
 
 void Device::LogMemoryStats(const char* when) const {
-    constexpr double MB = 1024.0 * 1024.0;
     VmaStats         stats {};
     vmaCalculateStats(*m_allocator, &stats);
     const auto& mem = m_gpu.GetMemoryProperties().memoryProperties;
 
-    // usedBytes is what live allocations occupy; unusedBytes is free space inside blocks VMA
-    // already reserved. Their sum is the block total. VMA builds this version does not split
-    // out dedicated allocations: each one is a block holding a single allocation.
+    // The VMA version this builds against does not split out dedicated
+    // allocations: each one counts as a block holding one allocation.
     auto line = [&](const char* label, const VmaStatInfo& d) {
+        const auto mb =
+            MemoryStatsMbOf(d.usedBytes, d.unusedBytes, d.unusedRangeSizeMax, d.allocationSizeMax);
         LOG_INFO("VMA-STATS %s %s: blocks=%u allocs=%u used=%.1fMB unused=%.1fMB "
                  "blockTotal=%.1fMB unusedRanges=%u unusedMax=%.1fMB allocMax=%.1fMB",
                  when,
                  label,
                  d.blockCount,
                  d.allocationCount,
-                 static_cast<double>(d.usedBytes) / MB,
-                 static_cast<double>(d.unusedBytes) / MB,
-                 static_cast<double>(d.usedBytes + d.unusedBytes) / MB,
+                 mb.used,
+                 mb.unused,
+                 mb.block_total,
                  d.unusedRangeCount,
-                 static_cast<double>(d.unusedRangeSizeMax) / MB,
-                 static_cast<double>(d.allocationSizeMax) / MB);
+                 mb.unused_range_max,
+                 mb.alloc_max);
     };
     line("total", stats.total);
     for (uint32_t i = 0; i < mem.memoryHeapCount && i < VK_MAX_MEMORY_HEAPS; ++i) {
@@ -336,12 +337,12 @@ void Device::LogMemoryStats(const char* when) const {
                  "budget=%.1fMB",
                  when,
                  i,
-                 static_cast<double>(budgets[i].usage) / MB,
-                 static_cast<double>(budgets[i].blockBytes) / MB,
-                 static_cast<double>(budgets[i].allocationBytes) / MB,
-                 static_cast<double>(budgets[i].budget) / MB);
+                 BytesToMb(budgets[i].usage),
+                 BytesToMb(budgets[i].blockBytes),
+                 BytesToMb(budgets[i].allocationBytes),
+                 BytesToMb(budgets[i].budget));
     }
-    LOG_INFO("VMA-STATS %s GetUsage=%.1fMB", when, static_cast<double>(GetUsage()) / MB);
+    LOG_INFO("VMA-STATS %s GetUsage=%.1fMB", when, BytesToMb(GetUsage()));
 
     // WEKDE_VMA_DUMP=<prefix> also writes VMA's per-allocation JSON map (size, image vs
     // buffer, usage flags) to <prefix>.<when>.json, for attributing where the bytes went.
