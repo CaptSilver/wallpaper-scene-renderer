@@ -1,6 +1,9 @@
 #include <doctest.h>
 
 #include "Scene/PendingUpdateQueues.hpp"
+#include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
+#include "UserPropUniformBinding.hpp"
 
 #include <string>
 
@@ -182,5 +185,76 @@ TEST_SUITE("PendingUpdateQueues") {
             CHECK(textures.size() == 1);
             CHECK(textures.at("$mediaThumbnail") == imgB);
         });
+    }
+
+    TEST_CASE("setUserPropUniform appends in call order") {
+        PendingUpdateQueues q;
+        auto                mesh = std::make_shared<SceneMesh>();
+        q.setUserPropUniform(mesh, "g_A", { 1.f });
+        q.setUserPropUniform(mesh, "g_B", { 2.f, 3.f });
+
+        q.withPropertyLocked([&](PendingUpdateQueues& p) {
+            REQUIRE(p.m_pending_user_prop_uniforms.size() == 2);
+            CHECK(p.m_pending_user_prop_uniforms[0].uniform == "g_A");
+            CHECK(p.m_pending_user_prop_uniforms[1].uniform == "g_B");
+            CHECK(p.m_pending_user_prop_uniforms[1].value == std::vector<float> { 2.f, 3.f });
+            p.m_pending_user_prop_uniforms.clear();
+        });
+    }
+
+    TEST_CASE("drainUserPropUniforms writes the value, flags the material and empties the queue") {
+        PendingUpdateQueues q;
+        auto                mesh = std::make_shared<SceneMesh>();
+        mesh->AddMaterial(SceneMaterial {});
+        q.setUserPropUniform(mesh, "g_A", { 0.25f });
+
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+        });
+
+        auto* mat = mesh->Material();
+        REQUIRE(mat->customShader.constValues.count("g_A") == 1u);
+        CHECK(mat->customShader.constValues.at("g_A")[0] == doctest::Approx(0.25f));
+        CHECK(mat->customShader.constValuesDirty);
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            CHECK(p.m_pending_user_prop_uniforms.empty());
+        });
+    }
+
+    TEST_CASE("drainUserPropUniforms skips a mesh with no material and still empties the queue") {
+        PendingUpdateQueues q;
+        auto                bare = std::make_shared<SceneMesh>();
+        auto                live = std::make_shared<SceneMesh>();
+        live->AddMaterial(SceneMaterial {});
+        q.setUserPropUniform(bare, "g_A", { 1.f });
+        q.setUserPropUniform(nullptr, "g_A", { 1.f });
+        q.setUserPropUniform(live, "g_A", { 0.5f });
+
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+        });
+
+        CHECK(live->Material()->customShader.constValues.at("g_A")[0] == doctest::Approx(0.5f));
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            CHECK(p.m_pending_user_prop_uniforms.empty());
+        });
+    }
+
+    TEST_CASE("an entry that is the last owner of its mesh drains safely") {
+        PendingUpdateQueues      q;
+        std::weak_ptr<SceneMesh> weak;
+        {
+            auto mesh = std::make_shared<SceneMesh>();
+            mesh->AddMaterial(SceneMaterial {});
+            weak = mesh;
+            q.setUserPropUniform(mesh, "g_A", { 1.f });
+        } // the queue now holds the only owner
+        REQUIRE_FALSE(weak.expired());
+
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+        });
+
+        CHECK(weak.expired());
     }
 }

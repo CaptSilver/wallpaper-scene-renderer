@@ -1,5 +1,6 @@
 #include <doctest.h>
 
+#include "EffectUniformAnimation.hpp"
 #include "UserPropUniformBinding.hpp"
 
 #include "Scene/Scene.h"
@@ -23,6 +24,15 @@ std::shared_ptr<SceneMesh> meshWithMaterial() {
     auto mesh = std::make_shared<SceneMesh>();
     mesh->AddMaterial(SceneMaterial {});
     return mesh;
+}
+
+// What the main thread and the render thread do between them for one update.
+void applyAndDrain(const Scene& scene, const nlohmann::json& props) {
+    PendingUpdateQueues q;
+    wek::applyUserPropUniforms(scene, props, q);
+    q.withPropertyLocked([](PendingUpdateQueues& p) {
+        wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+    });
 }
 
 } // namespace
@@ -81,7 +91,7 @@ TEST_SUITE("UserPropUniformBinding") {
         auto  mesh = meshWithMaterial();
         wek::registerUserPropUniformBinding(scene, "prop", mesh, "g_Alpha");
 
-        wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", 0.5 } });
+        applyAndDrain(scene, nlohmann::json { { "prop", 0.5 } });
 
         auto* mat = mesh->Material();
         REQUIRE(mat->customShader.constValues.count("g_Alpha") == 1u);
@@ -96,7 +106,7 @@ TEST_SUITE("UserPropUniformBinding") {
         wek::registerUserPropUniformBinding(scene, "prop", a, "g_Alpha");
         wek::registerUserPropUniformBinding(scene, "prop", b, "g_Strength");
 
-        wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", 2.0 } });
+        applyAndDrain(scene, nlohmann::json { { "prop", 2.0 } });
 
         CHECK(a->Material()->customShader.constValues.at("g_Alpha")[0] == doctest::Approx(2.0f));
         CHECK(b->Material()->customShader.constValues.at("g_Strength")[0] == doctest::Approx(2.0f));
@@ -107,7 +117,7 @@ TEST_SUITE("UserPropUniformBinding") {
         auto  mesh = meshWithMaterial();
         wek::registerUserPropUniformBinding(scene, "prop", mesh, "g_Alpha");
 
-        wek::applyUserPropUniforms(scene, nlohmann::json { { "other", 1.0 } });
+        applyAndDrain(scene, nlohmann::json { { "other", 1.0 } });
 
         CHECK(mesh->Material()->customShader.constValues.count("g_Alpha") == 0u);
         CHECK_FALSE(mesh->Material()->customShader.constValuesDirty);
@@ -118,7 +128,7 @@ TEST_SUITE("UserPropUniformBinding") {
         auto  mesh = meshWithMaterial();
         wek::registerUserPropUniformBinding(scene, "prop", mesh, "g_Alpha");
 
-        wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", nlohmann::json::object() } });
+        applyAndDrain(scene, nlohmann::json { { "prop", nlohmann::json::object() } });
 
         CHECK(mesh->Material()->customShader.constValues.count("g_Alpha") == 0u);
         CHECK_FALSE(mesh->Material()->customShader.constValuesDirty);
@@ -136,7 +146,7 @@ TEST_SUITE("UserPropUniformBinding") {
         mesh.reset(); // the effect is dropped; nothing else owns the mesh
         REQUIRE_FALSE(weak.expired());
 
-        wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", 0.5 } });
+        applyAndDrain(scene, nlohmann::json { { "prop", 0.5 } });
 
         auto kept = weak.lock();
         REQUIRE(kept);
@@ -151,8 +161,68 @@ TEST_SUITE("UserPropUniformBinding") {
         scene.userPropUniformBindings["prop"].push_back({ empty, "g_Alpha" });
         wek::registerUserPropUniformBinding(scene, "prop", live, "g_Alpha");
 
-        CHECK_NOTHROW(wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", 0.5 } }));
+        CHECK_NOTHROW(applyAndDrain(scene, nlohmann::json { { "prop", 0.5 } }));
 
         CHECK(live->Material()->customShader.constValues.at("g_Alpha")[0] == doctest::Approx(0.5f));
+    }
+
+    TEST_CASE("applying a user prop leaves the material alone until the render thread drains") {
+        Scene               scene;
+        auto                mesh = meshWithMaterial();
+        PendingUpdateQueues q;
+        wek::registerUserPropUniformBinding(scene, "prop", mesh, "g_Alpha");
+
+        wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", 0.5 } }, q);
+
+        auto* mat = mesh->Material();
+        CHECK(mat->customShader.constValues.count("g_Alpha") == 0u);
+        CHECK_FALSE(mat->customShader.constValuesDirty);
+
+        q.withPropertyLocked([](PendingUpdateQueues& p) {
+            wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+        });
+        REQUIRE(mat->customShader.constValues.count("g_Alpha") == 1u);
+        CHECK(mat->customShader.constValues.at("g_Alpha")[0] == doctest::Approx(0.5f));
+        CHECK(mat->customShader.constValuesDirty);
+    }
+
+    TEST_CASE("a user value survives a finished single-shot curve and loses to a looping one") {
+        auto fade = [](PropertyAnimMode mode) {
+            PropertyAnimation a;
+            a.mode      = mode;
+            a.fps       = 1.0f;
+            a.length    = 2.0f;
+            a.keyframes = { { 0.0f, 1.0f }, { 2.0f, 0.0f } };
+            a.playing   = true;
+            return a;
+        };
+        auto post = [](const std::shared_ptr<SceneMesh>& mesh) {
+            std::vector<PendingUpdateQueues::UserPropUniformUpdate> pending;
+            pending.push_back({ mesh, "g_Alpha", { 0.5f } });
+            wek::drainUserPropUniforms(pending);
+        };
+
+        {
+            auto                                       mesh = meshWithMaterial();
+            std::vector<Scene::EffectUniformAnimation> anims;
+            anims.push_back(
+                { mesh, "g_Alpha", { { 1.0f }, { { 0, fade(PropertyAnimMode::Single) } } } });
+            TickEffectUniformAnimations(anims, 5.0); // runs to its end and holds
+            post(mesh);
+            TickEffectUniformAnimations(anims, 1.0);
+            CHECK(mesh->Material()->customShader.constValues.at("g_Alpha")[0] ==
+                  doctest::Approx(0.5f));
+        }
+        {
+            auto                                       mesh = meshWithMaterial();
+            std::vector<Scene::EffectUniformAnimation> anims;
+            anims.push_back(
+                { mesh, "g_Alpha", { { 1.0f }, { { 0, fade(PropertyAnimMode::Loop) } } } });
+            TickEffectUniformAnimations(anims, 1.0);
+            post(mesh);
+            TickEffectUniformAnimations(anims, 0.5);
+            CHECK(mesh->Material()->customShader.constValues.at("g_Alpha")[0] !=
+                  doctest::Approx(0.5f));
+        }
     }
 }

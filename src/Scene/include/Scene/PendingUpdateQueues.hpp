@@ -49,6 +49,8 @@
 namespace wallpaper
 {
 
+class SceneMesh;
+
 struct PendingUpdateQueues {
     PendingUpdateQueues()                                      = default;
     PendingUpdateQueues(const PendingUpdateQueues&)            = delete;
@@ -67,6 +69,13 @@ struct PendingUpdateQueues {
     struct LightScalarUpdate {
         i32   index;
         float value;
+    };
+    // Holds the mesh, not its material: the queued write must stay valid if the
+    // scene that owned the effect is replaced before the render thread drains.
+    struct UserPropUniformUpdate {
+        std::shared_ptr<SceneMesh> mesh;
+        std::string                uniform;
+        std::vector<float>         value;
     };
     struct LightPositionUpdate {
         i32                  index;
@@ -144,6 +153,12 @@ struct PendingUpdateQueues {
         std::lock_guard<std::mutex> lock(m_property_mutex);
         m_pending_effect_material_values.emplace_back(
             nodeId, effectIdx, std::move(name), std::move(floats));
+    }
+    void setUserPropUniform(std::shared_ptr<SceneMesh> mesh, std::string name,
+                            std::vector<float> floats) {
+        std::lock_guard<std::mutex> lock(m_property_mutex);
+        m_pending_user_prop_uniforms.push_back(
+            { std::move(mesh), std::move(name), std::move(floats) });
     }
     void setLayerSpriteFrame(i32 nodeId, bool wantsManual, i32 frameIdx) {
         std::lock_guard<std::mutex> lock(m_property_mutex);
@@ -278,6 +293,7 @@ struct PendingUpdateQueues {
     std::vector<std::tuple<i32, std::string, std::vector<float>>> m_pending_material_values;
     std::vector<std::tuple<i32, i32, std::string, std::vector<float>>>
                                                   m_pending_effect_material_values;
+    std::vector<UserPropUniformUpdate>            m_pending_user_prop_uniforms;
     std::unordered_map<i32, std::pair<bool, i32>> m_pending_sprite_frame;
 
     std::optional<std::array<float, 3>> m_pending_clear_color;

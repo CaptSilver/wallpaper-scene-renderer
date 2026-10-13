@@ -525,6 +525,15 @@ if(WEK_THREAD_REPRO_PROVE_RACE_QUEUE)
     target_compile_definitions(backend_scene_thread_tests PRIVATE
         WEK_THREAD_REPRO_PROVE_RACE_QUEUE)
 endif()
+# Sibling prove-flag for the user-property uniform repro: the poster writes the
+# material directly, as the unqueued path did, so TSAN must report a race.
+option(WEK_THREAD_REPRO_PROVE_RACE_USERPROP
+       "Compile the user-property uniform repro with an unqueued material write \
+(demonstrates TSAN bites; leave OFF for the clean regression run)" OFF)
+if(WEK_THREAD_REPRO_PROVE_RACE_USERPROP)
+    target_compile_definitions(backend_scene_thread_tests PRIVATE
+        WEK_THREAD_REPRO_PROVE_RACE_USERPROP)
+endif()
 wek_apply_sanitizers(backend_scene_thread_tests)
 add_test(NAME backend_scene_thread_tests COMMAND backend_scene_thread_tests)
 set_tests_properties(backend_scene_thread_tests PROPERTIES TIMEOUT 300)

@@ -32,6 +32,10 @@
 #include "Scene/Scene.h"
 #include "Scene/SceneNode.h"
 #include "Scene/PendingUpdateQueues.hpp"
+#include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
+#include "EffectUniformAnimation.hpp"
+#include "UserPropUniformBinding.hpp"
 #include "WPShaderParser.hpp"
 #include "WPShaderTransforms.h"
 #include "Fs/VFS.h"
@@ -481,6 +485,79 @@ int repro_pending_update_queues(int iters) {
 }
 
 
+// ── Repro: user-property uniform writes vs. the render thread ───────────────
+// The main thread posts user-property values while the render thread drains
+// them, ticks keyframed uniforms and uploads (reads + clears constValuesDirty)
+// the same material.  Posted values are 2..9 and the looping curve stays in
+// [0,1], so any other number, or a vector of the wrong size, is a torn write.
+// Which of the two writers ends up last is not asserted: the curve legitimately
+// overwrites the posted value whenever it moves.
+//
+// WEK_THREAD_REPRO_PROVE_RACE_USERPROP swaps the poster for the direct material
+// write it replaced; TSAN must then report a race.  Off by default.
+int repro_user_prop_uniforms(int iters) {
+    Scene scene;
+    auto  mesh = std::make_shared<SceneMesh>();
+    mesh->AddMaterial(SceneMaterial {});
+    wek::registerUserPropUniformBinding(scene, "prop", mesh, "g_Alpha");
+
+    PropertyAnimation curve;
+    curve.mode      = PropertyAnimMode::Loop;
+    curve.fps       = 1.0f;
+    curve.length    = 2.0f;
+    curve.keyframes = { { 0.0f, 1.0f }, { 2.0f, 0.0f } };
+    curve.playing   = true;
+    std::vector<Scene::EffectUniformAnimation> anims;
+    anims.push_back({ mesh, "g_Alpha", { { 1.0f }, { { 0, curve } } } });
+
+    PendingUpdateQueues q;
+    std::atomic<bool>   go { false };
+    std::atomic<long>   torn { 0 };
+
+    std::thread poster([&] {
+        while (! go.load()) {
+        }
+        for (int i = 0; i < iters; ++i) {
+            const float v = 2.0f + (float)(i % 8);
+#ifdef WEK_THREAD_REPRO_PROVE_RACE_USERPROP
+            auto* mat                                = mesh->Material();
+            mat->customShader.constValues["g_Alpha"] = std::vector<float> { v };
+            mat->customShader.constValuesDirty       = true;
+#else
+            wek::applyUserPropUniforms(scene, nlohmann::json { { "prop", v } }, q);
+#endif
+        }
+    });
+    std::thread render([&] {
+        while (! go.load()) {
+        }
+        auto* mat = mesh->Material();
+        for (int i = 0; i < iters; ++i) {
+            q.withPropertyLocked([](PendingUpdateQueues& p) {
+                wek::drainUserPropUniforms(p.m_pending_user_prop_uniforms);
+            });
+            TickEffectUniformAnimations(anims, 0.016);
+            // What CustomShaderPass does with the flag.
+            if (mat->customShader.constValuesDirty) {
+                for (const auto& [name, val] : mat->customShader.constValues) {
+                    (void)name;
+                    const float x = val.size() == 1 ? val[0] : -1.0f;
+                    const bool  ok =
+                        val.size() == 1 && ((x >= 0.0f && x <= 1.0f) ||
+                                            (x >= 2.0f && x <= 9.0f && x == (float)(int)x));
+                    if (! ok) ++torn;
+                }
+                mat->customShader.constValuesDirty = false;
+            }
+        }
+    });
+
+    go.store(true);
+    poster.join();
+    render.join();
+    return torn.load() == 0 ? 0 : 1;
+}
+
 int repro_frame_timer_pacing(int /*iters*/) {
     // The old timer mutated its frametime deque from two threads unlocked
     // and read a plain u16 fps cross-thread; TSAN flags both.
@@ -530,6 +607,10 @@ int main(int argc, char** argv) {
     std::printf("[thread-repro] PendingUpdateQueues setters vs. withXLocked drains, %d iters...\n",
                 iters);
     rc |= repro_pending_update_queues(iters);
+
+    std::printf("[thread-repro] user-property uniform posts vs. render-thread drain, %d iters...\n",
+                iters);
+    rc |= repro_user_prop_uniforms(iters);
 
     std::printf("[thread-repro] FrameTimer SetRequiredFps vs FrameEnd vs Run/Stop...\n");
     rc |= repro_frame_timer_pacing(iters);

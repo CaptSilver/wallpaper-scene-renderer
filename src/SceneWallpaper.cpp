@@ -646,6 +646,12 @@ public:
         m_queues.setEffectMaterialValue(nodeId, effectIdx, std::move(name), std::move(floats));
     }
 
+    // Posts the changed user properties' uniform values; the render thread
+    // applies them on its next draw.
+    void postUserPropUniforms(const Scene& scene, const nlohmann::json& props) {
+        wek::applyUserPropUniforms(scene, props, m_queues);
+    }
+
     void setLayerSpriteFrame(i32 nodeId, bool wantsManual, i32 frameIdx) {
         m_queues.setLayerSpriteFrame(nodeId, wantsManual, frameIdx);
     }
@@ -1331,6 +1337,11 @@ private:
                     mat->customShader.constValuesDirty = true;
                 }
                 m_pending_effect_material_values.clear();
+                // Runs before tickPropertyAnimations in this same draw.  A
+                // keyframed constant that is also user-bound keeps the user
+                // value until its curve next moves: a finished single-shot
+                // curve never overwrites it, a looping one does.
+                wek::drainUserPropUniforms(q.m_pending_user_prop_uniforms);
                 // Sprite-frame pins from SceneScript setFrame() — drained
                 // into Scene::nodeSpriteFrame for per-pass consumption in
                 // WPShaderValueUpdater (see SetManualFrame loop there).
@@ -3000,7 +3011,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
     }
 
-    wek::applyUserPropUniforms(scene, props);
+    m_render_handler->postUserPropUniforms(scene, props);
 
     // Check text layer pointsize bindings for runtime re-rasterization
     for (auto& tl : scene.textLayers) {
