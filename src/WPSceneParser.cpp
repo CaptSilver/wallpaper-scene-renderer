@@ -94,21 +94,25 @@ std::string effectUserPropName(const wpscene::WPImageEffect& effect) {
 // Which effects in `effects` get added to a layer: an effect builds if it is
 // visible or carries a binding that resolves (a named user property or a
 // visible.script), so a later toggle can show it without a reload. A binding
-// that names nothing can never show the effect, so it counts as hidden. A hidden last effect draws
-// a passthrough of whatever is visible before it, and a hidden effect elsewhere copies its input
-// when its hidden run would break the chain, so no position needs excluding. Shared by
+// that names nothing can never show the effect, so it counts as hidden. On a
+// layer a SceneScript reaches with getEffect(...).visible every effect builds,
+// because the script can show any of them and addresses them by index or name.
+// A hidden last effect draws a passthrough of whatever is visible before it, and a hidden
+// effect elsewhere copies its input when its hidden run would break the chain, so no
+// position needs excluding. Shared by
 // countVisibleEffects/adjustBlendForTextEffects (whether to build an effect layer at all) and
 // assembleEffects.
 struct EffectBuildPlan {
     std::vector<bool> wouldBuild;
 };
 
-EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffect>& effects) {
+EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffect>& effects,
+                                         bool layerScriptTargeted) {
     EffectBuildPlan plan;
     plan.wouldBuild.reserve(effects.size());
     for (const auto& e : effects)
-        plan.wouldBuild.push_back(e.visible || ! effectUserPropName(e).empty() ||
-                                  ! e.visibleScript.empty());
+        plan.wouldBuild.push_back(e.visible || layerScriptTargeted ||
+                                  ! effectUserPropName(e).empty() || ! e.visibleScript.empty());
     return plan;
 }
 
@@ -1632,8 +1636,9 @@ struct ImageEffectCounts {
     bool    hasEffect;
 };
 
-ImageEffectCounts countVisibleEffects(const std::vector<wpscene::WPImageEffect>& effects) {
-    auto    plan      = computeWouldBuildEffects(effects);
+ImageEffectCounts countVisibleEffects(const std::vector<wpscene::WPImageEffect>& effects,
+                                      bool layerScriptTargeted) {
+    auto    plan      = computeWouldBuildEffects(effects, layerScriptTargeted);
     int32_t count_eff = 0;
     for (bool b : plan.wouldBuild)
         if (b) count_eff++;
@@ -2366,14 +2371,13 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     // built (and hidden) so applyUserPropsRuntime can flip it on later
     // without a reload, at any position: a hidden last effect draws a
     // passthrough (CustomShaderPass::hideable). See computeWouldBuildEffects.
-    auto plan = computeWouldBuildEffects(effects);
-
-    // A script that toggles this layer's effects at runtime can hide any of
-    // them, whether or not a binding was declared, so the render graph has to
-    // treat all of them as hideable.
-    if (context.script_effect_targets.contains(opts.layer_id, layer_name)) {
-        scene.scriptEffectVisLayers.insert(opts.layer_id);
-    }
+    //
+    // A script that toggles this layer's effects at runtime can hide or show
+    // any of them, whether or not a binding was declared, so every effect is
+    // built and the render graph treats all of them as hideable.
+    const bool scriptTargeted = context.script_effect_targets.contains(opts.layer_id, layer_name);
+    auto       plan           = computeWouldBuildEffects(effects, scriptTargeted);
+    if (scriptTargeted) scene.scriptEffectVisLayers.insert(opts.layer_id);
 
     int32_t i_eff   = -1;
     usize   raw_idx = 0;
@@ -2563,13 +2567,15 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
             for (auto& anim : effUniformAnims) scene.effectUniformAnimations.push_back(anim);
             imgEffect->name = wpeffobj.name;
             layer.AddEffect(imgEffect);
-            if (! wpeffobj.userVisibleRawJson.empty()) {
-                if (! wpeffobj.visible) {
-                    imgEffect->visible = false;
-                    for (auto& n : imgEffect->nodes) {
-                        if (n.sceneNode) n.sceneNode->SetVisible(false);
-                    }
+            // Every built-hidden effect starts hidden, bound or not: a script-targeted
+            // layer builds literal-hidden effects that have no binding at all.
+            if (! wpeffobj.visible) {
+                imgEffect->visible = false;
+                for (auto& n : imgEffect->nodes) {
+                    if (n.sceneNode) n.sceneNode->SetVisible(false);
                 }
+            }
+            if (! wpeffobj.userVisibleRawJson.empty()) {
                 std::string propName = effectUserPropName(wpeffobj);
                 if (! propName.empty()) {
                     context.pending_user_prop_effect_vis.push_back({ imgEffect.get(),
@@ -2580,12 +2586,6 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                 }
             }
             if (! wpeffobj.visibleScript.empty()) {
-                if (! wpeffobj.visible) {
-                    imgEffect->visible = false;
-                    for (auto& n : imgEffect->nodes) {
-                        if (n.sceneNode) n.sceneNode->SetVisible(false);
-                    }
-                }
                 context.pending_script_effect_vis.push_back({ imgEffect.get(),
                                                               opts.layer_id,
                                                               layer_name,
@@ -3016,7 +3016,8 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     BlendMode colorBlendOverride = *colorBlendOverrideOpt;
 
     // Count effects after colorBlendMode may have added one
-    auto [count_eff, hasEffect] = countVisibleEffects(wpimgobj.effects);
+    auto [count_eff, hasEffect] = countVisibleEffects(
+        wpimgobj.effects, context.script_effect_targets.contains(wpimgobj.id, wpimgobj.name));
     if (registerScriptHostPlaceholderIfNoEffectFullscreen(context, wpimgobj, hasEffect)) return;
 
     bool hasPuppet = ! wpimgobj.puppet.empty();
@@ -3873,8 +3874,9 @@ struct TextEffectBlend {
 };
 
 // Count effects + disable base material blend if it will be the first effect node
-TextEffectBlend adjustBlendForTextEffects(const wpscene::WPTextObject& textObj, SceneMaterial& material) {
-    auto [count_eff, hasEffect] = countVisibleEffects(textObj.effects);
+TextEffectBlend adjustBlendForTextEffects(const wpscene::WPTextObject& textObj,
+                                          SceneMaterial& material, bool layerScriptTargeted) {
+    auto [count_eff, hasEffect] = countVisibleEffects(textObj.effects, layerScriptTargeted);
     (void)count_eff;
 
     // Disable base material blend if it will be the first effect node
@@ -4244,7 +4246,10 @@ void ParseTextObj(ParseContext& context, wpscene::WPTextObject& textObj) {
     auto& svData     = baseMat->svData;
     auto& shaderInfo = baseMat->shaderInfo;
 
-    auto [hasEffect, imgBlendMode] = adjustBlendForTextEffects(textObj, material);
+    auto [hasEffect, imgBlendMode] = adjustBlendForTextEffects(
+        textObj,
+        material,
+        context.script_effect_targets.contains(textObj.id, textObj.name));
 
     auto spMesh = buildTextMesh(textObj, textImage, texW, texH, autosize_canvas);
     spMesh->AddMaterial(std::move(material));

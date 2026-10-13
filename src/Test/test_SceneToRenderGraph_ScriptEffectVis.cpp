@@ -187,4 +187,29 @@ TEST_SUITE("SceneToRenderGraph_ScriptEffectVis") {
         REQUIRE(hostLayer->EffectCount() == 1u);
         CHECK(writerDesc(*rgraph, hostLayer, 0).hideable == vulkan::HideableKind::None);
     }
+    TEST_CASE("a script-targeted compose layer with only a hidden effect ends in a hidden terminal "
+              "instead of a synthesized passthrough") {
+        // The authored effect now counts as built, so no passthrough is synthesized for the
+        // compose layer; the chain's last pass is the hidden effect, and copybackground decides
+        // whether the base image is considered drawn under it.
+        for (const bool copyBackground : { true, false }) {
+            const std::string obj    = std::string(R"({"id": 176, "name": "glass",
+                "image": "models/util/composelayer.json", "origin": "0 0 0", "scale": "1 1 1",
+                "angles": "0 0 0", "copybackground": )") +
+                                       (copyBackground ? "true" : "false") +
+                                       R"(, "visible": {"value": true, "script":
+                "export function update(v) { thisLayer.getEffect(0).visible = true; return v; }"},
+                "effects": [{"id": 10, "name": "a", "visible": false,
+                             "file": "effects/tint.json"}]})";
+            auto              scene  = parseObjects(obj);
+            auto              rgraph = sceneToRenderGraph(*scene);
+
+            auto* layer = effectLayerOf(*scene, 176);
+            REQUIRE(layer->EffectCount() == 1u);
+            CHECK_FALSE(layer->GetEffect(0)->visible);
+            const auto& d = writerDesc(*rgraph, layer, 0);
+            CHECK(d.hideable == vulkan::HideableKind::Terminal);
+            CHECK(d.chain_base_image_written == copyBackground);
+        }
+    }
 }

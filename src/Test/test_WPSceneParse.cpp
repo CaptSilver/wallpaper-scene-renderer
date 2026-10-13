@@ -2996,6 +2996,205 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
     }
 
+    // Layers a SceneScript reaches with getEffect(...).visible build their
+    // literal-hidden effects too (hidden), so the script can show them and
+    // getEffect(name / index) finds them.
+    TEST_CASE("a literal-hidden effect a script shows by name is built hidden and named") {
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({
+            { "/effects/noise.json",
+                     R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 801, "name": "pattern",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "value": true, "script":
+        "export function update(v) { thisLayer.getEffect('Noise').visible = true; return v; }" },
+      "effects": [
+        { "id": 10, "name": "Noise", "visible": false, "file": "effects/noise.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto                scene = parser.Parse("scene_hidden_effect_shown", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(801) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(801);
+        REQUIRE(effLayer->EffectCount() == 1u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible);
+        REQUIRE_FALSE(effLayer->GetEffect(0)->nodes.empty());
+        for (const auto& n : effLayer->GetEffect(0)->nodes) {
+            REQUIRE(n.sceneNode != nullptr);
+            CHECK_FALSE(n.sceneNode->IsVisible());
+        }
+        REQUIRE(scene->layerEffectNames.count("pattern") == 1u);
+        CHECK(scene->layerEffectNames.at("pattern") == std::vector<std::string> { "Noise" });
+    }
+
+    TEST_CASE("an all-hidden chain builds an effect layer when a script toggles it by index") {
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({
+            { "/effects/a.json",
+                     R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
+            { "/effects/b.json",
+                     R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
+            { "/effects/c.json",
+                     R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 802, "name": "all_hidden",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "value": true, "script":
+        "export function update(v) { for (var i = 0; i < thisLayer.getEffectCount(); i++) { thisLayer.getEffect(i).visible = false; } return v; }" },
+      "effects": [
+        { "id": 10, "name": "a", "visible": false, "file": "effects/a.json" },
+        { "id": 11, "name": "b", "visible": false, "file": "effects/b.json" },
+        { "id": 12, "name": "c", "visible": false, "file": "effects/c.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_all_hidden_by_index", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(802) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(802);
+        REQUIRE(effLayer->EffectCount() == 3u);
+        for (usize i = 0; i < 3; i++) CHECK_FALSE(effLayer->GetEffect(i)->visible);
+    }
+
+    TEST_CASE("a script-targeted layer keeps authored effect order for index lookups") {
+        // Script indices address the built list, so a hidden effect in the middle must not shift
+        // the ones after it.
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({
+            { "/effects/a.json",
+                     R"({"name": "a", "passes": [{"material": "materials/_plain.json"}]})" },
+            { "/effects/b.json",
+                     R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
+            { "/effects/c.json",
+                     R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 803, "name": "ordered",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "value": true, "script":
+        "export function update(v) { thisLayer.getEffect(1).visible = true; return v; }" },
+      "effects": [
+        { "id": 10, "name": "a", "visible": true, "file": "effects/a.json" },
+        { "id": 11, "name": "b", "visible": false, "file": "effects/b.json" },
+        { "id": 12, "name": "c", "visible": true, "file": "effects/c.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_authored_order", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->layerEffectNames.count("ordered") == 1u);
+        CHECK(scene->layerEffectNames.at("ordered") == std::vector<std::string> { "a", "b", "c" });
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(803);
+        REQUIRE(effLayer->EffectCount() == 3u);
+        CHECK(effLayer->GetEffect(0)->visible);
+        CHECK_FALSE(effLayer->GetEffect(1)->visible);
+        CHECK(effLayer->GetEffect(2)->visible);
+    }
+
+    TEST_CASE("a literal-hidden effect with no script stays unbuilt") {
+        ensureGlslangInit();
+        auto        vfs        = makeAssetsVfsWith({
+            { "/effects/noise.json",
+                     R"({"name": "Noise", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 804, "name": "plain_hidden",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "Noise", "visible": false, "file": "effects/noise.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_hidden_unscripted", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->nodeEffectLayerMap.count(804) == 0u);
+        CHECK(scene->scriptEffectVisLayers.count(804) == 0u);
+    }
+
+    TEST_CASE("a text layer's literal-hidden effect a script shows is built hidden") {
+        ensureGlslangInit();
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
+
+        auto        vfs        = makeAssetsVfsWith({
+            { "/effects/glow.json",
+                     R"({"name": "glow", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        const char* kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 805, "name": "script_text",
+      "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 64",
+      "font": "systemfont_sans", "pointsize": 24,
+      "text": { "value": "12:00" },
+      "visible": { "value": true, "script":
+        "export function update(v) { thisLayer.getEffect('glow').visible = true; return v; }" },
+      "effects": [
+        { "id": 12, "name": "glow", "visible": false, "file": "effects/glow.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_text_hidden_shown", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(805) == 1);
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(805);
+        REQUIRE(effLayer->EffectCount() == 1u);
+        CHECK_FALSE(effLayer->GetEffect(0)->visible);
+        REQUIRE(scene->layerEffectNames.count("script_text") == 1u);
+        CHECK(scene->layerEffectNames.at("script_text") == std::vector<std::string> { "glow" });
+    }
+
     // A pass that animates a constant and carries a user binding, ahead of a
     // second pass chosen by the caller.  The binding sits in the material file
     // (a pass override records one too, covered separately), and the shader
