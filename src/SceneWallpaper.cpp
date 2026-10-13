@@ -3278,6 +3278,13 @@ void MainHandler::loadScene() {
         }
 
         scene = m_scene_parser.Parse(scene_id, scene_src, vfs, *m_sound_manager, userProps);
+        if (! scene && isAborted()) {
+            // abortLoad() stopped the parse on purpose (the SceneObject went
+            // away, or its screen did): nobody is waiting for this scene, so
+            // this is not a load failure to report.
+            LOG_INFO("scene load aborted for id=%s", scene_id.c_str());
+            return;
+        }
         if (! scene) {
             LOG_ERROR("scene parse failed for id=%s — malformed scene.json, aborting load; "
                       "sound stays off until the next successful load",
