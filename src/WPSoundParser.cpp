@@ -162,7 +162,15 @@ public:
 
         return frameCount;
     };
-    void PassDesc(const Desc& d) override { m_desc = d; }
+    void PassDesc(const Desc& d) override {
+        // The output device reopens at the sink's current format, which can
+        // differ from the one the live decoder was built for.  Rebuild it on
+        // the next pull instead of mixing its old-format PCM into the new one.
+        if (m_curActive && (d.channels != m_desc.channels || d.sampleRate != m_desc.sampleRate)) {
+            m_needsReload.store(true, std::memory_order_relaxed);
+        }
+        m_desc = d;
+    }
     void Switch() {
         if (m_soundPaths.empty()) {
             m_curActive.reset();

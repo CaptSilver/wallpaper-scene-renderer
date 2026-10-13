@@ -806,6 +806,47 @@ TEST_SUITE("WPSoundStream::PassDesc + multi-channel paths") {
     }
 }
 
+TEST_SUITE("WPSoundStream::PassDesc — device format change") {
+    TEST_CASE("a live decoder is rebuilt when the device reopens in another format") {
+        // The output device is closed while paused and reopened at whatever the
+        // default sink is then, so the decoder built for the old format must not
+        // keep feeding a mix sized for the new one.
+        Fixture fx;
+        fx.mountWav("/audio/track1.ogg", MakeWavData(2048));
+
+        auto  obj    = MakeMountableObj("loop");
+        void* stream = WPSoundParser::Parse(obj, fx.vfs, fx.sm);
+        REQUIRE(stream != nullptr);
+
+        SoundStream* base = WPSoundParser::AsSoundStreamForTest(stream);
+        base->PassDesc({ .channels = 1, .sampleRate = 44100 });
+        CHECK(HasNonZero(Pull(base, 1, 256))); // decoder now built for mono
+
+        base->PassDesc({ .channels = 2, .sampleRate = 44100 });
+        auto stereo = Pull(base, 2, 256);
+        // Mono expanded to stereo: both channels of a frame carry the same sample.
+        for (size_t i = 0; i < 256; i++) CHECK(stereo[2 * i] == stereo[2 * i + 1]);
+    }
+
+    TEST_CASE("re-passing an unchanged format keeps the decoder position") {
+        Fixture fx;
+        fx.mountWav("/audio/track1.ogg", MakeWavData(2048));
+
+        auto  obj    = MakeMountableObj("loop");
+        void* stream = WPSoundParser::Parse(obj, fx.vfs, fx.sm);
+        REQUIRE(stream != nullptr);
+
+        SoundStream* base = WPSoundParser::AsSoundStreamForTest(stream);
+        base->PassDesc({ .channels = 1, .sampleRate = 44100 });
+        auto first = Pull(base, 1, 256);
+
+        base->PassDesc({ .channels = 1, .sampleRate = 44100 });
+        auto second = Pull(base, 1, 256);
+        // A rebuilt decoder would restart the track and repeat the first chunk.
+        CHECK(first != second);
+    }
+}
+
 TEST_SUITE("WPSoundStream::NextPcmData — partial read tail-zero") {
     TEST_CASE("Pull-bigger-than-track zero-fills the tail beyond decoder output") {
         // After the decoder yields its final partial chunk (frameReads <
