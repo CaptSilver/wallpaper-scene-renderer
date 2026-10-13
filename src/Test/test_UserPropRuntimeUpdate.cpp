@@ -4,6 +4,7 @@
 
 #include "Scene/Scene.h"
 #include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
 
 #include <algorithm>
 
@@ -41,9 +42,10 @@ TEST_SUITE("UserPropRuntimeUpdate") {
     }
 
     TEST_CASE("a changed property nothing in the live scene reads forces a reload") {
-        Scene         scene;
-        SceneMaterial mat;
-        scene.userPropUniformBindings["earthcolor"].push_back({ &mat, "g_Color" });
+        Scene scene;
+        auto  mesh = std::make_shared<SceneMesh>();
+        mesh->AddMaterial(SceneMaterial {});
+        scene.userPropUniformBindings["earthcolor"].push_back({ mesh, "g_Color" });
         scene.userPropVisBindings["showclouds"].push_back({ nullptr, true, "", "{}" });
         TextLayerInfo text;
         text.pointsizeUserProp = "clocksize";

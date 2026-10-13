@@ -2,6 +2,7 @@
 
 #include "Scene/Scene.h"
 #include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
 
 // activeUserPropBindingNames is defined in SceneWallpaper.cpp, next to the
 // loadScene() call site that uses it to write the "<id>_bindings.json"
@@ -49,9 +50,10 @@ TEST_SUITE("active user-property binding names") {
     }
 
     TEST_CASE("a shader-uniform-bound name is included") {
-        Scene         scene;
-        SceneMaterial mat;
-        scene.userPropUniformBindings["boundUniform"].push_back({ &mat, "g_Color" });
+        Scene scene;
+        auto  mesh = std::make_shared<SceneMesh>();
+        mesh->AddMaterial(SceneMaterial {});
+        scene.userPropUniformBindings["boundUniform"].push_back({ mesh, "g_Color" });
 
         auto active = activeUserPropBindingNames(allNames, scene);
         CHECK(active.count("boundUniform") == 1);
@@ -87,9 +89,10 @@ TEST_SUITE("active user-property binding names") {
         // A binding on a name the caller didn't ask about (e.g. a property
         // belonging to a different, already-unloaded scene) must not leak
         // into the result.
-        Scene         scene;
-        SceneMaterial mat;
-        scene.userPropUniformBindings["notInCandidateSet"].push_back({ &mat, "g_Color" });
+        Scene scene;
+        auto  mesh = std::make_shared<SceneMesh>();
+        mesh->AddMaterial(SceneMaterial {});
+        scene.userPropUniformBindings["notInCandidateSet"].push_back({ mesh, "g_Color" });
 
         auto active = activeUserPropBindingNames(allNames, scene);
         CHECK(active.count("notInCandidateSet") == 0);

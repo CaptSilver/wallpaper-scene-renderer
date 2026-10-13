@@ -190,6 +190,9 @@ add_executable(backend_scene_tests
     test_WPMaterialUserBinding.cpp
     # Which user-property changes the live scene can absorb without a reload.
     test_UserPropRuntimeUpdate.cpp
+    # Resolving, recording and applying shader-uniform bindings fed by user
+    # properties.
+    test_UserPropUniformBinding.cpp
     # Reconciling a parse-time effect-visibility binding against a layer's
     # final, post-RemoveFailedEffects state.
     test_UserPropEffectVisResolve.cpp

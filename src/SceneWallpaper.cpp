@@ -12,6 +12,7 @@
 #include "WPJson.hpp"
 #include "AttachmentLinkOrder.hpp"
 #include "UserPropRuntimeUpdate.hpp"
+#include "UserPropUniformBinding.hpp"
 #include "EffectUniformAnimation.hpp"
 #include "UserPropScriptReference.hpp"
 #include "WPSceneParser.hpp"
@@ -2999,24 +3000,7 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
     }
 
-    // Apply uniform value changes
-    for (auto& [propName, bindings] : scene.userPropUniformBindings) {
-        if (! props.contains(propName)) continue;
-        auto& val = props[propName];
-
-        // Convert JSON value to float vector
-        std::vector<float> floatVec = wek::ParseFloatVectorFromJson(val);
-        if (floatVec.empty()) continue;
-
-        for (auto& b : bindings) {
-            b.material->customShader.constValues[b.uniformName] = floatVec;
-            b.material->customShader.constValuesDirty           = true;
-            LOG_INFO("Runtime user prop: '%s' -> uniform '%s' = [%f...]",
-                     propName.c_str(),
-                     b.uniformName.c_str(),
-                     floatVec[0]);
-        }
-    }
+    wek::applyUserPropUniforms(scene, props);
 
     // Check text layer pointsize bindings for runtime re-rasterization
     for (auto& tl : scene.textLayers) {

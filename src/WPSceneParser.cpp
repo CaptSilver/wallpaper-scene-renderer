@@ -11,6 +11,7 @@
 #include "WPPropertyScriptExtract.hpp"
 #include "ScriptEffectVisResolve.hpp"
 #include "UserPropEffectVisResolve.hpp"
+#include "UserPropUniformBinding.hpp"
 #include "WPRopeCombos.hpp"
 #include "WPSceneGroupParse.hpp"
 #include "WPUserProperties.hpp"
@@ -1045,24 +1046,13 @@ void LoadAlignment(SceneNode& node, std::string_view align, Vector2f size) {
     node.SetTranslate(trans);
 }
 
-// The GLSL uniform a material constant name binds to: the shader's alias for
-// it, else a uniform whose name minus its `g_` prefix matches.  Empty when the
-// shader declares neither.
-std::string ConstantUniformName(const WPShaderInfo& info, const std::string& name) {
-    if (info.alias.count(name) != 0) return info.alias.at(name);
-    for (const auto& el : info.alias) {
-        if (el.second.substr(2) == name) return el.second;
-    }
-    return {};
-}
-
 void LoadConstvalue(SceneMaterial& material, const wpscene::WPMaterial& wpmat,
                     const WPShaderInfo& info) {
     // load glname from alias and load to constvalue
     for (const auto& cs : wpmat.constantshadervalues) {
         const auto&               name   = cs.first;
         const std::vector<float>& value  = cs.second;
-        std::string               glname = ConstantUniformName(info, name);
+        std::string               glname = wek::ConstantUniformName(info, name);
         if (glname.empty()) {
             // Not a renderer error — WE editor often lets authors expose
             // material settings in the UI that their custom shader never
@@ -2085,20 +2075,8 @@ void attachMaterialAndUserBindings(ParseContext&                     context,
     // Must be done after AddMaterial since material is moved
     if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
         for (auto& [propName, shaderConstName] : wpimgobj.material.userShaderBindings) {
-            std::string glname;
-            if (shaderInfo.alias.count(shaderConstName) != 0) {
-                glname = shaderInfo.alias.at(shaderConstName);
-            } else {
-                for (const auto& el : shaderInfo.alias) {
-                    if (el.second.substr(2) == shaderConstName) {
-                        glname = el.second;
-                        break;
-                    }
-                }
-            }
-            if (glname.empty()) glname = shaderConstName;
-            context.scene->userPropUniformBindings[propName].push_back(
-                { spMesh->Material(), glname });
+            auto glname = wek::UserBindingUniformName(shaderInfo, shaderConstName);
+            wek::registerUserPropUniformBinding(*context.scene, propName, spMesh, glname);
             LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
                      propName.c_str(),
                      glname.c_str(),
@@ -2439,6 +2417,12 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
 
         bool eff_mat_ok { true };
 
+        // Recorded per material but handed to the scene only once the whole
+        // effect has loaded: a failing later pass frees the earlier passes'
+        // materials along with the effect.
+        std::vector<std::pair<std::string, Scene::UserPropUniform>> effUniformBindings;
+        std::vector<Scene::EffectUniformAnimation>                  effUniformAnims;
+
         for (usize i_mat = 0; i_mat < wpeffobj.materials.size(); i_mat++) {
             wpscene::WPMaterial wpmat = wpeffobj.materials.at(i_mat);
             std::string         matOutRT { WE_EFFECT_PPONG_PREFIX_B };
@@ -2516,33 +2500,21 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
             spEffNode->AddMesh(spMesh);
 
             for (const auto& [constName, anim] : wpmat.constantAnimations) {
-                auto glname = ConstantUniformName(wpEffShaderInfo, constName);
+                auto glname = wek::ConstantUniformName(wpEffShaderInfo, constName);
                 if (glname.empty()) continue;
                 LOG_INFO("  effect constant animation: '%s' -> '%s' on effect %d of id=%d",
                          constName.c_str(),
                          glname.c_str(),
                          i_eff,
                          opts.layer_id);
-                scene.effectUniformAnimations.push_back({ spMesh, glname, anim });
+                effUniformAnims.push_back({ spMesh, glname, anim });
             }
 
             // Register user property bindings for effect material uniforms
             if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
                 for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
-                    std::string glname;
-                    if (wpEffShaderInfo.alias.count(shaderConstName) != 0) {
-                        glname = wpEffShaderInfo.alias.at(shaderConstName);
-                    } else {
-                        for (const auto& el : wpEffShaderInfo.alias) {
-                            if (el.second.substr(2) == shaderConstName) {
-                                glname = el.second;
-                                break;
-                            }
-                        }
-                    }
-                    if (glname.empty()) glname = shaderConstName;
-                    context.scene->userPropUniformBindings[propName].push_back(
-                        { spMesh->Material(), glname });
+                    auto glname = wek::UserBindingUniformName(wpEffShaderInfo, shaderConstName);
+                    effUniformBindings.push_back({ propName, { spMesh, glname } });
                     LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
                              propName.c_str(),
                              glname.c_str(),
@@ -2556,6 +2528,11 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
         }
 
         if (eff_mat_ok) {
+            for (auto& [propName, binding] : effUniformBindings) {
+                wek::registerUserPropUniformBinding(
+                    *context.scene, propName, binding.mesh, binding.uniformName);
+            }
+            for (auto& anim : effUniformAnims) scene.effectUniformAnimations.push_back(anim);
             imgEffect->name = wpeffobj.name;
             layer.AddEffect(imgEffect);
             if (! wpeffobj.userVisibleRawJson.empty()) {

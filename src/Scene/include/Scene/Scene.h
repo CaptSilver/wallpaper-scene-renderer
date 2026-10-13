@@ -477,9 +477,12 @@ public:
         std::string conditionValue; // combo: visible when prop == this value (empty = boolean)
         std::string rawVisibleJson; // raw JSON of "visible" field for re-resolution
     };
+    // Shares ownership of the mesh like EffectUniformAnimation does: an effect
+    // dropped after its binding was recorded (RemoveFailedEffects reaped it)
+    // would otherwise leave the write going through a freed material.
     struct UserPropUniform {
-        SceneMaterial* material;
-        std::string    uniformName; // glsl uniform name (e.g. "g_UserAlpha")
+        std::shared_ptr<SceneMesh> mesh;
+        std::string                uniformName; // glsl uniform name (e.g. "g_UserAlpha")
     };
     std::unordered_map<std::string, std::vector<UserPropVisibility>> userPropVisBindings;
     std::unordered_map<std::string, std::vector<UserPropUniform>>    userPropUniformBindings;

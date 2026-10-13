@@ -3138,6 +3138,98 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->userPropEffectVisBindings.count("godrays_enable") == 0u);
     }
 
+    // A pass that animates a constant and carries a user binding, ahead of a
+    // second pass chosen by the caller.  The binding sits in the material file
+    // (an effect-file pass override does not record one), and the shader
+    // annotates its uniform so the constant resolves to a GLSL name.
+    TEST_CASE("an effect dropped for a failed later pass registers neither its uniform binding "
+              "nor its constant animation") {
+        ensureGlslangInit();
+        constexpr const char* kPulseFrag             = R"GLSL(
+uniform float g_Pulse; // {"material":"pulse","default":1}
+void main() {
+    gl_FragColor = vec4(g_Pulse);
+}
+)GLSL";
+        constexpr const char* kAnimBoundMaterialJson = R"({
+            "passes": [{
+                "shader": "_anim", "blending": "translucent", "textures": [],
+                "constantshadervalues": {
+                    "pulse": {
+                        "user": "myprop",
+                        "animation": {
+                            "c0": [{ "frame": 0, "value": 1 }, { "frame": 30, "value": 0 }],
+                            "options": { "fps": 7.5, "length": 30, "mode": "single" }
+                        },
+                        "value": 1
+                    }
+                }
+            }]
+        })";
+        constexpr const char* kBrokenMaterialJson    = R"({
+            "passes": [{"shader": "broken", "blending": "translucent", "textures": []}]
+        })";
+        constexpr const char* kPairEffectJson        = R"({
+            "name": "pair",
+            "passes": [{ "material": "materials/_animbound.json" },
+                       { "material": "materials/SECOND.json" }]
+        })";
+        constexpr const char* kSceneJson             = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 509, "name": "pair_layer",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "pair", "visible": true, "file": "effects/pair.json" },
+        { "id": 11, "name": "tint", "visible": true, "file": "effects/tint.json" }
+      ] }
+  ]
+}
+)JSON";
+
+        auto parseWithSecond = [&](const char* secondMaterial) {
+            std::string effectJson = kPairEffectJson;
+            effectJson.replace(effectJson.find("SECOND"), 6, secondMaterial);
+            auto                vfs = makeAssetsVfsWith({
+                { "/shaders/_anim.vert", kTrivialVert },
+                { "/shaders/_anim.frag", kPulseFrag },
+                { "/materials/_animbound.json", kAnimBoundMaterialJson },
+                { "/materials/broken.json", kBrokenMaterialJson },
+                { "/effects/pair.json", effectJson },
+                { "/effects/tint.json", kEffectFileJson },
+            });
+            audio::SoundManager sm;
+            WPUserProperties    props {};
+            WPSceneParser       parser;
+            return parser.Parse("scene_pair_effect", kSceneJson, *vfs, sm, props);
+        };
+
+        SUBCASE("the second pass fails to load") {
+            auto scene = parseWithSecond("broken");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->nodeEffectLayerMap.count(509) == 1);
+            REQUIRE(scene->nodeEffectLayerMap.at(509)->EffectCount() == 1u); // only "tint"
+
+            CHECK(scene->userPropUniformBindings.count("myprop") == 0u);
+            CHECK(scene->effectUniformAnimations.empty());
+        }
+
+        SUBCASE("both passes load") {
+            auto scene = parseWithSecond("_plain");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->nodeEffectLayerMap.count(509) == 1);
+            REQUIRE(scene->nodeEffectLayerMap.at(509)->EffectCount() == 2u);
+
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(scene->userPropUniformBindings.at("myprop").size() == 1u);
+            CHECK(scene->effectUniformAnimations.size() == 1u);
+        }
+    }
+
     TEST_CASE("a script-bound effect visible field produces an Effect-attached property script "
               "with the right effectIndex") {
         ensureGlslangInit();
