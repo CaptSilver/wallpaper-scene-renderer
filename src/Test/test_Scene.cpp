@@ -767,9 +767,24 @@ TEST_SUITE("Normal matrix") {
         model(2, 2)           = 4.0;
 
         auto n = wallpaper::NormalMatrixFrom(model);
-        CHECK(n(0, 0) == doctest::Approx(0.5));
-        CHECK(n(1, 1) == doctest::Approx(1.0));
-        CHECK(n(2, 2) == doctest::Approx(0.25));
+        CHECK(n(0, 0) / n(1, 1) == doctest::Approx(0.5));
+        CHECK(n(2, 2) / n(1, 1) == doctest::Approx(0.25));
+        CHECK(n.topLeftCorner<3, 3>().determinant() == doctest::Approx(1.0));
+    }
+
+    // Stock shaders build the tangent frame as mul(tangent, g_NormalModelMatrix)
+    // and never renormalize it, so the matrix must not carry the model's scale.
+    // Real-Time Earth draws radius-1 spheres at scale 0.1: a 1/s matrix made the
+    // tangents 10x the normal and tilted every normal-map texel across the
+    // terminator, lighting cloud on the night side.
+    TEST_CASE("a uniform scale leaves only the rotation") {
+        Eigen::Matrix3d rot   = Eigen::AngleAxisd(0.7, Eigen::Vector3d::UnitY()).toRotationMatrix();
+        Eigen::Matrix4d model = Eigen::Matrix4d::Identity();
+        model.topLeftCorner<3, 3>() = rot * 0.1;
+
+        auto n = wallpaper::NormalMatrixFrom(model);
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) CHECK(n(r, c) == doctest::Approx(rot(r, c)));
     }
 
     // Under rotation the inverse transpose is the rotation itself.  This is the
