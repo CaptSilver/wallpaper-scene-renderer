@@ -10,6 +10,7 @@
 #include "WPCommon.hpp"
 #include "WPPropertyScriptExtract.hpp"
 #include "ScriptEffectVisResolve.hpp"
+#include "WPScriptEffectTargetScan.hpp"
 #include "UserPropEffectVisResolve.hpp"
 #include "UserPropScriptReference.hpp"
 #include "UserPropUniformBinding.hpp"
@@ -195,6 +196,11 @@ struct ParseContext {
     // subsequent SetVisible(true) has no visible effect — see dino_run's
     // jump sprite.
     std::unordered_set<std::string> script_referenced_layers;
+
+    // Layers whose effects a script can hide or show with getEffect(...).visible,
+    // found by prescanScripts.  assembleEffects marks the matching layers in
+    // Scene::scriptEffectVisLayers.
+    wek::ScriptEffectTargetSet script_effect_targets;
 
     // IDs of any image-object that appears in some compose layer's
     // `dependencies` list.  These images are intended to be sampled by a
@@ -2362,6 +2368,13 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     // passthrough (CustomShaderPass::hideable). See computeWouldBuildEffects.
     auto plan = computeWouldBuildEffects(effects);
 
+    // A script that toggles this layer's effects at runtime can hide any of
+    // them, whether or not a binding was declared, so the render graph has to
+    // treat all of them as hideable.
+    if (context.script_effect_targets.contains(opts.layer_id, layer_name)) {
+        scene.scriptEffectVisLayers.insert(opts.layer_id);
+    }
+
     int32_t i_eff   = -1;
     usize   raw_idx = 0;
     for (const auto& wpeffobj : effects) {
@@ -4268,12 +4281,14 @@ void AddWPObject(std::vector<WPObjectVar>& objs, const nlohmann::json& json_obj,
     }
     objs.push_back(wpobj);
 }
-// Pre-scan all embedded SceneScript sources for two things:
+// Pre-scan all embedded SceneScript sources for three things:
 //   1. getLayer('name') references — layers that the script may toggle at
 //      runtime, so we keep them in the main render graph.
 //   2. engine.registerAsset('path') references — assets the script will
 //      instantiate at runtime via thisScene.createLayer(), which need
 //      pre-allocated scene nodes (C++-side pool, see below).
+//   3. getEffect(...).visible writes — the layers whose effects a script can
+//      hide, so every effect of those layers becomes a hideable render pass.
 void prescanScripts(ParseContext& context, const nlohmann::json& json) {
     static const std::regex getLayerRe(R"(getLayer\s*\(\s*['"]([^'"]+)['"]\s*\))");
     static const std::regex registerAssetRe(R"(registerAsset\s*\(\s*['"]([^'"]+)['"]\s*\))");
@@ -4403,6 +4418,7 @@ void prescanScripts(ParseContext& context, const nlohmann::json& json) {
         }
     };
     scan(json);
+    wek::collectScriptEffectTargets(json, context.script_effect_targets);
     if (! context.script_referenced_layers.empty()) {
         LOG_INFO("Scripts reference %zu named layers", context.script_referenced_layers.size());
     }

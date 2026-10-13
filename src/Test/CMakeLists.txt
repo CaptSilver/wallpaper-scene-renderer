@@ -89,6 +89,7 @@ add_executable(backend_scene_tests
     test_SceneToRenderGraph_SelfWriteHazardScale.cpp
     test_SceneToRenderGraph_ReflectionTextureRead.cpp
     test_SceneToRenderGraph_TerminalPassthrough.cpp
+    test_SceneToRenderGraph_ScriptEffectVis.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp
@@ -199,6 +200,9 @@ add_executable(backend_scene_tests
     # Same resolver shape, for effect-level visible.script bindings instead
     # of visible.user ones.
     test_ScriptEffectVisResolve.cpp
+    # Text scan of SceneScript sources for the layers whose effects a script
+    # can hide or show.
+    test_WPScriptEffectTargetScan.cpp
     test_WPParticleObject.cpp
     test_WPImageObjectExpanded.cpp
     test_WPParticleParserMore.cpp

@@ -134,7 +134,9 @@ struct ExtraInfo {
     // user-property visibility binding, built once from
     // scene.propertyScripts / scene.userPropEffectVisBindings before the
     // graph traversal starts.  LoadEffectChain consults this per effect to
-    // decide which chain-writing passes are hideable.
+    // decide which chain-writing passes are hideable.  Layers listed in
+    // Scene::scriptEffectVisLayers are a second source: all of their effects
+    // are hideable, read there directly.
     std::unordered_set<uint64_t> hideable_effect_keys {};
 };
 
@@ -253,15 +255,18 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
 
     effs->ResolveEffect(scene.default_effect_mesh, "effect");
 
-    // Which effects carry a runtime visibility binding, checked once per layer
+    // Which effects can be hidden at runtime -- a declared binding, or any
+    // effect of a layer a script toggles effects on -- checked once per layer
     // rather than per node.  The whole chain is gathered only when some effect
     // is bound -- the overwhelming majority of layers have none.
     SceneNode*                           terminal_node = effs->ResolvedLastOutput();
     std::vector<const SceneImageEffect*> chain;
     std::vector<bool>                    bound(effs->EffectCount(), false);
     bool                                 anyBound = false;
+    const bool layerScripted = scene.scriptEffectVisLayers.count(node->ID()) != 0;
     for (usize j = 0; j < effs->EffectCount(); j++) {
-        bound[j] = extra.hideable_effect_keys.count(PackNodeEffectKey(node->ID(), (i32)j)) != 0;
+        bound[j] = layerScripted ||
+                   extra.hideable_effect_keys.count(PackNodeEffectKey(node->ID(), (i32)j)) != 0;
         anyBound = anyBound || bound[j];
     }
     if (anyBound) {
@@ -701,7 +706,9 @@ std::unique_ptr<rg::RenderGraph> wallpaper::sceneToRenderGraph(Scene& scene) {
     ExtraInfo                        extra { .rgraph = rgraph.get(), .scene = &scene };
     // Every (node id, effect index) the parser registered a runtime
     // visibility binding for, script- or user-property-bound alike.
-    // LoadEffectChain looks these up per effect as it walks the scene graph.
+    // LoadEffectChain looks these up per effect as it walks the scene graph;
+    // it reads Scene::scriptEffectVisLayers itself for layers a script
+    // toggles effects on.
     for (auto& ps : scene.propertyScripts) {
         if (ps.attachment != ScenePropertyScript::Attachment::Effect) continue;
         extra.hideable_effect_keys.insert(PackNodeEffectKey(ps.id, ps.effectIndex));

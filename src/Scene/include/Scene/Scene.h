@@ -628,6 +628,12 @@ public:
     // Layer name → ordered list of effect names for SceneScript getEffect()
     std::unordered_map<std::string, std::vector<std::string>> layerEffectNames;
 
+    // Node ids of the layers whose effects a SceneScript can hide or show with
+    // getEffect(...).visible.  The script's target is not known until it runs,
+    // so every built effect of these layers is a hideable pass: a hidden one
+    // draws its input through instead of leaving the layer's buffer cleared.
+    std::unordered_set<i32> scriptEffectVisLayers;
+
     // SceneScript dynamic-asset pools.  For each path passed to
     // engine.registerAsset(...), a pre-allocated pool of hidden scene nodes is
     // created at parse time.  thisScene.createLayer(asset) pops one off the
