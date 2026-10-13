@@ -350,9 +350,9 @@ private:
     // subsequent loads.
     std::atomic_bool m_aborted { false };
 
-    WPSceneParser                         m_scene_parser;
-    std::unique_ptr<audio::SoundManager>  m_sound_manager;
-    bool                                  m_playback_stopped { false };
+    WPSceneParser                        m_scene_parser;
+    std::unique_ptr<audio::SoundManager> m_sound_manager;
+    bool                                 m_playback_stopped { false };
     // Open the output stream only while there is something to play and close
     // it otherwise (see audio::WantsOutputDevice).  Mounted streams survive a
     // Close(); called after (un)mounting and on every STOP / resume.
