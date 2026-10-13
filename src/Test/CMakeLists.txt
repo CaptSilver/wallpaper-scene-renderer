@@ -43,6 +43,7 @@ add_executable(backend_scene_tests
     test_WPShaderTransforms.cpp
     test_WPShaderInclude.cpp
     test_WPShaderTexCombos.cpp
+    test_ReadbackPixels.cpp
     test_WPShaderPreamble_DepthGather.cpp
     test_StringUtils.cpp
     test_Algorism.cpp

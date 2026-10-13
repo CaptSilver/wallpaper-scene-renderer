@@ -32,6 +32,7 @@
 #include "VulkanPass.hpp"
 #include "PrePass.hpp"
 #include "FinPass.hpp"
+#include "VulkanRender/ReadbackPixels.hpp"
 #include "SwapchainRecreate.hpp"
 #include "CustomShaderPass.hpp"
 #include "SkyboxPass.hpp"
@@ -248,7 +249,14 @@ struct VulkanRender::Impl {
 // header-plus-RGB format, avoids pulling in a PNG encoder.
 static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swap_format,
                                 uint32_t width, uint32_t height, const std::string& path) {
-    const VkDeviceSize bufferSize = (VkDeviceSize)width * height * 4;
+    // Sized from the swapchain's real format: an HDR swapchain is RGBA16F, and a
+    // 4-byte-per-pixel buffer let the image copy overrun it.
+    const uint32_t bpp = BytesPerPixelFor(swap_format);
+    if (bpp == 0) {
+        LOG_ERROR("Screenshot: unsupported swapchain format %d", (int)swap_format);
+        return false;
+    }
+    const VkDeviceSize bufferSize = (VkDeviceSize)width * height * bpp;
 
     // 1) Host-visible staging buffer that we can map after the copy.
     VmaBufferParameters staging;
@@ -354,8 +362,7 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
         return false;
     }
 
-    // 5) Map memory, write PPM header + RGB rows.  Swapchain formats in this
-    //    codebase are BGRA8_UNORM or RGBA8_UNORM (see chooseSwapSurfaceFormat).
+    // 5) Map memory, write PPM header + RGB rows.
     void* mapped = nullptr;
     if (staging.handle.MapMemory(&mapped) != VK_SUCCESS) {
         LOG_ERROR("Screenshot: map failed");
@@ -370,23 +377,10 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
     }
     std::fprintf(f, "P6\n%u %u\n255\n", width, height);
 
-    const bool bgr =
-        (swap_format == VK_FORMAT_B8G8R8A8_UNORM || swap_format == VK_FORMAT_B8G8R8A8_SRGB);
     const auto*          pixels = static_cast<const uint8_t*>(mapped);
     std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
     for (uint32_t y = 0; y < height; y++) {
-        const uint8_t* src = pixels + (size_t)y * width * 4;
-        for (uint32_t x = 0; x < width; x++) {
-            if (bgr) {
-                row[x * 3 + 0] = src[x * 4 + 2];
-                row[x * 3 + 1] = src[x * 4 + 1];
-                row[x * 3 + 2] = src[x * 4 + 0];
-            } else {
-                row[x * 3 + 0] = src[x * 4 + 0];
-                row[x * 3 + 1] = src[x * 4 + 1];
-                row[x * 3 + 2] = src[x * 4 + 2];
-            }
-        }
+        SwapchainRowToRGB8(pixels + (size_t)y * width * bpp, swap_format, width, row.data());
         std::fwrite(row.data(), 1, row.size(), f);
     }
     std::fclose(f);
@@ -407,126 +401,6 @@ void VulkanRender::Impl::takeScreenshotIfRequested(VkImage swap_image, VkFormat 
     if (path.empty()) return;
     writeSwapchainToPPM(*m_device, swap_image, swap_format, width, height, path);
     m_screenshot_done.store(true, std::memory_order_release);
-}
-
-// Generic image readback for per-pass dump.  The src image is assumed to be
-// in SHADER_READ_ONLY_OPTIMAL layout — that's where intermediate RTs land
-// after their render pass's finalLayout transition, because the render graph
-// uses them as shader inputs for downstream passes.  Returns true on success.
-// Format is inferred as RGBA8 UNORM for simplicity; HDR (RGBA16F) RTs produce
-// a garbled PPM but never crash.
-[[maybe_unused]] static bool writeImageToPPM(Device& device, VkImage image,
-                                             VkImageLayout current_layout, uint32_t width,
-                                             uint32_t height, const std::string& path) {
-    if (image == VK_NULL_HANDLE || width == 0 || height == 0) return false;
-    const VkDeviceSize bufferSize = (VkDeviceSize)width * height * 4;
-
-    VmaBufferParameters staging;
-    staging.req_size = bufferSize;
-    {
-        VkBufferCreateInfo ci {
-            .sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .pNext                 = nullptr,
-            .flags                 = 0,
-            .size                  = bufferSize,
-            .usage                 = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            .sharingMode           = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices   = nullptr,
-        };
-        VmaAllocationCreateInfo vma_info = {};
-        vma_info.usage                   = VMA_MEMORY_USAGE_CPU_ONLY;
-        if (vvk::CreateBuffer(device.vma_allocator(), ci, vma_info, staging.handle) != VK_SUCCESS)
-            return false;
-    }
-
-    vvk::CommandBuffers cmds;
-    if (device.cmd_pool().Allocate(1, VK_COMMAND_BUFFER_LEVEL_PRIMARY, cmds) != VK_SUCCESS)
-        return false;
-    vvk::CommandBuffer cmd(cmds[0], device.handle().Dispatch());
-
-    VkCommandBufferBeginInfo begin {
-        .sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .pNext            = nullptr,
-        .flags            = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        .pInheritanceInfo = nullptr,
-    };
-    if (cmd.Begin(begin) != VK_SUCCESS) return false;
-
-    VkImageMemoryBarrier toSrc {
-        .sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .pNext               = nullptr,
-        .srcAccessMask       = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask       = VK_ACCESS_TRANSFER_READ_BIT,
-        .oldLayout           = current_layout,
-        .newLayout           = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image               = image,
-        .subresourceRange    = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 },
-    };
-    cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, toSrc);
-
-    VkBufferImageCopy region {
-        .bufferOffset      = 0,
-        .bufferRowLength   = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource  = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-        .imageOffset       = { 0, 0, 0 },
-        .imageExtent       = { width, height, 1 },
-    };
-    cmd.CopyImageToBuffer(image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, *staging.handle, region);
-
-    VkImageMemoryBarrier toBack = toSrc;
-    toBack.srcAccessMask        = VK_ACCESS_TRANSFER_READ_BIT;
-    toBack.dstAccessMask        = VK_ACCESS_SHADER_READ_BIT;
-    toBack.oldLayout            = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    toBack.newLayout            = current_layout;
-    cmd.PipelineBarrier(
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, toBack);
-
-    if (cmd.End() != VK_SUCCESS) return false;
-
-    VkSubmitInfo sub {
-        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .pNext                = nullptr,
-        .waitSemaphoreCount   = 0,
-        .pWaitSemaphores      = nullptr,
-        .pWaitDstStageMask    = nullptr,
-        .commandBufferCount   = 1,
-        .pCommandBuffers      = cmd.address(),
-        .signalSemaphoreCount = 0,
-        .pSignalSemaphores    = nullptr,
-    };
-    if (device.graphics_queue().handle.Submit(sub, {}) != VK_SUCCESS) return false;
-    if (device.graphics_queue().handle.WaitIdle() != VK_SUCCESS) return false;
-
-    void* mapped = nullptr;
-    if (staging.handle.MapMemory(&mapped) != VK_SUCCESS) return false;
-
-    FILE* f = std::fopen(path.c_str(), "wb");
-    if (! f) {
-        staging.handle.UnMapMemory();
-        return false;
-    }
-    std::fprintf(f, "P6\n%u %u\n255\n", width, height);
-    const auto*          pixels = static_cast<const uint8_t*>(mapped);
-    std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
-    for (uint32_t y = 0; y < height; y++) {
-        const uint8_t* src = pixels + (size_t)y * width * 4;
-        for (uint32_t x = 0; x < width; x++) {
-            // RTs are typically RGBA8; swap for BGRA would be detectable from
-            // the render target format, but we don't track that here.
-            row[x * 3 + 0] = src[x * 4 + 0];
-            row[x * 3 + 1] = src[x * 4 + 1];
-            row[x * 3 + 2] = src[x * 4 + 2];
-        }
-        std::fwrite(row.data(), 1, row.size(), f);
-    }
-    std::fclose(f);
-    staging.handle.UnMapMemory();
-    return true;
 }
 
 // Per-pass dump state.  CustomShaderPass::execute pushes an entry + records
@@ -550,48 +424,6 @@ struct PassDumpEntry {
     size_t              pass_index;
 };
 
-// Bytes per pixel for the formats our render graph emits.  Returns 0 for
-// formats we don't know how to dump — those get skipped rather than writing
-// garbage.  RGBA8/BGRA8 = 4bpp; RGBA16F (HDR scenes) = 8bpp.
-inline uint32_t BytesPerPixelFor(VkFormat f) {
-    switch (f) {
-    case VK_FORMAT_R8G8B8A8_UNORM:
-    case VK_FORMAT_R8G8B8A8_SRGB:
-    case VK_FORMAT_B8G8R8A8_UNORM:
-    case VK_FORMAT_B8G8R8A8_SRGB:
-        return 4;
-    case VK_FORMAT_R16G16B16A16_SFLOAT:
-        return 8;
-    default:
-        return 0;
-    }
-}
-
-// Half-to-float decode for RGBA16F dump conversion.  Standard IEEE 754-2008
-// binary16 layout; handles normals, subnormals, and inf/NaN.
-inline float Half2Float(uint16_t h) {
-    uint32_t sign = (h >> 15) & 0x1u;
-    uint32_t exp  = (h >> 10) & 0x1fu;
-    uint32_t mant = h & 0x3ffu;
-    uint32_t f;
-    if (exp == 0) {
-        if (mant == 0) {
-            f = sign << 31;
-        } else {
-            while ((mant & 0x400u) == 0) { mant <<= 1; exp--; }
-            exp++;
-            mant &= 0x3ffu;
-            f = (sign << 31) | ((exp + (127 - 15)) << 23) | (mant << 13);
-        }
-    } else if (exp == 31) {
-        f = (sign << 31) | 0x7f800000u | (mant << 13);
-    } else {
-        f = (sign << 31) | ((exp + (127 - 15)) << 23) | (mant << 13);
-    }
-    float out;
-    std::memcpy(&out, &f, 4);
-    return out;
-}
 bool                        g_pass_dump_active  = false;
 std::vector<PassDumpEntry>* g_pass_dump_entries = nullptr;
 Device const*               g_pass_dump_device  = nullptr;
