@@ -3175,6 +3175,68 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(effLayer->GetEffect(2)->visible);
     }
 
+    TEST_CASE("a script-targeted layer lists only the effects that survive a failed shader") {
+        // The script's effect index addresses the layer's live list, which
+        // RemoveFailedEffects compacts after assembly; the name and visibility
+        // lists have to follow, or getEffect(0) would toggle the wrong effect.
+        ensureGlslangInit();
+        constexpr const char* kBrokenFrag         = R"GLSL(
+void main() {
+    this is not glsl;
+}
+)GLSL";
+        constexpr const char* kBrokenMaterialJson = R"({
+            "passes": [{"shader": "_broken", "blending": "translucent", "textures": []}]
+        })";
+        auto                  vfs                 = makeAssetsVfsWith({
+            { "/shaders/_broken.vert", kTrivialVert },
+            { "/shaders/_broken.frag", kBrokenFrag },
+            { "/materials/_broken.json", kBrokenMaterialJson },
+            { "/effects/dead.json",
+              R"({"name": "dead", "passes": [{"material": "materials/_broken.json"}]})" },
+            { "/effects/b.json",
+              R"({"name": "b", "passes": [{"material": "materials/_plain.json"}]})" },
+            { "/effects/c.json",
+              R"({"name": "c", "passes": [{"material": "materials/_plain.json"}]})" },
+        });
+        // A shader cache mount makes a failed compile yield an empty module set
+        // on a live material, which RemoveFailedEffects reaps; without it the
+        // material itself fails to load and the effect is never added.
+        REQUIRE(vfs->Mount("/cache", std::make_unique<MemFs>(), "cache"));
+        const char*         kSceneJson = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 804, "name": "reaped",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "value": true, "script":
+        "export function update(v) { thisLayer.getEffect(0).visible = false; return v; }" },
+      "effects": [
+        { "id": 10, "name": "dead", "visible": true, "file": "effects/dead.json" },
+        { "id": 11, "name": "b", "visible": false, "file": "effects/b.json" },
+        { "id": 12, "name": "c", "visible": true, "file": "effects/c.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props;
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_reaped_effect_lists", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneImageEffectLayer* effLayer = scene->nodeEffectLayerMap.at(804);
+        REQUIRE(effLayer->EffectCount() == 2u);
+        CHECK(effLayer->GetEffect(0)->name == "b");
+
+        REQUIRE(scene->layerEffectNames.count("reaped") == 1u);
+        CHECK(scene->layerEffectNames.at("reaped") == std::vector<std::string> { "b", "c" });
+        REQUIRE(scene->layerEffectVisible.count("reaped") == 1u);
+        CHECK(scene->layerEffectVisible.at("reaped") == std::vector<bool> { false, true });
+    }
+
     TEST_CASE("a literal-hidden effect with no script stays unbuilt") {
         ensureGlslangInit();
         auto        vfs        = makeAssetsVfsWith({

@@ -254,6 +254,11 @@ struct ParseContext {
     // by resolvePendingScriptEffectVis once assembleEffects has finished
     // building every layer.
     std::vector<wek::PendingScriptEffectVis> pending_script_effect_vis;
+
+    // Layers whose effect names and visibility feed SceneScript getEffect(i).
+    // A script's index addresses the layer's live effect list, so the lists are
+    // read off the layer only once finalizeParse has compacted it.
+    std::vector<std::pair<std::string, wallpaper::SceneImageEffectLayer*>> effect_list_layers;
 };
 
 using WPObjectVar =
@@ -2601,19 +2606,9 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
             LOG_ERROR("effect \'%s\' failed to load", wpeffobj.name.c_str());
         }
     }
-    // Store effect names per layer for SceneScript getEffect()
-    {
-        std::vector<std::string> effNames;
-        std::vector<bool>        effVisible;
-        for (size_t i = 0; i < layer.EffectCount(); i++) {
-            effNames.push_back(layer.GetEffect(i)->name);
-            effVisible.push_back(layer.GetEffect(i)->visible);
-        }
-        if (! effNames.empty()) {
-            context.scene->layerEffectNames[layer_name]   = std::move(effNames);
-            context.scene->layerEffectVisible[layer_name] = std::move(effVisible);
-        }
-    }
+    // The name/visibility lists a script indexes with getEffect() are filled in
+    // finalizeParse, after RemoveFailedEffects has compacted the layer.
+    context.effect_list_layers.push_back({ layer_name, &layer });
 }
 
 void assembleEffectChain(ParseContext&                     context,
@@ -5852,6 +5847,18 @@ void finalizeParse(ParseContext& context) {
                      "compile so chains compose correctly via earlier-good last_output",
                      total_removed);
         }
+    }
+
+    for (const auto& [layerName, layer] : context.effect_list_layers) {
+        std::vector<std::string> effNames;
+        std::vector<bool>        effVisible;
+        for (size_t i = 0; i < layer->EffectCount(); i++) {
+            effNames.push_back(layer->GetEffect(i)->name);
+            effVisible.push_back(layer->GetEffect(i)->visible);
+        }
+        if (effNames.empty()) continue;
+        context.scene->layerEffectNames[layerName]   = std::move(effNames);
+        context.scene->layerEffectVisible[layerName] = std::move(effVisible);
     }
 
     wek::resolvePendingUserPropEffectVis(context.pending_user_prop_effect_vis,
