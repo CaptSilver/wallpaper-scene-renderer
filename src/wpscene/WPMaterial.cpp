@@ -27,9 +27,9 @@ std::string UserPropertyNameOf(const nlohmann::json& value) {
 // The textures/usertextures/constantshadervalues/combos parse is identical
 // between WPMaterialPass::FromJson and WPMaterial::FromJson's own passes[0]
 // block -- this shares it.  `onConstantValue`, when given, runs once per
-// constantshadervalues entry with its name and raw (pre-resolution) JSON --
-// WPMaterial::FromJson uses it to record userShaderBindings; WPMaterialPass
-// has no equivalent use, so it's left unset there.
+// constantshadervalues entry with its name and raw (pre-resolution) JSON.
+// Callers that care about {"user": ...} references go through
+// ParsePassFieldsRecordingBindings instead.
 void ParsePassFields(
     const nlohmann::json& json, std::vector<std::string>& textures,
     std::vector<WPMaterialPassUserTexture>&                               usertextures,
@@ -83,7 +83,7 @@ void MergeOverlayFields(
     std::unordered_map<std::string, int32_t>&                      combos,
     std::unordered_map<std::string, std::vector<float>>&           constantshadervalues,
     std::unordered_map<std::string, wallpaper::ConstantAnimation>& constantAnimations,
-    const WPMaterialPass&                                          p) {
+    std::unordered_map<std::string, std::string>& userShaderBindings, const WPMaterialPass& p) {
     int32_t i = -1;
     for (const auto& el : p.textures) {
         i++;
@@ -104,6 +104,12 @@ void MergeOverlayFields(
         constantshadervalues[el.first] = el.second;
         // A plain value replaces whatever curve the base carried for it.
         if (p.constantAnimations.count(el.first) == 0) constantAnimations.erase(el.first);
+        // Same for a property link: the override's value wins, so the base's property
+        // must stop driving this constant (the override's own link, if any, is added below).
+        userShaderBindings.erase(el.first);
+    }
+    for (const auto& el : p.userShaderBindings) {
+        userShaderBindings[el.first] = el.second;
     }
     for (const auto& el : p.constantAnimations) {
         constantAnimations[el.first] = el.second;
@@ -111,6 +117,37 @@ void MergeOverlayFields(
     for (const auto& el : p.combos) {
         combos[el.first] = el.second;
     }
+}
+
+// GET_JSON_VALUE already resolves an inline {"user": ...} to the property's
+// current value, but the link back to the property is lost with it. Record it,
+// keyed by constant (one constant has one property; a property can drive
+// several constants), so a settings change can reach the uniform without
+// reparsing the scene. Shared by the material file's pass and the scene's
+// per-effect pass override. The live update writes the property's raw value and
+// cannot evaluate a {"user": {"name", "condition"}} condition, so the pass
+// override leaves that shape unbound (a reload resolves it correctly).
+void ParsePassFieldsRecordingBindings(
+    const nlohmann::json& json, std::vector<std::string>& textures,
+    std::vector<WPMaterialPassUserTexture>&                        usertextures,
+    std::unordered_map<std::string, int32_t>&                      combos,
+    std::unordered_map<std::string, std::vector<float>>&           constantshadervalues,
+    std::unordered_map<std::string, wallpaper::ConstantAnimation>& constantAnimations,
+    std::unordered_map<std::string, std::string>& userShaderBindings, bool bindConditional) {
+    ParsePassFields(json,
+                    textures,
+                    usertextures,
+                    combos,
+                    constantshadervalues,
+                    constantAnimations,
+                    [&userShaderBindings, bindConditional](const std::string&    name,
+                                                           const nlohmann::json& rawValue) {
+                        auto prop = UserPropertyNameOf(rawValue);
+                        if (prop.empty()) return;
+                        // UserPropertyNameOf found a "user" key, so .at() cannot throw.
+                        if (! bindConditional && ! rawValue.at("user").is_string()) return;
+                        userShaderBindings[name] = prop;
+                    });
 }
 
 } // namespace
@@ -134,15 +171,34 @@ bool WPMaterialPassUserTexture::FromJson(const nlohmann::json& json) {
 }
 
 void WPMaterialPass::Update(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, constantAnimations, p);
+    MergeOverlayFields(textures,
+                       usertextures,
+                       combos,
+                       constantshadervalues,
+                       constantAnimations,
+                       userShaderBindings,
+                       p);
 }
 
 void WPMaterial::MergePass(const WPMaterialPass& p) {
-    MergeOverlayFields(textures, usertextures, combos, constantshadervalues, constantAnimations, p);
+    MergeOverlayFields(textures,
+                       usertextures,
+                       combos,
+                       constantshadervalues,
+                       constantAnimations,
+                       userShaderBindings,
+                       p);
 }
 
 bool WPMaterialPass::FromJson(const nlohmann::json& json) {
-    ParsePassFields(json, textures, usertextures, combos, constantshadervalues, constantAnimations);
+    ParsePassFieldsRecordingBindings(json,
+                                     textures,
+                                     usertextures,
+                                     combos,
+                                     constantshadervalues,
+                                     constantAnimations,
+                                     userShaderBindings,
+                                     false);
     GET_JSON_NAME_VALUE_NOWARN(json, "target", target);
     if (json.contains("bind")) {
         for (const auto& jB : json.at("bind")) {
@@ -174,26 +230,20 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
     if (jContent.contains("depthwriting") && ! jContent.contains("depthwrite"))
         GET_JSON_NAME_VALUE(jContent, "depthwriting", depthwrite);
     GET_JSON_NAME_VALUE(jContent, "shader", shader);
-    // GET_JSON_VALUE already resolved an inline {"user": ...} to the
-    // property's current value, but the link back to the property is lost
-    // with it. Record it so a settings change can reach the uniform without
-    // reparsing the scene.
-    ParsePassFields(jContent,
-                    textures,
-                    usertextures,
-                    combos,
-                    constantshadervalues,
-                    constantAnimations,
-                    [this](const std::string& name, const nlohmann::json& rawValue) {
-                        if (auto prop = UserPropertyNameOf(rawValue); ! prop.empty())
-                            userShaderBindings[prop] = name;
-                    });
+    ParsePassFieldsRecordingBindings(jContent,
+                                     textures,
+                                     usertextures,
+                                     combos,
+                                     constantshadervalues,
+                                     constantAnimations,
+                                     userShaderBindings,
+                                     true);
     // Resolve usershadervalues: maps user property names to shader constant names
     if (jContent.contains("usershadervalues")) {
         for (const auto& entry : jContent.at("usershadervalues").items()) {
             std::string shaderConstName = entry.value().get<std::string>();
             // Record the binding for runtime updates
-            userShaderBindings[entry.key()] = shaderConstName;
+            userShaderBindings[shaderConstName] = entry.key();
             if (g_currentUserProperties != nullptr) {
                 auto propVal = g_currentUserProperties->GetProperty(entry.key());
                 if (! propVal.has_value()) continue;

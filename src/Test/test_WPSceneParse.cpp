@@ -3140,7 +3140,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
 
     // A pass that animates a constant and carries a user binding, ahead of a
     // second pass chosen by the caller.  The binding sits in the material file
-    // (an effect-file pass override does not record one), and the shader
+    // (a pass override records one too, covered separately), and the shader
     // annotates its uniform so the constant resolves to a GLSL name.
     TEST_CASE("an effect dropped for a failed later pass registers neither its uniform binding "
               "nor its constant animation") {
@@ -3227,6 +3227,173 @@ void main() {
             REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
             CHECK(scene->userPropUniformBindings.at("myprop").size() == 1u);
             CHECK(scene->effectUniformAnimations.size() == 1u);
+        }
+    }
+
+    // A {"user": ...} constant written in the scene's own per-effect passes[]
+    // override (the usual authoring shape) has to reach the runtime bindings
+    // the same way one authored in the material file does, or changing the
+    // property reparses the whole scene instead of updating the uniform.
+    TEST_CASE("a user-bound constant in a scene effect's pass override registers a uniform "
+              "binding") {
+        ensureGlslangInit();
+        constexpr const char* kTwoUniformFrag      = R"GLSL(
+uniform float g_Pulse; // {"material":"pulse","default":1}
+uniform float g_Other; // {"material":"other","default":1}
+void main() {
+    gl_FragColor = vec4(g_Pulse + g_Other);
+}
+)GLSL";
+        constexpr const char* kUnboundMaterialJson = R"({
+            "passes": [{ "shader": "_anim", "blending": "translucent", "textures": [] }]
+        })";
+        constexpr const char* kBoundMaterialJson   = R"({
+            "passes": [{
+                "shader": "_anim", "blending": "translucent", "textures": [],
+                "constantshadervalues": { "pulse": { "user": "fileprop", "value": 1 } }
+            }]
+        })";
+        constexpr const char* kEffectJson          = R"({
+            "name": "pulse",
+            "passes": [{ "material": "materials/MATERIAL.json" }]
+        })";
+
+        // `passOverride` is the body of the scene effect's passes[0] entry.
+        // `effectFile` replaces the effect file when non-empty; `objectExtra` is spliced into
+        // the object (used for an image's "instance" block).
+        auto parseWith = [&](const char*        material,
+                             const std::string& passOverride,
+                             bool               text        = false,
+                             const std::string& effectFile  = {},
+                             const std::string& objectExtra = {},
+                             const char*        imageFile   = "models/_plain.json") {
+            std::string effectJson = effectFile.empty() ? std::string(kEffectJson) : effectFile;
+            if (effectFile.empty()) effectJson.replace(effectJson.find("MATERIAL"), 8, material);
+            auto        vfs     = makeAssetsVfsWith({
+                { "/models/_inst.json",
+                  R"({ "material": "materials/_unbound.json", "width": 256, "height": 256 })" },
+                { "/shaders/_anim.vert", kTrivialVert },
+                { "/shaders/_anim.frag", kTwoUniformFrag },
+                { "/materials/_unbound.json", kUnboundMaterialJson },
+                { "/materials/_bound.json", kBoundMaterialJson },
+                { "/effects/pulse.json", effectJson },
+            });
+            std::string scene   = R"JSON({
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [ OBJECT ]
+})JSON";
+            std::string effects = R"JSON("effects": [
+        { "id": 10, "name": "pulse", "visible": true, "file": "effects/pulse.json",
+          "passes": [ PASS ] } ])JSON";
+            effects.replace(effects.find("PASS"), 4, passOverride);
+            std::string object = text ? R"JSON({ "id": 520, "name": "obj",
+      "origin": "100 200 0", "scale": "1 1 1", "angles": "0 0 0",
+      "size": "256 64", "font": "systemfont_sans", "pointsize": 24,
+      "text": { "value": "12:00" }, "visible": true, )JSON" +
+                                            effects + " }"
+                                      : R"JSON({ "id": 520, "name": "obj", "image": "IMAGE",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true, )JSON" +
+                                            objectExtra + effects + " }";
+            if (auto at = object.find("IMAGE"); at != std::string::npos)
+                object.replace(at, 5, imageFile);
+            scene.replace(scene.find("OBJECT"), 6, object);
+            audio::SoundManager sm;
+            WPUserProperties    props {};
+            WPSceneParser       parser;
+            return parser.Parse("scene_pass_override_binding", scene, *vfs, sm, props);
+        };
+
+        SUBCASE("the binding sits in the scene pass override") {
+            auto scene = parseWith(
+                "_unbound",
+                R"({ "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } })");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            REQUIRE(scene->userPropUniformBindings.at("myprop").size() == 1u);
+            CHECK(scene->userPropUniformBindings.at("myprop")[0].uniformName == "g_Pulse");
+        }
+
+        SUBCASE("one property driving two constants binds both") {
+            auto scene = parseWith("_unbound", R"({ "constantshadervalues": {
+                "pulse": { "user": "myprop", "value": 1 },
+                "other": { "user": "myprop", "value": 1 } } })");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 2u);
+            CHECK(((bs[0].uniformName == "g_Pulse" && bs[1].uniformName == "g_Other") ||
+                   (bs[0].uniformName == "g_Other" && bs[1].uniformName == "g_Pulse")));
+        }
+
+        SUBCASE("a plain value in the override replaces a constant the material file bound") {
+            auto scene = parseWith("_bound", R"({ "constantshadervalues": { "pulse": 0.5 } })");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropUniformBindings.count("fileprop") == 0u);
+        }
+
+        SUBCASE("a differently bound value in the override replaces the material file's binding") {
+            auto scene = parseWith(
+                "_bound",
+                R"({ "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } })");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropUniformBindings.count("fileprop") == 0u);
+            CHECK(scene->userPropUniformBindings.count("myprop") == 1u);
+        }
+
+        SUBCASE("a user constant on the effect file's own pass binds") {
+            auto scene = parseWith("_unbound", "{}", false, R"({
+                "name": "pulse",
+                "passes": [{ "material": "materials/_unbound.json",
+                    "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } }]
+            })");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            REQUIRE(scene->userPropUniformBindings.at("myprop").size() == 1u);
+            CHECK(scene->userPropUniformBindings.at("myprop")[0].uniformName == "g_Pulse");
+        }
+
+        SUBCASE("the same property on both passes of an effect binds each pass's mesh") {
+            const std::string bound =
+                R"({ "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } })";
+            auto scene = parseWith("_unbound", bound + ", " + bound, false, R"({
+                "name": "pulse",
+                "passes": [{ "material": "materials/_unbound.json" },
+                           { "material": "materials/_unbound.json" }]
+            })");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 2u);
+            CHECK(bs[0].mesh != bs[1].mesh);
+        }
+
+        SUBCASE("an image's instance block binds through the base-image path") {
+            // The pass override is irrelevant here; the object carries the binding.
+            auto scene = parseWith("_unbound",
+                                   "{}",
+                                   false,
+                                   {},
+                                   R"JSON(
+                "instance": { "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } },
+)JSON",
+                                   "models/_inst.json");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+        }
+
+        SUBCASE("a text layer's effect override binds the same way") {
+            if (ResolveSystemFontFallback("systemfont_sans").empty()) {
+                MESSAGE("skipped: no system font fallback for systemfont_sans");
+                return;
+            }
+            auto scene = parseWith(
+                "_unbound",
+                R"({ "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } })",
+                true);
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(scene->userPropUniformBindings.at("myprop")[0].uniformName == "g_Pulse");
         }
     }
 

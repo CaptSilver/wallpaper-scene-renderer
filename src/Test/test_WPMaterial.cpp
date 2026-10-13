@@ -343,8 +343,8 @@ TEST_SUITE("WPMaterial::FromJson — happy paths") {
                 "usershadervalues": {"opacity": "g_Alpha", "tint": "g_Color"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("opacity") == "g_Alpha");
-        CHECK(m.userShaderBindings.at("tint")    == "g_Color");
+        CHECK(m.userShaderBindings.at("g_Alpha") == "opacity");
+        CHECK(m.userShaderBindings.at("g_Color") == "tint");
     }
 }
 
@@ -429,7 +429,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
             }]
         })");
         // Binding always recorded
-        CHECK(m.userShaderBindings.at("tint") == "g_Color");
+        CHECK(m.userShaderBindings.at("g_Color") == "tint");
         // Value resolved into constantshadervalues by user property hookup
         REQUIRE(m.constantshadervalues.count("g_Color") == 1u);
         const auto& v = m.constantshadervalues.at("g_Color");
@@ -469,7 +469,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
             }]
         })");
         // Binding still recorded
-        CHECK(m.userShaderBindings.at("nothing") == "g_Empty");
+        CHECK(m.userShaderBindings.at("g_Empty") == "nothing");
         // But no value parsed, so no constantshadervalues entry
         CHECK(m.constantshadervalues.count("g_Empty") == 0u);
     }
@@ -485,7 +485,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
                 "usershadervalues": {"garbage": "g_Junk"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("garbage") == "g_Junk");
+        CHECK(m.userShaderBindings.at("g_Junk") == "garbage");
         CHECK(m.constantshadervalues.count("g_Junk") == 0u);
     }
 
@@ -574,7 +574,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
                 "usershadervalues": {"empty": "g_Nope"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("empty") == "g_Nope");
+        CHECK(m.userShaderBindings.at("g_Nope") == "empty");
         CHECK(m.constantshadervalues.count("g_Nope") == 0u);
     }
 
@@ -589,7 +589,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
                 "usershadervalues": {"strs": "g_Strs"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("strs") == "g_Strs");
+        CHECK(m.userShaderBindings.at("g_Strs") == "strs");
         CHECK(m.constantshadervalues.count("g_Strs") == 0u);
     }
 
@@ -605,7 +605,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
             }]
         })");
         // Binding still recorded for the unknown key
-        CHECK(m.userShaderBindings.at("unknown") == "g_Missing");
+        CHECK(m.userShaderBindings.at("g_Missing") == "unknown");
         // No value in props → propVal has no value → continue → no constant entry
         CHECK(m.constantshadervalues.count("g_Missing") == 0u);
     }
@@ -623,7 +623,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
                 "usershadervalues": {"flag": "g_Flag"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("flag") == "g_Flag");
+        CHECK(m.userShaderBindings.at("g_Flag") == "flag");
         CHECK(m.constantshadervalues.count("g_Flag") == 0u);
     }
 
@@ -638,7 +638,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
                 "usershadervalues": {"nothing": "g_Null"}
             }]
         })");
-        CHECK(m.userShaderBindings.at("nothing") == "g_Null");
+        CHECK(m.userShaderBindings.at("g_Null") == "nothing");
         CHECK(m.constantshadervalues.count("g_Null") == 0u);
     }
 

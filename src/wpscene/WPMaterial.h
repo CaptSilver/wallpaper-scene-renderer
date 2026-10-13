@@ -42,9 +42,11 @@ public:
     std::unordered_map<std::string, int32_t>            combos;
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
     // Keyframed constants, by the same name as their constantshadervalues entry.
-    std::unordered_map<std::string, ConstantAnimation>  constantAnimations;
-    std::string                                         target;
-    std::vector<WPMaterialPassBindItem>                 bind;
+    std::unordered_map<std::string, ConstantAnimation> constantAnimations;
+    // Shader constant name → user property that drives it (inline {"user": ...} values).
+    std::unordered_map<std::string, std::string> userShaderBindings;
+    std::string                                  target;
+    std::vector<WPMaterialPassBindItem>          bind;
 };
 
 class WPMaterial {
@@ -62,7 +64,8 @@ public:
     std::unordered_map<std::string, std::vector<float>> constantshadervalues;
     std::unordered_map<std::string, ConstantAnimation>  constantAnimations;
 
-    // Maps user property name → shader constant name (from usershadervalues)
+    // Maps shader constant name → user property name (from usershadervalues and inline
+    // {"user": ...} constants). Keyed by constant because one property may drive several.
     std::unordered_map<std::string, std::string> userShaderBindings;
 
     bool use_puppet { false };

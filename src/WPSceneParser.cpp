@@ -2074,7 +2074,7 @@ void attachMaterialAndUserBindings(ParseContext&                     context,
     // Record usershadervalue bindings for runtime user property updates
     // Must be done after AddMaterial since material is moved
     if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
-        for (auto& [propName, shaderConstName] : wpimgobj.material.userShaderBindings) {
+        for (auto& [shaderConstName, propName] : wpimgobj.material.userShaderBindings) {
             auto glname = wek::UserBindingUniformName(shaderInfo, shaderConstName);
             wek::registerUserPropUniformBinding(*context.scene, propName, spMesh, glname);
             LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
@@ -2512,7 +2512,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
 
             // Register user property bindings for effect material uniforms
             if (! wpmat.userShaderBindings.empty() && spMesh->Material()) {
-                for (auto& [propName, shaderConstName] : wpmat.userShaderBindings) {
+                for (auto& [shaderConstName, propName] : wpmat.userShaderBindings) {
                     auto glname = wek::UserBindingUniformName(wpEffShaderInfo, shaderConstName);
                     effUniformBindings.push_back({ propName, { spMesh, glname } });
                     LOG_INFO("  effect user prop binding: '%s' -> '%s' on effect of id=%d",
