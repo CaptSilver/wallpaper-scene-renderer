@@ -360,29 +360,33 @@ struct MdlBytes {
     }
 };
 
-// A flag-9 (pos + uv) model with one submesh, three vertices and one
-// triangle, referencing matPath (defaults to the shared trivial material).
-std::string makeTriangleModelMdl(std::string_view matPath = "materials/_plain.json") {
+// A flag-9 (pos + uv) model with one submesh per entry of mats, each with
+// three vertices and one triangle, referencing that material path.
+std::string makeModelMdlN(std::initializer_list<std::string_view> mats) {
     MdlBytes b;
     b.str("MDLV0013");
     b.i32(9); // mdl_flag: pos(3) + texcoord(2)
     b.i32(1);
-    b.u32(1); // submesh_count
-    b.str(matPath);
-    b.i32(0);
-    b.u32(3 * 5 * 4); // vertex bytes
-    for (int i = 0; i < 3; i++) {
-        b.f32((float)i);
-        b.f32(0.0f);
-        b.f32(0.0f);
-        b.f32(0.0f);
-        b.f32(0.0f);
+    b.u32((uint32_t)mats.size()); // submesh_count
+    for (auto m : mats) {
+        b.str(m);
+        b.i32(0);
+        b.u32(3 * 5 * 4); // vertex bytes
+        for (int i = 0; i < 3; i++) {
+            b.f32((float)i);
+            for (int k = 0; k < 4; k++) b.f32(0.0f);
+        }
+        b.u32(6); // one u16 triangle
+        b.u16(0);
+        b.u16(1);
+        b.u16(2);
     }
-    b.u32(6); // one u16 triangle
-    b.u16(0);
-    b.u16(1);
-    b.u16(2);
     return b.data;
+}
+
+// One submesh referencing matPath (defaults to the shared trivial material).
+std::string makeTriangleModelMdl(std::string_view matPath = "materials/_plain.json") {
+    return makeModelMdlN({ matPath });
 }
 
 // A puppet with one root bone at (3,4,5) and one MDAT attachment "tip" on
@@ -3711,7 +3715,7 @@ void main() {
         }
     }
 
-    TEST_CASE("a model submesh material's user constants are baked in") {
+    TEST_CASE("a model submesh material's user constants are live-bound, not static uses") {
         auto parse = [](const char* material) {
             return parseStaticUseScene(
                 R"JSON({ "id": 730, "name": "rock", "model": "models/_tri_ub.mdl",
@@ -3727,15 +3731,16 @@ void main() {
                 "textures":[],"constantshadervalues":
                 {"pulse":{"user":"modelprop","value":1}}}]})");
             REQUIRE(scene != nullptr);
-            CHECK(scene->userPropUniformBindings.count("modelprop") == 0u);
-            CHECK(scene->userPropStaticUses.count("modelprop") == 1u);
-            CHECK_FALSE(wek::userPropsNeedingReload(*scene, { "modelprop" }).empty());
+            CHECK(scene->userPropUniformBindings.count("modelprop") == 1u);
+            CHECK(scene->userPropStaticUses.count("modelprop") == 0u);
+            CHECK(wek::userPropsNeedingReload(*scene, { "modelprop" }).empty());
         }
         SUBCASE("a usershadervalues entry") {
             auto scene = parse(R"({"passes":[{"shader":"_t","blending":"translucent",
                 "textures":[],"usershadervalues":{"modelprop":"g_Pulse"}}]})");
             REQUIRE(scene != nullptr);
-            CHECK(scene->userPropStaticUses.count("modelprop") == 1u);
+            CHECK(scene->userPropUniformBindings.count("modelprop") == 1u);
+            CHECK(scene->userPropStaticUses.count("modelprop") == 0u);
         }
     }
 
@@ -4833,6 +4838,210 @@ TEST_SUITE("regression: minimised fuzz crashes") {
                     }
                 }());
             }
+        }
+    }
+}
+
+namespace
+{
+constexpr const char* kUbFrag         = R"GLSL(
+uniform float g_Pulse; // {"material":"pulse","default":1}
+void main() {
+    gl_FragColor = vec4(g_Pulse);
+}
+)GLSL";
+constexpr const char* kUbMaterialJson = R"({
+    "passes": [{ "shader": "_ub", "blending": "normal", "textures": [],
+                 "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } }]
+})";
+// The 3662790108 太空球 shape: the user reference sits inside a script's
+// scriptproperties, not at the constant's top level.
+constexpr const char* kUbScriptedMaterialJson = R"({
+    "passes": [{ "shader": "_ub", "blending": "normal", "textures": [],
+                 "constantshadervalues": { "pulse": {
+                     "script": "export function update(value) { return value; }",
+                     "scriptproperties": { "starb": { "user": "myprop", "value": 1 } },
+                     "value": 1 } } }]
+})";
+constexpr const char* kUbBrokenMaterialJson   = R"({
+    "passes": [{ "shader": "broken", "blending": "normal", "textures": [],
+                 "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } }]
+})";
+
+std::unique_ptr<fs::VFS>
+makeUbVfs(std::initializer_list<std::pair<std::string, std::string>> more) {
+    auto vfs   = std::make_unique<fs::VFS>();
+    auto memfs = std::make_unique<MemFs>();
+    memfs->add("/shaders/_t.vert", kTrivialVert);
+    memfs->add("/shaders/_t.frag", kTrivialFrag);
+    memfs->add("/shaders/_ub.vert", kTrivialVert);
+    memfs->add("/shaders/_ub.frag", kUbFrag);
+    memfs->add("/materials/_plain.json", kPlainMaterialJson);
+    memfs->add("/materials/_ub.json", kUbMaterialJson);
+    memfs->add("/materials/_ub_scripted.json", kUbScriptedMaterialJson);
+    memfs->add("/materials/_ub_broken.json", kUbBrokenMaterialJson);
+    memfs->add("/models/_ub_img_plain.json",
+               R"({"material":"materials/_plain.json","width":256,"height":256})");
+    memfs->add("/models/_ub_img.json",
+               R"({"material":"materials/_ub.json","width":256,"height":256})");
+    for (const auto& [p, c] : more) memfs->add(p, c);
+    REQUIRE(vfs->Mount("/assets", std::move(memfs)));
+    return vfs;
+}
+
+std::shared_ptr<Scene> parseUb(fs::VFS& vfs, const std::string& objectJson) {
+    std::string         scene = R"({"general":{"clearcolor":"0 0 0",
+        "orthogonalprojection":{"width":1280,"height":720}},"objects":[)" +
+                                objectJson + "]}";
+    audio::SoundManager sm;
+    WPUserProperties    props {};
+    WPSceneParser       parser;
+    return parser.Parse("scene_ub", scene, vfs, sm, props);
+}
+} // namespace
+
+TEST_SUITE("WPSceneParser user-property uniform bindings on model and particle materials") {
+    TEST_CASE("control: an image layer with the same material registers the binding") {
+        ensureGlslangInit();
+        auto vfs   = makeUbVfs({});
+        auto scene = parseUb(*vfs, R"({"id":10,"name":"img","image":"models/_ub_img.json",
+            "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})");
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+        CHECK(scene->userPropUniformBindings.at("myprop")[0].uniformName == "g_Pulse");
+    }
+
+    TEST_CASE("model submesh material with a user constant registers a uniform binding") {
+        ensureGlslangInit();
+        const char* kModelObj = R"({"id":501,"name":"m","model":"models/m.mdl",
+            "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})";
+
+        SUBCASE("one submesh: bound to that submesh's mesh, aliased uniform name") {
+            auto vfs = makeUbVfs({ { "/models/m.mdl", makeModelMdlN({ "materials/_ub.json" }) } });
+            auto scene = parseUb(*vfs, kModelObj);
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->nodeById.count(501) == 1);
+            auto& kids = scene->nodeById.at(501)->GetChildren();
+            REQUIRE(kids.size() == 1u);
+            SceneMesh* subMesh = kids.front()->Mesh();
+            REQUIRE(subMesh != nullptr);
+            REQUIRE(subMesh->Material() != nullptr); // material really loaded
+
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 1u);
+            CHECK(bs[0].mesh.get() == subMesh);
+            CHECK(bs[0].uniformName == "g_Pulse");
+        }
+
+        SUBCASE("two submeshes: one binding per submesh mesh") {
+            auto vfs =
+                makeUbVfs({ { "/models/m.mdl",
+                              makeModelMdlN({ "materials/_ub.json", "materials/_ub.json" }) } });
+            auto scene = parseUb(*vfs, kModelObj);
+            REQUIRE(scene != nullptr);
+            auto& kids = scene->nodeById.at(501)->GetChildren();
+            REQUIRE(kids.size() == 2u);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 2u);
+            std::vector<SceneMesh*> got { bs[0].mesh.get(), bs[1].mesh.get() };
+            for (auto& k : kids) CHECK(std::find(got.begin(), got.end(), k->Mesh()) != got.end());
+        }
+
+        SUBCASE("a submesh whose material fails to load leaves no binding") {
+            auto vfs =
+                makeUbVfs({ { "/models/m.mdl", makeModelMdlN({ "materials/_ub_broken.json" }) } });
+            auto scene = parseUb(*vfs, kModelObj);
+            REQUIRE(scene != nullptr);
+            CHECK(scene->nodeById.at(501)->GetChildren().empty());
+            CHECK(scene->userPropUniformBindings.count("myprop") == 0u);
+        }
+
+        SUBCASE("a user reference inside scriptproperties is not a uniform binding") {
+            auto vfs = makeUbVfs(
+                { { "/models/m.mdl", makeModelMdlN({ "materials/_ub_scripted.json" }) } });
+            auto scene = parseUb(*vfs, kModelObj);
+            REQUIRE(scene != nullptr);
+            auto& kids = scene->nodeById.at(501)->GetChildren();
+            REQUIRE(kids.size() == 1u);
+            REQUIRE(kids.front()->Mesh()->Material() != nullptr);
+            CHECK(scene->userPropUniformBindings.count("myprop") == 0u);
+        }
+    }
+
+    TEST_CASE("particle material with a user constant registers a uniform binding") {
+        ensureGlslangInit();
+        const char* kParticleObj = R"({"id":600,"name":"p","particle":"particle/p.json",
+            "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})";
+
+        SUBCASE("system mesh") {
+            auto vfs   = makeUbVfs({ { "/particle/p.json",
+                                       R"({"emitter":[{}],"renderer":[{"name":"sprite"}],
+                                         "maxcount":4,"material":"materials/_ub.json"})" } });
+            auto scene = parseUb(*vfs, kParticleObj);
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->nodeById.count(600) == 1);
+            SceneMesh* mesh = scene->nodeById.at(600)->Mesh();
+            REQUIRE(mesh != nullptr);
+            REQUIRE(mesh->Material() != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 1u);
+            CHECK(bs[0].mesh.get() == mesh);
+            CHECK(bs[0].uniformName == "g_Pulse");
+        }
+
+        SUBCASE("a child system registers against its own mesh") {
+            auto vfs   = makeUbVfs({
+                { "/particle/p.json",
+                  R"({"emitter":[{}],"renderer":[{"name":"sprite"}],"maxcount":4,
+                      "material":"materials/_ub.json",
+                      "children":[{"name":"particle/c.json"}]})" },
+                { "/particle/c.json",
+                  R"({"emitter":[{}],"renderer":[{"name":"sprite"}],"maxcount":4,
+                      "material":"materials/_ub.json"})" },
+            });
+            auto scene = parseUb(*vfs, kParticleObj);
+            REQUIRE(scene != nullptr);
+            SceneNode* sys = scene->nodeById.at(600);
+            REQUIRE(sys->Mesh() != nullptr);
+            REQUIRE(sys->Mesh()->Material() != nullptr);
+            REQUIRE(sys->GetChildren().size() == 1u);
+            SceneMesh* childMesh = sys->GetChildren().front()->Mesh();
+            REQUIRE(childMesh != nullptr);
+            REQUIRE(childMesh->Material() != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            const auto& bs = scene->userPropUniformBindings.at("myprop");
+            REQUIRE(bs.size() == 2u);
+            std::vector<SceneMesh*> got { bs[0].mesh.get(), bs[1].mesh.get() };
+            CHECK(std::find(got.begin(), got.end(), sys->Mesh()) != got.end());
+            CHECK(std::find(got.begin(), got.end(), childMesh) != got.end());
+        }
+    }
+
+    TEST_CASE("a property read by a model material and by an object color still reloads") {
+        ensureGlslangInit();
+        auto vfs = makeUbVfs({ { "/models/m.mdl", makeModelMdlN({ "materials/_ub.json" }) } });
+
+        SUBCASE("model material and image color share the property") {
+            auto scene = parseUb(*vfs, R"({"id":501,"name":"m","model":"models/m.mdl",
+                "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true},
+                {"id":10,"name":"img","image":"models/_ub_img_plain.json",
+                "color":{"user":"myprop","value":"1 0 0"},
+                "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(wek::userPropsNeedingReload(*scene, { "myprop" }) ==
+                  std::vector<std::string> { "myprop" });
+        }
+
+        SUBCASE("a property only a model material reads applies live") {
+            auto scene = parseUb(*vfs, R"({"id":501,"name":"m","model":"models/m.mdl",
+                "origin":"0 0 0","scale":"1 1 1","angles":"0 0 0","visible":true})");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(wek::userPropsNeedingReload(*scene, { "myprop" }).empty());
         }
     }
 }

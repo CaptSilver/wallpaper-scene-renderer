@@ -723,6 +723,21 @@ enum class MaterialUserBindings
     BakedIn,    // nothing registers them
 };
 
+// Registers each user-bound constant of `wpmat` against the mesh that owns the
+// loaded material, so a property change becomes a live uniform write. Call it
+// after AddMaterial (the material is moved in) and only for a material that
+// loaded, otherwise a failed one leaves a binding with nothing to write to.
+void RegisterMaterialUserBindings(Scene& scene, const wpscene::WPMaterial& wpmat,
+                                  const std::shared_ptr<SceneMesh>& spMesh,
+                                  const WPShaderInfo&               shaderInfo) {
+    if (! spMesh->Material()) return;
+    for (const auto& [constName, propName] : wpmat.userShaderBindings) {
+        auto glname = wek::UserBindingUniformName(shaderInfo, constName);
+        wek::registerUserPropUniformBinding(scene, propName, spMesh, glname);
+        LOG_INFO("  user prop binding: '%s' -> uniform '%s'", propName.c_str(), glname.c_str());
+    }
+}
+
 bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene, SceneNode* pNode,
                   SceneMaterial* pMaterial, WPShaderValueData* pSvData,
                   MaterialUserBindings userBindings, WPShaderInfo* pWPShaderInfo = nullptr) {
@@ -2080,18 +2095,8 @@ void attachMaterialAndUserBindings(ParseContext&                     context,
     mesh.AddMaterial(std::move(material));
     spImgNode->AddMesh(spMesh);
 
-    // Record usershadervalue bindings for runtime user property updates
-    // Must be done after AddMaterial since material is moved
-    if (! wpimgobj.material.userShaderBindings.empty() && spMesh->Material()) {
-        for (auto& [shaderConstName, propName] : wpimgobj.material.userShaderBindings) {
-            auto glname = wek::UserBindingUniformName(shaderInfo, shaderConstName);
-            wek::registerUserPropUniformBinding(*context.scene, propName, spMesh, glname);
-            LOG_INFO("  user prop binding: '%s' -> uniform '%s' on id=%d",
-                     propName.c_str(),
-                     glname.c_str(),
-                     wpimgobj.id);
-        }
-    }
+    // After AddMaterial: the material was moved into the mesh.
+    RegisterMaterialUserBindings(*context.scene, wpimgobj.material, spMesh, shaderInfo);
 
     // Record color script for SceneScript evaluation
     if (! wpimgobj.colorScript.empty() && spMesh->Material()) {
@@ -3336,7 +3341,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                        spNode.get(),
                        &material,
                        &svData,
-                       MaterialUserBindings::BakedIn,
+                       MaterialUserBindings::Registered,
                        &shaderInfo)) {
         LOG_ERROR("load particleobj '%s' material faild", wppartobj.name.c_str());
         return;
@@ -3473,6 +3478,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
 
     mesh.AddMaterial(std::move(material));
     spNode->AddMesh(spMesh);
+    RegisterMaterialUserBindings(*context.scene, particle_obj.material, spMesh, shaderInfo);
     context.shader_updater->SetNodeData(spNode.get(), svData);
 
     for (auto& child : particle_obj.children) {
@@ -3683,7 +3689,7 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
                            spNode.get(),
                            &material,
                            &svData,
-                           MaterialUserBindings::BakedIn,
+                           MaterialUserBindings::Registered,
                            &shaderInfo)) {
             LOG_ERROR("load model id=%d submesh %zu '%s' material failed",
                       model_obj.id,
@@ -3706,6 +3712,7 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
 
         mesh.AddMaterial(std::move(material));
         spNode->AddMesh(spMesh);
+        RegisterMaterialUserBindings(*context.scene, wpmat, spMesh, shaderInfo);
         context.shader_updater->SetNodeData(spNode.get(), svData);
 
         // Defer translucent submeshes so opaque geometry renders first
