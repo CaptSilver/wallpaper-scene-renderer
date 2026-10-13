@@ -150,6 +150,101 @@ TEST_SUITE("LOG_DEBUG gating") {
     }
 }
 
+// LOG_INFO is gated like LOG_DEBUG: off unless WEKDE_LOG_INFO (or
+// WEKDE_LOG_DEBUG) is set.  Pin both sides of the gate so the default can't
+// silently flip back to a journald firehose, nor INFO become unreachable.
+TEST_SUITE("LOG_INFO gating") {
+    TEST_CASE("disabled: LOG_INFO never reaches the sink") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(false);
+        LOG_INFO("%s", "should-not-appear");
+        CHECK(g_captured_level.load() == -1);
+        wallpaper::SetLogInfoEnabled(was);
+    }
+
+    TEST_CASE("enabled: LOG_INFO reaches the sink at LOGLEVEL_INFO") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(true);
+        LOG_INFO("%s", "marker");
+        CHECK(g_captured_level.load() == LOGLEVEL_INFO);
+        CHECK(std::string(g_captured_msg) == "marker");
+        wallpaper::SetLogInfoEnabled(was);
+    }
+
+    TEST_CASE("the environment rule: either variable set, non-empty and not 0") {
+        using wallpaper::LogInfoEnabledFromEnv;
+        static const char* s_info  = nullptr;
+        static const char* s_debug = nullptr;
+        auto               rule    = [](const char* a, const char* b) {
+            s_info  = a;
+            s_debug = b;
+            return LogInfoEnabledFromEnv([](const char* name) -> const char* {
+                if (std::string(name) == "WEKDE_LOG_INFO") return s_info;
+                if (std::string(name) == "WEKDE_LOG_DEBUG") return s_debug;
+                return nullptr;
+            });
+        };
+        CHECK_FALSE(rule(nullptr, nullptr)); // the default
+        CHECK_FALSE(rule("", ""));
+        CHECK_FALSE(rule("0", "0"));
+        CHECK(rule("1", nullptr));
+        CHECK(rule(nullptr, "1")); // debug implies info
+        CHECK(rule("yes", "0"));
+        CHECK(rule("0", "1"));
+        CHECK_FALSE(rule("", "0"));
+    }
+
+    // Each of these switches turns on a diagnostic whose output goes through
+    // LOG_INFO, so setting the switch alone has to be enough to see it.
+    TEST_CASE("the environment rule: each diagnostic switch turns INFO on") {
+        using wallpaper::LogInfoEnabledFromEnv;
+        static const char* s_only  = nullptr;
+        static const char* s_val   = nullptr;
+        const char* const  names[] = { "WEKDE_SCRIPT_DIAG",     "WEKDE_TIME_DIAG",
+                                       "WEKDE_DEBUG_FRAMETIME", "WEKDE_DEBUG_SHAKE",
+                                       "WEKDE_DEBUG_UNIFORM",   "WEKDE_DEBUG_PARTICLE",
+                                       "WEKDE_PIPELINE_DIAG",   "WEKDE_DEBUG_TEXBYTES",
+                                       "WEKDE_DIAG_NODES" };
+        for (const char* name : names) {
+            CAPTURE(name);
+            s_only   = name;
+            s_val    = "1";
+            auto get = [](const char* n) -> const char* {
+                return std::string(n) == s_only ? s_val : nullptr;
+            };
+            CHECK(LogInfoEnabledFromEnv(get));
+            s_val = "0";
+            CHECK_FALSE(LogInfoEnabledFromEnv(get));
+            s_val = "";
+            CHECK_FALSE(LogInfoEnabledFromEnv(get));
+        }
+        CHECK_FALSE(LogInfoEnabledFromEnv([](const char*) -> const char* {
+            return nullptr;
+        }));
+    }
+
+    TEST_CASE("LOG_NOTICE is emitted while INFO is off") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(false);
+        LOG_NOTICE("%s", "always-on");
+        CHECK(g_captured_level.load() == LOGLEVEL_INFO);
+        CHECK(std::string(g_captured_msg) == "always-on");
+        wallpaper::SetLogInfoEnabled(was);
+    }
+
+    TEST_CASE("ERROR is never gated") {
+        SinkGuard  guard;
+        const bool was = wallpaper::LogInfoEnabled();
+        wallpaper::SetLogInfoEnabled(false);
+        LOG_ERROR("%s", "err");
+        CHECK(g_captured_level.load() == LOGLEVEL_ERROR);
+        wallpaper::SetLogInfoEnabled(was);
+    }
+}
+
 // WallpaperLog renders prefix + body + newline into one buffer and writes it
 // with a single fwrite so concurrent callers (WPTexImageParser::Parse()
 // during a multi-threaded texture prefetch) can't interleave mid-line. Two

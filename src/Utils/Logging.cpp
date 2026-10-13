@@ -25,8 +25,32 @@ std::atomic<bool>& debugLogFlag() {
     }();
     return flag;
 }
+std::atomic<bool>& infoLogFlag() {
+    static std::atomic<bool> flag = LogInfoEnabledFromEnv([](const char* name) -> const char* {
+        return std::getenv(name);
+    });
+    return flag;
+}
 } // namespace
 
+// Switches that print through LOG_INFO; setting one alone must be enough to
+// see its output.
+constexpr const char* kInfoSwitches[] = {
+    "WEKDE_LOG_INFO",        "WEKDE_LOG_DEBUG",      "WEKDE_SCRIPT_DIAG",   "WEKDE_TIME_DIAG",
+    "WEKDE_DEBUG_FRAMETIME", "WEKDE_DEBUG_SHAKE",    "WEKDE_DEBUG_UNIFORM", "WEKDE_DEBUG_PARTICLE",
+    "WEKDE_PIPELINE_DIAG",   "WEKDE_DEBUG_TEXBYTES", "WEKDE_DIAG_NODES",
+};
+
+bool LogInfoEnabledFromEnv(const char* (*getenv_fn)(const char* name)) {
+    for (const char* name : kInfoSwitches) {
+        const char* v = getenv_fn(name);
+        if (v != nullptr && v[0] != '\0' && std::strcmp(v, "0") != 0) return true;
+    }
+    return false;
+}
+
+bool LogInfoEnabled() { return infoLogFlag().load(std::memory_order_relaxed); }
+void SetLogInfoEnabled(bool enabled) { infoLogFlag().store(enabled, std::memory_order_relaxed); }
 bool LogDebugEnabled() { return debugLogFlag().load(std::memory_order_relaxed); }
 void SetLogDebugEnabled(bool enabled) { debugLogFlag().store(enabled, std::memory_order_relaxed); }
 } // namespace wallpaper

@@ -30,7 +30,10 @@ VkBool32 DebugUtilsMessengerCallback(VkDebugUtilsMessageSeverityFlagBitsEXT mess
     if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
         const bool is_error = messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         if (is_error) result |= VK_TRUE;
-        LOG_INFO("vulkan validation %s: %s", is_error ? "ERROR" : "WARN", pCallbackData->pMessage);
+        if (is_error)
+            LOG_ERROR("vulkan validation ERROR: %s", pCallbackData->pMessage);
+        else
+            LOG_NOTICE("vulkan validation WARN: %s", pCallbackData->pMessage);
     }
     return result;
 }
@@ -95,7 +98,7 @@ bool Instance::ChoosePhysicalDevice(const CheckGpuOp&             checkgpu,
 
     VkInstanceCreateInfo crea;
     auto                 logGpu = [](const VkPhysicalDeviceProperties& props) {
-        LOG_INFO("vulkan device: %s", props.deviceName);
+        LOG_NOTICE("vulkan device: %s", props.deviceName);
     };
 
     vvk::PhysicalDevice        final_gpu;

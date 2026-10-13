@@ -392,7 +392,7 @@ static bool writeSwapchainToPPM(Device& device, VkImage swap_image, VkFormat swa
     std::fclose(f);
     staging.handle.UnMapMemory();
 
-    LOG_INFO("Screenshot saved: %s (%ux%u)", path.c_str(), width, height);
+    LOG_NOTICE("Screenshot saved: %s (%ux%u)", path.c_str(), width, height);
     return true;
 }
 
