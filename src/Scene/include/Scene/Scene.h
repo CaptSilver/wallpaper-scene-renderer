@@ -627,6 +627,9 @@ public:
 
     // Layer name → ordered list of effect names for SceneScript getEffect()
     std::unordered_map<std::string, std::vector<std::string>> layerEffectNames;
+    // Same layers, parallel to layerEffectNames: whether each effect was built
+    // visible, so getEffect(...).visible starts out matching the renderer.
+    std::unordered_map<std::string, std::vector<bool>> layerEffectVisible;
 
     // Node ids of the layers whose effects a SceneScript can hide or show with
     // getEffect(...).visible.  The script's target is not known until it runs,

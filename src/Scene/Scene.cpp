@@ -35,6 +35,11 @@ std::string Scene::SerializeLayerInitialStates() const {
         auto eit = layerEffectNames.find(name);
         if (eit != layerEffectNames.end()) {
             entry["efx"] = eit->second;
+            auto vit     = layerEffectVisible.find(name);
+            if (vit != layerEffectVisible.end()) {
+                auto& efv = entry["efv"] = nlohmann::json::array();
+                for (bool v : vit->second) efv.push_back(v ? 1 : 0);
+            }
         }
         // Node id for setParent bridge dispatch.
         auto idit = nodeNameToId.find(name);

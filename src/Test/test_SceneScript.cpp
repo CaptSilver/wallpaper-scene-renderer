@@ -5338,6 +5338,74 @@ TEST_SUITE("Layer Proxy") {
         CHECK(env.engine.evaluate("thisScene.getLayer('fg').getEffectCount()").toInt() == 0);
     }
 
+    TEST_CASE("getEffect reads the built-in visibility of an effect built hidden") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['hx'] = { o: [0,0,0], s: [1,1,1], a: [0,0,0], sz: [10,10], v: true,\n"
+            "                           efx: ['Shown', 'Hidden'], efv: [1, 0] };\n"
+            "_layerNameToId['hx'] = 21;\n");
+        CHECK(env.engine.evaluate("thisScene.getLayer('hx').getEffect('Shown').visible").toBool());
+        CHECK_FALSE(
+            env.engine.evaluate("thisScene.getLayer('hx').getEffect('Hidden').visible").toBool());
+        CHECK_FALSE(env.engine.evaluate("thisScene.getLayer('hx').getEffect(1).visible").toBool());
+    }
+
+    TEST_CASE("toggling a hidden-built effect with !visible shows it on the first press") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['hx'] = { o: [0,0,0], s: [1,1,1], a: [0,0,0], sz: [10,10], v: true,\n"
+            "                           efx: ['Shown', 'Hidden'], efv: [1, 0] };\n"
+            "_layerNameToId['hx'] = 21;\n"
+            "var e = thisScene.getLayer('hx').getEffect('Hidden');\n"
+            "e.visible = !e.visible;\n");
+        CHECK(env.engine.evaluate("e.visible").toBool());
+        QJSValue updates = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(updates.property("length").toInt() == 17);
+        QJSValue efx = updates.property(16);
+        CHECK(efx.property("length").toInt() == 2);
+        CHECK(efx.property(0).toInt() == 1); // idx of 'Hidden'
+        CHECK(efx.property(1).toInt() == 1); // now shown
+    }
+
+    TEST_CASE("an effect list without built-in visibility defaults every effect to visible") {
+        ScriptEnv env;
+        // 'bg' carries efx but no efv (older init JSON / test fixtures).
+        CHECK(env.engine.evaluate("thisScene.getLayer('bg').getEffect('Blur').visible").toBool());
+    }
+
+    TEST_CASE("an effect past the end of the built-in visibility list defaults to visible") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['short'] = { o: [0,0,0], s: [1,1,1], a: [0,0,0], sz: [10,10], "
+            "v: true,\n"
+            "                              efx: ['A', 'B'], efv: [0] };\n"
+            "_layerNameToId['short'] = 23;\n");
+        CHECK_FALSE(
+            env.engine.evaluate("thisScene.getLayer('short').getEffect(0).visible").toBool());
+        CHECK(env.engine.evaluate("thisScene.getLayer('short').getEffect(1).visible").toBool());
+    }
+
+    TEST_CASE("getEffect keeps same-named effects on one layer apart") {
+        ScriptEnv env;
+        env.engine.evaluate(
+            "_layerInitStates['twin'] = { o: [0,0,0], s: [1,1,1], a: [0,0,0], sz: [10,10], "
+            "v: true,\n"
+            "                             efx: ['Glow', 'Glow'], efv: [1, 1] };\n"
+            "_layerNameToId['twin'] = 22;\n"
+            "var second = thisScene.getLayer('twin').getEffect(1);\n"
+            "second.visible = false;\n"
+            "var first = thisScene.getLayer('twin').getEffect(0);\n");
+        CHECK(env.engine.evaluate("first.visible").toBool());
+        CHECK_FALSE(env.engine.evaluate("second.visible").toBool());
+        CHECK(env.engine.evaluate("first !== second").toBool());
+        QJSValue updates = env.engine.evaluate("_collectDirtyLayers()");
+        REQUIRE(updates.property("length").toInt() == 17);
+        QJSValue efx = updates.property(16);
+        CHECK(efx.property("length").toInt() == 2);
+        CHECK(efx.property(0).toInt() == 1);
+        CHECK(efx.property(1).toInt() == 0);
+    }
+
     TEST_CASE("getEffect cached by name") {
         ScriptEnv env;
         env.engine.evaluate("var e1 = thisScene.getLayer('bg').getEffect('Blur');\n"

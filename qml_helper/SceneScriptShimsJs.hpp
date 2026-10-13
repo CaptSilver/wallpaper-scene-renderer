@@ -1096,15 +1096,21 @@ function _makeLayerProxy(name) {
     if (!efxList) return null;
     var idx = -1;
     if (typeof ename === 'number') {
-      if (ename >= 0 && ename < efxList.length) { idx = ename|0; ename = efxList[idx]; }
+      if (ename >= 0 && ename < efxList.length) idx = ename|0;
     } else {
       for (var i = 0; i < efxList.length; i++) {
         if (efxList[i] === ename) { idx = i; break; }
       }
     }
     if (idx < 0) return null;
-    if (_s._effCache[ename]) return _s._effCache[ename];
-    var es = { visible: true, name: ename, _idx: idx };
+    // Keyed by index: two effects can share a name, and the first match must
+    // not stand in for the second.
+    if (_s._effCache[idx]) return _s._effCache[idx];
+    ename = efxList[idx];
+    // `efv` carries each effect's built-in visibility (absent: all visible),
+    // so `e.visible = !e.visible` is right on an effect that starts hidden.
+    var efv = init ? init.efv : null;
+    var es = { visible: efv && idx < efv.length ? !!efv[idx] : true, name: ename, _idx: idx };
     var ep = {};
     Object.defineProperty(ep, 'name', { get: function(){ return es.name; }, enumerable: true });
     Object.defineProperty(ep, 'visible', {
@@ -1117,7 +1123,7 @@ function _makeLayerProxy(name) {
     ep.getMaterial = function() {
       return _makeMaterialProxy(_s.name, idx);
     };
-    _s._effCache[ename] = ep;
+    _s._effCache[idx] = ep;
     return ep;
   };
   p.getEffectCount = function() {

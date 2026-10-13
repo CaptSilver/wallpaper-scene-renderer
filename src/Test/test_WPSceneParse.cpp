@@ -2696,6 +2696,56 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(effLayer->GetEffect((std::size_t)binding[0].effectIndex)->name == "bloom");
     }
 
+    TEST_CASE("records which effects were built hidden, and hands it to the layer init JSON") {
+        ensureGlslangInit();
+        constexpr const char* kBloomEffectFileJson = R"({
+            "name": "bloom",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        constexpr const char* kGlowEffectFileJson  = R"({
+            "name": "glow",
+            "passes": [{ "material": "materials/_plain.json" }]
+        })";
+        auto                  vfs                  = makeAssetsVfsWith({
+            { "/effects/bloom.json", kBloomEffectFileJson },
+            { "/effects/glow.json", kGlowEffectFileJson },
+        });
+        const char*           kSceneJson           = R"JSON(
+{
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [
+    { "id": 508, "name": "mixed_visibility_layer",
+      "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": true,
+      "effects": [
+        { "id": 10, "name": "bloom",
+          "visible": {"user": "godrays_enable", "value": true},
+          "file": "effects/bloom.json" },
+        { "id": 11, "name": "glow", "visible": true, "file": "effects/glow.json" }
+      ] }
+  ]
+}
+)JSON";
+        audio::SoundManager   sm;
+        WPUserProperties      props;
+        REQUIRE(props.LoadFromProjectJson(
+            R"({"general":{"properties":{"godrays_enable":{"value":false,"type":"bool"}}}})"));
+        WPSceneParser parser;
+        auto          scene = parser.Parse("scene_mixed_visibility", kSceneJson, *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->layerEffectVisible.count("mixed_visibility_layer") == 1);
+        CHECK(scene->layerEffectVisible.at("mixed_visibility_layer") ==
+              std::vector<bool> { false, true });
+
+        auto init = nlohmann::json::parse(scene->SerializeLayerInitialStates());
+        REQUIRE(init.contains("mixed_visibility_layer"));
+        CHECK(init["mixed_visibility_layer"]["efv"].dump() == "[0,1]");
+        CHECK(init["mixed_visibility_layer"]["efx"].dump() == "[\"bloom\",\"glow\"]");
+    }
+
     TEST_CASE("a user-bound single effect that starts hidden is built, hidden, with its binding") {
         ensureGlslangInit();
         auto                vfs        = makeAssetsVfsWith({

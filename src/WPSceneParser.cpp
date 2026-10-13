@@ -2604,11 +2604,14 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     // Store effect names per layer for SceneScript getEffect()
     {
         std::vector<std::string> effNames;
+        std::vector<bool>        effVisible;
         for (size_t i = 0; i < layer.EffectCount(); i++) {
             effNames.push_back(layer.GetEffect(i)->name);
+            effVisible.push_back(layer.GetEffect(i)->visible);
         }
         if (! effNames.empty()) {
-            context.scene->layerEffectNames[layer_name] = std::move(effNames);
+            context.scene->layerEffectNames[layer_name]   = std::move(effNames);
+            context.scene->layerEffectVisible[layer_name] = std::move(effVisible);
         }
     }
 }
