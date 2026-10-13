@@ -347,3 +347,35 @@ TEST_CASE("a truncated SPV cache entry is rejected rather than handed to the dri
     CHECK_FALSE(WPShaderParser::CompileToSpv("shader_pub", units, codes, vfs, &info, texs));
     CHECK(codes.empty());
 }
+
+// `#require <name>` is a Wallpaper Engine directive, not GLSL: Preprocessor
+// expands LightingV1 and comments out any other name before glslang sees the
+// source.  A #require left in place is an invalid preprocessing directive and
+// the compile fails, which is what this pins (the expansion is skipped for
+// sources without the literal, as a fast path).
+TEST_CASE("a #require line is rewritten before glslang sees it") {
+    EnsureGlslang();
+    const std::string cache_dir = wallpaper::test::ScratchDir("require_directive", ::getpid());
+    std::filesystem::remove_all(cache_dir);
+    std::filesystem::create_directories(cache_dir);
+    {
+        fs::VFS vfs;
+        REQUIRE(vfs.Mount("/cache", fs::CreatePhysicalFs(cache_dir, true), "cache"));
+        WPShaderInfo              info;
+        std::vector<WPShaderUnit> units;
+        units.push_back(WPShaderUnit { ShaderType::FRAGMENT,
+                                       "#require SomethingUnknown\n"
+                                       "void main() {\n"
+                                       "    gl_FragColor = vec4(1.0);\n"
+                                       "}\n",
+                                       {} });
+        std::vector<ShaderCode>      codes;
+        std::vector<WPShaderTexInfo> texs;
+        CHECK(WPShaderParser::CompileToSpv("require_pin", units, codes, vfs, &info, texs));
+        WPShaderParser::ClearSpvMemo();
+    }
+    // CompileToSpv defers the compile, so its return value does not say whether
+    // glslang accepted the source; the SPV only reaches the cache if it did.
+    CHECK(CountFilesRec(cache_dir) > 0);
+    std::filesystem::remove_all(cache_dir);
+}

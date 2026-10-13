@@ -2971,6 +2971,9 @@ inline std::string FixImplicitConversions(const std::string& src) {
 // Only matches whole identifiers (`\bclip\s*\(`) so substrings like `clipped`,
 // `flipclamp`, or `aclipb` are left untouched.
 inline std::string TranslateHlslClip(const std::string& src) {
+    // Runs on every fragment shader of every load; without a `clip` the regex
+    // walk below cannot match and would return src unchanged.
+    if (src.find("clip") == std::string::npos) return src;
     thread_local const std::regex re(R"(\bclip\s*\()");
     std::string result;
     result.reserve(src.size());

@@ -37,6 +37,7 @@ static constexpr std::string_view SHADER_PLACEHOLD { "__SHADER_PLACEHOLD__" };
 // namespace and their symbols become `<anon>::wallpaper::X` rather than
 // `::wallpaper::X`.
 #include "WPShaderTransforms.h"
+#include "ShaderSourceScan.hpp"
 #include "WPShaderPreamble.hpp"
 #include "ShaderComboGuard.hpp"
 
@@ -304,23 +305,6 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
     auto NposToZero = [](usize p) {
         return p == std::string::npos ? 0 : p;
     };
-    auto search = [](const std::string& p, usize pos, const auto& re) {
-        auto        startpos = p.begin() + (isize)pos;
-        std::smatch match;
-        if (startpos < p.end() && std::regex_search(startpos, p.end(), match, re)) {
-            return pos + (usize)match.position();
-        }
-        return std::string::npos;
-    };
-    auto searchLast = [](const std::string& p, const auto& re) {
-        auto        startpos = p.begin();
-        std::smatch match;
-        while (startpos < p.end() && std::regex_search(startpos, p.end(), match, re)) {
-            startpos++;
-            startpos += match.position();
-        }
-        return startpos >= p.end() ? std::string::npos : usize(startpos - p.begin());
-    };
     auto nextLinePos = [](const std::string& p, usize pos) {
         return p.find_first_of('\n', pos) + 1;
     };
@@ -343,8 +327,7 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
         // include can sit before the struct just as safely as after it — its
         // contents (helper functions, blend ops, etc.) don't depend on the
         // shader's local structs.
-        const std::regex reAfters(R"(\n(attribute|varying|uniform) )");
-        usize            afterPos = searchLast(src, reAfters);
+        usize afterPos = FindLastDeclarationLine(src);
         if (afterPos != std::string::npos) {
             afterPos = nextLinePos(src, afterPos + 1);
         }
@@ -353,9 +336,8 @@ inline usize FindIncludeInsertPos(const std::string& src, usize startPos) {
     {
         std::stack<usize> ifStack;
         usize             nowPos { 0 };
-        const std::regex  reIfs(R"((#if|#endif))");
         while (true) {
-            auto p = search(src, nowPos + 1, reIfs);
+            auto p = FindIfOrEndif(src, nowPos + 1);
             if (p > mainPos || p == std::string::npos) break;
             if (src.substr(p, 3) == "#if") {
                 ifStack.push(p);
@@ -431,7 +413,10 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
         std::smatch             m;
         std::string             tmp = src;
         std::string             result;
-        while (std::regex_search(tmp, m, re_require)) {
+        // Nearly no shader has a #require; skip the full-source regex scan
+        // (a hot spot in scene loads) when the literal cannot occur.
+        const bool has_require = src.find("#require ") != std::string::npos;
+        while (has_require && std::regex_search(tmp, m, re_require)) {
             result += m.prefix().str() + m[1].str();
             std::string req_name = m[2].str();
             // Trim whitespace
@@ -472,31 +457,21 @@ inline std::string Preprocessor(const std::string& in_src, ShaderType type, cons
     // (?:^|\s) lets us match "out vec2 foo;" at column 0 (no qualifier) as well as
     // "smooth out vec4 foo;" where the qualifier precedes the keyword.
     // The optional (\[\])? handles geometry shader array inputs (e.g., "in vec4 v_Color[];").
-    thread_local const std::regex re_io(R"((?:^|\s)(in|out)\s[\s\w]+\s(\w+)\s*(?:\[\])?\s*;)",
-                                  std::regex::ECMAScript | std::regex::multiline);
-    for (auto it = std::sregex_iterator(res.begin(), res.end(), re_io);
-         it != std::sregex_iterator();
-         it++) {
-        std::smatch mc = *it;
+    ForEachStageIoDecl(res, [&process_info](const std::smatch& mc) {
         if (mc[1] == "in") {
             process_info.input[mc[2]] = mc[0].str();
         } else {
             process_info.output[mc[2]] = mc[0].str();
         }
-    }
+    });
 
-    thread_local const std::regex re_tex(R"(uniform\s+sampler2D\s+g_Texture(\d+))",
-                                   std::regex::ECMAScript);
-    for (auto it = std::sregex_iterator(res.begin(), res.end(), re_tex);
-         it != std::sregex_iterator();
-         it++) {
-        std::smatch mc  = *it;
-        auto        str = mc[1].str();
-        uint        slot;
+    ForEachTextureSlotUniform(res, [&process_info](const std::smatch& mc) {
+        auto str = mc[1].str();
+        uint slot;
         auto [ptr, ec] { std::from_chars(str.c_str(), str.c_str() + str.size(), slot) };
-        if (ec != std::errc()) continue;
+        if (ec != std::errc()) return;
         process_info.active_tex_slots.insert(slot);
-    }
+    });
     return res;
 }
 

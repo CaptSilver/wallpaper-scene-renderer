@@ -130,6 +130,7 @@ add_executable(backend_scene_tests
     test_CustomShaderPassDesc.cpp
     test_PassthroughShader.cpp
     test_CardMesh.cpp
+    test_ShaderSourceScan.cpp
     test_CustomShaderPass_DepthBinding.cpp
     test_CustomShaderPass_ForceClearOutput.cpp
     test_CustomShaderPass_ScratchReuse.cpp
