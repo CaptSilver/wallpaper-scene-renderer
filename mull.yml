@@ -1,6 +1,10 @@
 # Mull mutation testing configuration
 # https://mull.readthedocs.io/en/latest/Configuration.html
 
+# Runner-side only: the frontend that embeds mutants at compile time never sees
+# this file (MULL_CONFIG is exported only around mull-runner), so this list can
+# narrow what is run but never add a family.  The embedded set is arithmetic and
+# comparison; no logical mutants exist in the binaries whatever is listed here.
 mutators:
   - cxx_arithmetic
   - cxx_comparison
