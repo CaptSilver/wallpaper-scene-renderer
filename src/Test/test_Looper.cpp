@@ -2,6 +2,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <string>
 #include <memory>
 #include <thread>
 
@@ -118,5 +121,40 @@ TEST_SUITE("Looper lifecycle") {
         while (! workerExited.load(std::memory_order_acquire)) {
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
+    }
+}
+
+TEST_SUITE("Looper thread name") {
+    using wallpaper::looper::WorkerThreadName;
+
+    TEST_CASE("worker threads are prefixed so they stand out in top -H") {
+        CHECK(WorkerThreadName("main") == "wek:main");
+        CHECK(WorkerThreadName("render") == "wek:render");
+    }
+
+    TEST_CASE("names are cut to the 15 characters Linux keeps") {
+        CHECK(WorkerThreadName("a-very-long-looper-name") == "wek:a-very-long");
+        CHECK(WorkerThreadName("a-very-long-looper-name").size() == 15u);
+        CHECK(WorkerThreadName("exactly-11c") == "wek:exactly-11c"); // 15, kept whole
+    }
+
+    TEST_CASE("the running worker carries the name") {
+        auto looper = std::make_shared<Looper>();
+        looper->setName("named");
+        REQUIRE(looper->start() == status_t::OK);
+        // The worker names itself as soon as it runs; find it among this
+        // process's threads.
+        bool found = false;
+        for (int i = 0; i < 1000 && ! found; i++) {
+            for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+                std::ifstream comm(entry.path() / "comm");
+                std::string   name;
+                std::getline(comm, name);
+                if (name == "wek:named") found = true;
+            }
+            if (! found) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        looper->stop();
+        CHECK(found);
     }
 }
