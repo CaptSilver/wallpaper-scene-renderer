@@ -240,7 +240,7 @@ bool Particle::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 
 bool WPParticleObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE(json, "particle", particle);
-    GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
 
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     GET_JSON_NAME_VALUE_NOWARN(json, "id", id);

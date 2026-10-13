@@ -1,7 +1,9 @@
 #include "WPMaterial.h"
 #include "WPAnimationJson.h"
+#include "UserPropUseRecorder.hpp"
 #include "WPUserProperties.hpp"
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -10,33 +12,23 @@ using namespace wallpaper::wpscene;
 namespace
 {
 
-// The user-property reference a constant value carries, if any.  Two shapes
-// occur in shipped materials: {"user": "prop"} and the conditional
-// {"user": {"name": "prop", "condition": "..."}}.  Returns "" for a plain
-// literal.  WPUserProperties::ResolveValue reads the same two shapes to get
-// the value out.
-std::string UserPropertyNameOf(const nlohmann::json& value) {
-    if (! value.is_object() || ! value.contains("user")) return {};
-    const auto& user = value.at("user");
-    if (user.is_string()) return user.get<std::string>();
-    if (user.is_object() && user.contains("name") && user.at("name").is_string())
-        return user.at("name").get<std::string>();
-    return {};
-}
-
 // The textures/usertextures/constantshadervalues/combos parse is identical
 // between WPMaterialPass::FromJson and WPMaterial::FromJson's own passes[0]
 // block -- this shares it.  `onConstantValue`, when given, runs once per
-// constantshadervalues entry with its name and raw (pre-resolution) JSON.
-// Callers that care about {"user": ...} references go through
-// ParsePassFieldsRecordingBindings instead.
+// constantshadervalues entry with its name and raw (pre-resolution) JSON, and
+// returns whether it recorded a runtime binding for that constant.  A bound
+// constant is updated live, so its {"user": ...} read is not reported as a
+// parse-time use; an unbound one is (the resolver reports it), so a change to
+// the property reloads the scene instead of being lost.  Callers that care
+// about {"user": ...} references go through ParsePassFieldsRecordingBindings
+// instead.
 void ParsePassFields(
     const nlohmann::json& json, std::vector<std::string>& textures,
     std::vector<WPMaterialPassUserTexture>&                               usertextures,
     std::unordered_map<std::string, int32_t>&                             combos,
     std::unordered_map<std::string, std::vector<float>>&                  constantshadervalues,
     std::unordered_map<std::string, wallpaper::ConstantAnimation>&        constantAnimations,
-    const std::function<void(const std::string&, const nlohmann::json&)>& onConstantValue = {}) {
+    const std::function<bool(const std::string&, const nlohmann::json&)>& onConstantValue = {}) {
     if (json.contains("textures")) {
         for (const auto& jT : json.at("textures")) {
             std::string tex;
@@ -56,11 +48,15 @@ void ParsePassFields(
             std::string        name;
             std::vector<float> value;
             GET_JSON_VALUE(jC.key(), name);
-            GET_JSON_VALUE(jC.value(), value);
+            const bool bound = onConstantValue && onConstantValue(name, jC.value());
+            {
+                std::optional<wallpaper::LiveBoundReadScope> live;
+                if (bound) live.emplace();
+                GET_JSON_VALUE(jC.value(), value);
+            }
             constantshadervalues[name] = value;
             if (auto anim = ParseConstantAnimation(jC.value(), value))
                 constantAnimations[name] = std::move(*anim);
-            if (onConstantValue) onConstantValue(name, jC.value());
         }
     }
     if (json.contains("combos")) {
@@ -142,11 +138,12 @@ void ParsePassFieldsRecordingBindings(
                     constantAnimations,
                     [&userShaderBindings, bindConditional](const std::string&    name,
                                                            const nlohmann::json& rawValue) {
-                        auto prop = UserPropertyNameOf(rawValue);
-                        if (prop.empty()) return;
+                        auto prop = wallpaper::UserPropertyNameOf(rawValue);
+                        if (prop.empty()) return false;
                         // UserPropertyNameOf found a "user" key, so .at() cannot throw.
-                        if (! bindConditional && ! rawValue.at("user").is_string()) return;
+                        if (! bindConditional && ! rawValue.at("user").is_string()) return false;
                         userShaderBindings[name] = prop;
+                        return true;
                     });
 }
 

@@ -1,5 +1,6 @@
 #include "WPImageObject.h"
 #include "WPAnimationJson.h"
+#include "WPUserProperties.hpp"
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
@@ -129,6 +130,16 @@ bool TryParseVec3PropertyAnimation(const nlohmann::json&           fieldJson,
     return emittedAny;
 }
 
+// An image's `visible` is re-resolved at runtime for a bound property, so the
+// read is not a parse-time use.  Parsing still routes a layer that starts
+// hidden to an offscreen target, which the runtime path never undoes; the
+// property name is kept so the parser can count that as baked in.
+void readVisible(const nlohmann::json& json, bool& visible, std::string& visibleUserProp) {
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
+    if (json.contains("visible"))
+        visibleUserProp = wallpaper::UserPropertyNameOf(json.at("visible"));
+}
+
 // Parse color field: may be a simple vec3 array or an object with {script, scriptproperties, value}
 void ParseColorField(const nlohmann::json& json, std::array<float, 3>& color,
                      std::string& colorScript, std::string& colorScriptProperties, int32_t id) {
@@ -198,7 +209,7 @@ bool WPImageEffect::IsEffectBlacklisted(const std::string& filePath) {
 bool WPImageEffect::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     std::string filePath;
     GET_JSON_NAME_VALUE(json, "file", filePath);
-    GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
     if (this->IsEffectBlacklisted(filePath)) {
         // hide blacklisted effects
         visible = false;
@@ -306,7 +317,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
 
         GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
-        GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        readVisible(json, visible, visibleUserProp);
         GET_JSON_NAME_VALUE_NOWARN(json, "disablepropagation", disablepropagation);
         // Combo condition-based visibility: {"user": {"condition": "X", "name": "prop"}}
         // These are mutually exclusive character selectors that must stay in the
@@ -389,7 +400,7 @@ bool WPImageObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     }
 
     GET_JSON_NAME_VALUE(json, "image", image);
-    GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    readVisible(json, visible, visibleUserProp);
     GET_JSON_NAME_VALUE_NOWARN(json, "disablepropagation", disablepropagation);
     if (json.contains("visible") && json.at("visible").is_object() &&
         json.at("visible").contains("user") && json.at("visible").at("user").is_object() &&

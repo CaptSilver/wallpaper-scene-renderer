@@ -2,13 +2,15 @@
 #include "Utils/Logging.h"
 #include "Fs/VFS.h"
 
+#include <optional>
+
 using namespace wallpaper::wpscene;
 
 bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "id", id);
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     GET_JSON_NAME_VALUE_NOWARN(json, "parent", parent_id);
-    GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "origin", origin);
     // A scripted origin ({script, scriptproperties, value}) drives the node's
     // position at runtime — usually with absolute scene coords — so the effect
@@ -25,12 +27,18 @@ bool WPTextObject::FromJson(const nlohmann::json& json, fs::VFS& vfs) {
     GET_JSON_NAME_VALUE_NOWARN(json, "brightness", brightness);
     GET_JSON_NAME_VALUE_NOWARN(json, "colorBlendMode", colorBlendMode);
     GET_JSON_NAME_VALUE_NOWARN(json, "font", font);
-    GET_JSON_NAME_VALUE_NOWARN(json, "pointsize", pointsize);
-    // Record user property binding for runtime pointsize updates
+    // Record user property binding for runtime pointsize updates.  Only the
+    // by-name form is re-resolved live; a conditional one stays a parse-time
+    // read, so it is left visible to the use recorder.
     if (json.contains("pointsize") && json.at("pointsize").is_object() &&
         json.at("pointsize").contains("user")) {
         const auto& userField = json.at("pointsize")["user"];
         if (userField.is_string()) pointsizeUserProp = userField.get<std::string>();
+    }
+    {
+        std::optional<wallpaper::LiveBoundReadScope> live;
+        if (! pointsizeUserProp.empty()) live.emplace();
+        GET_JSON_NAME_VALUE_NOWARN(json, "pointsize", pointsize);
     }
     GET_JSON_NAME_VALUE_NOWARN(json, "horizontalalign", horizontalalign);
     GET_JSON_NAME_VALUE_NOWARN(json, "verticalalign", verticalalign);

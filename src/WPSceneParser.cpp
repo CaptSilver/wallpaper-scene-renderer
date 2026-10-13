@@ -11,7 +11,9 @@
 #include "WPPropertyScriptExtract.hpp"
 #include "ScriptEffectVisResolve.hpp"
 #include "UserPropEffectVisResolve.hpp"
+#include "UserPropScriptReference.hpp"
 #include "UserPropUniformBinding.hpp"
+#include "UserPropUseRecorder.hpp"
 #include "WPRopeCombos.hpp"
 #include "WPSceneGroupParse.hpp"
 #include "WPUserProperties.hpp"
@@ -76,27 +78,12 @@ using namespace Eigen;
 
 std::string getAddr(void* p) { return std::to_string(reinterpret_cast<intptr_t>(p)); }
 
-// Extract the user-property name from a `{"user": "name"}` or
-// `{"user": {"name": "name", ...}}` binding.  Shared by registerObjectBindings
-// (object-level `visible`) and assembleEffects (effect-level `visible`) so
-// both shapes are recognized identically.  Empty string if `visibleField`
-// isn't a `{"user": ...}` binding.
-std::string extractUserPropName(const nlohmann::json& visibleField) {
-    if (! visibleField.is_object() || ! visibleField.contains("user")) return {};
-    const auto& userField = visibleField.at("user");
-    if (userField.is_string()) return userField.get<std::string>();
-    if (userField.is_object() && userField.contains("name")) {
-        return userField.at("name").get<std::string>();
-    }
-    return {};
-}
-
 // The user property an effect's `"visible": {"user": ...}` binding names, or
 // empty if the stored JSON is missing, malformed or names nothing.
 std::string effectUserPropName(const wpscene::WPImageEffect& effect) {
     if (effect.userVisibleRawJson.empty()) return {};
     try {
-        return extractUserPropName(nlohmann::json::parse(effect.userVisibleRawJson));
+        return UserPropertyNameOf(nlohmann::json::parse(effect.userVisibleRawJson));
     } catch (const std::exception& e) {
         LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
         return {};
@@ -726,10 +713,25 @@ void ParseSpecTexName(std::string& name, const wpscene::WPMaterial& wpmat,
     }
 }
 
+// Who consumes a material's user-bound constants (`wpmat.userShaderBindings`).
+// A consumer that registers them as runtime bindings makes a property change a
+// live uniform write; one that does not leaves the value baked into the
+// material, so the property has to be recorded as a parse-time use.
+enum class MaterialUserBindings
+{
+    Registered, // the caller registers the bindings after loading
+    BakedIn,    // nothing registers them
+};
+
 bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene, SceneNode* pNode,
                   SceneMaterial* pMaterial, WPShaderValueData* pSvData,
-                  WPShaderInfo* pWPShaderInfo = nullptr) {
+                  MaterialUserBindings userBindings, WPShaderInfo* pWPShaderInfo = nullptr) {
     (void)pNode;
+
+    if (userBindings == MaterialUserBindings::BakedIn) {
+        for (const auto& [constName, propName] : wpmat.userShaderBindings)
+            recordUserPropStaticUse(propName, "material constant");
+    }
 
     auto& svData   = *pSvData;
     auto& material = *pMaterial;
@@ -795,7 +797,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             const auto& texh = pScene->imageParser->ParseHeader(el);
             texHeaders[el]   = texh;
             for (const auto& v : texh.variants)
-                pScene->userPropTextureVariantNames.insert(v.property);
+                recordUserPropStaticUse(v.property, "texture variant");
             // Require ALL THREE compo* keys before reading them: a malformed
             // .tex header carrying compo1 but not compo2/compo3 would throw
             // out_of_range from .at("compo2"/"compo3").  Runs on the parse
@@ -1851,6 +1853,7 @@ std::optional<ImageBaseMaterial> loadImageBaseMaterial(ParseContext&            
                            spImgNode,
                            &material,
                            &svData,
+                           MaterialUserBindings::Registered,
                            &shaderInfo)) {
             LOG_ERROR(
                 "load imageobj id=%d '%s' material failed", wpimgobj.id, wpimgobj.name.c_str());
@@ -1917,8 +1920,14 @@ std::optional<TextBaseMaterial> loadTextBaseMaterial(ParseContext&              
     shaderInfo.baseConstSvs["g_UserAlpha"]  = textObj.alpha;
     shaderInfo.baseConstSvs["g_Brightness"] = textObj.brightness;
 
-    if (! LoadMaterial(
-            vfs, wpMat, context.scene.get(), spNodeRaw, &material, &svData, &shaderInfo)) {
+    if (! LoadMaterial(vfs,
+                       wpMat,
+                       context.scene.get(),
+                       spNodeRaw,
+                       &material,
+                       &svData,
+                       MaterialUserBindings::BakedIn,
+                       &shaderInfo)) {
         LOG_ERROR("  load text material failed");
         return std::nullopt;
     }
@@ -2481,6 +2490,7 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                                spEffNode.get(),
                                &material,
                                &svData,
+                               MaterialUserBindings::Registered,
                                &wpEffShaderInfo)) {
                 eff_mat_ok = false;
                 break;
@@ -2978,6 +2988,10 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     applyImagePreRoutingDefaults(context, wpimgobj);
 
     const auto [isOffscreen, isScriptedLayer] = computeOffscreenRouting(context, wpimgobj);
+    // An offscreen layer is skipped from the main composite, and the runtime
+    // visibility path only flips a flag on its node: turning the bound
+    // property on would show nothing.  Only a reload re-routes it.
+    if (isOffscreen) recordUserPropStaticUse(wpimgobj.visibleUserProp, "visible (offscreen)");
 
     auto colorBlendOverrideOpt = applyColorBlendOverride(context, wpimgobj);
     if (! colorBlendOverrideOpt) return;
@@ -3322,6 +3336,7 @@ void ParseParticleObj(ParseContext& context, wpscene::WPParticleObject& wppartob
                        spNode.get(),
                        &material,
                        &svData,
+                       MaterialUserBindings::BakedIn,
                        &shaderInfo)) {
         LOG_ERROR("load particleobj '%s' material faild", wppartobj.name.c_str());
         return;
@@ -3662,8 +3677,14 @@ void ParseModelObj(ParseContext& context, wpscene::WPModelObject& model_obj) {
         WPShaderInfo      shaderInfo;
         shaderInfo.baseConstSvs = context.global_base_uniforms;
 
-        if (! LoadMaterial(
-                vfs, wpmat, context.scene.get(), spNode.get(), &material, &svData, &shaderInfo)) {
+        if (! LoadMaterial(vfs,
+                           wpmat,
+                           context.scene.get(),
+                           spNode.get(),
+                           &material,
+                           &svData,
+                           MaterialUserBindings::BakedIn,
+                           &shaderInfo)) {
             LOG_ERROR("load model id=%d submesh %zu '%s' material failed",
                       model_obj.id,
                       si,
@@ -5052,7 +5073,7 @@ void registerObjectBindings(ParseContext& context, const nlohmann::json& json,
             const auto& userField =
                 obj.at("visible").at("user"); // still needed below for the
                                               // "Alternative format" conditionValue lookup
-            std::string propName = extractUserPropName(obj.at("visible"));
+            std::string propName = UserPropertyNameOf(obj.at("visible"));
             if (! propName.empty()) {
                 // conditionValue is the scene.json comparison target (used
                 // for combo bindings that do string equality against the
@@ -5491,8 +5512,14 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
                 SceneMaterial     material;
                 WPShaderValueData svData;
 
-                if (! LoadMaterial(
-                        vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                if (! LoadMaterial(vfs,
+                                   wpmat,
+                                   &scene,
+                                   spNode.get(),
+                                   &material,
+                                   &svData,
+                                   MaterialUserBindings::BakedIn,
+                                   &shaderInfo)) {
                     LOG_ERROR("bloom: failed to load material (stage=%d)", (int)def.stage);
                     scene.bloomConfig.enabled = false;
                     break;
@@ -5661,8 +5688,14 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
                 SceneMaterial     material;
                 WPShaderValueData svData;
 
-                if (! LoadMaterial(
-                        vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+                if (! LoadMaterial(vfs,
+                                   wpmat,
+                                   &scene,
+                                   spNode.get(),
+                                   &material,
+                                   &svData,
+                                   MaterialUserBindings::BakedIn,
+                                   &shaderInfo)) {
                     LOG_ERROR("bloom (LDR): failed to load material for '%s'", def.shader.c_str());
                     scene.bloomConfig.enabled = false;
                     break;
@@ -5715,7 +5748,14 @@ void buildBloomAndReflection(ParseContext& context, const wpscene::WPScene& sc,
             SceneMaterial     material;
             WPShaderValueData svData;
 
-            if (! LoadMaterial(vfs, wpmat, &scene, spNode.get(), &material, &svData, &shaderInfo)) {
+            if (! LoadMaterial(vfs,
+                               wpmat,
+                               &scene,
+                               spNode.get(),
+                               &material,
+                               &svData,
+                               MaterialUserBindings::BakedIn,
+                               &shaderInfo)) {
                 LOG_ERROR("reflection blur: failed to load material for '%s' VERTICAL=%d",
                           def.shader.c_str(),
                           def.vertical);
@@ -5791,6 +5831,10 @@ void finalizeParse(ParseContext& context) {
                                        context.scene->nodeEffectLayerMap,
                                        context.scene->propertyScripts);
 
+    // A script's stored scriptproperties are seeded once when it compiles, so
+    // a property bound there needs a reload.  Every script is in its list by now.
+    wek::recordStructuredScriptUserProps(*context.scene);
+
     releaseParseSubsystems();
 
     // End-of-parse hide-pattern summary — prints once to stderr so it's easy
@@ -5846,7 +5890,14 @@ void attachVolumetricMaterials(ParseContext& context) {
         shaderInfo.baseConstSvs = context.global_base_uniforms;
         SceneMaterial     material;
         WPShaderValueData svData;
-        if (! LoadMaterial(vfs, wpmat, &scene, node, &material, &svData, &shaderInfo)) {
+        if (! LoadMaterial(vfs,
+                           wpmat,
+                           &scene,
+                           node,
+                           &material,
+                           &svData,
+                           MaterialUserBindings::BakedIn,
+                           &shaderInfo)) {
             return false;
         }
         LoadConstvalue(material, wpmat, shaderInfo);
@@ -5910,6 +5961,10 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     WEK_PROFILE_SCOPE("WPSceneParser::Parse");
     // Set user properties context for the duration of parsing
     UserPropertiesScope propsScope(&userProps);
+    // Collects the properties read into fields the live scene cannot edit.
+    // Installed before the scene's general settings are read, which are among them.
+    UserPropUseRecorder       useRecorder;
+    UserPropUseRecordingScope useRecorderScope(&useRecorder);
 
     nlohmann::json json;
     if (! PARSE_JSON(buf, json)) return nullptr;
@@ -6072,5 +6127,6 @@ std::shared_ptr<Scene> WPSceneParser::Parse(std::string_view scene_id, const std
     // have run by the time it does.
     finalizeParse(context);
 
+    context.scene->userPropStaticUses = std::move(useRecorder.uses);
     return context.scene;
 }

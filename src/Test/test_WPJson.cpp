@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include "WPJson.hpp"
+#include "UserPropUseRecorder.hpp"
 #include "WPUserProperties.hpp"
 
 #include <nlohmann/json.hpp>
@@ -641,5 +642,145 @@ TEST_SUITE("regression: minimised fuzz crashes") {
                     __FILE__, __FUNCTION__, __LINE__, src, out));
             }
         }
+    }
+}
+
+// ===========================================================================
+// UserPropUseRecorder — which {"user": ...} reads the resolver saw
+// ===========================================================================
+
+TEST_SUITE("UserPropUseRecorder") {
+    TEST_CASE("a user-bound read is recorded under the property name") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "bright", { { "user", "bright" }, { "value", 0.7 } } } };
+        float v = 0.f;
+        REQUIRE(GET_JSON_NAME_VALUE(j, "bright", v));
+
+        CHECK(rec.uses.count("bright") == 1u);
+    }
+
+    TEST_CASE("a read with no recorder installed records nothing and still resolves") {
+        njson j = { { "bright", { { "user", "bright" }, { "value", 0.7 } } } };
+        float v = 0.f;
+        REQUIRE(GET_JSON_NAME_VALUE(j, "bright", v));
+        CHECK(v == doctest::Approx(0.7f));
+    }
+
+    TEST_CASE("a read that falls back to the default is still a use") {
+        // No user-property context: the value comes from the authored default,
+        // but the field is bound all the same.
+        REQUIRE(g_currentUserProperties == nullptr);
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "mode", { { "user", "mode" }, { "value", 3 } } } };
+        int   v = 0;
+        REQUIRE(GET_JSON_NAME_VALUE(j, "mode", v));
+        CHECK(rec.uses.count("mode") == 1u);
+    }
+
+    TEST_CASE("the conditional object shape records its property") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "mode",
+                      { { "user", { { "name", "mode" }, { "condition", "3" } } },
+                        { "value", true } } } };
+        bool  v = false;
+        GET_JSON_NAME_VALUE(j, "mode", v);
+        CHECK(rec.uses.count("mode") == 1u);
+    }
+
+    TEST_CASE("a plain value and a user key that names nothing record nothing") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "plain", 1 }, { "odd", { { "user", 42 }, { "value", 2 } } } };
+        int   v = 0;
+        GET_JSON_NAME_VALUE(j, "plain", v);
+        GET_JSON_NAME_VALUE(j, "odd", v);
+        CHECK(rec.uses.empty());
+    }
+
+    TEST_CASE("a read inside a live-bound scope is not recorded") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "bright", { { "user", "bright" }, { "value", 0.7 } } } };
+        float v = 0.f;
+        {
+            LiveBoundReadScope live;
+            GET_JSON_NAME_VALUE(j, "bright", v);
+        }
+        CHECK(rec.uses.empty());
+
+        GET_JSON_NAME_VALUE(j, "bright", v);
+        CHECK(rec.uses.count("bright") == 1u);
+    }
+
+    TEST_CASE("nested live-bound scopes keep the suppression until the outer one ends") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        njson j = { { "bright", { { "user", "bright" }, { "value", 0.7 } } } };
+        float v = 0.f;
+        {
+            LiveBoundReadScope outer;
+            {
+                LiveBoundReadScope inner;
+            }
+            GET_JSON_NAME_VALUE(j, "bright", v);
+        }
+        CHECK(rec.uses.empty());
+        CHECK(rec.liveDepth == 0);
+    }
+
+    TEST_CASE("a live-bound scope with no recorder installed is harmless") {
+        LiveBoundReadScope live;
+        CHECK(g_userPropUseRecorder == nullptr);
+    }
+
+    TEST_CASE("nested recording scopes restore the previous recorder") {
+        UserPropUseRecorder outer, inner;
+        njson               j = { { "k", { { "user", "k" }, { "value", 0.0 } } } };
+        float               v = 0.f;
+        {
+            UserPropUseRecordingScope o(&outer);
+            {
+                UserPropUseRecordingScope i(&inner);
+                GET_JSON_NAME_VALUE(j, "k", v);
+            }
+            CHECK(inner.uses.count("k") == 1u);
+            CHECK(outer.uses.empty());
+            GET_JSON_NAME_VALUE(j, "k", v);
+            CHECK(outer.uses.count("k") == 1u);
+        }
+        CHECK(g_userPropUseRecorder == nullptr);
+    }
+
+    TEST_CASE("recordUserPropStaticUse feeds the active recorder and ignores an empty name") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+        recordUserPropStaticUse("a", "scriptproperties");
+        recordUserPropStaticUse("", "scriptproperties");
+        CHECK(rec.uses.size() == 1u);
+        CHECK(rec.uses.at("a").count("scriptproperties") == 1u);
+    }
+}
+
+TEST_SUITE("UserPropertyNameOf") {
+    TEST_CASE("the string shape yields the name") {
+        CHECK(UserPropertyNameOf(njson::parse(R"({"user":"p","value":1})")) == "p");
+    }
+    TEST_CASE("the conditional shape yields the name") {
+        CHECK(UserPropertyNameOf(njson::parse(R"({"user":{"name":"p","condition":"1"}})")) == "p");
+    }
+    TEST_CASE("a plain value, a nameless object and a non-string name yield nothing") {
+        CHECK(UserPropertyNameOf(njson(5)).empty());
+        CHECK(UserPropertyNameOf(njson::parse(R"({"user":{"condition":"1"}})")).empty());
+        CHECK(UserPropertyNameOf(njson::parse(R"({"user":{"name":3}})")).empty());
+        CHECK(UserPropertyNameOf(njson::parse(R"({"user":42})")).empty());
     }
 }

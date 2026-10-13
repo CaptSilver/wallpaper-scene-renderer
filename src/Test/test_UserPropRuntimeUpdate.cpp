@@ -92,11 +92,66 @@ TEST_SUITE("UserPropRuntimeUpdate") {
         // it in place, so a visibility binding on the same combo is not enough.
         Scene scene;
         scene.userPropVisBindings["facestyles"].push_back({ nullptr, true, "Isa", "{}" });
-        scene.userPropTextureVariantNames.insert("facestyles");
+        scene.userPropStaticUses["facestyles"].insert("texture variant");
 
         auto needReload = wek::userPropsNeedingReload(scene, { "facestyles" });
 
         CHECK(needReload == std::vector<std::string> { "facestyles" });
+    }
+
+    // One property can feed a live-updatable field and a parse-time one. Pushing
+    // the new value to the live field alone leaves the other stale, so any
+    // static use sends the whole property through a reload.
+    TEST_CASE("a property with a uniform binding and a static use reloads") {
+        Scene scene;
+        auto  mesh = std::make_shared<SceneMesh>();
+        mesh->AddMaterial(SceneMaterial {});
+        scene.userPropUniformBindings["audiocolor"].push_back({ mesh, "g_Color" });
+        scene.userPropStaticUses["audiocolor"].insert("color");
+
+        CHECK(wek::userPropsNeedingReload(scene, { "audiocolor" }) ==
+              std::vector<std::string> { "audiocolor" });
+    }
+
+    TEST_CASE("a property with a visibility binding and a static use reloads") {
+        Scene scene;
+        scene.userPropVisBindings["depth"].push_back({ nullptr, true, "", "{}" });
+        scene.userPropStaticUses["depth"].insert("parallaxDepth");
+
+        CHECK(wek::userPropsNeedingReload(scene, { "depth" }) ==
+              std::vector<std::string> { "depth" });
+    }
+
+    TEST_CASE("a property whose only use is static reloads") {
+        Scene scene;
+        scene.userPropStaticUses["objectcolor"].insert("color");
+
+        CHECK(wek::userPropsNeedingReload(scene, { "objectcolor" }) ==
+              std::vector<std::string> { "objectcolor" });
+    }
+
+    TEST_CASE("a property reported with several static fields reloads once") {
+        Scene scene;
+        scene.userPropStaticUses["multi"] = { "color", "alpha", "scriptproperties" };
+
+        CHECK(wek::userPropsNeedingReload(scene, { "multi" }).size() == 1u);
+    }
+
+    TEST_CASE("a property with only runtime bindings stays live next to a static one") {
+        Scene scene;
+        scene.userPropVisBindings["live"].push_back({ nullptr, true, "", "{}" });
+        scene.userPropStaticUses["baked"].insert("color");
+
+        CHECK(wek::userPropsNeedingReload(scene, { "live", "baked" }) ==
+              std::vector<std::string> { "baked" });
+    }
+
+    TEST_CASE("the static fields of a property are reported for the reload log") {
+        Scene scene;
+        scene.userPropStaticUses["p"] = { "color", "parallaxDepth" };
+
+        CHECK(wek::userPropStaticFields(scene, "p") == "color, parallaxDepth");
+        CHECK(wek::userPropStaticFields(scene, "unknown").empty());
     }
 }
 

@@ -115,6 +115,8 @@ public:
     bool copybackground { true };
     bool visible { true };
     bool visibleIsComboSelector { false }; // combo condition-based visibility (skip offscreen)
+    // The user property `visible` is bound to, if any.
+    std::string visibleUserProp;
     // WE editor flag: when true, this object doesn't inherit transform /
     // visibility / alpha / tint from parent groups or nodes.  Parsed for
     // completeness; currently no group hierarchy exists in the scenes we

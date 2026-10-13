@@ -36,8 +36,13 @@
 #include "Scene/SceneNode.h"
 #include "SpecTexs.hpp"
 #include "SystemFontFallback.hpp"
+#include "UserPropRuntimeUpdate.hpp"
+#include "UserPropUseRecorder.hpp"
 #include "WPUserProperties.hpp"
+#include "wpscene/WPImageObject.h"
+#include "wpscene/WPMaterial.h"
 #include "wpscene/WPModelObject.h"
+#include "wpscene/WPSoundObject.h"
 
 #include "Audio/SoundManager.h"
 #include "Utils/Logging.h"
@@ -3395,6 +3400,406 @@ void main() {
             REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
             CHECK(scene->userPropUniformBindings.at("myprop")[0].uniformName == "g_Pulse");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Properties that feed a field parsing consumes once.  A change to one
+    // of those needs a reload even when the same property also has a live
+    // binding, so the parser records them in Scene::userPropStaticUses and
+    // wek::userPropsNeedingReload consults that.
+    // ------------------------------------------------------------------
+
+    static std::shared_ptr<Scene> parseStaticUseScene(
+        const std::string&                                         objects,
+        const char*                                                propertiesJson,
+        std::initializer_list<std::pair<std::string, std::string>> extras = {}) {
+        ensureGlslangInit();
+        auto        vfs   = makeAssetsVfsWith(extras);
+        std::string scene = R"JSON({
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [ OBJECTS ]
+})JSON";
+        scene.replace(scene.find("OBJECTS"), 7, objects);
+        WPUserProperties props {};
+        REQUIRE(props.LoadFromProjectJson(std::string(R"({"general":{"properties":)") +
+                                          propertiesJson + "}}"));
+        audio::SoundManager sm;
+        WPSceneParser       parser;
+        return parser.Parse("scene_static_use", scene, *vfs, sm, props);
+    }
+
+    static std::string imageObject(const std::string& visible, const std::string& extra = {}) {
+        return R"JSON({ "id": 601, "name": "layer", "image": "models/_plain.json",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": )JSON" +
+               visible + extra + " }";
+    }
+
+    constexpr const char* kShowMeOff = R"({"showme":{"value":false,"type":"bool"}})";
+    constexpr const char* kShowMeOn  = R"({"showme":{"value":true,"type":"bool"}})";
+    constexpr const char* kVisShowMe = R"({"user":"showme","value":true})";
+
+    constexpr const char* kStaticTwoUniformFrag      = R"GLSL(
+uniform float g_Pulse; // {"material":"pulse","default":1}
+uniform float g_Other; // {"material":"other","default":1}
+void main() {
+    gl_FragColor = vec4(g_Pulse + g_Other);
+}
+)GLSL";
+    constexpr const char* kStaticUnboundMaterialJson = R"({
+        "passes": [{ "shader": "_anim", "blending": "translucent", "textures": [] }]
+    })";
+    constexpr const char* kStaticPulseEffectJson     = R"({
+        "name": "pulse",
+        "passes": [{ "material": "materials/_unbound.json" }]
+    })";
+
+    TEST_CASE("a property bound as a pass-override constant and read as an object color reloads") {
+        const std::string effects = R"JSON(, "effects": [
+        { "id": 10, "name": "pulse", "visible": true, "file": "effects/pulse.json",
+          "passes": [ { "constantshadervalues": { "pulse": { "user": "myprop", "value": 1 } } } ] }
+        ])JSON";
+        const std::string color   = R"JSON(, "color": { "user": "myprop", "value": "1 1 1" })JSON";
+
+        auto parse = [&](const std::string& extra) {
+            return parseStaticUseScene(
+                imageObject("true", extra),
+                R"({"myprop":{"value":1,"type":"slider"}})",
+                {
+                    { "/shaders/_anim.vert", kTrivialVert },
+                    { "/shaders/_anim.frag", kStaticTwoUniformFrag },
+                    { "/materials/_unbound.json", kStaticUnboundMaterialJson },
+                    { "/effects/pulse.json", kStaticPulseEffectJson },
+                });
+        };
+
+        SUBCASE("the constant alone is live") {
+            auto scene = parse(effects);
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(scene->userPropStaticUses.count("myprop") == 0u);
+            CHECK(wek::userPropsNeedingReload(*scene, { "myprop" }).empty());
+        }
+
+        SUBCASE("the object color alone is a static use") {
+            auto scene = parse(color);
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropUniformBindings.count("myprop") == 0u);
+            CHECK(scene->userPropStaticUses.count("myprop") == 1u);
+            CHECK_FALSE(wek::userPropsNeedingReload(*scene, { "myprop" }).empty());
+        }
+
+        SUBCASE("both together bind the uniform and still reload") {
+            auto scene = parse(color + effects);
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropUniformBindings.count("myprop") == 1u);
+            CHECK(scene->userPropStaticUses.count("myprop") == 1u);
+            CHECK_FALSE(wek::userPropsNeedingReload(*scene, { "myprop" }).empty());
+        }
+    }
+
+    TEST_CASE("a conditional pass-override constant is neither bound nor lost") {
+        // The live update cannot evaluate the condition, so the pass override
+        // leaves it unbound; it has to surface as a static use or a change to
+        // the property would neither apply nor reload.
+        const std::string effects = R"JSON(, "effects": [
+        { "id": 10, "name": "pulse", "visible": true, "file": "effects/pulse.json",
+          "passes": [ { "constantshadervalues": { "pulse": {
+              "user": { "name": "myprop", "condition": "1" }, "value": 1 } } } ] }
+        ])JSON";
+        auto              scene =
+            parseStaticUseScene(imageObject("true", effects),
+                                R"({"myprop":{"value":1,"type":"combo"}})",
+                                {
+                                    { "/shaders/_anim.vert", kTrivialVert },
+                                    { "/shaders/_anim.frag", kStaticTwoUniformFrag },
+                                    { "/materials/_unbound.json", kStaticUnboundMaterialJson },
+                                    { "/effects/pulse.json", kStaticPulseEffectJson },
+                                });
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropUniformBindings.count("myprop") == 0u);
+        CHECK(scene->userPropStaticUses.count("myprop") == 1u);
+    }
+
+    TEST_CASE("an image visible binding that resolves true is live, not a static use") {
+        auto scene = parseStaticUseScene(imageObject(kVisShowMe), kShowMeOn);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropVisBindings.count("showme") == 1u);
+        CHECK(scene->userPropStaticUses.count("showme") == 0u);
+        CHECK(wek::userPropsNeedingReload(*scene, { "showme" }).empty());
+    }
+
+    // A layer that starts hidden is routed to a private render target at parse
+    // time and skipped from the main composite.  The runtime visibility path
+    // only flips the node's flag; it never re-routes, so switching the property
+    // on would show nothing.  That read has to count as baked in.
+    TEST_CASE("an image routed offscreen by its visible binding reloads when the property "
+              "changes") {
+        auto scene = parseStaticUseScene(imageObject(kVisShowMe), kShowMeOff);
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropVisBindings.count("showme") == 1u);
+        CHECK(scene->userPropStaticUses.count("showme") == 1u);
+        CHECK_FALSE(wek::userPropsNeedingReload(*scene, { "showme" }).empty());
+    }
+
+    TEST_CASE("a combo-selector image that starts hidden stays in the main graph and live") {
+        auto scene = parseStaticUseScene(
+            imageObject(R"({"user":{"name":"showme","condition":"2"},"value":true})"),
+            R"({"showme":{"value":"1","type":"combo"}})");
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropVisBindings.count("showme") == 1u);
+        CHECK(scene->userPropStaticUses.count("showme") == 0u);
+    }
+
+    TEST_CASE("object-level visible bindings on a group and a light are live") {
+        const std::string objects = R"JSON(
+    { "id": 700, "name": "grp", "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "user": "showme", "value": true } },
+    { "id": 701, "name": "lamp", "light": "point", "color": "1 1 1",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "radius": 100.0,
+      "intensity": 1.0, "visible": { "user": "lampprop", "value": true } })JSON";
+        auto              scene   = parseStaticUseScene(
+            objects,
+            R"({"showme":{"value":true,"type":"bool"},"lampprop":{"value":true,"type":"bool"}})");
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropVisBindings.count("showme") == 1u);
+        CHECK(scene->userPropVisBindings.count("lampprop") == 1u);
+        CHECK(scene->userPropStaticUses.empty());
+    }
+
+    TEST_CASE("object-level visible bindings on a model and a particle are live") {
+        const std::string objects = R"JSON(
+    { "id": 702, "name": "rock", "model": "models/_tri.mdl",
+      "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+      "visible": { "user": "rockprop", "value": true } },
+    { "id": 703, "name": "dust", "particle": "particle/dust.json", "origin": "0 0 0",
+      "visible": { "user": "dustprop", "value": true } })JSON";
+        auto              scene   = parseStaticUseScene(
+            objects,
+            R"({"rockprop":{"value":true,"type":"bool"},"dustprop":{"value":true,"type":"bool"}})",
+            {
+                { "/models/_tri.mdl", makeTriangleModelMdl() },
+                { "/particle/dust.json",
+                  R"JSON({ "emitter": [{ "name": "box", "id": 1 }],
+                           "renderer": [{ "name": "sprite" }],
+                           "material": "materials/_plain.json",
+                           "maxcount": 4 })JSON" },
+            });
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropVisBindings.count("rockprop") == 1u);
+        CHECK(scene->userPropVisBindings.count("dustprop") == 1u);
+        CHECK(scene->userPropStaticUses.count("rockprop") == 0u);
+        CHECK(scene->userPropStaticUses.count("dustprop") == 0u);
+    }
+
+    TEST_CASE("an effect visible binding is live, not a static use") {
+        auto scene = parseStaticUseScene(
+            imageObject("true",
+                        R"JSON(, "effects": [ { "id": 10, "name": "tint", "visible":
+                            { "user": "fxprop", "value": true },
+                            "file": "effects/tint.json" } ])JSON"),
+            R"({"fxprop":{"value":true,"type":"bool"}})",
+            { { "/effects/tint.json", kEffectFileJson } });
+        REQUIRE(scene != nullptr);
+        CHECK(scene->userPropEffectVisBindings.count("fxprop") == 1u);
+        CHECK(scene->userPropStaticUses.count("fxprop") == 0u);
+    }
+
+    TEST_CASE("a text pointsize bound by name is live; a conditional one is baked in") {
+        if (ResolveSystemFontFallback("systemfont_sans").empty()) {
+            MESSAGE("skipped: no system font fallback for systemfont_sans");
+            return;
+        }
+        auto text = [](const std::string& pointsize) {
+            return R"JSON({ "id": 720, "name": "t", "origin": "100 200 0", "scale": "1 1 1",
+      "angles": "0 0 0", "size": "256 64", "font": "systemfont_sans", "pointsize": )JSON" +
+                   pointsize + R"JSON(, "text": { "value": "12:00" }, "visible": true })JSON";
+        };
+        SUBCASE("by name") {
+            auto scene = parseStaticUseScene(text(R"({"user":"sizeprop","value":24})"),
+                                             R"({"sizeprop":{"value":24,"type":"slider"}})");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->textLayers.size() == 1u);
+            CHECK(scene->textLayers[0].pointsizeUserProp == "sizeprop");
+            CHECK(scene->userPropStaticUses.count("sizeprop") == 0u);
+        }
+        SUBCASE("conditional") {
+            auto scene = parseStaticUseScene(
+                text(R"({"user":{"name":"sizeprop","condition":"1"},"value":24})"),
+                R"({"sizeprop":{"value":1,"type":"combo"}})");
+            REQUIRE(scene != nullptr);
+            REQUIRE(scene->textLayers.size() == 1u);
+            CHECK(scene->textLayers[0].pointsizeUserProp.empty());
+            CHECK(scene->userPropStaticUses.count("sizeprop") == 1u);
+        }
+    }
+
+    TEST_CASE("fields parsing consumes once are static uses") {
+        SUBCASE("an object color") {
+            auto scene = parseStaticUseScene(
+                imageObject("true", R"(, "color": { "user": "c", "value": "1 1 1" })"),
+                R"({"c":{"value":"1 1 1","type":"color"}})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("c") == 1u);
+        }
+        SUBCASE("an object parallax depth") {
+            auto scene = parseStaticUseScene(
+                imageObject("true", R"(, "parallaxDepth": { "user": "d", "value": "0 0" })"),
+                R"({"d":{"value":"0 0","type":"textinput"}})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("d") == 1u);
+        }
+        SUBCASE("an animation layer's visible") {
+            wpscene::WPImageObject obj;
+            UserPropUseRecorder    rec;
+            auto                   vfs = makeAssetsVfsWith({});
+            {
+                UserPropUseRecordingScope scope(&rec);
+                obj.FromJson(nlohmann::json::parse(R"({
+                    "id": 1, "name": "puppet", "image": "models/_plain.json",
+                    "animationlayers": [ { "animation": 1, "blend": 1.0, "rate": 1.0,
+                                           "visible": { "user": "layervis", "value": true } } ]
+                })"),
+                             *vfs);
+            }
+            CHECK(rec.uses.count("layervis") == 1u);
+        }
+        SUBCASE("a scene general setting") {
+            ensureGlslangInit();
+            auto             vfs       = makeAssetsVfsWith({});
+            const char*      sceneJson = R"JSON({
+  "camera": { "center": "0 0 0", "eye": "0 0 1", "up": "0 1 0" },
+  "general": { "clearcolor": "0 0 0", "bloom": { "user": "bloomprop", "value": true },
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": []
+})JSON";
+            WPUserProperties props {};
+            REQUIRE(props.LoadFromProjectJson(
+                R"({"general":{"properties":{"bloomprop":{"value":true,"type":"bool"}}}})"));
+            audio::SoundManager sm;
+            WPSceneParser       parser;
+            auto scene = parser.Parse("scene_general_static", sceneJson, *vfs, sm, props);
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("bloomprop") == 1u);
+        }
+    }
+
+    TEST_CASE("material fields parsing consumes once are static uses") {
+        auto record = [](const char* materialJson) {
+            wpscene::WPMaterial mat;
+            UserPropUseRecorder rec;
+            {
+                UserPropUseRecordingScope scope(&rec);
+                REQUIRE(mat.FromJson(nlohmann::json::parse(materialJson)));
+            }
+            return rec;
+        };
+        SUBCASE("a combo value") {
+            auto rec = record(R"({"passes":[{"shader":"_t","combos":
+                {"MODE":{"user":"modeprop","value":1}}}]})");
+            CHECK(rec.uses.count("modeprop") == 1u);
+        }
+        SUBCASE("a texture path") {
+            auto rec = record(R"({"passes":[{"shader":"_t","textures":
+                [{"user":"texprop","value":"materials/x"}]}]})");
+            CHECK(rec.uses.count("texprop") == 1u);
+        }
+        SUBCASE("a constant bound by name is held by the binding, not recorded here") {
+            auto rec = record(R"({"passes":[{"shader":"_t","constantshadervalues":
+                {"pulse":{"user":"constprop","value":1}}}]})");
+            CHECK(rec.uses.count("constprop") == 0u);
+        }
+    }
+
+    TEST_CASE("a model submesh material's user constants are baked in") {
+        auto parse = [](const char* material) {
+            return parseStaticUseScene(
+                R"JSON({ "id": 730, "name": "rock", "model": "models/_tri_ub.mdl",
+                    "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0", "visible": true })JSON",
+                R"({"modelprop":{"value":1,"type":"slider"}})",
+                {
+                    { "/models/_tri_ub.mdl", makeTriangleModelMdl("materials/_ub.json") },
+                    { "/materials/_ub.json", material },
+                });
+        };
+        SUBCASE("a constant") {
+            auto scene = parse(R"({"passes":[{"shader":"_t","blending":"translucent",
+                "textures":[],"constantshadervalues":
+                {"pulse":{"user":"modelprop","value":1}}}]})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropUniformBindings.count("modelprop") == 0u);
+            CHECK(scene->userPropStaticUses.count("modelprop") == 1u);
+            CHECK_FALSE(wek::userPropsNeedingReload(*scene, { "modelprop" }).empty());
+        }
+        SUBCASE("a usershadervalues entry") {
+            auto scene = parse(R"({"passes":[{"shader":"_t","blending":"translucent",
+                "textures":[],"usershadervalues":{"modelprop":"g_Pulse"}}]})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("modelprop") == 1u);
+        }
+    }
+
+    TEST_CASE("a property named only in a script's stored scriptproperties is a static use") {
+        auto scriptProps = [](const char* name) {
+            return std::string(R"JSON("scriptproperties": { "k": { "user": ")JSON") + name +
+                   R"JSON(", "value": 1 } })JSON";
+        };
+        SUBCASE("a color script") {
+            auto scene = parseStaticUseScene(
+                imageObject("true",
+                            R"JSON(, "color": { "script": "function update(v){return v;}",
+                                    )JSON" +
+                                scriptProps("colorprop") + R"JSON(, "value": "1 1 1" })JSON"),
+                R"({"colorprop":{"value":1,"type":"slider"}})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("colorprop") == 1u);
+        }
+        SUBCASE("a property script") {
+            auto scene = parseStaticUseScene(
+                imageObject("true",
+                            R"JSON(, "alpha": { "script": "function update(v){return v;}",
+                                    )JSON" +
+                                scriptProps("alphaprop") + R"JSON(, "value": 1.0 })JSON"),
+                R"({"alphaprop":{"value":1,"type":"slider"}})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("alphaprop") == 1u);
+        }
+        SUBCASE("an effect's visible script") {
+            auto scene =
+                parseStaticUseScene(imageObject(
+                                        "true",
+                                        R"JSON(, "effects": [ { "id": 10, "name": "tint", "visible":
+                                { "script": "function update(v){return v;}",
+                                )JSON" + scriptProps("fxscriptprop") +
+                                            R"JSON(, "value": true },
+                                "file": "effects/tint.json" } ])JSON"),
+                                    R"({"fxscriptprop":{"value":1,"type":"slider"}})",
+                                    { { "/effects/tint.json", kEffectFileJson } });
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("fxscriptprop") == 1u);
+        }
+        SUBCASE("a name only in the script body is left to the sidecar's textual check") {
+            auto scene = parseStaticUseScene(imageObject("true",
+                                                         R"JSON(, "alpha": { "script":
+                                "function update(v){return engine.userProperties.bodyprop;}",
+                                "scriptproperties": {}, "value": 1.0 })JSON"),
+                                             R"({"bodyprop":{"value":1,"type":"slider"}})");
+            REQUIRE(scene != nullptr);
+            CHECK(scene->userPropStaticUses.count("bodyprop") == 0u);
+        }
+    }
+
+    TEST_CASE("a sound object's visible is read but consumed by nothing") {
+        wpscene::WPSoundObject snd;
+        UserPropUseRecorder    rec;
+        auto                   vfs = makeAssetsVfsWith({});
+        {
+            UserPropUseRecordingScope scope(&rec);
+            REQUIRE(snd.FromJson(nlohmann::json::parse(R"({
+                "sound": ["a.mp3"], "visible": { "user": "soundvis", "value": true } })"),
+                                 *vfs));
+        }
+        CHECK(rec.uses.count("soundvis") == 0u);
     }
 
     TEST_CASE("a script-bound effect visible field produces an Effect-attached property script "

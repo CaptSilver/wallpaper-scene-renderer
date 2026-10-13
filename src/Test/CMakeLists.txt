@@ -477,7 +477,7 @@ if(Qt6_FOUND)
     # deliberately spared from.
     target_compile_options(scenescript_tests PRIVATE ${wek_warn_opts} ${WEK_DOCTEST_WERROR_EXEMPT_FLAGS})
     target_link_libraries(scenescript_tests PRIVATE
-        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer)
+        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer nlohmann_json)
     wek_apply_sanitizers(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
     set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)

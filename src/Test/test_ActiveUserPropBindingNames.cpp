@@ -1,5 +1,8 @@
 #include <doctest.h>
 
+#include "UserPropScriptReference.hpp"
+#include "UserPropUseRecorder.hpp"
+
 #include "Scene/Scene.h"
 #include "Scene/SceneMaterial.h"
 #include "Scene/SceneMesh.h"
@@ -37,10 +40,28 @@ std::set<std::string> allNames {
 TEST_SUITE("active user-property binding names") {
     TEST_CASE("a name that picks a texture variant is included") {
         Scene scene;
-        scene.userPropTextureVariantNames.insert("orphan");
+        scene.userPropStaticUses["orphan"].insert("texture variant");
 
         auto active = activeUserPropBindingNames(allNames, scene);
         CHECK(active.count("orphan") == 1);
+    }
+
+    // An object's color or a sound's volume is read once at parse time.  The
+    // control works (a change reloads the scene), so it must not gray out.
+    TEST_CASE("a name whose only use is baked in at parse time is included") {
+        Scene scene;
+        scene.userPropStaticUses["orphan"].insert("color");
+
+        auto active = activeUserPropBindingNames(allNames, scene);
+        CHECK(active.count("orphan") == 1);
+    }
+
+    TEST_CASE("a static use of one name does not activate another") {
+        Scene scene;
+        scene.userPropStaticUses["boundVis"].insert("color");
+
+        auto active = activeUserPropBindingNames(allNames, scene);
+        CHECK(active.count("orphan") == 0);
     }
 
     TEST_CASE("a name absent from every binding table is excluded") {
@@ -193,5 +214,61 @@ TEST_SUITE("active user-property binding names") {
 
         auto active = activeUserPropBindingNames({ "neverMentioned" }, scene);
         CHECK(active.count("neverMentioned") == 0);
+    }
+}
+
+TEST_SUITE("structured script user properties") {
+    TEST_CASE("the string user form yields each bound property") {
+        auto names = wek::structuredScriptUserProps(
+            R"({"a":{"user":"first","value":1},"b":{"user":"second"},"c":{"value":3}})");
+        CHECK(names == std::vector<std::string> { "first", "second" });
+    }
+
+    TEST_CASE("the conditional object form is not a script binding") {
+        auto names = wek::structuredScriptUserProps(
+            R"({"a":{"user":{"name":"first","condition":"1"},"value":1}})");
+        CHECK(names.empty());
+    }
+
+    TEST_CASE("empty and malformed input yield nothing") {
+        CHECK(wek::structuredScriptUserProps("").empty());
+        CHECK(wek::structuredScriptUserProps("{not json").empty());
+        CHECK(wek::structuredScriptUserProps("[1,2]").empty());
+    }
+
+    TEST_CASE("recording a scene's scripts covers every script list but ignores body text") {
+        Scene scene;
+
+        ScenePropertyScript prop {};
+        prop.scriptProperties = R"({"x":{"user":"fromProp"}})";
+        prop.script           = "engine.userProperties.bodyOnly";
+        scene.propertyScripts.push_back(prop);
+
+        SceneMaterial    mat;
+        SceneColorScript color {};
+        color.material         = &mat;
+        color.scriptProperties = R"({"x":{"user":"fromColor"}})";
+        scene.colorScripts.push_back(color);
+
+        SceneShaderValueScript sv {};
+        sv.scriptProperties = R"({"x":{"user":"fromShader"}})";
+        scene.shaderValueScripts.push_back(sv);
+
+        Scene::SoundVolumeScript snd {};
+        snd.scriptProperties = R"({"x":{"user":"fromSound"}})";
+        scene.soundVolumeScripts.push_back(snd);
+
+        TextLayerInfo text {};
+        text.scriptProperties = R"({"x":{"user":"fromText"}})";
+        scene.textLayers.push_back(text);
+
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+        wek::recordStructuredScriptUserProps(scene);
+
+        CHECK(rec.uses.size() == 5u);
+        for (const char* n : { "fromProp", "fromColor", "fromShader", "fromSound", "fromText" })
+            CHECK(rec.uses.count(n) == 1u);
+        CHECK(rec.uses.count("bodyOnly") == 0u);
     }
 }

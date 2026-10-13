@@ -2,13 +2,14 @@
 
 // Deciding whether a user-property change can be applied to the live scene.
 //
-// The parser records two kinds of runtime binding: a layer's `visible` field,
+// The parser records three kinds of runtime binding: a layer's `visible` field,
 // re-resolved against the property, and a shader uniform fed by it.  Text
 // layers additionally re-rasterise when their pointsize property moves.
-// Everything else a property feeds is baked in at parse time — most commonly a
-// property script's scriptProperties, which are seeded once when the script is
-// compiled and never re-seeded — so a change there only takes effect if the
-// scene is parsed again.
+// Everything else a property feeds is baked in at parse time (an object's
+// color, a texture variant, a property script's scriptProperties, which are
+// seeded once when the script is compiled, ...), and the parser lists those in
+// Scene::userPropStaticUses.  A property with any such use needs the scene
+// parsed again, even if it also has a runtime binding.
 //
 // Header-only so the decision can be exercised without the wallpaper bridge.
 
@@ -83,17 +84,34 @@ inline bool userPropHasRuntimeBinding(const Scene& scene, const std::string& nam
     return false;
 }
 
-inline bool userPropSelectsTextureVariant(const Scene& scene, const std::string& name) {
-    return scene.userPropTextureVariantNames.count(name) != 0;
+// Whether parsing consumed the property into a field nothing re-reads live.
+inline bool userPropHasStaticUse(const Scene& scene, const std::string& name) {
+    auto it = scene.userPropStaticUses.find(name);
+    return it != scene.userPropStaticUses.end() && ! it->second.empty();
+}
+
+// The fields a property was baked into, comma-joined, for the reload log.
+inline std::string userPropStaticFields(const Scene& scene, const std::string& name) {
+    std::string joined;
+    auto        it = scene.userPropStaticUses.find(name);
+    if (it == scene.userPropStaticUses.end()) return joined;
+    for (const auto& field : it->second) {
+        if (! joined.empty()) joined += ", ";
+        joined += field;
+    }
+    return joined;
 }
 
 // The subset of `changed` that the live scene cannot apply in place, i.e. the
-// reason to reload: nothing binds it, or it picks a texture variant.
+// reason to reload: nothing binds it at runtime, or parsing also baked it into
+// some field. The second case matters because one property can feed both a
+// live field and a parse-time one; pushing the new value to the live field
+// alone would leave the other stale.
 inline std::vector<std::string> userPropsNeedingReload(const Scene&                    scene,
                                                        const std::vector<std::string>& changed) {
     std::vector<std::string> needReload;
     for (const auto& name : changed) {
-        if (! userPropHasRuntimeBinding(scene, name) || userPropSelectsTextureVariant(scene, name))
+        if (! userPropHasRuntimeBinding(scene, name) || userPropHasStaticUse(scene, name))
             needReload.push_back(name);
     }
     return needReload;

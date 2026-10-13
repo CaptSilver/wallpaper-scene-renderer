@@ -6,6 +6,7 @@
 #include <string_view>
 #include <type_traits>
 
+#include "UserPropUseRecorder.hpp"
 #include "Utils/Logging.h"
 
 #define GET_JSON_VALUE(json, value) \
@@ -21,6 +22,14 @@
 #define GET_JSON_NAME_VALUE_NOWARN(json, name, value) \
     wallpaper::GetJsonValue(                          \
         __SHORT_FILE__, __FUNCTION__, __LINE__, (json), (value), true, (name), false)
+
+// For a field a runtime mechanism re-resolves after parsing (an object's or
+// effect's `visible`): the read is covered, so it is not a parse-time use.
+#define GET_JSON_NAME_VALUE_LIVE_NOWARN(json, name, value) \
+    do {                                                   \
+        wallpaper::LiveBoundReadScope wekLiveBoundRead;    \
+        GET_JSON_NAME_VALUE_NOWARN(json, name, value);     \
+    } while (0)
 
 #define PARSE_JSON(source, result) \
     wallpaper::ParseJson(__SHORT_FILE__, __FUNCTION__, __LINE__, (source), (result))
@@ -85,8 +94,13 @@ std::string StripLeadingZeros(std::string_view source);
 // g_currentUserProperties resolving a {"user":...} field, which may yield a
 // synthesized/temporary value) materializes into caller-owned `storage` and
 // returns a reference into it.  `storage` must outlive the returned reference.
+//
+// A {"user":...} field is also reported to the active UserPropUseRecorder
+// (UserPropUseRecorder.hpp), tagged with `field`, unless a LiveBoundReadScope
+// marks the read as covered by a runtime mechanism.
 const nlohmann::json& ResolveUserPropertyRef(const nlohmann::json&          json,
-                                             std::optional<nlohmann::json>& storage);
+                                             std::optional<nlohmann::json>& storage,
+                                             std::string_view               field = {});
 
 // Quote first-key-missing-opening-quote object members like `{Foo":0,"Bar":1}`,
 // rewriting to `{"Foo":0,"Bar":1}`.  WE workshop shader source occasionally

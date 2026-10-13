@@ -3034,15 +3034,22 @@ bool MainHandler::applyUserPropsRuntime(const std::string& newJson) {
         }
     }
 
-    // A property with no visibility, uniform or pointsize binding is read
-    // somewhere the live scene can't be edited — most often a property script,
-    // whose scriptProperties are seeded once when the script is compiled.
-    // Report failure so the caller reparses; otherwise the setting silently
-    // does nothing until the user switches the wallpaper away and back.
+    // A property with no visibility, uniform or pointsize binding, or one that
+    // is also read into a field parsing consumed once (an object's color, a
+    // script's scriptProperties, which are seeded when the script compiles),
+    // can't be edited in the live scene.  Report failure so the caller
+    // reparses; otherwise the setting silently does nothing until the user
+    // switches the wallpaper away and back.
     auto needReload = wek::userPropsNeedingReload(scene, changed);
     if (! needReload.empty()) {
-        LOG_INFO("User property '%s' has no runtime binding, reloading scene",
-                 needReload.front().c_str());
+        const auto& name   = needReload.front();
+        const auto  fields = wek::userPropStaticFields(scene, name);
+        if (fields.empty())
+            LOG_INFO("User property '%s' has no runtime binding, reloading scene", name.c_str());
+        else
+            LOG_INFO("User property '%s' is baked in at parse time (%s), reloading scene",
+                     name.c_str(),
+                     fields.c_str());
         return false;
     }
     return true;
@@ -3053,22 +3060,19 @@ namespace wallpaper
 
 // Property names worth writing to the "<id>_bindings.json" sidecar the
 // settings panel reads to decide which rows to gray out. A name counts as
-// active when either something in THIS scene can apply it live
-// (wek::userPropHasRuntimeBinding — the same test applyUserPropsRuntime uses
-// to decide whether an edited property needs a full reload) or a script
-// somewhere in the scene reads it (wek::userPropReferencedInScript). A
-// property wired only inside a script body still does something — editing it
-// just happens to need a reload, same as any other script-baked value. What's
-// excluded is a name neither path reaches at all: a stale project.json entry,
-// or a toggle whose handler was dropped. A property that picks a texture
-// variant counts too; like a script-read one, it applies through a reload.
+// active when something in THIS scene reads it: a runtime binding
+// (wek::userPropHasRuntimeBinding, the same test applyUserPropsRuntime uses to
+// apply an edit live), a field parsing baked it into
+// (wek::userPropHasStaticUse; editing it reloads the scene), or a script that
+// mentions it (wek::userPropReferencedInScript, which also catches a name only
+// the script's own text uses). What's excluded is a name none of those reach:
+// a stale project.json entry, or a toggle whose handler was dropped.
 std::set<std::string> activeUserPropBindingNames(const std::set<std::string>& allPropNames,
                                                  const Scene&                 scene) {
     std::set<std::string> active;
     for (const auto& name : allPropNames) {
-        if (wek::userPropHasRuntimeBinding(scene, name) ||
-            wek::userPropReferencedInScript(scene, name) ||
-            wek::userPropSelectsTextureVariant(scene, name))
+        if (wek::userPropHasRuntimeBinding(scene, name) || wek::userPropHasStaticUse(scene, name) ||
+            wek::userPropReferencedInScript(scene, name))
             active.insert(name);
     }
     return active;

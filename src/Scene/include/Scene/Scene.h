@@ -1,6 +1,7 @@
 #pragma once
 #include <unordered_map>
 #include <unordered_set>
+#include <map>
 #include <set>
 #include <vector>
 #include <string>
@@ -499,9 +500,11 @@ public:
     };
     std::unordered_map<std::string, std::vector<UserPropEffectVisibility>>
         userPropEffectVisBindings;
-    // User properties that pick a conditional variant of some texture. The
-    // variant is decoded into the texture at load, so changing one reloads.
-    std::set<std::string> userPropTextureVariantNames;
+    // User properties read into something parsing consumed once (an object's
+    // color, a texture variant, a script's seed values, ...), mapped to the
+    // fields they fed. Nothing in the live scene re-reads those, so changing
+    // one needs a reload even when the same property also has a runtime binding.
+    std::map<std::string, std::set<std::string>> userPropStaticUses;
     // Node lookup by ID for visibility updates and SceneScript getLayer
     // resolution.
     //

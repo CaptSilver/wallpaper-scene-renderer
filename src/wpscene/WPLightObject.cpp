@@ -13,7 +13,7 @@ bool WPLightObject::FromJson(const nlohmann::json& json, fs::VFS&) {
     GET_JSON_NAME_VALUE(json, "light", light);
     GET_JSON_NAME_VALUE(json, "radius", radius);
     GET_JSON_NAME_VALUE(json, "intensity", intensity);
-    GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
     GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
     // NOWARN — most authored lights are root-attached with linear falloff;
     // only scenes that drive lights from a script-animated parent (Real-Time

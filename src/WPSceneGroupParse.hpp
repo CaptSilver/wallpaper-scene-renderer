@@ -52,7 +52,7 @@ inline GroupParseResult ParseGroupNode(const nlohmann::json& obj) {
     GET_JSON_NAME_VALUE_NOWARN(obj, "origin", origin);
     GET_JSON_NAME_VALUE_NOWARN(obj, "scale", scale);
     GET_JSON_NAME_VALUE_NOWARN(obj, "angles", angles);
-    GET_JSON_NAME_VALUE_NOWARN(obj, "visible", r.visible);
+    GET_JSON_NAME_VALUE_LIVE_NOWARN(obj, "visible", r.visible);
     GET_JSON_NAME_VALUE_NOWARN(obj, "parent", r.parent_id);
     if (obj.contains("parallaxDepth")) {
         r.hasParallaxDepth =

@@ -81,7 +81,10 @@ struct WPSoundObject {
         GET_JSON_NAME_VALUE(json, "playbackmode", playbackmode);
         GET_JSON_NAME_VALUE_NOWARN(json, "mintime", mintime);
         GET_JSON_NAME_VALUE_NOWARN(json, "maxtime", maxtime);
-        GET_JSON_NAME_VALUE_NOWARN(json, "visible", visible);
+        // Nothing consumes a sound's visible flag (no runtime binding exists
+        // for it), so a reload could not change anything either: not a
+        // parse-time use.
+        GET_JSON_NAME_VALUE_LIVE_NOWARN(json, "visible", visible);
         GET_JSON_NAME_VALUE_NOWARN(json, "startsilent", startsilent);
         GET_JSON_NAME_VALUE_NOWARN(json, "name", name);
         if (! json.contains("sound") || ! json.at("sound").is_array()) {

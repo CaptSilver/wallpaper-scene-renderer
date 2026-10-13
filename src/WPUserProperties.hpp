@@ -217,6 +217,20 @@ private:
     std::unordered_map<std::string, std::string>    m_types;    // "bool", "combo", "slider", etc.
 };
 
+// The user-property name a JSON value is bound to, if any. Two shapes occur
+// in shipped assets: {"user": "prop"} and the conditional
+// {"user": {"name": "prop", "condition": "..."}}. Returns "" for a plain
+// literal or a "user" key that names nothing. WPUserProperties::ResolveValue
+// reads the same two shapes to get the value out.
+inline std::string UserPropertyNameOf(const nlohmann::json& value) {
+    if (! value.is_object() || ! value.contains("user")) return {};
+    const auto& user = value.at("user");
+    if (user.is_string()) return user.get<std::string>();
+    if (user.is_object() && user.contains("name") && user.at("name").is_string())
+        return user.at("name").get<std::string>();
+    return {};
+}
+
 // Global thread-local pointer to current user properties context
 // This is set during scene parsing and used by GetJsonValue
 inline thread_local const WPUserProperties* g_currentUserProperties = nullptr;

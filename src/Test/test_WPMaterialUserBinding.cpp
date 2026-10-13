@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include "wpscene/WPMaterial.h"
+#include "UserPropUseRecorder.hpp"
 #include "WPUserProperties.hpp"
 
 #include <nlohmann/json.hpp>
@@ -151,5 +152,34 @@ TEST_SUITE("WPMaterial user property bindings") {
         auto m = parse(R"({"passes": [{"shader": "generic4", "constantshadervalues":
             {"pulse": {"user": {"name": "myprop", "condition": "1"}, "value": 1}}}]})");
         CHECK(m.userShaderBindings.at("pulse") == "myprop");
+    }
+
+    // A constant that got a runtime binding is updated live, so its read is not
+    // a parse-time use; one that did not (the conditional shape in a pass
+    // override) is read once and a change has to reload the scene.
+    TEST_CASE("a pass-override constant is reported as a parse-time use only when unbound") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+
+        WPMaterialPass byName;
+        REQUIRE(byName.FromJson(nlohmann::json::parse(
+            R"({"constantshadervalues": {"pulse": {"user": "named", "value": 1}}})")));
+        CHECK(rec.uses.count("named") == 0u);
+
+        WPMaterialPass conditional;
+        REQUIRE(conditional.FromJson(nlohmann::json::parse(
+            R"({"constantshadervalues": {"pulse": {"user": {"name": "cond", "condition": "1"},
+                                                    "value": 1}}})")));
+        CHECK(rec.uses.count("cond") == 1u);
+    }
+
+    TEST_CASE("a usershadervalues entry is not read through the resolver, so the loader "
+              "reports it itself") {
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope scope(&rec);
+        auto                      m = parse(R"({"passes": [{"shader": "generic4",
+            "usershadervalues": {"tint": "g_Tint"}}]})");
+        CHECK(rec.uses.empty());
+        CHECK(m.userShaderBindings.at("g_Tint") == "tint");
     }
 }
