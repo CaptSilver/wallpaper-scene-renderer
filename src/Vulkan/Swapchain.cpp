@@ -16,7 +16,7 @@ namespace
 {
 
 // Human-readable name for a VkPresentModeKHR — used in the create-time
-// LOG_INFO so a user bug report indicates which mode was actually picked.
+// LOG_NOTICE so a user bug report indicates which mode was actually picked.
 const char* present_mode_name(VkPresentModeKHR m) {
     switch (m) {
         case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "IMMEDIATE";
@@ -51,9 +51,9 @@ VkSurfaceFormatKHR chooseSwapSurfaceFormat(std::span<const VkSurfaceFormatKHR> a
         }
     }
     auto& format = availableFormats[0];
-    LOG_INFO("swapchain format: %s, color space: %s",
-             vvk::ToString(format.format),
-             vvk::ToString(format.colorSpace));
+    LOG_NOTICE("swapchain format: %s, color space: %s",
+               vvk::ToString(format.format),
+               vvk::ToString(format.colorSpace));
     return format;
 }
 
@@ -108,11 +108,11 @@ bool Swapchain::Create(Device& device, VkSurfaceKHR surface, VkExtent2D extent, 
     // Diagnostic: log the picked mode so a user bug report indicates which
     // mode the surface ended up on (the Auto policy fall-backs are not
     // observable in the QML config, only here).
-    LOG_INFO("swapchain present mode = %s on %dHz output for fps %d (policy=%d)",
-             present_mode_name(swap.m_present_mode),
-             swap.m_output_refresh_hz,
-             swap.m_target_fps,
-             static_cast<int>(swap.m_present_policy));
+    LOG_NOTICE("swapchain present mode = %s on %dHz output for fps %d (policy=%d)",
+               present_mode_name(swap.m_present_mode),
+               swap.m_output_refresh_hz,
+               swap.m_target_fps,
+               static_cast<int>(swap.m_present_policy));
     VkSurfaceTransformFlagBitsKHR preTransform   = surfaceCapabilities.currentTransform;
     VkCompositeAlphaFlagBitsKHR   compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
 
