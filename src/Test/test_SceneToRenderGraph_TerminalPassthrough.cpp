@@ -1,5 +1,6 @@
 #include <doctest.h>
 
+#include "RenderGraphTestHelpers.hpp"
 #include "VulkanRender/SceneToRenderGraph.hpp"
 #include "VulkanRender/CustomShaderPass.hpp"
 #include "RenderGraph/RenderGraph.hpp"
@@ -15,6 +16,7 @@
 #include <vector>
 
 using namespace wallpaper;
+using wek::test::findPassForNode;
 
 // Covers the wiring SceneToRenderGraph::LoadEffectChain/ToGraphPass do for a
 // terminal-hideable pass: both of the chain's physical ping-pong buffers get
@@ -45,14 +47,6 @@ std::shared_ptr<SceneImageEffect> makeEffect(std::string name, std::shared_ptr<S
     eff->name = std::move(name);
     eff->nodes.push_back({ "_rt_effect_pingpong_b_", std::move(node) });
     return eff;
-}
-
-vulkan::CustomShaderPass* findPassForNode(rg::RenderGraph& rgraph, SceneNode* node) {
-    for (auto id : rgraph.topologicalOrder()) {
-        auto* p = dynamic_cast<vulkan::CustomShaderPass*>(rgraph.getPass(id));
-        if (p != nullptr && p->desc().node == node) return p;
-    }
-    return nullptr;
 }
 
 // Populates `scene` with one world node (id `worldId`) whose camera owns an
