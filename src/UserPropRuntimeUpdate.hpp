@@ -14,10 +14,10 @@
 // Header-only so the decision can be exercised without the wallpaper bridge.
 
 #include "Scene/Scene.h"
+#include "UserPropFloatVector.hpp"
 #include "WPUserProperties.hpp"
 
 #include <nlohmann/json.hpp>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -53,25 +53,6 @@ inline bool ResolveVisibilityFromJson(const nlohmann::json& resolved, bool defau
         return ! s.empty() && s != "0" && s != "false";
     }
     return defaultVisible;
-}
-
-// A resolved user-property JSON value, coerced to the float vector a shader
-// uniform binding wants: a bare number becomes one element, a string is
-// whitespace-split into floats, an array keeps only its numeric elements.
-inline std::vector<float> ParseFloatVectorFromJson(const nlohmann::json& val) {
-    std::vector<float> floatVec;
-    if (val.is_number()) {
-        floatVec.push_back(val.get<float>());
-    } else if (val.is_string()) {
-        std::istringstream iss(val.get<std::string>());
-        float              f;
-        while (iss >> f) floatVec.push_back(f);
-    } else if (val.is_array()) {
-        for (const auto& elem : val) {
-            if (elem.is_number()) floatVec.push_back(elem.get<float>());
-        }
-    }
-    return floatVec;
 }
 
 inline bool userPropHasRuntimeBinding(const Scene& scene, const std::string& name) {

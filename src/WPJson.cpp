@@ -461,9 +461,12 @@ inline bool _GetJsonValue(const nlohmann::json& json, typename utils::is_std_arr
     const auto* pjson = &resolved;
     if (resolved.contains("value")) pjson = &resolved.at("value");
     const auto& njson = *pjson;
-    if (njson.is_number()) {
+    // A bool property bound to a vector constant reads as 1 / 0, the same value
+    // the live uniform update writes.  Fixed-size arrays keep rejecting it.
+    constexpr bool kIsVector = requires { value.resize(1); };
+    if (njson.is_number() || (kIsVector && njson.is_boolean())) {
         // Replicate scalar to all components (e.g. uniform scale slider → xyz scale)
-        Tv v = njson.get<Tv>();
+        Tv v = njson.is_boolean() ? static_cast<Tv>(njson.get<bool>()) : njson.get<Tv>();
         if constexpr (requires { value.resize(1); }) {
             value.assign(1, v);
         } else {

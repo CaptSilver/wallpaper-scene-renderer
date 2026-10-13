@@ -38,6 +38,20 @@ void applyAndDrain(const Scene& scene, const nlohmann::json& props) {
 } // namespace
 
 TEST_SUITE("UserPropUniformBinding") {
+    TEST_CASE("a bool property writes 1 or 0 to its bound uniform") {
+        Scene scene;
+        auto  mesh = meshWithMaterial();
+        scene.userPropUniformBindings["calendar"].push_back({ mesh, "g_UserAlpha" });
+
+        applyAndDrain(scene, nlohmann::json { { "calendar", false } });
+        const auto& values = mesh->Material()->customShader.constValues;
+        REQUIRE(values.count("g_UserAlpha") == 1u);
+        CHECK(values.at("g_UserAlpha")[0] == 0.0f);
+
+        applyAndDrain(scene, nlohmann::json { { "calendar", true } });
+        CHECK(values.at("g_UserAlpha")[0] == 1.0f);
+    }
+
     TEST_CASE("a direct alias hit wins") {
         auto info = shaderWithAlias({ { "alpha", "g_Alpha" } });
         CHECK(wek::ConstantUniformName(info, "alpha") == "g_Alpha");

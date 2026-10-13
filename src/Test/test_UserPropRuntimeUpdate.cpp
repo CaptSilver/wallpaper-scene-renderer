@@ -189,6 +189,10 @@ TEST_SUITE("ParseFloatVectorFromJson") {
         auto v = wek::ParseFloatVectorFromJson(nlohmann::json::parse(R"([1, "x", 2])"));
         CHECK(v == std::vector<float> { 1.0f, 2.0f });
     }
+    TEST_CASE("a bool becomes 1 or 0") {
+        CHECK(wek::ParseFloatVectorFromJson(nlohmann::json(true)) == std::vector<float> { 1.0f });
+        CHECK(wek::ParseFloatVectorFromJson(nlohmann::json(false)) == std::vector<float> { 0.0f });
+    }
     TEST_CASE("an unsupported type produces an empty vector") {
         auto v = wek::ParseFloatVectorFromJson(nlohmann::json::object());
         CHECK(v.empty());

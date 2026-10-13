@@ -1,10 +1,10 @@
 #include "WPMaterial.h"
 #include "WPAnimationJson.h"
+#include "UserPropFloatVector.hpp"
 #include "UserPropUseRecorder.hpp"
 #include "WPUserProperties.hpp"
 #include <functional>
 #include <optional>
-#include <sstream>
 #include <unordered_map>
 
 using namespace wallpaper::wpscene;
@@ -47,13 +47,17 @@ void ParsePassFields(
         for (const auto& jC : json.at("constantshadervalues").items()) {
             std::string        name;
             std::vector<float> value;
+            bool               read = false;
             GET_JSON_VALUE(jC.key(), name);
             const bool bound = onConstantValue && onConstantValue(name, jC.value());
             {
                 std::optional<wallpaper::LiveBoundReadScope> live;
                 if (bound) live.emplace();
-                GET_JSON_VALUE(jC.value(), value);
+                read = GET_JSON_VALUE(jC.value(), value);
             }
+            // A failed read leaves nothing to store; an empty entry would
+            // overwrite the seeded shader default with no value at all.
+            if (! read) continue;
             constantshadervalues[name] = value;
             if (auto anim = ParseConstantAnimation(jC.value(), value))
                 constantAnimations[name] = std::move(*anim);
@@ -122,7 +126,8 @@ void MergeOverlayFields(
 // reparsing the scene. Shared by the material file's pass and the scene's
 // per-effect pass override. The live update writes the property's raw value and
 // cannot evaluate a {"user": {"name", "condition"}} condition, so the pass
-// override leaves that shape unbound (a reload resolves it correctly).
+// override leaves that shape unbound (a reload resolves it correctly). A constant
+// whose default is a bool is unbound in both, see the check below.
 void ParsePassFieldsRecordingBindings(
     const nlohmann::json& json, std::vector<std::string>& textures,
     std::vector<WPMaterialPassUserTexture>&                        usertextures,
@@ -142,6 +147,11 @@ void ParsePassFieldsRecordingBindings(
                         if (prop.empty()) return false;
                         // UserPropertyNameOf found a "user" key, so .at() cannot throw.
                         if (! bindConditional && ! rawValue.at("user").is_string()) return false;
+                        // A bool default makes parse time resolve to a match flag or a
+                        // default-flip, while the live write carries the property's own
+                        // value, so the two cannot agree; leave it to a reload.
+                        if (rawValue.contains("value") && rawValue.at("value").is_boolean())
+                            return false;
                         userShaderBindings[name] = prop;
                         return true;
                     });
@@ -244,19 +254,8 @@ bool WPMaterial::FromJson(const nlohmann::json& json) {
             if (g_currentUserProperties != nullptr) {
                 auto propVal = g_currentUserProperties->GetProperty(entry.key());
                 if (! propVal.has_value()) continue;
-                const auto&        val = *propVal;
-                std::vector<float> floatVec;
-                if (val.is_string()) {
-                    std::istringstream iss(val.get<std::string>());
-                    float              f;
-                    while (iss >> f) floatVec.push_back(f);
-                } else if (val.is_number()) {
-                    floatVec.push_back(val.get<float>());
-                } else if (val.is_array()) {
-                    for (const auto& elem : val) {
-                        if (elem.is_number()) floatVec.push_back(elem.get<float>());
-                    }
-                }
+                const auto&        val      = *propVal;
+                std::vector<float> floatVec = wek::ParseFloatVectorFromJson(val);
                 if (! floatVec.empty()) {
                     constantshadervalues[shaderConstName] = floatVec;
                 }

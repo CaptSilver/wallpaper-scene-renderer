@@ -610,10 +610,8 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
         CHECK(m.constantshadervalues.count("g_Missing") == 0u);
     }
 
-    TEST_CASE("unsupported value type (bool) yields no constant entry") {
+    TEST_CASE("a bool property becomes a 1 / 0 constant entry") {
         WPUserProperties props;
-        // Bool is neither string nor number nor array — none of the three branches fire,
-        // floatVec stays empty, no constantshadervalues entry written.
         props.SetProperty("flag", nlohmann::json(true));
         UserPropertiesScope scope(&props);
 
@@ -624,7 +622,7 @@ TEST_SUITE("WPMaterial::FromJson — usershadervalues with g_currentUserProperti
             }]
         })");
         CHECK(m.userShaderBindings.at("g_Flag") == "flag");
-        CHECK(m.constantshadervalues.count("g_Flag") == 0u);
+        CHECK(m.constantshadervalues.at("g_Flag") == std::vector<float> { 1.0f });
     }
 
     TEST_CASE("unsupported value type (null) yields no constant entry") {

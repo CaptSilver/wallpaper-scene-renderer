@@ -18,6 +18,13 @@ WPMaterial parse(const char* json) {
     return m;
 }
 
+WPUserProperties propsFrom(const char* properties) {
+    WPUserProperties props;
+    REQUIRE(props.LoadFromProjectJson(std::string(R"({"general": {"properties": )") + properties +
+                                      "}}"));
+    return props;
+}
+
 } // namespace
 
 // Shipped materials bind a user property to a shader constant two ways: the
@@ -181,5 +188,79 @@ TEST_SUITE("WPMaterial user property bindings") {
             "usershadervalues": {"tint": "g_Tint"}}]})");
         CHECK(rec.uses.empty());
         CHECK(m.userShaderBindings.at("g_Tint") == "tint");
+    }
+
+    // A bool property is the same 1 / 0 the live update writes to the uniform.
+    TEST_CASE("a bool property bound in a pass override resolves to 1 or 0") {
+        auto off  = propsFrom(R"({"calendar": {"type": "bool", "value": false}})");
+        auto on   = propsFrom(R"({"calendar": {"type": "bool", "value": true}})");
+        auto json = nlohmann::json::parse(
+            R"({"constantshadervalues": {"alpha": {"user": "calendar", "value": 1}}})");
+
+        {
+            UserPropertiesScope scope(&off);
+            WPMaterialPass      p;
+            REQUIRE(p.FromJson(json));
+            CHECK(p.userShaderBindings.at("alpha") == "calendar");
+            CHECK(p.constantshadervalues.at("alpha") == std::vector<float> { 0.0f });
+        }
+        {
+            UserPropertiesScope scope(&on);
+            WPMaterialPass      p;
+            REQUIRE(p.FromJson(json));
+            CHECK(p.constantshadervalues.at("alpha") == std::vector<float> { 1.0f });
+        }
+    }
+
+    TEST_CASE("a bool property in usershadervalues resolves to 1 or 0") {
+        auto                props = propsFrom(R"({"flag": {"type": "bool", "value": false}})");
+        UserPropertiesScope scope(&props);
+        auto                m = parse(R"({"passes": [{"shader": "generic4",
+            "constantshadervalues": {"alpha": 0.5}, "usershadervalues": {"flag": "alpha"}}]})");
+        CHECK(m.userShaderBindings.at("alpha") == "flag");
+        CHECK(m.constantshadervalues.at("alpha") == std::vector<float> { 0.0f });
+    }
+
+    // A read that fails must leave the constant out, so the seeded shader
+    // default is not overwritten by an empty value.
+    TEST_CASE("a constant whose value cannot be read is not stored") {
+        auto                props = propsFrom(R"({"p": {"type": "textinput", "value": {"x": 1}}})");
+        UserPropertiesScope scope(&props);
+        WPMaterialPass      pass;
+        REQUIRE(pass.FromJson(nlohmann::json::parse(
+            R"({"constantshadervalues": {"k": {"user": "p", "value": 1}, "ok": 2}})")));
+        CHECK(pass.constantshadervalues.count("k") == 0u);
+        CHECK(pass.constantAnimations.count("k") == 0u);
+        CHECK(pass.constantshadervalues.at("ok") == std::vector<float> { 2.0f });
+    }
+
+    // With a bool default the parse result is a match flag or a default-flip
+    // while the live update writes the property's own value, so those shapes
+    // must stay unbound and read as a parse-time use (a change reloads).
+    TEST_CASE("a bool-default user reference is not bound") {
+        auto                props = propsFrom(R"({"mode": {"type": "combo", "value": "2"}})");
+        UserPropertiesScope scope(&props);
+
+        auto m = parse(R"({"passes": [{"shader": "generic4", "constantshadervalues": {
+            "plain": {"user": "mode", "value": true},
+            "cond": {"user": {"name": "mode", "condition": "1"}, "value": true},
+            "num": {"user": "mode", "value": 1},
+            "numcond": {"user": {"name": "mode", "condition": "1"}, "value": 1}}}]})");
+        CHECK(m.userShaderBindings.count("plain") == 0u);
+        CHECK(m.userShaderBindings.count("cond") == 0u);
+        CHECK(m.userShaderBindings.at("num") == "mode");
+        CHECK(m.userShaderBindings.at("numcond") == "mode");
+
+        WPMaterialPass p;
+        REQUIRE(p.FromJson(nlohmann::json::parse(
+            R"({"constantshadervalues": {"plain": {"user": "mode", "value": true}}})")));
+        CHECK(p.userShaderBindings.count("plain") == 0u);
+
+        UserPropUseRecorder       rec;
+        UserPropUseRecordingScope recScope(&rec);
+        WPMaterialPass            q;
+        REQUIRE(q.FromJson(nlohmann::json::parse(
+            R"({"constantshadervalues": {"plain": {"user": "mode", "value": true}}})")));
+        CHECK(rec.uses.count("mode") == 1u);
     }
 }
