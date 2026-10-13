@@ -160,3 +160,58 @@ TEST_SUITE("shader texture combos") {
         CHECK(combos.count("COMPO_D") == 1);
     }
 }
+
+// ===========================================================================
+// Texture format defines
+// ===========================================================================
+
+#include "TexFormatCombo.hpp"
+
+using wallpaper::TextureFormat;
+
+TEST_SUITE("texture format defines") {
+    // The stock shaders branch on TEX<n>FORMAT for slots other than 0: a normal
+    // map in slot 1 picks its decode channels, a toon gradient in slot 4 reads
+    // .rrr when it is single-channel, and fur4 passes TEX8FORMAT to a function.
+    TEST_CASE("every slot gets its own define name") {
+        CHECK(wallpaper::TexFormatComboName(0) == "TEX0FORMAT");
+        CHECK(wallpaper::TexFormatComboName(1) == "TEX1FORMAT");
+        CHECK(wallpaper::TexFormatComboName(8) == "TEX8FORMAT");
+    }
+
+    TEST_CASE("formats map onto the stock FORMAT_ names") {
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RGBA8) == "FORMAT_RGBA8888");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RGB8) == "FORMAT_RGB888");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RGB565) == "FORMAT_RGB565");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::BC1) == "FORMAT_DXT1");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::BC2) == "FORMAT_DXT3");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::BC3) == "FORMAT_DXT5");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::BC7) == "FORMAT_BC7");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RG8) == "FORMAT_RG88");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::R8) == "FORMAT_R8");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RG16F) == "FORMAT_RG1616F");
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::R16F) == "FORMAT_R16F");
+    }
+
+    TEST_CASE("a bound slot writes its define into the combos") {
+        wallpaper::Combos combos;
+        wallpaper::ApplyTexFormatCombo(combos, 1, TextureFormat::BC3);
+        wallpaper::ApplyTexFormatCombo(combos, 4, TextureFormat::R8);
+        CHECK(combos.at("TEX1FORMAT") == "FORMAT_DXT5");
+        CHECK(combos.at("TEX4FORMAT") == "FORMAT_R8");
+    }
+
+    TEST_CASE("a format with no stock name leaves the combos alone") {
+        wallpaper::Combos combos;
+        wallpaper::ApplyTexFormatCombo(combos, 2, TextureFormat::RGBA16F);
+        CHECK(combos.count("TEX2FORMAT") == 0);
+    }
+
+    // The stock table has no name for these; leaving the define out makes it
+    // read as 0, the four-channel RGBA8888 branch, which is the closest match.
+    TEST_CASE("formats the stock table lacks get no define") {
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RGBA16F).empty());
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::BC6H).empty());
+        CHECK(wallpaper::TexFormatDefine(TextureFormat::RGBA1010102).empty());
+    }
+}

@@ -30,6 +30,7 @@
 
 #include "WPShaderParser.hpp"
 #include "WPTexImageParser.hpp"
+#include "TexFormatCombo.hpp"
 #include "WPMediaSystemTexture.hpp"
 #include "WPParticleParser.hpp"
 #include "WPMapSequenceParse.hpp"
@@ -968,12 +969,7 @@ bool LoadMaterial(fs::VFS& vfs, const wpscene::WPMaterial& wpmat, Scene* pScene,
             const ImageHeader& texh = texHeaders.count(name) == 0
                                           ? pScene->imageParser->ParseHeader(name)
                                           : texHeaders.at(name);
-            if (i == 0) {
-                if (texh.format == TextureFormat::R8)
-                    pWPShaderInfo->combos["TEX0FORMAT"] = "FORMAT_R8";
-                else if (texh.format == TextureFormat::RG8)
-                    pWPShaderInfo->combos["TEX0FORMAT"] = "FORMAT_RG88";
-            }
+            ApplyTexFormatCombo(pWPShaderInfo->combos, i, texh.format);
             if (texh.mipmap_larger) {
                 resolution = { texh.width, texh.height, texh.mapWidth, texh.mapHeight };
             } else {
