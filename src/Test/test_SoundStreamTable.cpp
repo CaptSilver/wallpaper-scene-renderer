@@ -245,3 +245,40 @@ TEST_SUITE("SoundStreamTable") {
     }
 
 } // SoundStreamTable
+
+namespace
+{
+// Records the order a scene teardown drives the manager in.
+struct TeardownProbe {
+    const SoundStreamTable<LayerRow>* layers { nullptr };
+    std::vector<std::string>          calls;
+    void*                             aliasAtUnmount { nullptr };
+
+    void UnMountAll() {
+        calls.push_back("unmount");
+        aliasAtUnmount = layers->streamAt(0);
+    }
+    void Close() { calls.push_back("close"); }
+};
+} // namespace
+
+TEST_SUITE("ShutdownSoundOutput") {
+    // A scene's streams read files through the scene's VFS on the audio
+    // thread.  Destroying a scene used to free that VFS while the device was
+    // still pulling samples; a stream switching tracks then opened a file
+    // through freed memory and aborted plasmashell.  Shutdown has to leave no
+    // stream mounted and no device running.
+    TEST_CASE("unmounts the streams, then closes the device") {
+        SoundStreamTable<LayerRow>  layers;
+        SoundStreamTable<VolumeRow> volumes;
+        int                         stream = 0;
+        layers.publish({ LayerRow { "music" } }, { &stream });
+
+        TeardownProbe probe;
+        probe.layers = &layers;
+        wallpaper::ShutdownSoundOutput(probe, layers, volumes);
+
+        CHECK(probe.calls == std::vector<std::string> { "unmount", "close" });
+        CHECK(probe.aliasAtUnmount == nullptr);
+    }
+}

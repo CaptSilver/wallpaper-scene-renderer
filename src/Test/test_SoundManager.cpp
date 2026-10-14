@@ -433,3 +433,65 @@ TEST_SUITE("miniaudio::Device channel lifetime") {
         CHECK(dev.ChannelCount() == 0u);
     }
 }
+
+namespace
+{
+// Reads through a pointer it does not own, the way WPSoundStream reads files
+// through the scene's VFS.  The string is long enough to live on the heap, so
+// a read after it is freed is a use-after-free ASAN reports.
+class BorrowingChannel : public miniaudio::Channel {
+public:
+    BorrowingChannel(const std::string* source, std::atomic<int>* reads)
+        : m_source(source), m_reads(reads) {}
+    ma_uint64 NextPcmData(void* pData, ma_uint32 frameCount) override {
+        volatile std::size_t n = m_source->size();
+        (void)n;
+        m_reads->fetch_add(1);
+        std::memset(pData, 0, frameCount * 2 * sizeof(float));
+        return frameCount;
+    }
+    void PassDeviceDesc(const miniaudio::DeviceDesc&) override {}
+
+private:
+    const std::string* m_source;
+    std::atomic<int>*  m_reads;
+};
+} // namespace
+
+TEST_SUITE("miniaudio::Device teardown") {
+    // A scene's teardown frees the VFS its streams read through.  That is only
+    // safe if, once UnmountAll() returns, no read is in progress on the audio
+    // thread and none starts.  Run the mix on a second thread the way the
+    // audio callback does, and free the source right after unmounting.
+    TEST_CASE("no stream read runs after UnmountAll returns") {
+        miniaudio::Device dev;
+        dev.TestSetRunning(true);
+
+        auto source =
+            std::make_unique<std::string>("sounds/a-track-name-long-enough-to-allocate.ogg");
+        std::atomic<int> reads { 0 };
+        dev.MountChannel(std::make_shared<BorrowingChannel>(source.get(), &reads));
+
+        std::atomic<bool> stop { false };
+        std::atomic<int>  frames { 0 };
+        std::thread       audio([&] {
+            std::vector<float> out(64 * 2);
+            while (! stop.load()) {
+                dev.ProcessFrame(out.data(), 64, 2);
+                frames.fetch_add(1);
+            }
+        });
+
+        while (reads.load() < 50) std::this_thread::yield();
+        dev.UnmountAll();
+        const int readsAtUnmount = reads.load();
+        source.reset();
+
+        const int framesAtFree = frames.load();
+        while (frames.load() < framesAtFree + 200) std::this_thread::yield();
+        stop.store(true);
+        audio.join();
+
+        CHECK(reads.load() == readsAtUnmount);
+    }
+}

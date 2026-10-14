@@ -117,4 +117,16 @@ void UnmountSoundStreams(ManagerT& sm, SoundStreamTable<LayerInfoT>& layers,
     sm.UnMountAll();
 }
 
+// Stop all sound output for a scene that is going away.  Mounted streams read
+// files through the scene's VFS on the audio thread, so this has to run while
+// that VFS is still alive.  Unmounting takes the mutex the mix loop holds
+// while it reads a stream, so it waits for a read in progress; closing the
+// device then stops further callbacks.
+template<class ManagerT, class LayerInfoT, class VolumeInfoT>
+void ShutdownSoundOutput(ManagerT& sm, SoundStreamTable<LayerInfoT>& layers,
+                         SoundStreamTable<VolumeInfoT>& volumes) {
+    UnmountSoundStreams(sm, layers, volumes);
+    sm.Close();
+}
+
 } // namespace wallpaper

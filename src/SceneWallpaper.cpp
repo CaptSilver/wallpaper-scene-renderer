@@ -136,6 +136,12 @@ public:
     virtual ~MainHandler() {
         if (m_render_loop) m_render_loop->stop();
         if (m_main_loop) m_main_loop->stop();
+        // Members die in reverse declaration order, so m_scene, which owns the
+        // VFS every mounted WPSoundStream holds a raw reference into, goes
+        // before m_sound_manager.  Stop sound output here, before any member
+        // destructor runs, or a stream that switches tracks on the audio thread
+        // opens a file through freed memory.
+        if (m_sound_manager) ShutdownSoundOutput(*m_sound_manager, m_sound_layers, m_sound_volumes);
     };
 
     void setHidePattern(const std::string& pat) { m_scene_parser.SetHidePattern(pat); }
