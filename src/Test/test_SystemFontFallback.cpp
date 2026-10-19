@@ -105,7 +105,10 @@ TEST_SUITE("SystemFontFallback") {
                                      std::pair { "systemfont_arial", "Sans" },
                                      std::pair { "systemfont_timesnewroman", "Serif" } }) {
             const auto p = ResolveSystemFontFallback(request.first);
-            if (p.empty()) continue; // No curated font installed on this host.
+            CAPTURE(request.first);
+            REQUIRE_MESSAGE(! p.empty(),
+                            "curated fallback must resolve; install Liberation/DejaVu fonts "
+                            "at a supported path before running this regression test");
             CAPTURE(p);
             CHECK(std::filesystem::exists(p));
             CHECK(MatchesFontconfig(p, request.first, request.second));
