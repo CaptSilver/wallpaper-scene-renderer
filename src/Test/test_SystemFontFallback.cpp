@@ -1,38 +1,45 @@
 // Pin the systemfont_* → Linux font path mapping logic.
 //
-// The mapping is OS-dependent: ResolveSystemFontFallback returns whatever
-// candidate path exists first.  Tests assert the *family* of the resolved
-// path (mono/sans/serif via filename substring) rather than a specific path,
-// because Bazzite ships Liberation but Debian/Ubuntu/Arch vary.
+// Fontconfig may choose Microsoft fonts, Croscore, or user-installed faces.
+// Check its match for the requested family rather than guessing from filenames.
 
 #include <doctest.h>
 
 #include "SystemFontFallback.hpp"
 
+#include <fontconfig/fontconfig.h>
+
 #include <filesystem>
 #include <string>
+#include <utility>
 
-using wallpaper::ResolveSystemFontFallback;
 using wallpaper::ReadSystemFile;
+using wallpaper::ResolveSystemFontFallback;
 
-namespace {
+namespace
+{
 
-bool IsMonoFamily(const std::string& path) {
-    return path.find("Mono") != std::string::npos
-        || path.find("mono") != std::string::npos;
-}
-
-bool IsSerifFamily(const std::string& path) {
-    return path.find("Serif") != std::string::npos
-        || path.find("serif") != std::string::npos;
-}
-
-bool IsSansFamily(const std::string& path) {
-    // "Sans" but NOT "SansMono" / "SansSerif" — narrow check.
-    if (path.find("Mono") != std::string::npos) return false;
-    if (path.find("Serif") != std::string::npos) return false;
-    return path.find("Sans") != std::string::npos
-        || path.find("sans") != std::string::npos;
+bool MatchesFontconfig(const std::string& path, const char* name, const char* fallback_family) {
+    FcPattern* pattern = FcNameParse(reinterpret_cast<const FcChar8*>(name));
+    if (! pattern) return false;
+    FcConfigSubstitute(nullptr, pattern, FcMatchPattern);
+    FcDefaultSubstitute(pattern);
+    FcResult   result;
+    FcPattern* match  = FcFontMatch(nullptr, pattern, &result);
+    FcChar8*   file   = nullptr;
+    const bool usable = match && result == FcResultMatch &&
+                        FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file &&
+                        std::filesystem::exists(reinterpret_cast<const char*>(file));
+    // Without usable Fontconfig data, production chooses Liberation/DejaVu.
+    const std::string family(fallback_family);
+    const auto        filename = std::filesystem::path(path).filename().string();
+    const bool        matches =
+        usable ? path == reinterpret_cast<const char*>(file)
+               : filename == "Liberation" + family + "-Regular.ttf" ||
+                     filename == "DejaVu" + (family == "Mono" ? "SansMono" : family) + ".ttf";
+    if (match) FcPatternDestroy(match);
+    FcPatternDestroy(pattern);
+    return matches;
 }
 
 bool HasAnyLinuxFont() {
@@ -51,39 +58,62 @@ TEST_SUITE("SystemFontFallback") {
             WARN_MESSAGE(false, "no fallback font installed; install liberation-mono-fonts to enable test");
             return;
         }
-        CHECK(IsMonoFamily(p));
+        CHECK(MatchesFontconfig(p, "Courier New:spacing=100", "Mono"));
     }
 
     TEST_CASE("courier_new resolves to a monospaced font") {
         if (!HasAnyLinuxFont()) return;
         const auto p = ResolveSystemFontFallback("systemfont_couriernew");
         if (p.empty()) return;
-        CHECK(IsMonoFamily(p));
+        CHECK(MatchesFontconfig(p, "Courier New:spacing=100", "Mono"));
     }
 
     TEST_CASE("arial resolves to a sans-serif font") {
         if (!HasAnyLinuxFont()) return;
         const auto p = ResolveSystemFontFallback("systemfont_arial");
         if (p.empty()) return;
-        CHECK(IsSansFamily(p));
+        CHECK(MatchesFontconfig(p, "Arial", "Sans"));
     }
 
     TEST_CASE("times new roman resolves to a serif font") {
         if (!HasAnyLinuxFont()) return;
         const auto p = ResolveSystemFontFallback("systemfont_timesnewroman");
         if (p.empty()) return;
-        CHECK(IsSerifFamily(p));
+        CHECK(MatchesFontconfig(p, "Times New Roman", "Serif"));
     }
 
     TEST_CASE("unknown systemfont_* defaults to sans-serif") {
         if (!HasAnyLinuxFont()) return;
         const auto p = ResolveSystemFontFallback("systemfont_madeupname");
         if (p.empty()) return;
-        CHECK(IsSansFamily(p));
+        CHECK(MatchesFontconfig(p, "Arial", "Sans"));
+    }
+
+    TEST_CASE("curated fallback works without Fontconfig fonts") {
+        struct ConfigGuard {
+            FcConfig* previous = FcConfigReference(FcConfigGetCurrent());
+            FcConfig* empty    = FcConfigCreate();
+            ~ConfigGuard() {
+                FcConfigSetCurrent(previous);
+                FcConfigDestroy(previous);
+                if (empty) FcConfigDestroy(empty);
+            }
+        } config;
+        REQUIRE(config.empty != nullptr);
+        REQUIRE(FcConfigSetCurrent(config.empty));
+        for (const auto& request : { std::pair { "systemfont_consolas", "Mono" },
+                                     std::pair { "systemfont_arial", "Sans" },
+                                     std::pair { "systemfont_timesnewroman", "Serif" } }) {
+            const auto p = ResolveSystemFontFallback(request.first);
+            if (p.empty()) continue; // No curated font installed on this host.
+            CAPTURE(p);
+            CHECK(std::filesystem::exists(p));
+            CHECK(MatchesFontconfig(p, request.first, request.second));
+        }
     }
 
     TEST_CASE("name lookup is case-insensitive") {
-        if (!HasAnyLinuxFont()) return;
+        if (! HasAnyLinuxFont()) return;
         const auto a = ResolveSystemFontFallback("systemfont_Consolas");
         const auto b = ResolveSystemFontFallback("systemfont_CONSOLAS");
         const auto c = ResolveSystemFontFallback("systemfont_consolas");
@@ -99,7 +129,7 @@ TEST_SUITE("SystemFontFallback") {
         if (!HasAnyLinuxFont()) return;
         const auto p = ResolveSystemFontFallback("consolas");
         if (p.empty()) return;
-        CHECK(IsMonoFamily(p));
+        CHECK(MatchesFontconfig(p, "Courier New:spacing=100", "Mono"));
     }
 
     TEST_CASE("a resolved path actually exists on disk") {
