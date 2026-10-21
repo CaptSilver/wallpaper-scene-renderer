@@ -1,5 +1,6 @@
 #include "Audio/AudioCapture.h"
 #include "Audio/AudioAnalyzer.h"
+#include "Audio/MaDeviceShutdown.hpp"
 #include "Audio/RebindRetry.hpp"
 #include "Utils/Logging.h"
 
@@ -76,7 +77,7 @@ struct AudioCapture::Impl {
 
     bool OpenMaDevice(const std::string& sinkName) {
         if (maDeviceInited) {
-            ma_device_uninit(&maDevice);
+            StopAndUninitDevice(&maDevice);
             maDeviceInited = false;
         }
         std::string  monitorName = sinkName + ".monitor";
@@ -101,7 +102,7 @@ struct AudioCapture::Impl {
         r              = ma_device_start(&maDevice);
         if (r != MA_SUCCESS) {
             LOG_INFO("AudioCapture: ma_device_start failed (r=%d)", (int)r);
-            ma_device_uninit(&maDevice);
+            StopAndUninitDevice(&maDevice);
             maDeviceInited = false;
             return false;
         }
@@ -157,7 +158,7 @@ struct AudioCapture::Impl {
             LOG_INFO("AudioCapture: legacy ma_device_start failed (r=%d, device='%s')",
                      (int)r,
                      pCaptureInfos[monitorIdx].name);
-            ma_device_uninit(&maDevice);
+            StopAndUninitDevice(&maDevice);
             maDeviceInited = false;
             return false;
         }
@@ -329,8 +330,9 @@ struct AudioCapture::Impl {
             }
             LOG_INFO("AudioCapture: default sink changed → rebinding to monitor of '%s'",
                      newSink.c_str());
-            // ma_device_uninit blocks until in-flight callbacks return, so it
-            // is safe to interleave with the running capture.
+            // OpenMaDevice stops the old device before freeing it.  Freeing it
+            // while it still runs can block this thread for good when the old
+            // sink has gone quiet (see StopAndUninitDevice).
             if (OpenMaDevice(newSink)) {
                 boundSink = newSink;
             } else {
@@ -440,10 +442,10 @@ void AudioCapture::Stop() {
     LOG_INFO("AudioCapture::Stop: DisconnectPulse done");
 #endif
     if (m_impl->maDeviceInited) {
-        LOG_INFO("AudioCapture::Stop: ma_device_uninit...");
-        ma_device_uninit(&m_impl->maDevice);
+        LOG_INFO("AudioCapture::Stop: stopping and freeing the capture device...");
+        StopAndUninitDevice(&m_impl->maDevice);
         m_impl->maDeviceInited = false;
-        LOG_INFO("AudioCapture::Stop: ma_device_uninit done");
+        LOG_INFO("AudioCapture::Stop: capture device freed");
     }
     if (m_impl->maContextInited) {
         LOG_INFO("AudioCapture::Stop: ma_context_uninit...");

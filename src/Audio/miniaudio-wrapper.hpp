@@ -12,6 +12,7 @@
 
 #include "Utils/Logging.h"
 #include "Core/NoCopyMove.hpp"
+#include "Audio/MaDeviceShutdown.hpp"
 
 #define MA_NO_WASAPI
 #define MA_NO_DSOUND
@@ -159,14 +160,14 @@ public:
             LOG_INFO("uninit sound device");
         }
         UnmountAll();
-        ma_device_uninit(&m_device); // always do it
+        wallpaper::audio::StopAndUninitDevice(&m_device); // always do it
     }
     // Bail out of a half-open device.  Deliberately NOT UnInit: the channels
     // were mounted before this attempt and their owners hold non-owning
     // aliases into them, so a device that refused to open must not destroy
     // them.  The next successful Init() re-PassDeviceDesc's whatever is still
     // mounted.
-    void AbortInit() { ma_device_uninit(&m_device); }
+    void AbortInit() { wallpaper::audio::StopAndUninitDevice(&m_device); }
     // Release the OS audio stream but keep the mounted channels (a later
     // Init() re-passes the device description to them).  An open stream,
     // even silent or stopped, keeps the audio codec powered; scenes without
@@ -174,7 +175,7 @@ public:
     void Close() {
         if (! IsInited()) return;
         LOG_INFO("close sound device");
-        ma_device_uninit(&m_device);
+        wallpaper::audio::StopAndUninitDevice(&m_device);
         FeedSpectrumSilence();
     }
     // An open device calls the spectrum callback every period, with silence
