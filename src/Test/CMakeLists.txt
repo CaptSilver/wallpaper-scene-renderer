@@ -114,6 +114,7 @@ add_executable(backend_scene_tests
     test_AudioCapture.cpp
     test_AudioCapture_Rebind.cpp
     test_MaDeviceShutdown.cpp
+    test_MiniaudioPulseInfo.cpp
     test_AudioBus.cpp
     test_BinaryStream.cpp
     test_VFS.cpp
