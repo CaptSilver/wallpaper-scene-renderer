@@ -2097,6 +2097,11 @@ std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
                 puppet_mat.textures[0] = "";
                 WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
                 puppet_effect.materials.push_back(puppet_mat);
+                // The skinned composite only puts the chain's output on screen.  The
+                // base pass already applied the layer's colour, alpha and brightness,
+                // so marking it synthesized keeps them neutral here and keeps runtime
+                // alpha writes and script effect lists off it.
+                puppet_effect.synthesized_passthrough = true;
                 wpimgobj.effects.push_back(puppet_effect);
             } else {
                 svData.puppet_layer = WPPuppetLayer(puppet->puppet);
@@ -3138,10 +3143,6 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     auto      spMesh = buildImageMesh(wpimgobj, material, svData, puppet.get(), hasEffect,
                                       effct_final_mesh);
     auto&     mesh   = *spMesh;
-
-    // buildImageMesh appended the puppet composite; on a bare source it is the
-    // isolation terminal, not an authored effect.
-    if (bareIsolated && puppet != nullptr) wpimgobj.effects.back().synthesized_passthrough = true;
 
     auto imgBlendMode = applyFinalBlendOverride(material, colorBlendOverride, hasEffect, isCompose, wpimgobj);
     // A bare source used to be one direct draw onto the scene.  Its base pass now

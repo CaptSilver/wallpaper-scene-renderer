@@ -2370,6 +2370,64 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(bv.at("g_Color4")[3] == doctest::Approx(0.5f));
     }
 
+    // A puppet with effects draws its card through the effect chain, then the
+    // skinned composite puts the result on screen.  The base pass already applied
+    // the layer's colour, alpha and brightness, so the composite must not apply
+    // them again: River Spirit 2513600306's "Girl reflection" (alpha 0.1)
+    // vanished at 0.01.
+    TEST_CASE("E2E: a puppet with effects applies colour, alpha and brightness once") {
+        ensureGlslangInit();
+        auto                vfs     = makeIsolatedLinkVfs({
+            { "/models/_ipup.json",
+              R"({ "material": "materials/_i.json", "puppet": "models/_pup.mdl" })" },
+            { "/models/_pup.mdl", makeOneBonePuppetMdl() },
+        });
+        const std::string   objects = R"JSON(
+      { "id": 401, "name": "puppet_fx",
+        "image": "models/_ipup.json", "size": "256 256",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "color": "0.5 0.5 0.5", "alpha": 0.5, "brightness": 1.2,
+        "visible": true,
+        "effects": [
+          { "id": 11, "name": "tint", "visible": true, "file": "effects/tint.json" }
+        ] }
+    )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto scene = parser.Parse("scene_puppet_fx", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        CHECK(layer->IsIsolatedLink() == false);
+        REQUIRE(layer->EffectCount() == 2u);
+        CHECK(layer->GetEffect(0)->synthesized == false);
+        auto composite = layer->GetEffect(1);
+        CHECK(composite->synthesized == true);
+        REQUIRE(composite->nodes.size() == 1u);
+        auto* cmat = composite->nodes.front().sceneNode->Mesh()->Material();
+        REQUIRE(cmat != nullptr);
+        const auto& cv = cmat->customShader.constValues;
+        REQUIRE(cv.count("g_Color4") == 1u);
+        for (int c = 0; c < 4; c++) CHECK(cv.at("g_Color4")[c] == doctest::Approx(1.0f));
+        REQUIRE(cv.count("g_UserAlpha") == 1u);
+        CHECK(cv.at("g_UserAlpha")[0] == doctest::Approx(1.0f));
+        REQUIRE(cv.count("g_Brightness") == 1u);
+        CHECK(cv.at("g_Brightness")[0] == doctest::Approx(1.0f));
+
+        SceneNode* node = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(node != nullptr);
+        auto* bmat = node->Mesh()->Material();
+        REQUIRE(bmat != nullptr);
+        const auto& bv = bmat->customShader.constValues;
+        REQUIRE(bv.count("g_Color4") == 1u);
+        CHECK(bv.at("g_Color4")[0] == doctest::Approx(0.5f));
+        CHECK(bv.at("g_Color4")[3] == doctest::Approx(0.5f));
+        REQUIRE(bv.count("g_Brightness") == 1u);
+        CHECK(bv.at("g_Brightness")[0] == doctest::Approx(1.2f));
+    }
+
     // A solid layer is a coloured quad: WE draws it with the object's own
     // `color` and `alpha`.  Authors who want an invisible pivot set alpha 0
     // themselves (Rei Ayanami 3061226599 does exactly that on its "Solid"
