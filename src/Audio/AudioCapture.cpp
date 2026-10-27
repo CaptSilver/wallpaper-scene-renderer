@@ -60,7 +60,8 @@ struct AudioCapture::Impl {
     std::mutex              rebindMutex;
     std::condition_variable rebindCV;
     std::string             targetSink; // protected by rebindMutex
-    std::string             boundSink;  // touched only by rebindThread + Init
+    std::string             boundSink;  // protected by rebindMutex; empty while nothing is bound
+    bool                    rebindInProgress { false }; // protected by rebindMutex
     std::atomic<bool>       rebindPending { false };
     std::atomic<bool>       shutdown { false };
 #endif
@@ -200,10 +201,15 @@ struct AudioCapture::Impl {
         std::string newSink = info->default_sink_name;
         {
             std::lock_guard<std::mutex> lk(impl->rebindMutex);
-            if (newSink == impl->targetSink) return;
+            if (! ShouldScheduleRebind(
+                    newSink, impl->targetSink, impl->boundSink, impl->rebindInProgress))
+                return;
             impl->targetSink = newSink;
+            // Stored under the lock, like Stop() does for shutdown: set after
+            // unlocking, it could land between the worker checking its wait
+            // predicate and parking, and the notify below would be lost.
+            impl->rebindPending = true;
         }
-        impl->rebindPending = true;
         impl->rebindCV.notify_one();
     }
 
@@ -325,30 +331,23 @@ struct AudioCapture::Impl {
                          (int)shutdown.load(), (int)rebindPending.load());
                 if (shutdown) return;
                 rebindPending = false;
-                if (targetSink == boundSink) continue;
-                newSink = targetSink;
+                if (! ClaimRebindTarget(targetSink, boundSink, rebindInProgress, newSink)) continue;
             }
             LOG_INFO("AudioCapture: default sink changed → rebinding to monitor of '%s'",
                      newSink.c_str());
             // OpenMaDevice stops the old device before freeing it.  Freeing it
             // while it still runs can block this thread for good when the old
-            // sink has gone quiet (see StopAndUninitDevice).
-            if (OpenMaDevice(newSink)) {
-                boundSink = newSink;
-            } else {
-                // Initial open failed (sink unloaded mid-init, PA race, card
-                // vanished).  Try a short exponential backoff before giving
-                // up and waiting for the next PA event.  RetryOpenWithBackoff
-                // aborts early on shutdown or on a newer rebindPending so we
-                // don't block the worker indefinitely.
-                const bool recovered = RetryOpenWithBackoff(
-                    newSink, shutdown, rebindPending, rebindCV, rebindMutex,
-                    [this](const std::string& s) { return this->OpenMaDevice(s); });
-                if (recovered) boundSink = newSink;
-                // No `else` log here — RetryOpenWithBackoff already emits the
-                // terminal "rebind to '%s' failed after N retries" line on
-                // giveup.
-            }
+            // sink has gone quiet (see StopAndUninitDevice).  The retries end
+            // early on shutdown or on a newer rebindPending, so the worker
+            // never sits out the whole schedule for a sink nobody wants.
+            auto openWithRetry = [this](const std::string& sink) {
+                auto open = [this](const std::string& s) {
+                    return OpenMaDevice(s);
+                };
+                return RetryOpenWithBackoff(
+                    sink, shutdown, rebindPending, rebindCV, rebindMutex, open);
+            };
+            RebindTo(newSink, boundSink, rebindInProgress, rebindMutex, openWithRetry);
         }
     }
 #endif // WEK_HAVE_LIBPULSE
@@ -389,8 +388,7 @@ bool AudioCapture::Init(std::shared_ptr<AudioAnalyzer> analyzer) {
         }
         {
             std::lock_guard<std::mutex> lk(m_impl->rebindMutex);
-            m_impl->boundSink  = defaultSink;
-            m_impl->targetSink = defaultSink;
+            RecordInitialBind(defaultSink, m_impl->targetSink, m_impl->boundSink);
         }
         m_impl->active       = true;
         m_impl->rebindThread = std::thread([impl = m_impl.get()] {
