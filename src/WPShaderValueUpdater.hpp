@@ -64,6 +64,7 @@ struct WPUniformInfo {
     bool has_PARALLAXPOSITION { false };
     bool has_TEXELSIZE { false };
     bool has_TEXELSIZEHALF { false };
+    bool has_TEXTUREREDUCTIONSCALE { false };
     bool has_SCREEN { false };
     bool has_LIGHTAMBIENTCOLOR { false };
     bool has_LIGHTSKYLIGHTCOLOR { false };

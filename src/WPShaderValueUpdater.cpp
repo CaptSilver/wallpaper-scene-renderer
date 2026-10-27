@@ -167,6 +167,8 @@ void WPShaderValueUpdater::InitUniforms(SceneNode* pNode, const ExistsUniformOp&
     info.has_LCR                = existsOp(G_LCR);
     info.has_EYEPOSITION        = existsOp(G_EYEPOSITION);
 
+    info.has_TEXTUREREDUCTIONSCALE = existsOp(G_TEXTUREREDUCTIONSCALE);
+
     info.has_AUDIOSPECTRUM16LEFT  = existsOp(G_AUDIOSPECTRUM16LEFT);
     info.has_AUDIOSPECTRUM16RIGHT = existsOp(G_AUDIOSPECTRUM16RIGHT);
     info.has_AUDIOSPECTRUM32LEFT  = existsOp(G_AUDIOSPECTRUM32LEFT);
@@ -595,6 +597,15 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
 
     if (info.has_TEXELSIZEHALF)
         updateOp(G_TEXELSIZEHALF, std::array { m_texelSize[0] / 2.0f, m_texelSize[1] / 2.0f });
+
+    // The factor textures were shrunk by on load.  blend.vert (TRANSFORMUV)
+    // divides g_BlendOffset, authored in full-size texels, by it; skew.vert
+    // (vertex mode) scales the texture size by it.  Layer textures are always
+    // loaded full size, so it is 1.  Left at 0 the blend UV turns into NaN and
+    // samples one arbitrary texel, and vertex-mode skew moves nothing.
+    // Screen-bound pingpongs shrink under a render scale below 1, which this
+    // does not account for; what WE reports there is unknown.
+    if (info.has_TEXTUREREDUCTIONSCALE) updateOp(G_TEXTUREREDUCTIONSCALE, 1.0f);
 
     if (info.has_SCREEN)
         updateOp(G_SCREEN,

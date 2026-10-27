@@ -175,6 +175,49 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::time_and_screen") {
         CHECK(uploadGTime(2.0 * kWrapPeriod + 1.25) == doctest::Approx(uploadGTime(1.25)));
     }
 
+    TEST_CASE("g_TextureReductionScale is uploaded as 1") {
+        // blend.vert divides g_BlendOffset by this (TRANSFORMUV) and skew.vert
+        // multiplies the texture size by it (vertex mode).  Left unwritten it
+        // reads 0: the transformed blend UV becomes NaN and samples one
+        // arbitrary texel instead of the blend texture (Ender Gengar
+        // 3249016730's eyes came out flat clear-color grey).  Textures are
+        // never loaded reduced, so the factor is always 1.
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ "g_TextureReductionScale" }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        const auto* w = cap.find("g_TextureReductionScale");
+        REQUIRE(w != nullptr);
+        REQUIRE(w->values.size() == 1);
+        CHECK(w->values[0] == doctest::Approx(1.0f));
+    }
+
+    TEST_CASE("g_TextureReductionScale is not written when the shader lacks it") {
+        Scene scene;
+        installActiveCamera(scene);
+
+        auto f = NodeFixture::make();
+        scene.sceneGraph->AppendChild(f.node);
+
+        WPShaderValueUpdater updater(&scene);
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_TIME }));
+
+        UniformCapture cap;
+        sprite_map_t   sprites;
+        updater.UpdateUniforms(f.node.get(), sprites, cap.op());
+
+        CHECK(cap.find("g_TextureReductionScale") == nullptr);
+    }
+
     TEST_CASE("g_DayTime defaults to 0 when no time-of-day source is set") {
         // WPShaderValueUpdater's m_dayTime defaults to 0 and is only ever
         // recomputed via a commented-out wall-clock block; in the shipped
