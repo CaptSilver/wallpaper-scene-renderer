@@ -2093,7 +2093,10 @@ std::shared_ptr<SceneMesh> buildImageMesh(wpscene::WPImageObject& wpimgobj,
 
                 wpscene::WPImageEffect puppet_effect;
                 wpscene::WPMaterial    puppet_mat;
-                puppet_mat             = wpimgobj.material;
+                puppet_mat = wpimgobj.material;
+                // Slot 0 receives the effect chain's output; a material that lists
+                // no textures still needs it.
+                if (puppet_mat.textures.empty()) puppet_mat.textures.resize(1);
                 puppet_mat.textures[0] = "";
                 WPMdlParser::AddPuppetMatInfo(puppet_mat, *puppet);
                 puppet_effect.materials.push_back(puppet_mat);

@@ -2428,6 +2428,44 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(bv.at("g_Brightness")[0] == doctest::Approx(1.2f));
     }
 
+    // The skinned composite takes the chain's output in slot 0.  A puppet whose
+    // material lists no textures at all still needs that slot; indexing the
+    // empty list aborted under libstdc++ assertions.
+    TEST_CASE("E2E: a puppet with effects and a material without textures parses") {
+        ensureGlslangInit();
+        auto                vfs     = makeIsolatedLinkVfs({
+            { "/materials/_i0.json",
+              R"({ "passes": [{ "shader": "_i", "blending": "translucent", "textures": [] }] })" },
+            { "/models/_ipup0.json",
+              R"({ "material": "materials/_i0.json", "puppet": "models/_pup.mdl" })" },
+            { "/models/_pup.mdl", makeOneBonePuppetMdl() },
+        });
+        const std::string   objects = R"JSON(
+      { "id": 401, "name": "puppet_notex",
+        "image": "models/_ipup0.json", "size": "256 256",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "visible": true,
+        "effects": [
+          { "id": 11, "name": "tint", "visible": true, "file": "effects/tint.json" }
+        ] }
+    )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_puppet_notex", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        REQUIRE(layer->EffectCount() == 2u);
+        auto composite = layer->GetEffect(1);
+        CHECK(composite->synthesized == true);
+        REQUIRE(composite->nodes.size() == 1u);
+        auto* cmat = composite->nodes.front().sceneNode->Mesh()->Material();
+        REQUIRE(cmat != nullptr);
+        CHECK(cmat->textures.size() >= 1u);
+    }
+
     // A solid layer is a coloured quad: WE draws it with the object's own
     // `color` and `alpha`.  Authors who want an invisible pivot set alpha 0
     // themselves (Rei Ayanami 3061226599 does exactly that on its "Solid"
