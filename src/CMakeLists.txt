@@ -71,6 +71,8 @@ add_subdirectory(Particle)
 add_subdirectory(VulkanRender)
 add_subdirectory(RenderGraph)
 
+wek_apply_shader_fingerprint()
+
 add_library(
   ${PROJECT_NAME} STATIC
   WPJson.cpp

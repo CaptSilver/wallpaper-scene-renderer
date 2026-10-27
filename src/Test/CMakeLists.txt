@@ -33,6 +33,8 @@ pkg_check_modules(GL gl)
 set(DOCTEST_INCLUDE_DIR
     "${PROJECT_SOURCE_DIR}/third_party/nlohmann/tests/thirdparty/doctest")
 set(SRC_DIR "${PROJECT_SOURCE_DIR}/src")
+# Test targets compile WPShaderParser.cpp directly; it needs the same define.
+wek_apply_shader_fingerprint()
 
 add_executable(backend_scene_tests
     test_main.cpp
@@ -42,6 +44,7 @@ add_executable(backend_scene_tests
     test_helpers.cpp
     test_WPShaderTransforms.cpp
     test_WPShaderInclude.cpp
+    test_ShaderCacheKey.cpp
     test_WPShaderTexCombos.cpp
     test_ReadbackPixels.cpp
     test_WPShaderPreamble_DepthGather.cpp

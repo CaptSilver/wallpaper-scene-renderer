@@ -1,6 +1,8 @@
 #pragma once
 
 #include <span>
+#include <string>
+#include <string_view>
 #include "Scene/Scene.h"
 #include "Scene/SceneShader.h"
 #include "Type.hpp"
@@ -43,6 +45,16 @@ struct WPShaderUnit {
     std::string        src;
     WPPreprocessorInfo preprocess_info;
 };
+
+// Identity of the shader translator this binary was built with: a SHA-1 over the
+// sources that decide the translated SPIR-V (see cmake/WekShaderFingerprint.cmake).
+std::string_view ShaderTranslatorFingerprint();
+
+// Key of a compiled-SPIR-V cache entry.  The units are hashed before
+// translation runs, so `salt` is what ties an entry to the translator that
+// produced it; a different salt never reuses another translator's entry.
+std::string ShaderCacheKey(std::span<const WPShaderUnit> units,
+                           std::string_view              salt = ShaderTranslatorFingerprint());
 
 class WPShaderParser {
 public:

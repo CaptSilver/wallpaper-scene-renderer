@@ -539,13 +539,6 @@ inline std::string Finalprocessor(const WPShaderUnit& unit, const WPPreprocessor
 // FixImplicitConversions — moved to WPShaderTransforms.h
 // FixEffectAlpha — moved to WPShaderTransforms.h
 
-inline std::string GenSha1(std::span<const WPShaderUnit> units) {
-    std::string shas;
-    for (auto& unit : units) {
-        shas += utils::genSha1(unit.src);
-    }
-    return utils::genSha1(shas);
-}
 inline std::string GetCachePath(std::string_view scene_id, std::string_view filename) {
     return std::string("/cache/") + std::string(scene_id) + "/" SHADER_DIR "/" +
            std::string(filename) + "." SHADER_SUFFIX;
@@ -1079,7 +1072,12 @@ bool WPShaderParser::CompileToSpv(std::string_view scene_id, std::span<WPShaderU
     bool has_cache_dir = vfs.IsMounted("cache");
 
     if (has_cache_dir) {
-        std::string sha1            = GenSha1(units);
+        static std::once_flag fp_logged;
+        std::call_once(fp_logged, [] {
+            LOG_NOTICE("shader translator fingerprint %s (SPV cache key salt)",
+                       std::string(ShaderTranslatorFingerprint()).c_str());
+        });
+        std::string sha1            = ShaderCacheKey(units);
         std::string cache_file_path = GetCachePath(scene_id, sha1);
 
         if (vfs.Contains(cache_file_path)) {
@@ -1159,3 +1157,22 @@ void WPShaderParser::ClearSpvMemo() {
     s_memoCompiles    = 0;
     s_memoCompileTime = std::chrono::steady_clock::duration::zero();
 }
+
+namespace wallpaper
+{
+#ifndef WEK_SHADER_TRANSLATOR_FINGERPRINT
+#    error \
+        "WEK_SHADER_TRANSLATOR_FINGERPRINT must be defined by the build (cmake/WekShaderFingerprint.cmake)"
+#endif
+
+std::string_view ShaderTranslatorFingerprint() { return WEK_SHADER_TRANSLATOR_FINGERPRINT; }
+
+std::string ShaderCacheKey(std::span<const WPShaderUnit> units, std::string_view salt) {
+    std::string shas;
+    for (auto& unit : units) {
+        shas += utils::genSha1(unit.src);
+    }
+    shas += salt;
+    return utils::genSha1(shas);
+}
+} // namespace wallpaper

@@ -45,6 +45,9 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekHardening.cmake)
 # Vulkan) — MULL_PLUGIN_PATH must already be resolved by the time they run.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekMullInstrument.cmake)
 
+# Translator fingerprint salting the on-disk SPIR-V cache key.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/WekShaderFingerprint.cmake)
+
 if(PROFILING)
     # Applied before add_subdirectory so every backend target compiles the
     # WEK_PROFILE_SCOPE macros to real timers instead of ((void)0).
