@@ -65,6 +65,27 @@ TEST_SUITE("SceneMaterialLayerWrite") {
         CHECK(synthCv.at("g_UserAlpha")[0] == doctest::Approx(1.0f));
     }
 
+    TEST_CASE("writeAlphaToEffectLayer reaches every effect in the chain, not just the first") {
+        SceneNode             world;
+        SceneImageEffectLayer layer(&world, "pp_a", "pp_b");
+
+        auto first  = std::make_shared<SceneImageEffect>();
+        auto second = std::make_shared<SceneImageEffect>();
+        first->nodes.push_back({ "pp_b", effectNodeWithMaterial(seededMaterial()) });
+        second->nodes.push_back({ "pp_b", effectNodeWithMaterial(seededMaterial()) });
+        layer.AddEffect(first);
+        layer.AddEffect(second);
+
+        writeAlphaToEffectLayer(layer, 0.25f);
+
+        for (const auto& eff : { first, second }) {
+            const auto& cv =
+                eff->nodes.front().sceneNode->Mesh()->Material()->customShader.constValues;
+            CHECK(cv.at("g_UserAlpha")[0] == doctest::Approx(0.25f));
+            CHECK(cv.at("g_Color4")[3] == doctest::Approx(0.25f));
+        }
+    }
+
     TEST_CASE("writeLayerAlpha updates g_UserAlpha and g_Color4.a, not the flat pair") {
         auto m = seededMaterial();
         writeLayerAlpha(m, 0.25f);

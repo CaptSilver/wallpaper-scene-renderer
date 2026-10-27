@@ -3357,6 +3357,77 @@ TEST_SUITE("FixImplicitConversions.goldenCharacterization") {
                  "}\n");
     }
 
+    // The float-statement check looks past guards and preprocessor lines to the statement
+    // they govern.
+    TEST_CASE("golden: tex-scalar — unbraced if guard does not hide a float assignment") {
+        std::string in  = "uniform float u_scale;\n"
+                          "uniform sampler2D s_tex;\n"
+                          "void main() {\n"
+                          "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                          "  float acc = 0.0;\n"
+                          "  if (u_scale > 0.5)\n"
+                          "    acc = u_scale * timer;\n"
+                          "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                 "  float acc = 0.0;\n"
+                 "  if (u_scale > 0.5)\n"
+                 "    acc = u_scale * timer.x;\n"
+                 "}\n");
+    }
+
+    TEST_CASE("golden: tex-scalar — else guard does not hide a float assignment") {
+        std::string in  = "uniform float u_scale;\n"
+                          "uniform sampler2D s_tex;\n"
+                          "void main() {\n"
+                          "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                          "  float acc = 0.0;\n"
+                          "  if (u_scale > 0.5) {\n"
+                          "    acc = 1.0;\n"
+                          "  } else\n"
+                          "    acc = u_scale * timer;\n"
+                          "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                 "  float acc = 0.0;\n"
+                 "  if (u_scale > 0.5) {\n"
+                 "    acc = 1.0;\n"
+                 "  } else\n"
+                 "    acc = u_scale * timer.x;\n"
+                 "}\n");
+    }
+
+    TEST_CASE("golden: tex-scalar — preprocessor line before a float assignment is skipped") {
+        std::string in  = "uniform float u_scale;\n"
+                          "uniform sampler2D s_tex;\n"
+                          "void main() {\n"
+                          "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                          "  float acc = 0.0;\n"
+                          "#ifdef BOOST\n"
+                          "  acc += u_scale * timer;\n"
+                          "#endif\n"
+                          "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                 "  float acc = 0.0;\n"
+                 "#ifdef BOOST\n"
+                 "  acc += u_scale * timer.x;\n"
+                 "#endif\n"
+                 "}\n");
+    }
+
     // Cluster: fixArithSwizzleTrunc reverse pattern — WORD.xyzw OP vec2_var;
     // the swizzle is on the left and the named variable is on the right.  Swizzle
     // truncated from 4 to 2.

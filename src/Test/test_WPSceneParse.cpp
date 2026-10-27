@@ -2272,6 +2272,59 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(scene->nodeEffectLayerMap.count(401) == 0);
     }
 
+    // The area test is `>= 1`, so a source exactly one unit wide or tall still has a
+    // sprite to copy and is isolated rather than sent offscreen.
+    TEST_CASE("E2E: a source one unit wide or tall still counts as having area") {
+        ensureGlslangInit();
+        for (const char* sz : { "1 5", "5 1", "1 1" }) {
+            CAPTURE(sz);
+            auto vfs = makeIsolatedLinkVfs(
+                { { "/models/_nosize.json", R"({ "material": "materials/_plain.json" })" } });
+            std::string objects = kPassReaderObjects;
+            objects.replace(objects.find("models/_plain.json"), 18, "models/_nosize.json");
+            const auto at = objects.find("\"name\": \"dep_image\",");
+            REQUIRE(at != std::string::npos);
+            objects.insert(at, std::string("\"size\": \"") + sz + "\", ");
+            audio::SoundManager sm;
+            WPUserProperties    props {};
+            WPSceneParser       parser;
+            auto                scene =
+                parser.Parse("scene_unit_area_source", isolatedLinkScene(objects), *vfs, sm, props);
+            REQUIRE(scene != nullptr);
+
+            SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+            REQUIRE(dep != nullptr);
+            CHECK(dep->IsOffscreen() == false);
+            REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+            CHECK(scene->nodeEffectLayerMap.at(401)->IsIsolatedLink() == true);
+        }
+    }
+
+    // Only a zero-area layer that something reads is forced offscreen; with no reader
+    // it is left on its normal route.
+    TEST_CASE("E2E: a zero-area layer nobody reads is not routed offscreen") {
+        ensureGlslangInit();
+        auto vfs = makeIsolatedLinkVfs(
+            { { "/models/_nosize.json", R"({ "material": "materials/_plain.json" })" } });
+        // Drop the reader: only the dep_image object remains.
+        const std::string objects =
+            R"JSON({ "id": 401, "name": "dep_image", "size": "0 0",
+        "image": "models/_nosize.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "color": "0.5 0.5 0.5", "alpha": 0.5,
+        "visible": true })JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_zero_area_unread", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == false);
+    }
+
     // colorBlendMode adds an effectpassthrough that is already the chain's
     // on-screen terminal.  Appending the isolation passthrough after it would
     // demote it to a middle pass, which blends against the whole screen
@@ -2296,6 +2349,50 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         CHECK(layer->IsIsolatedLink() == true);
         REQUIRE(layer->EffectCount() == 1u);
         CHECK(layer->GetEffect(0)->synthesized == false);
+    }
+
+    // An authored effect keeps the layer's colour and alpha in g_Color4; only a
+    // pass that re-reads the base pass's output (the colorBlendMode
+    // passthrough, or a synthesized one) gets them neutral, or they would be
+    // applied twice.
+    TEST_CASE("E2E: only a colorBlendMode passthrough gets a neutral g_Color4, not an authored "
+              "effect") {
+        ensureGlslangInit();
+        auto                vfs     = makeIsolatedLinkVfs();
+        const std::string   objects = R"JSON(
+      { "id": 401, "name": "tinted",
+        "image": "models/_plain.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "color": "0.5 0.5 0.5", "alpha": 0.5, "colorBlendMode": 21,
+        "visible": true,
+        "effects": [
+          { "id": 11, "name": "tint", "visible": true, "file": "effects/tint.json" }
+        ] }
+    )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_color4_neutral", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        REQUIRE(layer->EffectCount() == 2u);
+        auto color4Of = [&](usize i) {
+            auto eff = layer->GetEffect(i);
+            REQUIRE(eff->nodes.size() == 1u);
+            auto* mat = eff->nodes.front().sceneNode->Mesh()->Material();
+            REQUIRE(mat != nullptr);
+            REQUIRE(mat->customShader.constValues.count("g_Color4") == 1u);
+            return mat->customShader.constValues.at("g_Color4");
+        };
+        const auto tint = color4Of(0);
+        CHECK(tint[0] == doctest::Approx(0.5f));
+        CHECK(tint[3] == doctest::Approx(0.5f));
+        const auto blend = color4Of(1);
+        CHECK(blend[0] == doctest::Approx(1.0f));
+        CHECK(blend[3] == doctest::Approx(1.0f));
     }
 
     // The isolation passthrough is stock material; if it cannot load, the
