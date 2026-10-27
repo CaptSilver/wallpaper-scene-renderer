@@ -118,9 +118,10 @@ TEST_SUITE("AudioCapture") {
 
 namespace
 {
-// Process-global sink the doctest cases install while they are scoped.
-// backend_scene_tests runs doctest cases serially in a single thread, so a
-// raw global is safe; the test must set/clear it within the case scope.
+// Process-global sink the doctest cases install while they are scoped; the
+// test must set/clear it within the case scope.  AudioCapture logs from its
+// rebind thread too, which is fine only because WallpaperLog calls the sink
+// under its own lock.
 std::vector<std::pair<int, std::string>>* g_currentSink = nullptr;
 
 void appendingSink(int level, const char* msg) {

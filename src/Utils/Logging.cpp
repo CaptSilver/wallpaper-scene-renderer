@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <vector>
 
 #include "Sha.hpp"
@@ -56,9 +57,25 @@ void SetLogDebugEnabled(bool enabled) { debugLogFlag().store(enabled, std::memor
 } // namespace wallpaper
 
 namespace wallpaper_log_test {
-static Sink g_sink = nullptr;
-void        setSink(Sink s) { g_sink = s; }
-Sink        getSink() { return g_sink; }
+// Sinks append to plain containers, and WallpaperLog runs on whichever thread
+// logged.  Calling them under g_sinkMutex hands them one line at a time, and
+// taking it in setSink means no call is still running once a sink is
+// uninstalled, so the test can free what the sink wrote into.
+static std::mutex        g_sinkMutex;
+static std::atomic<Sink> g_sink { nullptr };
+
+void setSink(Sink s) {
+    std::lock_guard<std::mutex> lk(g_sinkMutex);
+    g_sink.store(s);
+}
+
+static bool sinkInstalled() { return g_sink.load(std::memory_order_relaxed) != nullptr; }
+
+static void callSink(int level, const char* msg) {
+    std::lock_guard<std::mutex> lk(g_sinkMutex);
+    // Re-read under the lock: it may have been uninstalled since the check.
+    if (Sink sink = g_sink.load()) sink(level, msg);
+}
 } // namespace wallpaper_log_test
 
 void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
@@ -133,13 +150,13 @@ void WallpaperLog(int level, const char* file, int line, const char* fmt, ...) {
         std::fwrite(heap_buf.data(), 1, line_len, stderr);
     }
     std::fflush(stderr);
-    if (auto sink = wallpaper_log_test::getSink()) {
+    if (wallpaper_log_test::sinkInstalled()) {
         std::va_list args2;
         va_start(args2, fmt);
         char sink_buf[1024];
         std::vsnprintf(sink_buf, sizeof(sink_buf), fmt, args2);
         va_end(args2);
-        sink(level, sink_buf);
+        wallpaper_log_test::callSink(level, sink_buf);
     }
 }
 

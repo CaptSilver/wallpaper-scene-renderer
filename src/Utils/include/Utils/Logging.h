@@ -83,10 +83,11 @@ bool LogInfoEnabledFromEnv(const char* (*getenv_fn)(const char* name));
 
 // Test-only sink. When non-null, called from WallpaperLog with the rendered
 // message (level + formatted body, no trailing newline) after the stderr
-// write. Production callers don't see this; runtime cost is one branch
-// when unset. Set/reset from doctest only — the backend_scene_tests binary
-// runs doctest cases serially in a single thread, so a global function
-// pointer is safe; ensure the sink is cleared at the end of each scope.
+// write. Production callers don't see this; runtime cost is one atomic load
+// when unset. Set/reset from doctest only, and clear it at the end of each
+// scope. The cases run one at a time but the code under them may log from
+// its own threads, so the sink is called with a lock held: it sees one line
+// at a time, must not log itself, and is never running once setSink returns.
 namespace wallpaper_log_test {
 using Sink = void (*)(int level, const char* msg);
 void setSink(Sink s);

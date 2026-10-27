@@ -8,11 +8,16 @@
 #include <doctest.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 #include <unistd.h>
 #include "Utils/Logging.h"
 
@@ -291,5 +296,92 @@ TEST_SUITE("WallpaperLog line framing") {
         CHECK(std::count(out.begin(), out.end(), '\n') == 2);
         REQUIRE(out.size() >= 12);
         CHECK(out.substr(out.size() - 12) == "INFO marker\n");
+    }
+}
+
+// The cases run one at a time, but the code under test does not: AudioCapture
+// starts its rebind thread, texture parsing logs from prefetch workers.  Sinks
+// append to plain containers, so WallpaperLog has to hand them one line at a
+// time, and uninstalling a sink has to wait out a call already in progress.
+namespace
+{
+std::atomic<int> g_insideSink { 0 };
+std::atomic<int> g_maxInsideSink { 0 };
+
+void overlapDetectingSink(int, const char*) {
+    const int inside = ++g_insideSink;
+    int       seen   = g_maxInsideSink.load();
+    while (inside > seen && ! g_maxInsideSink.compare_exchange_weak(seen, inside)) {
+    }
+    // Stay inside long enough for an unserialised caller to arrive meanwhile.
+    std::this_thread::sleep_for(std::chrono::microseconds(200));
+    --g_insideSink;
+}
+
+std::mutex              g_blockMutex;
+std::condition_variable g_blockCv;
+bool                    g_sinkEntered { false };
+bool                    g_sinkReleased { false };
+
+void blockingSink(int, const char*) {
+    std::unique_lock lk(g_blockMutex);
+    g_sinkEntered = true;
+    g_blockCv.notify_all();
+    g_blockCv.wait(lk, [] {
+        return g_sinkReleased;
+    });
+}
+} // namespace
+
+TEST_SUITE("WallpaperLog sink threading") {
+    TEST_CASE("concurrent log calls reach the sink one at a time") {
+        g_insideSink    = 0;
+        g_maxInsideSink = 0;
+        wallpaper_log_test::setSink(&overlapDetectingSink);
+
+        std::vector<std::thread> loggers;
+        for (int t = 0; t < 4; ++t) {
+            loggers.emplace_back([t] {
+                for (int i = 0; i < 25; ++i)
+                    WallpaperLog(LOGLEVEL_INFO, "", 0, "t%d line %d", t, i);
+            });
+        }
+        for (auto& th : loggers) th.join();
+        wallpaper_log_test::setSink(nullptr);
+
+        CHECK(g_maxInsideSink.load() == 1);
+    }
+
+    TEST_CASE("setSink(nullptr) waits for a sink call already in progress") {
+        g_sinkEntered  = false;
+        g_sinkReleased = false;
+        wallpaper_log_test::setSink(&blockingSink);
+
+        std::thread logger([] {
+            WallpaperLog(LOGLEVEL_INFO, "", 0, "held");
+        });
+        {
+            std::unique_lock lk(g_blockMutex);
+            g_blockCv.wait(lk, [] {
+                return g_sinkEntered;
+            });
+        }
+
+        std::atomic<bool> uninstalled { false };
+        std::thread       uninstaller([&] {
+            wallpaper_log_test::setSink(nullptr);
+            uninstalled = true;
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        CHECK_FALSE(uninstalled.load());
+
+        {
+            std::lock_guard lk(g_blockMutex);
+            g_sinkReleased = true;
+        }
+        g_blockCv.notify_all();
+        logger.join();
+        uninstaller.join();
+        CHECK(uninstalled.load());
     }
 }
