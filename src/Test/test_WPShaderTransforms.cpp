@@ -3288,6 +3288,75 @@ TEST_SUITE("FixImplicitConversions.goldenCharacterization") {
                  "}\n");
     }
 
+    // A vec4 texture var multiplied by a float is still a vec4 (`vec4 * float` scales every
+    // component).  Only uses that feed a float need the .x truncation; the stock shine
+    // downsample shader builds its vec4 output from `sample * mask` and must keep alpha.
+    TEST_CASE("golden: tex-scalar — vec4 output built from tvar * float keeps the vec4") {
+        std::string in = "uniform float g_Threshold;\n"
+                         "uniform sampler2D g_Texture0;\n"
+                         "void main() {\n"
+                         "  vec4 sample = texture(g_Texture0, v_TexCoord.xy);\n"
+                         "  float mask = 1.0;\n"
+                         "  sample.rgb *= sample.a;\n"
+                         "  sample.a = 1.0;\n"
+                         "  glOutColor = sample * mask * step(g_Threshold, dot(vec3(0.11, 0.59, "
+                         "0.3), sample.rgb));\n"
+                         "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float g_Threshold;\n"
+                 "uniform sampler2D g_Texture0;\n"
+                 "void main() {\n"
+                 "  vec4 sample = texture(g_Texture0, v_TexCoord.xy);\n"
+                 "  float mask = 1.0;\n"
+                 "  sample.rgb *= sample.a;\n"
+                 "  sample.a = 1.0;\n"
+                 "  glOutColor = vec4(sample * mask * step(g_Threshold, dot(vec3(0.11, 0.59, 0.3), "
+                 "sample.rgb)));\n"
+                 "}\n");
+    }
+
+    TEST_CASE("golden: tex-scalar — same tvar truncated in a float declaration, kept in a vec4 "
+              "assignment") {
+        std::string in  = "uniform float u_scale;\n"
+                          "uniform sampler2D s_tex;\n"
+                          "void main() {\n"
+                          "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                          "  float off = u_scale * timer;\n"
+                          "  vec4 tinted = timer * u_scale;\n"
+                          "  glOutColor = timer;\n"
+                          "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                 "  float off = u_scale * timer.x;\n"
+                 "  vec4 tinted = timer * u_scale;\n"
+                 "  glOutColor = vec4(timer);\n"
+                 "}\n");
+    }
+
+    TEST_CASE("golden: tex-scalar — compound assignment to a known float gets .x") {
+        std::string in  = "uniform float u_scale;\n"
+                          "uniform sampler2D s_tex;\n"
+                          "void main() {\n"
+                          "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                          "  float acc = 0.0;\n"
+                          "  acc += u_scale * timer;\n"
+                          "}\n";
+        std::string out = FixImplicitConversions(in);
+        CHECK_EQ(out,
+                 "uniform float u_scale;\n"
+                 "uniform sampler2D s_tex;\n"
+                 "void main() {\n"
+                 "  vec4 timer = texture(s_tex, v_TexCoord.xy);\n"
+                 "  float acc = 0.0;\n"
+                 "  acc += u_scale * timer.x;\n"
+                 "}\n");
+    }
+
     // Cluster: fixArithSwizzleTrunc reverse pattern — WORD.xyzw OP vec2_var;
     // the swizzle is on the left and the named variable is on the right.  Swizzle
     // truncated from 4 to 2.

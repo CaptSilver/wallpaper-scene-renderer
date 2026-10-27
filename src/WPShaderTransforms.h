@@ -753,9 +753,61 @@ inline std::string FixImplicitConversions(const std::string& src) {
         // by '.', '[', or another word char.  Equivalent to the old per-tvar
         // \b{tvar}(?!\s*[.\[\w]) after filtering on m[1] == tvar.
         thread_local const std::regex re_bare_use(R"(\b(\w+)(?!\s*[.\[\w]))");
+        // `vec4 * float` is a valid vec4, so truncation is only wanted where the statement
+        // produces a float.  Float statements: a `float NAME = ...` declaration, or an
+        // assignment (=, +=, -=, *=, /=) whose target is a known float or one component of
+        // a vector.  Float locals declared without an initialiser and float parameters
+        // count as known floats for the assignment target.
+        std::set<std::string>         float_targets = float_vars;
+        thread_local const std::regex re_fdecl_noinit(R"(\bfloat\s+(\w+)\s*[;,)])");
+        for (auto it = std::sregex_iterator(result.begin(), result.end(), re_fdecl_noinit);
+             it != std::sregex_iterator();
+             ++it)
+            float_targets.insert((*it)[1].str());
+        thread_local const std::regex re_float_decl_stmt(
+            R"(^(?:(?:const|highp|mediump|lowp)\s+)*float\s+\w+\s*=)");
+        thread_local const std::regex re_assign_stmt(R"(^(\w+)(\.[xyzwrgba])?\s*[-+*/]?=(?!=))");
+        auto                          isFloatStatement = [&](const std::string& stmt) {
+            size_t b = 0;
+            for (;;) {
+                while (b < stmt.size() && std::isspace(static_cast<unsigned char>(stmt[b]))) ++b;
+                if (b < stmt.size() && stmt[b] == '#') {
+                    // preprocessor line preceding the statement
+                    size_t nl = stmt.find('\n', b);
+                    if (nl == std::string::npos) return false;
+                    b = nl + 1;
+                    continue;
+                }
+                // `else` / `if (...)` / `while (...)` prefixes guard a single statement
+                size_t w = b;
+                while (w < stmt.size() &&
+                       (std::isalnum(static_cast<unsigned char>(stmt[w])) || stmt[w] == '_'))
+                    ++w;
+                const std::string word = stmt.substr(b, w - b);
+                if (word == "else") {
+                    b = w;
+                    continue;
+                }
+                if (word == "if" || word == "while") {
+                    size_t open = stmt.find('(', w);
+                    if (open == std::string::npos) return false;
+                    size_t close = findMatchingParen(stmt, open);
+                    if (close == std::string::npos) return false;
+                    b = close + 1;
+                    continue;
+                }
+                break;
+            }
+            const std::string body = stmt.substr(b);
+            if (std::regex_search(body, re_float_decl_stmt)) return true;
+            std::smatch m;
+            if (! std::regex_search(body, m, re_assign_stmt)) return false;
+            return m[2].matched || float_targets.count(m[1].str()) > 0;
+        };
         for (const auto& tvar : scalar_tvars) {
             // Replace bare uses of tvar (not followed by . or [ or word char) with tvar.x
-            // but preserve declarations: "vec4 tvar = texture" and "in vec4 tvar;"
+            // inside float statements only, but preserve declarations: "vec4 tvar = texture"
+            // and "in vec4 tvar;"
             // Mark-restore protocol: rename the declaration spans FIRST so the bare-use
             // pass cannot corrupt them, then restore after bare-use replacement completes.
             std::string mark = "__DECL_MARK_" + tvar;
@@ -763,11 +815,26 @@ inline std::string FixImplicitConversions(const std::string& src) {
             strReplaceAll(result, "vec4 " + tvar + " = texture", "vec4 " + mark + " = texture");
             // Mark 'in' declaration
             strReplaceAll(result, "in vec4 " + tvar + ";", "in vec4 " + mark + ";");
-            // Replace bare uses with .x (constant pattern + C++ name filter)
-            regexTransformAll(result, re_bare_use, [&](const std::smatch& m) -> std::string {
-                if (m[1].str() != tvar) return m[0].str();
-                return tvar + ".x";
-            });
+            // Walk statements (split at ; { }) and rewrite only the float ones.
+            std::string rebuilt;
+            rebuilt.reserve(result.size() + 16);
+            size_t start = 0;
+            while (start < result.size()) {
+                size_t     end        = result.find_first_of(";{}", start);
+                const bool terminated = end != std::string::npos;
+                if (! terminated) end = result.size();
+                std::string stmt = result.substr(start, end - start);
+                if (stmt.find(tvar) != std::string::npos && isFloatStatement(stmt)) {
+                    regexTransformAll(stmt, re_bare_use, [&](const std::smatch& m) -> std::string {
+                        if (m[1].str() != tvar) return m[0].str();
+                        return tvar + ".x";
+                    });
+                }
+                rebuilt += stmt;
+                if (terminated) rebuilt += result[end];
+                start = end + 1;
+            }
+            result = std::move(rebuilt);
             // Restore marks (plain string — mark has no regex metacharacters)
             strReplaceAll(result, mark, tvar);
         }
