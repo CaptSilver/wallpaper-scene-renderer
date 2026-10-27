@@ -229,3 +229,50 @@ TEST_SUITE("Blend math — pingpong initialization") {
         CHECK(out[3] == doctest::Approx(0.0f));
     }
 }
+
+// A bare layer that other layers read is drawn in two steps (base pass into a
+// cleared ping-pong, then a terminal onto the scene).  The pair has to land the
+// same pixels as the single direct draw the layer used before it was read.
+TEST_SUITE("Blend math — two-step draw of a bare isolated source") {
+    TEST_CASE("straight base write + translucent terminal equals the direct translucent draw") {
+        auto direct = makeState();
+        SetBlend(BlendMode::Translucent, direct);
+        auto base = makeState();
+        SetBlend(BlendMode::Normal, base);
+
+        const std::array<float, 4> texel { 0.8f, 0.4f, 0.2f, 0.5f }; // colour*alpha already applied
+        const std::array<float, 4> scene { 0.3f, 0.6f, 0.9f, 1.0f };
+        const auto                 want  = applyBlend(direct, texel, scene);
+        const auto                 ppong = applyBlend(base, texel, { 0.0f, 0.0f, 0.0f, 0.0f });
+        const auto                 got   = applyBlend(direct, ppong, scene);
+        for (int c = 0; c < 4; c++) CHECK(got[c] == doctest::Approx(want[c]));
+    }
+    TEST_CASE("a translucent base write would weight colour by alpha twice") {
+        auto direct = makeState();
+        SetBlend(BlendMode::Translucent, direct);
+        auto base = makeState();
+        SetBlend(BlendMode::Translucent, base);
+
+        const std::array<float, 4> texel { 0.8f, 0.4f, 0.2f, 0.5f };
+        const std::array<float, 4> scene { 0.3f, 0.6f, 0.9f, 1.0f };
+        const auto                 want  = applyBlend(direct, texel, scene);
+        const auto                 ppong = applyBlend(base, texel, { 0.0f, 0.0f, 0.0f, 0.0f });
+        const auto                 got   = applyBlend(direct, ppong, scene);
+        // 0.5 * (0.5 * 0.8) + 0.5 * 0.3, against 0.5 * 0.8 + 0.5 * 0.3.
+        CHECK(got[0] == doctest::Approx(0.5f * 0.5f * 0.8f + 0.5f * 0.3f));
+        CHECK(got[0] < want[0]);
+    }
+    TEST_CASE("straight base write + additive terminal equals the direct additive draw") {
+        auto direct = makeState();
+        SetBlend(BlendMode::Additive, direct);
+        auto base = makeState();
+        SetBlend(BlendMode::Normal, base);
+
+        const std::array<float, 4> texel { 0.8f, 0.4f, 0.2f, 0.5f };
+        const std::array<float, 4> scene { 0.3f, 0.6f, 0.9f, 1.0f };
+        const auto                 want  = applyBlend(direct, texel, scene);
+        const auto                 ppong = applyBlend(base, texel, { 0.0f, 0.0f, 0.0f, 0.0f });
+        const auto                 got   = applyBlend(direct, ppong, scene);
+        for (int c = 0; c < 4; c++) CHECK(got[c] == doctest::Approx(want[c]));
+    }
+}

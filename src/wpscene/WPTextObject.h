@@ -62,25 +62,25 @@ public:
 };
 
 // Collect every image id a text layer's effect chain reads via a raw
-// `_rt_imageLayerComposite_<id>` texture string in its own effect
-// materials.  A text layer is never itself a compose-blend target
-// (composelayer.json / projectlayer.json only apply to image objects) but
-// it can still be a *reader* of another layer's composite RT: text
+// `_rt_imageLayerComposite_<id>` texture string in its own effect materials
+// or scene.json pass overrides.  A text layer is never itself a compose-blend
+// target (composelayer.json / projectlayer.json only apply to image objects)
+// but it can still be a *reader* of another layer's composite RT: text
 // effects go through the same LoadMaterial/ParseSpecTexName path as image
 // effects, so the reference is honored at render time whether or not the
 // source id ever appears in anyone's scene.json `dependencies` array.
 inline std::unordered_set<int32_t>
-CollectTextComposeLinkIds(const std::vector<const WPTextObject*>& text_objs) {
+CollectTextComposeLinkIds(const std::vector<const WPTextObject*>&  text_objs,
+                          const LayerScriptTargetFn<WPTextObject>& layerScriptTargeted = {}) {
     std::unordered_set<int32_t> out;
     for (const WPTextObject* txt : text_objs) {
         if (txt == nullptr) continue;
+        const bool targeted = layerScriptTargeted && layerScriptTargeted(*txt);
         for (const auto& effect : txt->effects) {
-            // Same invisible-effect exclusion as the image-object scan in
-            // WPImageObject.h: an invisible effect never reaches LoadMaterial
-            // at render time, so its texture strings never resolve.
-            if (! effect.visible) continue;
-            for (const auto& mat : effect.materials)
-                collectComposeLinkIdsFromTextures(mat.textures, txt->id, out);
+            // Same would-build rule as the image-object scan in WPImageObject.h:
+            // an effect that is never built never reaches LoadMaterial.
+            if (! EffectWouldBuild(effect, targeted)) continue;
+            collectEffectComposeLinkIds(effect, txt->id, out);
         }
     }
     return out;

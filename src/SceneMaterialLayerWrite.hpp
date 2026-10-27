@@ -16,7 +16,10 @@
 // image-shader pair only.
 //
 
+#include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
+#include "Scene/SceneNode.h"
 
 #include <vector>
 
@@ -31,6 +34,20 @@ inline void writeLayerAlpha(SceneMaterial& mat, float alpha) {
         it->second[3] = alpha;
     }
     mat.customShader.constValuesDirty = true;
+}
+
+// Alpha onto every material of a layer's effect chain.  The synthesized
+// passthrough is skipped: the base pass already carries the alpha into the
+// buffer it copies, and its g_Color4 is held neutral so it is not applied twice.
+inline void writeAlphaToEffectLayer(SceneImageEffectLayer& layer, float alpha) {
+    for (std::size_t i = 0; i < layer.EffectCount(); i++) {
+        if (layer.GetEffect(i)->synthesized) continue;
+        for (auto& en : layer.GetEffect(i)->nodes) {
+            if (en.sceneNode && en.sceneNode->HasMaterial())
+                writeLayerAlpha(*en.sceneNode->Mesh()->Material(), alpha);
+        }
+    }
+    if (auto* finalMat = layer.FinalMesh().Material()) writeLayerAlpha(*finalMat, alpha);
 }
 
 // g_Alpha — what the flat shader reads.  Only rewrites a slot the parser

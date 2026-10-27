@@ -303,6 +303,14 @@ void main() {
 }
 )GLSL";
 
+SceneNode* findNodeById(SceneNode* n, i32 id) {
+    if (n->ID() == id) return n;
+    for (auto& c : n->GetChildren()) {
+        if (auto* hit = findNodeById(c.get(), id)) return hit;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
@@ -1924,8 +1932,8 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         REQUIRE(scene->userPropEffectVisBindings.count("glow_enable") == 1u);
     }
 
-    TEST_CASE("E2E: text layer reading a composite RT by raw texture string forces its source "
-              "offscreen") {
+    TEST_CASE("E2E: text layer reading a composite RT by raw texture string keeps its source on "
+              "screen and isolates its sprite") {
         ensureGlslangInit();
         if (ResolveSystemFontFallback("systemfont_sans").empty()) return;
 
@@ -1948,6 +1956,7 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         auto vfs = makeAssetsVfsWith({
             { "/effects/compositeReader.json", kCompositeReaderEffectJson },
             { "/materials/_compositeReader.json", kCompositeReaderMaterialJson },
+            { "/materials/util/effectpassthrough.json", kPlainMaterialJson },
         });
 
         const char*         kSceneJson = R"JSON(
@@ -1989,12 +1998,376 @@ TEST_SUITE("WPSceneParser::Parse (end-to-end)") {
         SceneNode* dep = findById(scene->sceneGraph.get(), 401);
         REQUIRE(dep != nullptr);
 
-        // Before this fix: prescanDependencies never looked at any text object's
-        // effect materials, so 401 stayed onscreen and 501's compositeReader
-        // effect sampled a full-FB snapshot at 401's own draw position instead
-        // of an isolated sprite.
+        // An ordinary reader does not hide its source: 401 keeps drawing itself
+        // and 501 samples an isolated sprite copy of its chain output instead
+        // of a full-framebuffer snapshot at 401's draw position.  Only a compose
+        // layer's `dependencies` send a source offscreen.
+        CHECK(dep->IsOffscreen() == false);
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* depLayer = scene->nodeEffectLayerMap.at(401);
+        CHECK(depLayer->IsIsolatedLink() == true);
+        CHECK(depLayer->IsOffscreen() == false);
+        REQUIRE(depLayer->EffectCount() == 1u);
+        CHECK(depLayer->GetEffect(0)->synthesized == true);
+        REQUIRE(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).width == 256);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).height == 256);
+    }
+
+    // ---- Isolated link sources --------------------------------------------
+    // A layer read through `_rt_imageLayerComposite_<id>_a` by anything other
+    // than a compose layer's `dependencies` keeps drawing itself on screen
+    // (Gengar 3249016730's fire layer is both visible and blended into
+    // another layer).  Readers get an isolated copy of its chain output, made
+    // from a synthesized effectpassthrough appended as the on-screen terminal.
+    namespace
+    {
+    constexpr const char* kPassReaderObjects = R"JSON(
+      { "id": 401, "name": "dep_image",
+        "image": "models/_plain.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "color": "0.5 0.5 0.5", "alpha": 0.5,
+        "visible": true },
+      { "id": 501, "name": "reader",
+        "image": "models/_plain.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "visible": true,
+        "effects": [
+          { "id": 11, "name": "tint", "visible": true, "file": "effects/tint.json",
+            "passes": [ { "textures": [ null, "_rt_imageLayerComposite_401_a" ] } ] }
+        ] }
+    )JSON";
+
+    std::string isolatedLinkScene(const std::string& objects) {
+        return std::string(R"JSON({
+  "general": { "clearcolor": "0 0 0",
+               "orthogonalprojection": { "width": 1280, "height": 720 } },
+  "objects": [)JSON") +
+               objects + "]}";
+    }
+    } // namespace
+
+    TEST_CASE("E2E: an image layer read through an effect pass override keeps its source on "
+              "screen and isolates it") {
+        ensureGlslangInit();
+        auto                vfs = makeIsolatedLinkVfs();
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse(
+            "scene_pass_override_reader", isolatedLinkScene(kPassReaderObjects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == false);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        SceneImageEffectLayer* layer = scene->nodeEffectLayerMap.at(401);
+        CHECK(layer->IsIsolatedLink() == true);
+        CHECK(layer->IsOffscreen() == false);
+
+        // A bare source gets the synthesized passthrough as its only effect.
+        REQUIRE(layer->EffectCount() == 1u);
+        auto synth = layer->GetEffect(0);
+        CHECK(synth->synthesized == true);
+        // The chain input slot holds the layer's first ping-pong buffer here;
+        // ResolveEffect rebinds it per chain position when the graph is built.
+        REQUIRE(synth->nodes.size() == 1u);
+        REQUIRE(synth->nodes.front().sceneNode->Mesh() != nullptr);
+        auto* mat = synth->nodes.front().sceneNode->Mesh()->Material();
+        REQUIRE(mat != nullptr);
+        REQUIRE(! mat->textures.empty());
+        CHECK(mat->textures[0] == layer->FirstTarget());
+
+        // The base pass already baked the layer's colour and alpha into the
+        // buffer, so the passthrough must not apply them a second time.
+        const auto& cv = mat->customShader.constValues;
+        REQUIRE(cv.count("g_Color4") == 1u);
+        for (int c = 0; c < 4; c++) CHECK(cv.at("g_Color4")[c] == doctest::Approx(1.0f));
+
+        // _rt_offscreen_401 is only a size alias for the readers' resolution
+        // lookups; nothing writes it.
+        REQUIRE(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).width == 256);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).height == 256);
+    }
+
+    TEST_CASE("E2E: a link source with one real effect gets the synthesized passthrough appended "
+              "last") {
+        ensureGlslangInit();
+        auto vfs = makeIsolatedLinkVfs();
+        // 401 carries its own tint, and 501 reads it through a pass override.
+        const std::string objects =
+            R"JSON(
+      { "id": 401, "name": "dep_image",
+        "image": "models/_plain.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "visible": true,
+        "effects": [ { "id": 10, "name": "tint", "visible": true,
+                       "file": "effects/tint.json" } ] },
+    )JSON" + std::string(kPassReaderObjects)
+                 .substr(std::string(kPassReaderObjects).find("{ \"id\": 501"));
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_source_with_effect", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        REQUIRE(layer->EffectCount() == 2u);
+        CHECK(layer->GetEffect(0)->synthesized == false);
+        CHECK(layer->GetEffect(1)->synthesized == true);
+        // Scripts index effects by name/position; the synthesized one is not listed.
+        REQUIRE(scene->layerEffectNames.count("dep_image") == 1);
+        CHECK(scene->layerEffectNames.at("dep_image").size() == 1u);
+    }
+
+    TEST_CASE("E2E: a compose dependency also read by an ordinary reader stays offscreen-only") {
+        ensureGlslangInit();
+        auto vfs = makeIsolatedLinkVfs();
+        // 402 lists 401 in `dependencies`; 501 also reads it through a pass
+        // override.  The compose route wins: hidden, no isolated copy.
+        const std::string   objects = std::string(kPassReaderObjects) + R"JSON(,
+      { "id": 402, "name": "compose_layer",
+        "image": "models/util/composelayer.json",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "visible": true, "dependencies": [401] }
+    )JSON";
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_compose_and_reader", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
         CHECK(dep->IsOffscreen() == true);
         CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+        // A bare offscreen dependency has no effect chain at all, so no layer
+        // exists to carry an isolated-link flag or a synthesized passthrough.
+        CHECK(scene->nodeEffectLayerMap.count(401) == 0);
+    }
+
+    TEST_CASE("E2E: an invisible source read by an ordinary reader keeps its offscreen route") {
+        ensureGlslangInit();
+        auto        vfs     = makeIsolatedLinkVfs();
+        std::string objects = kPassReaderObjects;
+        objects.replace(objects.find("\"visible\": true"), 15, "\"visible\": false");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_invisible_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == true);
+        CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+        CHECK(scene->nodeEffectLayerMap.count(401) == 0);
+    }
+
+    TEST_CASE("E2E: a compose-layer source read only by a texture string stays on screen") {
+        ensureGlslangInit();
+        auto vfs = makeIsolatedLinkVfs();
+        // Only a compose layer's `dependencies` hide what they name.  A compose
+        // layer that an ordinary effect reads keeps drawing itself, and is not
+        // isolated: its content is the background it captures, so readers get
+        // the framebuffer snapshot taken at its draw.  Forcing it offscreen
+        // blacked out the six triangle panels of 2902406982, whose
+        // clipping_mask readers sample them this way.
+        std::string       objects    = kPassReaderObjects;
+        const std::string plainImage = "\"image\": \"models/_plain.json\"";
+        objects.replace(objects.find(plainImage),
+                        plainImage.size(),
+                        "\"image\": \"models/util/composelayer.json\"");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_compose_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* src = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(src != nullptr);
+        CHECK(src->IsOffscreen() == false);
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        CHECK(layer->IsOffscreen() == false);
+        CHECK(layer->IsIsolatedLink() == false);
+        CHECK(scene->renderTargets.count(GenOffscreenRT(401)) == 0);
+    }
+
+    TEST_CASE("E2E: a script-referenced source read by an ordinary reader is isolated") {
+        ensureGlslangInit();
+        auto                vfs     = makeIsolatedLinkVfs();
+        const std::string   objects = R"JSON(
+      { "id": 600, "name": "script_host",
+        "origin": "0 0 0", "scale": "1 1 1", "angles": "0 0 0",
+        "visible": {
+          "script": "function update(v){ return thisScene.getLayer('dep_image').visible; }",
+          "scriptproperties": {},
+          "value": true
+        } },
+    )JSON" + std::string(kPassReaderObjects);
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_scripted_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == false);
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        CHECK(scene->nodeEffectLayerMap.at(401)->IsIsolatedLink() == true);
+    }
+
+    TEST_CASE("E2E: a no-effect fullscreen source stays a placeholder and gets no effect layer") {
+        ensureGlslangInit();
+        auto        vfs     = makeIsolatedLinkVfs();
+        std::string objects = kPassReaderObjects;
+        objects.replace(objects.find("models/_plain.json"), 18, "models/_full.json");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_fullscreen_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        CHECK(scene->nodeEffectLayerMap.count(401) == 0);
+    }
+
+    // A zero-area layer cannot be isolated (no sprite to copy).  It keeps the
+    // route it always had when something read it: offscreen, with a 1px target
+    // so the link has something valid to point at.
+    TEST_CASE("E2E: a zero-area source read by an ordinary reader is routed offscreen") {
+        ensureGlslangInit();
+        // No width/height in the model, so the object's own `size` applies.
+        auto vfs = makeIsolatedLinkVfs(
+            { { "/models/_nosize.json", R"({ "material": "materials/_plain.json" })" } });
+        std::string objects = kPassReaderObjects;
+        objects.replace(objects.find("models/_plain.json"), 18, "models/_nosize.json");
+        const auto at = objects.find("\"name\": \"dep_image\",");
+        REQUIRE(at != std::string::npos);
+        objects.insert(at, "\"size\": \"0 0\", ");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_zero_area_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == true);
+        REQUIRE(scene->renderTargets.count(GenOffscreenRT(401)) == 1);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).width >= 1);
+        CHECK(scene->renderTargets.at(GenOffscreenRT(401)).height >= 1);
+        CHECK(scene->nodeEffectLayerMap.count(401) == 0);
+    }
+
+    // colorBlendMode adds an effectpassthrough that is already the chain's
+    // on-screen terminal.  Appending the isolation passthrough after it would
+    // demote it to a middle pass, which blends against the whole screen
+    // squeezed into the sprite, so the chain is left as it is.
+    TEST_CASE("E2E: a link source ending in the colorBlendMode passthrough gets no second "
+              "passthrough") {
+        ensureGlslangInit();
+        auto        vfs     = makeIsolatedLinkVfs();
+        std::string objects = kPassReaderObjects;
+        const auto  at      = objects.find("\"visible\": true");
+        REQUIRE(at != std::string::npos);
+        objects.insert(at, "\"colorBlendMode\": 21, ");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_blend_mode_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        CHECK(layer->IsIsolatedLink() == true);
+        REQUIRE(layer->EffectCount() == 1u);
+        CHECK(layer->GetEffect(0)->synthesized == false);
+    }
+
+    // The isolation passthrough is stock material; if it cannot load, the
+    // source falls back to the plain on-screen route instead of vanishing.
+    TEST_CASE("E2E: a link source still parses when effectpassthrough.json is missing") {
+        ensureGlslangInit();
+        auto                vfs = makeAssetsVfsWith({
+            { "/shaders/_s.vert", kTrivialVert },
+            { "/shaders/_s.frag", kTwoSamplerFrag },
+            { "/materials/_s.json",
+              R"({ "passes": [{ "shader": "_s", "blending": "translucent", "textures": [] }] })" },
+            { "/effects/tint.json",
+              R"({ "name": "tint", "passes": [{ "material": "materials/_s.json" }] })" },
+        });
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene = parser.Parse(
+            "scene_no_passthrough_asset", isolatedLinkScene(kPassReaderObjects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        CHECK(dep->IsOffscreen() == false);
+        CHECK(scene->nodeEffectLayerMap.count(401) == 0);
+    }
+
+    // A bare puppet source draws through a card base pass plus the puppet
+    // composite.  The base pass carries the layer's colour, alpha and
+    // brightness, so the composite must not multiply them in again.
+    TEST_CASE("E2E: a bare puppet link source applies colour and alpha once") {
+        ensureGlslangInit();
+        auto        vfs     = makeIsolatedLinkVfs({
+            { "/models/_ipup.json",
+              R"({ "material": "materials/_i.json", "puppet": "models/_pup.mdl" })" },
+            { "/models/_pup.mdl", makeOneBonePuppetMdl() },
+        });
+        std::string objects = kPassReaderObjects;
+        objects.replace(objects.find("models/_plain.json"), 18, "models/_ipup.json");
+        objects.insert(objects.find("\"name\": \"dep_image\","), "\"size\": \"256 256\", ");
+        audio::SoundManager sm;
+        WPUserProperties    props {};
+        WPSceneParser       parser;
+        auto                scene =
+            parser.Parse("scene_bare_puppet_source", isolatedLinkScene(objects), *vfs, sm, props);
+        REQUIRE(scene != nullptr);
+
+        REQUIRE(scene->nodeEffectLayerMap.count(401) == 1);
+        auto* layer = scene->nodeEffectLayerMap.at(401);
+        CHECK(layer->IsIsolatedLink() == true);
+        REQUIRE(layer->EffectCount() == 1u);
+        auto composite = layer->GetEffect(0);
+        REQUIRE(composite->nodes.size() == 1u);
+        auto* cmat = composite->nodes.front().sceneNode->Mesh()->Material();
+        REQUIRE(cmat != nullptr);
+        const auto& cv = cmat->customShader.constValues;
+        REQUIRE(cv.count("g_Color4") == 1u);
+        for (int c = 0; c < 4; c++) CHECK(cv.at("g_Color4")[c] == doctest::Approx(1.0f));
+        REQUIRE(cv.count("g_UserAlpha") == 1u);
+        CHECK(cv.at("g_UserAlpha")[0] == doctest::Approx(1.0f));
+        REQUIRE(cv.count("g_Brightness") == 1u);
+        CHECK(cv.at("g_Brightness")[0] == doctest::Approx(1.0f));
+
+        // The base pass still carries them.
+        SceneNode* dep = findNodeById(scene->sceneGraph.get(), 401);
+        REQUIRE(dep != nullptr);
+        auto* bmat = dep->Mesh()->Material();
+        REQUIRE(bmat != nullptr);
+        const auto& bv = bmat->customShader.constValues;
+        REQUIRE(bv.count("g_Color4") == 1u);
+        CHECK(bv.at("g_Color4")[0] == doctest::Approx(0.5f));
+        CHECK(bv.at("g_Color4")[3] == doctest::Approx(0.5f));
     }
 
     // A solid layer is a coloured quad: WE draws it with the object's own

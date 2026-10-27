@@ -32,6 +32,10 @@ struct SceneImageEffect {
     };
     std::string                     name;             // effect name from scene.json
     bool                            visible { true }; // runtime visibility toggle
+    // The passthrough the parser appends to a link source (see
+    // SceneImageEffectLayer::IsIsolatedLink).  It is never authored, so it has
+    // no entry in the names scripts index and its colour/alpha stay neutral.
+    bool                            synthesized { false };
     std::vector<Command>            commands;
     std::list<SceneImageEffectNode> nodes;
 
@@ -68,6 +72,15 @@ public:
     // SpecTex_Default, so invisible dependency nodes don't composite into the main scene.
     void SetOffscreen(bool v) { m_is_offscreen = v; }
     bool IsOffscreen() const { return m_is_offscreen; }
+
+    // True for a layer that draws itself on screen AND is read by another
+    // layer through `_rt_imageLayerComposite_<id>_a`.  Its last effect draws on
+    // _rt_default (a synthesized passthrough, or the puppet composite or
+    // colorBlendMode passthrough the chain already ends in); the readers' link
+    // copy is taken from that pass's input, a sprite-sized buffer, rather than
+    // from the full framebuffer.  Unlike SetOffscreen, the layer still composites.
+    void SetIsolatedLink(bool v) { m_isolated_link = v; }
+    bool IsIsolatedLink() const { return m_isolated_link; }
 
     // When true, the last effect node inherits the parent pointer from the
     // world node so its world transform includes the parent-group transform.
@@ -129,6 +142,7 @@ private:
     std::string m_pingpong_b;
 
     bool                       m_is_offscreen { false };
+    bool                       m_isolated_link { false };
     bool                       m_inherit_parent { false };
     bool                       m_passthrough { false };
     bool                       m_is_compose_layer { false };

@@ -112,8 +112,9 @@ void SceneImageEffectLayer::ResolveEffect(const SceneMesh& default_mesh,
         {
             material.blenmode = m_final_blend;
             if (m_is_offscreen) {
-                // Force Normal blend so the first write uses DONT_CARE load op
-                // instead of LOAD on an uninitialized render target (Vulkan UB).
+                // Normal overwrites rather than blends: the RT's first writer
+                // CLEARs it on entry (CustomShaderPass), and a sprite that landed
+                // alpha-weighted would be weighted again wherever it is read.
                 material.blenmode = BlendMode::Normal;
                 // Offscreen nodes render their final effect into a dedicated RT.
                 // Use the "effect" camera (2x2 ortho at origin) with the default

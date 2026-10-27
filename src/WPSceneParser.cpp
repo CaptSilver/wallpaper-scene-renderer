@@ -80,16 +80,8 @@ using namespace Eigen;
 
 std::string getAddr(void* p) { return std::to_string(reinterpret_cast<intptr_t>(p)); }
 
-// The user property an effect's `"visible": {"user": ...}` binding names, or
-// empty if the stored JSON is missing, malformed or names nothing.
 std::string effectUserPropName(const wpscene::WPImageEffect& effect) {
-    if (effect.userVisibleRawJson.empty()) return {};
-    try {
-        return UserPropertyNameOf(nlohmann::json::parse(effect.userVisibleRawJson));
-    } catch (const std::exception& e) {
-        LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
-        return {};
-    }
+    return wpscene::EffectUserPropName(effect);
 }
 
 // Which effects in `effects` get added to a layer: an effect builds if it is
@@ -112,8 +104,7 @@ EffectBuildPlan computeWouldBuildEffects(const std::vector<wpscene::WPImageEffec
     EffectBuildPlan plan;
     plan.wouldBuild.reserve(effects.size());
     for (const auto& e : effects)
-        plan.wouldBuild.push_back(e.visible || layerScriptTargeted ||
-                                  ! effectUserPropName(e).empty() || ! e.visibleScript.empty());
+        plan.wouldBuild.push_back(wpscene::EffectWouldBuild(e, layerScriptTargeted));
     return plan;
 }
 
@@ -216,6 +207,15 @@ struct ParseContext {
     // rectangle over the layer's world position.  Populated by a pre-pass in
     // Parse before any ParseImageObj runs.
     std::unordered_set<int32_t> compose_dependency_ids;
+
+    // IDs of any image that some other layer reads through
+    // `_rt_imageLayerComposite_<id>_a` without being a compose dependent:
+    // an image, text or particle material or effect pass, or the
+    // `dependencies` of a non-compose image.  Such a layer keeps drawing
+    // itself on screen and gives its readers an isolated sprite copy (see
+    // ParseImageObj); compose_dependency_ids above is the set that is hidden.
+    // Populated by the same pre-pass.
+    std::unordered_set<int32_t> link_reader_ids;
 
     // Asset paths that SceneScript registered via engine.registerAsset('path').
     // A pool of hidden scene nodes gets pre-allocated for each so that
@@ -1582,15 +1582,35 @@ ImageOffscreenRouting computeOffscreenRouting(const ParseContext&            con
     // Clair Obscur Expedition 33 3498984739 had Calque CO33-Mx compose layers
     // declaring character body-parts (M3A/B/C, M4A/B/C, M2/C/B/D, M5A/B/C/D)
     // as dependencies, each producing a gray quad over its character.
-    if (! isOffscreen && context.compose_dependency_ids.count(wpimgobj.id) > 0 &&
-        ! isScriptedLayer && ! wpimgobj.visibleIsComboSelector) {
+    const bool composeSource = context.compose_dependency_ids.count(wpimgobj.id) > 0;
+    // A layer some other layer reads keeps drawing itself and hands its readers an
+    // isolated sprite (see ParseImageObj) -- except a zero-area one, which has no
+    // sprite to copy.  That one goes offscreen like a compose dependency, into the
+    // 1px target ensureBareDependencyOffscreenRT gives it.
+    const bool zeroAreaLinkSource = ! hasArea && context.link_reader_ids.count(wpimgobj.id) > 0;
+    if (! isOffscreen && (composeSource || zeroAreaLinkSource) && ! isScriptedLayer &&
+        ! wpimgobj.visibleIsComboSelector) {
         isOffscreen = true;
-        LOG_INFO("  image id=%d name='%s' forced offscreen (referenced as compose dependency)",
+        LOG_INFO("  image id=%d name='%s' forced offscreen (referenced as %s)",
                  wpimgobj.id,
-                 wpimgobj.name.c_str());
+                 wpimgobj.name.c_str(),
+                 composeSource ? "compose dependency" : "link source with no area");
     }
 
     return { isOffscreen, isScriptedLayer };
+}
+
+// The stock effectpassthrough material (genericimage3: samples slot 0 times
+// g_Color4).  Several parse steps append it as a plain copy-to-screen effect.
+std::optional<wpscene::WPMaterial> loadEffectPassthroughMaterial(fs::VFS& vfs) {
+    nlohmann::json json;
+    if (! PARSE_JSON(fs::GetFileContentBounded(
+                         vfs, "/assets/materials/util/effectpassthrough.json", kMaxJsonBytes),
+                     json))
+        return std::nullopt;
+    wpscene::WPMaterial mat;
+    mat.FromJson(json);
+    return mat;
 }
 
 std::optional<BlendMode> applyColorBlendOverride(ParseContext&            context,
@@ -1610,13 +1630,9 @@ std::optional<BlendMode> applyColorBlendOverride(ParseContext&            contex
             break;
         default: {
             wpscene::WPImageEffect colorEffect;
-            wpscene::WPMaterial    colorMat;
-            nlohmann::json         json;
-            if (! PARSE_JSON(fs::GetFileContentBounded(
-                                 vfs, "/assets/materials/util/effectpassthrough.json", kMaxJsonBytes),
-                             json))
-                return std::nullopt;
-            colorMat.FromJson(json);
+            auto                   loaded = loadEffectPassthroughMaterial(vfs);
+            if (! loaded) return std::nullopt;
+            wpscene::WPMaterial colorMat = std::move(*loaded);
             colorMat.combos["BONECOUNT"] = 1;
             colorMat.combos["BLENDMODE"] = wpimgobj.colorBlendMode;
             colorMat.blending            = "disabled";
@@ -1721,15 +1737,10 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
     bool synthesizedPassthroughOnly = false;
     if (! hasEffect && isCompose) {
         wpscene::WPImageEffect passEffect;
-        wpscene::WPMaterial    passMat;
-        nlohmann::json         json;
-        if (PARSE_JSON(fs::GetFileContentBounded(
-                           vfs, "/assets/materials/util/effectpassthrough.json", kMaxJsonBytes),
-                       json)) {
-            passMat.FromJson(json);
-            passMat.combos["BONECOUNT"] = 1;
-            passMat.blending            = "normal";
-            passEffect.materials.push_back(std::move(passMat));
+        if (auto passMat = loadEffectPassthroughMaterial(vfs)) {
+            passMat->combos["BONECOUNT"] = 1;
+            passMat->blending            = "normal";
+            passEffect.materials.push_back(std::move(*passMat));
             wpimgobj.effects.push_back(std::move(passEffect));
             count_eff                  = 1;
             hasEffect                  = true;
@@ -1743,6 +1754,41 @@ std::optional<ComposePassthroughResult> synthesizePassthroughForCompose(
         }
     }
     return ComposePassthroughResult { isCompose, synthesizedPassthroughOnly };
+}
+
+// A layer other layers read through `_rt_imageLayerComposite_<id>_a` still has
+// to draw itself, and readers must get a sprite, not the framebuffer around it.
+// Appending an effectpassthrough as the chain's last effect gives both: it is
+// the on-screen terminal (layer blend, transform, z), and its input ping-pong
+// buffer holds the full chain output at the layer's own size, which is what the
+// readers' link copy snapshots.  Returns false when the stock material is
+// missing.  A puppet layer already ends in its skinned composite, and a
+// colorBlendMode layer in its blend passthrough; both do the same job, so
+// callers skip them.
+// True when the chain already ends in the colorBlendMode passthrough (the
+// effectpassthrough carrying a BLENDMODE combo).  That pass is the on-screen
+// terminal: it blends against the framebuffer at the layer's screen position, so
+// appending anything after it would demote it to a middle pass.
+bool endsInColorBlendTerminal(const wpscene::WPImageObject& wpimgobj) {
+    if (wpimgobj.effects.empty() || wpimgobj.effects.back().materials.empty()) return false;
+    return wpimgobj.effects.back().materials.back().combos.count("BLENDMODE") != 0;
+}
+
+bool synthesizePassthroughForIsolatedLink(ParseContext& context, wpscene::WPImageObject& wpimgobj) {
+    auto passMat = loadEffectPassthroughMaterial(*context.vfs);
+    if (! passMat) {
+        LOG_ERROR("link source id=%d: failed to load effectpassthrough.json", wpimgobj.id);
+        return false;
+    }
+    passMat->combos["BONECOUNT"] = 1;
+    passMat->blending            = "normal";
+    wpscene::WPImageEffect passEffect;
+    passEffect.synthesized_passthrough = true;
+    passEffect.materials.push_back(std::move(*passMat));
+    wpimgobj.effects.push_back(std::move(passEffect));
+    LOG_INFO("  link source id=%d: synthesized effectpassthrough as its on-screen terminal",
+             wpimgobj.id);
+    return true;
 }
 
 std::shared_ptr<SceneNode> createImageNode(ParseContext& context,
@@ -2497,9 +2543,17 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
             wpEffShaderInfo.baseConstSvs = baseConstSvs;
             // colorBlendMode effectpassthrough: base RT already has color+alpha baked in,
             // don't re-apply g_Color4 (would double-count alpha and re-tint)
-            if (wpmat.combos.count("BLENDMODE") != 0) {
+            if (wpmat.combos.count("BLENDMODE") != 0 || wpeffobj.synthesized_passthrough) {
                 wpEffShaderInfo.baseConstSvs["g_Color4"] =
                     std::array<float, 4> { 1.0f, 1.0f, 1.0f, 1.0f };
+            }
+            // The isolation terminal is the same: the base pass already baked
+            // the layer's colour, alpha and brightness into the buffer it reads.
+            // A puppet composite is a full image shader, which multiplies in
+            // g_UserAlpha and g_Brightness as well.
+            if (wpeffobj.synthesized_passthrough) {
+                wpEffShaderInfo.baseConstSvs["g_UserAlpha"]  = 1.0f;
+                wpEffShaderInfo.baseConstSvs["g_Brightness"] = 1.0f;
             }
             wpEffShaderInfo.baseConstSvs["g_EffectTextureProjectionMatrix"] =
                 ShaderValue::fromMatrix(Eigen::Matrix4f::Identity());
@@ -2566,7 +2620,8 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
                     *context.scene, propName, binding.mesh, binding.uniformName);
             }
             for (auto& anim : effUniformAnims) scene.effectUniformAnimations.push_back(anim);
-            imgEffect->name = wpeffobj.name;
+            imgEffect->name        = wpeffobj.name;
+            imgEffect->synthesized = wpeffobj.synthesized_passthrough;
             layer.AddEffect(imgEffect);
             // Every built-hidden effect starts hidden, bound or not: a script-targeted
             // layer builds literal-hidden effects that have no binding at all.
@@ -2607,16 +2662,11 @@ void assembleEffects(ParseContext& context, const std::vector<wpscene::WPImageEf
     context.effect_list_layers.push_back({ layer_name, &layer });
 }
 
-void assembleEffectChain(ParseContext&                     context,
-                         wpscene::WPImageObject&           wpimgobj,
-                         const std::shared_ptr<SceneNode>& spImgNode,
-                         SceneMesh&                        effct_final_mesh,
-                         const ShaderValueMap&             baseConstSvs,
-                         const WPMdl*                      puppet,
-                         BlendMode                         imgBlendMode,
-                         bool                              isOffscreen,
-                         bool                              effectOffscreen,
-                         bool                              isCompose) {
+void assembleEffectChain(ParseContext& context, wpscene::WPImageObject& wpimgobj,
+                         const std::shared_ptr<SceneNode>& spImgNode, SceneMesh& effct_final_mesh,
+                         const ShaderValueMap& baseConstSvs, const WPMdl* puppet,
+                         BlendMode imgBlendMode, bool isOffscreen, bool effectOffscreen,
+                         bool isCompose, bool isolatedLink) {
     auto& scene = *context.scene;
     // currently use addr for unique
     std::string nodeAddr = getAddr(spImgNode.get());
@@ -2674,6 +2724,7 @@ void assembleEffectChain(ParseContext&                     context,
     {
         imgEffectLayer->SetFinalBlend(imgBlendMode);
         imgEffectLayer->SetOffscreen(effectOffscreen);
+        imgEffectLayer->SetIsolatedLink(isolatedLink);
         // Compose layer with copybackground:false — author intent is "do
         // NOT capture _rt_default into the pingpong" (e.g. Nightingale
         // 3470764447 id=249 with colorBlendMode=21 BlendReflect, where
@@ -2789,11 +2840,15 @@ void assembleEffectChain(ParseContext&                     context,
             scene.renderTargets[effect_ppong_a].bind = { .enable = true, .screen = true };
         }
         scene.renderTargets[effect_ppong_b] = scene.renderTargets.at(effect_ppong_a);
-        if (effectOffscreen) {
+        if (effectOffscreen || isolatedLink) {
             // Dedicated RT for the final output of invisible dependency nodes
             // (and of a synthesized-passthrough compose layer that some other
             // layer depends on).  Sized to match the layer's pingpong so the
             // link RT is a 1:1 copy of the captured region.
+            //
+            // An isolated link source draws on screen and nothing ever writes
+            // this RT; the row is only the size readers' g_TextureNResolution
+            // lookups resolve _rt_link_<id> against.
             scene.renderTargets[GenOffscreenRT(wpimgobj.id)] =
                 scene.renderTargets.at(effect_ppong_a);
         }
@@ -3047,6 +3102,28 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
 
     logPuppetDiagnostics(context, wpimgobj, puppet.get());
 
+    // A layer read by an ordinary effect/material (not hidden as a compose
+    // dependency) keeps drawing itself and gives readers an isolated sprite;
+    // see synthesizePassthroughForIsolatedLink.  The chain has to exist before
+    // the base material is loaded: hasEffect picks the base/final blend split
+    // and the effect-path base material.  The layer's visibility stays a live
+    // runtime toggle, so no static use of a bound property is recorded.
+    const bool hasArea      = wpimgobj.size[0] >= 1.0f && wpimgobj.size[1] >= 1.0f;
+    bool       isolatedLink = ! isOffscreen && ! composeHasDependent && ! isCompose && hasArea &&
+                              context.link_reader_ids.count(wpimgobj.id) > 0;
+    // Only a chain that does not already end in an on-screen terminal needs the
+    // passthrough appended.  If the stock material is missing the layer keeps
+    // the plain on-screen route rather than being dropped.
+    if (isolatedLink && puppet == nullptr && ! endsInColorBlendTerminal(wpimgobj) &&
+        ! synthesizePassthroughForIsolatedLink(context, wpimgobj)) {
+        LOG_ERROR("  link source id=%d: drawn without an isolated copy for its readers",
+                  wpimgobj.id);
+        isolatedLink = false;
+    }
+    // No effects of its own: the base pass and the terminal are the whole chain.
+    const bool bareIsolated = isolatedLink && ! hasEffect;
+    if (bareIsolated) hasEffect = true;
+
     auto spImgNode = createImageNode(context, wpimgobj, isOffscreen, isScriptedLayer);
 
     auto baseMatResult =
@@ -3062,7 +3139,16 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
                                       effct_final_mesh);
     auto&     mesh   = *spMesh;
 
+    // buildImageMesh appended the puppet composite; on a bare source it is the
+    // isolation terminal, not an authored effect.
+    if (bareIsolated && puppet != nullptr) wpimgobj.effects.back().synthesized_passthrough = true;
+
     auto imgBlendMode = applyFinalBlendOverride(material, colorBlendOverride, hasEffect, isCompose, wpimgobj);
+    // A bare source used to be one direct draw onto the scene.  Its base pass now
+    // fills a cleared ping-pong that the terminal blends onto the scene; writing
+    // straight keeps that equal to the old draw, where the layer's own blend
+    // would weight colour by alpha once in the buffer and again in the terminal.
+    if (bareIsolated) material.blenmode = BlendMode::Normal;
 
     attachMaterialAndUserBindings(context, wpimgobj, spImgNode, spMesh, mesh, std::move(material),
                                   shaderInfo, svData);
@@ -3083,8 +3169,17 @@ void ParseImageObj(ParseContext& context, wpscene::WPImageObject& img_obj) {
     computeWorldTransformAndAttachments(context, wpimgobj, spImgNode.get(), puppet.get());
 
     if (hasEffect) {
-        assembleEffectChain(context, wpimgobj, spImgNode, effct_final_mesh, baseConstSvs,
-                            puppet.get(), imgBlendMode, isOffscreen, effectOffscreen, isCompose);
+        assembleEffectChain(context,
+                            wpimgobj,
+                            spImgNode,
+                            effct_final_mesh,
+                            baseConstSvs,
+                            puppet.get(),
+                            imgBlendMode,
+                            isOffscreen,
+                            effectOffscreen,
+                            isCompose,
+                            isolatedLink);
     }
 
     applyFlatPerspectiveOrthoCamera(context, wpimgobj, spImgNode, hasEffect);
@@ -4528,17 +4623,19 @@ void computeAutoOrthoSize(wpscene::WPScene& sc, const std::vector<WPObjectVar>& 
     }
 }
 
-// Pre-pass: collect every image id that (a) appears in some compose
-// layer's (composelayer.json/projectlayer.json) `dependencies` list, or
-// (b) is read directly by a raw `_rt_imageLayerComposite_<id>` texture
-// string in any object's material -- image, text, or particle alike.
-// Stored on context so ParseImageObj can force the referenced image
-// offscreen (so the reader's blend/sample gets an isolated sprite RT,
-// not a full-FB snapshot via _rt_link_<id>).  The per-object-type
-// collection logic lives in CollectComposeDependencyIds /
-// CollectTextComposeLinkIds / CollectParticleComposeLinkIds
-// (WPImageObject.h / WPTextObject.h / WPParticleObject.h) so the test
-// suite can pin each in isolation.
+// Pre-pass over two sets of image ids.
+//   compose_dependency_ids: ids in some compose layer's
+//     (composelayer.json/projectlayer.json) `dependencies` list.  ParseImageObj
+//     forces these offscreen so the compose blend samples an isolated sprite RT
+//     instead of a full-FB snapshot via _rt_link_<id>.
+//   link_reader_ids: ids read by a raw `_rt_imageLayerComposite_<id>` texture
+//     string in any object's material or effect pass (image, text or
+//     particle), or listed in a non-compose image's `dependencies`.  These
+//     keep drawing and give their readers an isolated copy of their output.
+// The per-object-type collection logic lives in CollectComposeDependencyIds /
+// CollectImageLinkReaderIds / CollectTextComposeLinkIds /
+// CollectParticleComposeLinkIds (WPImageObject.h / WPTextObject.h /
+// WPParticleObject.h) so the test suite can pin each in isolation.
 void prescanDependencies(ParseContext& context, const std::vector<WPObjectVar>& wp_objs) {
     std::vector<const wpscene::WPImageObject*> image_objs;
     image_objs.reserve(wp_objs.size());
@@ -4553,19 +4650,29 @@ void prescanDependencies(ParseContext& context, const std::vector<WPObjectVar>& 
             particle_objs.push_back(part);
         }
     }
+    const auto& targets            = context.script_effect_targets;
     context.compose_dependency_ids = wpscene::CollectComposeDependencyIds(image_objs);
+    context.link_reader_ids =
+        wpscene::CollectImageLinkReaderIds(image_objs, [&targets](const wpscene::WPImageObject& o) {
+            return targets.contains(o.id, o.name);
+        });
     // Text effect materials go through the same LoadMaterial/ParseSpecTexName
     // path as image effect materials, so a text layer can be a reader of a
     // sibling's composite RT the same way an image effect chain can, even
     // with no `dependencies` entry naming it anywhere.
-    for (int32_t id : wpscene::CollectTextComposeLinkIds(text_objs))
-        context.compose_dependency_ids.insert(id);
+    for (int32_t id :
+         wpscene::CollectTextComposeLinkIds(text_objs, [&targets](const wpscene::WPTextObject& o) {
+             return targets.contains(o.id, o.name);
+         }))
+        context.link_reader_ids.insert(id);
     // Particle materials hit the identical LoadMaterial path (ParseParticleObj
     // calls it directly on particle_obj.material) -- same reasoning as text.
     for (int32_t id : wpscene::CollectParticleComposeLinkIds(particle_objs))
-        context.compose_dependency_ids.insert(id);
-    if (! context.compose_dependency_ids.empty()) {
-        LOG_INFO("compose dependency ids collected: %zu", context.compose_dependency_ids.size());
+        context.link_reader_ids.insert(id);
+    if (! context.compose_dependency_ids.empty() || ! context.link_reader_ids.empty()) {
+        LOG_INFO("compose dependency ids collected: %zu, link reader ids collected: %zu",
+                 context.compose_dependency_ids.size(),
+                 context.link_reader_ids.size());
     }
 }
 
@@ -5849,6 +5956,9 @@ void finalizeParse(ParseContext& context) {
         std::vector<std::string> effNames;
         std::vector<bool>        effVisible;
         for (size_t i = 0; i < layer->EffectCount(); i++) {
+            // The isolation passthrough is not an authored effect; it is always
+            // last, so the indices scripts use do not shift.
+            if (layer->GetEffect(i)->synthesized) continue;
             effNames.push_back(layer->GetEffect(i)->name);
             effVisible.push_back(layer->GetEffect(i)->visible);
         }

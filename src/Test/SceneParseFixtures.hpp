@@ -157,7 +157,7 @@ inline constexpr const char* kEffectFileJson = R"({
 // point"): a MemFs that adds "/hello.txt" answers a vfs.Open("/assets/
 // hello.txt").  Same key convention applies here.
 inline std::unique_ptr<fs::VFS>
-makeAssetsVfsWith(std::initializer_list<std::pair<std::string, std::string>> extras) {
+makeAssetsVfsFrom(const std::vector<std::pair<std::string, std::string>>& extras) {
     auto vfs   = std::make_unique<fs::VFS>();
     auto memfs = std::make_unique<MemFs>();
 
@@ -180,6 +180,69 @@ makeAssetsVfsWith(std::initializer_list<std::pair<std::string, std::string>> ext
 
     REQUIRE(vfs->Mount("/assets", std::move(memfs)));
     return vfs;
+}
+
+inline std::unique_ptr<fs::VFS>
+makeAssetsVfsWith(std::initializer_list<std::pair<std::string, std::string>> extras) {
+    return makeAssetsVfsFrom({ extras.begin(), extras.end() });
+}
+
+// Fragment shader declaring two samplers and g_Color4.  The parser clears any
+// material texture slot its shader does not declare, so a fixture that needs
+// slot 0 (chain input) and slot 1 (a composite read) to survive uses this.
+inline constexpr const char* kTwoSamplerFrag = R"GLSL(
+uniform sampler2D g_Texture0;
+uniform sampler2D g_Texture1;
+uniform vec4 g_Color4;
+void main() {
+    gl_FragColor = g_Color4;
+}
+)GLSL";
+
+// Fragment shader for a puppet composite: the three uniforms a WE image shader
+// multiplies into its output, so a fixture can see whether each is neutral.
+inline constexpr const char* kImageTintFrag = R"GLSL(
+uniform sampler2D g_Texture0;
+uniform vec4 g_Color4;
+uniform float g_UserAlpha;
+uniform float g_Brightness;
+void main() {
+    gl_FragColor = g_Color4 * g_UserAlpha * g_Brightness;
+}
+)GLSL";
+
+// VFS for the isolated-link cases: a "tint" effect and the stock
+// effectpassthrough material, both on the two-sampler shader, plus the
+// compose-layer model, a fullscreen image model, an additive image model and
+// a plain image on the colour/alpha-declaring shader.  `extras` layer on top.
+inline std::unique_ptr<fs::VFS>
+makeIsolatedLinkVfs(const std::vector<std::pair<std::string, std::string>>& extras = {}) {
+    const char* samplerMaterial =
+        R"({ "passes": [{ "shader": "_s", "blending": "translucent", "textures": [] }] })";
+    std::vector<std::pair<std::string, std::string>> files {
+        { "/shaders/_s.vert", kTrivialVert },
+        { "/shaders/_s.frag", kTwoSamplerFrag },
+        { "/shaders/_i.vert", kTrivialVert },
+        { "/shaders/_i.frag", kImageTintFrag },
+        { "/materials/_s.json", samplerMaterial },
+        { "/materials/_i.json",
+          // One (empty) texture slot: a puppet composite clears slot 0, so a
+          // material with no slots at all would index past the end.
+          R"({ "passes": [{ "shader": "_i", "blending": "translucent", "textures": [""] }] })" },
+        { "/materials/_add.json",
+          R"({ "passes": [{ "shader": "_t", "blending": "additive", "textures": [] }] })" },
+        { "/effects/tint.json",
+          R"({ "name": "tint", "passes": [{ "material": "materials/_s.json" }] })" },
+        { "/materials/util/effectpassthrough.json", samplerMaterial },
+        { "/models/util/composelayer.json", kPlainImageJson },
+        { "/models/_add.json",
+          R"({ "material": "materials/_add.json", "width": 256, "height": 256 })" },
+        { "/models/_full.json",
+          R"({ "material": "materials/_plain.json", "width": 256, "height": 256,
+               "fullscreen": true })" },
+    };
+    files.insert(files.end(), extras.begin(), extras.end());
+    return makeAssetsVfsFrom(files);
 }
 
 } // namespace wek::test

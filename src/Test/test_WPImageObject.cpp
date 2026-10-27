@@ -427,18 +427,20 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         CHECK(ids.count(601) == 1);
     }
 
-    TEST_CASE("CollectComposeDependencyIds: a base-material texture string naming the composite RT "
+    TEST_CASE("CollectImageLinkReaderIds: a base-material texture string naming the composite RT "
               "is collected with no dependencies entry") {
         wpscene::WPImageObject reader;
         reader.id                = 700;
         reader.material.textures = { "_rt_imageLayerComposite_777_a" };
 
-        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
         CHECK(ids.size() == 1);
         CHECK(ids.count(777) == 1);
+        // A plain reader does not hide its source; only compose `dependencies` do.
+        CHECK(wpscene::CollectComposeDependencyIds({ &reader }).empty());
     }
 
-    TEST_CASE("CollectComposeDependencyIds: a composite id of 0 is a real id, not a parse "
+    TEST_CASE("CollectImageLinkReaderIds: a composite id of 0 is a real id, not a parse "
               "failure") {
         // The parser's failure sentinel is -1 -- 0 is the first layer's id in
         // plenty of real scene.json files and must not be treated the same way.
@@ -446,12 +448,13 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         reader.id                = 700;
         reader.material.textures = { "_rt_imageLayerComposite_0_a" };
 
-        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
         CHECK(ids.size() == 1);
         CHECK(ids.count(0) == 1);
+        CHECK(wpscene::CollectComposeDependencyIds({ &reader }).empty());
     }
 
-    TEST_CASE("CollectComposeDependencyIds: an effect material's texture string is collected") {
+    TEST_CASE("CollectImageLinkReaderIds: an effect material's texture string is collected") {
         wpscene::WPImageObject reader;
         reader.id = 701;
         wpscene::WPImageEffect effect;
@@ -460,12 +463,13 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         effect.materials.push_back(mat);
         reader.effects.push_back(effect);
 
-        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
         CHECK(ids.size() == 1);
         CHECK(ids.count(888) == 1);
+        CHECK(wpscene::CollectComposeDependencyIds({ &reader }).empty());
     }
 
-    TEST_CASE("CollectComposeDependencyIds: an invisible effect's texture string is not "
+    TEST_CASE("CollectImageLinkReaderIds: an invisible effect's texture string is not "
               "collected") {
         wpscene::WPImageObject reader;
         reader.id = 702;
@@ -476,17 +480,98 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
         effect.materials.push_back(mat);
         reader.effects.push_back(effect);
 
-        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
         CHECK(ids.empty());
     }
 
-    TEST_CASE("CollectComposeDependencyIds: a texture-string self-reference is dropped") {
+    TEST_CASE("CollectImageLinkReaderIds: a texture-string self-reference is dropped") {
         wpscene::WPImageObject reader;
         reader.id                = 424;
         reader.material.textures = { "_rt_imageLayerComposite_424_a" };
 
-        auto ids = wpscene::CollectComposeDependencyIds({ &reader });
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
         CHECK(ids.empty());
+        CHECK(wpscene::CollectComposeDependencyIds({ &reader }).empty());
+    }
+
+    TEST_CASE("CollectImageLinkReaderIds: an id named only in an effect PASS override is "
+              "collected") {
+        // Gengar 3249016730 shape: the effect file's own material carries no
+        // texture, and the scene.json pass override supplies the composite
+        // read (WPImageEffect::FromJson stores those under `passes`).
+        wpscene::WPImageObject reader;
+        reader.id = 21;
+        wpscene::WPImageEffect effect;
+        wpscene::WPMaterial    mat;
+        effect.materials.push_back(mat);
+        wpscene::WPMaterialPass pass;
+        pass.textures = { "", "_rt_imageLayerComposite_1555_a" };
+        effect.passes.push_back(pass);
+        reader.effects.push_back(effect);
+
+        auto ids = wpscene::CollectImageLinkReaderIds({ &reader });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(1555) == 1);
+        CHECK(wpscene::CollectComposeDependencyIds({ &reader }).empty());
+    }
+
+    TEST_CASE("CollectImageLinkReaderIds: a user-bound effect that resolved hidden is collected; "
+              "a literal visible:false effect is not") {
+        auto makeReader = [](bool userBound, const char* tex) {
+            wpscene::WPImageObject reader;
+            reader.id = 31;
+            wpscene::WPImageEffect effect;
+            effect.visible = false;
+            if (userBound) effect.userVisibleRawJson = R"({"user":"flame","value":true})";
+            wpscene::WPMaterial mat;
+            mat.textures = { tex };
+            effect.materials.push_back(mat);
+            reader.effects.push_back(effect);
+            return reader;
+        };
+        auto bound   = makeReader(true, "_rt_imageLayerComposite_900_a");
+        auto literal = makeReader(false, "_rt_imageLayerComposite_901_a");
+        CHECK(wpscene::CollectImageLinkReaderIds({ &bound }).count(900) == 1);
+        CHECK(wpscene::CollectImageLinkReaderIds({ &literal }).empty());
+    }
+
+    TEST_CASE("CollectImageLinkReaderIds: every effect of a script-targeted layer builds, so a "
+              "literal visible:false effect is collected there") {
+        wpscene::WPImageObject reader;
+        reader.id = 32;
+        wpscene::WPImageEffect effect;
+        effect.visible = false;
+        wpscene::WPMaterial mat;
+        mat.textures = { "_rt_imageLayerComposite_902_a" };
+        effect.materials.push_back(mat);
+        reader.effects.push_back(effect);
+
+        auto targeted = [](const wpscene::WPImageObject& o) {
+            return o.id == 32;
+        };
+        CHECK(wpscene::CollectImageLinkReaderIds({ &reader }, targeted).count(902) == 1);
+        CHECK(wpscene::CollectImageLinkReaderIds({ &reader }).empty());
+    }
+
+    TEST_CASE("CollectImageLinkReaderIds: a non-compose layer's dependencies mark their ids as "
+              "read; Eclipse's self-only list marks nothing") {
+        // Gengar 21 is a plain image listing [1555, 1903]; the editor writes
+        // `dependencies` on every reader.
+        wpscene::WPImageObject gengar;
+        gengar.id           = 21;
+        gengar.image        = "models/plain.json";
+        gengar.dependencies = { 1555, 1903 };
+        wpscene::WPImageObject eclipse;
+        eclipse.id           = 64;
+        eclipse.image        = "models/868850.json";
+        eclipse.dependencies = { 64, 64, 64 };
+
+        auto ids = wpscene::CollectImageLinkReaderIds({ &gengar, &eclipse });
+        CHECK(ids.size() == 2);
+        CHECK(ids.count(1555) == 1);
+        CHECK(ids.count(1903) == 1);
+        // They stay out of the compose set, so nothing is forced offscreen.
+        CHECK(wpscene::CollectComposeDependencyIds({ &gengar, &eclipse }).empty());
     }
 
     TEST_CASE("CollectTextComposeLinkIds: a text layer's effect material texture string is "
@@ -517,6 +602,21 @@ TEST_SUITE("WPImageObject parsing — gap fixes") {
 
         auto ids = wpscene::CollectTextComposeLinkIds({ &txt });
         CHECK(ids.empty());
+    }
+
+    TEST_CASE("CollectTextComposeLinkIds: a text effect's pass override texture is collected") {
+        wpscene::WPTextObject txt;
+        txt.id = 603;
+        wpscene::WPImageEffect effect;
+        effect.materials.push_back(wpscene::WPMaterial {});
+        wpscene::WPMaterialPass pass;
+        pass.textures = { "", "_rt_imageLayerComposite_335_a" };
+        effect.passes.push_back(pass);
+        txt.effects.push_back(effect);
+
+        auto ids = wpscene::CollectTextComposeLinkIds({ &txt });
+        CHECK(ids.size() == 1);
+        CHECK(ids.count(335) == 1);
     }
 
     TEST_CASE("CollectParticleComposeLinkIds: a particle system's own material texture string is "

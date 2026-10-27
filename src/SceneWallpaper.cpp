@@ -2141,16 +2141,7 @@ public:
         if (! scene) return;
         auto eit = scene->nodeEffectLayerMap.find(nodeId);
         if (eit != scene->nodeEffectLayerMap.end() && eit->second) {
-            auto* eff = eit->second;
-            for (std::size_t i = 0; i < eff->EffectCount(); i++) {
-                auto& e = eff->GetEffect(i);
-                for (auto& en : e->nodes) {
-                    if (en.sceneNode && en.sceneNode->HasMaterial()) {
-                        pushAlpha(en.sceneNode->Mesh()->Material());
-                    }
-                }
-            }
-            pushAlpha(eff->FinalMesh().Material());
+            writeAlphaToEffectLayer(*eit->second, value);
         }
     }
 

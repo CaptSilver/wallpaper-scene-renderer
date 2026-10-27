@@ -192,6 +192,19 @@ struct TextureReadOptions {
     bool checkSelfWriteHazard { true };
     bool registerSpecLinkTex { true };
     bool trackMipmapFramebuffer { true };
+    // Receives the graph node bound to textures[0]; stays null when that slot is
+    // empty or a deferred link. Set only on the pass's own material read.
+    rg::TexNode** slot0 { nullptr };
+};
+
+// Extra per-pass behaviour ToGraphPass callers opt into.
+struct ToGraphPassOptions {
+    // The pass is the on-screen terminal of an isolated link source: readers'
+    // `_rt_link_<id>` copy is taken from this pass's slot-0 input (the sprite-sized
+    // chain output) instead of from the _rt_default version it writes.  Any
+    // terminal that reads the chain in slot 0 serves: the synthesized
+    // passthrough, a puppet's skinned composite, or a colorBlendMode passthrough.
+    bool link_from_slot0 { false };
 };
 
 // Shared by ToGraphPass and addReflectionPass: bind every texture in `textures` as a
@@ -242,12 +255,14 @@ static void addTextureReads(rg::RenderGraphBuilder& builder, ExtraInfo& extra,
                 *extra.scene, output, input->key(), kSelfWriteHazardCopyScale);
         }
         builder.read(input);
+        if (i == 0 && opts.slot0 != nullptr) *opts.slot0 = input;
         pdesc.textures.emplace_back(input->key());
     }
 }
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra,
-                        const HideablePassInfo* hideable = nullptr);
+                        const HideablePassInfo*   hideable = nullptr,
+                        const ToGraphPassOptions& options  = {});
 
 static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraInfo& extra) {
     auto& rgraph = *extra.rgraph;
@@ -265,6 +280,9 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
     bool                                 anyBound = false;
     const bool layerScripted = scene.scriptEffectVisLayers.count(node->ID()) != 0;
     for (usize j = 0; j < effs->EffectCount(); j++) {
+        // The synthesized passthrough is always drawn and is the layer's on-screen
+        // terminal, so a hidden effect before it always has a visible successor.
+        if (effs->GetEffect(j)->synthesized) continue;
         bound[j] = layerScripted ||
                    extra.hideable_effect_keys.count(PackNodeEffectKey(node->ID(), (i32)j)) != 0;
         anyBound = anyBound || bound[j];
@@ -335,14 +353,16 @@ static void LoadEffectChain(SceneNode* node, SceneImageEffectLayer* effs, ExtraI
                     infoPtr = &info;
                 }
             }
-            ToGraphPass(n.sceneNode.get(), name, node->ID(), extra, infoPtr);
+            ToGraphPassOptions options;
+            options.link_from_slot0 = effs->IsIsolatedLink() && n.sceneNode.get() == terminal_node;
+            ToGraphPass(n.sceneNode.get(), name, node->ID(), extra, infoPtr, options);
             nodePos++;
         }
     }
 }
 
 static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, ExtraInfo& extra,
-                        const HideablePassInfo* hideable) {
+                        const HideablePassInfo* hideable, const ToGraphPassOptions& options) {
     auto& rgraph = *extra.rgraph;
     auto& scene  = *extra.scene;
 
@@ -415,8 +435,9 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     if (imgeff == nullptr && node->IsOffscreen()) {
         offscreen_output = GenOffscreenRT(imgId);
         output           = offscreen_output;
-        // Force Normal blend so the first write uses DONT_CARE load op
-        // instead of LOAD on an uninitialized render target (Vulkan UB).
+        // Normal overwrites rather than blends: the RT's first writer CLEARs
+        // it on entry (CustomShaderPass), and a sprite that landed alpha-weighted
+        // would be weighted again wherever it is read.
         material->blenmode = BlendMode::Normal;
         auto default_node  = SceneNode();
         node->SetCamera("effect");
@@ -430,12 +451,27 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
     rgraph.addPass<vulkan::CustomShaderPass>(
         passName,
         rg::PassNode::Type::CustomShader,
-        [material, node, imgeff, &output, &imgId, &rgraph, &scene, &extra, hideable](
-            rg::RenderGraphBuilder& builder, vulkan::CustomShaderPass::Desc& pdesc) {
+        [material,
+         node,
+         imgeff,
+         &output,
+         &imgId,
+         &rgraph,
+         &scene,
+         &extra,
+         hideable,
+         link_from_slot0 = options.link_from_slot0](rg::RenderGraphBuilder&         builder,
+                                                    vulkan::CustomShaderPass::Desc& pdesc) {
             const auto& pass = builder.workPassNode();
             pdesc.node       = node;
             pdesc.output     = output;
             CheckAndSetSprite(scene, pdesc, material->textures);
+            // Taken from the material's own read only, never from the hideable
+            // extra reads below: those bind the chain's ping-pong buffers, not the
+            // slot an isolated link terminal copies from.  Whatever the terminal is
+            // (the synthesized passthrough, a puppet composite, a colorBlendMode
+            // passthrough), slot 0 is the chain output it reads.
+            rg::TexNode* slot0 { nullptr };
             addTextureReads(builder,
                             extra,
                             rgraph,
@@ -444,7 +480,7 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                             output,
                             pass.ID(),
                             imgId,
-                            TextureReadOptions {});
+                            TextureReadOptions { .slot0 = &slot0 });
 
             if (hideable != nullptr) {
                 pdesc.hideable                 = hideable->kind;
@@ -498,7 +534,17 @@ static void ToGraphPass(SceneNode* node, std::string_view output, i32 imgId, Ext
                                                           .type = rg::TexNode::TexType::Temp },
                                       true);
             builder.write(output_node);
-            if (output == SpecTex_Default || output == GenOffscreenRT(imgId)) {
+            if (link_from_slot0 && slot0 != nullptr) {
+                // Readers snapshot the sprite this on-screen pass draws from. Its
+                // _rt_default write is the whole framebuffer, which would hand them
+                // everything drawn so far instead of the layer.
+                extra.id_link_map[(usize)imgId] = slot0;
+            } else if (output == SpecTex_Default || output == GenOffscreenRT(imgId)) {
+                if (link_from_slot0) {
+                    LOG_ERROR("id=%d isolated link terminal has no slot-0 input; readers get "
+                              "the framebuffer",
+                              imgId);
+                }
                 extra.id_link_map[(usize)imgId] = output_node;
             }
             // A layer's own composite read (WPSceneParser's _a/_b routing) can only

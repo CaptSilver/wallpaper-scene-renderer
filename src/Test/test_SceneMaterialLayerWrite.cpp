@@ -1,8 +1,12 @@
 #include <doctest.h>
 
 #include "SceneMaterialLayerWrite.hpp"
+#include "Scene/SceneImageEffectLayer.h"
 #include "Scene/SceneMaterial.h"
+#include "Scene/SceneMesh.h"
+#include "Scene/SceneNode.h"
 
+#include <memory>
 #include <vector>
 
 using namespace wallpaper;
@@ -21,9 +25,46 @@ SceneMaterial seededMaterial() {
     m.customShader.constValuesDirty = false;
     return m;
 }
+
+std::shared_ptr<SceneNode> effectNodeWithMaterial(SceneMaterial m) {
+    auto node = std::make_shared<SceneNode>();
+    auto mesh = std::make_shared<SceneMesh>();
+    mesh->AddMaterial(std::move(m));
+    node->AddMesh(mesh);
+    return node;
+}
 } // namespace
 
 TEST_SUITE("SceneMaterialLayerWrite") {
+    TEST_CASE("writeAlphaToEffectLayer skips the synthesized passthrough, whose colour is "
+              "neutral because the base pass already baked the alpha in") {
+        SceneNode             world;
+        SceneImageEffectLayer layer(&world, "pp_a", "pp_b");
+
+        auto real = std::make_shared<SceneImageEffect>();
+        real->nodes.push_back({ "pp_b", effectNodeWithMaterial(seededMaterial()) });
+        layer.AddEffect(real);
+
+        auto synth                                    = std::make_shared<SceneImageEffect>();
+        synth->synthesized                            = true;
+        auto synthMat                                 = seededMaterial();
+        synthMat.customShader.constValues["g_Color4"] = std::vector<float> { 1, 1, 1, 1 };
+        synth->nodes.push_back({ "pp_b", effectNodeWithMaterial(std::move(synthMat)) });
+        layer.AddEffect(synth);
+
+        writeAlphaToEffectLayer(layer, 0.25f);
+
+        const auto& realCv =
+            real->nodes.front().sceneNode->Mesh()->Material()->customShader.constValues;
+        CHECK(realCv.at("g_UserAlpha")[0] == doctest::Approx(0.25f));
+        CHECK(realCv.at("g_Color4")[3] == doctest::Approx(0.25f));
+
+        const auto& synthCv =
+            synth->nodes.front().sceneNode->Mesh()->Material()->customShader.constValues;
+        CHECK(synthCv.at("g_Color4")[3] == doctest::Approx(1.0f));
+        CHECK(synthCv.at("g_UserAlpha")[0] == doctest::Approx(1.0f));
+    }
+
     TEST_CASE("writeLayerAlpha updates g_UserAlpha and g_Color4.a, not the flat pair") {
         auto m = seededMaterial();
         writeLayerAlpha(m, 0.25f);

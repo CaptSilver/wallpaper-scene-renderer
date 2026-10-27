@@ -9,7 +9,10 @@
 #include <string>
 #include <filesystem>
 #include <cctype>
+#include <functional>
 #include "SpecTexs.hpp"
+#include "WPUserProperties.hpp"
+#include "Utils/Logging.h"
 
 namespace wallpaper
 {
@@ -65,6 +68,10 @@ public:
     std::vector<WPMaterialPass>  passes;
     std::vector<WPEffectCommand> commands;
     std::vector<WPEffectFbo>     fbos;
+    // Set on the effectpassthrough the parser appends to a link source so the
+    // layer keeps drawing itself on screen while readers sample an isolated
+    // copy of its chain output.  Not a scene.json field.
+    bool synthesized_passthrough { false };
 };
 
 class WPImageObject {
@@ -156,13 +163,15 @@ public:
 
     // scene.json "dependencies": [id, ...] — set on compose layers that sample
     // the listed images via `_rt_imageLayerComposite_<id>_a`.  WPSceneParser
-    // collects these across all objects and forces every referenced image to
-    // render offscreen so the compose layer can sample an isolated sprite RT
-    // instead of getting a full-FB snapshot via _rt_link_<id>.  Without this,
-    // images that are intended to be sampled by a parent compose blend ALSO
-    // paint themselves onto _rt_default — and the compose layer's blend then
-    // produces solid quads (each Calque CO33-Mx in Clair Obscur Expedition 33
-    // 3498984739 produced a gray rectangle over its character).
+    // collects these across all compose layers and forces every referenced
+    // image to render offscreen so the compose layer can sample an isolated
+    // sprite RT instead of getting a full-FB snapshot via _rt_link_<id>.
+    // Without this, images that are intended to be sampled by a parent compose
+    // blend ALSO paint themselves onto _rt_default — and the compose layer's
+    // blend then produces solid quads (each Calque CO33-Mx in Clair Obscur
+    // Expedition 33 3498984739 produced a gray rectangle over its character).
+    // Only compose layers hide their dependencies this way; any other layer's
+    // list just marks the ids as read (see CollectImageLinkReaderIds).
     std::vector<int32_t> dependencies;
 };
 
@@ -181,6 +190,31 @@ constexpr std::string_view kProjectLayerImage = "models/util/projectlayer.json";
 inline bool IsComposeLayerImage(std::string_view image) {
     return image == kComposeLayerImage || image == kProjectLayerImage;
 }
+
+// The user property an effect's `"visible": {"user": ...}` binding names, or
+// empty if the stored JSON is missing, malformed or names nothing.
+inline std::string EffectUserPropName(const WPImageEffect& effect) {
+    if (effect.userVisibleRawJson.empty()) return {};
+    try {
+        return UserPropertyNameOf(nlohmann::json::parse(effect.userVisibleRawJson));
+    } catch (const std::exception& e) {
+        LOG_ERROR("effect user-bound visible JSON failed to re-parse: %s", e.what());
+        return {};
+    }
+}
+
+// Whether an effect gets added to its layer: it is visible, or carries a
+// binding that resolves (a named user property or a visible.script) so a later
+// toggle can show it without a reload.  On a layer a SceneScript reaches with
+// getEffect(...).visible every effect builds.
+inline bool EffectWouldBuild(const WPImageEffect& e, bool layerScriptTargeted) {
+    return e.visible || layerScriptTargeted || ! EffectUserPropName(e).empty() ||
+           ! e.visibleScript.empty();
+}
+
+// Decides per layer whether a SceneScript can toggle its effects.  Empty means no.
+template<typename Obj>
+using LayerScriptTargetFn = std::function<bool(const Obj&)>;
 
 // Scan a material's texture list for a raw `_rt_imageLayerComposite_<id>`
 // reference and record <id> in `out`.  This is the OTHER way a layer can
@@ -206,8 +240,19 @@ inline void collectComposeLinkIdsFromTextures(const std::vector<std::string>& te
     }
 }
 
+// Texture strings an effect reads: its materials' own and the scene.json pass
+// overrides, which assembleEffects merges over the materials.
+inline void collectEffectComposeLinkIds(const WPImageEffect& effect, int32_t self_id,
+                                        std::unordered_set<int32_t>& out) {
+    for (const auto& mat : effect.materials)
+        collectComposeLinkIdsFromTextures(mat.textures, self_id, out);
+    for (const auto& pass : effect.passes)
+        collectComposeLinkIdsFromTextures(pass.textures, self_id, out);
+}
+
 // Collect the image ids that any *compose* layer references in its
-// `dependencies` list.  Two filters apply:
+// `dependencies` list.  These are the only sources forced offscreen on that
+// basis alone.  Two filters apply:
 //
 //   1) Only image objects whose `image` is a compose-layer model
 //      contribute — non-compose layers that happen to declare
@@ -222,6 +267,9 @@ inline void collectComposeLinkIdsFromTextures(const std::vector<std::string>& te
 //   2) Self-references are dropped — a layer can't sample its own
 //      output via a link RT.  Same Eclipse 1210462523 case above.
 //
+// A layer read through a texture string, or listed by a non-compose layer, is
+// not hidden: see CollectImageLinkReaderIds.
+//
 // Header-resident as a small free function so the test suite can pin
 // these two filters without spinning up the full WPSceneParser::Parse
 // pipeline.
@@ -229,23 +277,43 @@ inline std::unordered_set<int32_t>
 CollectComposeDependencyIds(const std::vector<const WPImageObject*>& image_objs) {
     std::unordered_set<int32_t> out;
     for (const WPImageObject* img : image_objs) {
+        if (img == nullptr || ! IsComposeLayerImage(img->image)) continue;
+        for (int32_t dep_id : img->dependencies) {
+            if (dep_id == img->id) continue;
+            out.insert(dep_id);
+        }
+    }
+    return out;
+}
+
+// Collect the image ids that an image layer reads as an ordinary reader: a raw
+// `_rt_imageLayerComposite_<id>` texture string in its base material, or in
+// the materials or scene.json pass overrides of an effect that will be built,
+// plus the `dependencies` of a non-compose layer (the editor writes it on
+// every reader).  Self-references are dropped.
+//
+// An effect that will not be built never reaches LoadMaterial, so its strings
+// never resolve; `layerScriptTargeted` says whether a script can show any of a
+// layer's effects (every effect then builds).
+//
+// A source named here keeps drawing itself and gives readers an isolated copy
+// of its chain output.  Only compose `dependencies` send a source offscreen.
+inline std::unordered_set<int32_t>
+CollectImageLinkReaderIds(const std::vector<const WPImageObject*>&  image_objs,
+                          const LayerScriptTargetFn<WPImageObject>& layerScriptTargeted = {}) {
+    std::unordered_set<int32_t> out;
+    for (const WPImageObject* img : image_objs) {
         if (img == nullptr) continue;
-        if (IsComposeLayerImage(img->image)) {
+        if (! IsComposeLayerImage(img->image)) {
             for (int32_t dep_id : img->dependencies) {
-                if (dep_id == img->id) continue;
-                out.insert(dep_id);
+                if (dep_id != img->id) out.insert(dep_id);
             }
         }
         collectComposeLinkIdsFromTextures(img->material.textures, img->id, out);
+        const bool targeted = layerScriptTargeted && layerScriptTargeted(*img);
         for (const auto& effect : img->effects) {
-            // assembleEffects (WPSceneParser.cpp) skips invisible effects
-            // outright — they never reach LoadMaterial, so their texture
-            // strings are never resolved at render time. Scanning them here
-            // would force a referenced sibling offscreen for a consumer that
-            // will never exist.
-            if (! effect.visible) continue;
-            for (const auto& mat : effect.materials)
-                collectComposeLinkIdsFromTextures(mat.textures, img->id, out);
+            if (! EffectWouldBuild(effect, targeted)) continue;
+            collectEffectComposeLinkIds(effect, img->id, out);
         }
     }
     return out;

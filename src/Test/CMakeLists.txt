@@ -91,6 +91,7 @@ add_executable(backend_scene_tests
     test_SceneToRenderGraph_ReflectionTextureRead.cpp
     test_SceneToRenderGraph_TerminalPassthrough.cpp
     test_SceneToRenderGraph_ScriptEffectVis.cpp
+    test_SceneToRenderGraph_IsolatedLink.cpp
     test_WPSceneInitJsonHierarchy.cpp
     test_WPSceneGroupParse.cpp
     test_SceneIndexArray.cpp
