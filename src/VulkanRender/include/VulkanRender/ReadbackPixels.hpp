@@ -91,5 +91,34 @@ inline bool SwapchainRowToRGB8(const uint8_t* src, VkFormat format, uint32_t wid
     }
 }
 
+// Converts row `y` of a mapped pass-dump render target (--dump-passes-dir),
+// rows packed at `width` pixels, to packed 8-bit RGB for a PPM, and for 8-bit
+// targets its alpha to `alpha` for the companion PGM.  Intermediate targets on an HDR scene hold
+// unbounded linear colour, so half-float rows get FinPass's exposure curve `1 - exp(-x)` rather
+// than SwapchainRowToRGB8's clamp, which would turn most of an HDR pass white.  Returns false,
+// writing nothing, for a format BytesPerPixelFor does not know.
+inline bool PassDumpRowToRGB8(const uint8_t* image, VkFormat format, uint32_t width, uint32_t y,
+                              uint8_t* rgb, uint8_t* alpha) {
+    const uint32_t bpp = BytesPerPixelFor(format);
+    const uint8_t* src = image + (size_t)y * width * bpp;
+    switch (bpp) {
+    case 4:
+        SwapchainRowToRGB8(src, format, width, rgb);
+        for (uint32_t x = 0; x < width; x++) alpha[x] = src[x * 4 + 3];
+        return true;
+    case 8:
+        for (uint32_t x = 0; x < width; x++) {
+            for (uint32_t c = 0; c < 3; c++) {
+                uint16_t h;
+                std::memcpy(&h, src + x * 8 + c * 2, 2);
+                const float v  = 1.0f - std::exp(-std::max(0.0f, Half2Float(h)));
+                rgb[x * 3 + c] = static_cast<uint8_t>(std::clamp(v * 255.0f, 0.0f, 255.0f));
+            }
+        }
+        return true;
+    default: return false;
+    }
+}
+
 } // namespace vulkan
 } // namespace wallpaper

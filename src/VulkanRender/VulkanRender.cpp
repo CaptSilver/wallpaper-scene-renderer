@@ -677,8 +677,6 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                 std::fprintf(f, "P6\n%u %u\n255\n", entry.width, entry.height);
                 std::vector<uint8_t> row((size_t)entry.width * 3);
                 std::vector<uint8_t> alpha_row((size_t)entry.width);
-                const bool           is_bgra = (entry.format == VK_FORMAT_B8G8R8A8_UNORM ||
-                                                entry.format == VK_FORMAT_B8G8R8A8_SRGB);
                 const bool           is_8bpc = (BytesPerPixelFor(entry.format) == 4);
                 if (is_8bpc) {
                     af = std::fopen(alpha_path.c_str(), "wb");
@@ -686,40 +684,13 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                 }
 
                 for (uint32_t y = 0; y < entry.height; y++) {
-                    if (is_8bpc) {
-                        // RGBA8/BGRA8: direct byte copy with optional channel swizzle.
-                        const uint8_t* src =
-                            static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 4;
-                        for (uint32_t x = 0; x < entry.width; x++) {
-                            row[x * 3 + 0] = src[x * 4 + (is_bgra ? 2 : 0)];
-                            row[x * 3 + 1] = src[x * 4 + 1];
-                            row[x * 3 + 2] = src[x * 4 + (is_bgra ? 0 : 2)];
-                            alpha_row[x]   = src[x * 4 + 3];
-                        }
-                        if (af) std::fwrite(alpha_row.data(), 1, alpha_row.size(), af);
-                    } else {
-                        // RGBA16F: decode 16-bit half-floats, apply the same exposure
-                        // tonemap FinPass uses (`1 - exp(-hdr)`) to land in [0,1],
-                        // then quantize to u8.  Without this, HDR scenes dumped
-                        // before FinPass would emit garbage / appear white-clipped.
-                        const uint8_t* src =
-                            static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 8;
-                        for (uint32_t x = 0; x < entry.width; x++) {
-                            uint16_t hr, hg, hb;
-                            std::memcpy(&hr, src + x * 8 + 0, 2);
-                            std::memcpy(&hg, src + x * 8 + 2, 2);
-                            std::memcpy(&hb, src + x * 8 + 4, 2);
-                            float r        = std::max(0.0f, Half2Float(hr));
-                            float g        = std::max(0.0f, Half2Float(hg));
-                            float b        = std::max(0.0f, Half2Float(hb));
-                            r              = 1.0f - std::exp(-r);
-                            g              = 1.0f - std::exp(-g);
-                            b              = 1.0f - std::exp(-b);
-                            row[x * 3 + 0] = (uint8_t)std::clamp(r * 255.0f, 0.0f, 255.0f);
-                            row[x * 3 + 1] = (uint8_t)std::clamp(g * 255.0f, 0.0f, 255.0f);
-                            row[x * 3 + 2] = (uint8_t)std::clamp(b * 255.0f, 0.0f, 255.0f);
-                        }
-                    }
+                    PassDumpRowToRGB8(static_cast<const uint8_t*>(mapped),
+                                      entry.format,
+                                      entry.width,
+                                      y,
+                                      row.data(),
+                                      alpha_row.data());
+                    if (is_8bpc && af) std::fwrite(alpha_row.data(), 1, alpha_row.size(), af);
                     std::fwrite(row.data(), 1, row.size(), f);
                 }
                 std::fclose(f);

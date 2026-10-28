@@ -123,7 +123,7 @@ private:
 // on it.  Returns nullptr only when nothing works -- the caller must fail
 // init then, since there is nothing to present into.
 // One binary semaphore exportable as an opaque fd, and the fd.
-inline bool CreateExportedSemaphore(const Device& device, vvk::Semaphore& sem, int& fd) {
+inline bool CreateExportedSemaphore(const vvk::Device& device, vvk::Semaphore& sem, int& fd) {
     const VkExportSemaphoreCreateInfo export_info {
         .sType       = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
         .pNext       = nullptr,
@@ -134,7 +134,7 @@ inline bool CreateExportedSemaphore(const Device& device, vvk::Semaphore& sem, i
         .pNext = &export_info,
         .flags = 0,
     };
-    if (device.handle().CreateSemaphore(ci, sem) != VK_SUCCESS) return false;
+    if (device.CreateSemaphore(ci, sem) != VK_SUCCESS) return false;
     return sem.GetFdKHR(&fd) == VK_SUCCESS;
 }
 
@@ -164,8 +164,9 @@ inline std::unique_ptr<VulkanExSwapchain> CreateExSwapchain(const Device& device
         // unsynchronised handoff.
         if (interop_sync) {
             for (auto& handle : handles) {
-                if (! CreateExportedSemaphore(device, handle.render_done, handle.render_done_fd) ||
-                    ! CreateExportedSemaphore(device, handle.release, handle.release_fd)) {
+                if (! CreateExportedSemaphore(
+                        device.handle(), handle.render_done, handle.render_done_fd) ||
+                    ! CreateExportedSemaphore(device.handle(), handle.release, handle.release_fd)) {
                     LOG_ERROR("offscreen swapchain: cannot export image semaphores");
                     return nullptr;
                 }

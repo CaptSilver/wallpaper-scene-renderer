@@ -170,6 +170,7 @@ add_executable(backend_scene_tests
     test_ExImageParametersFd.cpp
     test_ExFd.cpp
     test_VulkanExSwapchainFd.cpp
+    test_ExportedSemaphore.cpp
     ${SRC_DIR}/VulkanRender/FrameFenceCycle.cpp
     test_VulkanDebugCallbackGate.cpp
     test_DeviceQueueSelection.cpp

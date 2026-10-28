@@ -11,6 +11,12 @@ struct RenderExtent {
     uint32_t height;
 };
 
+// An item's logical size in device pixels: what fills the window's backing
+// store 1:1 before any render scale is applied.
+inline uint32_t DevicePixels(double logical, double dpr) {
+    return static_cast<uint32_t>(std::lround(logical * dpr));
+}
+
 // Smallest render target worth producing.  Below this the upscale is mush and
 // the fixed per-frame costs dominate anyway, so clamping protects a user who
 // drags the scale slider to its floor on a small screen.

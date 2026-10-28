@@ -87,3 +87,15 @@ TEST_SUITE("RenderExtent") {
         CHECK((uint32_t)((float)pinned.height * kDeepestBloomMipScale) >= 1u);
     }
 }
+
+// SceneObject sizes its render target from the item's logical size and the
+// window's device-pixel ratio before ResolveRenderExtent applies the scale.
+TEST_SUITE("RenderExtent device pixels") {
+    TEST_CASE("logical size times the device-pixel ratio, rounded") {
+        CHECK(wallpaper::DevicePixels(100.0, 1.5) == 150u);
+        CHECK(wallpaper::DevicePixels(101.0, 1.25) == 126u); // 126.25
+        CHECK(wallpaper::DevicePixels(101.0, 1.5) == 152u);  // 151.5 rounds up
+        CHECK(wallpaper::DevicePixels(1920.0, 1.0) == 1920u);
+        CHECK(wallpaper::DevicePixels(0.0, 2.0) == 0u);
+    }
+}

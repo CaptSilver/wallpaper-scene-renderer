@@ -505,8 +505,8 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             // dpr unstable around window-show time (see qmlviewer.cpp -R).
             const auto dpr = window()->devicePixelRatio();
             using wallpaper::ResolveRenderExtent;
-            const auto extent = ResolveRenderExtent((uint32_t)std::lround(width() * dpr),
-                                                    (uint32_t)std::lround(height() * dpr),
+            const auto extent = ResolveRenderExtent(wallpaper::DevicePixels(width(), dpr),
+                                                    wallpaper::DevicePixels(height(), dpr),
                                                     m_renderScale,
                                                     (uint32_t)std::max(0, m_renderPixelWidth),
                                                     (uint32_t)std::max(0, m_renderPixelHeight));
