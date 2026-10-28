@@ -28,6 +28,7 @@
 #include "Vulkan/Swapchain.hpp"
 #include "Vulkan/SwapchainPolicy.hpp"
 #include "Vulkan/VulkanExSwapchain.hpp"
+#include "Swapchain/ExInteropSync.hpp"
 
 #include "VulkanPass.hpp"
 #include "PrePass.hpp"
@@ -103,7 +104,7 @@ constexpr std::array base_device_exts {
 };
 
 struct VulkanRender::Impl {
-    Impl()  = default;
+    Impl() = default;
     ~Impl() {
         // Stop counting toward other screens' quality tier once this renderer
         // is gone (screen unplug, wallpaper switch, containment teardown).
@@ -148,10 +149,10 @@ struct VulkanRender::Impl {
     // Written on the render thread at init, read from the main looper via
     // renderInited() (the post-init property replay does exactly that).
     std::atomic<bool> m_inited { false };
-    bool m_pass_loaded { false };
-    bool m_device_lost { false };
-    bool m_hdr_output { false };
-    bool m_hdr_content { false };
+    bool              m_pass_loaded { false };
+    bool              m_device_lost { false };
+    bool              m_hdr_output { false };
+    bool              m_hdr_content { false };
     // Set when Acquire or Present returns VK_ERROR_OUT_OF_DATE_KHR (Wayland
     // resize / output unplug). Consumed at the start of the next
     // drawFrameSwapchain to drop in a fresh swapchain via Swapchain::Recreate.
@@ -206,8 +207,8 @@ struct VulkanRender::Impl {
 
     // Residency: per-pass demand inputs fixed at compile, the per-frame half,
     // the slot table by id and which slots need a clear when they get an image.
-    std::vector<PassDemandStatic>  m_demand_static;
-    std::vector<PassDemandFrame>   m_demand_frame;
+    std::vector<PassDemandStatic> m_demand_static;
+    std::vector<PassDemandFrame>  m_demand_frame;
     // Reused every frame so an idle frame allocates nothing.
     DemandResult      m_demand_result;
     std::vector<bool> m_resident_now, m_blocked;
@@ -232,16 +233,16 @@ struct VulkanRender::Impl {
     // Set while recording; becomes m_rt_ts_pending only once the frame is
     // submitted, since a frame abandoned after record leaves queries nobody
     // will ever complete.
-    bool          m_rt_ts_recorded { false };
+    bool m_rt_ts_recorded { false };
     // Counts and step cost since the last DIAG line; reset there.
     ResidencyWindow m_rt_window;
 
-    void              buildResidencyTables();
+    void                     buildResidencyTables();
     const std::vector<bool>& computeDemand();
-    void              applyOutputNeeded(const std::vector<bool>& needed);
+    void                     applyOutputNeeded(const std::vector<bool>& needed);
     void                     noteCreateFailure(RtSlot& slot, bool log);
-    void              createLoadSlots(std::vector<SlotId>& fresh);
-    void              residencyStep(RenderingResources& rr);
+    void                     createLoadSlots(std::vector<SlotId>& fresh);
+    void                     residencyStep(RenderingResources& rr);
 };
 
 // Write a swapchain image to a PPM file.  Called with the device idle.
@@ -433,9 +434,9 @@ static size_t               g_pass_dump_counter = 0;
 // Reset by dumpPassesIfRequested() when phase transitions 0→1 (arm).
 static uint64_t g_pass_dump_total_bytes = 0;
 
-void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, VkFormat format,
-                        uint32_t w, uint32_t h, const std::string& shader,
-                        const std::string& output, int32_t node_id) {
+void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, VkFormat format, uint32_t w,
+                        uint32_t h, const std::string& shader, const std::string& output,
+                        int32_t node_id) {
     if (! g_pass_dump_active || ! g_pass_dump_entries || ! g_pass_dump_device) return;
     if (image == VK_NULL_HANDLE || w == 0 || h == 0) return;
 
@@ -463,7 +464,7 @@ void g_pass_dump_record(const vvk::CommandBuffer& cmd, VkImage image, VkFormat f
     // NieR-scale scenes end-to-end — 128 passes × ~30 MB base + a handful of
     // 3840×2160 effect RTs at 66 MB each.  Override via WEKDE_PASS_DUMP_MEM_MB.
     static const uint64_t s_mem_budget = [] {
-        const char* v = std::getenv("WEKDE_PASS_DUMP_MEM_MB");
+        const char* v  = std::getenv("WEKDE_PASS_DUMP_MEM_MB");
         uint64_t    mb = 8192;
         if (v && v[0]) {
             char*    end = nullptr;
@@ -677,7 +678,7 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                 std::vector<uint8_t> row((size_t)entry.width * 3);
                 std::vector<uint8_t> alpha_row((size_t)entry.width);
                 const bool           is_bgra = (entry.format == VK_FORMAT_B8G8R8A8_UNORM ||
-                                      entry.format == VK_FORMAT_B8G8R8A8_SRGB);
+                                                entry.format == VK_FORMAT_B8G8R8A8_SRGB);
                 const bool           is_8bpc = (BytesPerPixelFor(entry.format) == 4);
                 if (is_8bpc) {
                     af = std::fopen(alpha_path.c_str(), "wb");
@@ -690,10 +691,10 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                         const uint8_t* src =
                             static_cast<const uint8_t*>(mapped) + (size_t)y * entry.width * 4;
                         for (uint32_t x = 0; x < entry.width; x++) {
-                            row[x * 3 + 0]   = src[x * 4 + (is_bgra ? 2 : 0)];
-                            row[x * 3 + 1]   = src[x * 4 + 1];
-                            row[x * 3 + 2]   = src[x * 4 + (is_bgra ? 0 : 2)];
-                            alpha_row[x]     = src[x * 4 + 3];
+                            row[x * 3 + 0] = src[x * 4 + (is_bgra ? 2 : 0)];
+                            row[x * 3 + 1] = src[x * 4 + 1];
+                            row[x * 3 + 2] = src[x * 4 + (is_bgra ? 0 : 2)];
+                            alpha_row[x]   = src[x * 4 + 3];
                         }
                         if (af) std::fwrite(alpha_row.data(), 1, alpha_row.size(), af);
                     } else {
@@ -708,12 +709,12 @@ void VulkanRender::Impl::dumpPassesIfRequested() {
                             std::memcpy(&hr, src + x * 8 + 0, 2);
                             std::memcpy(&hg, src + x * 8 + 2, 2);
                             std::memcpy(&hb, src + x * 8 + 4, 2);
-                            float r = std::max(0.0f, Half2Float(hr));
-                            float g = std::max(0.0f, Half2Float(hg));
-                            float b = std::max(0.0f, Half2Float(hb));
-                            r       = 1.0f - std::exp(-r);
-                            g       = 1.0f - std::exp(-g);
-                            b       = 1.0f - std::exp(-b);
+                            float r        = std::max(0.0f, Half2Float(hr));
+                            float g        = std::max(0.0f, Half2Float(hg));
+                            float b        = std::max(0.0f, Half2Float(hb));
+                            r              = 1.0f - std::exp(-r);
+                            g              = 1.0f - std::exp(-g);
+                            b              = 1.0f - std::exp(-b);
                             row[x * 3 + 0] = (uint8_t)std::clamp(r * 255.0f, 0.0f, 255.0f);
                             row[x * 3 + 1] = (uint8_t)std::clamp(g * 255.0f, 0.0f, 255.0f);
                             row[x * 3 + 2] = (uint8_t)std::clamp(b * 255.0f, 0.0f, 255.0f);
@@ -807,7 +808,7 @@ void VulkanRender::setSwapchainPresentPolicy(int policy) {
         LOG_INFO("swapchain setting ignored: offscreen renderer has no swapchain");
         return;
     }
-    auto p = static_cast<PresentModePolicy>(policy);
+    auto  p    = static_cast<PresentModePolicy>(policy);
     auto& swap = pImpl->m_device->mut_swapchain();
     if (swap.presentPolicy() == p) return;
     swap.setPresentPolicy(p);
@@ -925,7 +926,8 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
                                             (info.offscreen_tiling == TexTiling::OPTIMAL
                                                  ? VK_IMAGE_TILING_OPTIMAL
                                                  : VK_IMAGE_TILING_LINEAR),
-                                            ex_fmt);
+                                            ex_fmt,
+                                            info.interop_sync);
         m_with_surface  = false;
         // Three external images have to allocate and export an fd; a GPU that
         // has just reset or is out of VRAM fails that.  Bail here so the
@@ -934,6 +936,10 @@ bool VulkanRender::Impl::init(RenderInitInfo info) {
             LOG_ERROR("create offscreen swapchain failed");
             return false;
         }
+        LOG_INFO("offscreen swapchain: images handed over %s",
+                 m_ex_swapchain->interopSync() ? "with semaphores"
+                                               : "unsynchronised (WEKDE_INTEROP_SYNC=0 or no "
+                                                 "GL_EXT_semaphore_fd)");
     }
 
     // The exported swapchain may have dropped to 8-bit when the driver would
@@ -1007,11 +1013,11 @@ bool VulkanRender::Impl::initRes() {
                                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                                                        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
     m_dyn_buf    = std::make_unique<StagingBuffer>(*m_device,
-                                                2 * 1024 * 1024,
-                                                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                                                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                                                kFramesInFlight);
+                                                   2 * 1024 * 1024,
+                                                   VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                                                       VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                                                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                                   kFramesInFlight);
     if (! m_vertex_buf->allocate()) return false;
     if (! m_dyn_buf->allocate()) return false;
     {
@@ -1320,15 +1326,15 @@ void VulkanRender::Impl::drawFrameSwapchain() {
 
     VkPipelineStageFlags wait_dst_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo         sub_info {
-                .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-                .pNext                = nullptr,
-                .waitSemaphoreCount   = 1,
-                .pWaitSemaphores      = m_sem_image_available[slot].address(),
-                .pWaitDstStageMask    = &wait_dst_stage,
-                .commandBufferCount   = 1,
-                .pCommandBuffers      = rr.command.address(),
-                .signalSemaphoreCount = 1,
-                .pSignalSemaphores    = m_sem_render_finished[slot].address(),
+        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext                = nullptr,
+        .waitSemaphoreCount   = 1,
+        .pWaitSemaphores      = m_sem_image_available[slot].address(),
+        .pWaitDstStageMask    = &wait_dst_stage,
+        .commandBufferCount   = 1,
+        .pCommandBuffers      = rr.command.address(),
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores    = m_sem_render_finished[slot].address(),
     };
 
     // Wait for the slot's previous in-flight submission (two frames ago)
@@ -1377,8 +1383,8 @@ void VulkanRender::Impl::drawFrameSwapchain() {
         .pImageIndices      = &image_index,
     };
     {
-        VkResult pres = m_device->present_queue().handle.Present(present_info);
-        const SwapResult sr = classifySwapResult(pres);
+        VkResult         pres = m_device->present_queue().handle.Present(present_info);
+        const SwapResult sr   = classifySwapResult(pres);
         if (sr == SwapResult::NeedsRecreate) {
             // Work is already submitted; just trigger recreate before the
             // next frame. Fall through to the normal frame epilogue so the
@@ -1480,11 +1486,26 @@ void VulkanRender::Impl::drawFrameOffscreen() {
 
     (void)rr.command.End();
 
+    // Release or a dropped frame's render-done gate everything this submit does
+    // to the image; render-done tells the consumer the image is written.
+    const auto sync =
+        PlanExSubmitSync(m_ex_swapchain->inprogressWait(), m_ex_swapchain->interopSync());
+    const VkSemaphore wait_sem = sync.wait_release ? m_ex_swapchain->inprogressRelease()
+                                                   : m_ex_swapchain->inprogressRenderDone();
+    const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    const VkSemaphore          signal_sem = m_ex_swapchain->inprogressRenderDone();
+    const bool                 waits      = sync.wait_release || sync.wait_render_done;
+
     VkSubmitInfo sub_info {
-        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .pNext              = nullptr,
-        .commandBufferCount = 1,
-        .pCommandBuffers    = rr.command.address(),
+        .sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .pNext                = nullptr,
+        .waitSemaphoreCount   = waits ? 1u : 0u,
+        .pWaitSemaphores      = waits ? &wait_sem : nullptr,
+        .pWaitDstStageMask    = waits ? &wait_stage : nullptr,
+        .commandBufferCount   = 1,
+        .pCommandBuffers      = rr.command.address(),
+        .signalSemaphoreCount = sync.signal_render_done ? 1u : 0u,
+        .pSignalSemaphores    = sync.signal_render_done ? &signal_sem : nullptr,
     };
     VVK_CHECK_DEVICE_LOST(m_device->graphics_queue().handle.Submit(sub_info, *rr.fence_frame));
     m_rt_ts_pending[slot] = m_rt_ts_recorded;
@@ -1713,15 +1734,12 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
     // Always from msaaRequested, never from the previous answer, so a
     // recompile at a lower resolution can raise the count back up.
     if (scene.msaaAutoScale) {
-        const auto& out = m_device->out_extent();
+        const auto& out    = m_device->out_extent();
         auto&       others = ConcurrentRenderers::Instance();
         others.Set(this, (u64)out.width * (u64)out.height);
         const u64 concurrent = others.PixelsExcluding(this);
-        const u32 msaa       = Scene::autoMsaaSamples(scene.msaaRequested,
-                                                out.width,
-                                                out.height,
-                                                (u32)nodes.size(),
-                                                concurrent);
+        const u32 msaa       = Scene::autoMsaaSamples(
+            scene.msaaRequested, out.width, out.height, (u32)nodes.size(), concurrent);
         if (msaa != scene.msaaSamples) {
             LOG_INFO("MSAA resolved: x%u -> x%u (%ux%u, %zu passes, %llu px on other screens)",
                      scene.msaaRequested,
@@ -2004,12 +2022,12 @@ void VulkanRender::Impl::compileRenderGraph(Scene& scene, rg::RenderGraph& rg) {
             // CustomShaderPass draw — PrePass, FinPass, CopyPass — stays a
             // hard boundary as well.
             if (csp != nullptr && csp->prepared() && ! csp->canCache()) {
-                const auto& d      = csp->desc();
-                info.mergeable     = true;
-                info.color_view    = csp->outputKey();
-                info.msaa_view     = KeyForImage(d.msaaColorView);
-                info.depth_view    = KeyForImage(d.depthView);
-                info.samples       = (unsigned)d.msaaSamples;
+                const auto& d   = csp->desc();
+                info.mergeable  = true;
+                info.color_view = csp->outputKey();
+                info.msaa_view  = KeyForImage(d.msaaColorView);
+                info.depth_view = KeyForImage(d.depthView);
+                info.samples    = (unsigned)d.msaaSamples;
                 // A prepared pass always has an out_slot: prepare() returns
                 // before setPrepared when the output or its slot is missing.
                 info.width         = (unsigned)d.out_slot->key.width;
@@ -2173,8 +2191,8 @@ void VulkanRender::Impl::noteCreateFailure(RtSlot& slot, bool log) {
 // WEKDE_RT_RESIDENCY=0), and let the caller batch the initial clears into the
 // vertex upload submit instead of one submit-and-wait per image.
 void VulkanRender::Impl::createLoadSlots(std::vector<SlotId>& fresh) {
-    auto&      cache   = m_device->tex_cache();
-    const auto& needed  = computeDemand();
+    auto&       cache  = m_device->tex_cache();
+    const auto& needed = computeDemand();
     applyOutputNeeded(needed);
     unsigned managed = 0, resident = 0, failed = 0;
     for (RtSlot* s : m_slot_by_id) {
@@ -2215,8 +2233,8 @@ void VulkanRender::Impl::releaseSlot(RtSlot& slot) {
 
 void VulkanRender::Impl::residencyStep(RenderingResources& rr) {
     WEK_PROFILE_SCOPE("VulkanRender::residencyStep");
-    const auto t0      = std::chrono::steady_clock::now();
-    auto&      cache   = m_device->tex_cache();
+    const auto t0    = std::chrono::steady_clock::now();
+    auto&      cache = m_device->tex_cache();
     // Blocked is a per-frame verdict (set below from what this frame could
     // create).  Clearing it first keeps last frame's verdict out of this
     // frame's demand: the reader of a failed slot still counts as drawing, so

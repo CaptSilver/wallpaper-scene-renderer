@@ -16,6 +16,7 @@ namespace
 // into it, so a consumer can tell which frame it was handed.
 struct Image {
     int frame { 0 };
+    int index { 0 };
 };
 
 // TripleSwapchain over three plain images.  The render thread and the Qt
@@ -26,6 +27,7 @@ struct Image {
 class TestSwapchain : public TripleSwapchain<Image> {
 public:
     TestSwapchain() {
+        for (int i = 0; i < 3; ++i) m_images[i].index = i;
         m_presented  = &m_images[0];
         m_ready      = &m_images[1];
         m_inprogress = &m_images[2];
@@ -76,13 +78,15 @@ private:
 };
 
 // What the Qt side would put on screen: the last image eatFrame() handed over.
+// No GPU synchronisation here, so retiring an image needs no signal.
 struct Screen {
     TestSwapchain& chain;
     int            shown { 0 };
     int            newest_shown { 0 };
 
     void repaint() {
-        if (Image* img = chain.eatFrame()) {
+        if (Image* img = chain.eatFrame([](Image*) {
+            })) {
             shown = img->frame;
             if (shown > newest_shown) newest_shown = shown;
         }
@@ -152,5 +156,184 @@ TEST_SUITE("TripleSwapchain") {
         chain.produce(4);
         screen.repaint();
         CHECK(screen.shown == 4);
+    }
+}
+
+namespace
+{
+
+// A binary semaphore as Vulkan and GL see it: a signal needs it unsignaled, a
+// wait needs a signal to be pending.  Both go wrong silently on a real driver
+// (a hang, or content read before it is written), so here they fail the test.
+struct FakeBinarySemaphore {
+    const char* name;
+    int         image;
+    bool        signaled { false };
+
+    void signal() {
+        CHECK_MESSAGE(! signaled, name, " of image ", image, " signaled while already signaled");
+        signaled = true;
+    }
+    void wait() {
+        CHECK_MESSAGE(signaled, name, " of image ", image, " waited with no signal pending");
+        signaled = false;
+    }
+};
+
+using Wait = TripleSwapchain<Image>::InprogressWait;
+
+// Both ends of the handoff with the semaphore traffic the real ones issue:
+// the render thread waits on whatever inprogressWait() says, then signals the
+// image's render-done in its submit; Qt signals release for the image it stops
+// presenting and waits render-done on each image it is handed.
+struct SyncedHandoff {
+    TestSwapchain                      chain;
+    std::array<FakeBinarySemaphore, 3> render_done {
+        { { "render-done", 0 }, { "render-done", 1 }, { "render-done", 2 } }
+    };
+    std::array<FakeBinarySemaphore, 3> release {
+        { { "release", 0 }, { "release", 1 }, { "release", 2 } }
+    };
+    int shown { 0 };
+    int newest_shown { 0 };
+    int frames { 0 };
+
+    void produce() {
+        Image* img = chain.getInprogress();
+        switch (chain.inprogressWait()) {
+        case Wait::None: break;
+        case Wait::Release: release[img->index].wait(); break;
+        case Wait::DrainRenderDone: render_done[img->index].wait(); break;
+        }
+        render_done[img->index].signal();
+        img->frame = ++frames;
+        chain.renderFrame();
+    }
+
+    void repaint() {
+        Image* img = chain.eatFrame([this](Image* outgoing) {
+            release[outgoing->index].signal();
+        });
+        if (! img) return;
+        render_done[img->index].wait();
+        shown = img->frame;
+        CHECK_MESSAGE(shown >= newest_shown,
+                      "repaint went back from frame ",
+                      newest_shown,
+                      " to frame ",
+                      shown);
+        if (shown > newest_shown) newest_shown = shown;
+    }
+
+    // 'P' = the render thread publishes a frame, 'E' = Qt repaints.
+    void run(const char* script) {
+        for (const char* c = script; *c; ++c) {
+            if (*c == 'P')
+                produce();
+            else if (*c == 'E')
+                repaint();
+        }
+    }
+};
+
+} // namespace
+
+TEST_SUITE("TripleSwapchain sync") {
+    TEST_CASE("the first render into each image waits on nothing") {
+        TestSwapchain chain;
+        CHECK(chain.inprogressWait() == Wait::None);
+        chain.produce(1); // the never-presented initial ready image comes back
+        CHECK(chain.inprogressWait() == Wait::None);
+    }
+
+    TEST_CASE("an image Qt stopped presenting is waited on for release before reuse") {
+        TestSwapchain chain;
+        chain.produce(1);
+        Image* initially_presented = nullptr;
+        Image* shown               = chain.eatFrame([&](Image* outgoing) {
+            initially_presented = outgoing;
+        });
+        REQUIRE(shown != nullptr);
+        REQUIRE(initially_presented != nullptr);
+        chain.produce(2); // the retired image is the only one free now
+        CHECK(chain.getInprogress() == initially_presented);
+        CHECK(chain.inprogressWait() == Wait::Release);
+    }
+
+    TEST_CASE("a frame dropped before any repaint has its render-done drained before reuse") {
+        TestSwapchain chain;
+        chain.produce(1);
+        Image* dropped = chain.getInprogress(); // gets frame 2, never eaten
+        chain.produce(2);
+        chain.produce(3); // frame 2 is pushed out of ready unseen
+        CHECK(chain.getInprogress() == dropped);
+        CHECK(chain.inprogressWait() == Wait::DrainRenderDone);
+    }
+
+    TEST_CASE("a render thread Qt never eats from keeps draining, never waits on release") {
+        TestSwapchain chain;
+        chain.produce(1);
+        for (int n = 2; n <= 8; ++n) {
+            chain.produce(n);
+            CHECK(chain.inprogressWait() == Wait::DrainRenderDone);
+        }
+    }
+
+    TEST_CASE("a repaint with nothing new retires nothing and hands over nothing") {
+        TestSwapchain chain;
+        chain.produce(1);
+        chain.eatFrame([](Image*) {
+        });
+        int    retired = 0;
+        Image* img     = chain.eatFrame([&](Image*) {
+            ++retired;
+        });
+        CHECK(img == nullptr);
+        CHECK(retired == 0);
+    }
+
+    // The release signal must be issued before the image can reach the render
+    // thread, or the render thread's wait finds no signal pending.  A publish
+    // racing the retire must not be able to pick up the image being retired.
+    TEST_CASE("the image being retired cannot reach the render thread before its release") {
+        TestSwapchain chain;
+        chain.produce(1);
+        chain.eatFrame([](Image*) {
+        });
+        chain.produce(2);
+        Image* picked_up_during_retire = nullptr;
+        Image* retiring                = nullptr;
+        chain.eatFrame([&](Image* outgoing) {
+            retiring = outgoing;
+            chain.produce(3);
+            picked_up_during_retire = chain.getInprogress();
+        });
+        REQUIRE(retiring != nullptr);
+        CHECK(picked_up_during_retire != retiring);
+    }
+
+    TEST_CASE("semaphores stay balanced and frames stay in order across interleavings") {
+        const char* scripts[] = {
+            "PEPEPEPEPE",   "PPPPEPPPPE",   "PEEEPEEEPE",   "EEPPEEPPEE",
+            "PPEPPEPPEPPE", "PEPPPEEPEPPP", "PPPPPPPPPPEE", "PEPEEPPPEEPE",
+        };
+        for (const char* script : scripts) {
+            CAPTURE(script);
+            SyncedHandoff h;
+            h.run(script);
+            h.run("PEPPEPEE"); // and it keeps going afterwards
+        }
+    }
+
+    TEST_CASE("semaphores stay balanced when a repaint lands inside a publish") {
+        SyncedHandoff h;
+        h.run("PE");
+        h.produce(); // published, not yet eaten
+        h.chain.arm_midpoint([&] {
+            h.repaint();
+        });
+        h.produce();
+        h.run("EPEPPE");
+        CHECK(h.newest_shown == h.shown);
     }
 }

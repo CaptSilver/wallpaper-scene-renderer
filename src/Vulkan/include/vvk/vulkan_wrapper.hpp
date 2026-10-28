@@ -180,6 +180,7 @@ struct DeviceDispatch : InstanceDispatch {
     PFN_vkGetFenceStatus                      vkGetFenceStatus {};
     PFN_vkGetImageMemoryRequirements          vkGetImageMemoryRequirements {};
     PFN_vkGetMemoryFdKHR                      vkGetMemoryFdKHR {};
+    PFN_vkGetSemaphoreFdKHR                   vkGetSemaphoreFdKHR {};
     PFN_vkGetPipelineCacheData                vkGetPipelineCacheData {};
     PFN_vkGetPipelineExecutablePropertiesKHR  vkGetPipelineExecutablePropertiesKHR {};
     PFN_vkGetPipelineExecutableStatisticsKHR  vkGetPipelineExecutableStatisticsKHR {};
@@ -482,6 +483,9 @@ class Semaphore : public Handle<VkSemaphore, VkDevice, DeviceDispatch> {
     using Handle<VkSemaphore, VkDevice, DeviceDispatch>::Handle;
 
 public:
+    // Exports the semaphore as an opaque fd; the caller owns the fd.
+    VkResult GetFdKHR(int*) const;
+
     VkResult GetCounter(uint64_t* value) const {
         return dld->vkGetSemaphoreCounterValueKHR(owner, handle, value);
     }
@@ -521,7 +525,8 @@ public:
     VkResult CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci, VkPipelineCache cache,
                                     Pipeline&) const noexcept;
 
-    VkResult CreatePipelineCache(const VkPipelineCacheCreateInfo& ci, PipelineCache&) const noexcept;
+    VkResult CreatePipelineCache(const VkPipelineCacheCreateInfo& ci,
+                                 PipelineCache&) const noexcept;
 
     VkResult GetPipelineCacheData(VkPipelineCache cache, size_t* size, void* data) const noexcept {
         return dld->vkGetPipelineCacheData(handle, cache, size, data);

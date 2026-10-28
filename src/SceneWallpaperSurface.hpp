@@ -41,7 +41,10 @@ struct RenderInitInfo {
 
     std::span<const std::uint8_t> uuid;
     TexTiling                     offscreen_tiling { TexTiling::OPTIMAL };
-    VulkanSurfaceInfo             surface_info;
+    // Offscreen only: hand images to the consumer with semaphores.  Set by the
+    // consumer, which has to be able to import them (InteropSyncEnabled).
+    bool              interop_sync { false };
+    VulkanSurfaceInfo surface_info;
 
     uint16_t width { 1920 };
     uint16_t height { 1080 };

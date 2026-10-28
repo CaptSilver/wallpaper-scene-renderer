@@ -1,4 +1,5 @@
 #include "SceneBackend.hpp"
+#include "Swapchain/ExInteropSync.hpp"
 #include "SceneGraphApi.hpp"
 #include "Scene/RenderExtent.h"
 #include "Timer/FramePacing.hpp"
@@ -175,6 +176,10 @@ public:
             m_glex.deleteTexture(exh.gltex);
             delete exh.qsg;
         }
+        for (auto& [id, sync] : m_ex_sync) {
+            m_glex.deleteSemaphore(sync.render_done);
+            m_glex.deleteSemaphore(sync.release);
+        }
         delete m_init_texture;
         emit nodeDestroyed();
         _Q_INFO("Destroy texnode");
@@ -195,6 +200,8 @@ public:
         info.deterministic      = deterministic;
         info.offscreen_tiling   = m_glex.tiling();
         info.uuid               = m_glex.uuid();
+        info.interop_sync       = wallpaper::InteropSyncEnabled(m_glex.hasSemaphoreFd(),
+                                                                std::getenv("WEKDE_INTEROP_SYNC"));
         info.width              = w;
         info.height             = h;
         // Every callback below captures m_guard, not `this`: the wallpaper
@@ -286,7 +293,13 @@ public slots:
     void newTexture() {
         if (! m_scene->inited() || m_scene->exSwapchain() == nullptr) return;
 
-        wallpaper::ExHandle* exh = m_scene->exSwapchain()->eatFrame();
+        // The image leaving the screen goes back to the renderer, which waits on
+        // its release before drawing into it again.
+        wallpaper::ExHandle* exh =
+            m_scene->exSwapchain()->eatFrame([this](wallpaper::ExHandle* outgoing) {
+                if (uint release = exSyncFor(*outgoing).release)
+                    m_glex.signalSemaphore(release, glTextureOf(outgoing->id()));
+            });
         if (exh != nullptr) {
             int id = exh->id();
             if (texs_map.count(id) == 0) {
@@ -304,6 +317,15 @@ public slots:
                 close(fd);
             }
             auto& newtex = texs_map.at(id);
+            // The renderer may still be drawing it: this frame's sampling
+            // waits for its render-done.
+            if (uint render_done = exSyncFor(*exh).render_done) {
+                m_glex.waitSemaphore(render_done, newtex.gltex);
+                if (! m_logged_interop_wait) {
+                    m_logged_interop_wait = true;
+                    _Q_INFO("interop: sampling waits on the renderer's render-done semaphore");
+                }
+            }
             if (newtex.qsg != nullptr)
                 m_texture = newtex.qsg;
             else
@@ -338,6 +360,29 @@ private:
         QSGTexture* qsg;
     };
     std::unordered_map<int, ExTex> texs_map;
+
+    // The GL side of an image's render-done/release pair, imported the first
+    // time the image is handed over or retired.  Both 0 when the swapchain is
+    // unsynchronised.
+    struct ExSync {
+        uint render_done { 0 };
+        uint release { 0 };
+    };
+    std::unordered_map<int, ExSync> m_ex_sync;
+    bool                            m_logged_interop_wait { false };
+
+    ExSync& exSyncFor(wallpaper::ExHandle& handle) {
+        auto [it, inserted] = m_ex_sync.try_emplace(handle.id());
+        if (inserted) {
+            it->second.render_done = m_glex.importSemaphore(handle.render_done_fd);
+            it->second.release     = m_glex.importSemaphore(handle.release_fd);
+        }
+        return it->second;
+    }
+    uint glTextureOf(int id) const {
+        auto it = texs_map.find(id);
+        return it == texs_map.end() ? 0 : it->second.gltex;
+    }
 
     // Render-thread callbacks (initVulkan) capture this instead of `this` —
     // see RenderCallbackGuard.hpp for why a raw capture isn't safe here.
@@ -460,14 +505,13 @@ QSGNode* SceneObject::updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData*) {
             // exact physical pixel size via the renderPixelWidth/Height
             // properties — needed because Wayland fractional scaling makes
             // dpr unstable around window-show time (see qmlviewer.cpp -R).
-            const auto dpr    = window()->devicePixelRatio();
+            const auto dpr = window()->devicePixelRatio();
             using wallpaper::ResolveRenderExtent;
-            const auto extent =
-                ResolveRenderExtent((uint32_t)std::lround(width() * dpr),
-                                    (uint32_t)std::lround(height() * dpr),
-                                    m_renderScale,
-                                    (uint32_t)std::max(0, m_renderPixelWidth),
-                                    (uint32_t)std::max(0, m_renderPixelHeight));
+            const auto extent = ResolveRenderExtent((uint32_t)std::lround(width() * dpr),
+                                                    (uint32_t)std::lround(height() * dpr),
+                                                    m_renderScale,
+                                                    (uint32_t)std::max(0, m_renderPixelWidth),
+                                                    (uint32_t)std::max(0, m_renderPixelHeight));
             node->initVulkan((int)extent.width, (int)extent.height, m_hdrOutput, m_deterministic);
 
             connect(
@@ -1921,7 +1965,7 @@ wek::qml_helper::ConsoleFlushDedup& jsConsoleDedup() {
 // m_propFrameCount, the property-tick counter the dedup window is measured
 // against.
 static void flushJsConsole(QJSEngine* engine, const QJSValue& consoleObj, qint64 tick,
-                            const char* ctx) {
+                           const char* ctx) {
     if (! engine) return;
     QJSValue consoleBuf = consoleObj.property("_buf");
     if (! consoleBuf.isArray()) return;

@@ -164,6 +164,7 @@ bool Load(VkDevice device, DeviceDispatch& dld) noexcept {
     X(vkGetFenceStatus);
     X(vkGetImageMemoryRequirements);
     X(vkGetMemoryFdKHR);
+    X(vkGetSemaphoreFdKHR);
     X(vkGetQueryPoolResults);
     X(vkGetPipelineCacheData);
     X(vkGetPipelineExecutablePropertiesKHR);
@@ -466,7 +467,7 @@ VkResult Device::CreateGraphicsPipeline(const VkGraphicsPipelineCreateInfo& ci,
 }
 
 VkResult Device::CreatePipelineCache(const VkPipelineCacheCreateInfo& ci,
-                                     PipelineCache& cache) const noexcept {
+                                     PipelineCache&                   cache) const noexcept {
     VkPipelineCache object;
     VkResult        res = dld->vkCreatePipelineCache(handle, &ci, nullptr, &object);
     if (res == VK_SUCCESS) cache = PipelineCache(object, handle, *dld);
@@ -588,6 +589,16 @@ VkResult CommandPool::Allocate(std::size_t num_buffers, VkCommandBufferLevel lev
     if (res == VK_SUCCESS)
         buffers_ = CommandBuffers(std::move(buffers), num_buffers, owner, handle, *dld);
     return res;
+}
+
+VkResult Semaphore::GetFdKHR(int* fd) const {
+    const VkSemaphoreGetFdInfoKHR get_fd_info {
+        .sType      = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+        .pNext      = nullptr,
+        .semaphore  = handle,
+        .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+    };
+    return dld->vkGetSemaphoreFdKHR(owner, &get_fd_info, fd);
 }
 
 VkResult DeviceMemory::GetMemoryFdKHR(int* fd) const {

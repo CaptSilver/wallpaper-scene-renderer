@@ -254,6 +254,43 @@ uint GlExtra::genExTexture(ExHandle& handle) {
     return tex;
 }
 
+bool GlExtra::hasSemaphoreFd() const { return inited && GLAD_GL_EXT_semaphore_fd; }
+
+uint GlExtra::importSemaphore(int& fd) {
+    if (fd < 0) return 0;
+    // Only this import's error counts, not one left from earlier calls.
+    while (glGetError() != GL_NO_ERROR) {
+    }
+    uint sem { 0 };
+    glGenSemaphoresEXT(1, &sem);
+    glImportSemaphoreFdEXT(sem, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
+    fd = -1; // GL owns it now, even if the import failed
+    if (glGetError() != GL_NO_ERROR || ! glIsSemaphoreEXT(sem)) {
+        LOG_ERROR("gl: importing a renderer semaphore failed");
+        glDeleteSemaphoresEXT(1, &sem);
+        return 0;
+    }
+    return sem;
+}
+
+// The renderer leaves exported images in VK_IMAGE_LAYOUT_GENERAL (FinPass).
+void GlExtra::waitSemaphore(uint sem, uint tex) {
+    const GLenum layout = GL_LAYOUT_GENERAL_EXT;
+    glWaitSemaphoreEXT(sem, 0, nullptr, tex ? 1 : 0, tex ? &tex : nullptr, &layout);
+    CHECK_GL_ERROR_IF_DEBUG();
+}
+
+void GlExtra::signalSemaphore(uint sem, uint tex) {
+    const GLenum layout = GL_LAYOUT_GENERAL_EXT;
+    glSignalSemaphoreEXT(sem, 0, nullptr, tex ? 1 : 0, tex ? &tex : nullptr, &layout);
+    glFlush();
+    CHECK_GL_ERROR_IF_DEBUG();
+}
+
+void GlExtra::deleteSemaphore(uint sem) {
+    if (sem) glDeleteSemaphoresEXT(1, &sem);
+}
+
 void GlExtra::deleteTexture(uint tex) {
     glDeleteTextures(1, &tex);
     CHECK_GL_ERROR_IF_DEBUG();

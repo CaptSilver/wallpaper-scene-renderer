@@ -17,6 +17,19 @@ public:
     uint genExTexture(wallpaper::ExHandle&);
     void deleteTexture(uint);
 
+    // GL_EXT_semaphore_fd, needed to take the renderer's semaphores.
+    bool hasSemaphoreFd() const;
+    // Imports in the current context and takes ownership of `fd` (sets -1).
+    // 0 on failure.
+    uint importSemaphore(int& fd);
+    // Order this context's later use of `tex` after the semaphore's signal.
+    // `tex` 0 = no texture to transition (one never imported here).
+    void waitSemaphore(uint sem, uint tex);
+    // Signal once this context's earlier use of `tex` is done, and flush so the
+    // signal is submitted before anything can wait on it.
+    void signalSemaphore(uint sem, uint tex);
+    void deleteSemaphore(uint sem);
+
     std::span<const std::uint8_t> uuid() const;
     wallpaper::TexTiling          tiling() const;
 
