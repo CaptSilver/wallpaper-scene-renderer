@@ -23,10 +23,10 @@ namespace
 // Build a ParticleInfo around the supplied particle vector with default
 // (zero-resolved) controlpoints unless overridden.
 struct OpFixture {
-    std::vector<Particle>             particles;
+    std::vector<Particle>               particles;
     std::array<ParticleControlpoint, 8> cps;
-    double                            time { 0.0 };
-    double                            time_pass { 0.016 };
+    double                              time { 0.0 };
+    double                              time_pass { 0.016 };
 
     ParticleInfo info() {
         return ParticleInfo {
@@ -66,7 +66,7 @@ wpscene::ParticleInstanceoverride empty_override() {
 
 TEST_SUITE("BlendWindow") {
     TEST_CASE("absent fields → trivial: factor is always 1") {
-        json j = json::object();
+        json j  = json::object();
         auto bw = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.Has());
         CHECK(bw.Factor(0.0) == doctest::Approx(1.0));
@@ -75,7 +75,7 @@ TEST_SUITE("BlendWindow") {
     }
 
     TEST_CASE("fade-in only ramps from 0 to 1 across the window") {
-        json j = { { "blendinstart", 0.0 }, { "blendinend", 0.2 } };
+        json j  = { { "blendinstart", 0.0 }, { "blendinend", 0.2 } };
         auto bw = BlendWindow::FromJson(j);
         CHECK(bw.Has());
         CHECK(bw.Factor(0.0) == doctest::Approx(0.0));
@@ -86,7 +86,7 @@ TEST_SUITE("BlendWindow") {
     }
 
     TEST_CASE("fade-out only ramps from 1 to 0 across the window") {
-        json j = { { "blendoutstart", 0.8 }, { "blendoutend", 1.0 } };
+        json j  = { { "blendoutstart", 0.8 }, { "blendoutend", 1.0 } };
         auto bw = BlendWindow::FromJson(j);
         CHECK(bw.Has());
         CHECK(bw.Factor(0.0) == doctest::Approx(1.0));
@@ -96,8 +96,10 @@ TEST_SUITE("BlendWindow") {
     }
 
     TEST_CASE("fade-in then fade-out — full pipeline") {
-        json j = { { "blendinstart", 0.0 }, { "blendinend", 0.2 },
-                   { "blendoutstart", 0.8 }, { "blendoutend", 1.0 } };
+        json j  = { { "blendinstart", 0.0 },
+                    { "blendinend", 0.2 },
+                    { "blendoutstart", 0.8 },
+                    { "blendoutend", 1.0 } };
         auto bw = BlendWindow::FromJson(j);
         CHECK(bw.Has());
         CHECK(bw.Factor(0.0) == doctest::Approx(0.0));
@@ -106,7 +108,7 @@ TEST_SUITE("BlendWindow") {
     }
 
     TEST_CASE("degenerate window (start==end) does not divide by zero") {
-        json j = { { "blendinstart", 0.5 }, { "blendinend", 0.5 } };
+        json j  = { { "blendinstart", 0.5 }, { "blendinend", 0.5 } };
         auto bw = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.has_fade_in); // collapsed to 0-width — gated off
         CHECK(bw.Factor(0.5) == doctest::Approx(1.0));
@@ -158,7 +160,7 @@ TEST_SUITE("BlendWindow") {
         json        j;
         j["blendinstart"] = start_v;
         j["blendinend"]   = end_v;
-        auto bw = BlendWindow::FromJson(j);
+        auto bw           = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.Has());
         CHECK_FALSE(bw.has_fade_in);
     }
@@ -172,7 +174,7 @@ TEST_SUITE("BlendWindow") {
         json        j;
         j["blendoutstart"] = start_v;
         j["blendoutend"]   = end_v;
-        auto bw = BlendWindow::FromJson(j);
+        auto bw            = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.Has());
         CHECK_FALSE(bw.has_fade_out);
     }
@@ -182,13 +184,15 @@ TEST_SUITE("BlendWindow") {
         // `blendout_start + 1e-6f`.  When `end == start`, original `>` is
         // false; mutated `+ → -` makes it `start > start - 1e-6` which is
         // true and would gate on a 0-width window producing NaN factors.
-        json j  = { { "blendinstart", 0.4 }, { "blendinend", 0.4 },
-                    { "blendoutstart", 0.5 }, { "blendoutend", 0.5 } };
+        json j  = { { "blendinstart", 0.4 },
+                    { "blendinend", 0.4 },
+                    { "blendoutstart", 0.5 },
+                    { "blendoutend", 0.5 } };
         auto bw = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.Has());
         CHECK_FALSE(bw.has_fade_in);
         CHECK_FALSE(bw.has_fade_out);
-        CHECK(bw.Factor(0.5) == doctest::Approx(1.0));  // not NaN
+        CHECK(bw.Factor(0.5) == doctest::Approx(1.0)); // not NaN
     }
 
     TEST_CASE("blendout_start == 1.0 - 1e-6 exactly → still trivial (upper-bound gate)") {
@@ -198,11 +202,11 @@ TEST_SUITE("BlendWindow") {
         // strictly larger than start + 1e-6 so the OTHER gate is true and
         // the upper-bound gate is what flips Has().
         const float start_v = 1.0f - 1e-6f;
-        const float end_v   = 1.0f + 5e-6f;  // strictly past start + 1e-6
+        const float end_v   = 1.0f + 5e-6f; // strictly past start + 1e-6
         json        j;
         j["blendoutstart"] = start_v;
         j["blendoutend"]   = end_v;
-        auto bw = BlendWindow::FromJson(j);
+        auto bw            = BlendWindow::FromJson(j);
         CHECK_FALSE(bw.Has());
         CHECK_FALSE(bw.has_fade_out);
     }
@@ -383,7 +387,7 @@ TEST_SUITE("HsvColor") {
     TEST_CASE("RgbToHsv pure red returns h strictly less than 360") {
         auto hsv = RgbToHsv(1.0, 0.0, 0.0);
         CHECK(hsv.x() == doctest::Approx(0.0));
-        CHECK(hsv.x() < 360.0);  // critical: NOT 360
+        CHECK(hsv.x() < 360.0); // critical: NOT 360
         CHECK(hsv.y() == doctest::Approx(1.0));
         CHECK(hsv.z() == doctest::Approx(1.0));
     }
@@ -434,9 +438,9 @@ TEST_SUITE("HsvColor") {
         // produce s=0/0=NaN inside the ternary.
         auto hsv = RgbToHsv(0.5, 0.5, 0.5);
         CHECK(hsv.x() == doctest::Approx(0.0));
-        CHECK(hsv.y() == doctest::Approx(0.0));  // saturation 0
-        CHECK(hsv.z() == doctest::Approx(0.5));  // value 0.5
-        CHECK(hsv.x() == hsv.x()); // not NaN
+        CHECK(hsv.y() == doctest::Approx(0.0)); // saturation 0
+        CHECK(hsv.z() == doctest::Approx(0.5)); // value 0.5
+        CHECK(hsv.x() == hsv.x());              // not NaN
         CHECK(hsv.y() == hsv.y());
     }
 
@@ -498,32 +502,32 @@ TEST_SUITE("ParticleCollision") {
 
 TEST_SUITE("capvelocity") {
     TEST_CASE("clamps fast particles to maxspeed") {
-        json j = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(300, 0, 0);
+        p.velocity  = Eigen::Vector3f(300, 0, 0);
         op(fx.info());
         CHECK(p.velocity.norm() == doctest::Approx(100.0));
     }
 
     TEST_CASE("leaves slower particles alone") {
-        json j = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(50, 0, 0);
+        p.velocity  = Eigen::Vector3f(50, 0, 0);
         op(fx.info());
         CHECK(p.velocity.x() == doctest::Approx(50.0));
     }
 
     TEST_CASE("dead particles are skipped") {
-        json j = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "capvelocity" }, { "maxspeed", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.lifetime = 0.0f;
-        p.velocity = Eigen::Vector3f(500, 0, 0);
+        p.lifetime  = 0.0f;
+        p.velocity  = Eigen::Vector3f(500, 0, 0);
         op(fx.info());
         CHECK(p.velocity.x() == doctest::Approx(500.0));
     }
@@ -535,11 +539,10 @@ TEST_SUITE("capvelocity") {
 
 TEST_SUITE("hsvcolorrandom initializer") {
     TEST_CASE("produces RGB color in [0, 1] range") {
-        json j = { { "name", "hsvcolorrandom" },
-                   { "huemin", 0.0 }, { "huemax", 360.0 },
-                   { "saturationmin", 0.5 }, { "saturationmax", 1.0 },
-                   { "valuemin", 1.0 }, { "valuemax", 1.0 } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j = { { "name", "hsvcolorrandom" }, { "huemin", 0.0 },        { "huemax", 360.0 },
+                       { "saturationmin", 0.5 },     { "saturationmax", 1.0 }, { "valuemin", 1.0 },
+                       { "valuemax", 1.0 } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         for (int i = 0; i < 50; i++) {
             init(p, 0.0);
@@ -553,10 +556,12 @@ TEST_SUITE("hsvcolorrandom initializer") {
     }
 
     TEST_CASE("zero saturation → grayscale particle") {
-        json j = { { "name", "hsvcolorrandom" },
-                   { "saturationmin", 0.0 }, { "saturationmax", 0.0 },
-                   { "valuemin", 0.5 }, { "valuemax", 0.5 } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j    = { { "name", "hsvcolorrandom" },
+                          { "saturationmin", 0.0 },
+                          { "saturationmax", 0.0 },
+                          { "valuemin", 0.5 },
+                          { "valuemax", 0.5 } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(0.5));
@@ -571,8 +576,8 @@ TEST_SUITE("hsvcolorrandom initializer") {
 
 TEST_SUITE("colorlist initializer") {
     TEST_CASE("picks one of the listed colors") {
-        json j = { { "name", "colorlist" },
-                   { "colors", { "1.0 0.0 0.0", "0.0 1.0 0.0", "0.0 0.0 1.0" } } };
+        json j    = { { "name", "colorlist" },
+                      { "colors", { "1.0 0.0 0.0", "0.0 1.0 0.0", "0.0 0.0 1.0" } } };
         auto init = WPParticleParser::genParticleInitOp(j);
         for (int i = 0; i < 30; i++) {
             Particle p;
@@ -583,8 +588,8 @@ TEST_SUITE("colorlist initializer") {
     }
 
     TEST_CASE("normalizes 0..255 strings to 0..1") {
-        json j = { { "name", "colorlist" }, { "colors", { "255 0 0" } } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j    = { { "name", "colorlist" }, { "colors", { "255 0 0" } } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.0));
@@ -592,8 +597,8 @@ TEST_SUITE("colorlist initializer") {
     }
 
     TEST_CASE("empty colors array does not crash — falls back to white") {
-        json j = { { "name", "colorlist" }, { "colors", json::array() } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j    = { { "name", "colorlist" }, { "colors", json::array() } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(1.0));
@@ -608,35 +613,38 @@ TEST_SUITE("colorlist initializer") {
 
 TEST_SUITE("maintaindistancetocontrolpoint") {
     TEST_CASE("hard clamp snaps the particle onto the sphere surface") {
-        json j = { { "name", "maintaindistancetocontrolpoint" },
-                   { "controlpoint", 0 }, { "distance", 100.0 },
-                   { "variablestrength", 0.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "maintaindistancetocontrolpoint" },
+                         { "controlpoint", 0 },
+                         { "distance", 100.0 },
+                         { "variablestrength", 0.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(50, 0, 0); // inside
+        p.position  = Eigen::Vector3f(50, 0, 0); // inside
         op(fx.info());
         CHECK(p.position.norm() == doctest::Approx(100.0));
     }
 
     TEST_CASE("particle outside the sphere is pushed back to surface") {
-        json j = { { "name", "maintaindistancetocontrolpoint" },
-                   { "controlpoint", 0 }, { "distance", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "maintaindistancetocontrolpoint" },
+                         { "controlpoint", 0 },
+                         { "distance", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(200, 0, 0);
+        p.position  = Eigen::Vector3f(200, 0, 0);
         op(fx.info());
         CHECK(p.position.x() == doctest::Approx(100.0));
     }
 
     TEST_CASE("zero CP, zero position → no NaN (epsilon guard)") {
-        json j = { { "name", "maintaindistancetocontrolpoint" },
-                   { "controlpoint", 0 }, { "distance", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "maintaindistancetocontrolpoint" },
+                         { "controlpoint", 0 },
+                         { "distance", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(0, 0, 0);
+        p.position  = Eigen::Vector3f(0, 0, 0);
         op(fx.info());
         CHECK(std::isfinite(p.position.x()));
     }
@@ -648,28 +656,28 @@ TEST_SUITE("maintaindistancetocontrolpoint") {
 
 TEST_SUITE("collisionplane") {
     TEST_CASE("particle below the y=0 plane is snapped to the plane") {
-        json j = { { "name", "collisionplane" },
-                   { "plane", { 0.0, 1.0, 0.0, 0.0 } },
-                   { "controlpoint", 0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "collisionplane" },
+                         { "plane", { 0.0, 1.0, 0.0, 0.0 } },
+                         { "controlpoint", 0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(10, -5, 0);
-        p.velocity = Eigen::Vector3f(0, -3, 0);
+        p.position  = Eigen::Vector3f(10, -5, 0);
+        p.velocity  = Eigen::Vector3f(0, -3, 0);
         op(fx.info());
         CHECK(p.position.y() == doctest::Approx(0.0));
         CHECK(p.velocity.y() == doctest::Approx(3.0)); // reflected
     }
 
     TEST_CASE("particle above the plane is left alone") {
-        json j = { { "name", "collisionplane" },
-                   { "plane", { 0.0, 1.0, 0.0, 0.0 } },
-                   { "controlpoint", 0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "collisionplane" },
+                         { "plane", { 0.0, 1.0, 0.0, 0.0 } },
+                         { "controlpoint", 0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(0, 10, 0);
-        p.velocity = Eigen::Vector3f(1, 1, 0);
+        p.position  = Eigen::Vector3f(0, 10, 0);
+        p.velocity  = Eigen::Vector3f(1, 1, 0);
         op(fx.info());
         CHECK(p.position.y() == doctest::Approx(10.0));
         CHECK(p.velocity.y() == doctest::Approx(1.0));
@@ -679,15 +687,15 @@ TEST_SUITE("collisionplane") {
         // Plane (normal=+y, d=0) shifted by distance=5 along the normal lands
         // at y=+5: a particle at y=-3 is now BELOW the plane and is snapped
         // upward.
-        json j = { { "name", "collisionplane" },
-                   { "plane", { 0.0, 1.0, 0.0, 0.0 } },
-                   { "distance", 5.0 },
-                   { "controlpoint", 0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "collisionplane" },
+                         { "plane", { 0.0, 1.0, 0.0, 0.0 } },
+                         { "distance", 5.0 },
+                         { "controlpoint", 0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(0, -3, 0);
-        p.velocity = Eigen::Vector3f(0, -1, 0);
+        p.position  = Eigen::Vector3f(0, -3, 0);
+        p.velocity  = Eigen::Vector3f(0, -1, 0);
         op(fx.info());
         CHECK(p.position.y() == doctest::Approx(5.0));
         CHECK(p.velocity.y() == doctest::Approx(1.0)); // reflected
@@ -700,27 +708,27 @@ TEST_SUITE("collisionplane") {
 
 TEST_SUITE("collisionsphere") {
     TEST_CASE("particle inside sphere is pushed to surface and reflected") {
-        json j = { { "name", "collisionsphere" },
-                   { "origin", { 0.0, 0.0, 0.0 } },
-                   { "radius", 100.0 },
-                   { "controlpoint", 0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "collisionsphere" },
+                         { "origin", { 0.0, 0.0, 0.0 } },
+                         { "radius", 100.0 },
+                         { "controlpoint", 0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(50, 0, 0); // inside, radius 50
-        p.velocity = Eigen::Vector3f(-10, 0, 0); // moving toward center (into surface)
+        p.position  = Eigen::Vector3f(50, 0, 0);  // inside, radius 50
+        p.velocity  = Eigen::Vector3f(-10, 0, 0); // moving toward center (into surface)
         op(fx.info());
         CHECK(p.position.norm() == doctest::Approx(100.0));
         CHECK(p.velocity.x() == doctest::Approx(10.0)); // reflected
     }
 
     TEST_CASE("particle outside sphere is left alone") {
-        json j = { { "name", "collisionsphere" }, { "radius", 50.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "collisionsphere" }, { "radius", 50.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(200, 0, 0);
-        p.velocity = Eigen::Vector3f(1, 0, 0);
+        p.position  = Eigen::Vector3f(200, 0, 0);
+        p.velocity  = Eigen::Vector3f(1, 0, 0);
         op(fx.info());
         CHECK(p.position.x() == doctest::Approx(200.0));
     }
@@ -732,14 +740,14 @@ TEST_SUITE("collisionsphere") {
 
 TEST_SUITE("boids") {
     TEST_CASE("two particles within neighbor distance steer toward each other (cohesion)") {
-        json j = { { "name", "boids" },
-                   { "neighborthreshold", 100.0 },
-                   { "separationthreshold", 0.0 }, // disable separation
-                   { "cohesionfactor", 1.0 },
-                   { "alignmentfactor", 0.0 },
-                   { "separationfactor", 0.0 },
-                   { "maxspeed", 1000.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "boids" },
+                         { "neighborthreshold", 100.0 },
+                         { "separationthreshold", 0.0 }, // disable separation
+                         { "cohesionfactor", 1.0 },
+                         { "alignmentfactor", 0.0 },
+                         { "separationfactor", 0.0 },
+                         { "maxspeed", 1000.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.spawn().position = Eigen::Vector3f(-10, 0, 0);
         fx.spawn().position = Eigen::Vector3f(10, 0, 0);
@@ -750,11 +758,11 @@ TEST_SUITE("boids") {
     }
 
     TEST_CASE("speed cap clips post-acceleration velocity") {
-        json j = { { "name", "boids" }, { "maxspeed", 5.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "boids" }, { "maxspeed", 5.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(100, 0, 0);
+        p.velocity  = Eigen::Vector3f(100, 0, 0);
         op(fx.info());
         CHECK(p.velocity.norm() <= 5.0f + 1e-3f);
     }
@@ -766,14 +774,12 @@ TEST_SUITE("boids") {
 
 TEST_SUITE("remapvalue") {
     TEST_CASE("particlelifetime → particlealpha multiply (legacy 'opacity' alias)") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "multiply" },
-                   { "input", "particlelifetime" },
-                   { "output", "opacity" },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "multiply" },
+                         { "input", "particlelifetime" }, { "output", "opacity" },
+                         { "outputrangemin", 0.0 },       { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
-        Particle& p = fx.spawn();
+        Particle& p     = fx.spawn();
         p.lifetime      = 0.5f;
         p.init.lifetime = 1.0f;
         p.alpha         = 1.0f;
@@ -783,57 +789,52 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("set operation overrides instead of multiplying") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlelifetime" },
-                   { "output", "particlesize" },
-                   { "outputrangemin", 100.0 }, { "outputrangemax", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "set" },
+                         { "input", "particlelifetime" }, { "output", "particlesize" },
+                         { "outputrangemin", 100.0 },     { "outputrangemax", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.size = 20.0f;
+        p.size      = 20.0f;
         op(fx.info());
         CHECK(p.size == doctest::Approx(100.0));
     }
 
     TEST_CASE("add operation accumulates onto current value") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "add" },
-                   { "input", "particlelifetime" },
-                   { "output", "particlesize" },
-                   { "outputrangemin", 5.0 }, { "outputrangemax", 5.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "add" },
+                         { "input", "particlelifetime" }, { "output", "particlesize" },
+                         { "outputrangemin", 5.0 },       { "outputrangemax", 5.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.size = 20.0f;
+        p.size      = 20.0f;
         op(fx.info());
         CHECK(p.size == doctest::Approx(25.0));
     }
 
     TEST_CASE("input range normalisation and output range mapping") {
         // Input in [0, 100]; output in [10, 30].  Time = 50 → t=0.5 → out=20.
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlesystemtime" },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                   { "outputrangemin", 10.0 }, { "outputrangemax", 30.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },          { "operation", "set" },
+                         { "input", "particlesystemtime" }, { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },          { "inputrangemax", 100.0 },
+                         { "outputrangemin", 10.0 },        { "outputrangemax", 30.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
-        fx.time = 50.0;
+        fx.time     = 50.0;
         Particle& p = fx.spawn();
         op(fx.info());
         CHECK(p.size == doctest::Approx(20.0));
     }
 
     TEST_CASE("smoothstep transform is non-linear at the midpoint") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlelifetime" },
-                   { "output", "particlesize" },
-                   { "transformfunction", "smoothstep" },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "particlelifetime" },
+                         { "output", "particlesize" },
+                         { "transformfunction", "smoothstep" },
+                         { "outputrangemin", 0.0 },
+                         { "outputrangemax", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
         // life = 0.25 → smoothstep(0.25) = 3*0.0625 - 2*0.015625 = 0.15625
@@ -844,49 +845,40 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("controlpoint input reads CP position component") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "controlpoint" },
-                   { "inputcomponent", "x" },
-                   { "output", "particlesize" },
-                   { "inputcontrolpoint0", 0 },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },     { "operation", "set" },
+                         { "input", "controlpoint" },  { "inputcomponent", "x" },
+                         { "output", "particlesize" }, { "inputcontrolpoint0", 0 },
+                         { "inputrangemin", 0.0 },     { "inputrangemax", 100.0 },
+                         { "outputrangemin", 0.0 },    { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.cps[0].resolved = Eigen::Vector3d(50, 0, 0);
-        Particle& p = fx.spawn();
+        Particle& p        = fx.spawn();
         op(fx.info());
         CHECK(p.size == doctest::Approx(0.5));
     }
 
     TEST_CASE("subtract operation reduces current value") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "subtract" },
-                   { "input", "particlelifetime" },
-                   { "output", "particlesize" },
-                   { "outputrangemin", 5.0 }, { "outputrangemax", 5.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "subtract" },
+                         { "input", "particlelifetime" }, { "output", "particlesize" },
+                         { "outputrangemin", 5.0 },       { "outputrangemax", 5.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.size = 20.0f;
+        p.size      = 20.0f;
         op(fx.info());
         CHECK(p.size == doctest::Approx(15.0));
     }
 
     TEST_CASE("`remap` is the explicit replace operation (alias for set)") {
-        json j_remap = { { "name", "remapvalue" },
-                         { "operation", "remap" },
-                         { "input", "particlelifetime" },
-                         { "output", "particlesize" },
-                         { "outputrangemin", 77.0 }, { "outputrangemax", 77.0 } };
-        json j_set   = { { "name", "remapvalue" },
-                         { "operation", "set" },
-                         { "input", "particlelifetime" },
-                         { "output", "particlesize" },
-                         { "outputrangemin", 77.0 }, { "outputrangemax", 77.0 } };
-        auto op_r = WPParticleParser::genParticleOperatorOp(j_remap, empty_override());
-        auto op_s = WPParticleParser::genParticleOperatorOp(j_set, empty_override());
+        json      j_remap = { { "name", "remapvalue" },        { "operation", "remap" },
+                              { "input", "particlelifetime" }, { "output", "particlesize" },
+                              { "outputrangemin", 77.0 },      { "outputrangemax", 77.0 } };
+        json      j_set   = { { "name", "remapvalue" },        { "operation", "set" },
+                              { "input", "particlelifetime" }, { "output", "particlesize" },
+                              { "outputrangemin", 77.0 },      { "outputrangemax", 77.0 } };
+        auto      op_r    = WPParticleParser::genParticleOperatorOp(j_remap, empty_override());
+        auto      op_s    = WPParticleParser::genParticleOperatorOp(j_set, empty_override());
         OpFixture fx_r, fx_s;
         Particle& p_r = fx_r.spawn();
         Particle& p_s = fx_s.spawn();
@@ -898,111 +890,117 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("square transform alternates 0 and 1 at the half-period") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlesystemtime" },
-                   { "output", "particlesize" },
-                   { "transformfunction", "square" },
-                   { "transforminputscale", 1.0 },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },          { "operation", "set" },
+                         { "input", "particlesystemtime" }, { "output", "particlesize" },
+                         { "transformfunction", "square" }, { "transforminputscale", 1.0 },
+                         { "inputrangemin", 0.0 },          { "inputrangemax", 1.0 },
+                         { "outputrangemin", 0.0 },         { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
         // t=0.25 → sin(π/2)=1 ≥ 0 → high
-        fx.time = 0.25; op(fx.info());
+        fx.time = 0.25;
+        op(fx.info());
         CHECK(p.size == doctest::Approx(1.0));
         // t=0.75 → sin(3π/2)=-1 → low
-        fx.time = 0.75; op(fx.info());
+        fx.time = 0.75;
+        op(fx.info());
         CHECK(p.size == doctest::Approx(0.0));
     }
 
     TEST_CASE("saw transform period is 1 (fractional part)") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlesystemtime" },
-                   { "output", "particlesize" },
-                   { "transformfunction", "saw" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },          { "operation", "set" },
+                         { "input", "particlesystemtime" }, { "output", "particlesize" },
+                         { "transformfunction", "saw" },    { "inputrangemin", 0.0 },
+                         { "inputrangemax", 1.0 },          { "outputrangemin", 0.0 },
+                         { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        fx.time = 0.3; op(fx.info());
+        fx.time     = 0.3;
+        op(fx.info());
         CHECK(p.size == doctest::Approx(0.3));
     }
 
     TEST_CASE("triangle wave: |2*fract(x)-1| peaks at boundaries, zero at midpoint") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlesystemtime" },
-                   { "output", "particlesize" },
-                   { "transformfunction", "triangle" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "particlesystemtime" },
+                         { "output", "particlesize" },
+                         { "transformfunction", "triangle" },
+                         { "inputrangemin", 0.0 },
+                         { "inputrangemax", 1.0 },
+                         { "outputrangemin", 0.0 },
+                         { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        fx.time = 0.0; op(fx.info());
-        CHECK(p.size == doctest::Approx(1.0));  // |2*0 - 1| = 1
-        fx.time = 0.5; op(fx.info());
-        CHECK(p.size == doctest::Approx(0.0));  // |2*0.5 - 1| = 0
-        fx.time = 0.25; op(fx.info());
-        CHECK(p.size == doctest::Approx(0.5));  // |2*0.25 - 1| = 0.5
+        fx.time     = 0.0;
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(1.0)); // |2*0 - 1| = 1
+        fx.time = 0.5;
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(0.0)); // |2*0.5 - 1| = 0
+        fx.time = 0.25;
+        op(fx.info());
+        CHECK(p.size == doctest::Approx(0.5)); // |2*0.25 - 1| = 0.5
     }
 
     TEST_CASE("simplexnoise stays in [0, 1] across many samples") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlesystemtime" },
-                   { "output", "particlesize" },
-                   { "transformfunction", "simplexnoise" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "particlesystemtime" },
+                         { "output", "particlesize" },
+                         { "transformfunction", "simplexnoise" },
+                         { "inputrangemin", 0.0 },
+                         { "inputrangemax", 100.0 },
+                         { "outputrangemin", 0.0 },
+                         { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
         for (double t = 0.0; t < 100.0; t += 1.7) {
-            fx.time = t; op(fx.info());
+            fx.time = t;
+            op(fx.info());
             CHECK(p.size >= 0.0f);
             CHECK(p.size <= 1.0f);
         }
     }
 
     TEST_CASE("fbmnoise reduces to simplexnoise when octaves=1") {
-        json j_simp = { { "name", "remapvalue" },
-                        { "operation", "set" },
-                        { "input", "particlesystemtime" },
-                        { "output", "particlesize" },
-                        { "transformfunction", "simplexnoise" },
-                        { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                        { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        json j_fbm  = j_simp;
+        json j_simp                = { { "name", "remapvalue" },
+                                       { "operation", "set" },
+                                       { "input", "particlesystemtime" },
+                                       { "output", "particlesize" },
+                                       { "transformfunction", "simplexnoise" },
+                                       { "inputrangemin", 0.0 },
+                                       { "inputrangemax", 1.0 },
+                                       { "outputrangemin", 0.0 },
+                                       { "outputrangemax", 1.0 } };
+        json j_fbm                 = j_simp;
         j_fbm["transformfunction"] = "fbmnoise";
-        j_fbm["transformoctaves"] = 1;
-        auto op_s = WPParticleParser::genParticleOperatorOp(j_simp, empty_override());
-        auto op_f = WPParticleParser::genParticleOperatorOp(j_fbm, empty_override());
+        j_fbm["transformoctaves"]  = 1;
+        auto      op_s = WPParticleParser::genParticleOperatorOp(j_simp, empty_override());
+        auto      op_f = WPParticleParser::genParticleOperatorOp(j_fbm, empty_override());
         OpFixture fx_s, fx_f;
         fx_s.time = fx_f.time = 0.42;
-        Particle& p_s = fx_s.spawn();
-        Particle& p_f = fx_f.spawn();
+        Particle& p_s         = fx_s.spawn();
+        Particle& p_f         = fx_f.spawn();
         op_s(fx_s.info());
         op_f(fx_f.info());
         CHECK(p_s.size == doctest::Approx(p_f.size).epsilon(0.01));
     }
 
     TEST_CASE("input: noise produces a value in [0, 1] that varies with position") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "noise" },
-                   { "output", "particlealpha" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },  { "operation", "set" },
+                         { "input", "noise" },      { "output", "particlealpha" },
+                         { "inputrangemin", 0.0 },  { "inputrangemax", 1.0 },
+                         { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.particles.resize(2);
         for (auto& q : fx.particles) {
-            q.lifetime = 1.0f;
+            q.lifetime      = 1.0f;
             q.init.lifetime = 1.0f;
         }
         fx.particles[0].position = Eigen::Vector3f(33, 17, 0);
@@ -1019,22 +1017,20 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("input: noise honours transformoctaves for fbm summing") {
-        json j_one = { { "name", "remapvalue" },
-                       { "operation", "set" },
-                       { "input", "noise" },
-                       { "output", "particlealpha" },
-                       { "transformoctaves", 1 },
-                       { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                       { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        json j_four = j_one;
+        json j_one                 = { { "name", "remapvalue" },  { "operation", "set" },
+                                       { "input", "noise" },      { "output", "particlealpha" },
+                                       { "transformoctaves", 1 }, { "inputrangemin", 0.0 },
+                                       { "inputrangemax", 1.0 },  { "outputrangemin", 0.0 },
+                                       { "outputrangemax", 1.0 } };
+        json j_four                = j_one;
         j_four["transformoctaves"] = 4;
-        auto op_o = WPParticleParser::genParticleOperatorOp(j_one, empty_override());
-        auto op_f = WPParticleParser::genParticleOperatorOp(j_four, empty_override());
+        auto      op_o = WPParticleParser::genParticleOperatorOp(j_one, empty_override());
+        auto      op_f = WPParticleParser::genParticleOperatorOp(j_four, empty_override());
         OpFixture fx_o, fx_f;
         Particle& p_o = fx_o.spawn();
         Particle& p_f = fx_f.spawn();
-        p_o.position = Eigen::Vector3f(123, 45, 0);
-        p_f.position = Eigen::Vector3f(123, 45, 0);
+        p_o.position  = Eigen::Vector3f(123, 45, 0);
+        p_f.position  = Eigen::Vector3f(123, 45, 0);
         op_o(fx_o.info());
         op_f(fx_f.info());
         CHECK(p_o.alpha >= 0.0f);
@@ -1053,128 +1049,125 @@ TEST_SUITE("remapvalue") {
             double      expected;
         };
         const Case cases[] = {
-            { "x",        3.0  },
-            { "y",        4.0  },
-            { "z",        12.0 },
-            { "sum",      19.0 },
-            { "average",  19.0 / 3.0 },
-            { "max",      12.0 },
-            { "min",      3.0  },
+            { "x", 3.0 },
+            { "y", 4.0 },
+            { "z", 12.0 },
+            { "sum", 19.0 },
+            { "average", 19.0 / 3.0 },
+            { "max", 12.0 },
+            { "min", 3.0 },
             { "magnitude", 13.0 },
         };
         for (const auto& kase : cases) {
-            json j = { { "name", "remapvalue" },
-                       { "operation", "set" },
-                       { "input", "particlevelocity" },
-                       { "inputcomponent", kase.component },
-                       { "output", "particlesize" },
-                       { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                       { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
-            auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+            json      j  = { { "name", "remapvalue" },        { "operation", "set" },
+                             { "input", "particlevelocity" }, { "inputcomponent", kase.component },
+                             { "output", "particlesize" },    { "inputrangemin", 0.0 },
+                             { "inputrangemax", 100.0 },      { "outputrangemin", 0.0 },
+                             { "outputrangemax", 100.0 } };
+            auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
             OpFixture fx;
             Particle& p = fx.spawn();
-            p.velocity = Eigen::Vector3f(3, 4, 12);
+            p.velocity  = Eigen::Vector3f(3, 4, 12);
             op(fx.info());
             CHECK_MESSAGE(p.size == doctest::Approx(kase.expected).epsilon(0.01),
-                          "component=", kase.component);
+                          "component=",
+                          kase.component);
         }
     }
 
     TEST_CASE("input: speed reads particle velocity magnitude") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "speed" },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },  { "operation", "set" },
+                         { "input", "speed" },      { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },  { "inputrangemax", 100.0 },
+                         { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(3, 4, 0);  // norm = 5
+        p.velocity  = Eigen::Vector3f(3, 4, 0); // norm = 5
         op(fx.info());
         CHECK(p.size == doctest::Approx(5.0));
     }
 
     TEST_CASE("input: maxlifetime reads p.init.lifetime") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "maxlifetime" },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 10.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 10.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },   { "operation", "set" },
+                         { "input", "maxlifetime" }, { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },   { "inputrangemax", 10.0 },
+                         { "outputrangemin", 0.0 },  { "outputrangemax", 10.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
-        Particle& p = fx.spawn();
+        Particle& p     = fx.spawn();
         p.init.lifetime = 7.5f;
         op(fx.info());
         CHECK(p.size == doctest::Approx(7.5));
     }
 
     TEST_CASE("input: deltatocontrolpoint with x-component") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "deltatocontrolpoint" },
-                   { "inputcomponent", "x" },
-                   { "inputcontrolpoint0", 0 },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 100.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },           { "operation", "set" },
+                         { "input", "deltatocontrolpoint" }, { "inputcomponent", "x" },
+                         { "inputcontrolpoint0", 0 },        { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },           { "inputrangemax", 100.0 },
+                         { "outputrangemin", 0.0 },          { "outputrangemax", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.cps[0].resolved = Eigen::Vector3d(20, 0, 0);
-        Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(80, 0, 0);
+        Particle& p        = fx.spawn();
+        p.position         = Eigen::Vector3f(80, 0, 0);
         op(fx.info());
         // delta.x = 80 - 20 = 60.
         CHECK(p.size == doctest::Approx(60.0));
     }
 
     TEST_CASE("input: directiontocontrolpoint normalises before component reduction") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "directiontocontrolpoint" },
-                   { "inputcomponent", "x" },
-                   { "inputcontrolpoint0", 0 },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "directiontocontrolpoint" },
+                         { "inputcomponent", "x" },
+                         { "inputcontrolpoint0", 0 },
+                         { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },
+                         { "inputrangemax", 1.0 },
+                         { "outputrangemin", 0.0 },
+                         { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
-        Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(0, 0, 0);
+        Particle& p        = fx.spawn();
+        p.position         = Eigen::Vector3f(0, 0, 0);
         op(fx.info());
         // Direction toward CP at +X = (1, 0, 0) → x = 1.
         CHECK(p.size == doctest::Approx(1.0));
     }
 
     TEST_CASE("input: positionbetweentwocontrolpoints projects onto cp0→cp1 segment") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "positionbetweentwocontrolpoints" },
-                   { "inputcontrolpoint0", 0 },
-                   { "output", "particlesize" },
-                   { "inputrangemin", 0.0 }, { "inputrangemax", 1.0 },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 100.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "operation", "set" },
+                         { "input", "positionbetweentwocontrolpoints" },
+                         { "inputcontrolpoint0", 0 },
+                         { "output", "particlesize" },
+                         { "inputrangemin", 0.0 },
+                         { "inputrangemax", 1.0 },
+                         { "outputrangemin", 0.0 },
+                         { "outputrangemax", 100.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
         fx.cps[1].resolved = Eigen::Vector3d(100, 0, 0);
-        Particle& p = fx.spawn();
-        p.position = Eigen::Vector3f(30, 50, 0);  // projection at t=0.3
+        Particle& p        = fx.spawn();
+        p.position         = Eigen::Vector3f(30, 50, 0); // projection at t=0.3
         op(fx.info());
         CHECK(p.size == doctest::Approx(30.0));
     }
 
     TEST_CASE("output sugar: `setvelocity` resolves to set + particlevelocity") {
-        json j = { { "name", "remapvalue" },
-                   { "input", "particlelifetime" },
-                   { "output", "setvelocity" },
-                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "input", "particlelifetime" },
+                         { "output", "setvelocity" },
+                         { "outputrangemin", 7.0 },
+                         { "outputrangemax", 7.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(0, 0, 0);
+        p.velocity  = Eigen::Vector3f(0, 0, 0);
         op(fx.info());
         // `set` operation broadcasts the scalar to all 3 axes (no
         // outputcomponent).  Each axis gets 7.
@@ -1184,14 +1177,15 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("output sugar: `multiplyopacity` resolves to multiply + particlealpha") {
-        json j = { { "name", "remapvalue" },
-                   { "input", "particlelifetime" },
-                   { "output", "multiplyopacity" },
-                   { "outputrangemin", 0.5 }, { "outputrangemax", 0.5 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },
+                         { "input", "particlelifetime" },
+                         { "output", "multiplyopacity" },
+                         { "outputrangemin", 0.5 },
+                         { "outputrangemax", 0.5 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.alpha = 1.0f;
+        p.alpha     = 1.0f;
         op(fx.info());
         // multiply by 0.5 → alpha becomes 0.5.
         CHECK(p.alpha == doctest::Approx(0.5));
@@ -1200,44 +1194,37 @@ TEST_SUITE("remapvalue") {
     TEST_CASE("output sugar: explicit operation key beats the prefix") {
         // Author writes "setvelocity" but explicitly says operation=add —
         // explicit must win.
-        json j = { { "name", "remapvalue" },
-                   { "operation", "add" },
-                   { "input", "particlelifetime" },
-                   { "output", "setvelocity" },
-                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "add" },
+                         { "input", "particlelifetime" }, { "output", "setvelocity" },
+                         { "outputrangemin", 7.0 },       { "outputrangemax", 7.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.velocity = Eigen::Vector3f(3, 0, 0);
+        p.velocity  = Eigen::Vector3f(3, 0, 0);
         op(fx.info());
         // add: velocity.x = 3 + 7 = 10 (not set to 7).
         CHECK(p.velocity.x() == doctest::Approx(10.0));
     }
 
     TEST_CASE("output sugar: short-form `color` resolves to particlecolor") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlelifetime" },
-                   { "output", "color" },
-                   { "outputcomponent", "x" },
-                   { "outputrangemin", 0.5 }, { "outputrangemax", 0.5 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "set" },
+                         { "input", "particlelifetime" }, { "output", "color" },
+                         { "outputcomponent", "x" },      { "outputrangemin", 0.5 },
+                         { "outputrangemax", 0.5 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
-        p.color = Eigen::Vector3f(0, 0, 0);
+        p.color     = Eigen::Vector3f(0, 0, 0);
         op(fx.info());
         CHECK(p.color.x() == doctest::Approx(0.5));
     }
 
     TEST_CASE("output: controlpoint writes back to the resolved CP") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlelifetime" },
-                   { "output", "controlpoint" },
-                   { "outputcontrolpoint0", 3 },
-                   { "outputcomponent", "x" },
-                   { "outputrangemin", 50.0 }, { "outputrangemax", 50.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "set" },
+                         { "input", "particlelifetime" }, { "output", "controlpoint" },
+                         { "outputcontrolpoint0", 3 },    { "outputcomponent", "x" },
+                         { "outputrangemin", 50.0 },      { "outputrangemax", 50.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.cps[3].resolved = Eigen::Vector3d(0, 0, 0);
         fx.spawn();
@@ -1247,13 +1234,11 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("output: controlpoint with no outputcomponent broadcasts scalar to xyz") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "particlelifetime" },
-                   { "output", "controlpoint" },
-                   { "outputcontrolpoint0", 5 },
-                   { "outputrangemin", 7.0 }, { "outputrangemax", 7.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },        { "operation", "set" },
+                         { "input", "particlelifetime" }, { "output", "controlpoint" },
+                         { "outputcontrolpoint0", 5 },    { "outputrangemin", 7.0 },
+                         { "outputrangemax", 7.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         fx.spawn();
         op(fx.info());
@@ -1263,12 +1248,10 @@ TEST_SUITE("remapvalue") {
     }
 
     TEST_CASE("input: random produces a stable per-particle value") {
-        json j = { { "name", "remapvalue" },
-                   { "operation", "set" },
-                   { "input", "random" },
-                   { "output", "particlealpha" },
-                   { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json      j  = { { "name", "remapvalue" },  { "operation", "set" },
+                         { "input", "random" },     { "output", "particlealpha" },
+                         { "outputrangemin", 0.0 }, { "outputrangemax", 1.0 } };
+        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p = fx.spawn();
         op(fx.info());
@@ -1286,19 +1269,21 @@ TEST_SUITE("remapvalue") {
 
 TEST_SUITE("controlpoint force equivalence") {
     TEST_CASE("controlpointforce is controlpointattract with reversed direction") {
-        json j_attract = { { "name", "controlpointattract" },
-                           { "controlpoint", 0 }, { "scale", 100.0 },
-                           { "threshold", 1000.0 } };
-        json j_force   = { { "name", "controlpointforce" },
-                           { "controlpoint", 0 }, { "scale", 100.0 },
-                           { "threshold", 1000.0 } };
-        auto op_a = WPParticleParser::genParticleOperatorOp(j_attract, empty_override());
-        auto op_f = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
+        json      j_attract = { { "name", "controlpointattract" },
+                                { "controlpoint", 0 },
+                                { "scale", 100.0 },
+                                { "threshold", 1000.0 } };
+        json      j_force   = { { "name", "controlpointforce" },
+                                { "controlpoint", 0 },
+                                { "scale", 100.0 },
+                                { "threshold", 1000.0 } };
+        auto      op_a      = WPParticleParser::genParticleOperatorOp(j_attract, empty_override());
+        auto      op_f      = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
         OpFixture fx_a, fx_f;
         // CP at +X, particle at origin: attract pulls +X, force pushes -X.
         fx_a.cps[0].resolved = fx_f.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
-        Particle& p_a = fx_a.spawn();
-        Particle& p_f = fx_f.spawn();
+        Particle& p_a                               = fx_a.spawn();
+        Particle& p_f                               = fx_f.spawn();
         op_a(fx_a.info());
         op_f(fx_f.info());
         CHECK(p_a.velocity.x() == doctest::Approx(-p_f.velocity.x()));
@@ -1307,13 +1292,14 @@ TEST_SUITE("controlpoint force equivalence") {
     }
 
     TEST_CASE("controlpointforce honours the same threshold as attract") {
-        json j_force = { { "name", "controlpointforce" },
-                         { "controlpoint", 0 }, { "scale", 100.0 },
-                         { "threshold", 50.0 } };
-        auto op = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
+        json      j_force = { { "name", "controlpointforce" },
+                              { "controlpoint", 0 },
+                              { "scale", 100.0 },
+                              { "threshold", 50.0 } };
+        auto      op      = WPParticleParser::genParticleOperatorOp(j_force, empty_override());
         OpFixture fx;
         fx.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
-        Particle& p = fx.spawn();
+        Particle& p        = fx.spawn();
         // Particle at +X 100 — outside threshold of 50.
         p.position = Eigen::Vector3f(100, 0, 0);
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1329,16 +1315,16 @@ TEST_SUITE("controlpoint force equivalence") {
 
 TEST_SUITE("BlendWindow on kinematic ops") {
     TEST_CASE("movement: gravity is scaled by the blend factor") {
-        json j_no_blend = { { "name", "movement" },
-                            { "gravity", "0 -10 0" } };
+        json j_no_blend = { { "name", "movement" }, { "gravity", "0 -10 0" } };
         json j_blend    = { { "name", "movement" },
                             { "gravity", "0 -10 0" },
-                            { "blendinstart", 0.0 }, { "blendinend", 1.0 } };
+                            { "blendinstart", 0.0 },
+                            { "blendinend", 1.0 } };
         wpscene::ParticleInstanceoverride over;
-        over.enabled = true;
-        over.speed   = 1.0f;
-        auto op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, over);
-        auto op_b = WPParticleParser::genParticleOperatorOp(j_blend, over);
+        over.enabled   = true;
+        over.speed     = 1.0f;
+        auto      op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, over);
+        auto      op_b = WPParticleParser::genParticleOperatorOp(j_blend, over);
         OpFixture fx_a, fx_b;
         Particle& p_a = fx_a.spawn();
         Particle& p_b = fx_b.spawn();
@@ -1358,17 +1344,16 @@ TEST_SUITE("BlendWindow on kinematic ops") {
                             { "controlpoint", 0 },
                             { "scale", 50.0 },
                             { "threshold", 1000.0 } };
-        json j_blend    = { { "name", "controlpointattract" },
-                            { "controlpoint", 0 },
-                            { "scale", 50.0 },
-                            { "threshold", 1000.0 },
-                            { "blendinstart", 0.0 }, { "blendinend", 1.0 } };
-        auto op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, empty_override());
-        auto op_b = WPParticleParser::genParticleOperatorOp(j_blend, empty_override());
+        json j_blend    = {
+            { "name", "controlpointattract" }, { "controlpoint", 0 },   { "scale", 50.0 },
+            { "threshold", 1000.0 },           { "blendinstart", 0.0 }, { "blendinend", 1.0 }
+        };
+        auto      op_a = WPParticleParser::genParticleOperatorOp(j_no_blend, empty_override());
+        auto      op_b = WPParticleParser::genParticleOperatorOp(j_blend, empty_override());
         OpFixture fx_a, fx_b;
         fx_a.cps[0].resolved = fx_b.cps[0].resolved = Eigen::Vector3d(100, 0, 0);
-        Particle& p_a = fx_a.spawn();
-        Particle& p_b = fx_b.spawn();
+        Particle& p_a                               = fx_a.spawn();
+        Particle& p_b                               = fx_b.spawn();
         p_a.lifetime = p_b.lifetime = 0.5f;
         p_a.init.lifetime = p_b.init.lifetime = 1.0f;
         op_a(fx_a.info());
@@ -1386,9 +1371,8 @@ TEST_SUITE("velocityrandom inherit-cp-velocity flag") {
     TEST_CASE("flag absent: only the random velocity is applied") {
         std::array<ParticleControlpoint, 8> cps;
         cps[0].velocity = Eigen::Vector3d(50, 0, 0);
-        json j = { { "name", "velocityrandom" },
-                   { "min", "0 0 0" }, { "max", "0 0 0" } };
-        auto init = WPParticleParser::genParticleInitOp(
+        json j          = { { "name", "velocityrandom" }, { "min", "0 0 0" }, { "max", "0 0 0" } };
+        auto init       = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p;
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1399,11 +1383,12 @@ TEST_SUITE("velocityrandom inherit-cp-velocity flag") {
     TEST_CASE("flag set: CP velocity is added on top of the random velocity") {
         std::array<ParticleControlpoint, 8> cps;
         cps[0].velocity = Eigen::Vector3d(50, 0, 0);
-        json j = { { "name", "velocityrandom" },
-                   { "min", "0 0 0" }, { "max", "0 0 0" },
-                   { "inheritcontrolpointvelocity", true },
-                   { "controlpoint", 0 } };
-        auto init = WPParticleParser::genParticleInitOp(
+        json j          = { { "name", "velocityrandom" },
+                            { "min", "0 0 0" },
+                            { "max", "0 0 0" },
+                            { "inheritcontrolpointvelocity", true },
+                            { "controlpoint", 0 } };
+        auto init       = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p;
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1415,11 +1400,12 @@ TEST_SUITE("velocityrandom inherit-cp-velocity flag") {
     TEST_CASE("flag set: CP velocity adds to a non-zero random base") {
         std::array<ParticleControlpoint, 8> cps;
         cps[0].velocity = Eigen::Vector3d(50, 0, 0);
-        json j = { { "name", "velocityrandom" },
-                   { "min", "10 0 0" }, { "max", "10 0 0" },
-                   { "inheritcontrolpointvelocity", true },
-                   { "controlpoint", 0 } };
-        auto init = WPParticleParser::genParticleInitOp(
+        json j          = { { "name", "velocityrandom" },
+                            { "min", "10 0 0" },
+                            { "max", "10 0 0" },
+                            { "inheritcontrolpointvelocity", true },
+                            { "controlpoint", 0 } };
+        auto init       = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p;
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1437,10 +1423,11 @@ TEST_SUITE("inheritcontrolpointvelocity") {
     TEST_CASE("adds CP velocity to particle initial velocity") {
         std::array<ParticleControlpoint, 8> cps;
         cps[0].velocity = Eigen::Vector3d(50, 0, 0);
-        json j = { { "name", "inheritcontrolpointvelocity" },
-                   { "controlpoint", 0 },
-                   { "min", 1.0 }, { "max", 1.0 } };
-        auto init = WPParticleParser::genParticleInitOp(
+        json j          = { { "name", "inheritcontrolpointvelocity" },
+                            { "controlpoint", 0 },
+                            { "min", 1.0 },
+                            { "max", 1.0 } };
+        auto init       = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p;
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1451,10 +1438,11 @@ TEST_SUITE("inheritcontrolpointvelocity") {
     TEST_CASE("scales by random in [min, max]") {
         std::array<ParticleControlpoint, 8> cps;
         cps[0].velocity = Eigen::Vector3d(100, 0, 0);
-        json j = { { "name", "inheritcontrolpointvelocity" },
-                   { "controlpoint", 0 },
-                   { "min", 0.5 }, { "max", 0.5 } };
-        auto init = WPParticleParser::genParticleInitOp(
+        json j          = { { "name", "inheritcontrolpointvelocity" },
+                            { "controlpoint", 0 },
+                            { "min", 0.5 },
+                            { "max", 0.5 } };
+        auto init       = WPParticleParser::genParticleInitOp(
             j, std::span<const ParticleControlpoint>(cps.data(), cps.size()));
         Particle p;
         p.velocity = Eigen::Vector3f(0, 0, 0);
@@ -1483,9 +1471,7 @@ struct EventInheritFixture {
         child.GetBoundedData().particle_idx = 0;
         particle_spawn_context::SetSpawnInstance(&child);
     }
-    ~EventInheritFixture() {
-        particle_spawn_context::SetSpawnInstance(nullptr);
-    }
+    ~EventInheritFixture() { particle_spawn_context::SetSpawnInstance(nullptr); }
 };
 
 Particle makeParent() {
@@ -1504,8 +1490,8 @@ Particle makeParent() {
 TEST_SUITE("inheritinitialvaluefromevent") {
     TEST_CASE("color: copies parent rgb into init+current") {
         EventInheritFixture fx(makeParent());
-        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j    = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(0.2f));
@@ -1516,10 +1502,10 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 
     TEST_CASE("size and alpha: copies parent into init+current") {
         EventInheritFixture fx(makeParent());
-        json j_size  = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
-        json j_alpha = { { "name", "inheritinitialvaluefromevent" }, { "input", "alpha" } };
-        auto i_size  = WPParticleParser::genParticleInitOp(j_size);
-        auto i_alpha = WPParticleParser::genParticleInitOp(j_alpha);
+        json     j_size  = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
+        json     j_alpha = { { "name", "inheritinitialvaluefromevent" }, { "input", "alpha" } };
+        auto     i_size  = WPParticleParser::genParticleInitOp(j_size);
+        auto     i_alpha = WPParticleParser::genParticleInitOp(j_alpha);
         Particle p;
         i_size(p, 0.0);
         i_alpha(p, 0.0);
@@ -1531,10 +1517,10 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 
     TEST_CASE("velocity and rotation: copies parent vec3") {
         EventInheritFixture fx(makeParent());
-        json j_vel = { { "name", "inheritinitialvaluefromevent" }, { "input", "velocity" } };
-        json j_rot = { { "name", "inheritinitialvaluefromevent" }, { "input", "rotation" } };
-        auto i_vel = WPParticleParser::genParticleInitOp(j_vel);
-        auto i_rot = WPParticleParser::genParticleInitOp(j_rot);
+        json     j_vel = { { "name", "inheritinitialvaluefromevent" }, { "input", "velocity" } };
+        json     j_rot = { { "name", "inheritinitialvaluefromevent" }, { "input", "rotation" } };
+        auto     i_vel = WPParticleParser::genParticleInitOp(j_vel);
+        auto     i_rot = WPParticleParser::genParticleInitOp(j_rot);
         Particle p;
         i_vel(p, 0.0);
         i_rot(p, 0.0);
@@ -1547,8 +1533,8 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 
     TEST_CASE("lifetime: copies parent's remaining lifetime into init+current") {
         EventInheritFixture fx(makeParent());
-        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "lifetime" } };
-        auto init = WPParticleParser::genParticleInitOp(j);
+        json     j    = { { "name", "inheritinitialvaluefromevent" }, { "input", "lifetime" } };
+        auto     init = WPParticleParser::genParticleInitOp(j);
         Particle p;
         p.lifetime      = 999.0f;
         p.init.lifetime = 999.0f;
@@ -1559,9 +1545,9 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 
     TEST_CASE("no spawn context → no-op (defensive: child stays at default)") {
         // Don't touch the thread-local — emulate "called outside an emit cycle".
-        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
-        auto init = WPParticleParser::genParticleInitOp(j);
-        Particle p;
+        json            j    = { { "name", "inheritinitialvaluefromevent" }, { "input", "color" } };
+        auto            init = WPParticleParser::genParticleInitOp(j);
+        Particle        p;
         Eigen::Vector3f original = p.color;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(original.x()));
@@ -1571,9 +1557,9 @@ TEST_SUITE("inheritinitialvaluefromevent") {
         Particle dead = makeParent();
         dead.lifetime = 0.0f;
         EventInheritFixture fx(dead);
-        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
-        auto init = WPParticleParser::genParticleInitOp(j);
-        Particle p;
+        json                j = { { "name", "inheritinitialvaluefromevent" }, { "input", "size" } };
+        auto                init = WPParticleParser::genParticleInitOp(j);
+        Particle            p;
         p.size      = 7.0f;
         p.init.size = 7.0f;
         init(p, 0.0);
@@ -1583,9 +1569,9 @@ TEST_SUITE("inheritinitialvaluefromevent") {
 
     TEST_CASE("unknown input string → no-op (typo-safe)") {
         EventInheritFixture fx(makeParent());
-        json j = { { "name", "inheritinitialvaluefromevent" }, { "input", "bogus" } };
-        auto init = WPParticleParser::genParticleInitOp(j);
-        Particle p;
+        json            j    = { { "name", "inheritinitialvaluefromevent" }, { "input", "bogus" } };
+        auto            init = WPParticleParser::genParticleInitOp(j);
+        Particle        p;
         Eigen::Vector3f original_color = p.color;
         init(p, 0.0);
         CHECK(p.color.x() == doctest::Approx(original_color.x()));
@@ -1630,16 +1616,16 @@ TEST_SUITE("collisionmodel") {
 TEST_SUITE("collisionquad") {
     TEST_CASE("particle crossing a horizontal quad gets snapped + reflected") {
         OpFixture of;
-        Particle& p = of.spawn();
-        p.position  = Eigen::Vector3f(0, -10, 0);  // crossed below the plane
-        p.velocity  = Eigen::Vector3f(0, -50, 0);  // moving downward
-        of.time_pass = 1.0;                         // 1s frame so prev_sd recovers as +40
-        json j      = { { "name", "collisionquad" },
-                        { "controlpoint", 0 },
-                        { "plane", "0 1 0" },
-                        { "forward", "1 0 0" },
-                        { "size", "200 200" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle& p  = of.spawn();
+        p.position   = Eigen::Vector3f(0, -10, 0); // crossed below the plane
+        p.velocity   = Eigen::Vector3f(0, -50, 0); // moving downward
+        of.time_pass = 1.0;                        // 1s frame so prev_sd recovers as +40
+        json j       = { { "name", "collisionquad" },
+                         { "controlpoint", 0 },
+                         { "plane", "0 1 0" },
+                         { "forward", "1 0 0" },
+                         { "size", "200 200" } };
+        auto op      = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
         CHECK(p.position.y() == doctest::Approx(0.0f));
         CHECK(p.velocity.y() == doctest::Approx(50.0f));
@@ -1649,32 +1635,32 @@ TEST_SUITE("collisionquad") {
         OpFixture of;
         Particle& p = of.spawn();
         // Particle sits past the +X edge of a 100×100 quad.
-        p.position  = Eigen::Vector3f(200, -10, 0);
-        p.velocity  = Eigen::Vector3f(0, -50, 0);
+        p.position   = Eigen::Vector3f(200, -10, 0);
+        p.velocity   = Eigen::Vector3f(0, -50, 0);
         of.time_pass = 1.0;
-        json j      = { { "name", "collisionquad" },
-                        { "controlpoint", 0 },
-                        { "plane", "0 1 0" },
-                        { "forward", "1 0 0" },
-                        { "size", "100 100" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json j       = { { "name", "collisionquad" },
+                         { "controlpoint", 0 },
+                         { "plane", "0 1 0" },
+                         { "forward", "1 0 0" },
+                         { "size", "100 100" } };
+        auto op      = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
-        CHECK(p.position.y() == doctest::Approx(-10.0f));  // unaffected
+        CHECK(p.position.y() == doctest::Approx(-10.0f)); // unaffected
         CHECK(p.velocity.y() == doctest::Approx(-50.0f));
     }
 
     TEST_CASE("particle that did not cross within the frame is unaffected") {
         OpFixture of;
-        Particle& p = of.spawn();
-        p.position  = Eigen::Vector3f(0, 50, 0);  // above plane, moving up
-        p.velocity  = Eigen::Vector3f(0, 10, 0);
+        Particle& p  = of.spawn();
+        p.position   = Eigen::Vector3f(0, 50, 0); // above plane, moving up
+        p.velocity   = Eigen::Vector3f(0, 10, 0);
         of.time_pass = 1.0;
-        json j      = { { "name", "collisionquad" },
-                        { "controlpoint", 0 },
-                        { "plane", "0 1 0" },
-                        { "forward", "1 0 0" },
-                        { "size", "200 200" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json j       = { { "name", "collisionquad" },
+                         { "controlpoint", 0 },
+                         { "plane", "0 1 0" },
+                         { "forward", "1 0 0" },
+                         { "size", "200 200" } };
+        auto op      = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
         CHECK(p.position.y() == doctest::Approx(50.0f));
         CHECK(p.velocity.y() == doctest::Approx(10.0f));
@@ -1683,17 +1669,17 @@ TEST_SUITE("collisionquad") {
     TEST_CASE("origin shifts quad centre off the CP anchor") {
         OpFixture of;
         of.cps[0].resolved = Eigen::Vector3d(0, 0, 0);
-        Particle& p = of.spawn();
+        Particle& p        = of.spawn();
         // Quad anchored at (10, 0, 0) via origin.  Particle crossed at +X centre.
-        p.position  = Eigen::Vector3f(10, -5, 0);
-        p.velocity  = Eigen::Vector3f(0, -10, 0);
+        p.position   = Eigen::Vector3f(10, -5, 0);
+        p.velocity   = Eigen::Vector3f(0, -10, 0);
         of.time_pass = 1.0;
-        json j      = { { "name", "collisionquad" },
-                        { "origin", "10 0 0" },
-                        { "plane", "0 1 0" },
-                        { "forward", "1 0 0" },
-                        { "size", "20 20" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json j       = { { "name", "collisionquad" },
+                         { "origin", "10 0 0" },
+                         { "plane", "0 1 0" },
+                         { "forward", "1 0 0" },
+                         { "size", "20 20" } };
+        auto op      = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
         CHECK(p.position.y() == doctest::Approx(0.0f));
         CHECK(p.velocity.y() == doctest::Approx(10.0f));
@@ -1701,17 +1687,17 @@ TEST_SUITE("collisionquad") {
 
     TEST_CASE("forward parallel to plane normal: arbitrary perpendicular fallback") {
         OpFixture of;
-        Particle& p = of.spawn();
-        p.position  = Eigen::Vector3f(0, -5, 0);
-        p.velocity  = Eigen::Vector3f(0, -50, 0);
+        Particle& p  = of.spawn();
+        p.position   = Eigen::Vector3f(0, -5, 0);
+        p.velocity   = Eigen::Vector3f(0, -50, 0);
         of.time_pass = 1.0;
         // Author bug: forward is colinear with plane normal — should still produce
         // a usable basis without dividing by zero.
-        json j      = { { "name", "collisionquad" },
-                        { "plane", "0 1 0" },
-                        { "forward", "0 1 0" },
-                        { "size", "200 200" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        json j  = { { "name", "collisionquad" },
+                    { "plane", "0 1 0" },
+                    { "forward", "0 1 0" },
+                    { "size", "200 200" } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
         CHECK(p.position.y() == doctest::Approx(0.0f));
         CHECK(p.velocity.y() == doctest::Approx(50.0f));
@@ -1770,15 +1756,15 @@ TEST_SUITE("collisionbox") {
     TEST_CASE("box anchored at non-zero CP") {
         OpFixture of;
         of.cps[2].resolved = Eigen::Vector3d(50, 50, 0);
-        Particle& p = of.spawn();
-        p.position  = Eigen::Vector3f(170, 50, 0);  // +X past CP+halfsize
-        p.velocity  = Eigen::Vector3f(5, 0, 0);
-        json j      = { { "name", "collisionbox" },
-                        { "controlpoint", 2 },
-                        { "halfsize", "100 100 100" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle& p        = of.spawn();
+        p.position         = Eigen::Vector3f(170, 50, 0); // +X past CP+halfsize
+        p.velocity         = Eigen::Vector3f(5, 0, 0);
+        json j             = { { "name", "collisionbox" },
+                               { "controlpoint", 2 },
+                               { "halfsize", "100 100 100" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
-        CHECK(p.position.x() == doctest::Approx(150.0f));  // CP.x + halfsize.x
+        CHECK(p.position.x() == doctest::Approx(150.0f)); // CP.x + halfsize.x
         CHECK(p.velocity.x() == doctest::Approx(-5.0f));
     }
 
@@ -1800,14 +1786,14 @@ TEST_SUITE("collisionbox") {
         OpFixture of;
         Particle& p = of.spawn();
         p.position  = Eigen::Vector3f(120, 0, 0);
-        p.velocity  = Eigen::Vector3f(-3, 0, 0);  // already moving inward
+        p.velocity  = Eigen::Vector3f(-3, 0, 0); // already moving inward
         json j      = { { "name", "collisionbox" },
                         { "controlpoint", 0 },
                         { "halfsize", "100 100 100" } };
         auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
         CHECK(p.position.x() == doctest::Approx(100.0f));
-        CHECK(p.velocity.x() == doctest::Approx(-3.0f));  // not flipped
+        CHECK(p.velocity.x() == doctest::Approx(-3.0f)); // not flipped
     }
 
     TEST_CASE("collisionbounds shares the box implementation") {
@@ -1833,7 +1819,7 @@ TEST_SUITE("collisionbox") {
         json j      = { { "name", "collisionbox" }, { "halfsize", "100 100 100" } };
         auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(of.info());
-        CHECK(p.position.x() == doctest::Approx(150.0f));  // untouched
+        CHECK(p.position.x() == doctest::Approx(150.0f)); // untouched
     }
 }
 
@@ -1867,10 +1853,10 @@ struct InheritOpFixture {
 TEST_SUITE("inheritvaluefromevent") {
     TEST_CASE("color: fully overwrites child each tick (no blend)") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.color     = Eigen::Vector3f(0, 0, 0);
-        json j      = { { "name", "inheritvaluefromevent" }, { "input", "color" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.color            = Eigen::Vector3f(0, 0, 0);
+        json j             = { { "name", "inheritvaluefromevent" }, { "input", "color" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         CHECK(p.color.x() == doctest::Approx(0.2f));
         CHECK(p.color.y() == doctest::Approx(0.4f));
@@ -1879,13 +1865,13 @@ TEST_SUITE("inheritvaluefromevent") {
 
     TEST_CASE("size and alpha overwrite each tick") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.size      = 5.0f;
-        p.alpha     = 0.0f;
-        json j_size = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
-        json j_a    = { { "name", "inheritvaluefromevent" }, { "input", "alpha" } };
-        auto op_s   = WPParticleParser::genParticleOperatorOp(j_size, empty_override());
-        auto op_a   = WPParticleParser::genParticleOperatorOp(j_a, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.size             = 5.0f;
+        p.alpha            = 0.0f;
+        json j_size        = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        json j_a           = { { "name", "inheritvaluefromevent" }, { "input", "alpha" } };
+        auto op_s          = WPParticleParser::genParticleOperatorOp(j_size, empty_override());
+        auto op_a          = WPParticleParser::genParticleOperatorOp(j_a, empty_override());
         op_s(fx.info());
         op_a(fx.info());
         CHECK(p.size == doctest::Approx(42.0f));
@@ -1894,10 +1880,10 @@ TEST_SUITE("inheritvaluefromevent") {
 
     TEST_CASE("velocity overwrite tracks parent velocity") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.velocity  = Eigen::Vector3f(0, 0, 0);
-        json j      = { { "name", "inheritvaluefromevent" }, { "input", "velocity" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.velocity         = Eigen::Vector3f(0, 0, 0);
+        json j             = { { "name", "inheritvaluefromevent" }, { "input", "velocity" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         CHECK(p.velocity.x() == doctest::Approx(7.0f));
         CHECK(p.velocity.z() == doctest::Approx(11.0f));
@@ -1905,17 +1891,17 @@ TEST_SUITE("inheritvaluefromevent") {
 
     TEST_CASE("blend-window halves the override") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.size      = 0.0f;
+        Particle&        p = fx.of.spawn();
+        p.size             = 0.0f;
         // Particle at LifetimePos = 0.5; blend ramps in over [0, 0.5] and out over [0.5, 1].
         p.lifetime      = 0.5f;
         p.init.lifetime = 1.0f;
         // Blend in from 0..0.5 (factor at life=0.5 is 1) — but we want a partial factor
         // so authour fade-in extending past current life: 0..1.0 makes factor=0.5.
-        json j = { { "name", "inheritvaluefromevent" },
-                   { "input", "size" },
-                   { "blendinstart", 0.0 },
-                   { "blendinend", 1.0 } };
+        json j  = { { "name", "inheritvaluefromevent" },
+                    { "input", "size" },
+                    { "blendinstart", 0.0 },
+                    { "blendinend", 1.0 } };
         auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         // factor = 0.5 → size = 0*(0.5) + 42*(0.5) = 21
@@ -1926,10 +1912,10 @@ TEST_SUITE("inheritvaluefromevent") {
         Particle dead = makeParent();
         dead.lifetime = 0.0f;
         InheritOpFixture fx(dead);
-        Particle& p = fx.of.spawn();
-        p.size      = 7.0f;
-        json j      = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.size             = 7.0f;
+        json j             = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         CHECK(p.size == doctest::Approx(7.0f));
     }
@@ -1947,21 +1933,21 @@ TEST_SUITE("inheritvaluefromevent") {
 
     TEST_CASE("dead child particle: skipped by lifetime gate") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.size      = 3.0f;
-        p.lifetime  = 0.0f;
-        json j      = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.size             = 3.0f;
+        p.lifetime         = 0.0f;
+        json j             = { { "name", "inheritvaluefromevent" }, { "input", "size" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         CHECK(p.size == doctest::Approx(3.0f));
     }
 
     TEST_CASE("unknown input string: silent no-op") {
         InheritOpFixture fx(makeParent());
-        Particle& p = fx.of.spawn();
-        p.size      = 11.0f;
-        json j      = { { "name", "inheritvaluefromevent" }, { "input", "noeffect" } };
-        auto op     = WPParticleParser::genParticleOperatorOp(j, empty_override());
+        Particle&        p = fx.of.spawn();
+        p.size             = 11.0f;
+        json j             = { { "name", "inheritvaluefromevent" }, { "input", "noeffect" } };
+        auto op            = WPParticleParser::genParticleOperatorOp(j, empty_override());
         op(fx.info());
         CHECK(p.size == doctest::Approx(11.0f));
     }
@@ -1989,7 +1975,7 @@ TEST_SUITE("Particle.RandomFloat") {
         for (uint32_t s = 1; s < 10000; s += 137) {
             Particle p;
             p.random_seed = s;
-            float v = p.RandomFloat();
+            float v       = p.RandomFloat();
             CHECK(v >= 0.0f);
             CHECK(v < 1.0f);
         }
@@ -2008,17 +1994,14 @@ TEST_SUITE("alphafade") {
     // Run the alphafade operator one frame at a chosen LifetimePos on a
     // particle with the given init.lifetime, returning the resulting alpha.
     // life_pos = 0 means freshly emitted; life_pos = 1 means at end of life.
-    auto run_at = [](float fadein, float fadeout, float init_life,
-                     float life_pos) -> float {
-        json j = { { "name", "alphafade" },
-                   { "fadeintime",  fadein  },
-                   { "fadeouttime", fadeout } };
-        auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
+    auto run_at = [](float fadein, float fadeout, float init_life, float life_pos) -> float {
+        json j  = { { "name", "alphafade" }, { "fadeintime", fadein }, { "fadeouttime", fadeout } };
+        auto op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p     = fx.spawn();
         p.init.lifetime = init_life;
-        p.lifetime = init_life * (1.0f - life_pos);
-        p.alpha    = 1.0f;
+        p.lifetime      = init_life * (1.0f - life_pos);
+        p.alpha         = 1.0f;
         op(fx.info());
         return p.alpha;
     };
@@ -2026,11 +2009,11 @@ TEST_SUITE("alphafade") {
     TEST_CASE("default 0.5/0.5: tent peaks instantaneously at midlife") {
         // Both defaults at 0.5 → fade-in ends at 0.5, fade-out starts at 0.5.
         // Zero-width plateau.  Lifetime-independent.
-        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.0f) == doctest::Approx(0.0f));
         CHECK(run_at(0.5f, 0.5f, 5.0f, 0.25f) == doctest::Approx(0.5f));
-        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.5f)  == doctest::Approx(1.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 0.5f) == doctest::Approx(1.0f));
         CHECK(run_at(0.5f, 0.5f, 5.0f, 0.75f) == doctest::Approx(0.5f));
-        CHECK(run_at(0.5f, 0.5f, 5.0f, 1.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.5f, 0.5f, 5.0f, 1.0f) == doctest::Approx(0.0f));
     }
 
     TEST_CASE("threshold semantic is lifetime-independent") {
@@ -2044,27 +2027,27 @@ TEST_SUITE("alphafade") {
 
     TEST_CASE("fadeintime=0.7, fadeouttime=0.7: triangle peaks at 0.7") {
         // (NieR magic_vortex_1 preset) — peak shifted from midlife.
-        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.0f)   == doctest::Approx(0.0f));
-        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.35f)  == doctest::Approx(0.5f));
-        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.7f)   == doctest::Approx(1.0f));
-        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.85f)  == doctest::Approx(0.5f));
-        CHECK(run_at(0.7f, 0.7f, 0.5f, 1.0f)   == doctest::Approx(0.0f));
+        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.0f) == doctest::Approx(0.0f));
+        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.35f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.7f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.7f, 0.7f, 0.5f, 0.85f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.7f, 0.7f, 0.5f, 1.0f) == doctest::Approx(0.0f));
     }
 
     TEST_CASE("fadeouttime=1.0: never fades out (threshold at end of life)") {
         // Edge: fade-out STARTS at age01=1.0 → never triggers.
         // (Ember preset's fadeouttime=1 — particles never fade out.)
-        CHECK(run_at(0.3f, 1.0f, 5.0f, 0.0f)  == doctest::Approx(0.0f));
-        CHECK(run_at(0.3f, 1.0f, 5.0f, 0.3f)  == doctest::Approx(1.0f));
+        CHECK(run_at(0.3f, 1.0f, 5.0f, 0.0f) == doctest::Approx(0.0f));
+        CHECK(run_at(0.3f, 1.0f, 5.0f, 0.3f) == doctest::Approx(1.0f));
         CHECK(run_at(0.3f, 1.0f, 5.0f, 0.99f) == doctest::Approx(1.0f));
     }
 
     TEST_CASE("fadeintime=0: no fade-in zone (threshold below age range)") {
         // fade-in ENDS at age01=0 → particle starts at full alpha.
-        CHECK(run_at(0.0f, 0.5f, 5.0f, 0.0f)  == doctest::Approx(1.0f));
-        CHECK(run_at(0.0f, 0.5f, 5.0f, 0.5f)  == doctest::Approx(1.0f));
+        CHECK(run_at(0.0f, 0.5f, 5.0f, 0.0f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.0f, 0.5f, 5.0f, 0.5f) == doctest::Approx(1.0f));
         CHECK(run_at(0.0f, 0.5f, 5.0f, 0.75f) == doctest::Approx(0.5f));
-        CHECK(run_at(0.0f, 0.5f, 5.0f, 1.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.0f, 0.5f, 5.0f, 1.0f) == doctest::Approx(0.0f));
     }
 
     TEST_CASE("fadeouttime=0: fade-out begins immediately") {
@@ -2077,21 +2060,20 @@ TEST_SUITE("alphafade") {
 
     TEST_CASE("asymmetric 0.2/0.8: long plateau between thresholds") {
         // fade-in ends at 0.2, fade-out starts at 0.8 → 60% plateau.
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.0f)  == doctest::Approx(0.0f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.1f)  == doctest::Approx(0.5f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.2f)  == doctest::Approx(1.0f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.5f)  == doctest::Approx(1.0f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.8f)  == doctest::Approx(1.0f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.9f)  == doctest::Approx(0.5f));
-        CHECK(run_at(0.2f, 0.8f, 2.0f, 1.0f)  == doctest::Approx(0.0f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.0f) == doctest::Approx(0.0f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.1f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.2f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.5f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.8f) == doctest::Approx(1.0f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 0.9f) == doctest::Approx(0.5f));
+        CHECK(run_at(0.2f, 0.8f, 2.0f, 1.0f) == doctest::Approx(0.0f));
     }
 
     TEST_CASE("zero init.lifetime: LifetimePos NaN compares false, alpha preserved") {
         // Defensive: a degenerate particle with zero init.lifetime makes
         // LifetimePos return NaN. NaN comparisons against fade thresholds are
         // false, so neither branch fires and alpha stays unchanged.
-        json j = { { "name", "alphafade" },
-                   { "fadeintime", 0.5f }, { "fadeouttime", 0.5f } };
+        json      j  = { { "name", "alphafade" }, { "fadeintime", 0.5f }, { "fadeouttime", 0.5f } };
         auto      op = WPParticleParser::genParticleOperatorOp(j, empty_override());
         OpFixture fx;
         Particle& p     = fx.spawn();
