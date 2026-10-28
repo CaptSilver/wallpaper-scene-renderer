@@ -168,6 +168,8 @@ add_executable(backend_scene_tests
     test_TripleSwapchain.cpp
     test_ExInteropSync.cpp
     test_ExImageParametersFd.cpp
+    test_ExFd.cpp
+    test_VulkanExSwapchainFd.cpp
     ${SRC_DIR}/VulkanRender/FrameFenceCycle.cpp
     test_VulkanDebugCallbackGate.cpp
     test_DeviceQueueSelection.cpp
@@ -476,7 +478,6 @@ if(Qt6_FOUND)
     set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
     target_include_directories(scenescript_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/qml_helper
-        ${PROJECT_SOURCE_DIR}/src/Vulkan/include
         ${PROJECT_SOURCE_DIR}/src/Audio/include
         ${PROJECT_SOURCE_DIR}/src/Scene/include
     )

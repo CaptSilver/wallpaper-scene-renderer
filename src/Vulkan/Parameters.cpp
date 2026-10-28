@@ -1,5 +1,5 @@
 #include "Parameters.hpp"
-#include <unistd.h>
+#include "Swapchain/ExFd.hpp"
 
 namespace wallpaper
 {
@@ -42,9 +42,7 @@ VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexce
 }
 
 ExImageParameters::ExImageParameters() = default;
-ExImageParameters::~ExImageParameters() {
-    if (fd >= 0) close(fd);
-}
+ExImageParameters::~ExImageParameters() { CloseHeldFd(fd); }
 ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
     : mem(std::move(o.mem)),
       mem_reqs(o.mem_reqs),
@@ -64,7 +62,7 @@ ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept 
     sampler      = o.sampler; // non-owning raw VkSampler
     extent       = o.extent;
     mipmap_level = o.mipmap_level;
-    if (fd >= 0 && fd != o.fd) close(fd);
+    if (fd != o.fd) CloseHeldFd(fd);
     fd = std::exchange(o.fd, -1);
     return *this;
 }

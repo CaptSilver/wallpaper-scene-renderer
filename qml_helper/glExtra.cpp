@@ -1,5 +1,5 @@
 #include "glExtra.hpp"
-#include <unistd.h>
+#include "Swapchain/ExFd.hpp"
 #include <glad/glad.h>
 #include <vector>
 #include "Utils/Logging.h"
@@ -206,11 +206,10 @@ std::span<const std::uint8_t> GlExtra::uuid() const { return pImpl->uuid; }
 TexTiling GlExtra::tiling() const { return m_tiling; }
 
 uint GlExtra::genExTexture(ExHandle& handle) {
-    if (handle.fd < 0 || handle.size == 0) {
+    if (! wallpaper::ExHandleImportable(handle)) {
         LOG_ERROR("gl: invalid ExHandle (fd=%d, size=%zu)", handle.fd, handle.size);
         // Still ours, and the caller cannot tell it from one GL took.
-        if (handle.fd >= 0) close(handle.fd);
-        handle.fd = -1;
+        wallpaper::CloseHeldFd(handle.fd);
         return 0;
     }
 
@@ -261,7 +260,7 @@ uint GlExtra::genExTexture(ExHandle& handle) {
 bool GlExtra::hasSemaphoreFd() const { return inited && GLAD_GL_EXT_semaphore_fd; }
 
 uint GlExtra::importSemaphore(int& fd) {
-    if (fd < 0) return 0;
+    if (! wallpaper::HoldsFd(fd)) return 0;
     // Only this import's error counts, not one left from earlier calls.
     while (glGetError() != GL_NO_ERROR) {
     }

@@ -4,7 +4,7 @@
 #include "Device.hpp"
 #include <cstdio>
 #include <utility>
-#include <unistd.h>
+#include "Swapchain/ExFd.hpp"
 
 namespace wallpaper
 {
@@ -25,8 +25,8 @@ struct VulkanExHandle : NoCopy {
     // Semaphore fds still here were never handed to a swapchain (creation
     // failed part-way); nobody else will close them.
     ~VulkanExHandle() {
-        if (render_done_fd >= 0) close(render_done_fd);
-        if (release_fd >= 0) close(release_fd);
+        CloseHeldFd(render_done_fd);
+        CloseHeldFd(release_fd);
     }
     VulkanExHandle(VulkanExHandle&& o) noexcept
         : handle(o.handle),
@@ -36,8 +36,8 @@ struct VulkanExHandle : NoCopy {
           render_done_fd(std::exchange(o.render_done_fd, -1)),
           release_fd(std::exchange(o.release_fd, -1)) {}
     VulkanExHandle& operator=(VulkanExHandle&& o) noexcept {
-        if (render_done_fd >= 0 && render_done_fd != o.render_done_fd) close(render_done_fd);
-        if (release_fd >= 0 && release_fd != o.release_fd) close(release_fd);
+        if (render_done_fd != o.render_done_fd) CloseHeldFd(render_done_fd);
+        if (release_fd != o.release_fd) CloseHeldFd(release_fd);
         handle         = o.handle;
         image          = std::move(o.image);
         render_done    = std::move(o.render_done);
@@ -78,8 +78,9 @@ public:
     // An image the consumer never imported still has its fds here.
     virtual ~VulkanExSwapchain() {
         for (auto& h : m_handles) {
-            for (int fd : { h.handle.fd, h.handle.render_done_fd, h.handle.release_fd })
-                if (fd >= 0) close(fd);
+            CloseHeldFd(h.handle.fd);
+            CloseHeldFd(h.handle.render_done_fd);
+            CloseHeldFd(h.handle.release_fd);
         }
     }
 
