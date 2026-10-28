@@ -31,7 +31,8 @@ fs::path makeTempDir(const char* tag) {
     int n = 0;
     while (fs::exists(tmp)) {
         ++n;
-        tmp = fs::temp_directory_path() / (std::string("wekde-e5-") + tag + "-" + std::to_string(n));
+        tmp =
+            fs::temp_directory_path() / (std::string("wekde-e5-") + tag + "-" + std::to_string(n));
     }
     fs::create_directory(tmp);
     return tmp;
@@ -61,7 +62,9 @@ TEST_SUITE("HWVideoTextureDecoder::initEGL diagnostics") {
         // fails on the non-DRI fd, the per-node LOG_INFO fires.  Final
         // outcome is still "no working GPU render node" + outError populated.
         fs::path tmp = makeTempDir("fakedri");
-        { std::ofstream(tmp / "renderD128") << "fake"; }
+        {
+            std::ofstream(tmp / "renderD128") << "fake";
+        }
         setenv("WEK_HW_DECODE_DRI_PATH", tmp.c_str(), 1);
 
         HWVideoTextureDecoder dec(64, 64);
