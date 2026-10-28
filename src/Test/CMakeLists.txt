@@ -499,6 +499,9 @@ if(Qt6_FOUND)
         Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer nlohmann_json
         ${CMAKE_DL_LIBS})
     wek_apply_sanitizers(scenescript_tests)
+    # The only binary that builds qml_helper/, so tools/scripts/mutation.sh
+    # mutates it as a target of its own.
+    wek_apply_mull_instrumentation(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
     set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)
 endif()

@@ -136,3 +136,8 @@ set_property(TARGET ${PROJECT_NAME} PROPERTY POSITION_INDEPENDENT_CODE ON)
 # and the wpscene/*.cpp sources it compiles directly had never been checked
 # under any warning flag at all.
 target_compile_options(${PROJECT_NAME} PRIVATE ${warn_opts})
+
+# backend_scene_tests compiles these sources itself, but scenescript_tests links
+# this library, so without the plugin here its mutation run would cover none of
+# them while reporting them measured.
+wek_apply_mull_instrumentation(${PROJECT_NAME})
