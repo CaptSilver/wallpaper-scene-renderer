@@ -1971,6 +1971,14 @@ TEST_SUITE("Particle.RandomFloat") {
         CHECK(a.RandomFloat() != b.RandomFloat());
     }
 
+    TEST_CASE("the generator is Marsaglia's xorshift32 (13, 17, 5)") {
+        // From state 1 the published sequence starts 270369; RandomFloat keeps
+        // its top 24 bits as the mantissa.
+        Particle p;
+        p.random_seed = 1u;
+        CHECK(p.RandomFloat() == (270369u >> 8) * (1.0f / 16777216.0f));
+    }
+
     TEST_CASE("output is in [0, 1)") {
         for (uint32_t s = 1; s < 10000; s += 137) {
             Particle p;

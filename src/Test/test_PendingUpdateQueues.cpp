@@ -75,6 +75,31 @@ TEST_SUITE("PendingUpdateQueues") {
         });
     }
 
+    TEST_CASE("applyLayerBatch: scale/angles/visible without origin or alpha queue neither") {
+        PendingUpdateQueues                  q;
+        PendingUpdateQueues::LayerBatchEntry e {};
+        e.id      = 13;
+        e.flags   = PendingUpdateQueues::F_SCALE | PendingUpdateQueues::F_ANGLES |
+                    PendingUpdateQueues::F_VISIBLE;
+        e.origin  = { 10.f, 20.f, 30.f }; // present but flag unset -> ignored
+        e.scale   = { 2.f, 3.f, 4.f };
+        e.angles  = { 90.f, 0.f, 0.f };
+        e.alpha   = 0.5f; // present but flag unset -> ignored
+        e.visible = 0;
+        q.applyLayerBatch({ e });
+
+        q.withPropertyLocked([&](PendingUpdateQueues& p) {
+            CHECK(p.m_pending_transform_updates.count({ 13, "origin" }) == 0);
+            CHECK(p.m_pending_transform_updates.at({ 13, "scale" }) ==
+                  std::array<float, 3> { 2.f, 3.f, 4.f });
+            CHECK(p.m_pending_transform_updates.at({ 13, "angles" }) ==
+                  std::array<float, 3> { 90.f, 0.f, 0.f });
+            REQUIRE(p.m_pending_visible_updates.count(13) == 1);
+            CHECK_FALSE(p.m_pending_visible_updates.at(13));
+            CHECK(p.m_pending_alpha_updates.count(13) == 0);
+        });
+    }
+
     TEST_CASE("scene optional: setClearColor sets once, drain resets, second drain empty") {
         PendingUpdateQueues q;
         q.setClearColor(0.1f, 0.2f, 0.3f);

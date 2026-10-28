@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "VulkanRender/ReadbackPixels.hpp"
 
@@ -231,5 +232,35 @@ TEST_SUITE("pass dump readback") {
         CHECK_FALSE(PassDumpRowToRGB8(src, VK_FORMAT_R32G32B32A32_SFLOAT, 1, 0, rgb, alpha));
         CHECK(rgb[0] == 9);
         CHECK(alpha[0] == 9);
+    }
+}
+
+TEST_SUITE("ReadbackPixels.Half2Float") {
+    uint32_t floatBits(float f) {
+        uint32_t u;
+        std::memcpy(&u, &f, 4);
+        return u;
+    }
+
+    TEST_CASE("negative zero keeps its sign") {
+        const float f = Half2Float(0x8000);
+        CHECK(f == 0.0f);
+        CHECK(std::signbit(f));
+        CHECK_FALSE(std::signbit(Half2Float(0x0000)));
+    }
+
+    TEST_CASE("subnormals are normalised into the wider exponent range") {
+        CHECK(Half2Float(0x0001) == std::ldexp(1.0f, -24));
+        CHECK(Half2Float(0x0200) == std::ldexp(1.0f, -15));
+        CHECK(Half2Float(0x03FF) == std::ldexp(1023.0f, -24));
+        // Two mantissa bits: one becomes the implicit bit, one stays in the fraction.
+        CHECK(Half2Float(0x8003) == -std::ldexp(3.0f, -24));
+    }
+
+    TEST_CASE("infinities keep their sign and NaNs keep sign and payload") {
+        CHECK(Half2Float(0x7C00) == std::numeric_limits<float>::infinity());
+        CHECK(Half2Float(0xFC00) == -std::numeric_limits<float>::infinity());
+        CHECK(floatBits(Half2Float(0x7C01)) == (0x7F800000u | (0x001u << 13)));
+        CHECK(floatBits(Half2Float(0xFE01)) == (0x80000000u | 0x7F800000u | (0x201u << 13)));
     }
 }

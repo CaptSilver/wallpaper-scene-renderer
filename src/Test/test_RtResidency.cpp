@@ -46,6 +46,19 @@ TEST_SUITE("RtResidency::ResidencyKey") {
         CHECK(set.count(ResidencyKey::ForHandle(1)) == 1);
         CHECK(set.count(ResidencyKey {}) == 0);
     }
+    TEST_CASE("keys differing in a single value bit hash differently, for each kind") {
+        // Built directly: ForSlot takes a 32-bit SlotId, and the hash covers all 64 value bits.
+        const std::hash<ResidencyKey> h;
+        const auto                    slot = [](std::uint64_t v) {
+            return ResidencyKey { ResidencyKey::Kind::Slot, v };
+        };
+        for (int bit = 0; bit < 64; bit++) {
+            const std::uint64_t v = std::uint64_t { 1 } << bit;
+            CAPTURE(bit);
+            CHECK(h(slot(0)) != h(slot(v)));
+            CHECK(h(ResidencyKey::ForHandle(v)) != h(slot(v)));
+        }
+    }
 }
 
 // Demand: walking the passes last to first, a pass is active when its output is
