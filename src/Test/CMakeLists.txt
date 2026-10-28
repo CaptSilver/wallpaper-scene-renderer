@@ -469,6 +469,7 @@ if(Qt6_FOUND)
         test_ActiveUserPropBindingNames.cpp
         # Also here for glExtra.cpp, which only this binary builds.
         test_ExFdOwnership.cpp
+        test_GlExtraSemaphoreGpu.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/MediaThumbnailCrossfade.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
@@ -495,7 +496,8 @@ if(Qt6_FOUND)
     # deliberately spared from.
     target_compile_options(scenescript_tests PRIVATE ${wek_warn_opts} ${WEK_DOCTEST_WERROR_EXEMPT_FLAGS})
     target_link_libraries(scenescript_tests PRIVATE
-        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer nlohmann_json)
+        Qt6::Core Qt6::Qml Qt6::Gui Qt6::Quick glad wescene-renderer wpTimer nlohmann_json
+        ${CMAKE_DL_LIBS})
     wek_apply_sanitizers(scenescript_tests)
     add_test(NAME scenescript_tests COMMAND scenescript_tests)
     set_tests_properties(scenescript_tests PROPERTIES TIMEOUT 120)

@@ -21,8 +21,8 @@ public:
 
     // GL_EXT_semaphore_fd, needed to take the renderer's semaphores.
     bool hasSemaphoreFd() const;
-    // Imports in the current context and takes ownership of `fd` (sets -1).
-    // 0 on failure.
+    // Imports in the current context.  Takes `fd` either way and leaves -1:
+    // GL owns it after an import, and one that fails is closed.  0 on failure.
     uint importSemaphore(int& fd);
     // Order this context's later use of `tex` after the semaphore's signal.
     // `tex` 0 = no texture to transition (one never imported here).

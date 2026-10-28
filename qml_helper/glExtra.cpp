@@ -267,12 +267,15 @@ uint GlExtra::importSemaphore(int& fd) {
     uint sem { 0 };
     glGenSemaphoresEXT(1, &sem);
     glImportSemaphoreFdEXT(sem, GL_HANDLE_TYPE_OPAQUE_FD_EXT, fd);
-    fd = -1; // GL owns it now, even if the import failed
     if (glGetError() != GL_NO_ERROR || ! glIsSemaphoreEXT(sem)) {
         LOG_ERROR("gl: importing a renderer semaphore failed");
         glDeleteSemaphoresEXT(1, &sem);
+        // Only a successful import hands the fd to GL (EXT_external_objects_fd),
+        // so after a failed one it is still ours to close.
+        wallpaper::CloseHeldFd(fd);
         return 0;
     }
+    fd = -1; // GL owns it now
     return sem;
 }
 
