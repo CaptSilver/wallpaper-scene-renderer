@@ -165,6 +165,7 @@ add_executable(backend_scene_tests
     test_FenceWaitRetry.cpp
     ${SRC_DIR}/VulkanRender/FenceWaitRetry.cpp
     test_FrameFenceCycle.cpp
+    test_TripleSwapchain.cpp
     ${SRC_DIR}/VulkanRender/FrameFenceCycle.cpp
     test_VulkanDebugCallbackGate.cpp
     test_DeviceQueueSelection.cpp
