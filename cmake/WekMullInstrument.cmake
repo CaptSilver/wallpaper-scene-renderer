@@ -59,6 +59,16 @@ if(MUTATION_TESTING)
     if(MULL_RUNNER)
         message(STATUS "Mull runner: ${MULL_RUNNER}")
     endif()
+
+    # The frontend reads mull.yml while compiling and only embeds the mutator
+    # families listed there (cxx_default when it finds none), so the config
+    # has to reach the compiler, not just mull-runner.  Ninja cannot see that
+    # dependency: hash the file into the instrumented targets' flags and make
+    # it a configure dependency, so editing it reconfigures and rebuilds them.
+    set(WEK_MULL_FRONTEND_CONFIG "${CMAKE_CURRENT_LIST_DIR}/../mull.yml")
+    cmake_path(NORMAL_PATH WEK_MULL_FRONTEND_CONFIG)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WEK_MULL_FRONTEND_CONFIG}")
+    file(SHA1 "${WEK_MULL_FRONTEND_CONFIG}" WEK_MULL_FRONTEND_CONFIG_SHA1)
 endif()
 
 # wek_apply_mull_instrumentation(<target>) — append the same -fpass-plugin
@@ -86,5 +96,13 @@ function(wek_apply_mull_instrumentation _target)
         -fpass-plugin=${MULL_PLUGIN_PATH}
         -g -grecord-command-line
         -DWP_SUPPRESS_DEBUG_LOGGING
+        -DWEK_MULL_FRONTEND_CONFIG_SHA1=${WEK_MULL_FRONTEND_CONFIG_SHA1}
+    )
+    # Through a launcher rather than the caller's environment, so a plain
+    # `cmake --build` of a mutation tree embeds the same mutants mutation.sh's
+    # does.
+    set_target_properties(${_target} PROPERTIES
+        C_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;MULL_CONFIG=${WEK_MULL_FRONTEND_CONFIG}"
+        CXX_COMPILER_LAUNCHER "${CMAKE_COMMAND};-E;env;MULL_CONFIG=${WEK_MULL_FRONTEND_CONFIG}"
     )
 endfunction()
