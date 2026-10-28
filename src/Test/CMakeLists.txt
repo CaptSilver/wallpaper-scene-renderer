@@ -167,6 +167,7 @@ add_executable(backend_scene_tests
     test_FrameFenceCycle.cpp
     test_TripleSwapchain.cpp
     test_ExInteropSync.cpp
+    test_ExImageParametersFd.cpp
     ${SRC_DIR}/VulkanRender/FrameFenceCycle.cpp
     test_VulkanDebugCallbackGate.cpp
     test_DeviceQueueSelection.cpp
