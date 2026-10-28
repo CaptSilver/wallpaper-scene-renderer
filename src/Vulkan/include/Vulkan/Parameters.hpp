@@ -40,18 +40,18 @@ struct BufferParameters {
 
 struct VmaImageParameters : NoCopy {
     vvk::VmaImage  handle;
-    vvk::ImageView view;       // multi-mip view (covers all levels) — for sampling
-    vvk::ImageView mip0_view;  // single-mip view at level 0 — for render attachment.
-                               // Only populated when mipmap_level > 1; for single-mip
-                               // images `view` already covers exactly mip 0 and the
-                               // ImageParameters wrapper falls back to it.
+    vvk::ImageView view;      // multi-mip view (covers all levels) — for sampling
+    vvk::ImageView mip0_view; // single-mip view at level 0 — for render attachment.
+                              // Only populated when mipmap_level > 1; for single-mip
+                              // images `view` already covers exactly mip 0 and the
+                              // ImageParameters wrapper falls back to it.
     // Non-owning raw VkSampler.  The owning vvk::Sampler lives in
     // TextureCache::m_sampler_cache (dedup'd by VkSamplerCreateInfo hash) and
     // is destroyed there in Clear() AFTER this image — which references the
     // sampler via descriptor sets — has been destroyed.
-    VkSampler      sampler { VK_NULL_HANDLE };
-    VkExtent3D     extent;
-    uint           mipmap_level { 1 };
+    VkSampler  sampler { VK_NULL_HANDLE };
+    VkExtent3D extent;
+    uint       mipmap_level { 1 };
     // First-use barrier latch for the UNDEFINED -> initial-usage transition.
     // Owned here (not a global VkImage-keyed set) so the bool dies with the
     // VkImage handle — Vulkan is free to recycle handles after a free, and a
@@ -77,10 +77,10 @@ struct ExImageParameters : NoCopy {
     vvk::ImageView view;
     // Non-owning raw VkSampler.  Same dedup'd lifetime as VmaImageParameters
     // — TextureCache::m_sampler_cache owns the underlying vvk::Sampler.
-    VkSampler      sampler { VK_NULL_HANDLE };
-    VkExtent3D     extent;
-    uint           mipmap_level { 1 };
-    int            fd { 0 };
+    VkSampler  sampler { VK_NULL_HANDLE };
+    VkExtent3D extent;
+    uint       mipmap_level { 1 };
+    int        fd { 0 };
 
     ExImageParameters();
     ~ExImageParameters();
@@ -90,13 +90,13 @@ struct ExImageParameters : NoCopy {
 
 struct ImageParameters {
     VkImage     handle;
-    VkImageView view;        // multi-mip view — for sampler binding
-    VkImageView mip0_view;   // single-mip-level-0 view — for render attachment.
-                             // Equals `view` when the source image is single-mip
-                             // (mipmap_level == 1) so callers can use unconditionally.
-    VkSampler   sampler;
-    VkExtent3D  extent;
-    uint        mipmap_level { 1 };
+    VkImageView view;      // multi-mip view — for sampler binding
+    VkImageView mip0_view; // single-mip-level-0 view — for render attachment.
+                           // Equals `view` when the source image is single-mip
+                           // (mipmap_level == 1) so callers can use unconditionally.
+    VkSampler  sampler;
+    VkExtent3D extent;
+    uint       mipmap_level { 1 };
 
     ImageParameters()  = default;
     ~ImageParameters() = default;
