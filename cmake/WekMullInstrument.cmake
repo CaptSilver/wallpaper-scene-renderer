@@ -65,8 +65,12 @@ if(MUTATION_TESTING)
     # has to reach the compiler, not just mull-runner.  Ninja cannot see that
     # dependency: hash the file into the instrumented targets' flags and make
     # it a configure dependency, so editing it reconfigures and rebuilds them.
-    set(WEK_MULL_FRONTEND_CONFIG "${CMAKE_CURRENT_LIST_DIR}/../mull.yml")
-    cmake_path(NORMAL_PATH WEK_MULL_FRONTEND_CONFIG)
+    # A cache entry so a one-off run can embed a narrower set, e.g. only the
+    # bitwise and logical mutants, without editing the committed mull.yml.
+    set(_wek_mull_default_config "${CMAKE_CURRENT_LIST_DIR}/../mull.yml")
+    cmake_path(NORMAL_PATH _wek_mull_default_config)
+    set(WEK_MULL_FRONTEND_CONFIG "${_wek_mull_default_config}" CACHE FILEPATH
+        "mull.yml Mull's frontend reads while compiling instrumented targets")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WEK_MULL_FRONTEND_CONFIG}")
     file(SHA1 "${WEK_MULL_FRONTEND_CONFIG}" WEK_MULL_FRONTEND_CONFIG_SHA1)
 endif()
