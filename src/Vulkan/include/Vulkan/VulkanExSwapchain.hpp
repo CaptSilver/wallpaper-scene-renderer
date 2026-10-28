@@ -4,6 +4,7 @@
 #include "Device.hpp"
 #include <cstdio>
 #include <utility>
+#include <unistd.h>
 
 namespace wallpaper
 {
@@ -20,8 +21,13 @@ struct VulkanExHandle : NoCopy {
     int            render_done_fd { -1 };
     int            release_fd { -1 };
 
-    VulkanExHandle()  = default;
-    ~VulkanExHandle() = default;
+    VulkanExHandle() = default;
+    // Semaphore fds still here were never handed to a swapchain (creation
+    // failed part-way); nobody else will close them.
+    ~VulkanExHandle() {
+        if (render_done_fd >= 0) close(render_done_fd);
+        if (release_fd >= 0) close(release_fd);
+    }
     VulkanExHandle(VulkanExHandle&& o) noexcept
         : handle(o.handle),
           image(std::move(o.image)),
@@ -30,6 +36,8 @@ struct VulkanExHandle : NoCopy {
           render_done_fd(std::exchange(o.render_done_fd, -1)),
           release_fd(std::exchange(o.release_fd, -1)) {}
     VulkanExHandle& operator=(VulkanExHandle&& o) noexcept {
+        if (render_done_fd >= 0 && render_done_fd != o.render_done_fd) close(render_done_fd);
+        if (release_fd >= 0 && release_fd != o.release_fd) close(release_fd);
         handle         = o.handle;
         image          = std::move(o.image);
         render_done    = std::move(o.render_done);
@@ -51,14 +59,15 @@ public:
         uint32_t gl_fmt = (fmt == kExSwapchainHdrFormat) ? 0x881Au : 0x8058u;
         int      index  = 0;
         for (auto& h : m_handles) {
-            auto& handle     = h.handle;
-            handle           = ExHandle(index++);
-            handle.width     = (i32)h.image.extent.width;
-            handle.height    = (i32)h.image.extent.height;
-            handle.fd        = h.image.fd;
-            handle.size      = h.image.mem_reqs.size;
-            handle.gl_format = gl_fmt;
-            // The consumer imports these and owns them from then on.
+            auto& handle  = h.handle;
+            handle        = ExHandle(index++);
+            handle.width  = (i32)h.image.extent.width;
+            handle.height = (i32)h.image.extent.height;
+            // The consumer takes these fds from the handle, and owns them
+            // once it has imported them; the swapchain closes what is left.
+            handle.fd             = std::exchange(h.image.fd, -1);
+            handle.size           = h.image.mem_reqs.size;
+            handle.gl_format      = gl_fmt;
             handle.render_done_fd = std::exchange(h.render_done_fd, -1);
             handle.release_fd     = std::exchange(h.release_fd, -1);
         }
@@ -66,7 +75,13 @@ public:
         m_ready      = &m_handles[1].handle;
         m_inprogress = &m_handles[2].handle;
     }
-    virtual ~VulkanExSwapchain() = default;
+    // An image the consumer never imported still has its fds here.
+    virtual ~VulkanExSwapchain() {
+        for (auto& h : m_handles) {
+            for (int fd : { h.handle.fd, h.handle.render_done_fd, h.handle.release_fd })
+                if (fd >= 0) close(fd);
+        }
+    }
 
     std::uint32_t width() const override { return m_extent.width; }
     std::uint32_t height() const override { return m_extent.height; }

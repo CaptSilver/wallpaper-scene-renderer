@@ -464,6 +464,8 @@ if(Qt6_FOUND)
         # wescene-renderer (SceneWallpaper.cpp's library) headlessly, and the
         # function under test lives there.
         test_ActiveUserPropBindingNames.cpp
+        # Also here for glExtra.cpp, which only this binary builds.
+        test_ExFdOwnership.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneBackend.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/MediaThumbnailCrossfade.cpp
         ${PROJECT_SOURCE_DIR}/qml_helper/SceneScriptBridge.h
@@ -473,6 +475,7 @@ if(Qt6_FOUND)
     set_target_properties(scenescript_tests PROPERTIES AUTOMOC ON)
     target_include_directories(scenescript_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/qml_helper
+        ${PROJECT_SOURCE_DIR}/src/Vulkan/include
         ${PROJECT_SOURCE_DIR}/src/Audio/include
         ${PROJECT_SOURCE_DIR}/src/Scene/include
     )

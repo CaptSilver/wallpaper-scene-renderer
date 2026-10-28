@@ -1,4 +1,5 @@
 #include "Parameters.hpp"
+#include <unistd.h>
 
 namespace wallpaper
 {
@@ -40,8 +41,10 @@ VmaImageParameters& VmaImageParameters::operator=(VmaImageParameters&& o) noexce
     return *this;
 }
 
-ExImageParameters::ExImageParameters()  = default;
-ExImageParameters::~ExImageParameters() = default;
+ExImageParameters::ExImageParameters() = default;
+ExImageParameters::~ExImageParameters() {
+    if (fd >= 0) close(fd);
+}
 ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
     : mem(std::move(o.mem)),
       mem_reqs(o.mem_reqs),
@@ -52,7 +55,7 @@ ExImageParameters::ExImageParameters(ExImageParameters&& o) noexcept
       sampler(o.sampler),
       extent(o.extent),
       mipmap_level(o.mipmap_level),
-      fd(std::exchange(o.fd, 0)) {}
+      fd(std::exchange(o.fd, -1)) {}
 ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept {
     mem          = std::move(o.mem);
     mem_reqs     = o.mem_reqs;
@@ -61,7 +64,8 @@ ExImageParameters& ExImageParameters::operator=(ExImageParameters&& o) noexcept 
     sampler      = o.sampler; // non-owning raw VkSampler
     extent       = o.extent;
     mipmap_level = o.mipmap_level;
-    fd           = std::exchange(o.fd, 0);
+    if (fd >= 0 && fd != o.fd) close(fd);
+    fd = std::exchange(o.fd, -1);
     return *this;
 }
 

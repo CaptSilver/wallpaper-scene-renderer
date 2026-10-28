@@ -14,6 +14,8 @@ public:
     GlExtra();
     ~GlExtra();
     bool init(void* get_proc_address(const char*));
+    // Takes the handle's memory fd either way: GL owns it after an import,
+    // and one that cannot be imported is closed.  handle.fd is -1 after.
     uint genExTexture(wallpaper::ExHandle&);
     void deleteTexture(uint);
 

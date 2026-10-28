@@ -80,7 +80,9 @@ struct ExImageParameters : NoCopy {
     VkSampler  sampler { VK_NULL_HANDLE };
     VkExtent3D extent;
     uint       mipmap_level { 1 };
-    int        fd { 0 };
+    // The exported memory fd; owned here (closed on destruction) until
+    // VulkanExSwapchain hands it to the consumer.  -1 = none.
+    int fd { -1 };
 
     ExImageParameters();
     ~ExImageParameters();

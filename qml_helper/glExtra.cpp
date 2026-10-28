@@ -1,4 +1,5 @@
 #include "glExtra.hpp"
+#include <unistd.h>
 #include <glad/glad.h>
 #include <vector>
 #include "Utils/Logging.h"
@@ -207,6 +208,9 @@ TexTiling GlExtra::tiling() const { return m_tiling; }
 uint GlExtra::genExTexture(ExHandle& handle) {
     if (handle.fd < 0 || handle.size == 0) {
         LOG_ERROR("gl: invalid ExHandle (fd=%d, size=%zu)", handle.fd, handle.size);
+        // Still ours, and the caller cannot tell it from one GL took.
+        if (handle.fd >= 0) close(handle.fd);
+        handle.fd = -1;
         return 0;
     }
 
