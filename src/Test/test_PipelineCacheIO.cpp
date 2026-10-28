@@ -9,6 +9,9 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unistd.h>
+
+#include "test_scratch.hpp"
 
 using wallpaper::vulkan::pipeline_cache_io::HeaderMatches;
 using wallpaper::vulkan::pipeline_cache_io::PathFromEnv;
@@ -149,7 +152,10 @@ TEST_CASE("HeaderMatches rejects on vendor / device / UUID mismatch") {
 }
 
 TEST_CASE("Write then Read round-trips bytes through a real tmpfile") {
-    const auto base = std::filesystem::temp_directory_path() / "wek-pcache-test";
+    // Per process: Mull runs many copies of this binary at once.
+    const auto base =
+        std::filesystem::path(wallpaper::test::ScratchDir("pcache", (int)::getpid())) /
+        "round-trip";
     std::filesystem::remove_all(base);
     const auto                         path = base / "nested" / "dir" / "pipeline.cache";
     const std::array<unsigned char, 9> bytes {
@@ -163,14 +169,18 @@ TEST_CASE("Write then Read round-trips bytes through a real tmpfile") {
 }
 
 TEST_CASE("Read returns empty on missing file") {
-    const auto path = std::filesystem::temp_directory_path() / "wek-pcache-not-here.cache";
+    const auto path =
+        std::filesystem::path(wallpaper::test::ScratchDir("pcache", (int)::getpid())) /
+        "not-here.cache";
     std::filesystem::remove(path);
     const auto blob = Read(path);
     CHECK(blob.empty());
 }
 
 TEST_CASE("Write leaves no .tmp leftover on success") {
-    const auto base = std::filesystem::temp_directory_path() / "wek-pcache-test2";
+    const auto base =
+        std::filesystem::path(wallpaper::test::ScratchDir("pcache", (int)::getpid())) /
+        "no-tmp-leftover";
     std::filesystem::remove_all(base);
     const auto                         path = base / "pipeline.cache";
     const std::array<unsigned char, 4> bytes { 1, 2, 3, 4 };

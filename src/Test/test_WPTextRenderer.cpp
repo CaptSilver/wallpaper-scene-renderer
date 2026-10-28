@@ -1,4 +1,7 @@
 #include <doctest.h>
+#include <unistd.h>
+
+#include "test_scratch.hpp"
 
 #include "WPTextRenderer.hpp"
 #include "SystemFontFallback.hpp"
@@ -981,13 +984,10 @@ TEST_SUITE("WPTextRenderer CJK fallback resolution caching") {
             MESSAGE("Liberation Sans not present on host; skipping");
             return;
         }
-        std::error_code ec;
-        const auto      junk =
-            std::filesystem::temp_directory_path(ec) / "wek-text-fallback-not-a-font.bin";
-        if (ec) {
-            MESSAGE("No writable temp directory; skipping");
-            return;
-        }
+        // Per process: Mull runs many copies of this binary at once.
+        const auto junk =
+            std::filesystem::path(wallpaper::test::ScratchDir("text-fallback", (int)::getpid())) /
+            "not-a-font.bin";
         {
             std::ofstream out(junk, std::ios::binary);
             if (! out) {
@@ -1009,6 +1009,7 @@ TEST_SUITE("WPTextRenderer CJK fallback resolution caching") {
         }
         CHECK(WPTextRenderer::TEST_getFallbackResolveCount() == 1);
 
+        std::error_code ec;
         std::filesystem::remove(junk, ec);
     }
 

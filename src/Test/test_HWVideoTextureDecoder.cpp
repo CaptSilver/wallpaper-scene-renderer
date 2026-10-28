@@ -10,6 +10,8 @@
 #include <string>
 #include <unistd.h>
 
+#include "test_scratch.hpp"
+
 using namespace wallpaper;
 namespace fs = std::filesystem;
 
@@ -26,15 +28,14 @@ namespace fs = std::filesystem;
 namespace
 {
 fs::path makeTempDir(const char* tag) {
-    fs::path tmp = fs::temp_directory_path() / (std::string("wekde-e5-") + tag);
-    // unique-ify so parallel test cases don't collide.
-    int n = 0;
-    while (fs::exists(tmp)) {
-        ++n;
-        tmp =
-            fs::temp_directory_path() / (std::string("wekde-e5-") + tag + "-" + std::to_string(n));
-    }
-    fs::create_directory(tmp);
+    // Under this process's own scratch dir, so copies of the binary running at
+    // once (Mull) cannot both claim the same name; the counter keeps repeated
+    // tags in one process apart.
+    const fs::path base = wallpaper::test::ScratchDir("hwdec", (int)::getpid());
+    fs::path       tmp  = base / tag;
+    int            n    = 0;
+    while (fs::exists(tmp)) tmp = base / (std::string(tag) + "-" + std::to_string(++n));
+    fs::create_directories(tmp);
     return tmp;
 }
 } // namespace

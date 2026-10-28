@@ -12,6 +12,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <unistd.h>
+
+#include "test_scratch.hpp"
 
 using namespace wallpaper;
 using namespace wallpaper::fs;
@@ -102,9 +105,11 @@ std::filesystem::path writeTempPkg(const std::vector<std::pair<std::string, std:
     header.insert(header.end(), payload.begin(), payload.end());
 
     static std::atomic<int> counter { 0 };
-    auto                    path = std::filesystem::temp_directory_path() /
-                                   ("wek-pkgfs-open-test-" + std::to_string(counter++) + ".pkg");
-    std::ofstream           f(path, std::ios::binary);
+    // The counter is unique within this process, the directory across the
+    // copies Mull runs at once.
+    auto path = std::filesystem::path(wallpaper::test::ScratchDir("pkgfs", (int)::getpid())) /
+                ("open-test-" + std::to_string(counter++) + ".pkg");
+    std::ofstream f(path, std::ios::binary);
     f.write(reinterpret_cast<const char*>(header.data()), (std::streamsize)header.size());
     f.close();
     return path;
