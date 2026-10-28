@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <cstdint>
 #include "Core/NoCopyMove.hpp"
 
 namespace wallpaper
@@ -21,8 +22,8 @@ public:
     }
     T* getInprogress() { return inprogress(); }
 
-    virtual uint width() const  = 0;
-    virtual uint height() const = 0;
+    virtual std::uint32_t width() const  = 0;
+    virtual std::uint32_t height() const = 0;
 
 protected:
     TripleSwapchain() = default;

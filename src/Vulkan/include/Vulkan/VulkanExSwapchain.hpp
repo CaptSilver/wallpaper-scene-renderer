@@ -52,8 +52,8 @@ public:
     }
     virtual ~VulkanExSwapchain() = default;
 
-    uint width() const override { return m_extent.width; }
-    uint height() const override { return m_extent.height; }
+    std::uint32_t width() const override { return m_extent.width; }
+    std::uint32_t height() const override { return m_extent.height; }
 
     const auto& handles() const { return m_handles; }
 
