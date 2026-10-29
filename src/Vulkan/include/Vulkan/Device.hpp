@@ -38,11 +38,11 @@ public:
 
     void Destroy();
 
-    const auto&           graphics_queue() const { return m_graphics_queue; }
-    const auto&           present_queue() const { return m_present_queue; }
-    const auto&           device() const { return m_device; }
-    const auto&           handle() const { return m_device; }
-    const auto&           gpu() const { return m_gpu; }
+    const auto& graphics_queue() const { return m_graphics_queue; }
+    const auto& present_queue() const { return m_present_queue; }
+    const auto& device() const { return m_device; }
+    const auto& handle() const { return m_device; }
+    const auto& gpu() const { return m_gpu; }
     // True iff this device advertises VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT on
     // VK_FORMAT_D32_SFLOAT for optimal tiling.  Probed once at Device::Create.
     // Consumers (volumetric chain, future SSAO/DOF) gate the depth-as-sampled
@@ -67,10 +67,10 @@ public:
     // persisted back in Destroy().  Returns VK_NULL_HANDLE if creation
     // failed — vkCreateGraphicsPipelines accepts that fallback.
     VkPipelineCache pipeline_cache() const { return *m_pipeline_cache; }
-    const auto& swapchain() const { return m_swapchain; }
-    Swapchain&  mut_swapchain() { return m_swapchain; }
-    const auto& out_extent() const { return m_extent; }
-    void        set_out_extent(VkExtent2D v) { m_extent = v; }
+    const auto&     swapchain() const { return m_swapchain; }
+    Swapchain&      mut_swapchain() { return m_swapchain; }
+    const auto&     out_extent() const { return m_extent; }
+    void            set_out_extent(VkExtent2D v) { m_extent = v; }
 
     bool supportExt(std::string_view) const;
 
@@ -110,8 +110,8 @@ private:
 
     Swapchain m_swapchain;
 
-    vvk::CommandPool    m_command_pool;
-    vvk::PipelineCache  m_pipeline_cache;
+    vvk::CommandPool   m_command_pool;
+    vvk::PipelineCache m_pipeline_cache;
 
     QueueParameters m_graphics_queue;
     QueueParameters m_present_queue;

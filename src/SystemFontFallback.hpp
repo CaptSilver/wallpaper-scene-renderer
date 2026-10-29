@@ -20,7 +20,8 @@
 
 #include <string>
 
-namespace wallpaper {
+namespace wallpaper
+{
 
 std::string ResolveSystemFontFallback(const std::string& we_name);
 

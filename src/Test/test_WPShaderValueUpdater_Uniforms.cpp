@@ -77,9 +77,8 @@ struct NodeFixture {
 
     static NodeFixture make(const Eigen::Vector3f& translate = Eigen::Vector3f::Zero()) {
         NodeFixture f;
-        f.node = std::make_shared<SceneNode>(translate,
-                                             Eigen::Vector3f(1, 1, 1),
-                                             Eigen::Vector3f(0, 0, 0));
+        f.node = std::make_shared<SceneNode>(
+            translate, Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
         f.mesh = std::make_shared<SceneMesh>();
         SceneMaterial mat;
         mat.name = "test_mat";
@@ -94,9 +93,8 @@ struct NodeFixture {
 // raw pointer assigned to `activeCamera` stays alive.
 SceneCamera* installActiveCamera(Scene& scene, double w = 1920.0, double h = 1080.0) {
     auto cam = std::make_shared<SceneCamera>((i32)w, (i32)h, 0.01f, 1000.0f);
-    cam->SetDirectLookAt(Eigen::Vector3d(0, 0, 1),
-                         Eigen::Vector3d(0, 0, 0),
-                         Eigen::Vector3d(0, 1, 0));
+    cam->SetDirectLookAt(
+        Eigen::Vector3d(0, 0, 1), Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 1, 0));
     scene.cameras["__test__"] = cam;
     scene.activeCamera        = cam.get();
     return cam.get();
@@ -425,7 +423,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::parallax_position") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        WPCameraParallax p;
+        WPCameraParallax     p;
         p.enable         = true;
         p.amount         = 0.05f;
         p.mouseinfluence = 0.6f;
@@ -458,7 +456,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::parallax_position") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        WPCameraParallax p;
+        WPCameraParallax     p;
         p.enable         = true;
         p.mouseinfluence = 1.0f;
         p.delay          = 0.5f;
@@ -597,11 +595,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         installActiveCamera(scene);
 
         // One point light at world (10, 20, 30) with exponent 0.5.
-        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1),
-                                                  100.0f, 2.0f, 0.5f);
-        auto light_node = std::make_shared<SceneNode>(Eigen::Vector3f(10, 20, 30),
-                                                      Eigen::Vector3f(1, 1, 1),
-                                                      Eigen::Vector3f(0, 0, 0));
+        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 2.0f, 0.5f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f(10, 20, 30), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
         light->setNode(light_node);
         scene.sceneGraph->AppendChild(light_node);
         scene.lights.push_back(std::move(light));
@@ -633,12 +629,11 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         Scene scene;
         installActiveCamera(scene);
 
-        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(1.0f, 0.5f, 0.25f),
-                                                  /*radius*/ 250.0f,
-                                                  /*intensity*/ 4.0f);
-        auto light_node = std::make_shared<SceneNode>(Eigen::Vector3f::Zero(),
-                                                      Eigen::Vector3f(1, 1, 1),
-                                                      Eigen::Vector3f(0, 0, 0));
+        auto light      = std::make_unique<SceneLight>(Eigen::Vector3f(1.0f, 0.5f, 0.25f),
+                                                       /*radius*/ 250.0f,
+                                                       /*intensity*/ 4.0f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f::Zero(), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
         light->setNode(light_node);
         scene.sceneGraph->AppendChild(light_node);
         scene.lights.push_back(std::move(light));
@@ -667,12 +662,11 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         Scene scene;
         installActiveCamera(scene);
 
-        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(0.1f, 0.2f, 0.4f),
-                                                  /*radius*/ 10.0f,
-                                                  /*intensity*/ 3.0f);
-        auto light_node = std::make_shared<SceneNode>(Eigen::Vector3f::Zero(),
-                                                      Eigen::Vector3f(1, 1, 1),
-                                                      Eigen::Vector3f(0, 0, 0));
+        auto light      = std::make_unique<SceneLight>(Eigen::Vector3f(0.1f, 0.2f, 0.4f),
+                                                       /*radius*/ 10.0f,
+                                                       /*intensity*/ 3.0f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f::Zero(), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
         light->setNode(light_node);
         scene.sceneGraph->AppendChild(light_node);
         scene.lights.push_back(std::move(light));
@@ -692,7 +686,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         // are present).
         const auto* lcp = cap.find(G_LCP);
         REQUIRE(lcp != nullptr);
-        REQUIRE(lcp->values.size() == 12); // 3 lights * vec4 in first three slots
+        REQUIRE(lcp->values.size() == 12);    // 3 lights * vec4 in first three slots
         const float k = 3.0f * 10.0f * 10.0f; // intensity * radius^2
         CHECK(lcp->values[0] == doctest::Approx(0.1f * k));
         CHECK(lcp->values[1] == doctest::Approx(0.2f * k));
@@ -705,17 +699,14 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         // cameras.at("reflected_perspective") when the node binds it.
         installActiveCamera(scene);
         auto refl = std::make_shared<SceneCamera>(1920, 1080, 0.01f, 1000.0f);
-        refl->SetDirectLookAt(Eigen::Vector3d(0, 0, 1),
-                              Eigen::Vector3d(0, 0, 0),
-                              Eigen::Vector3d(0, 1, 0));
+        refl->SetDirectLookAt(
+            Eigen::Vector3d(0, 0, 1), Eigen::Vector3d(0, 0, 0), Eigen::Vector3d(0, 1, 0));
         scene.cameras["reflected_perspective"] = refl;
 
         // One point light at y = +50 (above floor).
-        auto light = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1),
-                                                  100.0f, 1.0f);
-        auto light_node = std::make_shared<SceneNode>(Eigen::Vector3f(0, 50, 0),
-                                                      Eigen::Vector3f(1, 1, 1),
-                                                      Eigen::Vector3f(0, 0, 0));
+        auto light      = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 100.0f, 1.0f);
+        auto light_node = std::make_shared<SceneNode>(
+            Eigen::Vector3f(0, 50, 0), Eigen::Vector3f(1, 1, 1), Eigen::Vector3f(0, 0, 0));
         light->setNode(light_node);
         scene.sceneGraph->AppendChild(light_node);
         scene.lights.push_back(std::move(light));
@@ -745,8 +736,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
 
         // Push 6 lights — writer should only consume the first 4.
         for (int i = 0; i < 6; ++i) {
-            auto l = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1),
-                                                  10.0f, 1.0f);
+            auto l = std::make_unique<SceneLight>(Eigen::Vector3f(1, 1, 1), 10.0f, 1.0f);
             auto n = std::make_shared<SceneNode>(Eigen::Vector3f((float)i, 0, 0),
                                                  Eigen::Vector3f(1, 1, 1),
                                                  Eigen::Vector3f(0, 0, 0));
@@ -769,9 +759,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::point_lights") {
         REQUIRE(lp != nullptr);
         REQUIRE(lp->values.size() == 16);
         // Only lights 0..3 wrote x = 0,1,2,3.
-        CHECK(lp->values[0]  == doctest::Approx(0.0f));
-        CHECK(lp->values[4]  == doctest::Approx(1.0f));
-        CHECK(lp->values[8]  == doctest::Approx(2.0f));
+        CHECK(lp->values[0] == doctest::Approx(0.0f));
+        CHECK(lp->values[4] == doctest::Approx(1.0f));
+        CHECK(lp->values[8] == doctest::Approx(2.0f));
         CHECK(lp->values[12] == doctest::Approx(3.0f));
         // (lights 4/5 not present in the 16 floats; just confirming no
         // overflow occurred.)
@@ -884,9 +874,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 800;
-        rt.height       = 450;
-        rt.mipmap_level = 3;
+        rt.width                         = 800;
+        rt.height                        = 450;
+        rt.mipmap_level                  = 3;
         scene.renderTargets["custom_rt"] = rt;
 
         auto f = NodeFixture::make();
@@ -901,9 +891,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         data.renderTargets.emplace_back(2u, std::string("custom_rt"));
         updater.SetNodeData(f.node.get(), data);
 
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[2],
-                                            WE_GLTEX_MIPMAPINFO_NAMES[2] }));
+        updater.InitUniforms(
+            f.node.get(),
+            makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[2], WE_GLTEX_MIPMAPINFO_NAMES[2] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -933,8 +923,8 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width  = 320;
-        rt.height = 240;
+        rt.width                                = 320;
+        rt.height                               = 240;
         scene.renderTargets[GenOffscreenRT(42)] = rt;
 
         auto f = NodeFixture::make();
@@ -946,8 +936,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         data.renderTargets.emplace_back(0u, GenLinkTex(42));
         updater.SetNodeData(f.node.get(), data);
 
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
+        updater.InitUniforms(f.node.get(), makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -970,8 +959,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::rt_size_lookup") {
         scene.sceneGraph->AppendChild(f.node);
 
         WPShaderValueUpdater updater(&scene);
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[1] }));
+        updater.InitUniforms(f.node.get(), makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[1] }));
 
         WPShaderValueData data;
         data.renderTargets.emplace_back(1u, std::string("missing_rt"));
@@ -1016,10 +1004,12 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::audio_zerofill") {
         // size depends on ShaderValue clamping into ShaderValueInter (16),
         // so we don't pin a strict length — we only check the contract that
         // every captured float is zero.
-        for (auto name : {
-                 G_AUDIOSPECTRUM16LEFT, G_AUDIOSPECTRUM16RIGHT,
-                 G_AUDIOSPECTRUM32LEFT, G_AUDIOSPECTRUM32RIGHT,
-                 G_AUDIOSPECTRUM64LEFT, G_AUDIOSPECTRUM64RIGHT }) {
+        for (auto name : { G_AUDIOSPECTRUM16LEFT,
+                           G_AUDIOSPECTRUM16RIGHT,
+                           G_AUDIOSPECTRUM32LEFT,
+                           G_AUDIOSPECTRUM32RIGHT,
+                           G_AUDIOSPECTRUM64LEFT,
+                           G_AUDIOSPECTRUM64RIGHT }) {
             const auto* w = cap.find(name);
             REQUIRE_MESSAGE(w != nullptr, "missing band: ", std::string(name));
             CHECK_FALSE(w->values.empty());
@@ -1134,8 +1124,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::init_audio_flag") {
         WPShaderValueUpdater updater(&scene);
         CHECK_FALSE(updater.hasAudioConsumer()); // baseline: no consumers
 
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ G_AUDIOSPECTRUM32LEFT }));
+        updater.InitUniforms(f.node.get(), makeExistsOp({ G_AUDIOSPECTRUM32LEFT }));
         CHECK(updater.hasAudioConsumer()); // latched by InitUniforms
     }
 
@@ -1191,9 +1180,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 640;
-        rt.height       = 480;
-        rt.mipmap_level = 1;
+        rt.width                           = 640;
+        rt.height                          = 480;
+        rt.mipmap_level                    = 1;
         scene.renderTargets["_rt_default"] = rt;
 
         auto f = NodeFixture::make();
@@ -1205,8 +1194,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         data.renderTargets.emplace_back(0u, std::string("_rt_default"));
         updater.SetNodeData(f.node.get(), data);
 
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
+        updater.InitUniforms(f.node.get(), makeExistsOp({ WE_GLTEX_RESOLUTION_NAMES[0] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -1221,9 +1209,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 640;
-        rt.height       = 480;
-        rt.mipmap_level = 1;
+        rt.width                           = 640;
+        rt.height                          = 480;
+        rt.mipmap_level                    = 1;
         scene.renderTargets["_rt_default"] = rt;
 
         auto f = NodeFixture::make();
@@ -1253,9 +1241,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 1024;
-        rt.height       = 512;
-        rt.mipmap_level = 4;
+        rt.width                           = 1024;
+        rt.height                          = 512;
+        rt.mipmap_level                    = 4;
         scene.renderTargets["_rt_default"] = rt;
 
         auto f = NodeFixture::make();
@@ -1267,8 +1255,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         data.renderTargets.emplace_back(5u, std::string("_rt_default"));
         updater.SetNodeData(f.node.get(), data);
 
-        updater.InitUniforms(f.node.get(),
-                             makeExistsOp({ WE_GLTEX_MIPMAPINFO_NAMES[5] }));
+        updater.InitUniforms(f.node.get(), makeExistsOp({ WE_GLTEX_MIPMAPINFO_NAMES[5] }));
 
         UniformCapture cap;
         sprite_map_t   sprites;
@@ -1286,9 +1273,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 256;
-        rt.height       = 256;
-        rt.mipmap_level = 2;
+        rt.width                           = 256;
+        rt.height                          = 256;
+        rt.mipmap_level                    = 2;
         scene.renderTargets["_rt_default"] = rt;
 
         auto f = NodeFixture::make();
@@ -1330,9 +1317,9 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
         installActiveCamera(scene);
 
         SceneRenderTarget rt;
-        rt.width        = 128;
-        rt.height       = 128;
-        rt.mipmap_level = 1;
+        rt.width                           = 128;
+        rt.height                          = 128;
+        rt.mipmap_level                    = 1;
         scene.renderTargets["_rt_default"] = rt;
 
         auto f = NodeFixture::make();
@@ -1340,7 +1327,7 @@ TEST_SUITE("WPShaderValueUpdater::Uniforms::texture_resolution_mipmap_flags") {
 
         WPShaderValueUpdater updater(&scene);
 
-        WPShaderValueData data;
+        WPShaderValueData             data;
         std::vector<std::string_view> allNames;
         for (usize i = 0; i < 12; ++i) {
             data.renderTargets.emplace_back(i, std::string("_rt_default"));

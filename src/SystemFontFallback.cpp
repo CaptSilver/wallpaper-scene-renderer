@@ -8,11 +8,18 @@
 
 #include <fontconfig/fontconfig.h>
 
-namespace wallpaper {
+namespace wallpaper
+{
 
-namespace {
+namespace
+{
 
-enum class FontFamily { Mono, Sans, Serif };
+enum class FontFamily
+{
+    Mono,
+    Sans,
+    Serif
+};
 
 struct WeNameMapping {
     const char* prefix;
@@ -24,30 +31,30 @@ struct WeNameMapping {
 // `systemfont_arial_bold` and `systemfont_arial` both resolve to sans.
 constexpr WeNameMapping kNameMappings[] = {
     // Monospaced
-    { "consolas",       FontFamily::Mono  },
-    { "couriernew",     FontFamily::Mono  },
-    { "courier_new",    FontFamily::Mono  },
-    { "courier",        FontFamily::Mono  },
-    { "lucidaconsole",  FontFamily::Mono  },
-    { "lucida_console", FontFamily::Mono  },
-    { "monaco",         FontFamily::Mono  },
-    { "monospace",      FontFamily::Mono  },
+    { "consolas", FontFamily::Mono },
+    { "couriernew", FontFamily::Mono },
+    { "courier_new", FontFamily::Mono },
+    { "courier", FontFamily::Mono },
+    { "lucidaconsole", FontFamily::Mono },
+    { "lucida_console", FontFamily::Mono },
+    { "monaco", FontFamily::Mono },
+    { "monospace", FontFamily::Mono },
     // Serif
-    { "timesnewroman",  FontFamily::Serif },
-    { "times_new_roman",FontFamily::Serif },
-    { "times",          FontFamily::Serif },
-    { "georgia",        FontFamily::Serif },
-    { "cambria",        FontFamily::Serif },
-    { "serif",          FontFamily::Serif },
+    { "timesnewroman", FontFamily::Serif },
+    { "times_new_roman", FontFamily::Serif },
+    { "times", FontFamily::Serif },
+    { "georgia", FontFamily::Serif },
+    { "cambria", FontFamily::Serif },
+    { "serif", FontFamily::Serif },
     // Sans (everything else falls through to sans, but keeping these explicit
     // helps if we later want to log "exact match" vs "default fallback")
-    { "arial",          FontFamily::Sans  },
-    { "helvetica",      FontFamily::Sans  },
-    { "segoe",          FontFamily::Sans  },
-    { "tahoma",         FontFamily::Sans  },
-    { "verdana",        FontFamily::Sans  },
-    { "calibri",        FontFamily::Sans  },
-    { "trebuchet",      FontFamily::Sans  },
+    { "arial", FontFamily::Sans },
+    { "helvetica", FontFamily::Sans },
+    { "segoe", FontFamily::Sans },
+    { "tahoma", FontFamily::Sans },
+    { "verdana", FontFamily::Sans },
+    { "calibri", FontFamily::Sans },
+    { "trebuchet", FontFamily::Sans },
 };
 
 // Per-family candidate paths.  Tried in order; first existing file wins.
@@ -87,8 +94,8 @@ const std::vector<const char*>& CandidatesFor(FontFamily f) {
         "/usr/share/fonts/TTF/DejaVuSerif.ttf",
     };
     switch (f) {
-    case FontFamily::Mono:  return kMono;
-    case FontFamily::Sans:  return kSans;
+    case FontFamily::Mono: return kMono;
+    case FontFamily::Sans: return kSans;
     case FontFamily::Serif: return kSerif;
     }
     return kSans;
@@ -110,8 +117,8 @@ const std::vector<const char*>& CandidatesFor(FontFamily f) {
 // "sans-serif" would return Cantarell on Fedora and silently reflow the text.
 const char* FcFamilyFor(FontFamily f) {
     switch (f) {
-    case FontFamily::Mono:  return "Courier New";
-    case FontFamily::Sans:  return "Arial";
+    case FontFamily::Mono: return "Courier New";
+    case FontFamily::Sans: return "Arial";
     case FontFamily::Serif: return "Times New Roman";
     }
     return "Arial";
@@ -122,8 +129,7 @@ const char* FcFamilyFor(FontFamily f) {
 // and draw tofu, which is worse than reporting nothing, so verify coverage.
 bool PatternCoversLang(FcPattern* pattern, const char* lang) {
     FcLangSet* langset = nullptr;
-    if (FcPatternGetLangSet(pattern, FC_LANG, 0, &langset) != FcResultMatch
-        || langset == nullptr) {
+    if (FcPatternGetLangSet(pattern, FC_LANG, 0, &langset) != FcResultMatch || langset == nullptr) {
         return false;
     }
     return FcLangSetHasLang(langset, reinterpret_cast<const FcChar8*>(lang)) != FcLangDifferentLang;
@@ -149,11 +155,10 @@ std::string QueryFontconfig(const char* family, bool want_mono, const char* lang
         FcResult   res   = FcResultNoMatch;
         FcPattern* match = FcFontMatch(nullptr, pat, &res);
         if (match != nullptr) {
-            FcChar8* file = nullptr;
+            FcChar8*   file    = nullptr;
             const bool lang_ok = lang == nullptr || PatternCoversLang(match, lang);
-            if (res == FcResultMatch && lang_ok
-                && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch
-                && file != nullptr) {
+            if (res == FcResultMatch && lang_ok &&
+                FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file != nullptr) {
                 out = reinterpret_cast<const char*>(file);
             }
             FcPatternDestroy(match);
@@ -188,9 +193,9 @@ std::string ResolveSystemFontFallback(const std::string& we_name) {
 
     const std::string via_fc =
         QueryFontconfig(FcFamilyFor(family), family == FontFamily::Mono, nullptr);
-    if (!via_fc.empty()) {
+    if (! via_fc.empty()) {
         std::error_code ec;
-        if (std::filesystem::exists(via_fc, ec) && !ec) {
+        if (std::filesystem::exists(via_fc, ec) && ! ec) {
             return via_fc;
         }
     }
@@ -198,7 +203,7 @@ std::string ResolveSystemFontFallback(const std::string& we_name) {
     // Fallback for hosts with no usable fontconfig configuration.
     for (const char* path : CandidatesFor(family)) {
         std::error_code ec;
-        if (std::filesystem::exists(path, ec) && !ec) {
+        if (std::filesystem::exists(path, ec) && ! ec) {
             return path;
         }
     }
@@ -207,7 +212,7 @@ std::string ResolveSystemFontFallback(const std::string& we_name) {
 
 std::string ReadSystemFile(const std::string& path) {
     std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return {};
+    if (! f) return {};
     std::fseek(f, 0, SEEK_END);
     long size = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
@@ -215,7 +220,7 @@ std::string ReadSystemFile(const std::string& path) {
         std::fclose(f);
         return {};
     }
-    std::string out(static_cast<size_t>(size), '\0');
+    std::string  out(static_cast<size_t>(size), '\0');
     const size_t read = std::fread(out.data(), 1, static_cast<size_t>(size), f);
     std::fclose(f);
     out.resize(read);
@@ -252,14 +257,14 @@ std::string ResolveCJKHanFallback() {
         const std::string via_fc = QueryFontconfig("sans-serif", false, lang);
         if (via_fc.empty()) continue;
         std::error_code ec;
-        if (std::filesystem::exists(via_fc, ec) && !ec) {
+        if (std::filesystem::exists(via_fc, ec) && ! ec) {
             return via_fc;
         }
     }
 
     for (const char* path : kCandidates) {
         std::error_code ec;
-        if (std::filesystem::exists(path, ec) && !ec) {
+        if (std::filesystem::exists(path, ec) && ! ec) {
             return path;
         }
     }

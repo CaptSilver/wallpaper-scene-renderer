@@ -87,8 +87,8 @@ void WPShaderValueUpdater::FrameBegin() {
         float r = m_shake.roughness;
         float sx =
             std::sin(t * 1.0f) + std::sin(t * 2.3f + 1.7f) * r + std::sin(t * 4.7f + 3.1f) * r * r;
-        float sy = std::cos(t * 1.3f + 0.5f) + std::cos(t * 2.7f + 2.1f) * r +
-                   std::cos(t * 5.1f + 0.9f) * r * r;
+        float sy      = std::cos(t * 1.3f + 0.5f) + std::cos(t * 2.7f + 2.1f) * r +
+                        std::cos(t * 5.1f + 0.9f) * r * r;
         float norm    = 1.0f + r + r * r;
         m_shakeOffset = Vector2f(sx, sy) * (m_shake.amplitude / norm);
     }
@@ -627,8 +627,7 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
         // Correct Y-flip is `1 - mouseY` (mouse Y is 0-at-top while world
         // Y is up), then offset from center scaled by mouseinfluence.
         Vector2f mouseCentered { m_mousePos[0] - 0.5f, 0.5f - m_mousePos[1] };
-        Vector2f para =
-            Vector2f { 0.5f, 0.5f } + mouseCentered * m_parallax.mouseinfluence;
+        Vector2f para = Vector2f { 0.5f, 0.5f } + mouseCentered * m_parallax.mouseinfluence;
         updateOp(G_PARALLAXPOSITION, std::array { para[0], para[1] });
     }
 
@@ -674,13 +673,13 @@ void WPShaderValueUpdater::UpdateUniforms(SceneNode* pNode, sprite_map_t& sprite
     // harmless (default-constructed NodeSpriteSnapshot matches the pre-existing
     // cache-miss return path).
     if (pNode && ! sprites.empty() && spriteSnapshotShouldPublish(m_scene->needsSpriteSnapshot)) {
-        const auto&                   first_sp = sprites.begin()->second;
-        std::lock_guard<std::mutex>   lock(m_scene->nodeSpriteSnapshotMutex);
-        auto&                         snap     = m_scene->nodeSpriteSnapshot[pNode->ID()];
-        snap.numFrames                         = (u32)first_sp.numFrames();
-        snap.currentFrame                      = (u32)first_sp.curFrameIndex();
-        snap.duration                          = first_sp.totalDuration();
-        snap.isManualPin                       = first_sp.isManualFrame();
+        const auto&                 first_sp = sprites.begin()->second;
+        std::lock_guard<std::mutex> lock(m_scene->nodeSpriteSnapshotMutex);
+        auto&                       snap = m_scene->nodeSpriteSnapshot[pNode->ID()];
+        snap.numFrames                   = (u32)first_sp.numFrames();
+        snap.currentFrame                = (u32)first_sp.curFrameIndex();
+        snap.duration                    = first_sp.totalDuration();
+        snap.isManualPin                 = first_sp.isManualFrame();
     }
 
     if (info.has_LP || info.has_LCR) {

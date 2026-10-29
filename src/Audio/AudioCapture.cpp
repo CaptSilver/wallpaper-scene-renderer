@@ -328,7 +328,8 @@ struct AudioCapture::Impl {
                     return shutdown.load() || rebindPending.load();
                 });
                 LOG_INFO("AudioCapture::RebindLoop: woke (shutdown=%d, rebindPending=%d)",
-                         (int)shutdown.load(), (int)rebindPending.load());
+                         (int)shutdown.load(),
+                         (int)rebindPending.load());
                 if (shutdown) return;
                 rebindPending = false;
                 if (! ClaimRebindTarget(targetSink, boundSink, rebindInProgress, newSink)) continue;

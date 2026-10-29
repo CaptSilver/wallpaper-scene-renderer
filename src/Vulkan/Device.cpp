@@ -294,7 +294,7 @@ VkDeviceSize Device::GetUsage() const {
 }
 
 void Device::LogMemoryStats(const char* when) const {
-    VmaStats         stats {};
+    VmaStats stats {};
     vmaCalculateStats(*m_allocator, &stats);
     const auto& mem = m_gpu.GetMemoryProperties().memoryProperties;
 
@@ -385,8 +385,7 @@ void Device::Destroy() {
             if (m_device.GetPipelineCacheData(*m_pipeline_cache, &bytes, blob.data()) ==
                 VK_SUCCESS) {
                 const auto path = pipeline_cache_io::PathFromEnv();
-                if (! path.empty() &&
-                    pipeline_cache_io::Write(path, blob.data(), bytes)) {
+                if (! path.empty() && pipeline_cache_io::Write(path, blob.data(), bytes)) {
                     LOG_INFO("pipeline cache: persisted %zu bytes to %s", bytes, path.c_str());
                 }
             }
